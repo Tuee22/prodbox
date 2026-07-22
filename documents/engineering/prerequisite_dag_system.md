@@ -30,6 +30,27 @@ equality (Sprint 5.6).
 
 The supported command surface does not construct ad-hoc prerequisite orderings outside this model.
 
+### 1A. Kubernetes substrate boundary
+
+The generic Kubernetes branch is intentionally independent of the home-local cluster
+implementation:
+
+```text
+ToolKubectl -> K8sClusterReachable -> K8sReady
+```
+
+`K8sClusterReachable` executes the authoritative `kubectl cluster-info` observation against the
+kubeconfig selected for the active substrate. The selected kubeconfig may name the home RKE2 API,
+an EKS API, or another supported substrate; the graph does not infer substrate identity from host
+files or services.
+
+`KubeconfigExists`, `KubeconfigHomeExists`, `Rke2ConfigExists`, `Rke2Installed`,
+`Rke2ServiceExists`, and `Rke2ServiceActive` remain explicit nodes for home-local plans. None may
+occur in the transitive closure of `K8sClusterReachable` or `K8sReady` unless a caller separately
+selects a home-local root. Unit tables pin both the direct edges and this negative-space closure, so
+an AWS-selected run cannot acquire an accidental dependency on `/etc/rancher/rke2` or
+`rke2-server.service`.
+
 ## 2. Prerequisite Result Propagation
 
 Prerequisite failures propagate from the root cause upward.

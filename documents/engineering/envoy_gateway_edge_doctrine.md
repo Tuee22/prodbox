@@ -44,13 +44,12 @@ The target public-edge doctrine for self-managed `prodbox` clusters is:
 9. Redis is optional shared application infrastructure for realtime or rate-limit workloads only.
 10. WebSocket authorization happens at connection setup time, while message-level authorization
     remains application-owned.
-11. Supported public routing serves hostnames that are total projections of the configured
-    certificate scope set; the default supported shape remains one shared public hostname with
-    explicit path prefixes for identity, application, and admin surfaces. Wildcard public DNS is
-    supported only when the wildcard is anchored at a config-declared delegated zone (org-apex
-    wildcards are discouraged — an org-apex wildcard's blast radius covers every org subdomain and
-    non-prodbox services, and cannot even cover the AWS substrate's deeper-labelled host); path
-    routing is preserved.
+11. Supported public routing serves one explicit bound hostname per substrate, with path prefixes
+    for identity, application, and admin surfaces. That hostname must be covered by the configured
+    certificate scope set; `bindListener` rejects it otherwise. Wildcard certificate SANs are
+    supported only when anchored at a config-declared delegated zone, but they do not implicitly
+    create or enumerate Gateway listeners, HTTPRoutes, or DNS records (org-apex wildcards remain
+    discouraged because their blast radius covers unrelated subdomains); path routing is preserved.
 12. The Haskell distributed gateway daemon documented in
     [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) is distinct from
     the Envoy Gateway public edge.
@@ -195,8 +194,8 @@ The issuer name is DNS-01-honest: the issuer authenticates ACME challenges throu
 renamed it from the historically-inaccurate HTTP-01-claiming name (which named HTTP-01 but ran
 DNS-01). Because the issuer name is baked into retained ACME account and certificate state,
 the live rename lands on a wipe-and-rebuild boundary; the S3 cert retention key is keyed on
-substrate + FQDN (not the issuer name), so the retained certificate restores under the new
-issuer name without re-ordering from ZeroSSL.
+substrate + the exact canonical certificate scope (not the issuer name), so the retained certificate
+restores under the new issuer name without re-ordering from ZeroSSL.
 
 The keycloak chart `Certificate` references this single issuer
 (`Prodbox.PublicEdge.publicEdgeClusterIssuerName`). Because the canonical validation loop
@@ -204,10 +203,11 @@ repeatedly rebuilds the substrate, the issued certificate is retained and restor
 issuance (see below) so rebuilds do not re-order it and consume ZeroSSL issuance quota.
 
 The public-edge listener certificate is a **LongLived** managed resource, not disposable
-chart state. It is issued once and retained as an Agent-encrypted envelope in the long-lived
-`pulumi_state_backend` S3 bucket under `public-edge-tls/<substrate>/<fqdn>`. The managed-resource
-registry binds the exact TLS Secret identity, object versions, TLS-retention identity/policy, and
-restore receipt per
+chart state. Each exact canonical SAN set is issued once and retained as an Agent-encrypted envelope in the long-lived
+`pulumi_state_backend` S3 bucket under
+`public-edge-tls/<substrate>/<canonical-scope-key>`. A different SAN set has a different coordinate;
+restore never substitutes a merely covering `impliedBy` set. The managed-resource registry binds
+the exact TLS Secret identity, object versions, TLS-retention identity/policy, and restore receipt per
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md). Explicit consumer
 decommission or `prodbox nuke` removes/read-backs the TLS prefix objects/versions and TLS identity;
 it never deletes the shared bucket. Restore-before-issue and rebuild semantics are in §9.
@@ -303,12 +303,13 @@ The supported route model is explicit:
 - API and WebSocket workloads on explicit path prefixes such as `/api` and `/ws`
 - the MinIO console admin surface on the explicit `/minio` path prefix
 
-The served-FQDN set and the Gateway listener hostnames are total projections of the configured
-`CertScopeSet` in Tier-0 config; `test.resolvefintech.com` is the default exact scope, so today's
-single-hostname shape is unchanged until an operator widens scope. A served hostname with no
-covering configured scope is unrepresentable on the prodbox-managed side — `bindListener` returns a
-`Left` at bind time and config validation fails fast — so the drift that produced an unmanaged
-orphan certificate cannot recur through this edge. See
+Each substrate has one explicit served FQDN from Tier-0 config, and its Gateway listener, routes,
+and DNS record project that bound hostname. The configured `CertScopeSet` supplies the certificate
+SANs and must cover the bound host; `test.resolvefintech.com` is the default home exact scope, so
+today's single-hostname shape is unchanged until an operator changes scope. A served hostname with
+no covering configured scope is unrepresentable on the prodbox-managed side — `bindListener`
+returns a `Left` at bind time and config validation fails fast — while a wildcard SAN never
+synthesizes additional listeners, routes, or records. See
 [acme_provider_guide.md](./acme_provider_guide.md) for the scope algebra and coverage semantics.
 
 Example hostname routing inside this model may look like:
@@ -687,7 +688,8 @@ Lifecycle and chart implications:
    Transit-sealed custody through attested one-shot home/selected Agent workers, then relies on the
    retained-and-restored public-edge certificate. Authority sees ciphertext/typed receipts only;
    neither restore exposes a generic export or requires operator re-entry on a fresh AWS Vault.
-8. The public-edge listener certificate is restored before issuance on every rebuild path
+8. The public-edge listener certificate for the exact configured SAN set is restored before
+   issuance evaluation on every rebuild path
    (`prodbox cluster reconcile`, `prodbox charts reconcile`, and the substrate-platform installs):
    Authority obtains the exact retained ciphertext/version through TLS Retention Adapter, routes it
    to the selected Target Agent, and uses the retained home Agent's TLS-envelope Transit lane to
@@ -772,9 +774,12 @@ The supported success state for `prodbox edge status` is
 
 The `certificate-renew-due` and `certificate-expired` rungs are purely observational: prodbox reads
 cert-manager's `status.renewalTime` (renew-due) and `notAfter` (expired) and never recomputes a
-repo-side renewal window, which would drift from the chart `renewBefore: 720h`. cert-manager and
+repo-side renewal window, which would drift from cert-manager's committed issuance decision. cert-manager and
 ZeroSSL own renewal; prodbox only observes it. When `status.renewalTime` is absent the rung is
 unobservable and fails closed as `certificate-unobservable` rather than reporting a healthy state.
+`prodbox edge status` emits the observed rung on a `CERTIFICATE_EXPIRY=<rung>` line whose four
+fail-closed values are `certificate-current` (now is before the observed renewal time),
+`certificate-renew-due`, `certificate-expired`, and `certificate-unobservable`.
 
 Current named validation implications:
 

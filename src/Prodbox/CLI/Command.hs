@@ -1,6 +1,8 @@
 module Prodbox.CLI.Command
   ( AwsCommand (..)
   , AwsTeardownFlags (..)
+  , BootstrapBrokerCommand (..)
+  , BrokerLaunchOptions (..)
   , PulumiResiduePolicy (..)
   , ChartsCommand (..)
   , buildPlan
@@ -60,6 +62,7 @@ data CommandListingFormat
 
 data NativeCommand
   = NativeAws AwsCommand
+  | NativeBootstrapBroker BootstrapBrokerCommand
   | NativeCharts ChartsCommand
   | NativeCheckCode
   | NativeConfig ConfigCommand
@@ -137,6 +140,19 @@ data VaultCommand
   | VaultRotateTransitKey String
   | VaultPkiStatus
   | VaultPkiIssueTestCert
+  deriving (Eq, Show)
+
+-- | The closed executable surface for the dedicated pre-Vault Bootstrap
+-- Broker.  The mounted role config is always selected explicitly; there is no
+-- repository-config or environment fallback.
+data BootstrapBrokerCommand
+  = BootstrapBrokerStart BrokerLaunchOptions
+  deriving (Eq, Show)
+
+data BrokerLaunchOptions = BrokerLaunchOptions
+  { brokerConfigPath :: FilePath
+  , brokerPlanOptions :: PlanOptions
+  }
   deriving (Eq, Show)
 
 data DaemonLaunchOptions = DaemonLaunchOptions

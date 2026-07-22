@@ -1,6 +1,10 @@
 module Prodbox.Native
   ( runNativeCommand
   , commandPrerequisites
+  , NativeRuntimeCommand
+  , nativeRuntimeCommand
+  , nativeRuntimeRole
+  , nativeRuntimeConfigIdentity
   )
 where
 
@@ -9,9 +13,11 @@ import Prodbox.Aws
   ( runAwsCommand
   , runInteractiveConfigSetupWithPlan
   )
+import Prodbox.Bootstrap.Broker (runBootstrapBrokerCommand)
 import Prodbox.CLI.Charts (runChartsCommand)
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , BootstrapBrokerCommand (..)
   , ConfigCommand (..)
   , EdgeCommand (..)
   , GatewayCommand (..)
@@ -47,6 +53,11 @@ import Prodbox.K8s (runK8sCommand)
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Repo (resolveTier0ConfigPath)
+import Prodbox.Runtime.Role
+  ( RuntimeConfigIdentity
+  , RuntimeRole (..)
+  , runtimeRoleConfigIdentity
+  )
 import Prodbox.Settings
   ( defaultConfigFile
   , renderSettingsDisplay
@@ -62,6 +73,45 @@ import System.Exit
 
 runNativeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNativeCommand repoRoot command =
+  case nativeRuntimeCommand command of
+    Just runtimeCommand -> runNativeRuntimeCommand repoRoot runtimeCommand
+    Nothing -> runNonRuntimeCommand repoRoot command
+
+-- | Closed projection from the public CLI command tree to long-running
+-- process roles.  A role is selected before its role-specific Dhall decoder
+-- runs; ordinary operator commands deliberately project to 'Nothing'.
+data NativeRuntimeCommand
+  = BootstrapBrokerRuntimeCommand !BootstrapBrokerCommand
+  | GatewayRuntimeCommand !GatewayCommand
+  deriving (Eq, Show)
+
+nativeRuntimeCommand :: NativeCommand -> Maybe NativeRuntimeCommand
+nativeRuntimeCommand command = case command of
+  NativeBootstrapBroker brokerCommand ->
+    Just (BootstrapBrokerRuntimeCommand brokerCommand)
+  NativeGateway gatewayCommand@GatewayDaemonCommand {} ->
+    Just (GatewayRuntimeCommand gatewayCommand)
+  _ -> Nothing
+
+nativeRuntimeRole :: NativeRuntimeCommand -> RuntimeRole
+nativeRuntimeRole runtimeCommand = case runtimeCommand of
+  BootstrapBrokerRuntimeCommand _ -> BootstrapBroker
+  GatewayRuntimeCommand _ -> GatewayRuntime
+
+nativeRuntimeConfigIdentity :: NativeRuntimeCommand -> RuntimeConfigIdentity
+nativeRuntimeConfigIdentity = runtimeRoleConfigIdentity . nativeRuntimeRole
+
+runNativeRuntimeCommand :: FilePath -> NativeRuntimeCommand -> IO ExitCode
+runNativeRuntimeCommand repoRoot runtimeCommand =
+  -- Force the total role/config projection before entering either decoder.
+  nativeRuntimeConfigIdentity runtimeCommand `seq` case runtimeCommand of
+    BootstrapBrokerRuntimeCommand brokerCommand ->
+      runBootstrapBrokerCommand repoRoot brokerCommand
+    GatewayRuntimeCommand gatewayCommand ->
+      runGatewayCommand repoRoot gatewayCommand
+
+runNonRuntimeCommand :: FilePath -> NativeCommand -> IO ExitCode
+runNonRuntimeCommand repoRoot command =
   case command of
     NativeAws awsCommand ->
       -- Sprint 4.26: inject the long-lived teardown preflight here (rather
@@ -71,12 +121,15 @@ runNativeCommand repoRoot command =
       -- the harness teardown paths bypass it, preserving Sprint 7.9's
       -- aws-ses relaxation.
       runAwsCommand repoRoot noLiveLongLivedPulumiStacksPreflight awsCommand
+    NativeBootstrapBroker _ -> runtimeProjectionInvariantViolation
     NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
     NativeDns dnsCommand -> runDnsCommand repoRoot dnsCommand
     NativeDocs docsCommand -> runDocsCommand repoRoot docsCommand
     NativeEdge edgeCommand -> runEdgeCommand repoRoot edgeCommand
+    NativeGateway gatewayCommand@GatewayDaemonCommand {} ->
+      gatewayCommand `seq` runtimeProjectionInvariantViolation
     NativeGateway gatewayCommand -> runGatewayCommand repoRoot gatewayCommand
     NativeHost hostCommand -> runHostCommand repoRoot hostCommand
     NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
@@ -89,6 +142,10 @@ runNativeCommand repoRoot command =
     NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand
     NativeVault vaultCommand -> runVaultCommand repoRoot vaultCommand
     NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
+
+runtimeProjectionInvariantViolation :: IO ExitCode
+runtimeProjectionInvariantViolation =
+  pure (ExitFailure 1)
 
 -- | Phase 4: the declarative single-source-of-truth for the typed
 -- 'PrerequisiteId' set each command's APPLY path requires. The function is
@@ -115,6 +172,9 @@ commandPrerequisites command =
         AwsCheckQuotas -> [AwsCredentialsValid]
         AwsRequestQuotas _ -> [AwsCredentialsValid]
         AwsReapTestEbs _ -> [AwsCredentialsValid]
+    NativeBootstrapBroker brokerCommand ->
+      case brokerCommand of
+        BootstrapBrokerStart _ -> []
     -- Chart reconcile/delete apply against the active cluster.
     NativeCharts _ -> [K8sClusterReachable]
     NativeCheckCode -> []

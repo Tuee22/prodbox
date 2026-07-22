@@ -75,12 +75,17 @@ import Prodbox.Aws.Native.Wire
   , DispatchPhase (..)
   , HttpOutcome (HttpOutcome)
   , Idempotency (..)
+  , NativeAwsResponseByteLimit
   , NativeAwsSender
   , SignedHttpRequest (shrHeaders)
   , TransportFailure (TransportFailure)
   , buildSignedRequest
   , classifyOutcome
+  , defaultNativeAwsResponseByteLimit
   , formContentType
+  , mkNativeAwsResponseByteLimit
+  , nativeAwsResponseByteLimitBytes
+  , readBoundedNativeAwsHttpOutcome
   , renderFormBody
   )
 import System.Directory (getCurrentDirectory)
@@ -225,6 +230,45 @@ bannedSeams =
 awsNativeClientsSuite :: SuiteBuilder ()
 awsNativeClientsSuite =
   describe "Sprint 1.62 native AWS clients" $ do
+    describe "bounded native AWS response transport" $ do
+      it "rejects zero and negative response-byte limits" $ do
+        mkNativeAwsResponseByteLimit 0
+          `shouldBe` Left "native AWS response-byte limit must be positive"
+        mkNativeAwsResponseByteLimit (-1)
+          `shouldBe` Left "native AWS response-byte limit must be positive"
+        mkNativeAwsResponseByteLimit maxBound
+          `shouldBe` Left "native AWS response-byte limit is too large"
+      it "accepts an empty fragmented response body" $ do
+        (readChunk, _) <- fragmentedBodyReader []
+        result <- readBoundedNativeAwsHttpOutcome (responseLimit 5) 204 [] readChunk
+        result `shouldBe` Right (HttpOutcome 204 [] "")
+      it "accepts exactly the limit across arbitrary response fragments" $ do
+        (readChunk, remainingFragments) <- fragmentedBodyReader ["ab", "c", "de"]
+        result <- readBoundedNativeAwsHttpOutcome (responseLimit 5) 200 [] readChunk
+        result `shouldBe` Right (HttpOutcome 200 [] "abcde")
+        remainingFragments `shouldReturn` []
+      it "rejects max+1 across fragments without returning a partial body or draining the stream" $ do
+        (readChunk, remainingFragments) <- fragmentedBodyReader ["ab", "cde", "f", "unread"]
+        result <- readBoundedNativeAwsHttpOutcome (responseLimit 5) 200 [] readChunk
+        result
+          `shouldBe` Left
+            (TransportFailure "native AWS HTTP response exceeds the 5-byte bound" PossiblySent)
+        remainingFragments `shouldReturn` ["unread"]
+      it "classifies a fake transport overflow conservatively after a mutating dispatch" $ do
+        (readChunk, _) <- fragmentedBodyReader ["123", "456"]
+        outcome <- readBoundedNativeAwsHttpOutcome (responseLimit 5) 200 [] readChunk
+        classifyOutcome "iam:CreateAccessKey" Mutating XmlErrorFormat outcome
+          `shouldBe` Left
+            ( AwsAmbiguousOutcome
+                ( AmbiguousDispatchFailure
+                    "iam:CreateAccessKey"
+                    "native AWS HTTP response exceeds the 5-byte bound"
+                )
+            )
+      it "ships a fixed positive one-MiB default limit" $
+        nativeAwsResponseByteLimitBytes defaultNativeAwsResponseByteLimit
+          `shouldBe` (1024 * 1024)
+
     describe "classifyOutcome ambiguity gate (pure truth table)" $ do
       it "idempotent + not-sent transport failure is a plain transport error" $
         classifyOutcome "op" Idempotent XmlErrorFormat (Left (TransportFailure "d" DefinitelyNotSent))
@@ -413,3 +457,22 @@ probeSign handle =
     []
     "probe"
     formContentType
+
+responseLimit :: Int -> NativeAwsResponseByteLimit
+responseLimit bytes =
+  either
+    (error . ("invalid native AWS response test limit: " ++))
+    id
+    (mkNativeAwsResponseByteLimit bytes)
+
+fragmentedBodyReader :: [ByteString] -> IO (IO ByteString, IO [ByteString])
+fragmentedBodyReader initialFragments = do
+  fragmentsRef <- newIORef initialFragments
+  let readChunk = do
+        fragments <- readIORef fragmentsRef
+        case fragments of
+          [] -> pure ""
+          chunk : remaining -> do
+            writeIORef fragmentsRef remaining
+            pure chunk
+  pure (readChunk, readIORef fragmentsRef)

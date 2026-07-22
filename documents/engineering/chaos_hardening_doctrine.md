@@ -455,9 +455,13 @@ liveness property (*demand is eventually served*); and a checker explores it to 
 **matches the real actor count** — do not model 2 actors if you deploy 3. The model's vocabulary — the
 snapshot and observation *types* — should be the very ones Extract named. If Extract and Model disagree
 about a case, you have found either a protocol bug or an implementation bug, and you will know which.
-prodbox does exactly this for the gateway: `documents/engineering/tla/gateway_orders_rule.tla` states the
-six safety/liveness invariants and `prodbox dev tla-check` explores them to exhaustion (~4.4M states at
-scope 3); the model and its documented divergences are owned by
+prodbox applies this with an explicit decomposition for the emitter-local refinement:
+`documents/engineering/tla/gateway_orders_rule.tla` checks 16 safety invariants over one
+representative emitter and one real peer/acknowledger while holding `activeOrders` fixed. The
+canonical exhaustive run generated 7,139,920 states and checked 781,710 distinct states; the
+independent Orders/ranked-owner/partition axis and concrete Orders migration remain separate proof
+obligations. The model does not claim liveness or the production three-peer cardinality. Its exact
+scope, correspondence, and documented divergences are owned by
 [tla_modelling_assumptions.md](./tla_modelling_assumptions.md).
 
 Where the invariant is **impossibility-bounded** (R7), state it *conditionally* — e.g. *≤ 1 owner once
@@ -588,7 +592,9 @@ injects benign faults conforms to *"recovers from outages,"* not to this doctrin
 
 **Required prodbox campaign.** Inject faults at every durable authority CAS boundary, lose responses
 after an external effect applies, saturate Gateway Runtime while Lifecycle Authority continues, and
-restart the single gateway emitter actor between stage/fsync/publish/commit. Cleanup injection fails
+restart the single gateway emitter actor around journal-first marker creation and every
+`stage -> fsync -> publish -> commit -> fsync` boundary, including migrated-projection
+pre-publication recovery. Cleanup injection fails
 each node of the registered always-run DAG in turn and asserts every independent node still runs,
 credential teardown remains dependency-blocked, and the final report retains the original plus all
 cleanup failures. The Development Plan alone records which scenarios have deployment-qualified.
@@ -1103,17 +1109,27 @@ whichever of them is the elected leader, so traffic always reaches a live owner.
 address-space state; they converge a **bounded signed semantic replica state**: latest heartbeat and
 ownership evidence per Orders member, bounded replay/diagnostic windows, and a monotonic
 receive-cursor vector keyed by emitter.
-Peers reconcile by idempotent bounded deltas or a signed per-emitter semantic checkpoint plus a
-bounded suffix. Each Gateway Runtime has one actor that exclusively owns its encrypted,
-identity-bound local journal and the complete `stage -> fsync -> publish -> commit -> fsync`
-transition. Other workers submit bounded intents; they cannot stage or commit continuity directly.
-The journal prevents sequence reset across a total peer restart but does not preserve discarded
-semantic history, and it is not a remote lifecycle CAS or generic object-store record. The only externally-visible effect is the DNS
+Peers reconcile by idempotent bounded deltas or an authenticated per-emitter checkpoint floor plus
+one contiguous bounded retained suffix. Per-peer acknowledgements select which suffix records need
+republishing; only an installed signed checkpoint may compact the retained chain. Each Gateway Runtime
+has one actor that exclusively owns its encrypted, identity-bound local journal and the complete
+`stage -> fsync -> publish -> commit -> fsync` transition. Other workers submit bounded intents; they
+cannot stage or commit continuity directly. The mount is admitted only while the process holds the
+filesystem lock and a matching current Kubernetes Lease/incarnation witness. The journal prevents
+sequence reset across a total peer restart but does not preserve discarded semantic history, and it is
+not a remote lifecycle CAS or generic object-store record. The only externally-visible effect is the DNS
 write. The invariant: **at most one daemon writes the DNS record —
 once the daemons' views have converged.** That conditional clause is deliberate and load-bearing (R7): the
 invariant is *not* absolute. It meets the §2 gate — decisions under concurrency (claim / yield / write),
 coordination only through the peer protocol, and a *no-two-writers* invariant no single daemon can enforce
 alone.
+
+First admission is journal-first: an authenticated initialized journal is durable before the
+independent marker is written and read back. A crash in that gap resumes the journal and retries the
+marker; marker presence with a missing journal fails closed. Local restart restores only from that
+journal's authenticated floor, contiguous suffix, and retained exact stage. Peer checkpoint/suffix
+repair is remote-replica repair only. The durable projection also retains the authenticated prior-
+Orders digest needed to re-arm an interrupted Orders migration without relabelling evidence.
 
 **The defect (§3 made concrete).** Each daemon decides "am I the owner, and may I write DNS?" from its
 local view of peer liveness (heartbeat ages) and replicated ownership evidence. The naive path reads a *peer heartbeat older
@@ -1137,7 +1153,12 @@ drop peer from the up-set," but that coercion only changes *who attempts to lead
 authorizes a write, because the write is gated by ownership, credential, claim, and continuity
 evidence, not by the heartbeat. The coercion is therefore
 licensed — it cannot violate safety. The pure `decide` and `may-write` are exhausted by property tests
-with no cluster or clock.
+with no cluster or clock. Inside the emitter boundary, the same Extract move produces a transition only
+from one exact `TransitionAdmission`: capability identity, queue generation, immutable request digest,
+incarnation, and absolute deadline travel unchanged through every phase. A normal epoch rotation is
+legal only at sequence exhaustion; promotion to a changed Orders digest is a distinct authenticated
+invalidation bound to the exact prior coordinate and is separately admitted before any new-Orders
+assertion.
 
 The before/after, as the §8 template instantiates:
 
@@ -1172,26 +1193,51 @@ bound (`max_clock_skew_seconds`), **enforced** by rejecting inbound heartbeats w
 outside it, and **monitored** by exporting the maximum observed inter-node skew so drift is visible
 before it crosses the bound. No move proves this premise; it is recorded **assumed**.
 
-**Model applied.** The finite TLC model explores two ranked nodes with bounded epoch, sequence,
-Orders, and time domains. It checks the documented safety invariants, including bounded types,
-cursor/authority ordering, credential-and-continuity prerequisites, claim-before-write, no sequence
-wrap, and at most one eligible writer once views are stable. It does not claim liveness or coverage
-of the production three-peer cardinality. Its `ClaimPrecedesWrite` invariant ensures the abstract
-writer has a current self-claim; native semantic-fold and partition tests exercise the corresponding
+**Model applied.** The finite TLC model explores one representative emitter and one real
+peer/acknowledger with bounded epoch, sequence, admission, incarnation, and time domains while
+holding the admitted `activeOrders` identity fixed. Its invariant set covers the exact journal phase
+shape, immutable transition-admission identity, stale-completion rejection, deadline expiry,
+OS-lock/fsynced-incarnation/Lease fencing, Orders scoping, bounded acknowledgement/checkpoint state,
+and the complete DNS gate. The canonical exhaustive run checks all 16 configured invariants over
+7,139,920 generated / 781,710 distinct states at depth 44 with an empty queue. It does not claim
+liveness, Orders migration, or coverage of the production three-peer cardinality. The independent
+Orders/ranked-owner/partition proof axis precedes this refinement; native tests cover the concrete
+durable migration and re-arm. Native semantic-fold and partition tests exercise the corresponding
 yield/takeover convergence behavior. Honest limits (§9, §12): the model is
 in **logical time with a bounded scope**, so it proves nothing about node counts beyond two, nothing
 about unbounded runs, and — critically — nothing about the **real-time clock-skew premise** it abstracts
 away (that lives in R8's ledger row, not the model). Native properties separately exercise concrete
 delta/repair merge, cursor recovery, byte bounds, and retained-authority crash points.
 
-**Inject applied.** The system already injects benign faults (rolling restarts, isolated failover). Extend
-that harness with the §11 adversarial scenarios that target what Extract and Model assert: partition the
-mesh and assert the chosen R7 mode — possible bounded divergence during the partition, plus
-**single-writer once views converge** and the expected claim/yield markers after heal; kill the current
-owner *mid-claim under active write load* and assert exactly one writer survives after convergence; drive
-a **one-way** partition and confirm inbound-vs-outbound health stay distinguished rather than collapsed;
-and inject **clock skew beyond the configured bound** to confirm the daemon rejects the out-of-bound events
-(R8) rather than silently corrupting the ordering.
+**Inject applied.** The harness targets the boundaries the model abstracts. It partitions the mesh and
+asserts possible bounded divergence during the partition plus **single-writer once views converge** and
+the expected claim/yield markers after heal. It drives a one-way partition and keeps inbound freshness
+distinct from outbound dial success, and injects clock skew beyond the configured bound so the event is
+rejected rather than silently reordered.
+
+The emitter-specific matrix is exact rather than a generic “restart test”:
+
+- cancel or kill in every signed phase; recovery must rewind each retained record to the durable-
+  stage boundary, clear its volatile publication witness, and re-fsync and republish the exact bytes,
+  never synthesize a replacement signature, and never answer the originating request before the final
+  projection fsync;
+- crash after journal initialization/fsync but before admission-marker write/read-back and prove the
+  authenticated journal resumes and the marker is retried; prove the inverse marker-without-journal
+  state fails closed;
+- overlap two process mounts and prove the POSIX lock excludes the second even before Lease admission;
+  then lose or expire the Lease, observe readiness clear, reject stale-incarnation completions,
+  reacquire, recover, and only then become ready;
+- keep one peer offline while commits and acknowledgements advance, install a checkpoint at the exact
+  candidate prefix frontier, and repair the offline peer from that authenticated floor plus contiguous
+  suffix; acknowledgement alone never deletes the chain;
+- promote changed Orders at a non-terminal sequence through the separately-ticketed authenticated
+  Orders invalidation; crash after the projection migrates but before publication and refuse the
+  same-process final fsync, then prove recovery re-arms from the retained prior digest and republishes
+  the exact bytes; reject conflicting/old-Orders evidence and fail closed on epoch overflow;
+- remove the journal only with an exact indexed retirement receipt and reject missing, mismatched,
+  malformed, or unobservable retirement evidence; and
+- saturate the bounded mailbox and capability lanes, proving immediate structured refusal with no
+  hidden waiter and one unchanged absolute deadline across queue wait, I/O, read-back, and response.
 
 **The dependency, instantiated** (the §14 template):
 
@@ -1205,9 +1251,10 @@ flowchart LR
   A -->|"if Simulate skipped"| C
 ```
 
-**The ledger this example must keep** (§12): *proven* — pure decision-layer properties and the seven
-modeled safety invariants for the finite two-node model; *tested* — bounded delta/repair convergence,
-continuity crash points, credential-gate refusal, and the native partition scenario; *assumed* — the
+**The ledger this example must keep** (§12): *proven* — pure decision-layer properties and the 16
+configured safety invariants for the finite two-node model; *tested* — bounded floor/suffix repair,
+journal crash points, lock/Lease/incarnation exclusion, credential-gate refusal, and the native
+partition scenario; *assumed* — the
 bounded clock-skew premise (R8), model↔code refinement, and behaviour above the modeled node count.
 Reading §15's matrix, the rows that make this
 subsystem distinctive are *impossibility-bounded invariant (R7)* — the condition stated, the

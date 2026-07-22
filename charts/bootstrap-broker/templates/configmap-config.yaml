@@ -1,0 +1,16 @@
+{{- /*
+Mounted broker Dhall for the `bootstrap-broker` runtime role. The empty default
+lets generic `helm template`/lint invocations omit the body; the supported
+ChartPlatform render supplies the complete, non-secret broker config. Directory
+mount (see deployment.yaml) so a ConfigMap update fires the broker's file-watch.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bootstrap-broker-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+data:
+  config.dhall: |
+    {{- .Values.config.brokerDhall | nindent 4 }}

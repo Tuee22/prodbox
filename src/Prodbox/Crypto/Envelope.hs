@@ -14,8 +14,8 @@
 -- gateway daemon authenticates with Kubernetes auth). See
 -- @documents/engineering/vault_doctrine.md@ §8 (Envelope encryption).
 --
--- NOTE: the local AEAD helpers mirror those in "Prodbox.Vault.UnlockBundle";
--- factoring them into a shared @Prodbox.Crypto.Aead@ is a follow-up.
+-- The local authenticated transform is shared with the emitter journal through
+-- "Prodbox.Crypto.Aead"; this module retains only envelope-specific wrapping.
 module Prodbox.Crypto.Envelope
   ( Envelope (..)
   , EnvelopeError (..)
@@ -27,8 +27,7 @@ module Prodbox.Crypto.Envelope
   )
 where
 
-import Crypto.Cipher.ChaChaPoly1305 qualified as CCP
-import Crypto.Error (CryptoError, CryptoFailable, eitherCryptoError)
+import Crypto.Error (CryptoError)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.Aeson
@@ -42,9 +41,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson qualified as Aeson
-import Data.ByteArray qualified as ByteArray
 import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as BL
 import Data.Text (Text)
@@ -52,6 +49,12 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Prodbox.Crypto.Aead
+  ( AeadError (..)
+  , aeadNonceBytes
+  , openAead
+  , sealAead
+  )
 
 -- | A pluggable data-encryption-key wrapper. Production binds these to Vault
 -- Transit @encrypt@ / @decrypt@; tests inject a local symmetric cipher. The
@@ -128,18 +131,12 @@ envelopeFormatV2 = "prodbox-envelope-v2"
 dekBytes :: Int
 dekBytes = 32
 
-nonceBytes :: Int
-nonceBytes = 12
-
-authTagBytes :: Int
-authTagBytes = 16
-
 -- | Seal @plaintext@ under a fresh DEK, binding @aad@ into the AEAD and
 -- wrapping the DEK with @cipher@. Returns the encoded envelope JSON.
 sealEnvelope :: DekCipher -> ByteString -> ByteString -> IO (Either EnvelopeError ByteString)
 sealEnvelope cipher aad plaintext = do
   dek <- getRandomBytes dekBytes
-  nonce <- getRandomBytes nonceBytes
+  nonce <- getRandomBytes aeadNonceBytes
   createdAt <- Text.pack . iso8601Show <$> getCurrentTime
   case aeadSeal dek nonce aad plaintext of
     Left cipherErr -> pure (Left cipherErr)
@@ -196,37 +193,18 @@ decodeEnvelope envelopeBytes = do
       Right bytes -> Right bytes
 
 aeadSeal :: ByteString -> ByteString -> ByteString -> ByteString -> Either EnvelopeError ByteString
-aeadSeal key nonce aad plaintext = case eitherCryptoError stateResult of
-  Left cryptoErr -> Left (EnvelopeCipherFailed cryptoErr)
-  Right st0 ->
-    let st1 = CCP.finalizeAAD (CCP.appendAAD aad st0)
-        (ciphertext, st2) = CCP.encrypt plaintext st1
-        tag = CCP.finalize st2
-     in Right (ciphertext <> ByteArray.convert tag)
- where
-  stateResult :: CryptoFailable CCP.State
-  stateResult = do
-    nonce' <- CCP.nonce12 nonce
-    CCP.initialize key nonce'
+aeadSeal key nonce aad plaintext =
+  case sealAead key nonce aad plaintext of
+    Left (AeadCipherFailed cryptoErr) -> Left (EnvelopeCipherFailed cryptoErr)
+    Left AeadAuthenticationFailed -> Left EnvelopeAuthFailed
+    Right sealed -> Right sealed
 
 aeadOpen :: ByteString -> ByteString -> ByteString -> ByteString -> Either EnvelopeError ByteString
-aeadOpen key nonce aad input
-  | BS.length input < authTagBytes = Left EnvelopeAuthFailed
-  | otherwise = case eitherCryptoError stateResult of
-      Left cryptoErr -> Left (EnvelopeCipherFailed cryptoErr)
-      Right st0 ->
-        let st1 = CCP.finalizeAAD (CCP.appendAAD aad st0)
-            (ciphertext, tag) = BS.splitAt (BS.length input - authTagBytes) input
-            (plaintext, st2) = CCP.decrypt ciphertext st1
-            expectedTag = ByteArray.convert (CCP.finalize st2) :: ByteString
-         in if ByteArray.constEq expectedTag tag
-              then Right plaintext
-              else Left EnvelopeAuthFailed
- where
-  stateResult :: CryptoFailable CCP.State
-  stateResult = do
-    nonce' <- CCP.nonce12 nonce
-    CCP.initialize key nonce'
+aeadOpen key nonce aad input =
+  case openAead key nonce aad input of
+    Left (AeadCipherFailed cryptoErr) -> Left (EnvelopeCipherFailed cryptoErr)
+    Left AeadAuthenticationFailed -> Left EnvelopeAuthFailed
+    Right plaintext -> Right plaintext
 
 base64Text :: ByteString -> Text
 base64Text = TextEncoding.decodeUtf8 . B64.encode

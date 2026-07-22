@@ -44,6 +44,7 @@ module Prodbox.Gateway.DnsAuthority
   , dnsWriteActionRegion
   , dnsWriteActionIpv4
   , dnsWriteActionAwsEnvironment
+  , dnsWriteActionCredentialHandle
   , DnsAuthorityError (..)
   )
 where
@@ -51,7 +52,13 @@ where
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding (encodeUtf8)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.CredentialHandle
+  ( BaseCredentialHandle
+  , CredentialError
+  , mkBaseCredentialHandle
+  )
 
 newtype CredentialGeneration = CredentialGeneration Natural
   deriving (Eq, Ord, Show)
@@ -425,6 +432,23 @@ dnsWriteActionIpv4 = validatedRequestIpv4 . validatedActionRequest
 
 dnsWriteActionAwsEnvironment :: DnsWriteAction -> [(String, String)]
 dnsWriteActionAwsEnvironment = dnsWriteAwsEnvironment . validatedActionAuthority
+
+-- | Project the already-validated, in-memory DNS authority into the opaque
+-- credential handle required by native AWS interpreters. Secret material never
+-- crosses an environment, profile, subprocess, serialization, or logging
+-- boundary.
+dnsWriteActionCredentialHandle
+  :: DnsWriteAction
+  -> Either CredentialError BaseCredentialHandle
+dnsWriteActionCredentialHandle action =
+  mkBaseCredentialHandle
+    (encodeUtf8 (validatedDnsAccessKeyId credentials))
+    (encodeUtf8 (validatedDnsSecretAccessKey credentials))
+    (encodeUtf8 <$> validatedDnsSessionToken credentials)
+    (encodeUtf8 (validatedDnsRegion credentials))
+ where
+  credentials =
+    validatedAuthorizedCredentials (validatedActionAuthority action)
 
 validZoneId :: Text -> Bool
 validZoneId value =

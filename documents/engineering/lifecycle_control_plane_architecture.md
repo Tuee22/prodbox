@@ -66,7 +66,7 @@ workload.
 | Admin Action Runner | One backup-receipted `AdminActionPermit` for explicit registered SES/S3 plus SMTP IAM destroy, legacy backend migration/retained-store compatibility, or quota request/status read-back | Credential creation/delivery, normal provider work, generic shell/AWS, Authority state writes, nuke/decommission |
 | Fenced Provider Worker | Closed normal provider intents, including registered stack-owned non-credential IAM roles, bounded scratch checkpoint execution, authoritative observation, and read-back under one narrow session | Credential IAM identity/access-key create/delete/remint, any prompt/credential permit, Authority state writes, backup/TLS identity, target secrets, Gateway/DNS election |
 | Authority Backup Adapter | Closed prepare/blob/commit-receipt/restore/GC protocol for the independently backed Authority namespace | Provider/AWS-resource mutation, generic S3, Authority decisions, config projection, target secrets, Gateway/DNS |
-| TLS Retention Adapter | Closed ciphertext-byte retain/read-back and restore-envelope-byte protocol for exact `public-edge-tls/<substrate>/<fqdn>` objects | Plaintext certificate/key material, backup/provider credentials, generic S3, Authority decisions, target mutation, Gateway routing |
+| TLS Retention Adapter | Closed ciphertext-byte retain/read-back and restore-envelope-byte protocol for exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects | Plaintext certificate/key material, backup/provider credentials, generic S3, Authority decisions, target mutation, Gateway routing |
 | Target Secret Agent | Allowlisted payload sealing plus generation-checked Vault KV observe/CAS/read-back for one substrate; retained home Agent also owns closed SMTP/EAB custody and rewrap | Global lease, provider mutation, checkpoints, gateway mesh, arbitrary KV or generic secret export |
 
 Deployment cardinality is explicit: there is exactly one logical Lifecycle Authority in the
@@ -169,7 +169,7 @@ AWS power is split into separately minted identities and Vault coordinates:
 | Lifecycle provider bootstrap | Fenced provider worker only | Assume only the operation-specific Pulumi, non-credential SES/S3, or AWS-edge role named by a committed provider intent |
 | Authority backup-store bootstrap admin | Ephemeral Credential Provisioner Job only | One signed `GenesisBackupPermit`'s deterministic bucket/prefix/IAM create/observe/delete/remint set; raw material is memory-only and cannot authorize normal provider work |
 | Authority backup store | Credential Provisioner only until direct Agent sealing, then the separately deployed Authority Backup Adapter only through the `LongLived` generation at `secret/aws/authority-backup-store` | Get/put/version/read-back and fenced GC only under the exact long-lived backup bucket/prefix; no provider, DNS, IAM, or arbitrary target-Vault power |
-| TLS retention store | Separately deployed TLS Retention Adapter only, using the `LongLived` generation at `secret/aws/tls-retention-store` | Ciphertext get/put/version/read-back only under exact `public-edge-tls/<substrate>/<fqdn>` prefixes; no Authority-backup, provider, DNS, IAM, or target-Vault power |
+| TLS retention store | Separately deployed TLS Retention Adapter only, using the `LongLived` generation at `secret/aws/tls-retention-store` | Ciphertext get/put/version/read-back only under exact `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes; no Authority-backup, provider, DNS, IAM, or target-Vault power |
 | SMTP credential family | Credential Provisioner for install/rotate/remint and repair-time deletion; Admin Action Runner only for exact `DestroyAwsSes` teardown | Deterministic SMTP IAM identity/path/policy/access-key inventory plus Authority key-ID/opaque Agent receipts; no raw IAM secret persists |
 | Retained operator-material custody | Retained home Target Secret Agent one-shot custody/rewrap lane only | Closed `SesSmtpMaterial` and `AcmeEabMaterial` Transit-ciphertext receipts; rewrap only to an attested selected Agent for exact `secret/keycloak/smtp` or `secret/acme/eab` generation-CAS materialization |
 | Gateway DNS | The Gateway Runtime configured as writer for the exact home public record | Observe/change only the registered zone/name/type record; no SES, EKS, IAM, S3, or cert-manager power |
@@ -241,8 +241,10 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
     identities, generations, Vault paths, policies, and cleanup resources. No shared operational
     AWS secret crosses those roles.
 15. Before Vault `/sys/init`, the Broker stores/read-backs a password-AEAD-sealed
-    `PreparedInitEnvelope` containing the recovery-recipient private key plus transaction/storage
-    generation and fingerprints. It stores/read-backs the PGP-encrypted share response and
+    `PreparedInitEnvelope` containing the recovery-recipient private key plus pristine observation,
+    transaction/storage generation, schema, share count/threshold, exact ordered `pgp_keys`
+    array/digest, recovery fingerprint, and both burn-key pins. It stores/read-backs the
+    PGP-encrypted share response and
     burn-recipient-encrypted initial token, atomically promotes/read-backs the final password-AEAD
     unlock bundle, and only then deletes/read-backs the prepared envelope. Applied init without an
     encrypted response is ambiguous and recoverable only through proven-pristine reset. The burn
@@ -878,7 +880,7 @@ and receives typed read-back receipts, never the AWS credential.
 `TlsRetentionProgram` is separately closed over `retain ciphertext bytes/read-back`, `observe exact
 version/digest`, and `return restore ciphertext bytes plus read-back receipt`; its coordinate comes only from
 `CapabilityRef 'TlsRetentionCommitReadBack` or `CapabilityRef 'TlsRestoreDeliverReadBack` and is
-fixed to `public-edge-tls/<substrate>/<fqdn>`. Its interpreter is the TLS Retention Adapter, whose
+fixed to `public-edge-tls/<substrate>/<canonical-scope-key>`. Its interpreter is the TLS Retention Adapter, whose
 only secret is `secret/aws/tls-retention-store`. The Adapter cannot decrypt certificate/key bytes,
 address the Authority-backup prefix, construct provider requests, or call a target directly.
 Authority commits the bounded retention/restore outbox; cross-substrate selection and delivery are
@@ -1445,7 +1447,7 @@ One bounded `AuthorityEnvelope` contains:
   tombstone/absence receipts;
 - encrypted operator-material generations and delivery intents;
 - bounded per-target delivery states;
-- bounded per-`(substrate,FQDN)` TLS pending/current immutable-version states;
+- bounded per-`(substrate, canonical scope set)` TLS pending/current immutable-version states;
 - bounded seal-receipt and child-recovery-delivery states;
 - durable outbox intents and their attempt/result state;
 - bounded active operation records plus terminal idempotency tombstones;
@@ -1639,9 +1641,10 @@ Retention Adapter sees no Transit token, DEK, certificate plaintext, or private-
 
 For retention after issuance or renewal:
 
-1. Authority commits a bounded retention intent naming the selected substrate, FQDN, exact TLS
-   Secret identity/resource version, selected-Agent attestation, and exact
-   `public-edge-tls/<substrate>/<fqdn>` coordinate.
+1. Authority commits a bounded retention intent naming the selected substrate, exact canonical
+   certificate scope set, bound served FQDN, exact TLS Secret identity/resource version,
+   selected-Agent attestation, and exact
+   `public-edge-tls/<substrate>/<canonical-scope-key>` coordinate.
 2. Under narrow exact-Secret Kubernetes RBAC, the selected substrate Agent starts a one-shot
    secret worker, reads and validates the certificate/key pair, and sends its attested ephemeral
    public key through the Authority-routed intent to the home Agent.
@@ -1652,18 +1655,17 @@ For retention after issuance or renewal:
    Authority sees only the wrapped DEK, encrypted-to-Agent DEK, attestations, and typed receipt. The
    selected worker decrypts the DEK and encrypts the bounded certificate/key bytes locally.
 4. Authority receipt-commits a retention outbox containing only certificate ciphertext, the
-   home-Transit-wrapped DEK, certificate/FQDN/expiry metadata, and digests. The TLS Retention Adapter
+   home-Transit-wrapped DEK, certificate/scope/FQDN/expiry metadata, and digests. The TLS Retention Adapter
    receives those exact bounded envelope bytes from Authority, writes that exact object/version,
    reads back bytes and digest, and returns a typed receipt before Authority closes the transition.
 
-Once operator-configurable certificate scope sets land (Sprint
-[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md)), the
-`public-edge-tls/<substrate>/<fqdn>` coordinate generalizes to a canonical scope-set
-serialization key: the exact-prefix TLS-retention IAM contract and per-`(substrate, scope-key)`
-serialization are restated over that canonical key, so the retained coordinate stays a total
-projection of the one configured scope set rather than a hand-chosen FQDN.
+Sprint [`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md) makes that coordinate a path-safe
+encoding of the canonical (deduped, ordered) scope-set serialization. The exact-prefix
+TLS-retention IAM contract and per-`(substrate, scope-key)` serialization therefore stay a total
+projection of the one configured scope set rather than independently supplied hostname text.
 
-Retention is serialized by the exact `(substrate, FQDN)` key in the Authority aggregate. One
+Retention is serialized by the exact `(substrate, canonical scope set)` key in the Authority
+aggregate. One
 fenced candidate at a time binds the Secret UID/resourceVersion, certificate serial,
 `notBefore`/`notAfter`, public-key SPKI fingerprint, selected-Agent attestation, ciphertext digest,
 wrapped-DEK digest, and an Authority-CAS sequence. Kubernetes `resourceVersion` is treated as an
@@ -1945,14 +1947,27 @@ Reconnaissance produces `VaultBootstrapObservation`; a pure planner derives a bo
 `BootstrapPlan`; the broker interpreter alone calls Vault and the bootstrap object store. The
 broker exposes no generic MinIO, Vault KV, lifecycle, target-secret, peer, or DNS proxy.
 
+The executable boundary is the dedicated `prodbox bootstrap-broker start --config <path>` runtime
+role. Its role-only Dhall decoder is selected before configuration is loaded, its listener accepts
+only loopback addresses, and its bounded queue, body, request-deadline, and drain limits come only
+from that mounted document. `Prodbox.Bootstrap.Broker.Protocol` is the one exact, secret-free wire
+schema used by client, server, fake, and execution engine. The HTTP method and registered route
+select a closed operation; body-bearing requests repeat that operation and carry only the validated
+storage generation, action digest, and the bounded PKI extension where applicable.
+`Prodbox.Bootstrap.Broker.Engine` then prepares the corresponding `BrokerProgram operation result`.
+Admission and execution carry the same `CapabilityRef operation`, selected exhaustively from the
+four indexed Broker references; a route cannot relabel an observe program as mutation, baseline, or
+PKI authority.
+
 The detailed initialization, encrypted-share receipt, root unlock-bundle, pristine-reset, and child
 Transit-seal custody protocol has one SSoT:
 [Vault Secret-Management Doctrine §5](./vault_doctrine.md#5-vault-deployment-model-and-durability),
 [§6](./vault_doctrine.md#6-the-unlock-bundle-root-cluster), and
 [§16](./vault_doctrine.md#16-cluster-federation-a-vault-transit-seal-trust-tree). This architecture
 retains only the boundary invariants: the initial root token is encrypted to the compiled/pinned
-burn public key, whose private key prodbox never generates, stores, accepts, or accesses, and the
-token ciphertext is never decrypted or used; encrypted recovery shares are durably read back before custody advances; an
+burn public key, whose private material existed only inside the isolated destructive ceremony,
+was never exported, was destroyed before adoption, and is never accepted, retained, or accessible
+to prodbox; the token ciphertext is never decrypted or used; encrypted recovery shares are durably read back before custody advances; an
 established Vault generation is never reset; root shares enter only the password-sealed bundle;
 child shares enter only generation-checked parent custody; and baseline work uses a separately
 generated, short-lived root session that is revoked and observed absent.
@@ -1969,15 +1984,25 @@ is deletion-read-back. Disconnect, restart, Pod loss, fence loss, attestation mi
 expiry destroys the linear ingress and requires a fresh worker/prompt for the same durable request.
 No claim is made about byte erasure of immutable/runtime/library copies.
 
+Worker completion is not inferred from Pod disappearance. A persistent checkpoint binds the
+secret-free request, receipt digest, managed session ID and accessor, and cleanup phase. Recovery
+resumes the exact sequence `receipt captured -> session/accessor revoked -> worker exited -> worker
+deleted -> worker absent`; an unobservable step refuses, and the next prompt cannot start until the
+prior session and workload are authoritatively absent.
+
 The crash-safe recovery-recipient transaction is mandatory. Before `/sys/init`, under the exact
 bootstrap fence, the long-lived Broker controller starts the verified one-shot initialization
 worker described above. The worker generates the recovery PGP
-recipient, constructs `PreparedInitEnvelope (transaction ID, Vault storage generation, recipient
-private key, recovery/burn public-key fingerprints, schema)`, password-AEAD-seals it, writes it to
-bootstrap MinIO, and reads back bytes/digest. Only that read-back authorizes `/sys/init`, whose
-recovery shares target the prepared public key and whose initial token targets the compiled/pinned,
-provenance-audited burn public key. The worker verifies its fingerprint before `/sys/init`; prodbox
-never accepts any corresponding private key.
+recipient and constructs a `PreparedInitEnvelope` bound to the transaction ID, exact pristine
+storage observation and generation, schema, sealed recipient private key, share count, threshold,
+the exact ordered canonical-base64 `pgp_keys` array and its digest, the recovery fingerprint, and
+both the burn fingerprint and burn-public-key digest. It password-AEAD-seals that envelope, writes
+it to bootstrap MinIO, and reads back bytes/digest. Only that read-back authorizes `/sys/init`.
+The cryptographic boundary returns opaque `PreparedRecoveryRecipient`, `VerifiedBurnRecipient`, and
+`PreparedInitRecipients` evidence only after the recovered public/private pair matches the durable
+commitment and the burn public key matches both compiled pins. `/sys/init` receives the share
+count, threshold, and exact ordered keys only through that verified evidence; prodbox has no burn
+private-key type or decrypt operation.
 
 The Broker then stores and byte-read-backs an `EncryptedInitResponseReceipt` containing only the
 Vault-returned PGP-encrypted shares, burn-key-encrypted token, transaction/storage generation, and
@@ -2011,6 +2036,15 @@ operation/action digest, and absolute deadline. A Broker rechecks both observati
 Vault effect and fails closed if either is stale. Deployment uses a single logical Broker identity;
 rollout overlap may serve observations but cannot acquire a second mutation permit.
 
+The same fresh observations mint distinct opaque permits for every Vault mutation and every
+custody/journal bootstrap-store mutation; the physical-effect GADT and those store-port operations
+have no mutation constructor that lacks one. Fence acquisition and retirement instead require
+their own exact CAS plans and authoritative read-back. A vacant durable record preserves its last
+fence generation as an ABA-resistant high-water floor. An expired owner is never silently
+replaced: recovery uses the old binding to finish the receipt/session/accessor and durable-journal
+cleanup, CAS-retires the exact held record, reads back the vacant high-water floor, and only then
+may a successor acquire the next generation and matching Lease.
+
 Lease expiry alone never authorizes a successor root session. Recovery first observes the durable
 bootstrap record, cancels any incomplete generate-root attempt, creates one new fenced session,
 inventories and revokes every stale root-policy accessor, waits for stable accessor absence, and
@@ -2025,12 +2059,28 @@ nonce consumption before generate-root and records the accessor-revocation attes
 replay of the same nonce resumes that state, while another nonce cannot overlap it. Plaintext shares
 and token values never enter Lifecycle Authority or Gateway Runtime.
 
+The role config names six fixed, disjoint progress objects rather than a generic store namespace:
+the root-init journal, root-session journal, child-custody journal, child-recovery journal,
+post-unseal handoff, and secret-worker checkpoint. Prepared envelope, encrypted response, final
+bundle, child custody receipt, child recovery delivery, storage generation, and fence are separately
+typed fixed coordinates. An interpreter cannot accept a caller-supplied bucket key or use one
+record family as another.
+
 PKI status and test issuance use the named bounded PKI role through `VaultPkiOperate`; they do not
 grant baseline-policy or generic secret access. Every Broker request uses the same exact
 operation-indexed reference for admission/execution and one absolute request deadline.
 
 The cryptographic formats, unlock-bundle backend, bootstrap credential, sealed-state behavior, and
 Vault policies remain owned only by [Vault Secret-Management Doctrine](./vault_doctrine.md).
+
+These are the code-local target boundaries, not a deployment or cutover claim. The production
+facade remains fail closed for readiness and every non-health request until Sprint `3.26` supplies
+the physical Kubernetes TokenReview, Lease, workload/attestation, MinIO, Vault, and OpenPGP
+interpreters and renders the separate workload. Gateway target routing contains no bootstrap
+handler. The isolated `LegacyModelBEmitter` rollback continues to reach the registered
+`Prodbox.Bootstrap.Broker.LegacyAdapter` only under
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure); current-revision
+deployment qualification and eventual legacy removal remain solely in the Development Plan.
 
 ## 8. Gateway Emitter Actor
 
@@ -2046,28 +2096,36 @@ on the heartbeat path. It stops publishing before local lease expiry. A Pod cann
 publish until every applicable fence is owned; peers reject a lower incarnation. Other workers
 submit pure intents to a bounded mailbox:
 
+The physical bindings above are the target contract. Sprint `2.32` supplies their typed claim-side
+inputs through `Prodbox.Gateway.Emitter.Persistence`; Sprint `3.26` owns rendering those inputs into
+StatefulSet templates, home PVs, EBS `volumeHandle`s, reclaim policy, and RBAC. This section does not
+assert production cutover or deployment qualification; those states belong only to the Development
+Plan.
+
 ```haskell
--- Example: target shape for src/Prodbox/Gateway/Emitter/Model.hs
-data EmitterIntent
-  = EmitHeartbeat GatewayTime
-  | EmitClaim ClaimEvidence
-  | EmitYield YieldEvidence
-  | RotateEmitterEpoch RotationReason
+-- Example: the landed shapes in src/Prodbox/Gateway/Emitter/Mailbox.hs (the
+-- bounded mailbox + its submittable requests) and .../Kernel.hs (the pure
+-- decide/evolve transition kernel). External epoch rotation is accepted but a
+-- no-op: rotation is decided internally at the sign boundary, never submitted.
+data EmitterRequest
+  = ReqHeartbeat HeartbeatPayload
+  | ReqOwnership OwnershipTransition -- OwnershipClaim | OwnershipYield
+  | ReqEpochRotation -- accepted but a no-op (rotation is internal)
+  | ReqRecover
 
-data PendingEmitterIntents = PendingEmitterIntents
-  { coalescedHeartbeat :: Maybe GatewayTime
-  , orderedAuthorityIntents :: BoundedSeq EmitterIntent
-  }
+-- The bounded FIFO holds at most one pending heartbeat (coalesced to the latest);
+-- ownership/epoch/recover are never coalesced or reordered. Overload is refused.
+data Mailbox
 
-stepEmitter
-  :: EmitterState
-  -> EmitterInput
-  -> Either EmitterRefusal (EmitterState, [EmitterEffect])
+-- The one pure transition; only the actor interpreter applies it. EmitterStep
+-- bundles { stepState, stepEffects, stepOutcome }.
+step :: EmitterState -> EmitterIntent -> EmitterStep
 ```
 
-Heartbeat intents coalesce; claim, yield, and rotation intents never do. Only the actor may stage,
-durably re-observe, publish, commit, or recover local continuity. There is no independent
-continuity loop that can commit another transition's staged record.
+Heartbeat intents coalesce; ownership intents never do, and external epoch rotation is a no-op
+because rotation is decided internally at the sign boundary. Only the actor may stage, durably
+re-observe, publish, commit, or recover local continuity. There is no independent continuity loop
+that can commit another transition's staged record.
 
 The persistence-first invariant uses an encrypted identity-bound retained journal, not a shared
 remote object-store transaction for every heartbeat. The actor owns the complete
@@ -2077,23 +2135,50 @@ writes do not call Vault or MinIO. A missing journal after prior admission fails
 requires explicit emitter retirement plus a new identity. Each journal volume is a registered
 retained resource whose substrate binding is explicit.
 
-First admission is itself a recoverable transaction. Under the volume lock and Lease, the actor
-fsyncs `JournalPrepared admissionNonce genesisDigest incarnation`, CAS-writes a Vault
-`EmitterAdmissionPrepared` marker carrying the same fields, reads back both, then fsyncs
-`JournalActive` and CAS-promotes the marker to `EmitterAdmissionActive`. Publication requires both
-active observations. A prepared/prepared pair resumes promotion; a journal without its matching
-marker, a marker without its matching journal, or any digest/incarnation disagreement fails closed.
-It is never treated as fresh genesis. Retirement requires a receipt-committed
+First admission is itself a recoverable journal-first transaction. After authoritative marker
+absence is observed, the volume lock admits exactly one identity-bound encrypted journal
+initialization and fsync. The admission marker is then conditionally written and authoritatively
+read back before the actor can acquire its Lease, publish readiness, or emit. A crash after the
+journal fsync but before marker read-back leaves a recognizable authenticated journal; the next
+mount opens it as an existing admission and retries the marker write/read-back. The inverse state
+(marker present but journal missing), journal corruption, or any identity/Orders disagreement fails
+closed and is never treated as fresh genesis. Retirement requires a receipt-committed
 `EmitterRetirementMutation`, a signed peer repair-floor checkpoint, marker revocation read-back, and
 journal-resource disposition before a new emitter identity can be admitted.
 
+Every interrupted phase that already contains exact signed bytes is recovered through one rule:
+rewind it to the durable-stage boundary, clear the volatile publication witness, re-fsync and
+republish those identical bytes, rewrite commit, and answer only after the final projection fsync.
+That rule covers publication and commit interruptions as well as a migrated projection that crashes
+before its first publication; recovery never re-signs or invents a replacement transition.
+
 `GatewayTime` is a gateway-local validated clock/peer-skew value, not Lifecycle Authority time;
-heartbeat emission therefore has no authority hot-path dependency. The journal retains the latest
-committed signed assertion, its previous anchor, current incarnation, and peer-ack projection.
-After restart the actor republishes an unacknowledged assertion. It may compact an ownership
-transition only after every currently registered peer acknowledges it or after a signed checkpoint
-that includes it becomes the bounded repair floor; an offline peer recovers from that checkpoint.
+heartbeat emission therefore has no authority hot-path dependency. The journal retains an immutable
+trusted genesis or authenticated checkpoint floor, one contiguous bounded committed suffix, current
+incarnation, exact active/prior Orders digests, and the known-current-peer acknowledgement projection.
+After restart the actor republishes only suffix records still waiting on at least one current peer.
+Acknowledgement updates republish selection but never deletes a chain link; only installation of an
+authenticated checkpoint at the exact candidate prefix frontier compacts the prefix into the new
+repair floor. An offline peer recovers from that floor plus the contiguous suffix.
 Commit-before-peer-response can therefore cause a replay, never silent loss.
+
+Local restart recovery is deliberately different from peer repair. It rebuilds only this emitter
+from its authenticated local journal floor, suffix, and retained in-flight record. A peer's
+checkpoint/suffix frame repairs only that peer's remote semantic replica; it cannot reconstruct,
+reset, or advance the local emitter's continuity authority.
+
+A changed boot-mounted Orders digest does not relabel the journal. The new mount preserves the prior
+committed cursor, clears old-Orders acknowledgements/in-flight evidence, takes a new incarnation, and
+runs a separately-admitted authenticated Orders-migration assertion bound to the exact prior digest
+and coordinate. It reaches `(epoch + 1, 0)` before readiness or any new-Orders semantic assertion;
+ordinary epoch rotation remains restricted to sequence exhaustion, and overflow fails closed.
+
+The version-3 durable projection retains that prior digest across ordinary commits,
+acknowledgement fsyncs, checkpoint compaction, incarnation rebase, and encode/decode. Ordinary
+recovery re-arms the exact State admission from the retained digest before replay. A
+migrated-projection crash before publication and a same-process final-fsync refusal therefore both
+re-drive the exact staged migration bytes; pending, in-flight, latest, suffix, or checkpointed
+migration evidence with a different digest is rejected rather than relabelled.
 
 Remote Model-B continuity may exist only as a migration adapter. While it exists, the actor still
 owns the entire transaction and reaches it through a native client; after journal cutover the
@@ -2217,8 +2302,9 @@ projections of that registry. A hand-authored duplicate of a registry value in a
 file, or client is a defect caught by the conformance tier of the canonical quality gate, not a
 convention.
 
-Readiness is one pure latched projection. Admission requires the first proven object-store round
-trip since boot and thereafter does not flap on later transient backend degradation; deep
+Readiness is one pure cached projection. The gateway rollback topology latches validated continuity
+startup; the target topology requires the current identity-bound journal lock, matching Lease
+witness, completed recovery, and started workers, and it clears readiness on Lease loss. Deep
 diagnostics remain a separate route. The scope claim is honest: the kubelet can never hold a
 `CapabilityRef`, so Invariant 2 (§2) cannot reach it. Deriving the probe endpoint from the same
 compiled registry as the execution handlers is the strongest coupling reachable across the YAML
@@ -2408,9 +2494,13 @@ Pure and model-based validation includes:
   deadline-expiry simulations;
 - single-writer epoch and stale-fence rejection;
 - freeze-aware cutover with old-process restart at every boundary;
-- emitter crash points around admission-marker prepare/promote and stage/reobserve/publish/commit,
+- emitter crash points around journal-first initialization/marker read-back, including the
+  authenticated-journal-before-marker gap and the fail-closed inverse, and around
+  stage/fsync/publish/commit/fsync,
   with EKS RWOP and home node-pin/OS-lock/Lease overlapping-Pod exclusion plus
-  peer-ack/checkpoint compaction;
+  exact floor/suffix recovery, every-signed-phase durable-stage rewind/republication,
+  peer-ack/checkpoint compaction, migrated-projection/pre-publication Orders re-arm, same-process
+  final-fsync refusal, and transient-effect recovery while the Lease remains current;
 - deadline monotonicity, admission fairness, bounded queue, and cancellation properties;
 - fixed client-slot/reservation saturation, operation-ID tombstone/result lookup/expiry, and
   pending-blob/primary+backup GC interleavings;
@@ -2444,7 +2534,8 @@ Pure and model-based validation includes:
   primary/backup proof, primary-MinIO restore, and total-`.data` refusal;
 - `BackupRepairFrozen` deleted key/bucket/policy drift, temporary-unobservable non-escalation,
   repair-permit crash/replay, full-copy read-back, no-normal-effect, and greater-epoch reopen;
-- TLS per-substrate/FQDN serialization, stale/out-of-order put receipts, response loss, Secret
+- TLS per-substrate/exact-canonical-scope-set serialization, stale/out-of-order put receipts,
+  response loss, Secret
   UID/resourceVersion and cert validity/SPKI regression, committed-current-not-S3-latest restore,
   corrupt/digest-mismatch/unobservable/not-yet-valid and Authority-time-uncertain fail-closed
   decisions, and positive absence/validated-expiry issuance authorization;
@@ -2454,9 +2545,9 @@ Pure and model-based validation includes:
   wildcard never matches the apex), the multi-label boundary (a wildcard matches exactly one label),
   and the `*.a.z ⋢ *.z` child-wildcard trap, with `mkScopeSet` rejection of undeclared-zone
   wildcards and `bindListener` rejection of uncovered served hosts;
-- restore-vs-reissue decision tables keyed by the `impliedBy` narrowing partial order — narrower-or-
-  equal reuses retained material, widening triggers one fresh ACME order — under the canonical
-  (deduped, ordered) scope-set serialization key;
+- coverage/admission tables for the `impliedBy` narrowing partial order, plus exact-scope
+  restore-vs-reissue tables: only an identical canonical `Certificate.spec.dnsNames` set reuses
+  retained material; every new SAN set receives its own key and first issuance;
 - IAM create-key applied-response-lost, finite-inventory delete/remint, and no-uncommitted-key
   tables;
 - exact DNS owner/epoch, ensure/delete/read-back, owner-unavailable, and no-writer-fallback tables;

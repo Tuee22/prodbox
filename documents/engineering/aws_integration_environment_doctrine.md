@@ -595,7 +595,7 @@ Every promoted Authority transition and referenced blob also has a mandatory exa
 receipt copy in the independently credentialed long-lived S3 backup prefix. The separate Authority
 Backup Adapter writes and reads back that copy; core Authority never receives its AWS credential,
 and the S3 copy is not a second current-state selector. The shared retained bucket also contains
-disjoint `public-edge-tls/<substrate>/<fqdn>` ciphertext prefixes owned only by the TLS Retention
+disjoint `public-edge-tls/<substrate>/<canonical-scope-key>` ciphertext prefixes owned only by the TLS Retention
 Adapter. TLS retention stores certificate ciphertext plus a retained-home-Transit-wrapped DEK;
 neither S3 lane is a raw Pulumi backend.
 

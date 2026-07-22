@@ -293,8 +293,9 @@ cleared, IAM user deleted, no leak). Getting there required four fixes, each ver
    continuation matcher to accept `action-token`; added 2 regression tests; refreshed the fixture
    to the live capture (both pages).
 3. **Sprint `8.8` cert-retention core — retain-on-ready.** The S3 retention store
-   (`s3://…/public-edge-tls/<substrate>/<fqdn>`) was never being populated: retain ran only on
-   `charts delete` of an already-present cert, and the delete plan carries no public FQDN
+   (`s3://…/public-edge-tls/<substrate>/<canonical-scope-key>`) was never being populated: retain
+   ran only on `charts delete` of an already-present cert, and the delete plan at that revision
+   carried no public FQDN
    (`retainPublicEdgeSecretToStore` skipped with "no public FQDN resolved"), so under flaky
    issuance the cert was never captured → every rebuild re-ordered against ZeroSSL. Added
    `retainReadyPublicEdgeCertificate` (`src/Prodbox/Lib/ChartPlatform.hs`), called from the harness
@@ -1199,10 +1200,11 @@ post-`rke2 delete`), not only the chart-delete→redeploy path.
 
 - S3 put/get retention: preserve writes the live cert Secret to the
   long-lived `pulumi_state_backend` bucket under the substrate-scoped key
-  `public-edge-tls/<substrate>/<fqdn>` (Sprint 7.11's `putLongLivedObject`); restore reads it
+  `public-edge-tls/<substrate>/<canonical-scope-key>` (Sprint 7.11's `putLongLivedObject`, later
+  typed/re-keyed by Sprint 2.35); restore reads it
   back (`getLongLivedObject`). Both degrade gracefully when the retention store (admin creds /
-  bucket / FQDN) is unavailable, so a host without the store skips retention rather than failing
-  the deploy. ✅
+  bucket) or compiled canonical scope is unavailable, so a host without the store skips retention
+  rather than failing the deploy. ✅
 - A typed preserve outcome (`PublicEdgePreserveOutcome`) distinguishing (a) Secret present →
   `PreservedToRetentionStore` (or `PreserveSkippedNoRetentionStore` when the store is
   unavailable), (b) Secret absent but a `Certificate` exists → `PreserveDeferredIssuanceInFlight`,

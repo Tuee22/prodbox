@@ -72,7 +72,7 @@ resourceLifecycleClasses =
     ("aws-ebs-volumes", LongLived)
   , -- Sprint 4.24: the retained public-edge TLS certificate
     -- material, written to a substrate-scoped key
-    -- (@public-edge-tls/\<substrate\>/\<fqdn\>@) in the long-lived
+    -- (@public-edge-tls/\<substrate\>/\<canonical-scope-key\>@) in the long-lived
     -- @pulumi_state_backend@ S3 bucket. Classified 'LongLived' (the same
     -- class as @aws-ses@) because re-ordering the certificate on every
     -- rebuild would consume the ZeroSSL ACME issuance quota; the cert is

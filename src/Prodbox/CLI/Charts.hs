@@ -35,7 +35,7 @@ import Prodbox.Lib.AwsSubstratePlatform (ensureAwsSubstratePlatformRuntime)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
-  , buildChartDeletePlan
+  , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlanForSubstrate
   , deleteChartPlan
   , deployChartPlan
@@ -44,6 +44,7 @@ import Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , supportedChartNames
   )
+import Prodbox.PublicEdge (publicEdgeTlsRetentionKey)
 import Prodbox.Settings
   ( ConfigFile (..)
   , ValidatedSettings (..)
@@ -51,7 +52,7 @@ import Prodbox.Settings
   , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate (Substrate (..), substrateId)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -115,7 +116,7 @@ runChartsCommand repoRoot command =
             allowed <- if confirmed then pure True else promptForDelete rootChart
             if not allowed
               then failWith "User declined confirmation"
-              else case buildChartDeletePlan repoRoot (Just settings) rootChart of
+              else case buildChartDeletePlanForSubstrate substrate repoRoot (Just settings) rootChart of
                 Left err -> failWith err
                 Right plan ->
                   withSubstrateEnvironment repoRoot settings substrate $
@@ -205,7 +206,13 @@ renderChartDeploymentPlan plan =
     [ "CHART_DEPLOY_PLAN"
     , "ROOT_CHART=" ++ chartDeploymentPlanRootChart plan
     , "NAMESPACE=" ++ chartDeploymentPlanNamespace plan
+    , "SUBSTRATE=" ++ substrateId (chartDeploymentPlanSubstrate plan)
     ]
+      ++ maybe
+        []
+        ( \scopeSet -> ["TLS_RETENTION_KEY=" ++ publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) scopeSet]
+        )
+        (chartDeploymentPlanCertScopeSet plan)
       ++ concatMap renderRelease (chartDeploymentPlanReleases plan)
  where
   renderRelease release =
@@ -220,7 +227,13 @@ renderChartDeletePlan plan =
     [ "CHART_DELETE_PLAN"
     , "ROOT_CHART=" ++ chartDeploymentPlanRootChart plan
     , "NAMESPACE=" ++ chartDeploymentPlanNamespace plan
+    , "SUBSTRATE=" ++ substrateId (chartDeploymentPlanSubstrate plan)
     ]
+      ++ maybe
+        []
+        ( \scopeSet -> ["TLS_RETENTION_KEY=" ++ publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) scopeSet]
+        )
+        (chartDeploymentPlanCertScopeSet plan)
       ++ map (("DELETE_RELEASE=" ++) . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan)
 
 failWith :: String -> IO ExitCode

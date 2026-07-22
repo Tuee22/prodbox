@@ -18,11 +18,15 @@ module Prodbox.Gateway.Peer
     -- * Signed semantic assertions
   , SignedAssertion
   , signAssertion
+  , signAssertionForIncarnation
   , signAndConvertAssertion
+  , signAndConvertAssertionForIncarnation
+  , signAndConvertOrdersMigrationForIncarnation
   , verifySignedAssertion
   , signedAssertionBytes
   , decodeSignedAssertion
   , signedAssertionEmitter
+  , signedAssertionIncarnation
   , signedAssertionEpoch
   , signedAssertionSequence
   , signedAssertionKind
@@ -42,7 +46,11 @@ module Prodbox.Gateway.Peer
   , SignedSemanticSnapshot
   , SnapshotEvidenceKind (..)
   , signSemanticSnapshot
+  , encodeSignedSemanticSnapshot
+  , decodeSignedSemanticSnapshot
+  , verifySemanticSnapshot
   , signedSemanticSnapshotEmitter
+  , signedSemanticSnapshotIncarnation
   , signedSemanticSnapshotCursor
   , SignedRepairFrame
   , selectSignedRepair
@@ -70,6 +78,7 @@ module Prodbox.Gateway.Peer
   , peerErrorResponse
   , peerResponseAccepted
   , peerResponseCursorVector
+  , peerResponseAckPoint
 
     -- * Bounded HTTP framing
   , PeerHttpPreflight
@@ -122,6 +131,14 @@ import Prodbox.Gateway.Bounds
   , gatewayMaxTrustKeyBytes
   , gatewayReplayPerEmitter
   )
+import Prodbox.Gateway.Continuity
+  ( mkContinuityDigest
+  , restoreContinuityAnchor
+  )
+import Prodbox.Gateway.Emitter.Kernel
+  ( AckPoint
+  , mkAckPoint
+  )
 import Prodbox.Gateway.State
   ( AssertionKind (..)
   , CursorVector
@@ -129,6 +146,7 @@ import Prodbox.Gateway.State
   , DeltaFrame
   , EmitterCheckpoint
   , EmitterCursor
+  , EmitterIncarnation
   , EmitterRepair
   , EventHash
   , GatewayAssertion
@@ -136,6 +154,7 @@ import Prodbox.Gateway.State
   , GatewayStateError
   , NodeId
   , OrdersAnchor
+  , OrdersMigrationScope
   , OwnershipDecision (..)
   , RejectionReason
   , RejectionSample (..)
@@ -147,27 +166,37 @@ import Prodbox.Gateway.State
   , emitterCheckpointCursor
   , emitterCheckpointEmitter
   , emitterCheckpointHeartbeat
+  , emitterCheckpointIncarnation
   , emitterCheckpointOrdersAnchor
   , emitterCheckpointOwnership
   , emitterCursorEpoch
   , emitterCursorHash
   , emitterCursorSequence
   , emitterEpochValue
+  , emitterIncarnationValue
+  , emitterIncarnationZero
   , emitterSequenceValue
   , eventHashBytes
   , gatewayStateActiveOrders
   , gatewayStateCursorVector
+  , gatewayStateEmitterIncarnation
   , gatewayStateRejectionSummary
   , mkCursorVector
   , mkDeltaFrame
-  , mkEmitterCheckpoint
+  , mkEmitterCheckpointForIncarnation
+  , mkEmitterIncarnation
   , mkEmitterRepair
-  , mkEpochRotationAssertion
+  , mkEpochRotationAssertionForIncarnation
   , mkEventHash
-  , mkNextAssertion
+  , mkNextAssertionForIncarnation
+  , mkOrdersMigrationAssertionForIncarnation
+  , mkOrdersMigrationScope
   , nodeIdText
   , ordersAnchorHashBytes
   , ordersAnchorVersion
+  , ordersMigrationPreviousEpoch
+  , ordersMigrationPreviousOrdersDigest
+  , ordersMigrationPreviousSequence
   , ordersVersionValue
   , rejectionSamples
   , restoredEmitterCursor
@@ -176,13 +205,16 @@ import Prodbox.Gateway.State
   )
 
 protocolVersion :: Word16
-protocolVersion = 1
+protocolVersion = 4
 
 signatureBytes :: Int
 signatureBytes = 32
 
 hashBytes :: Int
 hashBytes = 32
+
+minimumEventKeyBytes :: Natural
+minimumEventKeyBytes = 32
 
 -- | Peer event keys are opaque and are always redacted from diagnostics.
 newtype EventKey = EventKey ByteString
@@ -199,6 +231,9 @@ mkEventKey bounds bytes = do
   let actual = byteLength bytes
       allowed = gatewayMaxTrustKeyBytes bounds
   when (BS.null bytes) (Left PeerEventKeyMustNotBeEmpty)
+  when
+    (actual < minimumEventKeyBytes)
+    (Left (PeerEventKeyTooSmall actual minimumEventKeyBytes))
   when (actual > allowed) (Left (PeerEventKeyTooLarge actual allowed))
   Right (EventKey bytes)
 
@@ -215,6 +250,7 @@ data WireAssertionKind
   | WireClaim
   | WireYield
   | WireEpochInvalidation
+  | WireOrdersMigration !OrdersMigrationScope
   deriving (Eq, Generic, Ord, Show)
 
 instance Serialise WireAssertionKind
@@ -225,6 +261,7 @@ data WireUnsignedAssertion = WireUnsignedAssertion
   { wireAssertionProtocol :: Word16
   , wireAssertionOrders :: WireOrdersAnchor
   , wireAssertionEmitter :: Text
+  , wireAssertionIncarnation :: Word64
   , wireAssertionEpoch :: Word64
   , wireAssertionSequence :: Word64
   , wireAssertionPreviousDigest :: ByteString
@@ -269,30 +306,88 @@ signAssertion
   -> EventKey
   -> Either PeerError SignedAssertion
 signAssertion bounds orders emitter previous kind (EventKey key) = do
-  (epoch, sequenceNumber) <- nextCoordinates emitter previous kind
-  let unsigned =
-        WireUnsignedAssertion
-          { wireAssertionProtocol = protocolVersion
-          , wireAssertionOrders = anchorToWire (validatedOrdersAnchor orders)
-          , wireAssertionEmitter = nodeIdText emitter
-          , wireAssertionEpoch = epoch
-          , wireAssertionSequence = sequenceNumber
-          , wireAssertionPreviousDigest = eventHashBytes (emitterCursorHash previous)
-          , wireAssertionKind = kindToWire kind
-          }
-      unsignedBytes = canonicalBytes unsigned
-      signed =
-        WireSignedAssertion
-          { wireSignedUnsigned = unsigned
-          , wireSignedHmac = SHA256.hmac key unsignedBytes
-          }
-      assertion = SignedAssertion signed
-  validateSignedAssertionShape bounds signed
-  -- Re-enter the semantic constructor before exposing the signed value.  This
-  -- catches membership, sequence-exhaustion, and rotation mistakes at the
-  -- production boundary rather than at the receiver.
-  _ <- signedToGatewayAssertion bounds orders assertion
-  Right assertion
+  signAssertionForIncarnation
+    bounds
+    orders
+    emitter
+    emitterIncarnationZero
+    previous
+    kind
+    (EventKey key)
+
+-- | Sign one successor under the durable emitter incarnation that owns the
+-- publication.  The incarnation is inside the HMAC-covered canonical bytes.
+signAssertionForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> AssertionKind
+  -> EventKey
+  -> Either PeerError SignedAssertion
+signAssertionForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  previous
+  kind
+  key =
+    case kind of
+      OrdersMigrationAssertion _ -> Left PeerOrdersMigrationRequiresDedicatedPath
+      _ ->
+        signAssertionForIncarnationInternal
+          bounds
+          orders
+          emitter
+          incarnation
+          previous
+          kind
+          key
+
+signAssertionForIncarnationInternal
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> AssertionKind
+  -> EventKey
+  -> Either PeerError SignedAssertion
+signAssertionForIncarnationInternal
+  bounds
+  orders
+  emitter
+  incarnation
+  previous
+  kind
+  (EventKey key) = do
+    (epoch, sequenceNumber) <- nextCoordinates emitter previous kind
+    let unsigned =
+          WireUnsignedAssertion
+            { wireAssertionProtocol = protocolVersion
+            , wireAssertionOrders = anchorToWire (validatedOrdersAnchor orders)
+            , wireAssertionEmitter = nodeIdText emitter
+            , wireAssertionIncarnation = emitterIncarnationValue incarnation
+            , wireAssertionEpoch = epoch
+            , wireAssertionSequence = sequenceNumber
+            , wireAssertionPreviousDigest = eventHashBytes (emitterCursorHash previous)
+            , wireAssertionKind = kindToWire kind
+            }
+        unsignedBytes = canonicalBytes unsigned
+        signed =
+          WireSignedAssertion
+            { wireSignedUnsigned = unsigned
+            , wireSignedHmac = SHA256.hmac key unsignedBytes
+            }
+        assertion = SignedAssertion signed
+    validateSignedAssertionShape bounds signed
+    -- Re-enter the semantic constructor before exposing the signed value.  This
+    -- catches membership, sequence-exhaustion, and rotation mistakes at the
+    -- production boundary rather than at the receiver.
+    _ <- signedToGatewayAssertion bounds orders assertion
+    Right assertion
 
 -- | Convenience for the local durable-publication path: return both the
 -- exact bytes to stage in the continuity authority and the semantic value to
@@ -306,9 +401,62 @@ signAndConvertAssertion
   -> EventKey
   -> Either PeerError (SignedAssertion, GatewayAssertion)
 signAndConvertAssertion bounds orders emitter previous kind key = do
-  signed <- signAssertion bounds orders emitter previous kind key
+  signAndConvertAssertionForIncarnation
+    bounds
+    orders
+    emitter
+    emitterIncarnationZero
+    previous
+    kind
+    key
+
+signAndConvertAssertionForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> AssertionKind
+  -> EventKey
+  -> Either PeerError (SignedAssertion, GatewayAssertion)
+signAndConvertAssertionForIncarnation bounds orders emitter incarnation previous kind key = do
+  signed <- signAssertionForIncarnation bounds orders emitter incarnation previous kind key
   semantic <- signedToGatewayAssertion bounds orders signed
   Right (signed, semantic)
+
+-- | Dedicated mounted-Orders promotion path. The exact prior cursor and old
+-- Orders digest are embedded in the HMAC-covered kind; the generic assertion
+-- signer rejects this kind so ordinary callers cannot trigger a scope reset.
+signAndConvertOrdersMigrationForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> ByteString
+  -> EventKey
+  -> Either PeerError (SignedAssertion, GatewayAssertion)
+signAndConvertOrdersMigrationForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  previous
+  previousOrdersDigest
+  key = do
+    scope <- mapStateError (mkOrdersMigrationScope previous previousOrdersDigest)
+    let kind = OrdersMigrationAssertion scope
+    signed <-
+      signAssertionForIncarnationInternal
+        bounds
+        orders
+        emitter
+        incarnation
+        previous
+        kind
+        key
+    semantic <- signedToGatewayAssertion bounds orders signed
+    Right (signed, semantic)
 
 signedAssertionBytes :: SignedAssertion -> ByteString
 signedAssertionBytes (SignedAssertion wire) = canonicalBytes wire
@@ -334,6 +482,10 @@ signedAssertionEmitter :: SignedAssertion -> Text
 signedAssertionEmitter (SignedAssertion wire) =
   wireAssertionEmitter (wireSignedUnsigned wire)
 
+signedAssertionIncarnation :: SignedAssertion -> Word64
+signedAssertionIncarnation (SignedAssertion wire) =
+  wireAssertionIncarnation (wireSignedUnsigned wire)
+
 signedAssertionEpoch :: SignedAssertion -> Word64
 signedAssertionEpoch (SignedAssertion wire) =
   wireAssertionEpoch (wireSignedUnsigned wire)
@@ -349,6 +501,7 @@ signedAssertionKind (SignedAssertion wire) =
     WireClaim -> OwnershipAssertion OwnershipClaim
     WireYield -> OwnershipAssertion OwnershipYield
     WireEpochInvalidation -> EpochRotationAssertion
+    WireOrdersMigration scope -> OrdersMigrationAssertion scope
 
 signedAssertionResultDigest :: SignedAssertion -> ByteString
 signedAssertionResultDigest = SHA256.hash . signedAssertionBytes
@@ -389,23 +542,38 @@ signedToGatewayAssertion bounds orders signed@(SignedAssertion wire) = do
   kind <- wireToKind (wireAssertionKind unsigned)
   previous <- previousCursorFor emitter unsigned previousHash
   let encodedBytes = byteLength (signedAssertionBytes signed)
+      incarnation = mkEmitterIncarnation (wireAssertionIncarnation unsigned)
   case kind of
     EpochRotationAssertion ->
       mapStateError
-        ( mkEpochRotationAssertion
+        ( mkEpochRotationAssertionForIncarnation
             bounds
             orders
             emitter
+            incarnation
             previous
             resultHash
             encodedBytes
         )
-    _ ->
+    OrdersMigrationAssertion scope ->
       mapStateError
-        ( mkNextAssertion
+        ( mkOrdersMigrationAssertionForIncarnation
             bounds
             orders
             emitter
+            incarnation
+            previous
+            resultHash
+            encodedBytes
+            scope
+        )
+    _ ->
+      mapStateError
+        ( mkNextAssertionForIncarnation
+            bounds
+            orders
+            emitter
+            incarnation
             previous
             resultHash
             encodedBytes
@@ -424,6 +592,12 @@ nextCoordinates emitter previous kind =
         EpochRotationAssertion
           | sequenceNumber /= maxBound ->
               Left (PeerEpochInvalidationBeforeExhaustion emitter sequenceNumber)
+          | epoch == maxBound -> Left (PeerEmitterCountersExhausted emitter)
+          | otherwise -> Right (epoch + 1, 0)
+        OrdersMigrationAssertion scope
+          | ordersMigrationPreviousEpoch scope /= epoch
+              || ordersMigrationPreviousSequence scope /= sequenceNumber ->
+              Left PeerOrdersMigrationScopeMismatch
           | epoch == maxBound -> Left (PeerEmitterCountersExhausted emitter)
           | otherwise -> Right (epoch + 1, 0)
         _
@@ -454,6 +628,24 @@ previousCursorFor emitter unsigned previousHash =
                 maxBound
                 previousHash
             )
+    WireOrdersMigration scope
+      | wireAssertionSequence unsigned /= 0 ->
+          Left
+            ( PeerEpochInvalidationSequenceInvalid
+                emitter
+                (wireAssertionSequence unsigned)
+            )
+      | wireAssertionEpoch unsigned == 0 ->
+          Left (PeerEpochInvalidationEpochInvalid emitter)
+      | wireAssertionEpoch unsigned /= ordersMigrationPreviousEpoch scope + 1 ->
+          Left PeerOrdersMigrationScopeMismatch
+      | otherwise ->
+          Right
+            ( restoredEmitterCursor
+                (ordersMigrationPreviousEpoch scope)
+                (ordersMigrationPreviousSequence scope)
+                previousHash
+            )
     _
       | wireAssertionSequence unsigned == 0 ->
           Left (PeerSemanticSequenceInvalid emitter)
@@ -472,6 +664,7 @@ kindToWire kind =
     OwnershipAssertion OwnershipClaim -> WireClaim
     OwnershipAssertion OwnershipYield -> WireYield
     EpochRotationAssertion -> WireEpochInvalidation
+    OrdersMigrationAssertion scope -> WireOrdersMigration scope
 
 wireToKind :: WireAssertionKind -> Either PeerError AssertionKind
 wireToKind wire =
@@ -480,6 +673,7 @@ wireToKind wire =
     WireClaim -> OwnershipAssertion OwnershipClaim
     WireYield -> OwnershipAssertion OwnershipYield
     WireEpochInvalidation -> EpochRotationAssertion
+    WireOrdersMigration scope -> OrdersMigrationAssertion scope
 
 data WireCursorEntry = WireCursorEntry
   { wireCursorEmitter :: Text
@@ -491,10 +685,19 @@ data WireCursorEntry = WireCursorEntry
 
 instance Serialise WireCursorEntry
 
+data WireCursorIncarnation = WireCursorIncarnation
+  { wireCursorIncarnationEmitter :: Text
+  , wireCursorIncarnationValue :: Word64
+  }
+  deriving (Eq, Generic, Ord, Show)
+
+instance Serialise WireCursorIncarnation
+
 data WireCursorVector = WireCursorVector
   { wireCursorProtocol :: Word16
   , wireCursorOrders :: WireOrdersAnchor
   , wireCursorEntries :: [WireCursorEntry]
+  , wireCursorIncarnations :: [WireCursorIncarnation]
   }
   deriving (Eq, Generic, Show)
 
@@ -533,6 +736,7 @@ newtype SignedDeltaFrame = SignedDeltaFrame WireDeltaFrame
 data WireUnsignedSemanticSnapshot = WireUnsignedSemanticSnapshot
   { wireSnapshotProtocol :: Word16
   , wireSnapshotOrders :: WireOrdersAnchor
+  , wireSnapshotIncarnation :: Word64
   , wireSnapshotCursor :: WireCursorEntry
   , wireSnapshotHeartbeat :: Maybe WireSignedAssertion
   , wireSnapshotOwnership :: Maybe WireSignedAssertion
@@ -554,6 +758,8 @@ instance Show WireSignedSemanticSnapshot where
     let snapshot = wireSignedSnapshotUnsigned signed
      in "WireSignedSemanticSnapshot { emitter = "
           ++ show (wireCursorEmitter (wireSnapshotCursor snapshot))
+          ++ ", incarnation = "
+          ++ show (wireSnapshotIncarnation snapshot)
           ++ ", epoch = "
           ++ show (wireCursorEpoch (wireSnapshotCursor snapshot))
           ++ ", sequence = "
@@ -718,10 +924,20 @@ selectReplaySuffix
   -> EmitterCursor
   -> [SignedAssertion]
   -> Either PeerError [SignedAssertion]
-selectReplaySuffix emitter initialCursor = go initialCursor
+selectReplaySuffix emitter initialCursor =
+  selectReplaySuffixFromIncarnation emitter Nothing initialCursor
+
+selectReplaySuffixFromIncarnation
+  :: NodeId
+  -> Maybe Word64
+  -> EmitterCursor
+  -> [SignedAssertion]
+  -> Either PeerError [SignedAssertion]
+selectReplaySuffixFromIncarnation emitter initialIncarnation initialCursor =
+  go initialIncarnation initialCursor
  where
-  go _ [] = Right []
-  go cursor (signed : remaining) = do
+  go _ _ [] = Right []
+  go currentIncarnation cursor (signed : remaining) = do
     resultHash <- mapStateError (mkEventHash (signedAssertionResultDigest signed))
     let targetEpoch = signedAssertionEpoch signed
         targetSequence = signedAssertionSequence signed
@@ -730,12 +946,22 @@ selectReplaySuffix emitter initialCursor = go initialCursor
         currentSequence = emitterSequenceValue (emitterCursorSequence cursor)
         currentPosition = (currentEpoch, currentSequence)
     case compare targetPosition currentPosition of
-      LT -> go cursor remaining
+      LT -> go currentIncarnation cursor remaining
       EQ ->
         if resultHash == emitterCursorHash cursor
-          then go cursor remaining
+          then go currentIncarnation cursor remaining
           else Left (PeerSignedReplayCursorConflict emitter targetEpoch targetSequence)
       GT -> do
+        case currentIncarnation of
+          Just observed
+            | signedAssertionIncarnation signed < observed ->
+                Left
+                  ( PeerSignedReplayStaleIncarnation
+                      (nodeIdText emitter)
+                      (signedAssertionIncarnation signed)
+                      observed
+                  )
+          _ -> Right ()
         unless
           (signedDirectlyFollows cursor signed)
           ( Left
@@ -746,7 +972,11 @@ selectReplaySuffix emitter initialCursor = go initialCursor
               )
           )
         let advanced = restoredEmitterCursor targetEpoch targetSequence resultHash
-        rest <- go advanced remaining
+        rest <-
+          go
+            (Just (signedAssertionIncarnation signed))
+            advanced
+            remaining
         Right (signed : rest)
 
 signedDirectlyFollows :: EmitterCursor -> SignedAssertion -> Bool
@@ -762,6 +992,12 @@ signedDirectlyFollows cursor (SignedAssertion wire) =
           WireEpochInvalidation ->
             currentSequence == maxBound
               && currentEpoch /= maxBound
+              && wireAssertionEpoch unsigned == currentEpoch + 1
+              && wireAssertionSequence unsigned == 0
+          WireOrdersMigration scope ->
+            currentEpoch /= maxBound
+              && ordersMigrationPreviousEpoch scope == currentEpoch
+              && ordersMigrationPreviousSequence scope == currentSequence
               && wireAssertionEpoch unsigned == currentEpoch + 1
               && wireAssertionSequence unsigned == 0
           _ ->
@@ -837,6 +1073,8 @@ signSemanticSnapshot bounds orders checkpoint signedHeartbeat signedOwnership ke
         WireUnsignedSemanticSnapshot
           { wireSnapshotProtocol = protocolVersion
           , wireSnapshotOrders = anchorToWire (validatedOrdersAnchor orders)
+          , wireSnapshotIncarnation =
+              emitterIncarnationValue (emitterCheckpointIncarnation checkpoint)
           , wireSnapshotCursor = cursorEntry emitter (emitterCheckpointCursor checkpoint)
           , wireSnapshotHeartbeat = heartbeatWire
           , wireSnapshotOwnership = ownershipWire
@@ -847,6 +1085,29 @@ signSemanticSnapshot bounds orders checkpoint signedHeartbeat signedOwnership ke
           { wireSignedSnapshotUnsigned = unsigned
           , wireSignedSnapshotHmac = SHA256.hmac keyBytes (canonicalBytes unsigned)
           }
+  validateWireSemanticSnapshotShape bounds wire
+  Right (SignedSemanticSnapshot wire)
+
+-- | Canonical bounded checkpoint payload suitable for the emitter repair
+-- floor. Unlike repair-frame encoding, this boundary validates the standalone
+-- snapshot and its total encoded size before exposing bytes to persistence.
+encodeSignedSemanticSnapshot
+  :: GatewayBounds
+  -> SignedSemanticSnapshot
+  -> Either PeerError ByteString
+encodeSignedSemanticSnapshot bounds (SignedSemanticSnapshot wire) = do
+  validateWireSemanticSnapshotShape bounds wire
+  let encoded = canonicalBytes wire
+  validateEncodedFrameBytes bounds encoded
+  Right encoded
+
+decodeSignedSemanticSnapshot
+  :: GatewayBounds
+  -> ByteString
+  -> Either PeerError SignedSemanticSnapshot
+decodeSignedSemanticSnapshot bounds bytes = do
+  validateEncodedFrameBytes bounds bytes
+  wire <- decodeCanonical "semantic snapshot" bytes
   validateWireSemanticSnapshotShape bounds wire
   Right (SignedSemanticSnapshot wire)
 
@@ -880,6 +1141,10 @@ signedSemanticSnapshotEmitter :: SignedSemanticSnapshot -> Text
 signedSemanticSnapshotEmitter (SignedSemanticSnapshot signed) =
   wireCursorEmitter
     (wireSnapshotCursor (wireSignedSnapshotUnsigned signed))
+
+signedSemanticSnapshotIncarnation :: SignedSemanticSnapshot -> Word64
+signedSemanticSnapshotIncarnation (SignedSemanticSnapshot signed) =
+  wireSnapshotIncarnation (wireSignedSnapshotUnsigned signed)
 
 signedSemanticSnapshotCursor
   :: SignedSemanticSnapshot
@@ -922,8 +1187,9 @@ selectSignedRepair bounds orders peerCursor snapshot@(SignedSemanticSnapshot sig
     (Left (PeerSignedReplayCapacityExceeded retainedCount replayCapacity))
   traverse_ (validateRetainedAssertion bounds orders) retained
   suffix <-
-    selectReplaySuffix
+    selectReplaySuffixFromIncarnation
       emitter
+      (Just (signedSemanticSnapshotIncarnation snapshot))
       checkpointCursor
       ( sortOn
           signedAssertionPosition
@@ -1032,7 +1298,12 @@ mkSignedRepairFrame bounds orders snapshot@(SignedSemanticSnapshot signedSnapsho
     (all ((== nodeIdText emitter) . signedAssertionEmitter) suffix)
     (Left (PeerRepairSuffixEmitterMismatch emitter))
   let sorted = sortOn signedAssertionPosition suffix
-  selected <- selectReplaySuffix emitter checkpointCursor sorted
+  selected <-
+    selectReplaySuffixFromIncarnation
+      emitter
+      (Just (signedSemanticSnapshotIncarnation snapshot))
+      checkpointCursor
+      sorted
   unless
     (length selected == length sorted)
     (Left (PeerRepairSuffixContainsStale emitter))
@@ -1134,7 +1405,15 @@ verifySemanticSnapshot bounds orders lookupKey (SignedSemanticSnapshot signed) =
       (verifySignedAssertion bounds orders lookupKey . SignedAssertion)
       (wireSnapshotOwnership snapshot)
   mapStateError
-    (mkEmitterCheckpoint bounds orders emitter cursor heartbeat ownership)
+    ( mkEmitterCheckpointForIncarnation
+        bounds
+        orders
+        emitter
+        (mkEmitterIncarnation (wireSnapshotIncarnation snapshot))
+        cursor
+        heartbeat
+        ownership
+    )
 
 applySignedRepair
   :: GatewayBounds
@@ -1178,6 +1457,10 @@ cursorToWire orders cursor = do
       { wireCursorProtocol = protocolVersion
       , wireCursorOrders = anchorToWire (validatedOrdersAnchor orders)
       , wireCursorEntries = entries
+      , wireCursorIncarnations =
+          [ WireCursorIncarnation (nodeIdText emitter) 0
+          | emitter <- validatedOrdersMemberIds orders
+          ]
       }
  where
   toEntry emitter =
@@ -1224,10 +1507,11 @@ wireToCursor bounds orders wire = do
     cursor <- cursorEntryToCursor entry
     Right (emitter, cursor)
 
-signedAssertionPosition :: SignedAssertion -> (Text, Word64, Word64)
+signedAssertionPosition :: SignedAssertion -> (Text, Word64, Word64, Word64)
 signedAssertionPosition (SignedAssertion wire) =
   let unsigned = wireSignedUnsigned wire
    in ( wireAssertionEmitter unsigned
+      , wireAssertionIncarnation unsigned
       , wireAssertionEpoch unsigned
       , wireAssertionSequence unsigned
       )
@@ -1302,6 +1586,15 @@ validateWireSnapshotEvidence bounds snapshot evidenceKind wire = do
   unless
     (wireAssertionEmitter unsigned == emitter)
     (Left (PeerSnapshotEvidenceEmitterMismatch emitter (wireAssertionEmitter unsigned)))
+  when
+    (wireAssertionIncarnation unsigned > wireSnapshotIncarnation snapshot)
+    ( Left
+        ( PeerSnapshotEvidenceIncarnationAhead
+            emitter
+            (wireAssertionIncarnation unsigned)
+            (wireSnapshotIncarnation snapshot)
+        )
+    )
   unless
     (wireEvidenceKindMatches evidenceKind (wireAssertionKind unsigned))
     (Left (PeerSnapshotEvidenceWireKindMismatch emitter evidenceKind))
@@ -1366,26 +1659,39 @@ validateWireRepairShape bounds frame = do
     suffix
   let positions = map wireSignedAssertionPosition suffix
   unless (positions == sortOn id positions) (Left PeerRepairSuffixNotCanonical)
-  foldM_ advanceWireRepairCursor (wireSnapshotCursor snapshot) suffix
+  foldM_
+    advanceWireRepairCursor
+    (wireSnapshotIncarnation snapshot, wireSnapshotCursor snapshot)
+    suffix
   validateEncodedFrameBytes bounds (canonicalBytes frame)
 
-wireSignedAssertionPosition :: WireSignedAssertion -> (Text, Word64, Word64)
+wireSignedAssertionPosition :: WireSignedAssertion -> (Text, Word64, Word64, Word64)
 wireSignedAssertionPosition wire =
   let unsigned = wireSignedUnsigned wire
    in ( wireAssertionEmitter unsigned
+      , wireAssertionIncarnation unsigned
       , wireAssertionEpoch unsigned
       , wireAssertionSequence unsigned
       )
 
 advanceWireRepairCursor
-  :: WireCursorEntry
+  :: (Word64, WireCursorEntry)
   -> WireSignedAssertion
-  -> Either PeerError WireCursorEntry
-advanceWireRepairCursor cursor wire = do
+  -> Either PeerError (Word64, WireCursorEntry)
+advanceWireRepairCursor (currentIncarnation, cursor) wire = do
   semanticCursor <- cursorEntryToCursor cursor
   let signed = SignedAssertion wire
       unsigned = wireSignedUnsigned wire
       emitter = wireCursorEmitter cursor
+  when
+    (wireAssertionIncarnation unsigned < currentIncarnation)
+    ( Left
+        ( PeerSignedReplayStaleIncarnation
+            emitter
+            (wireAssertionIncarnation unsigned)
+            currentIncarnation
+        )
+    )
   unless
     (signedDirectlyFollows semanticCursor signed)
     ( Left
@@ -1396,29 +1702,42 @@ advanceWireRepairCursor cursor wire = do
         )
     )
   Right
-    WireCursorEntry
-      { wireCursorEmitter = emitter
-      , wireCursorEpoch = wireAssertionEpoch unsigned
-      , wireCursorSequence = wireAssertionSequence unsigned
-      , wireCursorDigest = SHA256.hash (canonicalBytes wire)
-      }
+    ( wireAssertionIncarnation unsigned
+    , WireCursorEntry
+        { wireCursorEmitter = emitter
+        , wireCursorEpoch = wireAssertionEpoch unsigned
+        , wireCursorSequence = wireAssertionSequence unsigned
+        , wireCursorDigest = SHA256.hash (canonicalBytes wire)
+        }
+    )
 
 validateWireCursorShape :: GatewayBounds -> WireCursorVector -> Either PeerError ()
 validateWireCursorShape bounds wire = do
   validateProtocol (wireCursorProtocol wire)
   validateAnchorShape (wireCursorOrders wire)
   let entries = wireCursorEntries wire
+      incarnations = wireCursorIncarnations wire
   when
     (length entries > gatewayMaxMembers bounds)
     (Left (PeerCursorMemberCountExceeded (length entries) (gatewayMaxMembers bounds)))
   traverse_ validateEntry entries
+  when
+    (length incarnations /= length entries)
+    (Left PeerCursorIncarnationShapeMismatch)
+  traverse_
+    (validateEmitterBytes bounds . wireCursorIncarnationEmitter)
+    incarnations
   let emitterNames = map wireCursorEmitter entries
+      incarnationNames = map wireCursorIncarnationEmitter incarnations
   when
     (Set.size (Set.fromList emitterNames) /= length emitterNames)
     (Left PeerCursorDuplicateEmitter)
   unless
     (emitterNames == sortOn id emitterNames)
     (Left PeerCursorEntriesNotCanonical)
+  unless
+    (incarnationNames == emitterNames)
+    (Left PeerCursorIncarnationShapeMismatch)
  where
   validateEntry entry = do
     validateEmitterBytes bounds (wireCursorEmitter entry)
@@ -1434,6 +1753,18 @@ validateSignedAssertionShape bounds wire = do
   validateAnchorShape (wireAssertionOrders unsigned)
   validateEmitterBytes bounds (wireAssertionEmitter unsigned)
   validateHashWidth (wireAssertionPreviousDigest unsigned)
+  case wireAssertionKind unsigned of
+    WireOrdersMigration scope -> do
+      validateHashWidth (ordersMigrationPreviousOrdersDigest scope)
+      when
+        (ordersMigrationPreviousEpoch scope == maxBound)
+        (Left (PeerOrdersMigrationEpochExhausted (wireAssertionEmitter unsigned)))
+      unless
+        ( wireAssertionEpoch unsigned == ordersMigrationPreviousEpoch scope + 1
+            && wireAssertionSequence unsigned == 0
+        )
+        (Left PeerOrdersMigrationScopeMismatch)
+    _ -> Right ()
   when
     (BS.length (wireSignedHmac wire) /= signatureBytes)
     ( Left
@@ -1623,6 +1954,7 @@ validatePeerRequestHeartbeatSkew now maximumSkew request =
               )
       OwnershipAssertion _ -> Right ()
       EpochRotationAssertion -> Right ()
+      OrdersMigrationAssertion _ -> Right ()
 
 data PeerRejectionCode
   = PeerRejectMalformedHttp
@@ -1754,17 +2086,74 @@ peerResponseCursorVector
   -> PeerTransportResponse
   -> Either PeerError (Maybe CursorVector)
 peerResponseCursorVector bounds orders response =
-  traverse (wireToCursor bounds orders) $ case response of
-    PeerResponseCursor cursor -> Just cursor
-    PeerResponseDeltaApplied cursor _ -> Just cursor
-    PeerResponseDeltaRejected _ cursor _ -> Just cursor
-    PeerResponseError _ -> Nothing
+  traverse (wireToCursor bounds orders) (peerResponseWireCursor response)
+
+-- | Recover the exact incarnation-aware acknowledgement for one emitter from
+-- a peer response. The incarnation is explicit response data, not inferred
+-- from the receiver's current mount, and the fixed-width cursor digest is
+-- re-entered through the continuity smart constructor before producing the
+-- Kernel-owned 'AckPoint'.
+peerResponseAckPoint
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> PeerTransportResponse
+  -> Either PeerError (Maybe AckPoint)
+peerResponseAckPoint bounds orders emitter response =
+  case peerResponseWireCursor response of
+    Nothing -> Right Nothing
+    Just wire -> do
+      _ <- wireToCursor bounds orders wire
+      let emitterName = nodeIdText emitter
+      cursor <-
+        case find ((== emitterName) . wireCursorEmitter) (wireCursorEntries wire) of
+          Nothing -> Left (PeerCursorMissingEmitter emitter)
+          Just present -> Right present
+      incarnation <-
+        case find
+          ((== emitterName) . wireCursorIncarnationEmitter)
+          (wireCursorIncarnations wire) of
+          Nothing -> Left PeerCursorIncarnationShapeMismatch
+          Just present -> Right (wireCursorIncarnationValue present)
+      digest <-
+        first
+          (const (PeerDigestWidthInvalid hashBytes (BS.length (wireCursorDigest cursor))))
+          (mkContinuityDigest (wireCursorDigest cursor))
+      Right
+        ( Just
+            ( mkAckPoint
+                (mkEmitterIncarnation incarnation)
+                ( restoreContinuityAnchor
+                    (wireCursorEpoch cursor)
+                    (wireCursorSequence cursor)
+                    digest
+                )
+            )
+        )
+
+peerResponseWireCursor :: PeerTransportResponse -> Maybe WireCursorVector
+peerResponseWireCursor response = case response of
+  PeerResponseCursor cursor -> Just cursor
+  PeerResponseDeltaApplied cursor _ -> Just cursor
+  PeerResponseDeltaRejected _ cursor _ -> Just cursor
+  PeerResponseError _ -> Nothing
 
 cursorFromState :: GatewayState -> Either PeerError WireCursorVector
-cursorFromState state =
-  cursorToWire
-    (gatewayStateActiveOrders state)
-    (gatewayStateCursorVector state)
+cursorFromState state = do
+  let orders = gatewayStateActiveOrders state
+  wire <- cursorToWire orders (gatewayStateCursorVector state)
+  incarnations <- traverse exactIncarnation (validatedOrdersMemberIds orders)
+  Right wire {wireCursorIncarnations = incarnations}
+ where
+  exactIncarnation emitter =
+    case gatewayStateEmitterIncarnation emitter state of
+      Nothing -> Left (PeerCursorMissingEmitter emitter)
+      Just incarnation ->
+        Right
+          WireCursorIncarnation
+            { wireCursorIncarnationEmitter = nodeIdText emitter
+            , wireCursorIncarnationValue = emitterIncarnationValue incarnation
+            }
 
 boundedSamples
   :: GatewayBounds
@@ -1810,9 +2199,11 @@ peerErrorEmitter err =
     PeerEpochInvalidationRequired emitter _ -> Just (nodeIdText emitter)
     PeerEpochInvalidationSequenceInvalid emitter _ -> Just (nodeIdText emitter)
     PeerEpochInvalidationEpochInvalid emitter -> Just (nodeIdText emitter)
+    PeerOrdersMigrationEpochExhausted emitter -> Just emitter
     PeerSemanticSequenceInvalid emitter -> Just (nodeIdText emitter)
     PeerSignedReplayUnavailable emitter _ _ -> Just (nodeIdText emitter)
     PeerSignedReplayCursorConflict emitter _ _ -> Just (nodeIdText emitter)
+    PeerSignedReplayStaleIncarnation emitter _ _ -> Just emitter
     PeerSnapshotSignatureMismatch emitter -> Just (nodeIdText emitter)
     PeerSnapshotEvidenceMissing emitter _ -> Just (nodeIdText emitter)
     PeerSnapshotEvidenceUnexpected emitter _ -> Just (nodeIdText emitter)
@@ -1821,6 +2212,7 @@ peerErrorEmitter err =
     PeerSnapshotEvidenceWireKindMismatch emitter _ -> Just emitter
     PeerSnapshotEvidencePositionAhead emitter -> Just emitter
     PeerSnapshotEvidenceCursorConflict emitter -> Just emitter
+    PeerSnapshotEvidenceIncarnationAhead emitter _ _ -> Just emitter
     PeerRepairCheckpointNotAhead emitter _ _ -> Just (nodeIdText emitter)
     PeerRepairCheckpointConflict emitter _ _ -> Just (nodeIdText emitter)
     PeerRepairNotRequired emitter -> Just (nodeIdText emitter)
@@ -2214,6 +2606,7 @@ peerErrorCode err =
     PeerEmitterTooLarge {} -> PeerRejectEmitter
     PeerUnknownEmitter {} -> PeerRejectEmitter
     PeerEventKeyMustNotBeEmpty -> PeerRejectSignature
+    PeerEventKeyTooSmall {} -> PeerRejectSignature
     PeerEventKeyTooLarge {} -> PeerRejectSignature
     PeerEventKeyUnavailable {} -> PeerRejectSignature
     PeerAssertionSignatureWidthInvalid {} -> PeerRejectSignature
@@ -2229,18 +2622,24 @@ peerErrorCode err =
     PeerEpochInvalidationRequired {} -> PeerRejectContinuity
     PeerEpochInvalidationSequenceInvalid {} -> PeerRejectContinuity
     PeerEpochInvalidationEpochInvalid {} -> PeerRejectContinuity
+    PeerOrdersMigrationRequiresDedicatedPath -> PeerRejectProtocol
+    PeerOrdersMigrationScopeMismatch -> PeerRejectContinuity
+    PeerOrdersMigrationEpochExhausted {} -> PeerRejectContinuity
     PeerSemanticSequenceInvalid {} -> PeerRejectContinuity
     PeerSnapshotEvidencePositionAhead {} -> PeerRejectContinuity
     PeerSnapshotEvidenceCursorConflict {} -> PeerRejectContinuity
+    PeerSnapshotEvidenceIncarnationAhead {} -> PeerRejectContinuity
     PeerRepairCheckpointConflict {} -> PeerRejectContinuity
     PeerRepairSuffixContainsStale {} -> PeerRejectContinuity
     PeerRepairSuffixDiscontinuous {} -> PeerRejectContinuity
     PeerHeartbeatSkewExceeded {} -> PeerRejectContinuity
     PeerCursorDuplicateEmitter -> PeerRejectCursor
     PeerCursorEntriesNotCanonical -> PeerRejectCursor
+    PeerCursorIncarnationShapeMismatch -> PeerRejectCursor
     PeerCursorMissingEmitter {} -> PeerRejectCursor
     PeerSignedReplayUnavailable {} -> PeerRejectCursor
     PeerSignedReplayCursorConflict {} -> PeerRejectContinuity
+    PeerSignedReplayStaleIncarnation {} -> PeerRejectContinuity
     PeerRepairCheckpointNotAhead {} -> PeerRejectCursor
     PeerRepairNotRequired {} -> PeerRejectCursor
     PeerRepairSuffixNotCanonical -> PeerRejectCursor
@@ -2252,6 +2651,7 @@ peerErrorCode err =
 
 data PeerError
   = PeerEventKeyMustNotBeEmpty
+  | PeerEventKeyTooSmall Natural Natural
   | PeerEventKeyTooLarge Natural Natural
   | PeerEventKeyUnavailable NodeId
   | PeerProtocolVersionMismatch Word16 Word16
@@ -2270,6 +2670,9 @@ data PeerError
   | PeerEpochInvalidationRequired NodeId Word64
   | PeerEpochInvalidationSequenceInvalid NodeId Word64
   | PeerEpochInvalidationEpochInvalid NodeId
+  | PeerOrdersMigrationRequiresDedicatedPath
+  | PeerOrdersMigrationScopeMismatch
+  | PeerOrdersMigrationEpochExhausted Text
   | PeerSemanticSequenceInvalid NodeId
   | PeerEncodedFrameMustNotBeEmpty
   | PeerEncodedFrameTooLarge Natural Natural
@@ -2278,6 +2681,7 @@ data PeerError
   | PeerDeltaCannotFitAssertion
   | PeerSignedReplayUnavailable NodeId Word64 Word64
   | PeerSignedReplayCursorConflict NodeId Word64 Word64
+  | PeerSignedReplayStaleIncarnation Text Word64 Word64
   | PeerSnapshotOrdersMismatch
   | PeerSnapshotSignatureWidthInvalid Int Int
   | PeerSnapshotSignatureMismatch NodeId
@@ -2288,6 +2692,7 @@ data PeerError
   | PeerSnapshotEvidenceWireKindMismatch Text SnapshotEvidenceKind
   | PeerSnapshotEvidencePositionAhead Text
   | PeerSnapshotEvidenceCursorConflict Text
+  | PeerSnapshotEvidenceIncarnationAhead Text Word64 Word64
   | PeerRepairAssertionCountExceeded Int Int
   | PeerRepairCannotFitAssertion
   | PeerRepairCheckpointNotAhead NodeId EmitterCursor EmitterCursor
@@ -2301,6 +2706,7 @@ data PeerError
   | PeerCursorMemberCountExceeded Int Int
   | PeerCursorDuplicateEmitter
   | PeerCursorEntriesNotCanonical
+  | PeerCursorIncarnationShapeMismatch
   | PeerCursorMissingEmitter NodeId
   | PeerRejectionSampleCountExceeded Int Int
   | PeerCborDecodeFailed Text Text

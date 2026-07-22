@@ -4,7 +4,7 @@ _prodbox() {
   local -a words
   case "$CURRENT" in
     2)
-      words=("aws" "charts" "cluster" "commands" "config" "dev" "dns" "edge" "gateway" "help" "host" "nuke" "test" "users" "vault" "workload")
+      words=("aws" "bootstrap-broker" "charts" "cluster" "commands" "config" "dev" "dns" "edge" "gateway" "help" "host" "nuke" "test" "users" "vault" "workload")
       _describe 'command group' words
       ;;
     3)
@@ -67,6 +67,14 @@ _prodbox() {
       case "$words[2,4]" in
         "aws stack aws-ses")
           words=("reconcile" "destroy" "migrate-backend")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "bootstrap-broker")
+          words=("start")
           _describe 'subcommand' words
           ;;
       esac

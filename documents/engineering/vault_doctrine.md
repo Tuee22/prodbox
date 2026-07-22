@@ -7,6 +7,7 @@
 [config_doctrine.md](./config_doctrine.md),
 [../cli/commands.md](../cli/commands.md),
 [secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
+[burn_recipient_provenance.md](./burn_recipient_provenance.md),
 [cluster_federation_doctrine.md](./cluster_federation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
 [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md),
@@ -275,15 +276,20 @@ as any retained PV:
 
 - `vault init` runs **exactly once, ever** — the first time the PV is empty. Before root Shamir
   init, the Broker read-backs a password-AEAD-sealed `PreparedInitEnvelope` containing the generated
-  PGP recovery-recipient private key and exact transaction/storage-generation fingerprints (§6).
+  PGP recovery-recipient private key and a commitment to the exact pristine observation,
+  transaction/storage generation, share count, threshold, ordered `pgp_keys` bytes/digest,
+  recovery fingerprint, and compiled burn fingerprint/public-key digest (§6).
   Root init then uses `secret_shares` / `secret_threshold`, persists and reads back Vault's
   PGP-encrypted response, and atomically promotes the recovered shares into the final
   password-AEAD-sealed unlock bundle in durable MinIO — never host disk. Child
   Transit init uses `recovery_shares` / `recovery_threshold`; its recovery shares and a
   custody receipt are generation-CAS delivered to the parent's Vault KV (§16). Vault encrypts the
-  initial root token to the compiled/pinned burn public key. Its fingerprint/provenance is audited;
-  prodbox never generates, stores, accepts, or has access to a corresponding private key and never
-  decrypts or uses the token ciphertext.
+  initial root token to the compiled/pinned burn public key. Its fingerprint and destructive
+  generation evidence are fixed by the
+  [burn-recipient provenance record](./burn_recipient_provenance.md): private material existed only
+  inside that isolated ceremony to certify and bind the public entity, was never exported, and was
+  destroyed before adoption. Prodbox never accepts, retains, or has access to it and never decrypts
+  or uses the token ciphertext.
   A separate short-lived generate-root session performs first baseline only after custody is durable.
   Init is never rerun against existing state.
 - Every subsequent `cluster reconcile` redeploys the Vault chart against the existing data and
@@ -322,20 +328,33 @@ moving the bundle into MinIO does not change the Vault PV's durability contract.
 The root cluster's Vault uses **Shamir** seal mode: the operator is the only one who can unseal
 it. Before initialization, the Broker must make the generated PGP recovery recipient itself
 crash-safe. It password-AEAD-seals a `PreparedInitEnvelope` containing the recipient private key,
-transaction ID, exact empty Vault storage generation/fingerprint, recipient public-key fingerprint,
-burn-recipient fingerprint, and format/version bounds into the bootstrap MinIO namespace. The
-Broker reads back and decrypt-verifies that envelope before it may call `/sys/init`; a public-key
-fingerprint without durable private-key custody is not sufficient preparation.
+transaction ID, exact pristine-observation digest and empty Vault storage generation, schema,
+share count, threshold, the exact ordered canonical-base64 recovery public-key array and its digest,
+recipient fingerprint, and both compiled burn-recipient pins (fingerprint and public-key digest)
+into the bootstrap MinIO namespace. The Broker reads back and decrypt-verifies that envelope before
+it may call `/sys/init`; a public-key fingerprint without durable private-key custody is not
+sufficient preparation.
 
 The binding uses Vault's official init fields: [`pgp_keys`](https://developer.hashicorp.com/vault/api-docs/system/init)
 contains one public key per `secret_shares` output, and
 [`root_token_pgp_key`](https://developer.hashicorp.com/vault/api-docs/system/init) names the burn
 public key for the initial token. The prepared transaction commits the exact ordered public-key
-array and both fingerprints before the API call, so a restart cannot substitute a recipient.
+array, recovery fingerprint, and both burn-key pins before the API call, so a restart cannot
+substitute a recipient.
+
+The Vault call cannot be assembled from raw key text. Canonical decoding produces opaque recovery
+and burn public-key values; the cryptographic boundary returns `PreparedInitRecipients` only after
+the recovery public/private pair matches the durable envelope and the burn key matches both
+compiled pins. That evidence alone exposes the committed share count, threshold, ordered recovery
+key array, and verified burn key for `/sys/init`. There is no burn private-key type or burn-token
+decrypt operation in the boundary.
 
 Vault PGP-encrypts every unseal share to that prepared recovery recipient and its initial root token
-to the compiled/pinned burn public key. The Broker verifies its audited fingerprint before init,
-and prodbox never generates, stores, accepts, or accesses a corresponding private key. Before decrypting any share, the Broker
+to the compiled/pinned burn public key. The Broker verifies the exact public bytes and both audited
+pins before init. The burn private material existed only in the isolated destructive ceremony,
+was never exported, was destroyed before adoption, and is never accepted, retained, or accessible
+to prodbox; see the
+[burn-recipient provenance record](./burn_recipient_provenance.md). Before decrypting any share, the Broker
 persists and byte/digest-read-backs the complete encrypted init response under the same transaction
 and storage-generation binding. It then decrypts the shares only in bounded memory, constructs the
 password-AEAD-sealed **unlock bundle**, writes and reads back the candidate, and atomically promotes
@@ -472,7 +491,11 @@ of the unseal step, then proceeds with Vault deploy → Bootstrap Broker deploy 
 prepare/read back init custody → capture/read back the encrypted init response → atomically promote
 the final unlock bundle → fetch/decrypt that bundle → unseal. The broker exposes only the bounded bootstrap request
 algebra; it is not a generic Vault, MinIO, lifecycle, target-secret, peer, or DNS proxy. Direct host
-bootstrap transport and Gateway Runtime bootstrap routes are unsupported fallbacks. Service
+bootstrap transport and Gateway Runtime bootstrap routes are not target transports. The registered
+combined-gateway implementation remains isolated as a rollback adapter until qualified cutover
+permits deletion under
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+Service
 identity, capability binding, and failure-domain ownership are canonical in
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
@@ -496,6 +519,22 @@ prodbox vault rotate-transit-key <key>
 prodbox vault pki status
 prodbox vault pki issue-test-cert
 ```
+
+These leaves are Broker clients; the dedicated controller process is launched independently as
+`prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall`. Client,
+server, deterministic fake, and execution engine share one strict secret-free request protocol. The
+route selects a closed program, and its exact indexed `CapabilityRef` is carried unchanged through
+admission and execution. Every Vault or custody/journal-store mutation additionally requires a
+fresh opaque permit derived from the current durable fence and matching Lease; fence acquire/retire
+uses its own exact CAS plan and read-back. Expiry alone never transfers ownership:
+the old receipt/session/accessor and journal state must be cleaned, the exact fence CAS-retired and
+read back at its preserved high-water generation, and only then may a successor acquire.
+
+Each one-shot worker has a persistent checkpoint for its typed receipt, managed session/accessor,
+exit, deletion, and absence read-back. The controller cannot infer revocation from Pod loss or start
+a new prompt while prior cleanup is unobservable. The fixed progress coordinates are the root-init,
+root-session, child-custody, and child-recovery journals plus post-unseal handoff and secret-worker
+checkpoint; none is a caller-supplied object-store key.
 
 - `vault init` is the operator-facing init-if-empty surface. The host CLI reaches the
   loopback-restricted Bootstrap Broker controller with secret-free metadata; the controller returns
@@ -530,6 +569,11 @@ prodbox vault pki issue-test-cert
   revoked and observed absent inside the Broker transaction.
   Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
   their owning later sprints (§12, §16, §18).
+
+The code-local role deliberately serves liveness but refuses readiness and non-health execution
+until Sprint `3.26` supplies the physical TokenReview, Kubernetes Lease/workload, MinIO, Vault, and
+OpenPGP adapters and renders the separate workload. This doctrine does not promote that boundary to
+deployment-qualified or cut over; those states remain in the Development Plan.
 
 **Historical implementation record.** Lifecycle integration into `prodbox cluster reconcile` was
 split by cluster role: Sprint `4.29`
@@ -752,7 +796,7 @@ and only the Vault policy, logical coordinates, and operations assigned to that 
   registered S3 coordinate, returning typed receipts to core Authority;
 - the **TLS Retention Adapter** receives only bounded TLS envelope ciphertext from Authority. It
   alone reads `secret/aws/tls-retention-store` and may address only the registered
-  `public-edge-tls/<substrate>/<fqdn>` prefixes; it has no Transit, plaintext-TLS, provider, or
+  `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes; it has no Transit, plaintext-TLS, provider, or
   Authority-backup access;
 - the **Target Secret Agent** has no MinIO authority. It performs only allowlisted,
   generation-checked Vault KV read/CAS/read-back for its substrate. Independently scoped one-shot
@@ -961,7 +1005,7 @@ one-shot lane in the retained home Agent obtains a fresh data key from the non-e
 `transit/keys/prodbox-tls-envelope` key and encrypts that data key to the selected worker's attested
 ephemeral public key. Authority transports only bounded ciphertext, the home-Transit-wrapped data
 key, validated metadata, and ciphertext digests. The TLS Retention Adapter writes/read-backs that
-exact envelope at `public-edge-tls/<substrate>/<fqdn>` and never sees certificate plaintext, private
+exact envelope at `public-edge-tls/<substrate>/<canonical-scope-key>` and never sees certificate plaintext, private
 key plaintext, a plaintext DEK, or a Transit token. This retained-home wrapping lane is why an AWS
 Vault/EBS teardown does not destroy the ability to restore an AWS-substrate certificate.
 
@@ -1046,7 +1090,7 @@ materializes it through Kubernetes auth. The control-plane identities are disjoi
   `secret/aws/authority-backup-store` and may use only the exact backup-prefix session. It cannot
   decrypt logical state, assume provider roles, or share the Authority/provider ServiceAccount;
 - the separately deployed TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and
-  may use only exact registered `public-edge-tls/<substrate>/<fqdn>` sessions. It has no
+  may use only exact registered `public-edge-tls/<substrate>/<canonical-scope-key>` sessions. It has no
   Authority-backup prefix, target Secret, Transit, DNS, IAM, or provider permission;
 - a Target Secret Agent role is bound to one substrate and may read/CAS/read-back only its
   allowlisted schema and path, including `secret/data/keycloak/smtp`. Its exact seal-receipt policy
@@ -1308,7 +1352,7 @@ Plan.
 | # | Decision | Contract |
 |---|----------|----------|
 | 1 | Vault storage backend | Integrated storage on the retained `.data/vault/vault/0` PV; file storage is acceptable for development. Teardown never destroys Vault state and `init` never reruns (§5). |
-| 2 | Init and root-session custody | Before `/sys/init`, read back a password-AEAD `PreparedInitEnvelope` containing the generated share-recipient private key and exact transaction/storage fingerprints. Persist/read back Vault's PGP-encrypted response, atomically promote the final unlock bundle, then delete/read back the prepared envelope. Encrypt Vault's initial root token to the compiled/pinned, provenance-audited burn public key; prodbox never generates, stores, accepts, or accesses its private key and never decrypts/uses the token ciphertext. Use only separately generated, operation-PGP-encrypted short-lived root sessions for baseline/break-glass; inventory stale accessors, repair/read back, revoke, and observe absence (§6, §16). |
+| 2 | Init and root-session custody | Before `/sys/init`, read back a password-AEAD `PreparedInitEnvelope` containing the generated share-recipient private key and exact pristine observation, transaction/storage generation, share count/threshold, ordered `pgp_keys` array/digest, recovery fingerprint, and both burn-key pins. Persist/read back Vault's PGP-encrypted response, atomically promote the final unlock bundle, then delete/read back the prepared envelope. Encrypt Vault's initial root token to the compiled/pinned, provenance-audited burn public key; its private material existed only inside the isolated destructive certification ceremony, was never exported, was destroyed before adoption, and is never accepted, retained, or accessible to prodbox. Prodbox never decrypts/uses the token ciphertext. Use only separately generated, operation-PGP-encrypted short-lived root sessions for baseline/break-glass; inventory stale accessors, repair/read back, revoke, and observe absence (§6, §16). |
 | 3 | Opaque object names / indexes | Model B encryption (§9): capability-owned accessors share one pure envelope codec, opaque `objects/<vault-keyed-HMAC>.enc` names, Vault-encrypted indexes, hashed stored AAD, decoy count, and size buckets. Sharing the format grants no cross-capability authority. |
 | 4 | Pulumi encrypted-backend approach | Decrypt-to-scratch interposition (§10): a fenced provider worker hydrates RAM-tmpfs `file://` state, runs Pulumi with no passphrase, writes an immutable encrypted blob, and commits its digest through the Lifecycle Authority aggregate. |
 | 5 | TLS private-key custody and retention | cert-manager remains the public-edge issuer. The selected Agent encrypts exact TLS Secret bytes locally with a DEK supplied through the retained home Agent's `prodbox-tls-envelope` Transit lane; the TLS Retention Adapter stores ciphertext only under exact registered prefixes. Native Vault PKI remains the internal-cert authority (§11). |
@@ -1362,8 +1406,9 @@ the Development Plan:
 - A child cluster cannot unseal while its parent is sealed/unreachable.
 - Test-harness plaintext is isolated to `test-secrets.dhall` and never used by production paths.
 - The unlock-bundle password is handled by KDF + authenticated encryption, not raw SHA-256.
-- First init cannot run until the exact password-AEAD `PreparedInitEnvelope` and recipient/burn
-  fingerprints are read back. Crash after a captured PGP-encrypted init response resumes final
+- First init cannot run until the exact password-AEAD `PreparedInitEnvelope`, share-count/threshold,
+  ordered recipient-key commitment, recovery fingerprint, and both compiled burn-key pins are read
+  back and verified. Crash after a captured PGP-encrypted init response resumes final
   bundle promotion after re-prompt; crash with possible init but no durable response fails closed
   except for the proven-pristine storage-generation reset path. The prepared envelope is deleted
   and its absence read back only after the final bundle is promoted and decrypt-verified.
@@ -1375,7 +1420,9 @@ the Development Plan:
 - No recovered plaintext secret lands on a physical-disk-backed path, and every secret-bearing
   service-to-MinIO transfer uses TLS.
 - The initial Vault root token is compiled/pinned burn-key ciphertext that prodbox never decrypts or
-  uses and for which it never generates, stores, accepts, or accesses a private key; every generated root session
+  uses. The burn private material existed only inside the isolated destructive certification
+  ceremony, was never exported, was destroyed before adoption, and is never accepted, retained, or
+  accessible to prodbox; every generated root session
   is accessor-inventoried, revoked, and observed absent. `vault init` never reruns against
   established state; an ambiguous reset is permitted only for the exact proven-pristine storage
   generation with no durable init receipt or baseline (§5–§6).

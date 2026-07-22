@@ -21,46 +21,62 @@
 
 ## Phase Status
 
-✅ **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice; Sprint `2.34` landed
-2026-07-12.** Sprint `2.34` (Done;
+✅ **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice; that slice is complete.**
+Sprint `2.34` (Done 2026-07-12;
 registered by governance Sprint `0.17` in
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md) for counterexample
-`LCPC-2026-07-11`, mechanism `F-READY`) added the compiled service boundary and latched readiness
+`LCPC-2026-07-11`, mechanism `F-READY`) added the compiled service boundary and readiness
 surface: a closed `GatewayRoute` registry as the one place any daemon path string exists, with the
 dispatcher, clients, chart probe rendering, and the `ObjectStore`/`TargetSecret` wire paths as
-projections; one pure latched readiness projection (`computeReadiness`) whose admission requires the
-first proven object-store round trip since boot and does not flap; and a `GatewayChartStatics` record
+projections; one pure readiness projection (`computeReadiness`) over drain, emitter authority, and
+worker facts; and a `GatewayChartStatics` record
 feeding the deployed values and the generated port/identity sections with a forbidden-literal chart
 lint and a deployed-values-equal-compiled conformance gate. It absorbs the exact-readiness-evidence
 deliverable rescoped out of Sprint `1.61` (see
-[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)). The Foundation
-Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front
-and is executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces
-no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the
-epoch closes. Sprints `2.32`/`2.33` and their `Blocked by` edges are unchanged.
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)). Phase `2` has no
+remaining Foundation-Epoch work: Sprint `2.34` is complete, Sprint `2.32` subsequently landed its
+current-authority refinement, and the still-active Foundation-Epoch sprints in other phases retain
+their own status without creating a Phase-2 blocker.
 
-⏸️ **Expanded 2026-07-12 with the certificate-scope tail (Sprint `2.35`, Blocked by `2.34`).**
-Governance Sprint `0.18` in
-[phase-0-planning-documentation.md](phase-0-planning-documentation.md) registered Sprint `2.35`
-(Configurable Certificate Scope Algebra and Derived Edge Projections): a pure `CertScope` algebra
-plus a Tier-0 scope-set config with fail-fast validation makes a served hostname not covered by the
-configured scope set — and a wildcard anchored at a zone the operator has not delegated in config —
-unrepresentable on the prodbox-managed side, and derives the certificate `dnsNames`, the Gateway
-listener hostnames, the served-FQDN list, and the `public-edge-tls/<substrate>/<fqdn>` retention key
-as total projections of that one configured scope set. It reuses Sprint `2.34`'s compiled-projection
-/ generated-section machinery (hence the `Blocked by` edge onto `2.34`) and adds the `edge status`
-`certificate-renew-due`/`certificate-expired` rungs, observed fail-closed from cert-manager
-`status.renewalTime`/`notAfter` with no repo-side renewal-window recompute. Live serving proof is
-owned by Sprint `5.22` in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md). This
-introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain.
+✅ **Certificate-scope tail complete 2026-07-20 (Sprint `2.35`).** Governance Sprint `0.18` in
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md) registered the pure
+`CertScope` algebra, Tier-0 scope config, fail-fast bound-host validation, derived public-edge
+`Certificate.spec.dnsNames`, exact canonical scope-set retention coordinate, and fail-closed
+certificate-expiry status rungs. Each substrate binds its explicit served hostname to the configured
+scope set; wildcard SANs do not synthesize listeners, routes, or DNS records. Retention and restore
+use only the exact canonical SAN set because cert-manager treats any changed `dnsNames` set as a new
+issuance specification; `impliedBy` remains the coverage/admission order. The live serving proof is
+the now-unblocked Sprint `5.22` in
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md), so deployment qualification
+remains pending without reopening this code-owned sprint.
 
-⏸️ **Reopened and blocked by Sprint `1.62`.** Sprint `2.32` replaces the global child-process
-permit and interleavable continuity loops with one bounded single-writer emitter actor that owns an
-entire durable transition under one absolute deadline. Sprint `2.33`, blocked by `2.32`, extracts
-pre-Vault recovery into a minimal Bootstrap Broker and leaves the Gateway Runtime responsible only
-for mesh, ownership, DNS, and peer-state behavior. Historical Sprint `2.31` remains Done for its
-bounded-state result; the new work removes the runtime coupling that its capacity-one scheduler
-introduced.
+✅ **Reclosed 2026-07-21 on Sprint `2.33`; Phase `2` has no remaining open sprint.** Sprint
+`2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker: a closed `RuntimeRole` split
+(`src/Prodbox/Runtime/Role.hs`) where the `bootstrap-broker` and `gateway-runtime` roles each decode
+only their own mounted Dhall; a closed `BrokerRoute` registry limited to bounded
+init/unseal/seal/status/rotation, allowlisted baseline reconcile, bounded PKI status/test-issuance,
+and child custody/recovery — with no generic KV, mesh, DNS, Pulumi, SES, authority-CAS, or
+target-secret route; the prepared-init PGP-recovery/password-AEAD custody protocol (burn-recipient
+initial token never decrypted; separately generated accessor-audited short-lived root session
+revoked and proven absent) with a full crash/resume matrix; the child-Vault
+journal→parent-custody→acknowledged-delete delivery protocol; loopback-restricted authenticated
+Service with bounded bodies, absolute deadlines, idempotency, redaction, and drain; removal of the
+pre-Vault handlers from `Gateway/Daemon.hs`/`Gateway/Client.hs`; and a `checkBootstrapBrokerIsolation`
+lint proving the Gateway registry carries no bootstrap route or credential. Post-unseal handoff is an
+observed state transition, not the broker becoming the post-Vault Lifecycle Authority. Standard P
+keeps the public production gateway wrapper on the mutually exclusive `LegacyModelBEmitter` rollback
+topology (Sprint `2.32`) until current-revision qualification and later cutover; no dual writer or
+production cutover is claimed. Sprint `3.26` (Phase 3) renders the broker and later control-plane
+roles as physically separate workloads. Historical Sprint `2.31` remains Done for its bounded-state
+result.
+
+✅ **Sprint `2.32` code-owned target complete 2026-07-20.** The additive, mutually exclusive
+`JournalLeaseEmitter` topology replaces the global child-process permit and interleavable continuity
+loops with one bounded single-writer actor per emitter, an encrypted identity-bound retained
+journal, journal-first admission, exact recovery, and a current Lease/incarnation witness. Target
+readiness clears on Lease loss and returns only after reacquisition and recovery. Standard P keeps
+the public production wrapper on the mutually exclusive `LegacyModelBEmitter` rollback topology until
+current-revision qualification and later cutover; no dual writer or production cutover is claimed.
 
 ✅ **Reclosed 2026-07-10 on bounded gateway execution.** Sprint `2.31` replaces the
 uptime-growing append-log/full-retransmission path with bounded semantic state, signed
@@ -202,13 +218,17 @@ entrypoint. The landed phase-owned surfaces include the daemon, `prodbox gateway
 per-emitter cursor/delta transport with signed semantic repair, runtime claim/yield emission under
 `CanWriteDns`, bounded-clock-skew enforcement, and Orders-version coordination. The hot semantic
 projection, replay evidence, parser/frame admission, peer cursors, and diagnostic hashes all have
-finite limits independent of daemon uptime. A per-emitter retained Model-B continuity record
-write-ahead-stages the exact signed assertion and next fixed-width anchor before publication; the
-separate durable admission marker prevents missing retained state from being mistaken for a fresh
-member. Route 53 effects consume a typed credential-and-continuity-authorized action under the
-capacity-one child permit, with no ambient AWS authentication path. The
-gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
-`9.12.4`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
+finite limits independent of daemon uptime. The code-owned target topology adds one bounded
+single-writer emitter actor, an encrypted identity-bound retained journal, journal-first admission,
+an OS-lock plus Lease/incarnation fence, exact recovery, bounded acknowledgement/checkpoint repair,
+operation-specific lanes, and native Route 53 calls. Its typed persistence projection describes the
+stable identity, retained home and AWS claims, and exact Lease RBAC; Sprint `3.26` owns the physical
+StatefulSet, PV, EBS, and reclaim-policy rendering. Standard P keeps the public production wrapper
+on the process-construction-exclusive `LegacyModelBEmitter` rollback topology, including its
+capacity-one child schedule and AWS CLI Route 53 path, until current-revision qualification and
+later cutover; there is no runtime selector or dual writer. The gateway container doctrine is
+implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool
+shims, and the retained in-image AWS CLI rollback bundle. Sprints
 `2.1` through `2.7` now remain closed on the gateway-daemon, native partition validation split,
 single-record Route 53 doctrine, peer-transport runtime closure, claim/yield emission under
 `CanWriteDns`, time-base discipline, and Orders-promotion coordination. Sprint `2.8` is now
@@ -224,7 +244,9 @@ DNS-write-gate logic, claim/yield protocol, Orders-promotion coordination, Vault
 endpoints, and the formal TLA+ entrypoint — with no dependency on any later phase. The code-owned
 surface closes on local validation (`prodbox dev check`, `prodbox test unit`,
 `prodbox test integration cli`/`env`, the `prodbox-daemon-lifecycle` stanza, and `prodbox dev tla-check`)
-for the previously landed surface; Sprint `2.31` adds its own bounded-state and transport proofs;
+for the previously landed surface; Sprint `2.31` adds its bounded-state and transport proofs, while
+Sprint `2.32` adds actor, journal, Lease/incarnation, recovery, native Route 53, and finite-state
+protocol proofs;
 where a validation would touch Route 53, a deployed cluster, an unsealed Vault, or running MinIO,
 it is exercised on the home/local substrate or against a stub, and the live-infrastructure exercise
 is tracked as a non-blocking `Live-proof: pending` note rather than as `⏸️ Blocked`. Live AWS or
@@ -2834,22 +2856,20 @@ effect authority rather than an ever-growing heartbeat/event list or complete-lo
   runtime-stability oracle.
 - Keep `pure_fp_standards.md` and the other Sprint `2.31` doctrine pages linked back to this phase.
 
-## Sprint 2.32: Single-Writer Emitter Actor and Whole-Transition Admission [🔄 Active]
+## Sprint 2.32: Single-Writer Emitter Actor and Whole-Transition Admission [✅ Done]
 
-**Status**: Active — Sprint `1.62` (temporal-capacity + native sessions) is Done, so this sprint is
-unblocked. The additive, code-owned **first increment landed + validated 2026-07-19**:
-`Prodbox.Gateway.Emitter.Kernel` (the pure decide/evolve transition machine) and
-`Prodbox.Gateway.Emitter.Mailbox` (the bounded typed mailbox with heartbeat coalescing), plus the
-`GatewayEmitterKernel` property/table suite, all built warning-clean and validated pre-cluster
-(`prodbox dev check` exit 0, unit 1844/1844). All four adversarial corrections from the verified design
-(workflow `wf_dba36e3f-491`) are encoded. The live Daemon cutover, the encrypted journal/fsync
-interpreter, the StatefulSet/EBS-`ReadWriteOncePod`/Lease-incarnation wiring, and the TLA model revision
-remain the deferred cluster-adjacent Remaining Work.
+**Status**: Done (2026-07-20). The full code-owned target is implemented and independently
+validated. It is additive and process-construction-exclusive: `JournalLeaseEmitter` owns the new
+actor/journal/Lease path, while the public production wrapper continues to select
+`LegacyModelBEmitter` until Standard-P qualification and later cutover. No runtime selector, shadow
+writer, or dual-write path exists.
+**Live-proof**: pending — deployed journal-volume, Kubernetes Lease, saturation, and restart evidence
+remain a non-blocking Standard-O axis.
 **Deployment qualification**: pending
-**Design (verified 2026-07-19, four corrections to apply during implementation)**: the pure kernel
-refines the TLA `authorityPhase`/`volatile` state into an explicit `stage → fsync → publish → commit →
+**Design (verified 2026-07-19; implemented with all four corrections)**: the pure kernel
+refines the TLA `journal.phase` protocol into an explicit `stage → fsync → publish → commit →
 fsync` `EmitterPhase` (at most one non-idle value ⟹ structural single writer), holds one
-`AdmissionTicket` + absolute `Deadline` across a whole transition, delegates the monotonic sequence/epoch
+`TransitionAdmission` + absolute `Deadline` across a whole transition, delegates the monotonic sequence/epoch
 fence to `Continuity.nextAnchorFor` (no re-implementation, no drift), fences stale-mount completions by
 `Incarnation`, and coalesces heartbeats in a bounded mailbox while never coalescing ownership/epoch/
 recover. Adversarial corrections: (1) park the **unsigned** deferred request and re-sign it against the
@@ -2859,32 +2879,73 @@ decide-time force-epoch branch, with a mistimed rotation message a no-op rather 
 (3) keep a **size-triggered** checkpoint fold for the bounded repair floor so `emitterUnacked` cannot grow
 unbounded behind a permanently-unreachable peer (ack-gating governs only the replay suffix); (4) treat
 the forced-epoch rotation and the parked advance as **two separately-ticketed** transitions rather than
-one spanning ticket that could exhaust its deadline. The verified design + corrections are preserved for
-the dedicated implementation pass.
-**Implementation**: ✅ **increment 1 landed** — `src/Prodbox/Gateway/Emitter/Kernel.hs` (pure
-`EmitterState`/`EmitterIntent`/`EmitterEffect`/`EmitterStep` with the one `step` decide-evolve
-function; the explicit `stage → fsync → publish → commit → fsync` `EmitterPhase` whose single-writer
-property is *structural* because the whole in-flight transition lives in one `Maybe InFlight`; one
-`TransitionAdmission` + absolute `Deadline` + `Incarnation` minted at begin and threaded, unchanged,
-through every phase; park-the-unsigned-advance-then-rotate; incarnation fencing of stale-mount
-completions; and the size-triggered checkpoint fold) and `src/Prodbox/Gateway/Emitter/Mailbox.hs`
-(bounded FIFO, heartbeat coalescing to the latest, never-coalesced ownership/epoch/recover, immediate
-overload rejection with a retry hint). `nextAnchorFor` is now exported from
-`Prodbox.Gateway.Continuity` and the kernel delegates the monotonic sequence/epoch fence to it via
-`plannedSemanticAnchor`/`plannedEpochAnchor` (no re-implementation, no drift). 🔄 **remaining
-(deferred, cluster-adjacent)**: the live `Gateway/Daemon.hs` cutover onto the actor, the encrypted
-identity-bound journal/fsync interpreter (`Gateway/Emitter/Journal.hs`), the retirement of the
-capacity-one `ChildSchedule` from continuity/REST work, the StatefulSet/EBS-`ReadWriteOncePod`/Lease-
-incarnation wiring, and the gateway TLA+ model revision + `prodbox dev tla-check` recount.
-**Independent Validation**: ✅ the pure transition kernel + deterministic intent-fold simulator +
-property/table suite (`test/unit/GatewayEmitterKernel.hs`, 18 cases) prove single-writer ordering
-(pump-while-busy starts no work), monotonic sequence advance delegated to `nextAnchorFor`, idempotent
-replay of a passed-phase completion, crash-resume re-drive from each phase, stale-incarnation fencing,
-deadline propagation (pre-publish abort vs post-publish hold-for-re-drive), the park-and-resign
-rotation as two separately-ticketed transitions, heartbeat coalescing/overload bounds, and the
-size-triggered checkpoint — all without Kubernetes, AWS, or a later phase. The loopback daemon fixture
-and finite TLA+ exploration land with the deferred cutover increment. Evidence: warning-clean
-`-Werror` build, fourmolu/hlint clean, `prodbox dev check` exit 0, unit 1844/1844.
+one spanning ticket that could exhaust its deadline. The implementation preserves all four.
+**Implementation**: ✅ **Fully landed.** `Gateway/Emitter/Kernel.hs` owns the pure
+`EmitterState`/`EmitterIntent`/`EmitterEffect`/`EmitterStep` decide-evolve machine; the private
+`InFlight` value binds the `DurableKind`, exact `StagedRecord`, `TransitionAdmission`, absolute
+`Deadline`, and `Incarnation` across the five effects. `Gateway/Emitter/Mailbox.hs` and
+`Gateway/Emitter/Actor.hs` provide one capacity-certified worker with a bounded typed queue,
+freshest-heartbeat coalescing, never-coalesced ownership/recovery work, immediate saturation
+refusal, and no second state owner.
+
+`Gateway/Emitter/Journal.hs` is the bounded AEAD-encrypted, identity/event-key-bound local journal.
+It validates canonical and symlink-safe roots, holds a process-local guard plus a long-lived POSIX
+filesystem lock, and publishes through temporary write, file fsync, rename, and directory fsync.
+The journal and initial projection are durable **before** the independent admission marker is
+persisted and read back. A crash in that gap resumes the authenticated existing journal; the inverse
+(marker present but journal missing) fails closed unless an exact identity-bound indexed retirement
+receipt is admitted. Every mount fsyncs a monotonic non-zero incarnation before publication.
+`Gateway/Emitter/Lease.hs` and `Gateway/Emitter/KubernetesLease.hs` bind the exact emitter,
+incarnation, journal digest, and journal-identity digest into a read-back-verified
+`coordination.k8s.io/v1 Lease`; the Lease is one fence, never the sole fence.
+
+Recovery rewinds every signed interrupted phase to the last durable staged record, restores the
+authenticated repair floor and contiguous exact suffix before republication, and answers the
+originating request only after the final projection fsync. Lease loss clears readiness and the sole
+recovery worker serially re-drives the retained bytes after reacquisition. Peer acknowledgements
+advance through the same actor and are adopted into volatile peer cursors only after their projection
+fsyncs. Local restart recovery restores exactly one emitter from its journal; remote peer
+delta/checkpoint repair remains a distinct monotonic replica mechanism and cannot replace local
+authority.
+
+The version-3 durable projection retains one bounded `Maybe ContinuityDigest` for the authenticated
+previous Orders scope. `migrateEmitterOrders` sets or replaces it; ordinary commits, acknowledgement
+fsyncs, checkpoint compaction, incarnation rebase, encode/decode, and restore preserve it. Pending,
+in-flight, latest, suffix, or checkpointed Orders-migration evidence that disagrees with that digest
+is rejected. On ordinary recovery the daemon re-arms the exact State admission from the retained
+digest before replay. Both a migrated-projection crash before publication and a same-process final-
+fsync refusal therefore re-drive the exact staged bytes and converge without relabelling evidence.
+
+`Gateway/Daemon.hs` composes that target without using the global `ChildSchedule`: target REST and
+Route 53 calls use operation-specific capacity-one lanes with immediate refusal and one propagated
+absolute deadline, and target DNS mutation uses the bounded native Route 53
+`ChangeResourceRecordSets`/`GetChange` client through `INSYNC`. The legacy scheduler and AWS CLI
+remain only in the mutually exclusive rollback topology required by Standard P.
+`Gateway/Emitter/Persistence.hs` supplies the typed claim-side projection for stable StatefulSet
+identity, the home node-pinned retained `hostPath`, the AWS manual retained claim with
+`ReadWriteOncePod`, and exact Lease RBAC. Sprint `3.26` owns physical workload, PV, EBS
+`volumeHandle`, and `Retain` rendering; those later consumers are not Sprint-2.32 implementation
+work.
+
+`documents/engineering/tla/gateway_orders_rule.tla` models the complete five-step journal protocol,
+crash/Lease-loss rewind, overlapping incarnations, the OS-lock + fsynced-incarnation + Lease fence,
+admission/deadline/exact-record rejection, per-peer acknowledgements, bounded checkpoint repair,
+and the composed DNS gate.
+**Independent Validation**: ✅ pure/property and interpreter suites pass for bounded State
+(`43/43`), Kernel (`45/45`), Actor (`11/11`), Journal (`20/20`), Lease (`31/31`), and Persistence
+(`5/5`). The Journal suite uses a self-exec cross-process fixture: a canonical holder excludes a
+symlink-alias contender, survives SIGKILL as exact durable bytes, and remounts at incarnation `2`.
+The Sprint-2.32 daemon-lifecycle group passes `14/14`; the complete lifecycle suite passes `28/28`,
+including commit-before-response, publish-before-commit crash, Lease-loss rewind, exact restart,
+peer-ack fsync refusal/retry, migrated-projection restart, same-process migration final-fsync
+refusal, and indexed retirement. Full unit passes `1974/1974`. The native
+`gateway-partition` validation passes with `EMITTER_PIPELINE_COMPOSED`, `OFFLINE_REPAIR_EXACT`,
+`DURABLE_ACK_ADVANCED`, `CHECKPOINT_COMPACTION_BOUNDED`, `RESTART_EXACT_BYTES`,
+`WRONG_INCARNATION_REJECTED`, and `WRONG_DIGEST_REJECTED` all true. Canonical
+`prodbox dev tla-check` exits `0`: 7,139,920 generated states, 781,710 distinct states, depth 44,
+zero states left on the queue, and all 16 invariants pass. Fresh corrected CLI and env integration
+each pass `49/49`; docs check/lint, `git diff --check`, and the final-tree `prodbox dev check` all
+exit `0`.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/tla_modelling_assumptions.md`,
@@ -2894,27 +2955,28 @@ and finite TLA+ exploration land with the deferred cutover increment. Evidence: 
 ### Objective
 
 Make one actor the sole owner of each local emitter's continuity state and serialize an entire
-`stage -> fsync -> publish -> commit -> fsync` transition, eliminating races between heartbeat and continuity
-loops and the overloaded global child-process permit.
+`stage -> fsync -> publish -> commit -> fsync` transition, eliminating races between heartbeat and
+continuity loops and the overloaded global child-process permit on the target path.
 
 ### Deliverables
 
-- Define pure `EmitterState`, `EmitterIntent`, `EmitterDecision`, and `EmitterEffect` ADTs; only the
-  actor interpreter mutates the current state.
+- Define pure `EmitterState`, `EmitterIntent`, and `EmitterEffect` ADTs plus the total `EmitterStep`
+  decision result; only the actor worker owns and evolves the current state.
 - Route heartbeat, ownership, rotation, and recovery requests through a bounded typed mailbox.
   Coalesce superseded heartbeat intents but never ownership or epoch transitions.
-- Hold one `AdmissionTicket kind` and absolute deadline across the whole logical transition; no phase may
-  release and reacquire a global permit.
+- Hold one private kind/record-fenced `TransitionAdmission` and absolute deadline across the whole
+  logical transition; no phase may release and reacquire a global permit.
 - Use a dedicated encrypted identity-bound local journal/fsync interpreter; the heartbeat path has
   no MinIO, generic object-store, Vault-login, or subprocess client. Remove the gateway-wide
-  capacity-one subprocess scheduler from continuity and REST work.
-- Enforce one actor across process incarnations with stable StatefulSet identity and a substrate-
-  exact journal binding. EKS CSI EBS uses `ReadWriteOncePod`; home uses a node-pinned retained
-  `hostPath`/local PV because that access mode is CSI-only. Exact mount, exclusive OS filesystem
-  lock, Kubernetes Lease/incarnation witness, and fsynced monotonically increasing emitter
-  incarnation are all required before readiness/publish; the Lease is not the sole fence and peers
-  reject stale incarnations. Missing-journal recovery requires the explicit indexed emitter-
-  retirement program.
+  capacity-one subprocess scheduler from target continuity and REST work while Standard P retains
+  the mutually exclusive legacy rollback implementation.
+- Enforce one actor across process incarnations with an exact mount, exclusive OS filesystem lock,
+  Kubernetes Lease/incarnation witness, and fsynced monotonically increasing emitter incarnation
+  before readiness/publish; the Lease is not the sole fence and peers reject stale incarnations.
+  Supply the typed substrate-exact persistence projection: stable StatefulSet identity, EKS CSI EBS
+  `ReadWriteOncePod`, and a home node-pinned retained `hostPath`/local-PV coordinate. Sprint `3.26`
+  owns the physical chart/PV/EBS render. Missing-journal recovery requires the explicit indexed
+  emitter-retirement program.
 - Retain the latest signed assertion/previous anchor and peer-ack projection. Restart republishes
   unacknowledged state; ownership transitions compact only after every current peer acknowledges or
   a signed checkpoint makes the transition part of the bounded repair floor.
@@ -2925,7 +2987,8 @@ loops and the overloaded global child-process permit.
 ### Validation
 
 1. State-machine properties prove one writer, monotonic sequence/fence, idempotent replay, and
-   crash-resume convergence; overlapping-Pod fixtures prove lock/incarnation exclusion.
+   crash-resume convergence; real overlapping-process fixtures plus the finite overlapping-Pod
+   model prove lock/incarnation exclusion on the code-owned surface.
 2. Deterministic schedules reproduce and then reject the former re-observation mismatch race.
 3. Saturation tests prove bounded mailbox memory, heartbeat coalescing, ownership preservation,
    prompt overload rejection, and deadline propagation.
@@ -2935,23 +2998,16 @@ loops and the overloaded global child-process permit.
 
 ### Remaining Work
 
-- ✅ Increment 1 (2026-07-19): the pure decide/evolve kernel (`Gateway/Emitter/Kernel.hs`), the
-  bounded mailbox (`Gateway/Emitter/Mailbox.hs`), the `nextAnchorFor` export from `Continuity.hs`, and
-  the `GatewayEmitterKernel` property suite landed and validated pre-cluster (dev check exit 0, unit
-  1844/1844). All four adversarial corrections are encoded and covered by focused tests.
-- 🔄 Increment 2 (deferred, cluster-adjacent): drive the live `Gateway/Daemon.hs` from the actor;
-  add the encrypted identity-bound journal/fsync interpreter (`Gateway/Emitter/Journal.hs`); retire
-  the capacity-one `ChildSchedule` from continuity/REST work; wire stable StatefulSet identity, the
-  EBS `ReadWriteOncePod` (home node-pinned local PV) mount + exclusive OS filesystem lock +
-  Kubernetes Lease/incarnation witness + fsynced monotonic incarnation before readiness/publish; and
-  the missing-journal explicit emitter-retirement program. These need a running daemon/cluster and
-  are the non-blocking cutover work.
-- 🔄 Increment 3 (deferred): revise the gateway TLA+ continuity model so the
-  `stage → fsync → publish → commit → fsync` crash points are explicit and model-checked, then rerun
-  `prodbox dev tla-check` with recorded fresh state counts.
-- Sprint `2.33` (blocked by this sprint) then separates bootstrap authority from the gateway process;
-  it depends only on the final gateway actor/runtime boundary, which increment 1 establishes at the
-  type level.
+- None (code-owned). Kernel, actor, mailbox, encrypted journal, journal-first admission, filesystem
+  lock, Lease/incarnation fence, durable projection, exact recovery, acknowledgement/checkpoint
+  repair, authenticated Orders migration, target operation lanes, native Route 53, typed
+  persistence projection, formal model, and local validation fixtures are landed.
+- Sprint `3.26` consumes the typed persistence projection to render physical StatefulSets, PVs,
+  EBS identities, reclaim policy, and RBAC. That later phase-owned chart surface is not deferred
+  Sprint-2.32 implementation.
+- Standard-O live proof and Standard-P deployment qualification remain pending. Until Standard P
+  is proven, `LegacyModelBEmitter` remains the default production topology and its registered
+  rollback routes/scheduler stay Pending Removal; the target is not an operational cutover.
 
 ## Documentation Requirements
 
@@ -2973,17 +3029,33 @@ loops and the overloaded global child-process permit.
 
 - Link the actor to Sprint `1.62` capacity evidence and Sprint `5.19` temporal qualification.
 
-## Sprint 2.33: Minimal Bootstrap Broker and Gateway Scope Cut [⏸️ Blocked]
+## Sprint 2.33: Minimal Bootstrap Broker and Gateway Scope Cut [✅ Done]
 
-**Status**: Blocked
+**Status**: Done — the Bootstrap Broker runtime role, prepared-init custody protocol, gateway
+scope cut, role-indexed config split, and loopback crash matrix are landed and validated on the
+code-owned surface. Closing this sprint recloses Phase `2`.
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Bootstrap/Broker/`, a typed executable dispatch mode, removal of
-pre-Vault handlers from `Gateway/Daemon.hs` and `Gateway/Client.hs`, config/schema changes, and
-loopback lifecycle fixtures
-**Blocked by**: Sprint `2.32`
-**Independent Validation**: a loopback Bootstrap Broker with fake MinIO/Vault interpreters proves
-init/unseal/baseline/PKI/status/rotation behavior and gateway route absence without Kubernetes, AWS, or a later
-phase.
+**Live-proof**: pending — the composed MinIO→broker→Vault→observed-handoff bring-up on a real
+cluster is the non-blocking Standard-O axis; Sprint `3.26` renders the physical broker workload.
+**Implementation**: ✅ landed — the closed `RuntimeRole`/`RuntimeConfigIdentity` split in
+`src/Prodbox/Runtime/Role.hs` (each role decodes only its own mounted Dhall; no shared daemon
+config); the full `src/Prodbox/Bootstrap/Broker/` subsystem (closed `BrokerRoute` registry with
+only the four bootstrap/vault/baseline/PKI operation classes plus child custody/recovery — no
+generic KV/mesh/DNS/Pulumi/SES/authority-CAS/target-secret route; `Engine`, `Custody`,
+`PgpBoundary`, `SecretWorker`/`EngineSecretWorker`, `Server`, `Client`, `Fake`, `RequestJournal`,
+`Admission`, `Fence`, `StoreBoundary`, `Settings`, `Program`); the `bootstrap-broker start
+<config-path>` CLI with role dispatch; removal of the pre-Vault handlers from
+`Gateway/Daemon.hs`/`Gateway/Client.hs`; the CLI `vault ...` surface compiling pre-Vault requests
+into broker-mediated programs; and the `checkBootstrapBrokerIsolation` negative source/route lint in
+`CheckCode.hs` that fails the build on a reintroduced pre-Vault route in the Gateway registry or a
+generic-object-store escape in the Broker registry.
+**Independent Validation**: ✅ a loopback Bootstrap Broker with fake MinIO/Vault interpreters proves
+init/unseal/baseline/PKI/status/rotation behavior, the prepared-init PGP-recovery/password-AEAD
+custody protocol and its crash/resume matrix, generated-root session accessor audit/revoke/absence,
+child-custody delivery/recovery, HTTP bounds/drain, idempotency, and gateway route absence without
+Kubernetes, AWS, or a later phase. Evidence: `prodbox dev check` exit 0; `prodbox test unit`
+2193/2193 (incl. the ten `BootstrapBroker*` suites); `prodbox test integration cli` 52/52 and
+`env` 52/52; `prodbox-daemon-lifecycle` 28/28.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/vault_doctrine.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
@@ -3006,8 +3078,9 @@ initialization or unseal.
 - Before first init, bind the exact empty Vault storage generation and transaction ID. Generate the
   PGP recovery-recipient keypair, password-AEAD-seal its private key plus the recovery/burn public-
   key fingerprints into a `PreparedInitEnvelope` in bootstrap MinIO, and read it back before
-  `/sys/init`; the pinned/audited burn public key's private key is never generated, stored,
-  accepted, or available to prodbox and has no known holder, and prodbox never decrypts or uses the
+  `/sys/init`; the pinned/audited burn public key's private material existed only inside an isolated
+  destructive ceremony, was never exported, was destroyed before adoption, is never accepted,
+  retained, or available to prodbox, and has no known holder; prodbox never decrypts or uses the
   initial token. Persist/read-back Vault's PGP-encrypted share
   response, decrypt it only through the prepared recipient, atomically promote the final password-
   AEAD unlock bundle, then delete/read-back the prepared private-key envelope. A crash re-prompts
@@ -3046,8 +3119,11 @@ initialization or unseal.
 
 ### Remaining Work
 
-- Blocked until Sprint `2.32` establishes the final gateway actor/runtime boundary.
-- Sprint `3.26` renders the broker and the later control-plane roles as separate workloads.
+- None (code-owned). The broker/runtime role split, prepared-init custody protocol, route removal,
+  config split, and loopback crash matrix are landed and validated.
+- Sprint `3.26` (now unblocked) renders the broker and the later control-plane roles as separate
+  workloads. The composed real-cluster bring-up remains the non-blocking Standard-O live-proof axis,
+  and deployment qualification stays pending under Standard P.
 
 ## Documentation Requirements
 
@@ -3070,31 +3146,30 @@ initialization or unseal.
 ## Sprint 2.34: Compiled Service Boundary and Latched Readiness [✅ Done]
 
 **Status**: Done
-**Deployment qualification**: The code-owned deliverables are landed and proven pre-cluster (see
-Independent Validation). Standard O: the readiness projection, the monotone proof latch, the deleted
-serve-start write, and the `/readyz` precheck are proven by pure projection tables, the real daemon
-`prodbox-daemon-lifecycle` suite, and the CLI integration suite — but the "earn the latch via a live
-Vault-enveloped MinIO round trip" step is *seeded* in those no-Vault/no-MinIO harnesses
-(`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`) and is only exercised for real against live infrastructure
-by the AWS/chaos integration validations, so it cannot silently regress unobserved there.
+**Deployment qualification**: pending
+**Live-proof**: pending — Standard P retains the legacy rollback topology until the composed
+journal/Lease replacement is qualified. Sprint `2.32` landed the target topology's authority fact
+without changing this sprint's code-local closure.
 **Implementation**: ✅ **Fully landed.** Compiled service boundary — `src/Prodbox/Gateway/Routes.hs`
 (closed `GatewayRoute` registry), the total-case dispatcher `dispatchGatewayRoute`/`dispatchPatternRoute`
 in `src/Prodbox/Gateway/Daemon.hs`, the client URL projections in `src/Prodbox/Gateway/Client.hs`, the
 probe projection + `GatewayProbeEndpoint` deletion in `src/Prodbox/Gateway/Probe.hs`, and the
-`ObjectStore`/`TargetSecret` path constants now projected from `routePattern`. Latched readiness —
-`src/Prodbox/Gateway/Readiness.hs` (`computeReadiness` over drain-phase / object-store-proof /
-workers-started), the deleted unconditional serve-start `Ready` write, the `envReadiness` split into
-three monotone `TVar`s, the proof latch set in `installRuntime`'s continuity-publish STM transaction,
-the `/readyz` precheck on the lifecycle-restore gate (`TestRestore.hs` + `queryReadyz` in
-`Gateway/Client.hs`), the readiness `failureThreshold` 3 → 6, and the `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`
-harness seed. Chart statics — `src/Prodbox/Gateway/ChartStatics.hs`, the `valuesForGateway` +
+`ObjectStore`/`TargetSecret` path constants now projected from `routePattern`. Readiness —
+`src/Prodbox/Gateway/Readiness.hs` (`computeReadiness` over drain phase / emitter authority /
+workers started), the deleted unconditional serve-start `Ready` write, the rollback topology's
+continuity-authority latch, the `/readyz` precheck on the lifecycle-restore gate (`TestRestore.hs` +
+`queryReadyz` in `Gateway/Client.hs`), and readiness `failureThreshold` 3 → 6. Sprint `2.32` landed
+the target topology in which emitter authority is a current, fail-closed journal/Lease/recovery witness;
+there is no environment-variable readiness bypass. Chart statics —
+`src/Prodbox/Gateway/ChartStatics.hs`, the `valuesForGateway` +
 `values.yaml` `gateway-chart-statics.values` generated section, the `.Values.serviceAccount.name`
 template binding, the forbidden-raw-literal chart lint, and the deployed-values-equal-compiled
 conformance gate in `runConformanceTier`. Unit suites `test/unit/GatewayReadiness.hs` and
 `test/unit/GatewayChartStatics.hs`.
 **Independent Validation**: ✅ pure route-registry non-overlap/round-trip tables
-(`test/unit/GatewayRoutes.hs`); ✅ readiness projection tables proving no admission before the first
-proven round trip and no flap on later degradation (`test/unit/GatewayReadiness.hs`); ✅ a conformance
+(`test/unit/GatewayRoutes.hs`); ✅ readiness projection tables proving no admission without current
+emitter authority, fail-closed authority loss, and absorbing drain (`test/unit/GatewayReadiness.hs`);
+✅ a conformance
 spec proving deployed helm values equal the compiled statics projection
 (`test/unit/GatewayChartStatics.hs` + the `runConformanceTier` gate); ✅ the lifecycle-gate `/readyz`
 precheck composition proof (fail-closed, round trip not attempted while `/readyz` unready). Evidence:
@@ -3106,8 +3181,8 @@ lint, conformance tier). All pre-cluster.
 aligned), `documents/engineering/helm_chart_platform_doctrine.md` (§1A chart lint + gateway
 chart-statics contract), `documents/engineering/distributed_gateway_architecture.md` (already
 aligned), `documents/engineering/bootstrap_readiness_doctrine.md` (§2.1 latched-readiness note +
-Sprint `1.61` rescope pointer), and `documents/engineering/config_doctrine.md` (§10
-`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` sanctioned test hook).
+Sprint `1.61` rescope pointer), and `documents/engineering/config_doctrine.md` (§10 readiness has no
+configuration or test bypass).
 
 ### Objective
 
@@ -3123,12 +3198,12 @@ the divergent readiness notions into a single pure latched projection.
   without a handler is a compile error under `-Werror`; clients and chart probe rendering are
   projections of the same registry; the `GatewayProbeEndpoint` enum is deleted; a kubelet probe
   bound to a non-probe route is unbuildable by smart constructor.
-- Make readiness one pure latched projection: `computeReadiness` over phase, object-store-session,
-  and worker inputs. `Admitting` requires the first proven object-store round trip since boot and
-  does not flap on later transient degradation; deep diagnostics stay on the state route. The
-  unconditional serve-start `Ready` write is deleted; the continuity loop latches the proof. The
-  lifecycle gate keeps its end-to-end round trip and gains a `/readyz` precheck, so lifecycle-ready
-  implies kubelet-ready by construction; the readiness probe `failureThreshold` rises 3 → 6.
+- Make readiness one pure projection: `computeReadiness` over drain phase, emitter authority, and
+  worker inputs. The rollback topology requires and latches its validated continuity startup; the
+  Sprint `2.32` target topology supplies a current journal/Lease/recovery witness that may clear on
+  Lease loss. Deep diagnostics stay on the state route. The unconditional serve-start `Ready` write
+  is deleted. The lifecycle gate keeps its end-to-end round trip and gains a `/readyz` precheck, so
+  lifecycle-ready implies kubelet-ready by construction; readiness `failureThreshold` rises 3 → 6.
 - Introduce a `GatewayChartStatics` record feeding both the deployed values JSON and new generated
   sections for ports, NodePort, ServiceAccount, and Vault-role identities; a chart lint forbids the
   raw literals in hand-written templates.
@@ -3140,8 +3215,9 @@ the divergent readiness notions into a single pure latched projection.
 1. Pure route-registry tables prove non-overlap and pattern round-trip over the closed registry.
 2. A conformance spec proves the deployed helm values equal the compiled registry/statics
    projections.
-3. Readiness projection tables prove the latch: no admission before the first proven object-store
-   round trip since boot, and no flap on later transient backend degradation.
+3. Readiness projection tables prove no admission without current emitter authority, fail-closed
+   target authority loss, and absorbing drain; the daemon fixture proves the rollback topology does
+   not publish its monotone latch before validated startup recovery.
 4. All of the above run pre-cluster; `prodbox dev check` and `prodbox test unit` pass.
 
 ### Current Validation State
@@ -3155,14 +3231,14 @@ All three deliverable groups are ✅ landed and validated pre-cluster.
   client (`Prodbox.Gateway.Client`), the chart probe paths (`Prodbox.Gateway.Probe`,
   `GatewayProbeEndpoint` deleted), and the `ObjectStore`/`TargetSecret` wire-path constants are all
   projections of `routePattern`.
-- **Latched readiness**: `computeReadiness` (`src/Prodbox/Gateway/Readiness.hs`) folds three monotone
-  cached facts (drain phase, object-store proof, workers-started) with zero I/O; the unconditional
-  serve-start `Ready` write is deleted and `envReadiness` is split into three `TVar`s; the proof latch
-  is set once in `installRuntime`'s continuity-publish STM transaction on the first validated
-  `StartupRecovery`; the lifecycle-restore gate gains a `/readyz` precheck (lifecycle-ready ⟹
-  kubelet-ready); the readiness `failureThreshold` is 3 → 6. The `prodbox-daemon-lifecycle` and CLI
-  integration harnesses seed the proof via `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` (no live
-  Vault/MinIO). This absorbs the exact-readiness-evidence deliverable rescoped from Sprint `1.61`.
+- **Readiness**: `computeReadiness` (`src/Prodbox/Gateway/Readiness.hs`) folds cached drain phase,
+  emitter authority, and worker-started state with zero backend I/O. The rollback topology sets its
+  monotone authority latch in `installRuntime`'s continuity-publish STM transaction only after a
+  validated `StartupRecovery`. The Sprint `2.32` target topology instead supplies a current
+  journal-lock/Lease/recovery witness and clears readiness on Lease loss. The lifecycle-restore gate
+  has a `/readyz` precheck (lifecycle-ready ⟹ kubelet-ready), readiness `failureThreshold` is 3 → 6,
+  and no environment-variable hook can bypass either topology's authority gate. This absorbs the
+  exact-readiness-evidence deliverable rescoped from Sprint `1.61`.
 - **Chart statics**: `Prodbox.Gateway.ChartStatics` is the one source for ports / NodePort /
   ServiceAccount / Vault-role; `valuesForGateway` and the generated `gateway-chart-statics.values`
   section project from it, the templates render `{{ .Values.serviceAccount.name }}`, a chart lint
@@ -3175,29 +3251,25 @@ Evidence: warning-clean `-Werror` build, fourmolu/hlint clean, unit 1610/1610 (i
 pre-Vault invariant), CLI+env integration 49/49, and `prodbox dev check` exit 0 (env-read lint scope,
 generated-section drift, chart lint, conformance tier).
 
-Standard O: the "earn the latch via a live Vault-enveloped MinIO round trip" step is *seeded* in the
-no-Vault/no-MinIO harnesses and is only exercised for real against live infrastructure by the
-AWS/chaos integration validations.
+Standard O: live qualification of the composed target topology remains pending; this sprint's
+route, projection, and chart-static surfaces remain independently validated pre-cluster.
 
 ### Remaining Work
 
-- None (code-owned). The live round-trip readiness gate is proven only against live infrastructure
-  by the AWS/chaos integration validations, per the Standard O note above.
-- Foundation Epoch context: the Foundation Epoch (Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`,
-  `5.21`, and `7.34`) is the active work front, executed before Sprints `1.61` and `1.62` as an
-  execution-priority decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12`
-  chain, which resumes unchanged once the epoch closes. Sprints `2.32` and `2.33` retain their
-  existing `Blocked by` edges.
+- None (code-owned). Current-revision composed deployment qualification remains pending under
+  Standard P.
+- The Foundation Epoch's Phase-2 slice is complete; no pending Foundation work or blocked edge
+  remains in this sprint. Other phases own their current Foundation-Epoch statuses.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/lifecycle_control_plane_architecture.md` - compiled service boundary and
-  latched readiness projection.
+  readiness projection.
 - `documents/engineering/helm_chart_platform_doctrine.md` - probe/route single-source rule and the
   forbidden-literal chart lint.
-- `documents/engineering/distributed_gateway_architecture.md` - latched readiness semantics
+- `documents/engineering/distributed_gateway_architecture.md` - current-authority readiness semantics
   superseding the unconditional serve-start readiness write.
 - `documents/engineering/bootstrap_readiness_doctrine.md` - readiness-evidence rescope pointer
   (Sprint `1.61` → Sprint `2.34`).
@@ -3213,16 +3285,17 @@ AWS/chaos integration validations.
   deletion-ledger rows owned by this sprint in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 2.35: Configurable Certificate Scope Algebra and Derived Edge Projections [🔄 Active]
+## Sprint 2.35: Configurable Certificate Scope Algebra and Derived Edge Projections [✅ Done]
 
-**Status**: Active — Sprint `2.34` (the reused compiled-projection / generated-section machinery)
-is Done, so this sprint is unblocked. The pure `CertScope` algebra, the Tier-0 `cert_scopes` config field
-+ fail-fast validation (`validateConfiguredCertScope` replacing the `validateSupportedPublicHost` pin),
-the derived keycloak public-edge `dnsNames` (values-injection projection keyed on the served host), and
-the `edge status` certificate-expiry rungs all landed and are fully validated pre-cluster (dev check exit 0,
-unit 1854/1854, integration cli/env exit 0). The ONLY remaining code-owned item is the retention re-key,
-deliberately deferred for live-safety (behavior-identical for the default single-scope set); the live
-serving proof is owned by Sprint `5.22`.
+**Status**: Done (2026-07-20). The full code-owned surface is closed: pure `CertScope` algebra,
+Tier-0 `cert_scopes` plus fail-fast validation of every configured substrate served host, derived
+keycloak public-edge `Certificate.spec.dnsNames`, exact canonical scope-set TLS retention/restore,
+and the fail-closed `edge status` certificate-expiry rungs. The default exact-host configuration
+retains its historical object-key bytes. Wildcard/multi-SAN sets use a path-safe canonical key, and
+a different SAN set receives a different coordinate because cert-manager treats it as a distinct
+issuance specification. `impliedBy` remains the coverage/admission order only. Live serving proof is
+owned by the now-unblocked Sprint `5.22`.
+**Live-proof**: pending — Sprint `5.22` owns the live serving proof.
 **Deployment qualification**: pending
 **Implementation**: ✅ **pure algebra landed** — `src/Prodbox/Tls/CertScope.hs` defines
 smart-constructed `Fqdn` / `DelegatedZone`, `CertScope` (`ScopeExact` / `ScopeWildcard DelegatedZone`),
@@ -3259,36 +3332,51 @@ cert-manager `Certificate public-edge-tls` document + wall-clock now) — an abs
 is `certificate-expired` (terminal, priority); `renewalTime <= now < notAfter` is `certificate-renew-due`;
 otherwise `certificate-current`. No repo-side renewal-window recompute — prodbox reads cert-manager's
 committed timestamps and only compares. The `edge status` report renders `CERTIFICATE_EXPIRY=<rung>`.
-🔄 **Remaining**: only the retention re-key to `renderCertScopeSet` in `src/Prodbox/PublicEdge.hs` /
-`src/Prodbox/Lifecycle/LiveResidue.hs` (behavior-identical for the default single-scope set, so deferred
-to avoid orphaning retained certs on a live system) — plus the live serving proof owned by Sprint `5.22`.
+✅ **exact canonical scope-set retention landed (2026-07-20)**:
+`PublicEdge.publicEdgeTlsRetentionKey` now consumes the typed `CertScopeSet`, retains the historical
+single-exact-host key byte-for-byte, and path-escapes wildcard/comma syntax so certificate wildcards
+cannot become IAM resource-pattern wildcards. `ChartDeploymentPlan` carries the exact compiled scope
+set for its selected substrate; deploy and delete plans expose the resulting coordinate, and delete
+planning is now substrate-aware rather than silently falling back to home-local. Retain-on-ready,
+pre-delete retention, and restore-before-issue all address only that exact key. A new SAN set orders
+once and is retained under its own coordinate; returning to a still-valid previously retained exact
+set may reuse it. Settings validation also binds the configured AWS subzone host when present, so an
+explicit scope that covers home but not AWS fails before execution.
 **Independent Validation**: ✅ pure property tests landed in `test/unit/CertScopeSuite.hs`
 (registered in `test/unit/Main.hs`): boundary tables for the wildcard semantics (apex / single-label
 child / two-label-deep), the `impliedBy` structural cases (`*.a.z` not `impliedBy` `*.z`), `mkScopeSet`
 rejection of undeclared-zone wildcards, `bindListener` rejection of uncovered hosts, the canonical
 `dnsNames` / retention-key projection, the reduction of a redundant exact under a wildcard, and
 QuickCheck properties (100 cases each) for `impliedBy` reflexivity / transitivity / antisymmetry and
-coverage-preservation under widening (restore-vs-reissue soundness). The config-field validation is
+coverage-preservation under widening (admission-order soundness). The exact-retention tests prove
+that a scope set and a merely covering wider set serialize to different coordinates, that the
+single-host default retains its historical key, and that wildcard/multi-scope syntax is path-safe.
+The config-field validation is
 proven by direct `validateConfiguredCertScope` tests in the `settings` suite (default scope covers the
 served host; a delegated wildcard is accepted; an empty host, an undelegated-zone wildcard, and an
-uncovered served host are each rejected fail-closed). The derived keycloak `dnsNames` is proven by
+uncovered served host are each rejected fail-closed; an explicit set that covers home but not the
+configured AWS served host is also rejected). The derived keycloak `dnsNames` is proven by
 three `settings`-suite `certDnsNamesForServedHost` tests (default served host, AWS-subzone served host,
 widened wildcard) plus an isolated `helm template` render showing the default renders
 `dnsNames: ["test.resolvefintech.com"]` (behavior-identical) and a widened set renders both entries.
 The `edge status` certificate-expiry rungs are proven by 7 `host`-suite `classifyCertificateExpiry` tests
 over fake cert-manager `Certificate` JSON (current / renew-due / expired / three unobservable fail-closed
 cases / report-token mapping). `prodbox dev check` exit 0, unit 1854/1854, integration cli/env exit 0
-(2026-07-19). No cluster required. The only remaining code-owned item is the deliberately-deferred
-retention re-key; the live serving proof is Sprint `5.22`.
-**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+(2026-07-19) for the previously landed increments. Focused exact-retention and substrate-aware plan
+checks, the current unit total, build, docs, and diff evidence are recorded in the closure-history
+entry in `DEVELOPMENT_PLAN/README.md`. No cluster is required for Sprint `2.35`; the live serving
+proof is Sprint `5.22`.
+**Docs updated**: `documents/engineering/acme_provider_guide.md`,
 `documents/engineering/envoy_gateway_edge_doctrine.md`,
-`documents/engineering/lifecycle_control_plane_architecture.md`
+`documents/engineering/lifecycle_control_plane_architecture.md`, and the lifecycle/Vault/chart
+doctrine surfaces that name the exact retained coordinate.
 
 ### Objective
 
 Make certificate scope operator-configurable with illegal states unrepresentable on the
-prodbox-managed side, and derive every edge projection from the one configured scope set, so the
-drift that produced the orphan dashboard certificate cannot recur on the managed side.
+prodbox-managed side, derive the Certificate/retention projections from the one configured scope
+set, and bind every explicit served edge host against it so the drift that produced the orphan
+dashboard certificate cannot recur on the managed side.
 
 ### Deliverables
 
@@ -3303,20 +3391,28 @@ drift that produced the orphan dashboard certificate cannot recur on the managed
   covering configured scope, and a wildcard anchored at a zone the operator has not delegated in
   config, are unrepresentable on the prodbox-managed side. The default configured scope set is
   today's exact served hosts, so there is no behavior change until an operator widens scope.
-- Derive both hand-authored `dnsNames` sites — `charts/keycloak/templates/gateway.yaml` and
-  `charts/gateway/templates/certificates.yaml` — from the scope set via a generated section,
-  reusing Sprint `2.34`'s chart-statics / route-registry generated-section machinery, so the
-  certificate `dnsNames`, listener hostnames, and served-FQDN list are total projections of one set.
-- Re-key retention by the canonical scope-set serialization, generalizing the
-  `public-edge-tls/<substrate>/<fqdn>` coordinate, with restore-before-issue decided by `impliedBy`:
-  reuse retained material when the configured scope set is `impliedBy` the retained certificate's
-  scope (narrower-or-equal), and trigger one quota-conscious fresh ACME order on widening.
+- Derive the keycloak public-edge Certificate `dnsNames`
+  (`charts/keycloak/templates/gateway.yaml`) from the scope set, keyed on each substrate's served
+  host. Each explicit listener/route/DNS served hostname is independently bound to and covered by
+  that same set; wildcard SAN coverage does not synthesize an infinite listener or DNS inventory.
+  Implemented as a values-injection
+  projection (`Settings.certDnsNamesForServedHost` → `ChartPlatform.valuesForKeycloak`
+  `gateway.certDnsNames` → template `range`) rather than a `const` generated section, because the
+  dnsNames are substrate-dependent (home served host vs. AWS subzone); the
+  `charts/gateway/templates/certificates.yaml` daemon mesh cert is per-node internal and is
+  intentionally NOT scope-derived (the original "both sites via a generated section" wording was a
+  spec imprecision).
+- Re-key retention by a path-safe encoding of the canonical scope-set serialization, generalizing
+  the historical substrate/FQDN coordinate to
+  `public-edge-tls/<substrate>/<canonical-scope-key>`. Restore-before-issue matches only an identical
+  canonical scope set: cert-manager treats any changed `Certificate.spec.dnsNames` set as a new
+  issuance specification. `impliedBy` proves coverage/admission and never aliases retention keys.
 - Replace the `validateSupportedPublicHost` hard-pinned single public-host literal in
   `src/Prodbox/Settings.hs` with scope-set coverage: a served hostname is admissible iff the
   configured scope set covers it.
 - Add the `edge status` `certificate-renew-due`/`certificate-expired` rungs, observed fail-closed
   from cert-manager `status.renewalTime` (absent ⇒ `certificate-unobservable`) and `notAfter`, with
-  no repo-side renewal-window recompute (which would drift from the chart `renewBefore: 720h`).
+  no repo-side renewal-window recompute (which would drift from cert-manager's committed status).
   Renewal stays cert-manager's / ZeroSSL's alone; prodbox observes expiry and never drives ACME
   renewal from the daemon.
 
@@ -3328,9 +3424,10 @@ drift that produced the orphan dashboard certificate cannot recur on the managed
 2. Coverage / narrowing tables reproduce the boundary cases — a wildcard covers a single label but
    neither the apex nor a deeper `a.b.z`, and `*.a.z` is not `impliedBy` `*.z` — with generators
    spanning disjoint, non-covering, apex, multi-label, and single-label boundary scopes.
-3. A conformance check proves both generated `dnsNames` sites equal the scope-set projection, and a
-   restore-vs-reissue table proves narrower-or-equal reuses retained material while widening orders
-   once.
+3. A conformance check proves the keycloak listener `dnsNames` values-injection equals the scope-set
+   projection (an isolated `helm template` render plus `settings`-suite tests); the exact-retention
+   table proves equal canonical sets reuse one coordinate while every distinct SAN set gets a
+   distinct coordinate and first issuance. `impliedBy` tables remain coverage/admission proofs.
 4. All of the above run pre-cluster; `prodbox dev check` and `prodbox test unit` pass.
 
 ### Remaining Work
@@ -3353,9 +3450,11 @@ drift that produced the orphan dashboard certificate cannot recur on the managed
   intentionally NOT derived from the public scope set. Proven behavior-identical for the default by an
   isolated `helm template` render and by three `settings`-suite tests (default served host, AWS-subzone
   served host, and a widened wildcard projection); dev check exit 0, unit 1847/1847.
-- 🔄 The retention re-key to `renderCertScopeSet` (generalizing `publicEdgeTlsRetentionKey`) with
-  restore-vs-reissue decided by `impliedBy` — behavior-identical for the default single-scope set, so
-  deferred to avoid orphaning retained certs on a live system.
+- ✅ The retention re-key to an exact, path-safe `renderCertScopeSet` projection landed
+  2026-07-20. `publicEdgeTlsRetentionKey` consumes `CertScopeSet`; deployment plans compile and
+  expose the exact key; all retain/restore paths use it; delete planning preserves the selected
+  substrate; and distinct SAN sets never alias through `impliedBy`. The exact single-host default
+  remains byte-compatible with the historical object coordinate.
 - ✅ The `edge status` `certificate-renew-due` / `certificate-expired` rungs landed (2026-07-19):
   `Prodbox.Host.classifyCertificateExpiry` is a pure fail-closed classifier over the already-fetched
   cert-manager `Certificate public-edge-tls` document (absent `notAfter`/`renewalTime` ⇒
@@ -3364,18 +3463,19 @@ drift that produced the orphan dashboard certificate cannot recur on the managed
   `edge status` report renders `CERTIFICATE_EXPIRY=<rung>`. Proven by 7 `host`-suite tests over fake
   Certificate JSON; dev check exit 0, unit 1854/1854. (Live observation of real cert-manager status is
   the Sprint `5.22` axis.)
-- Live serving proof — a real TLS handshake against every scope-covered hostname with a real ZeroSSL
-  DNS-01 certificate — is owned by Sprint `5.22` in
+- ✅ No code-owned work remains. Live serving proof against each explicitly bound substrate host,
+  including inspection of the issued SAN set and exact restore/reissue behavior, is the independent
+  deployment-qualification axis owned by Sprint `5.22` in
   [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) (Standards N/O).
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/acme_provider_guide.md` - configurable certificate scope, the
-  coverage/narrowing semantics, and the scope-change restore-vs-reissue rule keyed by `impliedBy`.
-- `documents/engineering/envoy_gateway_edge_doctrine.md` - served-FQDN set and listener hostnames as
-  projections of the configured `CertScopeSet`, and the `edge status` `certificate-renew-due` /
+- `documents/engineering/acme_provider_guide.md` - configurable certificate scope,
+  coverage/admission semantics, and exact-SAN scope-change restore/reissue behavior.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` - explicit served-host binding to the
+  configured `CertScopeSet`, exact retention, and the `edge status` `certificate-renew-due` /
   `certificate-expired` rungs.
 - `documents/engineering/lifecycle_control_plane_architecture.md` - retention re-key to the
   canonical scope-set serialization and the closed certificate-material custody boundary.

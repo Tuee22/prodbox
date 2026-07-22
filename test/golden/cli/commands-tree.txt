@@ -25,6 +25,8 @@ prodbox
         reconcile
         destroy
         migrate-backend
+  bootstrap-broker
+    start
   charts
     list
     status

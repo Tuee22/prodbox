@@ -262,9 +262,9 @@ Gateway state/transport bounds remain owned by
 [Distributed Gateway Architecture §3.2](./distributed_gateway_architecture.md#32-event-plane-source-of-truth).
 Lifecycle-control-plane state, outbox, actor, and queue bounds remain owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Each component
-has its own calculation and envelope. A shared gateway child permit is not a substitute for
-physical scheduling isolation between Gateway Runtime, Lifecycle Authority, Bootstrap Broker, and
-Target Secret Agent.
+has its own calculation and envelope. A shared execution lane or admission queue is not a
+substitute for physical scheduling isolation between Gateway Runtime, Lifecycle Authority,
+Bootstrap Broker, and Target Secret Agent.
 
 Static validation ends at the rendered plan. A typed high-water threshold is a pure comparison
 input, not evidence that the process stayed below it. Live stability combines a run-wide absorbing
@@ -371,6 +371,21 @@ or when queue-wait-plus-service cannot fit the caller's remaining monotonic budg
 (`RejectedDeadlineUnmeetable`, strict boundary via `deadlineAdmission`), and a timed-out caller
 cooperatively frees a queued or in-service slot. Deterministic queue simulations (saturation,
 FIFO fairness, cancellation, deadline expiry, recovery) live in `test/unit/ControlPlaneCapacity.hs`.
+
+The Sprint `2.32` gateway emitter is a concrete consumer. `EmitterActorConfig` accepts only a
+single-worker `ServiceCapacityPlan`; the actor mints the one absolute deadline before queue admission,
+uses that same deadline for stage, both fsync projections, publication, commit, checkpoint install,
+recovery, and response, and represents overload/deadline refusal as structured `EmitterActorError`
+values. Heartbeat requests may replace the one pending heartbeat in place, but ownership, recovery,
+and durable peer-ack operations never coalesce. Interpreter failure leaves the exact durable phase for
+recovery only when it is unsigned; every retained signed phase is normalized to the durable-stage
+boundary and republishes the exact signed bytes before commit and final fsync. A retained prior-Orders
+digest re-arms an interrupted migration before that replay. Failure removes target readiness until a
+current-Lease recovery completes; it cannot open a second lane or mint a later deadline for the failed
+transition. The old process-global
+`ChildSchedule` is not a target-path capacity proof: fixed REST/frame bounds and operation-specific
+deadlines contain independent capability lanes, while the actor's validated queue exclusively owns
+emitter transitions.
 
 ## 2F. Measured Resource Profiles
 

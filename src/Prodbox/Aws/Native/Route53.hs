@@ -75,7 +75,9 @@ data ResourceRecordSet = ResourceRecordSet
 
 data Route53Client = Route53Client
   { changeResourceRecordSets
-      :: Text -> [(ChangeAction, ResourceRecordSet)] -> IO (Either AwsClientError (ChangeId, ChangeStatus))
+      :: Text
+      -> [(ChangeAction, ResourceRecordSet)]
+      -> IO (Either AwsClientError (ChangeId, ChangeStatus))
   , getChange :: ChangeId -> IO (Either AwsClientError ChangeStatus)
   }
 

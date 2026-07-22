@@ -1,6 +1,8 @@
 CHART_DEPLOY_PLAN
 ROOT_CHART=vscode
 NAMESPACE=vscode
+SUBSTRATE=home-local
+TLS_RETENTION_KEY=public-edge-tls/home-local/test.resolvefintech.com
 RELEASE=keycloak-postgres
 CHART=keycloak-postgres
 CHART_DIR=/tmp/prodbox/charts/keycloak-postgres

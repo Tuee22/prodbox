@@ -356,8 +356,8 @@ querySesLive repoRoot = do
 -- substrate-scoped S3 key prefix of the retained public-edge production
 -- TLS certificate material in the long-lived @pulumi_state_backend@
 -- bucket. The full per-substrate key scheme
--- (@public-edge-tls/\<substrate\>/\<fqdn\>@) is filled in by the chart
--- platform writers (Sprint 7.11 \/ 8.7); the @discover@ and @destroy@
+-- (@public-edge-tls/\<substrate\>/\<canonical-scope-key\>@) is filled in by
+-- the chart platform writers (Sprints 7.11 / 8.7 / 2.35); the @discover@ and @destroy@
 -- here operate on the whole prefix, so they observe and remove the
 -- entire retained-cert class regardless of which substrate keys exist.
 publicEdgeTlsResourceName :: String

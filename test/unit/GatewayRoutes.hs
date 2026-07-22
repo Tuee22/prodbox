@@ -20,7 +20,7 @@ gatewayRoutesSuite :: SuiteBuilder ()
 gatewayRoutesSuite =
   describe "Sprint 2.34 compiled gateway route registry" $ do
     it "enumerates every route via Enum/Bounded" $ do
-      length allGatewayRoutes `shouldBe` 20
+      length allGatewayRoutes `shouldBe` 13
       mapM_
         (\route -> (route `elem` allGatewayRoutes) `shouldBe` True)
         [RouteHealthz, RouteReadyz, RouteState, RouteTargetSecretCas]
@@ -64,7 +64,7 @@ gatewayRoutesSuite =
       it "rejects diagnostic and RPC routes" $ do
         isNothing (kubeletProbeRoute RouteState) `shouldBe` True
         isNothing (kubeletProbeRoute RouteMetrics) `shouldBe` True
-        isNothing (kubeletProbeRoute RouteBootstrapVaultEnsure) `shouldBe` True
+        isNothing (kubeletProbeRoute RoutePulumiObjectGet) `shouldBe` True
       it "exposes the two probe routes as total constants" $ do
         kubeletProbeRoutePattern healthzProbeRoute `shouldBe` "/healthz"
         kubeletProbeRoutePattern readyzProbeRoute `shouldBe` "/readyz"

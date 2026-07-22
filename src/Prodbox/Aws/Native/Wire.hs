@@ -5,8 +5,8 @@
 -- outcome classifier shared by the four native AWS service clients. The pure
 -- core ('signAwsRequest'\/'buildSignedRequest'\/'classifyOutcome'\/
 -- 'renderFormBody'\/'parseServiceFault') is unit-tested against fakes; the sole
--- I\/O is 'httpSend' (the only toucher of the shared TLS manager) and
--- 'performAwsRequest'.
+-- production transport I\/O is 'httpSend' (the only toucher of the shared TLS
+-- manager) plus 'performAwsRequest'.
 --
 -- The load-bearing correctness property is the ambiguity gate in
 -- 'classifyOutcome': a transport failure on a MUTATING op whose bytes may have
@@ -31,6 +31,10 @@ module Prodbox.Aws.Native.Wire
   , TransportFailure (..)
   , DispatchPhase (..)
   , NativeAwsSender
+  , NativeAwsResponseByteLimit
+  , mkNativeAwsResponseByteLimit
+  , nativeAwsResponseByteLimitBytes
+  , defaultNativeAwsResponseByteLimit
   , formContentType
 
     -- * Pure core
@@ -41,7 +45,9 @@ module Prodbox.Aws.Native.Wire
   , parseServiceFault
 
     -- * IO
+  , readBoundedNativeAwsHttpOutcome
   , httpSend
+  , httpSendWithResponseByteLimit
   , performAwsRequest
   )
 where
@@ -51,8 +57,8 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -64,12 +70,11 @@ import Network.HTTP.Client
   , HttpExceptionContent (..)
   , Request (..)
   , RequestBody (RequestBodyBS)
-  , Response
-  , httpLbs
   , parseRequest
   , responseBody
   , responseHeaders
   , responseStatus
+  , withResponse
   )
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Status (statusCode)
@@ -147,6 +152,27 @@ data TransportFailure = TransportFailure
 -- | The injected send seam. The production 'httpSend' is the sole reference to
 -- the shared TLS manager; fakes implement this to drive the pure pipeline.
 type NativeAwsSender = SignedHttpRequest -> IO (Either TransportFailure HttpOutcome)
+
+-- | A strictly positive cap on one decoded native AWS HTTP response body. The
+-- constructor also leaves room for the one overflow-detection byte, so the
+-- streaming reader can never wrap its internal counter.
+newtype NativeAwsResponseByteLimit = NativeAwsResponseByteLimit Int
+  deriving (Eq, Show)
+
+mkNativeAwsResponseByteLimit :: Int -> Either String NativeAwsResponseByteLimit
+mkNativeAwsResponseByteLimit bytes
+  | bytes <= 0 = Left "native AWS response-byte limit must be positive"
+  | bytes == maxBound = Left "native AWS response-byte limit is too large"
+  | otherwise = Right (NativeAwsResponseByteLimit bytes)
+
+nativeAwsResponseByteLimitBytes :: NativeAwsResponseByteLimit -> Int
+nativeAwsResponseByteLimitBytes (NativeAwsResponseByteLimit bytes) = bytes
+
+-- | The supported native operations return singleton XML/JSON documents. One
+-- MiB is deliberately generous for those documents while remaining a fixed
+-- per-request heap bound.
+defaultNativeAwsResponseByteLimit :: NativeAwsResponseByteLimit
+defaultNativeAwsResponseByteLimit = NativeAwsResponseByteLimit (1024 * 1024)
 
 data AwsServiceFault = AwsServiceFault
   { awsFaultHttpStatus :: !Int
@@ -292,9 +318,52 @@ jsonField field body = case Aeson.decodeStrict body of
 requestIdHeader :: [Header] -> Maybe Text
 requestIdHeader headers = decodeUtf8 <$> lookup (CI.mk "x-amzn-RequestId") headers
 
--- | The production sender: the sole reference to the shared TLS manager.
+-- | Read one response stream while retaining at most @limit + 1@ bytes. An
+-- overflow is a transport failure whose request may already have reached AWS;
+-- no partial 'HttpOutcome' escapes. The caller's @withResponse@ bracket closes
+-- the response as soon as this function returns, including the overflow arm.
+readBoundedNativeAwsHttpOutcome
+  :: NativeAwsResponseByteLimit
+  -> Int
+  -> [Header]
+  -> IO ByteString
+  -> IO (Either TransportFailure HttpOutcome)
+readBoundedNativeAwsHttpOutcome limit status headers readChunk = do
+  boundedBody <- collectBoundedResponseBody limit readChunk
+  pure (HttpOutcome status headers <$> boundedBody)
+
+collectBoundedResponseBody
+  :: NativeAwsResponseByteLimit
+  -> IO ByteString
+  -> IO (Either TransportFailure ByteString)
+collectBoundedResponseBody (NativeAwsResponseByteLimit maximumBytes) readChunk =
+  go (maximumBytes + 1) []
+ where
+  go remaining reversedChunks = do
+    chunk <- readChunk
+    let chunkBytes = BS.length chunk
+    if chunkBytes == 0
+      then pure (Right (BS.concat (reverse reversedChunks)))
+      else
+        if chunkBytes >= remaining
+          then pure (Left overflowFailure)
+          else go (remaining - chunkBytes) (chunk : reversedChunks)
+
+  overflowFailure =
+    TransportFailure
+      ("native AWS HTTP response exceeds the " ++ show maximumBytes ++ "-byte bound")
+      PossiblySent
+
+-- | The production sender uses a fixed safe response-body bound and is the
+-- sole reference to the shared TLS manager.
 httpSend :: NativeAwsSender
-httpSend request = do
+httpSend = httpSendWithResponseByteLimit defaultNativeAwsResponseByteLimit
+
+-- | Production sender with an explicit validated response-body bound. This is
+-- exposed for bounded runtime plans and deterministic transport tests; AWS
+-- client and signing APIs continue to consume the unchanged 'NativeAwsSender'.
+httpSendWithResponseByteLimit :: NativeAwsResponseByteLimit -> NativeAwsSender
+httpSendWithResponseByteLimit responseByteLimit request = do
   parsed <- try (parseRequest (shrUrl request)) :: IO (Either SomeException Request)
   case parsed of
     Left ex -> pure (Left (TransportFailure (show ex) DefinitelyNotSent))
@@ -306,15 +375,17 @@ httpSend request = do
               , requestBody = RequestBodyBS (shrBody request)
               }
       outcome <-
-        try (httpLbs prepared sharedTlsManager) :: IO (Either SomeException (Response BL.ByteString))
-      pure $ case outcome of
-        Right response ->
-          Right
-            ( HttpOutcome
+        try
+          ( withResponse prepared sharedTlsManager $ \response ->
+              readBoundedNativeAwsHttpOutcome
+                responseByteLimit
                 (statusCode (responseStatus response))
                 (responseHeaders response)
-                (BL.toStrict (responseBody response))
-            )
+                (responseBody response)
+          )
+          :: IO (Either SomeException (Either TransportFailure HttpOutcome))
+      pure $ case outcome of
+        Right bounded -> bounded
         Left ex -> Left (TransportFailure (show ex) (dispatchPhaseOf ex))
 
 -- | Conservative exception→phase mapping. Only unambiguously pre-connection

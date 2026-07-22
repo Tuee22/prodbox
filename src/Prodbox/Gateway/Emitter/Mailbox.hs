@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 
 -- | Sprint 2.32 (increment 1): the bounded typed mailbox that fronts the
@@ -10,15 +11,17 @@
 -- @LCPC-2026-07-11@ class where unbounded request/rejection materialization
 -- pinned the gateway CPU.
 --
--- Coalescing is deliberately asymmetric: a fresh heartbeat SUPERSEDES a pending
--- heartbeat (only the latest freshness observation matters, so the queue holds
--- at most one heartbeat and a heartbeat can never fill the mailbox), while
--- ownership transitions, the internally-decided epoch rotation, and recovery are
--- NEVER coalesced or reordered relative to one another — dropping or reordering
--- an ownership claim/yield would violate the DNS-write ordering the gateway
--- depends on. The coalesced heartbeat keeps the position of the oldest pending
--- heartbeat, so it can never jump ahead of an ownership request that arrived
--- after it.
+-- Coalescing is deliberately asymmetric: a heartbeat keeps the greatest
+-- observed monotonic payload even when arrivals are out of order (only the
+-- freshest observation matters, so the queue holds at most one heartbeat and a
+-- heartbeat can never fill the mailbox), while
+-- ownership transitions and the internally-decided epoch rotation are NEVER
+-- coalesced or reordered relative to one another — dropping or reordering an
+-- ownership claim/yield would violate the DNS-write ordering the gateway depends
+-- on. Recovery is a typed control request: a blocked emitter may extract it with
+-- 'dequeueRecovery' without moving any durable requests relative to each other.
+-- The coalesced heartbeat keeps the position of the oldest pending heartbeat, so
+-- it can never jump ahead of an ownership request that arrived after it.
 --
 -- The module is pure and total: no clock read, no @IO@. The overload
 -- 'RetryAfter' hint is carried by the mailbox so 'enqueue' stays clock-free.
@@ -45,10 +48,13 @@ module Prodbox.Gateway.Emitter.Mailbox
   , EnqueueOutcome (..)
   , enqueue
   , dequeue
+  , dequeueRecovery
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Word (Word64)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Deadline (RetryAfter (..))
 
@@ -71,7 +77,9 @@ mailboxCapacityValue (MailboxCapacity value) = value
 data OwnershipTransition
   = OwnershipClaim
   | OwnershipYield
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Generic, Ord, Show)
+
+instance Serialise OwnershipTransition
 
 -- | A heartbeat request carries the monotonic observation time (micros) so the
 -- coalesced representative is the freshest one; the value is otherwise opaque to
@@ -79,7 +87,9 @@ data OwnershipTransition
 newtype HeartbeatPayload = HeartbeatPayload
   { heartbeatObservedMicros :: Word64
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Generic, Ord, Show)
+
+instance Serialise HeartbeatPayload
 
 -- | A request submitted to the emitter actor.
 --
@@ -151,8 +161,9 @@ enqueue :: Mailbox -> EmitterRequest -> EnqueueOutcome
 enqueue mailbox request
   | requestCoalescible request =
       case break requestCoalescible queue of
-        (before, _existing : after) ->
-          EnqueueCoalesced mailbox {mailboxQueue = before ++ request : after}
+        (before, existing : after) ->
+          EnqueueCoalesced
+            mailbox {mailboxQueue = before ++ freshestHeartbeat existing request : after}
         (_, []) -> appendIfRoom
   | otherwise = appendIfRoom
  where
@@ -162,9 +173,25 @@ enqueue mailbox request
         EnqueueRejected (mailboxBackoff mailbox)
     | otherwise = EnqueueAccepted mailbox {mailboxQueue = queue ++ [request]}
 
+freshestHeartbeat :: EmitterRequest -> EmitterRequest -> EmitterRequest
+freshestHeartbeat (ReqHeartbeat old) (ReqHeartbeat new) = ReqHeartbeat (max old new)
+freshestHeartbeat _ new = new
+
 -- | Remove and return the next request, or 'Nothing' when empty.
 dequeue :: Mailbox -> Maybe (EmitterRequest, Mailbox)
 dequeue mailbox =
   case mailboxQueue mailbox of
     [] -> Nothing
     (request : rest) -> Just (request, mailbox {mailboxQueue = rest})
+
+-- | Remove the oldest recovery control request wherever it appears, preserving
+-- the relative order of every durable request around it.  This gives recovery
+-- priority while an in-flight transition is blocking the FIFO: requiring
+-- 'ReqRecover' to reach the head would let ordinary work ahead of it wedge the
+-- sole state owner indefinitely.
+dequeueRecovery :: Mailbox -> Maybe Mailbox
+dequeueRecovery mailbox =
+  case break (== ReqRecover) (mailboxQueue mailbox) of
+    (_, []) -> Nothing
+    (before, _recover : after) ->
+      Just mailbox {mailboxQueue = before ++ after}

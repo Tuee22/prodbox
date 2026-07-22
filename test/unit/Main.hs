@@ -11,10 +11,21 @@ import AwsSesLeaseRole (awsSesLeaseRoleSuite)
 import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
+import BootstrapBrokerClient (bootstrapBrokerClientSuite)
+import BootstrapBrokerCustody (bootstrapBrokerCustodySuite)
+import BootstrapBrokerEngine (bootstrapBrokerEngineSuite)
+import BootstrapBrokerEnginePhysical (enginePhysicalSuite)
+import BootstrapBrokerEngineSecretWorker (engineSecretWorkerSuite)
+import BootstrapBrokerFoundation (bootstrapBrokerFoundationSuite)
+import BootstrapBrokerRequestJournal (bootstrapBrokerRequestJournalSuite)
+import BootstrapBrokerRuntime (bootstrapBrokerRuntimeSuite)
+import BootstrapBrokerSafety (bootstrapBrokerSafetySuite)
+import BootstrapBrokerServerSafety (bootstrapBrokerServerSafetySuite)
+import BrokerChartStatics (brokerChartStaticsSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CertScopeSuite (certScopeSuite)
 import Control.Exception (finally)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, unless, when)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
@@ -62,7 +73,14 @@ import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
 import GatewayChartStatics (gatewayChartStaticsSuite)
 import GatewayContinuity (gatewayContinuitySuite)
+import GatewayEmitterActor (gatewayEmitterActorSuite)
+import GatewayEmitterJournal
+  ( gatewayEmitterJournalSuite
+  , runGatewayEmitterJournalHelper
+  )
 import GatewayEmitterKernel (gatewayEmitterKernelSuite)
+import GatewayEmitterLease (gatewayEmitterLeaseSuite)
+import GatewayEmitterPersistence (gatewayEmitterPersistenceSuite)
 import GatewayProbe (gatewayProbeSuite)
 import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
@@ -128,6 +146,26 @@ import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
   , overlayAwsCredentials
   , sealedAwsEnvironment
+  )
+import Prodbox.Bootstrap.Broker.Client qualified
+import Prodbox.Bootstrap.Broker.LegacyAdapter
+  ( BootstrapVaultRequest (..)
+  , BootstrapVaultRequestError (..)
+  , BootstrapVaultRotateTransitKeyRequest (..)
+  , BootstrapVaultRotateUnlockBundleRequest (..)
+  , bootstrapVaultPath
+  , bootstrapVaultPkiIssueTestCertPath
+  , bootstrapVaultPkiStatusPath
+  , bootstrapVaultRequestMaxBytes
+  , bootstrapVaultRotateTransitKeyPath
+  , bootstrapVaultRotateUnlockBundlePath
+  , bootstrapVaultSealPath
+  , bootstrapVaultStatusPath
+  , decodeBootstrapVaultAuthenticatedRequest
+  , decodeBootstrapVaultRequest
+  , decodeBootstrapVaultRotateTransitKeyRequest
+  , decodeBootstrapVaultRotateUnlockBundleRequest
+  , renderBootstrapVaultRequestError
   )
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
@@ -450,25 +488,9 @@ import Prodbox.Gateway
   )
 import Prodbox.Gateway.Client qualified
 import Prodbox.Gateway.Daemon
-  ( BootstrapVaultRequest (..)
-  , BootstrapVaultRequestError (..)
-  , BootstrapVaultRotateTransitKeyRequest (..)
-  , BootstrapVaultRotateUnlockBundleRequest (..)
-  , PulumiObjectRequestError (..)
+  ( PulumiObjectRequestError (..)
   , allowedOperatorSecretPaths
-  , bootstrapVaultPath
-  , bootstrapVaultPkiIssueTestCertPath
-  , bootstrapVaultPkiStatusPath
-  , bootstrapVaultRequestMaxBytes
-  , bootstrapVaultRotateTransitKeyPath
-  , bootstrapVaultRotateUnlockBundlePath
-  , bootstrapVaultSealPath
-  , bootstrapVaultStatusPath
   , daemonBootFieldsChanged
-  , decodeBootstrapVaultAuthenticatedRequest
-  , decodeBootstrapVaultRequest
-  , decodeBootstrapVaultRotateTransitKeyRequest
-  , decodeBootstrapVaultRotateUnlockBundleRequest
   , decodeOperatorSecretFields
   , decodePulumiObjectPutRequest
   , decodePulumiObjectRequest
@@ -476,7 +498,6 @@ import Prodbox.Gateway.Daemon
   , operatorSecretLogicalPath
   , operatorSecretRequestMethod
   , operatorWriteRoleName
-  , renderBootstrapVaultRequestError
   , renderPulumiObjectRequestError
   , requestBodyBytes
   )
@@ -585,13 +606,16 @@ import Prodbox.Keycloak.CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
-  ( ChartDeploymentPlan (..)
+  ( ChartDefinition (..)
+  , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
   , PatroniAuthObservation (..)
   , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
+  , ResolvedCustomImage (..)
   , buildChartDeletePlan
+  , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
@@ -605,11 +629,13 @@ import Prodbox.Lib.ChartPlatform
   , patroniSeedMismatchDecision
   , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
+  , resolveChart
   , resolveChartSecrets
   , resolveDependencyOrder
   , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
   , validateOperatorGatesWith
+  , valuesForBootstrapBroker
   )
 import Prodbox.Lib.EksContainerdMirror qualified
 import Prodbox.Lib.EksCustomImagePush qualified
@@ -763,6 +789,7 @@ import Prodbox.Settings
   , TestTopologyError (..)
   , ValidatedSettings (..)
   , certDnsNamesForServedHost
+  , certScopeSetForServedHost
   , decodeConfigDhallBytes
   , defaultConfigFile
   , defaultTestTopology
@@ -861,6 +888,7 @@ import Prodbox.TestValidation
   , daemonBootstrapForbiddenPatterns
   , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
+  , gatewayPartitionValidationReport
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
   , resourceGuardrailReport
@@ -1001,13 +1029,15 @@ import System.Directory
   , setPermissions
   )
 import System.Environment
-  ( getExecutablePath
+  ( getArgs
+  , getExecutablePath
   , lookupEnv
   , setEnv
   , unsetEnv
   )
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
+import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TestSupport
@@ -1020,7 +1050,12 @@ withBinarySiblingTier0 contents action = do
   previousExists <- doesFileExist tier0Path
   previousContents <-
     case previousExists of
-      True -> Just <$> readFile tier0Path
+      -- Strict read: `readFile` is lazy and leaves the read handle open until
+      -- the contents are forced, so the subsequent `writeFile` on the same
+      -- path trips GHC's RTS single-writer lock ("resource busy (file is
+      -- locked)") whenever a sibling file already exists (e.g. left present by
+      -- an earlier suite test). Forcing the contents closes the handle first.
+      True -> Just <$> readFile' tier0Path
       False -> pure Nothing
   writeFile tier0Path contents
   action `finally` restoreBinarySiblingTier0 tier0Path previousContents
@@ -1258,12 +1293,29 @@ defaultGatewayRuntimeMemoryProfile =
     profiles -> error ("expected one default runtime-memory profile, got " ++ show profiles)
 
 main :: IO ()
-main = mainWithSuite "prodbox-unit" $ do
+main = do
+  arguments <- getArgs
+  helperHandled <- runGatewayEmitterJournalHelper arguments
+  unless helperHandled (mainWithSuite "prodbox-unit" unitSuite)
+
+unitSuite :: SuiteBuilder ()
+unitSuite = do
   parserSuite
   awsSesLifecycleSuite
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
   awsSesSmtpKeySuite
+  bootstrapBrokerClientSuite
+  bootstrapBrokerCustodySuite
+  bootstrapBrokerEngineSuite
+  enginePhysicalSuite
+  engineSecretWorkerSuite
+  bootstrapBrokerFoundationSuite
+  bootstrapBrokerRequestJournalSuite
+  bootstrapBrokerRuntimeSuite
+  bootstrapBrokerSafetySuite
+  bootstrapBrokerServerSafetySuite
+  brokerChartStaticsSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
   capabilityReadinessBarrierSuite
@@ -1279,7 +1331,11 @@ main = mainWithSuite "prodbox-unit" $ do
   gatewayBoundedSuite
   gatewayChartStaticsSuite
   gatewayContinuitySuite
+  gatewayEmitterActorSuite
+  gatewayEmitterJournalSuite
   gatewayEmitterKernelSuite
+  gatewayEmitterLeaseSuite
+  gatewayEmitterPersistenceSuite
   gatewayProbeSuite
   gatewayReadinessSuite
   gatewayRoutesSuite
@@ -1577,6 +1633,8 @@ main = mainWithSuite "prodbox-unit" $ do
               , initRequestSecretThreshold = Nothing
               , initRequestRecoveryShares = Just 5
               , initRequestRecoveryThreshold = Just 3
+              , initRequestPgpKeys = []
+              , initRequestRootTokenPgpKey = Nothing
               }
           )
     it "renders a child transit seal stanza without embedding the transit token" $ do
@@ -3621,7 +3679,7 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldNotContain` "super-secret-password"
     it "builds the bootstrap URL on the loopback gateway endpoint" $ do
       let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
-      Prodbox.Gateway.Client.bootstrapVaultUrl endpoint
+      Prodbox.Bootstrap.Broker.Client.legacyBootstrapVaultUrl endpoint
         `shouldBe` "http://127.0.0.1:30443/v1/bootstrap/vault/ensure"
     it "decodes authenticated daemon lifecycle actions with the same loopback proof" $ do
       decodeBootstrapVaultAuthenticatedRequest
@@ -6085,6 +6143,20 @@ main = mainWithSuite "prodbox-unit" $ do
       validationSource
         `shouldNotContain` "ValidationGatewayPartition -> runNativeCliCommandForExitCode repoRoot environment [\"tla-check\"]"
 
+    it "composes gateway-partition through the bounded emitter and signed peer recovery path" $ do
+      result <- gatewayPartitionValidationReport
+      case result of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "GATEWAY_PARTITION_VALIDATION"
+          report `shouldContain` "EMITTER_PIPELINE_COMPOSED=true"
+          report `shouldContain` "OFFLINE_REPAIR_EXACT=true"
+          report `shouldContain` "DURABLE_ACK_ADVANCED=true"
+          report `shouldContain` "CHECKPOINT_COMPACTION_BOUNDED=true"
+          report `shouldContain` "RESTART_EXACT_BYTES=true"
+          report `shouldContain` "WRONG_INCARNATION_REJECTED=true"
+          report `shouldContain` "WRONG_DIGEST_REJECTED=true"
+
     it "routes sealed-vault through a native validation path" $ do
       repoRoot <- getCurrentDirectory
       validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
@@ -6869,11 +6941,11 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrereqTexts "rke2_service_active"
         `shouldBe` ["rke2_service_exists"]
       lookupPrereqTexts "k8s_cluster_reachable"
-        `shouldBe` ["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]
+        `shouldBe` ["tool_kubectl"]
       lookupPrereqTexts "pulumi_logged_in"
         `shouldBe` ["tool_pulumi", "k8s_cluster_reachable"]
       lookupPrereqTexts "k8s_ready"
-        `shouldBe` ["k8s_cluster_reachable", "rke2_service_active"]
+        `shouldBe` ["k8s_cluster_reachable"]
       -- Sprint 5.6: infra_ready keeps the cluster + AWS-credential bundle...
       lookupPrereqTexts "infra_ready"
         `shouldBe` ["k8s_ready", "aws_credentials_valid"]
@@ -6949,32 +7021,18 @@ main = mainWithSuite "prodbox-unit" $ do
           ]
       transitiveClosureTexts ["pulumi_logged_in"]
         `shouldBe` Right
-          [ "host_substrate_supported"
-          , "k8s_cluster_reachable"
-          , "kubeconfig_exists"
-          , "platform_linux"
+          [ "k8s_cluster_reachable"
           , "pulumi_logged_in"
-          , "rke2_installed"
-          , "rke2_service_active"
-          , "rke2_service_exists"
-          , "systemd_available"
           , "tool_kubectl"
           , "tool_pulumi"
           ]
       transitiveClosureTexts ["infra_ready"]
         `shouldBe` Right
           [ "aws_credentials_valid"
-          , "host_substrate_supported"
           , "infra_ready"
           , "k8s_cluster_reachable"
           , "k8s_ready"
-          , "kubeconfig_exists"
-          , "platform_linux"
-          , "rke2_installed"
-          , "rke2_service_active"
-          , "rke2_service_exists"
           , "settings_object"
-          , "systemd_available"
           , "tool_aws"
           , "tool_kubectl"
           ]
@@ -6982,18 +7040,26 @@ main = mainWithSuite "prodbox-unit" $ do
       -- readiness WITHOUT pulling in any AWS-credential node.
       transitiveClosureTexts ["public_edge_ready"]
         `shouldBe` Right
-          [ "host_substrate_supported"
-          , "k8s_cluster_reachable"
+          [ "k8s_cluster_reachable"
           , "k8s_ready"
-          , "kubeconfig_exists"
-          , "platform_linux"
           , "public_edge_ready"
-          , "rke2_installed"
-          , "rke2_service_active"
-          , "rke2_service_exists"
-          , "systemd_available"
           , "tool_kubectl"
           ]
+
+    it "keeps substrate-neutral Kubernetes readiness free of home-local RKE2 prerequisites" $ do
+      case transitiveClosureIds [K8sReady] prerequisiteRegistry of
+        Left err -> expectationFailure ("expected acyclic closure, got: " ++ err)
+        Right closure -> do
+          (ToolKubectl `elem` closure) `shouldBe` True
+          mapM_
+            (\localOnly -> (localOnly `elem` closure) `shouldBe` False)
+            [ KubeconfigExists
+            , KubeconfigHomeExists
+            , Rke2ConfigExists
+            , Rke2Installed
+            , Rke2ServiceExists
+            , Rke2ServiceActive
+            ]
 
   describe "construction-time acyclicity (Sprint 1.31)" $ do
     -- Sprint 5.6: synthetic registries are built from real 'PrerequisiteId'
@@ -7951,6 +8017,66 @@ main = mainWithSuite "prodbox-unit" $ do
       result
         `shouldBe` Left "capacity.resource_plan is missing workload profile `vscode`"
 
+    it "renders Bootstrap Broker values from the compiled statics and injected image" $ do
+      -- Sprint 3.26 (Increment C): the physically separate broker's deployed
+      -- values project the one compiled BrokerChartStatics; the resource
+      -- envelope is injected separately by attachResourcePlanValues.
+      let brokerImage =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+              , resolvedCustomImageTag = "broker-test-tag"
+              , resolvedCustomImageRolloutToken = Nothing
+              }
+      case valuesForBootstrapBroker "bootstrap-broker" "bootstrap-broker" (Just brokerImage) of
+        Left err -> expectationFailure err
+        Right (Object payload) -> do
+          case KeyMap.lookup (Key.fromString "serviceAccount") payload of
+            Just (Object sa) ->
+              KeyMap.lookup (Key.fromString "name") sa
+                `shouldBe` Just (String "prodbox-bootstrap-broker")
+            _ -> expectationFailure "expected serviceAccount object"
+          case KeyMap.lookup (Key.fromString "vault") payload of
+            Just (Object vaultPayload) ->
+              KeyMap.lookup (Key.fromString "role") vaultPayload
+                `shouldBe` Just (String "prodbox-bootstrap-broker")
+            _ -> expectationFailure "expected vault object"
+          case KeyMap.lookup (Key.fromString "probes") payload of
+            Just (Object probesPayload) -> do
+              KeyMap.lookup (Key.fromString "liveness") probesPayload
+                `shouldBe` Just (String "/healthz")
+              KeyMap.lookup (Key.fromString "readiness") probesPayload
+                `shouldBe` Just (String "/readyz")
+            _ -> expectationFailure "expected probes object"
+          case KeyMap.lookup (Key.fromString "listener") payload of
+            Just (Object listenerPayload) ->
+              KeyMap.lookup (Key.fromString "port") listenerPayload
+                `shouldBe` Just (Number 8600)
+            _ -> expectationFailure "expected listener object"
+          case KeyMap.lookup (Key.fromString "image") payload of
+            Just (Object imagePayload) ->
+              KeyMap.lookup (Key.fromString "repository") imagePayload
+                `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-runtime")
+            _ -> expectationFailure "expected image object"
+          -- The Guaranteed-QoS envelope is attached by attachResourcePlanValues,
+          -- not by valuesForBootstrapBroker.
+          KeyMap.lookup (Key.fromString "resources") payload `shouldBe` Nothing
+        Right _ -> expectationFailure "expected bootstrap-broker values object"
+
+    it "refuses Bootstrap Broker values without a resolved runtime image" $
+      valuesForBootstrapBroker "bootstrap-broker" "bootstrap-broker" Nothing
+        `shouldBe` Left "bootstrap-broker chart requires a resolved image reference"
+
+    it "resolves the internal bootstrap-broker chart definition off the public surface" $
+      case resolveChart "/tmp/prodbox" "bootstrap-broker" of
+        Left err -> expectationFailure err
+        Right definition -> do
+          chartDefinitionName definition `shouldBe` "bootstrap-broker"
+          chartDefinitionChartDir definition `shouldBe` "/tmp/prodbox/charts/bootstrap-broker"
+          chartDefinitionStorage definition `shouldBe` []
+          chartDefinitionRequiresPublicHost definition `shouldBe` False
+          -- Internal control-plane chart: not on the public `prodbox charts` surface.
+          ("bootstrap-broker" `elem` supportedChartNames) `shouldBe` False
+
     it "builds delete plans in reverse dependency order" $ do
       case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
         Left err -> expectationFailure err
@@ -7959,6 +8085,19 @@ main = mainWithSuite "prodbox-unit" $ do
           chartDeploymentPlanNamespace plan `shouldBe` "vscode"
           map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
             `shouldBe` ["vscode", "keycloak", "keycloak-postgres"]
+
+    it "builds AWS delete plans with the selected substrate FQDN and exact certificate scope" $ do
+      case buildChartDeletePlanForSubstrate
+        SubstrateAws
+        "/tmp/prodbox"
+        (Just (testValidatedSettings "/tmp/prodbox/.data"))
+        "vscode" of
+        Left err -> expectationFailure err
+        Right plan -> do
+          chartDeploymentPlanSubstrate plan `shouldBe` SubstrateAws
+          chartDeploymentPlanPublicFqdn plan `shouldBe` Just "aws.test.resolvefintech.com"
+          fmap (publicEdgeTlsRetentionKey SubstrateAws) (chartDeploymentPlanCertScopeSet plan)
+            `shouldBe` Just "public-edge-tls/aws/aws.test.resolvefintech.com"
 
     it "renders AWS gateway deployments with the AWS-substrate image tag" $ do
       result <-
@@ -8272,6 +8411,8 @@ main = mainWithSuite "prodbox-unit" $ do
           chartDeploymentPlanRootChart plan `shouldBe` "vscode"
           chartDeploymentPlanNamespace plan `shouldBe` "vscode"
           chartDeploymentPlanPublicFqdn plan `shouldBe` Just "test.resolvefintech.com"
+          fmap (publicEdgeTlsRetentionKey SubstrateHomeLocal) (chartDeploymentPlanCertScopeSet plan)
+            `shouldBe` Just "public-edge-tls/home-local/test.resolvefintech.com"
           map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
             `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
 
@@ -13049,11 +13190,38 @@ main = mainWithSuite "prodbox-unit" $ do
     it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
       publicEdgeClusterIssuerName `shouldBe` "zerossl-dns01"
 
-    it "the substrate-scoped retention key namespaces the production cert per substrate + fqdn" $ do
-      publicEdgeTlsRetentionKey SubstrateHomeLocal "test.resolvefintech.com"
+    it "the substrate-scoped retention key consumes the exact canonical scope set" $ do
+      let homeScope =
+            either error id $
+              certScopeSetForServedHost
+                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "test.resolvefintech.com"
+          awsScope =
+            either error id $
+              certScopeSetForServedHost
+                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+                (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
+                "aws.test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateHomeLocal homeScope
         `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com"
-      publicEdgeTlsRetentionKey SubstrateAws "aws.test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateAws awsScope
         `shouldBe` "public-edge-tls/aws/aws.test.resolvefintech.com"
+
+    it "escapes wildcard and multi-scope syntax in the exact IAM-safe key segment" $ do
+      let scopeSet =
+            either error id $
+              certScopeSetForServedHost
+                ( DomainSection
+                    { demo_fqdn = "test.resolvefintech.com"
+                    , demo_ttl = 60
+                    , cert_scopes = ["*.test.resolvefintech.com", "test.resolvefintech.com"]
+                    }
+                )
+                (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
+                "test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
+        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com%2C%2A.test.resolvefintech.com"
 
   describe "public-edge typed preserve outcome" $ do
     it "classifyPublicEdgePreserve distinguishes retain / in-flight / nothing (no silent absent)" $ do
@@ -14839,6 +15007,35 @@ main = mainWithSuite "prodbox-unit" $ do
         "aws.test.resolvefintech.com"
         `shouldBe` Right ["aws.test.resolvefintech.com"]
 
+    it "Sprint 2.35: rejects an explicit scope set that covers home but not the AWS served host" $ do
+      let domainSection =
+            DomainSection
+              { demo_fqdn = "test.resolvefintech.com"
+              , demo_ttl = 60
+              , cert_scopes = ["test.resolvefintech.com"]
+              }
+          awsSection =
+            AwsSubstrateSection
+              { hosted_zone_id = "Z123"
+              , subzone_name = "aws.test.resolvefintech.com"
+              }
+      validateConfiguredCertScope domainSection awsSection
+        `shouldSatisfy` isCertScopeError "not covered"
+      certDnsNamesForServedHost domainSection awsSection "aws.test.resolvefintech.com"
+        `shouldSatisfy` isCertScopeError "not covered"
+
+    it "Sprint 2.35: validates the supplied substrate served host even with explicit scopes" $
+      certDnsNamesForServedHost
+        ( DomainSection
+            { demo_fqdn = "test.resolvefintech.com"
+            , demo_ttl = 60
+            , cert_scopes = ["test.resolvefintech.com"]
+            }
+        )
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        "not-a-fqdn"
+        `shouldSatisfy` isCertScopeError "served hostname"
+
     it "accepts IPv6 literals for the supported public-edge settings" $
       validatePublicEdgeDeployment
         validDeploymentSection
@@ -14944,6 +15141,18 @@ main = mainWithSuite "prodbox-unit" $ do
       Capacity.validateResourcePlan workloadOverQuotaPlan
         `shouldBe` Left
           "capacity.resource_plan.workload_profiles for namespace keycloak must fit within that namespace quota"
+
+    it "reserves a fitting capacity slot for the Bootstrap Broker (Sprint 3.26)" $ do
+      -- Sprint 3.26 (Increment C): the over-provisioned vscode ceiling was
+      -- trimmed 100m to fund a dedicated bootstrap-broker namespace quota and a
+      -- Guaranteed-QoS workload profile, so control-plane demand is never hidden
+      -- behind a combined gateway envelope and the single-node plan still fits.
+      let plan = Capacity.defaultResourcePlan
+      any ((== "bootstrap-broker") . Capacity.namespace_name) (Capacity.namespace_quotas plan)
+        `shouldBe` True
+      any ((== Text.pack "bootstrap-broker") . Capacity.profile_id) (Capacity.workload_profiles plan)
+        `shouldBe` True
+      Capacity.validateResourcePlan plan `shouldBe` Right ()
 
     it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
       -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
@@ -15724,7 +15933,7 @@ resourceGuardrailQuotaFixture =
         .= Array
           ( Vector.fromList
               [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "61440Mi"
-              , resourceGuardrailQuota "vscode" "1400m" "5216Mi" "10944Mi" "112640Mi"
+              , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "112640Mi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
               , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20480Mi"
@@ -15739,7 +15948,7 @@ resourceGuardrailCanonicalQuotaFixture =
         .= Array
           ( Vector.fromList
               [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "60Gi"
-              , resourceGuardrailQuota "vscode" "1400m" "5216Mi" "10944Mi" "110Gi"
+              , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "110Gi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
               , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20Gi"
@@ -15818,10 +16027,10 @@ resourceGuardrailLimitRange namespace reqCpu reqMemory reqEphemeral limitCpu lim
 
 -- | Sprint 2.35: a cert-scope validation result is the expected fail-closed error
 -- when it is a @Left@ whose message contains the given needle.
-isCertScopeError :: String -> Either String () -> Bool
+isCertScopeError :: String -> Either String a -> Bool
 isCertScopeError needle result = case result of
   Left message -> needle `isInfixOf` message
-  Right () -> False
+  Right _ -> False
 
 validDeploymentSection :: DeploymentSection
 validDeploymentSection =

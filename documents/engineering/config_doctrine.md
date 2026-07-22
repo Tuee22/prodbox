@@ -86,9 +86,11 @@ trust state required to read it.
   lives in the DURABLE MinIO bucket — NOT on host disk, and NOT a Vault-Transit envelope (it is
   what UNSEALS Vault, so it cannot depend on an unsealed Vault). Before first `/sys/init`, the same
   Tier owns a temporary password-AEAD `PreparedInitEnvelope` containing the generated PGP
-  share-recipient private key plus exact transaction/storage/fingerprint binding. It is read back
-  before init and deleted/read-back absent only after Vault's encrypted response is durable and the
-  final unlock bundle is atomically promoted/read-back. It is read via the **static** MinIO
+  share-recipient private key plus the exact pristine observation, transaction/storage generation,
+  schema, share count, threshold, ordered canonical `pgp_keys` array/digest, recovery fingerprint,
+  and compiled burn fingerprint/public-key-digest binding. It is read back before init and
+  deleted/read-back absent only after Vault's encrypted response is durable and the final unlock
+  bundle is atomically promoted/read-back. It is read via the **static** MinIO
   root credential (`Prodbox.Minio.RootCredential`; operator decision 2026-06-22 — the access
   credential is not the security boundary, so password-deriving it was theatre). The operator
   password is the sole operator-memorized bootstrap secret (the prepared/final-body AEAD key). A
@@ -444,6 +446,18 @@ in-cluster binaries name that file with a CLI flag:
 prodbox <in-cluster service subcommand> --config <path-to-dhall-file>
 ```
 
+For the pre-Vault role that surface is exactly:
+
+```bash
+prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall
+```
+
+Runtime role selection precedes decoding: the Bootstrap Broker decoder cannot accept Gateway
+fields or silently open the binary-sibling host config. Its document is strict and secret-free;
+unknown fields, a non-loopback listener, malformed identities/coordinates, unbounded queue/body/
+deadline values, or duplicate fixed store keys refuse before the listener starts. `--dry-run` and
+`--plan-file` are the universal plan renderers, not alternate config sources.
+
 The host CLI takes no `--config` flag at all. It resolves its **binary-sibling**
 `prodbox.dhall` automatically (the file beside the executable, `.build/prodbox.dhall`), so the
 operator never names the path:
@@ -491,6 +505,13 @@ import syntax (Section 5).
 | In-cluster Target Secret Agent | `/etc/target-secret-agent/config/config.dhall` | per-substrate mount carrying substrate attestation, fixed closed payload-schema/KV/receipt allowlist, one-shot secret-worker binding, and exact TLS Secret RBAC; home alone also carries payload-specific SMTP/EAB custody/rewrap and `prodbox-tls-envelope` Transit lanes, none of which is a generic export |
 | In-cluster gateway daemon | `/etc/gateway/config/config.dhall` (Tier-0 `prodbox.dhall`, the `config.dhall` file inside the directory-mounted `/etc/gateway/config`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
+
+The Bootstrap Broker store block enumerates its fixed coordinates. In addition to storage
+generation, fence, prepared envelope, encrypted response, final bundle, child custody receipt, and
+child recovery delivery, it names exactly six disjoint progress keys: `root_init_journal_key`,
+`root_session_journal_key`, `child_custody_journal_key`, `child_recovery_journal_key`,
+`post_unseal_handoff_key`, and `secret_worker_checkpoint_key`. The runtime validates that all fixed
+keys are distinct; no request or program can supply an object-store key.
 
 The schema files `prodbox-config-types.dhall` and `test-secrets-types.dhall` are GENERATED and
 git-ignored (one-time operator `git rm --cached` untracks them; Sprint `1.41`). There is no
@@ -606,7 +627,7 @@ config. The kubelet's atomic `..data` symlink swap drives fsnotify reload (§7).
 
 | Process | Config mount | Authority-bearing config boundary |
 |---|---|---|
-| Bootstrap Broker | `/etc/bootstrap-broker/config` | bounded pre-Vault request surface and bootstrap-store coordinate only |
+| Bootstrap Broker | `/etc/bootstrap-broker/config` | bounded pre-Vault request surface, one loopback listener, fixed custody/fence coordinates, and the six disjoint journal/checkpoint keys only; no secret or generic store path |
 | Lifecycle Authority | `/etc/lifecycle-authority/config` | authority identity/epoch scope, aggregate/blob store, provider-worker and outbox coordinates |
 | Authority Backup Adapter | `/etc/authority-backup/config` | exact authority binding, S3 backup coordinate, and sole backup-store SecretRef |
 | TLS Retention Adapter | `/etc/tls-retention/config` | exact Authority binding, registered TLS prefixes, and sole TLS-retention-store SecretRef; ciphertext only |
@@ -615,6 +636,11 @@ config. The kubelet's atomic `..data` symlink swap drives fsnotify reload (§7).
 | Admin Action Runner | `/etc/admin-action-runner/config` | one closed admin-action permit and exact registered coordinates; prompt input is separate linear memory-only ingress |
 | Target Secret Agent | `/etc/target-secret-agent/config` | one substrate identity, Vault/one-shot-worker roles, fixed KV allowlist/closed payload schemas, and exact TLS Secret lanes; home alone has payload-specific SMTP/EAB custody/rewrap plus TLS-envelope Transit lanes, never generic export authority |
 | Gateway Runtime | `/etc/gateway/config` | Orders/peer/DNS config, journal-volume identity and renewable journal-key `SecretRef` only |
+
+The Broker command and strict decoder enforce this role split code-locally. Sprint `3.26` still owns
+rendering the ConfigMap, ServiceAccount/RBAC, Lease and one-shot workloads and binding the physical
+TokenReview, MinIO, Vault, and OpenPGP adapters. This mount contract does not assert deployment
+qualification or operational cutover.
 
 The Helm materialization layout is owned by
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md). The Gateway Runtime's
@@ -858,12 +884,10 @@ so the prohibition is the intended end state rather than a present-tense fact:
   the config-loading paths. The narrow, sanctioned exception is the documented **test-only** hook
   class — environment variables prefixed `PRODBOX_TEST_*` (and `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`).
   These are read once, in memory, outside the config-loading lint scope; they never participate in
-  config resolution and are never set by any production path. Sprint `2.34` added
-  `PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH`, read once at gateway-daemon env construction to seed the
-  readiness object-store proof latch so the `prodbox-daemon-lifecycle` and CLI integration harnesses
-  (which run with no Vault and no MinIO) can reach `/readyz` ready without a live round trip.
-  Production never sets it, so the latch defaults to unproven and the readiness gate stays
-  fail-closed.
+  config resolution and are never set by any production path. Readiness has no test-only
+  environment bypass: the legacy fixture earns its authority latch through the fake continuity
+  interpreter, while the target journal/Lease fixture must acquire its real temporary journal lock,
+  read back its fake Lease witness, and finish recovery before `/readyz` can succeed.
 - Materializing `prodbox-config.json` (or any other JSON projection of the Dhall) on a
   supported path. `prodbox config compile` is not a supported subcommand.
 - `--log-level`, `--port`, `--node-id`, `--foreground`, `--config-path`, and any other

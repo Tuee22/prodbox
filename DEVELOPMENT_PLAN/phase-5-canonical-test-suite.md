@@ -36,12 +36,13 @@ activates the Sprint `1.65` certification check. The Foundation Epoch (Sprints `
 existing `1.61` → `8.12` chain, which resumes unchanged once the epoch closes. Sprints
 `5.18`/`5.19` remain blocked exactly as recorded below.
 
-⏸️ **Certificate-scope serving validation added 2026-07-12.** Sprint `5.22` (⏸️ Blocked by
-Sprint `2.35`) adds a named integration validation that proves serving rather than assertion — a real
-TLS handshake against every hostname the configured `CertScopeSet` covers (each exact scope and, when
-a wildcard scope is configured, a wildcard-covered sibling plus the apex through its explicit exact
-scope), against harness-owned infrastructure with a real ZeroSSL DNS-01 certificate, plus a retained
-restore-vs-reissue proof (widening orders once; narrower-or-equal reuses). It is the canonical-suite
+📋 **Certificate-scope serving validation added 2026-07-12; unblocked 2026-07-20.** Sprint
+`5.22` (Planned) adds a named integration validation that proves serving rather than assertion: a
+real TLS handshake against every explicit substrate-bound served hostname, inspection that the
+presented real ZeroSSL DNS-01 certificate carries the exact configured canonical SAN set, and an
+exact-scope retained restore-vs-reissue proof. An unchanged canonical set restores without an
+order; each new SAN set receives a distinct retention coordinate and one issuance. `impliedBy`
+remains a coverage/admission proof and never substitutes a merely covering certificate. It is the canonical-suite
 consumer of the configurable-certificate-scope policy adopted by governance Sprint `0.18`
 ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)) and the scope algebra owned
 by Sprint `2.35` ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)); it is not part of the Foundation
@@ -1749,10 +1750,11 @@ position.
 
 **Status**: Active (Sprint `1.65` unblocked; the pure recorder gate landed 2026-07-12, the live
 metric sampling + first committed profile remain)
-**Deployment qualification**: The pure recorder gate is landed and unit-proven pre-cluster.
-Standard O: recording the first committed gateway profile requires a healthy live ≥30-minute run
-(and extending the gateway-runtime-stability observer to sample CPU/throttle/heap/object-store
-demand), so the live `--record-profile` wiring + the first artifact are the non-blocking live axis.
+**Deployment qualification**: pending
+**Live-proof**: pending — recording the first committed gateway profile requires a healthy live
+≥30-minute run and extending the gateway-runtime-stability observer to sample CPU, throttle, heap,
+and object-store demand; the `--record-profile` wiring and first artifact are the non-blocking live
+axis.
 **Implementation**: ✅ **Recorder gate landed** — `recordMeasuredProfile` (the pure health +
 30-minute-steady-window gate over a `MeasuredProfileRecorderInput`, refusing an unhealthy run or a
 short window), `recorderMinimumWindowSeconds`, `renderMeasuredResourceProfileDhall` (the committed
@@ -1810,13 +1812,12 @@ Sprints `1.64` and `1.66`.
 - Link the recorder to Sprint `1.65`'s certification check and the `dhall/capacity/measured/`
   artifact home ([phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)).
 
-## Sprint 5.22: Certificate Scope Serving Validation [⏸️ Blocked]
+## Sprint 5.22: Certificate Scope Serving Validation [📋 Planned]
 
-**Status**: Blocked
-**Blocked by**: Sprint `2.35`
+**Status**: Planned — Sprint `2.35` is Done, so this validation is unblocked.
 **Deployment qualification**: pending
 **Implementation**: planned named integration validation exercising real TLS handshakes
-against every scope-covered hostname
+against every explicit substrate-bound served hostname and inspecting the exact presented SAN set
 **Independent Validation**: the validation runs on the home substrate with harness-owned
 infrastructure and a real ZeroSSL DNS-01 certificate; AWS-substrate coverage is tracked in
 substrates.md parity (Standards N/O). Ready-condition alone is not accepted as proof.
@@ -1824,40 +1825,44 @@ substrates.md parity (Standards N/O). Ready-condition alone is not accepted as p
 
 ### Objective
 
-Prove serving, not assertion. A named validation opens a real TLS handshake against every hostname
-the configured `CertScopeSet` covers — each exact scope and, when a wildcard scope is configured, a
-wildcard-covered sibling plus the apex through its explicit exact scope — against harness-owned
-infrastructure with a real ZeroSSL DNS-01 certificate, and adds a retained restore-vs-reissue proof
-(widening triggers one fresh ACME order; a narrower-or-equal scope reuses the retained material). A
-cert-manager Ready condition alone is not accepted as proof.
+Prove serving, not assertion. A named validation opens a real TLS handshake against every explicit
+served hostname bound for the tested substrate, against harness-owned infrastructure with a real
+ZeroSSL DNS-01 certificate, and inspects the presented certificate's SANs against the exact
+canonical `CertScopeSet` projection. It adds an exact retained restore-vs-reissue proof: an unchanged
+set restores without ordering, a new SAN set gets a distinct coordinate and exactly one fresh order,
+and returning to a still-valid previously retained exact set may restore it. A cert-manager Ready
+condition alone is not accepted as proof.
 
 ### Deliverables
 
-- A named integration validation that curls every hostname the configured scope set covers over TLS
-  (exact scopes always; wildcard-covered siblings and the apex when a wildcard scope is configured)
-  and fails if any covered host does not serve the scope certificate.
-- A retained restore-vs-reissue proof keyed by `impliedBy` and the canonical scope-set
-  serialization: widening the configured scope orders once, and a narrower-or-equal scope reuses the
-  retained material.
+- A named integration validation that curls every explicit hostname bound by the tested substrate
+  over TLS and fails if any bound host does not serve the configured scope certificate. For a
+  wildcard scope, bind a deterministic covered child and inspect the peer SANs; do not pretend to
+  enumerate the wildcard's infinite coverage or invent listeners/routes/DNS records from SANs.
+- A retained restore-vs-reissue proof keyed by exact canonical scope-set serialization: an unchanged
+  set restores, every distinct SAN set gets a distinct coordinate and one first issuance, and a
+  previously retained exact set can be selected again. `impliedBy` is checked separately as the
+  coverage/admission relation.
 - Home-substrate serving proof against harness-owned infrastructure with a real ZeroSSL DNS-01
   certificate; AWS-substrate parity tracked as the non-blocking axis in
   [substrates.md](substrates.md).
 
 ### Validation
 
-1. The named validation performs a real TLS handshake against every scope-covered hostname and fails
-   if any covered host does not serve the scope certificate — the cert-manager Ready condition alone
-   is not accepted.
-2. The restore-vs-reissue proof shows a widening scope orders exactly once and a narrower-or-equal
-   scope reuses retained material.
+1. The named validation performs a real TLS handshake against every explicit substrate-bound served
+   hostname, inspects the presented SAN set, and fails if the binding or exact certificate scope is
+   wrong — the cert-manager Ready condition alone is not accepted.
+2. The restore-vs-reissue proof shows exact-set reuse, one issuance for each new SAN set, distinct
+   canonical coordinates for narrower/wider unequal sets, and optional reuse when selecting a
+   still-valid previously retained exact set again.
 3. The home-substrate run uses harness-owned infrastructure and a real ZeroSSL DNS-01 certificate;
    AWS-substrate coverage is the non-blocking parity axis in [substrates.md](substrates.md)
    (Standards N/O).
 
 ### Remaining Work
 
-- Blocked until Sprint `2.35` lands the `CertScope` algebra, the Tier-0 scope-set config, and the
-  derived edge projections it validates.
+- Implement and run the now-unblocked named home-substrate validation against the Sprint `2.35`
+  algebra, Tier-0 scope config, explicit served-host binding, exact retention key, and status rungs.
 - The live AWS-substrate serving proof is the non-blocking substrate-parity axis tracked in
   [substrates.md](substrates.md); it is not a `5.22` blocker (Standards N/O).
 
@@ -1866,12 +1871,13 @@ cert-manager Ready condition alone is not accepted as proof.
 **Engineering docs to create/update:**
 
 - `documents/engineering/acme_provider_guide.md` - the certificate-scope serving validation and its
-  retained restore-vs-reissue proof as the canonical-suite consumer of the configured `CertScopeSet`.
+  exact retained restore-vs-reissue proof as the canonical-suite consumer of the configured
+  `CertScopeSet`.
 
 **Product docs to create/update:**
 
-- `README.md` - note that the canonical suite proves serving on every hostname the configured
-  certificate scope covers.
+- `README.md` - note that the canonical suite proves serving on every explicit bound hostname and
+  inspects the exact configured certificate SAN set.
 
 **Cross-references to add:**
 

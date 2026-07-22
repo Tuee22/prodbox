@@ -428,13 +428,13 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | Phase | Focus | Current result | Independent validation |
 |-------|-------|----------------|------------------------|
 | 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. Sprint `0.18` adds the configurable certificate-scope governance surface on that same documentation surface (an additional governance sprint, no further reclose). | Documentation lint/check and canonical quality gate; no runtime dependency. |
-| 1 | Runtime, CLI, Config, and Pulumi Foundations | 🔄 Foundation Epoch Phase-1 sprints `1.63`–`1.66` ✅ Done; `1.61` ✅ Done (driver cutover live-validated 2026-07-18); `1.62` ✅ Done (absolute-deadline + service-capacity algebra + native SigV4 IAM/STS/Route53/ServiceQuotas clients, validated pre-cluster 2026-07-18). | Pure capability-kind, graph, deadline, capacity, object-store protocol, and Vault-session properties. |
-| 2 | Gateway Runtime and DNS Ownership | 📋 Foundation Epoch Sprint `2.34` ✅ Done (compiled service boundary + latched readiness projection + `GatewayChartStatics` all landed and validated pre-cluster); `2.32` 🔄 Active (`1.62` Done — pure emitter kernel + bounded mailbox + property suite (increment 1) landed + validated pre-cluster 2026-07-19; Daemon cutover + journal/fsync + StatefulSet/EBS/Lease + TLA revision deferred); `2.33` blocked by `2.32`; `2.35` (configurable certificate-scope algebra and derived edge projections) 🔄 Active — pure `CertScope` algebra + property suite, Tier-0 `cert_scopes` config + fail-fast validation, the derived keycloak public-edge `dnsNames` (values-injection projection keyed on the served host), and the `edge status` certificate-expiry rungs all landed and validated pre-cluster; only the deliberately-deferred retention re-key (live-safety) remains code-owned, plus the live serving proof (Sprint `5.22`). | Actor/interleaving simulation, journal crash tests, daemon lifecycle, partition validation, and revised TLA model. |
-| 3 | Chart Platform and Public Workload Delivery | ⏸️ `3.26` blocked by `2.33`. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, and retained-volume plans. |
+| 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
+| 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.33`; Sprints `2.30`–`2.35` all Done. Sprint `2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker: a closed `RuntimeRole` split, a closed `BrokerRoute` registry limited to bounded Vault init/unseal/baseline/PKI + child custody (no generic KV/mesh/DNS/authority-CAS/target-secret route), the prepared-init PGP/password-AEAD custody protocol with a crash/resume matrix, pre-Vault handler removal from the Gateway, and a broker/gateway isolation lint. Standard P keeps production on `LegacyModelBEmitter`; live proof and deployment qualification remain pending. Sprint `3.26` owns physical StatefulSet/PV/EBS consumption. | `dev check` 0, unit 2193/2193 (incl. ten `BootstrapBroker*` suites), integration cli/env 52/52, daemon-lifecycle 28/28, and the broker/gateway isolation lint. |
+| 3 | Chart Platform and Public Workload Delivery | 🔄 `3.26` Active; Increment A landed (Bootstrap Broker distinct Vault role + typed chart statics + route-sourced probes). Remaining increments render the workload templates and other roles. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, and retained-volume plans. |
 | 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Foundation Epoch Sprint `4.51` Active (Increment A — the `StoreLifetime` phantom-index type foundation — landed + validated 2026-07-14; Increment B cutover deferred); `4.48`–`4.50` form the durable authority/outbox/cutover chain after `3.26`. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
-| 5 | Canonical Test Suite | 📋 Foundation Epoch Sprint `5.20` ✅ Done (derived restore graph + total executor wired into `TestRunner`; end-to-end aggregate-report exercise is the Standard-O axis); `5.21` 🔄 Active (`1.65` Done — recorder gate landed; the live `--record-profile` collection + first committed profile remain the Standard-O axis); `5.18`–`5.19` follow `4.50`; `5.22` (certificate-scope serving validation) blocked by `2.35`. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
+| 5 | Canonical Test Suite | 🔄 Sprint `5.21` Active (recorder gate landed; live profile collection + first committed profile remain); Foundation Epoch Sprint `5.20` ✅ Done; `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
 | 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
-| 7 | AWS Substrate Foundations | ✅ Foundation Epoch Sprint `7.34` Done (harness postflight residue narrowed to per-run); `7.33` blocked by `6.4`. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
+| 7 | AWS Substrate Foundations | ⏸️ Sprint `7.33` blocked by `6.4`; Foundation Epoch Sprint `7.34` ✅ Done (harness postflight residue narrowed to per-run). | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ⏸️ `8.11`–`8.12` follow `7.33`. | SES workflow decision tables, provider/target fault injection, and current-revision invite aggregates. |
 
 ## Alignment Status
@@ -444,7 +444,7 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-07-11 — lifecycle-control-plane redesign opened):**
+**Current head state (2026-07-20 — Sprint `2.32` code-local target closed; redesign continues):**
 
 The current revision is not deployment-qualified. The aggregate suite demonstrated that nominal
 readiness could pass or eventually return while the gateway's shared CPU/child lane could not meet
@@ -458,10 +458,16 @@ observation/admission/execution; the authority uses a durable decide/evolve jour
 gateway emitters use single-writer identity-bound journals; one absolute deadline spans each call;
 and cleanup is an always-run DAG.
 
-Sprint `0.16` owns this doctrine/plan correction. Phases `1`–`8` are reopened through Sprints
-`1.61`–`8.12`. Earlier completed sprints remain historical evidence for their stated surfaces,
-not evidence that the current topology is qualified. Deployment qualification status and evidence
-live only in [DEVELOPMENT_PLAN/README.md](README.md#deployment-qualification).
+Sprint `2.32` has completed that emitter target on its independently validated code surface. The
+target and rollback topologies are mutually exclusive, and the production entrypoint remains
+`LegacyModelBEmitter` until current-revision deployment qualification permits cutover.
+
+Sprint `0.16` owns this doctrine/plan correction. Phase `1` has reclosed on Sprint `1.67` after
+Sprints `1.61`–`1.66` landed and the substrate-neutral Kubernetes prerequisite was corrected;
+Phases `2`–`8` remain open through Sprints `2.33`–`8.12`. Earlier completed sprints remain
+historical evidence for their stated surfaces, not evidence that the current topology is
+qualified. Deployment qualification status and evidence live only in
+[DEVELOPMENT_PLAN/README.md](README.md#deployment-qualification).
 
 **Foundation Epoch (2026-07-12 — adopted by Sprint `0.17`):**
 
@@ -473,12 +479,11 @@ fail-fast restore fold that silently discards independent restorations. The corr
 "one typed model, many generated projections": cross-artifact contracts are single-sourced in
 compiled values and generated outward, coverage is derived by total folds over closed registries,
 resource envelopes are certified against measured profiles, and drift fails the seconds-fast
-canonical quality gate rather than the multi-hour aggregate suite. The Foundation Epoch (Sprints
-`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is executed
-before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces no `Blocked by`
-edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the epoch closes.
-Sprints `1.61`/`1.62` are shrink-rescoped (readiness evidence to Sprint `2.34`; the cached Vault
-session to Sprint `1.64`; the native S3 client to Sprint `1.66`), Standard P gains the interim
+canonical quality gate rather than the multi-hour aggregate suite. Foundation Epoch Sprints
+`1.63`–`1.66`, `2.34`, `5.20`, and `7.34` are Done; Sprints `4.51` and `5.21` retain their own
+Active status. Sprints `1.61`/`1.62` are also Done after their shrink-rescoped work landed
+(readiness evidence moved to Sprint `2.34`; the cached Vault session to Sprint `1.64`; the native
+S3 client to Sprint `1.66`). Standard P gains the interim
 escape-path guard (registry owned by Sprint `1.63`), Guaranteed QoS is retained with honesty coming
 from measured-profile certification, and the harness postflight residue bypass narrows back to
 per-run under Sprint `7.34`, reversing part of Sprint `7.9`. The Deployment Qualification ledger is
@@ -486,9 +491,9 @@ unchanged — both rows remain pending; nothing in the epoch adoption claims qua
 Sprint `0.18` (2026-07-12) adopts the operator-configurable certificate-scope policy on the same
 documentation surface: an unmanaged or uncovered served hostname is unrepresentable on the
 prodbox-managed side, the orphan dashboard-cert incident is dispositioned, and parent→child
-certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial` self-issuance —
-implementation Sprints `2.35`/`5.22` join the post-`2.34` tail as the certificate-scope work, Phase
-`0` gains an additional governance sprint without a second reclose, and the Deployment Qualification
+certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial` self-issuance.
+Sprint `2.35` is now Done and its independent serving consumer Sprint `5.22` is Planned/unblocked;
+Phase `0` retains the governance addition without a second reclose, and the Deployment Qualification
 ledger is unchanged. The dated
 adoption entry and live status live in [README.md → Closure Status](README.md#closure-status).
 
@@ -544,7 +549,8 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 The Haskell-only baseline remains implemented, but its gateway-backed lifecycle authority,
 nominal deep-readiness target, subprocess object-store path, synchronous retained SES bracket, and
 first-failure restore sequence are superseded. Phase `0` is reclosed on the corrected doctrine;
-Phases `1`–`8` are reopened through the forward dependency chain in the Clean-Room Sequence.
+Phase `1` is reclosed on Sprint `1.67`; Phases `2`–`8` remain open through the forward dependency
+chain in the Clean-Room Sequence.
 
 Sprints `1.60`, `2.31`, `3.25`, `4.47`, `5.16`, `5.17`, and `8.10` remain complete historical work
 for their stated surfaces. They do not qualify the expanded process topology. The supported
@@ -757,14 +763,14 @@ model. Replacement and removal ownership live in the reopened phases and
 
 ## Current Execution State
 
-As of the July 11 lifecycle-control-plane correction and the July 12 Foundation Epoch adoption
-(Sprint `0.17`), Phase `0` is reclosed and the Foundation Epoch Sprints `1.63`–`1.66`, `2.34`,
-`4.51`, `5.20`, `5.21`, and `7.34` are the active work front — the four Phase-1 sprints
-`1.63`–`1.66` are ✅ Done, the rest Planned, except `5.21` blocked by `1.65` — executed
-before the shrink-rescoped Sprints `1.61`/`1.62`,
-after which every later implementation sprint remains blocked by its earlier owner. Deployment
-qualification is pending on both substrates. The historical narrative below remains closure
-history for earlier work; it is not the current status ledger. Current status is
+As of Sprint `2.33` on 2026-07-21, Phases `0`, `1`, and `2` are reclosed. Sprints `1.61`–`1.67`,
+the code-local Sprint `2.32` emitter target, and Sprint `2.33` (minimal Bootstrap Broker + gateway
+scope cut) are Done, so every Phase-2 sprint (`2.30`–`2.35`) is closed. Substrate-neutral Kubernetes
+reachability proves the selected cluster through `ToolKubectl` plus `kubectl cluster-info`, while
+local RKE2 file/service facts remain explicit home-local nodes. Phases `3`–`8` retain the Planned,
+Active, or forward-only Blocked states in the Alignment Status table, with Sprint `3.26` now
+unblocked by the completed `2.33`. Deployment qualification is pending on both substrates. The historical narrative
+below remains closure history for earlier work; it is not the current status ledger. Current status is
 [Alignment Status](#alignment-status) and
 [DEVELOPMENT_PLAN/README.md](README.md#current-plan-status).
 
@@ -802,7 +808,10 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the operation-indexed capability graph, opaque references, absolute-deadline and
-  service-capacity algebra, native object-store protocol, managed Vault-session boundary, the CLI,
+  service-capacity algebra, native object-store protocol, managed Vault-session boundary, and the
+  substrate-neutral Kubernetes prerequisite boundary: `K8sClusterReachable` is
+  `ToolKubectl` plus authoritative `kubectl cluster-info` against the selected substrate
+  kubeconfig, while RKE2 file/install/service nodes remain explicitly home-local. It also owns the CLI,
   direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
   and config-selected MetalLB BGP support. The Phase `1` doctrine-adoption reopen covers

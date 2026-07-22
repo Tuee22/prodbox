@@ -1,0 +1,19 @@
+{{- /*
+The Bootstrap Broker is a single-writer bootstrap singleton, so a voluntary
+disruption (node drain) must not evict it while it holds the pre-Vault
+init/unseal responsibility. `minAvailable: 1` over its one replica blocks
+voluntary eviction; involuntary disruption and the Recreate rollout are
+unaffected.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bootstrap-broker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "bootstrap-broker.selectorLabels" . | nindent 6 }}

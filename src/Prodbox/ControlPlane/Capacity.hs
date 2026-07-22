@@ -56,6 +56,7 @@ module Prodbox.ControlPlane.Capacity
   , AdmissionEvent (..)
   , evolveAdmission
   , admit
+  , replaceAdmission
   , completeService
   , cancelRequest
   )
@@ -304,6 +305,40 @@ admit :: AdmissionQueue -> AdmissionRequest -> (AdmissionDecision, AdmissionQueu
 admit q req = case decideAdmission q req of
   AdmissionAdmit t -> (AdmissionAdmit t, evolveAdmission q (RequestAdmitted (admissionRequestId req)))
   rejected -> (rejected, q)
+
+-- | Re-admit a separately-ticketed continuation in the exact FIFO slot of an
+-- existing request. This is the bounded replacement primitive needed by
+-- coalescing and multi-transition state machines: queue depth and relative
+-- order stay unchanged, while the replacement must independently fit its
+-- caller's remaining absolute-deadline budget. A missing source request is a
+-- caller invariant failure and is reported as 'Nothing'.
+replaceAdmission
+  :: RequestId
+  -> AdmissionQueue
+  -> AdmissionRequest
+  -> Maybe (AdmissionDecision, AdmissionQueue)
+replaceAdmission oldRequest q req = do
+  position <- Seq.findIndexL (== oldRequest) (admissionQueueInFlight q)
+  let plan = queuePlan q
+      naturalPosition = fromIntegral position
+      budget = admissionRemainingBudget req
+      cost =
+        estimatedQueueWaitMicros plan naturalPosition
+          + serviceCapacityServiceTimeMicros plan
+      decision = case deadlineAdmission budget (WorkEstimate cost) of
+        AdmissionMissesDeadline _ ->
+          AdmissionRejected (RejectedDeadlineUnmeetable (WorkEstimate cost) budget)
+        AdmissionWithinDeadline _ ->
+          AdmissionAdmit
+            (QueueTicket (admissionRequestId req) (WorkEstimate cost) naturalPosition)
+      replaced =
+        q
+          { admissionQueueInFlight =
+              Seq.update position (admissionRequestId req) (admissionQueueInFlight q)
+          }
+  pure $ case decision of
+    AdmissionAdmit ticket -> (AdmissionAdmit ticket, replaced)
+    rejected -> (rejected, q)
 
 completeService :: RequestId -> AdmissionQueue -> AdmissionQueue
 completeService rid q = evolveAdmission q (ServiceCompleted rid)

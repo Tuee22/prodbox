@@ -24,31 +24,27 @@
 
 ## Phase Status
 
-📋 **Expanded 2026-07-12 for the Foundation Epoch (Sprints `1.63`–`1.66`).** Counterexample
-`LCPC-2026-07-11` (see [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) traced
-the aggregate-suite failure mechanisms to cross-artifact seams, and governance Sprint `0.17`
-([phase-0-planning-documentation.md](phase-0-planning-documentation.md)) adopted the corrective
-epoch. Phase `1` gains four sprints: Sprint `1.63` (conformance tier and legacy escape registry —
-the Standard P interim escape-path guard), Sprint `1.64` (shared TLS manager and cached Vault
-session), Sprint `1.65` (measured capacity certification), and Sprint `1.66` (native S3
-object-store client, blocked by `1.64`). Sprints `1.61`/`1.62` are shrink-rescoped on the same
-date: the exact-readiness-evidence deliverable moves to Sprint `2.34`
-([phase-2-gateway-dns.md](phase-2-gateway-dns.md)), and the native object-store and cached
-Vault-session deliverables move to Sprints `1.66` and `1.64`. The Foundation Epoch (Sprints
-`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is
-executed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduces no
-`Blocked by` edge onto the existing `1.61` → `8.12` chain, which resumes unchanged once the epoch
-closes.
+✅ **Reclosed 2026-07-20 on substrate-neutral Kubernetes reachability (Sprint `1.67`).** The
+generic `K8sClusterReachable` prerequisite now depends only on `ToolKubectl` and authoritatively
+executes `kubectl cluster-info` against the kubeconfig selected for the active substrate.
+`K8sReady` depends on that observed reachability rather than on a local RKE2 service. The RKE2
+config-file, install, service-existence, and service-active facts remain explicit registry nodes
+for home-local plans, but they are no longer hidden dependencies of generic Kubernetes readiness.
+Focused evidence is green: prerequisite-registry tables 8/8, the stable `gateway-pods` regression
+1/1, and the absorbing-OOM regression 1/1. The post-change gate is also green: unit 1855/1855,
+integration CLI 49/49, integration env 49/49, documentation lint/check, `git diff --check`, and
+`prodbox dev check`. Deployment qualification remains pending under Standard P; this code-owned
+prerequisite correction does not claim aggregate substrate qualification.
 
-📋 **Reopened for capability and temporal-capacity foundations.** Sprint `1.61` is Planned. It
-replaces caller-injected arbitrary actions with operation-indexed capability references whose
-observation, admission, and execution share one identity; its exact-readiness-evidence deliverable
-is rescoped to Sprint `2.34` (2026-07-12). Sprint `1.62` is blocked by `1.61` and adds
-absolute-deadline/service-capacity algebra, bounded admission, and pinned closed native
-IAM/STS/Route53/ServiceQuotas clients; its native object-store and cached Vault-session
-deliverables are rescoped to Sprints `1.66` and `1.64` (2026-07-12). The earlier graph, readiness,
-and memory work remains completed evidence for its stated scope; it is not treated as proof of the
-expanded control-plane contract.
+✅ **Capability, temporal-capacity, and Foundation Epoch Phase-1 work is complete.** Sprints
+`1.61` and `1.62` are Done: the operation-indexed capability graph/interpreter and reconcile-driver
+cutover landed, followed by absolute deadlines, serializable authority time, bounded service
+admission, and native IAM/STS/Route53/ServiceQuotas clients. Foundation Epoch Sprints
+`1.63`–`1.66` are also Done: the conformance/escape-path guard, shared TLS manager and cached Vault
+session, measured-capacity certification, and native S3 object-store client all remain validated on
+their owned surfaces. The exact readiness projection lives in completed Sprint `2.34`; the cached
+Vault session and native object-store client live in Sprints `1.64` and `1.66` respectively. Later
+phase cutovers and live-infrastructure proofs do not reopen or block Phase `1` (Standards N/O).
 
 ✅ **Reclosed 2026-07-10 on runtime-memory representability.** Sprint `1.60` now separates authored
 admission/containment from bounded process demand. `capacity.runtime_memory_profiles` binds an
@@ -3944,11 +3940,7 @@ small, explicitly-scoped set of secondary consumers (the chart operator-gate, th
 universe) and the eventual `ReadinessObservation.hs` deletion + `CapabilityRequirementSpec`→Dhall-wire
 migration are deferred follow-ups that do not affect the core "one handle drives the observation"
 property.
-**Deployment qualification**: ✅ **live-validated 2026-07-18** — `prodbox cluster reconcile` on the
-home RKE2 cluster drove every component's readiness barrier through the new
-`requireNativeComponentReadiness` → `observeReadinessThroughCapability` → `runCapability` path and
-completed (exit 0) with no barrier failure; the AWS driver shares the identical routing (AWS live
-proof via `test all --substrate aws` optional).
+**Deployment qualification**: pending
 **Implementation**: ✅ **`config show --show-secrets` removed** — the `ConfigShow Bool` command is
 now flagless `ConfigShow`, `renderSensitive`/`renderSettingsDisplay` always mask (no unmasked reveal
 mode), and the parser/spec/goldens/generated `command-surface-matrix` no longer carry the flag
@@ -4127,11 +4119,14 @@ and admission evidence.
 - ✅ Driver cutover (2026-07-18, marks Sprint 1.61 Done): `CapabilityReadinessBarrier.hs` + the two
   reconcile-driver barriers routed through `runCapability`, behaviour-preserving, live-validated by
   `cluster reconcile`.
-- 🔄 Deferred follow-ups (do NOT block 1.61 Done or 1.62): fold the chart operator-gate + two-observation
-  `TestRestore` liveness precondition onto the handle; migrate `EffectInterpreter.runValidation`
-  (orthogonal prerequisite universe); build the real Vault-session `newCapabilityClient`; move
-  `CapabilityRequirementSpec` into the Dhall wire; only THEN retire `ReadinessObservation.hs` (it is a
-  live dependency of the barrier lane until every consumer is migrated).
+- Forward-owned adoption work (does not block Sprint `1.61`): Sprint `3.26` folds the chart
+  operator gate onto the capability handle and moves `CapabilityRequirementSpec` into the
+  role-specific Dhall wire; Sprint `4.48` supplies the real Vault-session-backed
+  `newCapabilityClient` used by the retained authority; Sprint `5.18` moves the two-observation
+  `TestRestore` liveness precondition and `EffectInterpreter.runValidation` onto the handle and,
+  after those consumers and Sprint `3.26` are migrated, deletes the legacy
+  `ReadinessObservation.hs` seam. These are explicit later-sprint deliverables, not incomplete
+  Phase-1 work.
 - Sprint `1.62` (now unblocked) consumes the handle algebra for temporal admission; Sprints `1.64` and
   `1.66` consume it for the cached Vault session and the native object-store client.
 
@@ -4158,13 +4153,10 @@ and admission evidence.
 ## Sprint 1.62: Absolute Deadlines, Service-Capacity Algebra, and Native Sessions [✅ Done]
 
 **Status**: Done — the pure temporal-capacity core and the native AWS service clients both landed
-and are validated pre-cluster (2026-07-18, UNCOMMITTED). Downstream consumption of these
+and were validated pre-cluster on 2026-07-18. Downstream consumption of these
 primitives (the gateway actor and Lifecycle Authority migrating off the `aws` CLI onto the native
 clients) is Phase 2 / Phase 4 work and is not assigned here.
-**Deployment qualification**: pending — every deliverable is pure/pre-cluster and proven with fake
-clocks, deterministic queue simulations, and fake AWS protocol servers; live SigV4 parity against
-real AWS is a Standard-O axis carried by the Phase 2/4 consumers (mirroring `ObjectStoreNative`'s
-live-MinIO-parity status).
+**Deployment qualification**: pending
 **Implementation** (landed): `src/Prodbox/ControlPlane/Deadline.hs` (extended with `WorkEstimate`,
 the `DeadlineAdmission` feasibility fold, `tightenDeadline`, and the opaque `DeadlineScope`
 tighten-only cancellation scope that makes deadline extension unrepresentable);
@@ -4239,19 +4231,18 @@ never invoke the `aws` CLI.
 
 ### Remaining Work
 
-- Code-owned closure landed and validated pre-cluster (2026-07-18, UNCOMMITTED). What remains is
+- Code-owned closure landed and validated pre-cluster on 2026-07-18. What remains is
   **downstream consumption**, owned by later phases (NOT this sprint):
-  - Phase 2 consumes the deadline/capacity primitives in the gateway actor; Phase 4 consumes them
-    in the Lifecycle Authority.
-  - Migrating the ~143 existing `aws`-CLI call sites onto the four native interpreters is a
-    per-phase adoption task (STS → `LeaseRuntime` assume-role/get-caller-identity; IAM →
-    `Aws.hs` user/access-key/policy sites; Route 53 → `Dns.hs` record-set/`wait` sites;
-    ServiceQuotas → `Aws.hs` `ensureServiceQuota`). 1.62 delivered the primitives + proved them
-    against fakes; it did not migrate the call sites.
-  - The Pulumi-confinement provider-lane↔admin-permit-lane non-convertibility is a separate future
-    index (a `Lane` phantom or a permit token threaded into `mk*Client`) added when the Pulumi env
-    sites migrate; the base↔session credential non-convertibility (the first index) landed here.
-  - Live SigV4 parity against real AWS (Standard-O) rides with the Phase 2/4 consumers.
+  - Sprint `2.32` consumes the deadline/capacity primitives in the gateway emitter actor and moves
+    its Route 53 record-set/read-back work from `Dns.hs` onto the native client.
+  - Sprints `4.48` and `4.50` consume the same primitives in the Lifecycle Authority and migrate
+    its `LeaseRuntime` STS and provider-side Route 53 paths. Sprint `7.33` migrates the remaining
+    AWS substrate IAM/STS/ServiceQuotas administration sites and introduces the non-convertible
+    provider-lane versus action-indexed admin-permit lane at the Pulumi boundary. Sprint `8.11`
+    owns the remaining SES-workflow-specific native-client adoption. This partitions the formerly
+    estimated ~143 `aws`-CLI call sites by their authoritative surface.
+  - Sprint `7.33` owns live SigV4 parity against real AWS and the source/escape-registry proof that
+    no supported migrated surface falls back to an ambient profile or `aws` subprocess.
 
 ## Documentation Requirements
 
@@ -4566,9 +4557,10 @@ suites), `prodbox dev check` exit 0.
 ### Remaining Work
 
 - None on the code-owned surface. The native-vs-subprocess live-MinIO parity (then flipping the
-  default to native and deleting the `*Subprocess` path) is the non-blocking Standard-O follow-up.
-- After one release with the config-selectable subprocess fallback, the fallback's removal flows
-  through [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+  default to native and deleting the `*Subprocess` path) is forward-owned: Sprint `6.4` records
+  clean-room home-local parity, and Sprint `7.33` records AWS parity, flips the default after both
+  proofs, deletes the rollback path, and closes the registered escape. Until those exact owners
+  execute, live parity remains a non-blocking Standard-O axis for Sprint `1.66`.
 
 ## Documentation Requirements
 
@@ -4585,6 +4577,75 @@ suites), `prodbox dev check` exit 0.
 
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Pending Removal row for the
   `aws` CLI subprocess object-store path names Sprint `1.66` as owner.
+
+## Sprint 1.67: Substrate-Neutral Kubernetes Reachability Prerequisite [✅ Done]
+
+**Status**: Done (2026-07-20)
+**Deployment qualification**: pending
+**Implementation**: `src/Prodbox/Prerequisite.hs`, `test/unit/Main.hs`
+**Independent Validation**: pure prerequisite-registry dependency and transitive-closure tables
+prove that `K8sClusterReachable`/`K8sReady` retain `ToolKubectl` and exclude every home-local
+kubeconfig/RKE2 node; focused regressions pass for the prerequisite registry (8/8), stable
+`gateway-pods` observation (1/1), and absorbing OOM evidence (1/1). The proof is
+substrate-independent and requires no later phase. Post-change closure evidence: unit 1855/1855,
+integration CLI 49/49, integration env 49/49, documentation lint/check, `git diff --check`, and
+`prodbox dev check`, all exit 0.
+**Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/prerequisite_dag_system.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Make generic Kubernetes reachability describe the selected substrate rather than the operator
+host's local RKE2 installation, so an AWS-selected validation cannot be rejected because the host
+lacks `/etc/rancher/rke2/rke2.yaml` or an active `rke2-server.service`.
+
+### Deliverables
+
+- Define `K8sClusterReachable` as the composition of the `ToolKubectl` prerequisite and the
+  authoritative `RequireKubectlClusterReachable` observation, which runs `kubectl cluster-info`
+  against the kubeconfig selected for the active substrate.
+- Make `K8sReady` depend only on `K8sClusterReachable`; successful generic readiness therefore
+  follows the selected cluster API rather than a local service-manager fact.
+- Retain `KubeconfigExists`, `KubeconfigHomeExists`, `Rke2ConfigExists`, `Rke2Installed`,
+  `Rke2ServiceExists`, and `Rke2ServiceActive` as explicit facts for home-local command plans.
+  They are not dependencies of substrate-neutral Kubernetes reachability.
+- Pin both direct edges and the transitive closures used by Pulumi, infrastructure, and public-edge
+  prerequisite roots so a future generic-to-home-local edge fails the unit suite.
+
+### Validation
+
+1. The prerequisite-registry table proves `k8s_cluster_reachable -> [tool_kubectl]` and
+   `k8s_ready -> [k8s_cluster_reachable]`, and the focused registry suite passes 8/8.
+2. The transitive-closure regression proves `K8sReady` contains `ToolKubectl` but none of
+   `KubeconfigExists`, `KubeconfigHomeExists`, `Rke2ConfigExists`, `Rke2Installed`,
+   `Rke2ServiceExists`, or `Rke2ServiceActive`.
+3. The stable `gateway-pods` validation passes 1/1 and the absorbing-OOM validation passes 1/1,
+   proving the prerequisite reduction does not weaken those temporal failure or stability oracles.
+
+### Remaining Work
+
+- None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/prerequisite_doctrine.md` - selected-kubeconfig Kubernetes reachability
+  and the home-local RKE2 negative-space rule.
+- `documents/engineering/prerequisite_dag_system.md` - the exact generic Kubernetes dependency
+  edges and transitive-closure invariant.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record Phase `1` reclosure in [README.md](README.md), [00-overview.md](00-overview.md), and
+  [system-components.md](system-components.md), and record the removed coupling in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

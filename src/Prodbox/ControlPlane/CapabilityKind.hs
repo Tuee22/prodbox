@@ -46,8 +46,7 @@ data CapabilityKind
     ProcessAvailability
   | WorkloadAvailability
   | OperatorAvailability
-  | VaultBaseline
-  | VaultPki
+  | VaultBootstrapObserve
   | GatewayFrontDoor
   | LifecycleObserve
   | ConfigObserve
@@ -68,7 +67,9 @@ data CapabilityKind
   | GatewayContinuityCommit
   | -- TierExternalIntent: external mutations. Gated by a signed
     -- 'Prodbox.ControlPlane.Permit.CommittedIntent'.
-    VaultBootstrap
+    VaultBootstrapMutate
+  | VaultBaselineReconcile
+  | VaultPkiOperate
   | ProviderApply
   | TargetSeal
   | GatewayDns
@@ -95,8 +96,7 @@ data CapabilityOp
   = OpProcessAvailability
   | OpWorkloadAvailability
   | OpOperatorAvailability
-  | OpVaultBaseline
-  | OpVaultPki
+  | OpVaultBootstrapObserve
   | OpGatewayFrontDoor
   | OpLifecycleObserve
   | OpConfigObserve
@@ -113,7 +113,9 @@ data CapabilityOp
   | OpAuthorityEpochCutover
   | OpAuthorityBackupCommit
   | OpGatewayContinuityCommit
-  | OpVaultBootstrap
+  | OpVaultBootstrapMutate
+  | OpVaultBaselineReconcile
+  | OpVaultPkiOperate
   | OpProviderApply
   | OpTargetSeal
   | OpGatewayDns
@@ -142,8 +144,7 @@ class KnownCapability (k :: CapabilityKind) where
 instance KnownCapability 'ProcessAvailability where capabilityOp = OpProcessAvailability
 instance KnownCapability 'WorkloadAvailability where capabilityOp = OpWorkloadAvailability
 instance KnownCapability 'OperatorAvailability where capabilityOp = OpOperatorAvailability
-instance KnownCapability 'VaultBaseline where capabilityOp = OpVaultBaseline
-instance KnownCapability 'VaultPki where capabilityOp = OpVaultPki
+instance KnownCapability 'VaultBootstrapObserve where capabilityOp = OpVaultBootstrapObserve
 instance KnownCapability 'GatewayFrontDoor where capabilityOp = OpGatewayFrontDoor
 instance KnownCapability 'LifecycleObserve where capabilityOp = OpLifecycleObserve
 instance KnownCapability 'ConfigObserve where capabilityOp = OpConfigObserve
@@ -160,7 +161,9 @@ instance KnownCapability 'TargetCas where capabilityOp = OpTargetCas
 instance KnownCapability 'AuthorityEpochCutover where capabilityOp = OpAuthorityEpochCutover
 instance KnownCapability 'AuthorityBackupCommit where capabilityOp = OpAuthorityBackupCommit
 instance KnownCapability 'GatewayContinuityCommit where capabilityOp = OpGatewayContinuityCommit
-instance KnownCapability 'VaultBootstrap where capabilityOp = OpVaultBootstrap
+instance KnownCapability 'VaultBootstrapMutate where capabilityOp = OpVaultBootstrapMutate
+instance KnownCapability 'VaultBaselineReconcile where capabilityOp = OpVaultBaselineReconcile
+instance KnownCapability 'VaultPkiOperate where capabilityOp = OpVaultPkiOperate
 instance KnownCapability 'ProviderApply where capabilityOp = OpProviderApply
 instance KnownCapability 'TargetSeal where capabilityOp = OpTargetSeal
 instance KnownCapability 'GatewayDns where capabilityOp = OpGatewayDns
@@ -198,7 +201,9 @@ instance MutatingKind 'TargetCas
 instance MutatingKind 'AuthorityEpochCutover
 instance MutatingKind 'AuthorityBackupCommit
 instance MutatingKind 'GatewayContinuityCommit
-instance MutatingKind 'VaultBootstrap
+instance MutatingKind 'VaultBootstrapMutate
+instance MutatingKind 'VaultBaselineReconcile
+instance MutatingKind 'VaultPkiOperate
 instance MutatingKind 'ProviderApply
 instance MutatingKind 'TargetSeal
 instance MutatingKind 'GatewayDns
@@ -226,7 +231,9 @@ instance InternalCasKind 'AuthorityEpochCutover
 instance InternalCasKind 'AuthorityBackupCommit
 instance InternalCasKind 'GatewayContinuityCommit
 
-instance ExternalIntentKind 'VaultBootstrap
+instance ExternalIntentKind 'VaultBootstrapMutate
+instance ExternalIntentKind 'VaultBaselineReconcile
+instance ExternalIntentKind 'VaultPkiOperate
 instance ExternalIntentKind 'ProviderApply
 instance ExternalIntentKind 'TargetSeal
 instance ExternalIntentKind 'GatewayDns
@@ -258,8 +265,7 @@ permitTier op = case op of
   OpProcessAvailability -> TierObserveOnly
   OpWorkloadAvailability -> TierObserveOnly
   OpOperatorAvailability -> TierObserveOnly
-  OpVaultBaseline -> TierObserveOnly
-  OpVaultPki -> TierObserveOnly
+  OpVaultBootstrapObserve -> TierObserveOnly
   OpGatewayFrontDoor -> TierObserveOnly
   OpLifecycleObserve -> TierObserveOnly
   OpConfigObserve -> TierObserveOnly
@@ -276,7 +282,9 @@ permitTier op = case op of
   OpAuthorityEpochCutover -> TierInternalCas
   OpAuthorityBackupCommit -> TierInternalCas
   OpGatewayContinuityCommit -> TierInternalCas
-  OpVaultBootstrap -> TierExternalIntent
+  OpVaultBootstrapMutate -> TierExternalIntent
+  OpVaultBaselineReconcile -> TierExternalIntent
+  OpVaultPkiOperate -> TierExternalIntent
   OpProviderApply -> TierExternalIntent
   OpTargetSeal -> TierExternalIntent
   OpGatewayDns -> TierExternalIntent

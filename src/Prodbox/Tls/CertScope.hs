@@ -6,8 +6,9 @@
 -- set, the certificate @dnsNames@, and the retention key were three
 -- hand-authored lists that could silently disagree. This module makes the
 -- prodbox-managed certificate scope ONE operator-configured value from which
--- every projection (served FQDNs, listener bindings, certificate @dnsNames@, the
--- retention key) is derived, and makes the two illegal states unrepresentable:
+-- certificate @dnsNames@ and the retention key are derived, while every explicit
+-- served-FQDN/listener binding is admitted against it. This makes the two illegal
+-- states unrepresentable:
 --
 --   * a wildcard scope anchored at a zone the operator has not delegated in
 --     Tier-0 config ('mkScopeSet' rejects it), and
@@ -17,10 +18,11 @@
 -- Everything here is pure and total. The wildcard semantics are deliberately
 -- strict: @*.z@ covers exactly the single-label children of @z@ — never the apex
 -- @z@ itself and never a deeper name @a.b.z@ — so apex coverage always requires
--- an explicit 'ScopeExact'. The narrower-or-equal partial order 'impliedBy'
--- drives restore-vs-reissue: a configured scope set that is 'impliedBy' the
--- retained certificate's scope reuses the retained material; widening beyond it
--- orders exactly one fresh ACME certificate.
+-- an explicit 'ScopeExact'. The narrower-or-equal partial order 'impliedBy' is
+-- the coverage/admission relation used to prove that bound listeners are covered.
+-- Retention is deliberately stricter: cert-manager treats a changed @dnsNames@
+-- set as a changed issuance specification, so retained material is addressed and
+-- restored only by the exact canonical scope-set serialization.
 module Prodbox.Tls.CertScope
   ( -- * Smart-constructed names
     Fqdn
@@ -223,8 +225,8 @@ scopeImpliedBy narrower wider = case (narrower, wider) of
 -- | The scope-set narrower-or-equal partial order: @a `impliedBy` b@ holds when
 -- every scope in @a@ is implied by some scope in @b@ — i.e. every host @a@ could
 -- serve, @b@ could serve too. Reflexive, transitive, and antisymmetric on
--- canonical sets. Restore-vs-reissue keys on this: reuse retained material when
--- @configured `impliedBy` retained@; widening beyond it orders once.
+-- canonical sets. This relation proves coverage/admission only; it does not make
+-- two distinct certificate SAN sets interchangeable for retention or restore.
 impliedBy :: CertScopeSet -> CertScopeSet -> Bool
 impliedBy (CertScopeSet narrower) wider =
   all (\scope -> any (scopeImpliedBy scope) (certScopeSetScopes wider)) narrower
@@ -242,13 +244,18 @@ certScopeDnsName scope = case scope of
   ScopeWildcard (DelegatedZone zone) -> "*." <> zone
 
 -- | The canonical @dnsNames@ projection of a scope set — the single source the
--- certificate templates and listener bindings both derive from.
+-- certificate templates derive from. Listener hostnames remain explicit bound
+-- hosts admitted against this set through 'bindListener'; wildcard coverage is
+-- never enumerated into listeners.
 certScopeSetDnsNames :: CertScopeSet -> [Text]
 certScopeSetDnsNames (CertScopeSet scopes) = map certScopeDnsName scopes
 
 -- | The canonical scope-set serialization used as the retention key: the sorted
 -- @dnsNames@ joined by commas. Equal scope sets serialize identically regardless
--- of input order, so a narrower-or-equal reconfigure keeps the same retained
--- material.
+-- of input order. Restore uses the exact canonical serialization: changing the
+-- set produces a different retention coordinate, while reselecting a previously
+-- issued exact set can reuse that set's retained material. 'impliedBy' remains
+-- the coverage/admission order; it does not make two distinct certificate SAN
+-- sets interchangeable to cert-manager.
 renderCertScopeSet :: CertScopeSet -> Text
 renderCertScopeSet = Text.intercalate "," . certScopeSetDnsNames

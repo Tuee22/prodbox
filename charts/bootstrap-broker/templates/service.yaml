@@ -1,0 +1,24 @@
+{{- /*
+In-cluster ClusterIP Service for the Bootstrap Broker. It fronts the broker's
+bounded init/unseal/PKI/child-custody route surface plus the constant-time
+`/healthz`/`/readyz` probes. Host-CLI access to the broker (the `vault …` CLI
+compiles into broker-mediated programs) is loopback-restricted at the node by
+the operator, not by this Service; the Service exists for in-cluster reachability
+and stable DNS.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: bootstrap-broker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "bootstrap-broker.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: broker
+      port: {{ .Values.listener.port }}
+      targetPort: broker
+      protocol: TCP

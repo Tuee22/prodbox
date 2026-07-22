@@ -55,7 +55,7 @@ exactly one of these classes. Cleanup ownership is defined per class.
 | 4. cert-manager Certificate/Challenge and DNS01 records | Home `Certificate`/`Challenge` plus `_acme-challenge.<host>` TXT ownership; run-scoped AWS counterparts | Certificate/Challenge UID plus typed exact account/zone/name/type observation registered before issuance | Exact coordinate; no wildcard name or tag substitute | Home ownership is `LongLived` with restored home cert-manager and is absent only on explicit consumer decommission/nuke. AWS ownership is run-scoped: delete Certificate/Challenge while AWS cert-manager is live, prove every TXT absent, then delete its DNS01 generation. Unobservability fails cleanup. |
 | 5. Registered public Route 53 records | `LongLived` home public A record and run-scoped AWS-substrate public A record | Typed managed resource keyed by account/zone/name/type/ownership epoch with observe/ensure/delete/read-back | Exact coordinate; no content guess or tag substitute | Home A record: elected Gateway DNS capability, retained during ordinary postflight. AWS A record: Lifecycle Authority provider intent, destroyed/read-back with EKS. The former direct `aws route53` call sites are pending removal. |
 | 6. Operational IAM identities and access keys | Lifecycle-provider and run-scoped AWS cert-manager-DNS01 users/roles/keys; SMTP IAM identity/path/policy/access key | Typed identity/key resources plus authority operation, committed credential generation, retained-home custody receipt where required, Target-Agent version, and Vault tombstone | Exact account/ARN/key ID/role/generation; never a shared-key guess | Credential Provisioner owns create/rotate/remint and repair-time deletion. Delete only after every exact consumer is quiescent and absent, then read back IAM absence before target/custody tombstones. `DestroyAwsSes` alone gives Admin Action Runner terminal delete/read-back authority for the registered SMTP family. Applied-but-response-lost key creation uses finite-inventory delete/remint recovery. |
-| 7. TLS retention store | Retained public-edge certificate ciphertext objects, independently scoped IAM identity/key, and `secret/aws/tls-retention-store` generation | Registered `LongLived` resource plus exact `public-edge-tls/<substrate>/<fqdn>` object bytes/digest/version and Authority outbox receipt | Exact account/region/bucket/prefix/identity/key/generation/object-version evidence | Retained across ordinary postflight and `aws teardown`; TLS Retention Adapter alone accesses ciphertext. Explicit consumer decommission/nuke tombstones the generation while home Agent/Vault remain live and deletes all TLS prefix versions plus IAM identity, but never the shared bucket; the final Authority-backup node owns bucket deletion. |
+| 7. TLS retention store | Retained public-edge certificate ciphertext objects, independently scoped IAM identity/key, and `secret/aws/tls-retention-store` generation | Registered `LongLived` resource plus exact `public-edge-tls/<substrate>/<canonical-scope-key>` object bytes/digest/version and Authority outbox receipt | Exact account/region/bucket/prefix/identity/key/generation/object-version evidence | Retained across ordinary postflight and `aws teardown`; TLS Retention Adapter alone accesses ciphertext. Explicit consumer decommission/nuke tombstones the generation while home Agent/Vault remain live and deletes all TLS prefix versions plus IAM identity, but never the shared bucket; the final Authority-backup node owns bucket deletion. |
 | 8. Authority backup store | Long-lived backup bucket/prefix, independently scoped IAM identity/key, `secret/aws/authority-backup-store` generation, transition receipts, and replicated immutable blobs | Registered `LongLived` resources plus `BackupEstablished` generation/read-back in the Authority aggregate | Exact account/region/bucket/prefix/identity/key/generation and backup receipt; never Lifecycle-provider identity or a tag guess | Retained across suite cleanup and `aws teardown`; rotation preserves a continuously readable generation; only `nuke` may delete it, after Authority freeze plus complete backup-object/IAM/Vault absence read-back |
 | 9. Retained home consumer identities | Home Gateway-DNS and home cert-manager-DNS01 IAM identities/keys plus exact Vault generations | Registered `LongLived` identity/key/generation resources bound to restored home Gateway/cert-manager consumers | Exact account/ARN/key ID/role/generation and consumer identity | Ordinary postflight restores/observes and retains them. Explicit consumer decommission/nuke removes owned record/Certificate/Challenge/TXT effects first, then tombstones generations through the still-live home Agent; no ordinary IAM harness teardown may strand them. |
 
@@ -152,7 +152,7 @@ stores encrypted transition prepares/receipts and replicated immutable config/ch
 blobs. Separate registered prefixes retain public-edge TLS material and the optional first-touch
 legacy `aws-ses` import source. The authority-backup identity can reach only its prefix. The
 separate TLS Retention Adapter identity at `secret/aws/tls-retention-store` can reach only exact
-`public-edge-tls/<substrate>/<fqdn>` ciphertext objects; it cannot reach Authority backup bytes.
+`public-edge-tls/<substrate>/<canonical-scope-key>` ciphertext objects; it cannot reach Authority backup bytes.
 Bucket lifecycle and compatibility import remain separately authorized admin actions.
 
 **Per-run state survives cluster wipes via `.data/` preservation.** MinIO runs from a
@@ -217,11 +217,15 @@ credentialed. Selected Agents use exact Kubernetes-Secret capabilities; retained
 uses the `prodbox-tls-envelope` Transit key to issue/unwrap a DEK and encrypt it to the selected
 one-shot worker's attested ephemeral key. Authority explicitly transports the bounded
 ciphertext/wrapped-DEK bytes between Agent and Adapter; a reference from one disjoint store is not
-dereferenceable by the other. Each `(substrate, FQDN)` has one fenced pending/current fold binding
+dereferenceable by the other. Each `(substrate, canonical scope set)` has one fenced
+pending/current fold binding
 Secret UID/resourceVersion equality witness, cert serial/validity/SPKI, Authority sequence, immutable
 S3 object version, and byte/digest read-back. Promotion re-observes the exact source Secret; stale,
 out-of-order, validity-regressing, or unpermitted different-key candidates refuse. Restore uses the
-receipt-committed current immutable version, never S3 latest/list order. The restore fold is total:
+receipt-committed current immutable version for that exact canonical scope set, never S3
+latest/list order and never a merely covering `impliedBy` coordinate. A different
+`Certificate.spec.dnsNames` set is a distinct cert-manager issuance specification and therefore a
+distinct retention key. The restore fold is total:
 the Adapter returns flat `TlsRestorePresent | TlsRestorePositivelyAbsent | TlsRestoreCorrupt |
 TlsRestoreDigestMismatch | TlsRestoreUnobservable`; it never classifies certificate time. A pure
 decision uses the trusted Authority-time uncertainty interval to classify present bytes as usable,
@@ -284,7 +288,7 @@ class.
 | Per-run stacks and EBS | Lifecycle-provider generation narrowed through the role committed by the provider intent | The fenced provider worker alone reads `secret/aws/lifecycle-provider`; a bounded session cannot outlive the mutation permit or absolute deadline. |
 | Canonical `aws-ses` desired-present reconcile | Lifecycle-provider session for non-credential SES/S3; schema-indexed AWS-admin Provisioner permit for SMTP IAM | Fenced Provider Worker may reconcile only SES identity/DKIM/receipt-rule/S3 resources. Credential Provisioner alone installs/rotates/remints or repair-deletes the SMTP IAM identity/policy/key, derives `SesSmtpSource`, and hands it to retained-home custody under `OperatorMaterialPermit 'AwsAdminProvisioningIngress`. Readiness and target delivery hold neither session. |
 | Lifecycle Authority backup receipts/blobs | Authority-backup-store generation | The separately deployed Authority Backup Adapter alone reads `secret/aws/authority-backup-store` and may access only the configured long-lived backup bucket/prefix through `AuthorityBackupCommitReadBack`. Core Authority has only the typed adapter client; it cannot read that path, construct S3 clients, assume provider roles, or use `secret/aws/lifecycle-provider`. |
-| TLS ciphertext retention/restore | TLS-retention-store generation | The separate TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and accesses exact `public-edge-tls/<substrate>/<fqdn>` objects. It sees only ciphertext/wrapped-DEK bytes; home Target Agent's dedicated Transit lane owns DEK issue/unwrap. |
+| TLS ciphertext retention/restore | TLS-retention-store generation | The separate TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and accesses exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects. It sees only ciphertext/wrapped-DEK bytes; home Target Agent's dedicated Transit lane owns DEK issue/unwrap. |
 | Home public A record | `LongLived` Gateway-DNS generation | The elected home Gateway DNS writer alone reads `secret/aws/gateway-dns`, scoped to the exact registered account/zone/name/type record. Ordinary postflight retains it with the consumer. |
 | Home DNS01 TXT records | `LongLived` home cert-manager-DNS01 generation | Home cert-manager alone reads `secret/aws/cert-manager/home/dns01`; its identity remains with restored home Certificate/Challenge ownership. |
 | AWS DNS01 TXT records | Run-scoped AWS cert-manager-DNS01 generation | AWS cert-manager alone reads `secret/aws/cert-manager/aws/dns01`; cleanup deletes it only after AWS Certificates/Challenges and exact TXT coordinates are absent. |
@@ -896,9 +900,9 @@ dependency blocking, and failure aggregation.
 
 The public-edge **production** certificate is a worked example of this
 registration (Sprint 4.24). Its S3-retained material — written to the
-substrate-scoped key `public-edge-tls/<substrate>/<fqdn>` in the
-long-lived `pulumi_state_backend` S3 bucket and restored before every
-issuance — is a registered `LongLived` managed resource with a typed
+substrate-scoped key `public-edge-tls/<substrate>/<canonical-scope-key>` in the
+long-lived `pulumi_state_backend` S3 bucket and restored before issuance evaluation for that exact
+SAN set — is a registered `LongLived` managed resource with a typed
 `discover` (read the retained object) and `destroy`, and
 `Unreachable → refuse` gate semantics. That soundness rule (§3.1
 invariant 2) is exactly the guarantee restored by closing the

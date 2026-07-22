@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
 **Generated sections**: none
 
 > **Purpose**: Define the fail-fast prerequisite doctrine for supported `prodbox` command flows.
@@ -27,6 +27,10 @@
   unmet readiness fails fast with an explicit error naming the missing field. Prerequisites
   must not silently substitute the other substrate's values. See
   [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
+- Generic Kubernetes reachability is substrate-neutral. `K8sClusterReachable` requires
+  `ToolKubectl` and authoritatively executes `kubectl cluster-info` against the kubeconfig selected
+  for the active substrate. Local RKE2 file, install, and service facts remain explicit home-local
+  prerequisite nodes and are never dependencies of `K8sClusterReachable` or `K8sReady`.
 
 ## 1. Philosophy
 
@@ -70,6 +74,22 @@ Important registry properties:
 - dependencies are explicit (`effectNodePrerequisites`)
 - root sets are selected by command planning code such as `src/Prodbox/TestPlan.hs`
 - the registry is shared by the public test harness and other prerequisite-aware command flows
+
+### Substrate-neutral Kubernetes reachability
+
+`K8sClusterReachable` means that the selected Kubernetes API is reachable, not that the operator
+host runs RKE2. Its only prerequisite edge is `ToolKubectl`; its validation effect runs
+`kubectl cluster-info`, whose process environment consumes the kubeconfig already selected for the
+active substrate by the owning runner. `K8sReady` depends only on this positively observed
+reachability. A missing, invalid, or unreachable selected kubeconfig therefore fails at the
+authoritative kubectl observation rather than being misreported as a missing local RKE2 service.
+
+The home-local facts remain first-class nodes: `KubeconfigExists`, `KubeconfigHomeExists`,
+`Rke2ConfigExists`, `Rke2Installed`, `Rke2ServiceExists`, and `Rke2ServiceActive`. A home-local
+command plan may select those nodes explicitly when it needs to inspect or operate the local RKE2
+installation. They are negative space for the generic Kubernetes branch: neither
+`K8sClusterReachable` nor `K8sReady` may depend on them, directly or transitively. Registry and
+transitive-closure tests enforce that boundary.
 
 IDs are presently raw `String`s. The intended target is a typed `PrerequisiteId` ADT, so root
 selection and dependency edges are compiler-checked rather than string-matched, with

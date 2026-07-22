@@ -1,0 +1,62 @@
+{{- /*
+Isolation policy for the pre-Vault Bootstrap Broker. Egress is limited to what
+the bounded broker route surface actually needs — DNS, the Vault API (init /
+unseal / seal / PKI status / test-issuance), and the object store (child
+custody / recovery). The broker has NO mesh, generic-KV, Pulumi, SES,
+authority-CAS, or target-secret egress (Sprint 2.33 route boundary). Ingress is
+restricted to its own namespace; kubelet liveness/readiness probes are
+node-local and unaffected.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bootstrap-broker-isolation
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prodbox-bootstrap-broker
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+      ports:
+        - protocol: TCP
+          port: broker
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: prodbox
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000

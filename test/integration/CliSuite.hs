@@ -307,7 +307,7 @@ integrationCliSuite = do
             requests `shouldSatisfy` any ("GET /v1/state" `isInfixOf`)
             requests `shouldSatisfy` any ("GET /v1/bootstrap/vault/status" `isInfixOf`)
 
-    it "Sprint 4.42: daemon-side Vault errors do not fall back to direct host Vault" $
+    it "Sprint 4.42: broker-mediated Vault errors do not fall back to direct host Vault" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeGatewayDaemonServer
           [ ("/v1/state", 200, gatewayStateResponseJson)
@@ -330,7 +330,7 @@ integrationCliSuite = do
 
             exitCode `shouldBe` ExitFailure 1
             stderrText `shouldBe` ""
-            stdoutText `shouldContain` "daemon-mediated Vault status failed"
+            stdoutText `shouldContain` "broker-mediated Vault status failed"
             stdoutText `shouldContain` "HTTP 503 response"
             stdoutText `shouldNotContain` "127.0.0.1:1"
 
@@ -356,15 +356,6 @@ integrationCliSuite = do
           writeFile ordersPath (gatewayOrdersAtPorts restPort socketPort)
           writeFile configPath (gatewayStartConfig vaultPort tokenPath ordersPath certPath keyPath caPath)
 
-          -- Sprint 2.34: this test exercises the daemon's federation endpoints
-          -- with a fake Vault and no MinIO, so the object-store proof latch can
-          -- never flip from a live round trip and /readyz would stay 503
-          -- "starting". Seed the latch via the sanctioned in-memory, read-once,
-          -- test-only PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH hook so the daemon
-          -- reaches ready without a live round trip (the genuine gate is covered
-          -- by the AWS/chaos integration validations).
-          gatewayProofEnvironment <-
-            (++ [("PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH", "1")]) <$> getEnvironment
           (_, _, _, processHandle) <-
             createProcess
               ( proc
@@ -379,14 +370,16 @@ integrationCliSuite = do
                   ]
               )
                 { cwd = Just tmpDir
-                , env = Just gatewayProofEnvironment
                 }
           let stopGateway = do
                 terminateProcess processHandle
                 void (waitForProcess processHandle)
 
           flip finally stopGateway $ do
-            waitForGatewayReadyProcess restPort processHandle stdoutPath stderrPath
+            -- This fixture owns only the federation API boundary and deliberately
+            -- supplies no MinIO continuity authority. Wait for the real listener
+            -- instead of bypassing the fail-closed readiness projection.
+            waitForGatewayHealthyProcess restPort processHandle stdoutPath stderrPath
             childrenBody <- expectHttpText ("http://127.0.0.1:" ++ show restPort ++ "/v1/federation/children")
             childrenBody `shouldContain` "\"cluster_id\":\"child-a\""
             childrenBody `shouldContain` "\"kubeconfig_reference\":\"vault:secret/clusters/child-a/kubeconfig\""
@@ -1739,6 +1732,75 @@ integrationCliSuite = do
         stderrText `shouldContain` "gateway daemon Dhall config"
         stderrText `shouldNotContain` "Could not locate the repository root"
 
+    it "requires an explicit mounted config for native Bootstrap Broker start" $ do
+      binary <- resolveBinaryPath
+
+      (exitCode, _, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["bootstrap-broker", "start"])
+          ""
+
+      exitCode `shouldBe` ExitFailure 1
+      stderrText `shouldContain` "--config PATH"
+
+    it "runs native Bootstrap Broker start without requiring repo markers" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        let configPath = tmpDir </> "nonexistent-bootstrap-broker.dhall"
+
+        (exitCode, _, stderrText) <-
+          readCreateProcessWithExitCode
+            ( proc
+                binary
+                [ "bootstrap-broker"
+                , "start"
+                , "--config"
+                , configPath
+                ]
+            )
+              { cwd = Just tmpDir
+              }
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "bootstrap-broker Dhall config"
+        stderrText `shouldNotContain` "Could not locate the repository root"
+
+    it "validates and renders the mounted Bootstrap Broker config in dry-run mode" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        let configPath = tmpDir </> "bootstrap-broker.dhall"
+            planPath = tmpDir </> "bootstrap-broker.plan"
+        writeFile configPath bootstrapBrokerConfig
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            ( proc
+                binary
+                [ "bootstrap-broker"
+                , "start"
+                , "--config"
+                , configPath
+                , "--dry-run"
+                , "--plan-file"
+                , planPath
+                ]
+            )
+              { cwd = Just tmpDir
+              }
+            ""
+
+        persistedPlan <- readFile planPath
+        exitCode `shouldBe` ExitSuccess
+        stderrText `shouldBe` ""
+        stdoutText `shouldBe` persistedPlan
+        stdoutText `shouldContain` "BOOTSTRAP_BROKER_START_PLAN"
+        stdoutText `shouldContain` "RUNTIME_ROLE=bootstrap-broker"
+        stdoutText `shouldContain` "LISTENER=127.0.0.1:18443"
+        stdoutText `shouldContain` "BOUNDARY_ADAPTERS=fail-closed"
+        stdoutText `shouldNotContain` "password"
+        stdoutText `shouldNotContain` "root_token"
+
     it "runs native config setup through the built frontend with a fake AWS CLI" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -2217,10 +2279,10 @@ allocateTwoLoopbackTcpPorts =
             _ -> ioError (userError "expected IPv4 socket addresses while allocating test ports")
       )
 
-waitForGatewayReadyProcess :: Int -> ProcessHandle -> FilePath -> FilePath -> IO ()
-waitForGatewayReadyProcess port processHandle stdoutPath stderrPath = go (60 :: Int)
+waitForGatewayHealthyProcess :: Int -> ProcessHandle -> FilePath -> FilePath -> IO ()
+waitForGatewayHealthyProcess port processHandle stdoutPath stderrPath = go (60 :: Int)
  where
-  go 0 = failWithGatewayLogs "gateway daemon did not become ready"
+  go 0 = failWithGatewayLogs "gateway daemon did not become healthy"
   go attempts = do
     exitStatus <- getProcessExitCode processHandle
     case exitStatus of
@@ -2229,9 +2291,9 @@ waitForGatewayReadyProcess port processHandle stdoutPath stderrPath = go (60 :: 
     result <-
       httpGetText
         (defaultHttpConfig {httpRequestTimeoutMicros = 250000})
-        ("http://127.0.0.1:" ++ show port ++ "/readyz")
+        ("http://127.0.0.1:" ++ show port ++ "/healthz")
     case result of
-      Right "ready\n" -> pure ()
+      Right "ok\n" -> pure ()
       _ -> threadDelay 100000 >> go (attempts - 1)
 
   failWithGatewayLogs message = do
@@ -4330,6 +4392,40 @@ findRecordLineIndex needle haystack =
   case findIndex (isInfixOf needle) (lines haystack) of
     Just indexValue -> indexValue
     Nothing -> error ("missing record line containing " ++ show needle)
+
+bootstrapBrokerConfig :: String
+bootstrapBrokerConfig =
+  unlines
+    [ "{ schemaVersion = 1"
+    , ", cluster_id = \"cluster-a\""
+    , ", vault_address = \"http://127.0.0.1:8200\""
+    , ", service_identity = \"gateway-service\""
+    , ", listener = { listen_host = \"127.0.0.1\", listen_port = 18443 }"
+    , ", bootstrap_store ="
+    , "    { store_endpoint = \"http://127.0.0.1:9000\""
+    , "    , store_bucket = \"bootstrap-state\""
+    , "    , vault_storage_generation_key = \"vault-storage-generation\""
+    , "    , bootstrap_session_fence_key = \"bootstrap-session-fence\""
+    , "    , prepared_init_envelope_key = \"prepared-init-envelope\""
+    , "    , encrypted_init_response_key = \"encrypted-init-response\""
+    , "    , final_unlock_bundle_key = \"final-unlock-bundle\""
+    , "    , child_custody_receipt_key = \"child-custody-receipt\""
+    , "    , child_recovery_delivery_key = \"child-recovery-delivery\""
+    , "    , root_init_journal_key = \"root-init-journal\""
+    , "    , root_session_journal_key = \"root-session-journal\""
+    , "    , child_custody_journal_key = \"child-custody-journal\""
+    , "    , child_recovery_journal_key = \"child-recovery-journal\""
+    , "    , post_unseal_handoff_key = \"post-unseal-handoff\""
+    , "    , secret_worker_checkpoint_key = \"secret-worker-checkpoint\""
+    , "    }"
+    , ", limits ="
+    , "    { queue_capacity = 8"
+    , "    , max_request_body_bytes = 4096"
+    , "    , request_deadline_milliseconds = 30000"
+    , "    , drain_deadline_milliseconds = 5000"
+    , "    }"
+    , "}"
+    ]
 
 gatewayStartConfig :: Int -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> String
 gatewayStartConfig vaultPort tokenPath ordersPath certPath keyPath caPath =

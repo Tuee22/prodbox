@@ -15,13 +15,10 @@ module Prodbox.Gateway.Client
   , compareAndSwapAuthorityObjectGuarded
   , getAuthorityClock
   , deletePulumiObject
-  , bootstrapVaultUrl
   , childBootstrapUrl
   , childrenUrl
-  , ensureVaultBootstrap
   , getAuthorityObject
   , getPulumiObject
-  , issueVaultPkiTestCert
   , authorityObjectCasUrl
   , authorityClockUrl
   , authorityObjectGetUrl
@@ -34,11 +31,6 @@ module Prodbox.Gateway.Client
   , queryChildBootstrap
   , queryFederationChildren
   , queryState
-  , queryVaultPkiStatus
-  , queryVaultStatus
-  , rotateVaultTransitKey
-  , rotateVaultUnlockBundle
-  , sealVault
   , statusUrl
   , renderGatewayError
   , hostLoopbackGatewayEndpoint
@@ -54,7 +46,7 @@ module Prodbox.Gateway.Client
 where
 
 import Control.Concurrent (threadDelay)
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (Value)
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -97,7 +89,6 @@ import Prodbox.Http.Client
   , renderHttpError
   )
 import Prodbox.Retry (RetryPolicy (..), retryDelayMicros)
-import Prodbox.Vault.Client (SealStatus)
 
 -- | Errors that surface from a gateway-client call.
 data GatewayError
@@ -193,30 +184,6 @@ childBootstrapUrl :: PeerEndpoint -> String -> String
 childBootstrapUrl endpoint childId =
   peerRestUrl endpoint ++ federationChildPathPrefix ++ childId ++ federationChildBootstrapSuffix
 
-bootstrapVaultUrl :: PeerEndpoint -> String
-bootstrapVaultUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultEnsure
-
-bootstrapVaultStatusUrl :: PeerEndpoint -> String
-bootstrapVaultStatusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultStatus
-
-bootstrapVaultSealUrl :: PeerEndpoint -> String
-bootstrapVaultSealUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultSeal
-
-bootstrapVaultRotateUnlockBundleUrl :: PeerEndpoint -> String
-bootstrapVaultRotateUnlockBundleUrl endpoint =
-  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultRotateUnlockBundle
-
-bootstrapVaultRotateTransitKeyUrl :: PeerEndpoint -> String
-bootstrapVaultRotateTransitKeyUrl endpoint =
-  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultRotateTransitKey
-
-bootstrapVaultPkiStatusUrl :: PeerEndpoint -> String
-bootstrapVaultPkiStatusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteBootstrapVaultPkiStatus
-
-bootstrapVaultPkiIssueTestCertUrl :: PeerEndpoint -> String
-bootstrapVaultPkiIssueTestCertUrl endpoint =
-  peerRestUrl endpoint ++ routePattern RouteBootstrapVaultPkiIssueTestCert
-
 pulumiObjectGetUrl :: PeerEndpoint -> String
 pulumiObjectGetUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectGet
 
@@ -289,60 +256,6 @@ queryGatewayJson url = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right value -> Right value
-
-ensureVaultBootstrap :: PeerEndpoint -> Text -> IO (Either GatewayError Value)
-ensureVaultBootstrap endpoint unlockPassword = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload =
-        object
-          [ "unlock_password" .= unlockPassword
-          , "loopback_nodeport_verified" .= True
-          ]
-  result <- httpPostJsonResponseJson config (bootstrapVaultUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right value -> Right value
-
-queryVaultStatus :: PeerEndpoint -> IO (Either GatewayError SealStatus)
-queryVaultStatus endpoint = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
-  result <- httpGetJson config (bootstrapVaultStatusUrl endpoint)
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right value -> Right value
-
-sealVault :: PeerEndpoint -> Text -> IO (Either GatewayError Value)
-sealVault endpoint unlockPassword =
-  postBootstrapPasswordAction (bootstrapVaultSealUrl endpoint) unlockPassword
-
-rotateVaultUnlockBundle :: PeerEndpoint -> Text -> Text -> IO (Either GatewayError Value)
-rotateVaultUnlockBundle endpoint unlockPassword newUnlockPassword = do
-  let payload =
-        object
-          [ "unlock_password" .= unlockPassword
-          , "new_unlock_password" .= newUnlockPassword
-          , "loopback_nodeport_verified" .= True
-          ]
-  postBootstrapJsonAction (bootstrapVaultRotateUnlockBundleUrl endpoint) payload
-
-rotateVaultTransitKey :: PeerEndpoint -> Text -> Text -> IO (Either GatewayError Value)
-rotateVaultTransitKey endpoint unlockPassword keyName = do
-  let payload =
-        object
-          [ "unlock_password" .= unlockPassword
-          , "key_name" .= keyName
-          , "loopback_nodeport_verified" .= True
-          ]
-  postBootstrapJsonAction (bootstrapVaultRotateTransitKeyUrl endpoint) payload
-
-queryVaultPkiStatus :: PeerEndpoint -> Text -> IO (Either GatewayError Value)
-queryVaultPkiStatus endpoint unlockPassword =
-  postBootstrapPasswordAction (bootstrapVaultPkiStatusUrl endpoint) unlockPassword
-
-issueVaultPkiTestCert :: PeerEndpoint -> Text -> IO (Either GatewayError Value)
-issueVaultPkiTestCert endpoint unlockPassword =
-  postBootstrapPasswordAction (bootstrapVaultPkiIssueTestCertUrl endpoint) unlockPassword
 
 getPulumiObject :: PeerEndpoint -> Text -> IO (Either GatewayError (Maybe ByteString))
 getPulumiObject endpoint stackName = do
@@ -468,25 +381,6 @@ compareAndSwapTargetSecret endpoint request = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right response -> Right response
-
-postBootstrapPasswordAction :: String -> Text -> IO (Either GatewayError Value)
-postBootstrapPasswordAction url unlockPassword =
-  postBootstrapJsonAction
-    url
-    ( object
-        [ "unlock_password" .= unlockPassword
-        , "loopback_nodeport_verified" .= True
-        ]
-    )
-
-postBootstrapJsonAction :: String -> Value -> IO (Either GatewayError Value)
-postBootstrapJsonAction url payload = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-  result <- httpPostJsonResponseJson config url payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right value -> Right value
 
 -- | Sprint 1.44: the gateway daemon's operator-write endpoint for a given KV
 -- logical path (e.g. @acme/eab@ or @gateway/gateway/aws@).

@@ -515,7 +515,7 @@ componentCapabilityOp = \case
   ComponentClusterBase -> OpProcessAvailability
   ComponentMinio -> OpManagedObserve
   ComponentVaultWorkload -> OpWorkloadAvailability
-  ComponentVaultUnsealed -> OpVaultBaseline
+  ComponentVaultUnsealed -> OpVaultBootstrapObserve
   ComponentRegistry -> OpRegistryPublication
   ComponentMetalLB -> OpOperatorAvailability
   ComponentEnvoyGateway -> OpOperatorAvailability

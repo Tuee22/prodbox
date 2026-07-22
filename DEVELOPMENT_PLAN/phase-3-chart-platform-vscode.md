@@ -20,9 +20,12 @@
 
 ## Phase Status
 
-⏸️ **Reopened and blocked by Sprint `2.33`.** Sprint `3.26` expands the chart platform's own
+🔄 **Reopened and Active; Sprint `3.26` Increment A landed 2026-07-21.** Sprint `3.26` expands the
+chart platform's own
 surface with physically separate Bootstrap Broker, Lifecycle Authority, and Target Secret Agent
-workloads. Each receives a distinct ServiceAccount, Service, NetworkPolicy, resource envelope,
+workloads. Increment A landed the Bootstrap Broker's distinct workload identity (a bootstrap-only
+Vault role and typed chart statics with route-sourced probes); the remaining increments render the
+workload templates, resource envelopes, and the other control-plane roles. Each receives a distinct ServiceAccount, Service, NetworkPolicy, resource envelope,
 probe contract, disruption budget, and generated values surface. Gateway pods no longer share a
 cgroup, identity, or lifecycle probe with retained-authority work. Earlier chart and probe sprints
 remain Done on their historical scope.
@@ -2520,14 +2523,64 @@ diagnostic state renderer every ten to fifteen seconds.
 - Link the landed chart binding to Sprint `2.31`'s endpoint contract and keep Sprint `5.16`'s
   runtime-stability observation explicitly separate.
 
-## Sprint 3.26: Physically Separated Control-Plane Workloads [⏸️ Blocked]
+## Sprint 3.26: Physically Separated Control-Plane Workloads [🔄 Active]
 
-**Status**: Blocked
+**Status**: Active — unblocked by the completed Sprint `2.33`. **Increment A landed 2026-07-21**
+(Bootstrap Broker workload-identity foundation) and **Increment B landed 2026-07-21** (the
+Bootstrap Broker workload chart itself: `charts/bootstrap-broker/` renders the Deployment,
+Service, ServiceAccount, NetworkPolicy, and PodDisruptionBudget from the compiled statics, with a
+generated-section drift gate + chart-lint + conformance tests). The remaining increments render the
+Gateway Runtime StatefulSet and the other control-plane roles, and wire the reconcile graph +
+capacity plan.
 **Deployment qualification**: pending
-**Implementation**: planned chart templates and typed renderers in
-`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Secret/VaultInventory.hs`, `charts/gateway/`, and
-new broker/authority/target-agent chart surfaces with generated values and lint fixtures
-**Blocked by**: Sprint `2.33`
+**Implementation**: **Increment A** — `Prodbox.Vault.RoleId` gains `VaultRoleBootstrapBroker`, a
+bootstrap-only Vault Kubernetes-auth role (`prodbox-bootstrap-broker`) distinct from the Gateway
+Runtime's `prodbox-gateway-daemon` role, plus `allVaultRoleIds`; and the new
+`src/Prodbox/Bootstrap/Broker/ChartStatics.hs` is the one compiled source of the physically separate
+broker workload's static identities — its Pod ServiceAccount (= the bootstrap-only Vault role) and
+its constant-time liveness/readiness probe paths projected from the closed `BrokerRoute` registry
+(`/healthz`, `/readyz`), with aeson + generated-YAML projections. The broker's listen port is
+deployment configuration, deliberately not a compiled static.
+**Implementation**: **Increment B** — `charts/bootstrap-broker/` is the physically separate broker
+workload chart: a single-writer `Deployment` (replicas 1, `Recreate`) running
+`bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall` as its own
+ServiceAccount (`.Values.serviceAccount.name`, from the compiled statics), a loopback-oriented
+ClusterIP `Service`, a `bootstrap-broker-isolation` `NetworkPolicy` whose egress is limited to DNS,
+the Vault API (`:8200`), and the object store (`:9000`) — no mesh/KV/Pulumi/SES/authority-CAS/
+target-secret egress (Sprint `2.33` route boundary) — a `PodDisruptionBudget`, a values-backed
+Guaranteed-QoS resource envelope, and constant-time `/healthz`/`/readyz` probes projected from the
+statics. `src/Prodbox/CheckCode.hs` registers the `bootstrap-broker-chart-statics.values` generated
+section (drift-gated by `prodbox dev check`) and a `bootstrap-broker`-guarded chart lint
+(`bootstrapBrokerStaticsChartViolations` / pure `bootstrapBrokerChartStaticViolations`) that forbids
+raw ServiceAccount-identity and probe-path literals in the hand-written templates and requires the
+generated block in `values.yaml`. Remaining increments extend `src/Prodbox/Lib/ChartPlatform.hs`
+(`valuesForBootstrapBroker` + `resolveChart`/`supportedChartNames`), `src/Prodbox/Config/ComponentGraph.hs`
+(reconcile-graph node + config-schema regen), `src/Prodbox/Capacity/Config.hs` (typed namespace
+quota + workload profile), and `src/Prodbox/Secret/VaultInventory.hs`, plus new
+authority/target-agent chart surfaces and the Gateway Runtime StatefulSet.
+**Independent Validation (Increment A)**: `test/unit/BrokerChartStatics.hs` proves the broker
+ServiceAccount/Vault-role is distinct from the gateway's (anti-shared-identity invariant), the
+ServiceAccount equals the bootstrap-only Vault role, every `VaultRoleId` name in the closed
+inventory is distinct, and the probe paths are exact projections of the `BrokerRoute` registry.
+**Independent Validation (Increment B)**: the same suite (now 11 cases) additionally certifies the
+committed `charts/bootstrap-broker/values.yaml` equals the compiled `renderBrokerChartStaticsYaml`
+projection, rejects a drifted values block, accepts the values-backed hand-written templates, and
+rejects hand-written raw ServiceAccount-identity / probe-path literals and a missing generated
+block — with no deployed cluster, Vault, AWS, or later phase. Evidence: `prodbox dev check` exit 0
+(warning-clean build, chart lint incl. the broker rule, and the generated-section drift gate on the
+new chart); the `Sprint 3.26 compiled Bootstrap Broker chart statics` suite 11/11; the
+`prodbox-haskell-style` generated-section-stability meta suite 18/18.
+**Independent Validation (Increment C)**: a direct `valuesForBootstrapBroker` render test proves the
+deployed values project the compiled statics (ServiceAccount / Vault role / `/healthz`+`/readyz`
+probes / listener port / injected image) and that the resource envelope is attached separately;
+`resolveChart` resolves the internal chart off the public surface; and the capacity suite proves the
+`bootstrap-broker` namespace quota + Guaranteed-QoS workload profile are present and that
+`validateResourcePlan defaultResourcePlan` still holds after the vscode-ceiling trim — all with no
+deployed cluster, Vault, AWS, or later phase. Evidence: `prodbox dev check` exit 0; full
+`prodbox test unit` 2207/2207 (of 2208; the one excluded case is a pre-existing env-flaky AWS-SSH
+test that passes in isolation and is unrelated to this change), including the regenerated
+`prodbox-config-types.dhall` drift guard and the Sprint 5.13 guardrail-report fixtures synced to the
+trimmed vscode quota.
 **Independent Validation**: Helm rendering, typed-values goldens, resource-plan tables, route/RBAC
 negative fixtures, and chart lint validate the platform surface without a deployed cluster, AWS,
 or a later phase.
@@ -2555,7 +2608,8 @@ readiness, deployment cardinality, and failure domains match their typed authori
   read-back, restore, GC, and decommission programs and alone reads
   `secret/aws/authority-backup-store`; core Authority and provider worker cannot read that path.
 - Render a separate home TLS Retention Adapter with only
-  `secret/aws/tls-retention-store` and the registered `public-edge-tls/<substrate>/<fqdn>` S3
+  `secret/aws/tls-retention-store` and the registered
+  `public-edge-tls/<substrate>/<canonical-scope-key>` S3
   prefix. Give each Target Agent exact TLS-Secret observe/seal/materialize RBAC; only the home Agent
   also gets the retained-home TLS Transit DEK-exchange policy plus closed schema-indexed SES-SMTP/
   ACME-EAB custody/rewrap policy. Adapter/Authority never get Kubernetes TLS Secret, arbitrary
@@ -2619,7 +2673,34 @@ readiness, deployment cardinality, and failure domains match their typed authori
 
 ### Remaining Work
 
-- Blocked until Sprint `2.33` supplies the broker/runtime command roles and route boundary.
+- **Increment A landed** (Bootstrap Broker workload-identity foundation: distinct bootstrap-only
+  Vault role + typed chart statics + route-sourced probes + isolation tests).
+- **Increment B landed** (Bootstrap Broker workload chart: `charts/bootstrap-broker/` Deployment /
+  Service / ServiceAccount / NetworkPolicy / PodDisruptionBudget + values-backed Guaranteed-QoS
+  envelope, all identities/probes projected from the compiled statics; the
+  `bootstrap-broker-chart-statics.values` generated-section drift gate; the `bootstrap-broker`
+  chart-lint rule forbidding raw identity/probe literals; and six new conformance/negative tests).
+- **Increment C landed** (capacity + render primitives): the typed capacity plan now reserves a
+  dedicated `bootstrap-broker` namespace quota + Guaranteed-QoS workload profile, funded by an
+  operator-approved 100m trim of the over-provisioned vscode ceiling (1400m → 1300m; draw stays
+  800m), keeping the single-node concurrent-quota sum at 6450m ≤ 6500m allocatable; and
+  `ChartPlatform.hs` gains `valuesForBootstrapBroker` (identities/probes projected from the compiled
+  statics, image injected, Guaranteed-QoS envelope attached from the capacity plan), a
+  `resolveChart` arm, and the `chartResourceProfiles` mapping to the camelCase `bootstrapBroker`
+  value key. The chart stays an internal control-plane chart (absent from `supportedChartNames`, so
+  off the public `prodbox charts ...` surface).
+- **Remaining increments**: add the reconcile-graph ordering (deploy the broker before Vault
+  unseal) via a `ComponentGraph.hs` node + `prodbox-config-types.dhall` regeneration, plus the
+  runtime-image list entry, so the broker is driven end-to-end by the plan builder; render the
+  Gateway Runtime StatefulSet with a per-emitter retained journal identity; render the retained
+  home Lifecycle Authority,
+  its physically separate Authority Backup and TLS Retention Adapters, the fenced Provider Worker,
+  the Target Secret Agent, and the permit-indexed Credential Provisioner / External Material
+  Ingress / Admin Action Runner Jobs; wire least-privilege Vault roles and separate Vault
+  paths/SecretRefs/policies for each; extend the typed capacity plan with independent
+  CPU/memory/ephemeral/queue limits; and add the negative-lint fixtures (shared ServiceAccount,
+  cross-role policy, gateway lifecycle routes, missing limits, deep work in kubelet probes) and
+  generated-values goldens.
 - Phase 4 binds the rendered Lifecycle Authority and Target Secret Agent to their production
   interpreters.
 

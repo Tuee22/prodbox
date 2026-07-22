@@ -47,6 +47,7 @@ import Prodbox.Settings
   , validatedConfig
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Tls.CertScope (CertScopeSet, renderCertScopeSet)
 
 data PublicEdgeRoute
   = PublicRouteAuth
@@ -136,24 +137,37 @@ substratePublicRouteUrl settings substrate route =
 -- (Sprint @7.13@). Must match the issuer name rendered by
 -- @Prodbox.CLI.Rke2.acmeRuntimeManifestWith@. Rebuild cycles avoid
 -- re-ordering the certificate through the S3-backed retention store
--- ('publicEdgeTlsRetentionKey') — keyed on substrate + FQDN, not on the
--- issuer name — so the renamed issuer restores the retained cert without
--- re-ordering from ZeroSSL.
+-- ('publicEdgeTlsRetentionKey') — keyed on substrate + the exact canonical
+-- certificate scope set, not on the issuer name — so an exact-scope retained
+-- cert restores without re-ordering from ZeroSSL.
 publicEdgeClusterIssuerName :: String
 publicEdgeClusterIssuerName = "zerossl-dns01"
 
--- | Sprint 7.11: the substrate-scoped S3 retention key for the
+-- | Sprints 7.11 / 2.35: the substrate-scoped S3 retention key for the
 -- public-edge **production** TLS certificate material in the long-lived
 -- @pulumi_state_backend@ bucket:
--- @public-edge-tls/\<substrate\>/\<fqdn\>@. Keying on both the substrate
--- id and the public FQDN keeps the home-local and AWS production
--- certificates independent, and groups every retained object under the
--- @public-edge-tls/@ prefix that the Sprint 4.24 managed-resource
--- @discover@ / @destroy@ operate over. Staging certificates are
--- disposable and are never written to this store.
-publicEdgeTlsRetentionKey :: Substrate -> Text -> String
-publicEdgeTlsRetentionKey substrate fqdn =
-  publicEdgeTlsRetentionPrefix ++ substrateId substrate ++ "/" ++ Text.unpack fqdn
+-- @public-edge-tls/\<substrate\>/\<canonical-scope-key\>@. The key consumes a
+-- 'CertScopeSet', not caller text, so retention cannot drift from the canonical
+-- deduped/ordered scope projection. The exact single-host default deliberately
+-- preserves its historical key byte-for-byte. Wildcard and multi-scope syntax
+-- is percent-escaped in the path segment so a literal certificate wildcard is
+-- never interpreted as an IAM resource-pattern wildcard by the later
+-- TLS-retention identity. Restore is exact-scope only: a different configured
+-- scope lets cert-manager issue once and is retained under its own canonical
+-- key. Every object remains grouped under the @public-edge-tls/@ prefix that
+-- the Sprint 4.24 managed-resource @discover@ / @destroy@ operate over.
+publicEdgeTlsRetentionKey :: Substrate -> CertScopeSet -> String
+publicEdgeTlsRetentionKey substrate scopeSet =
+  publicEdgeTlsRetentionPrefix
+    ++ substrateId substrate
+    ++ "/"
+    ++ Text.unpack (renderRetentionScopePathSegment scopeSet)
+
+renderRetentionScopePathSegment :: CertScopeSet -> Text
+renderRetentionScopePathSegment =
+  Text.replace "," "%2C"
+    . Text.replace "*" "%2A"
+    . renderCertScopeSet
 
 substrateIdentityIssuerUrl :: ValidatedSettings -> Substrate -> String
 substrateIdentityIssuerUrl settings substrate =

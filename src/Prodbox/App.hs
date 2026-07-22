@@ -23,7 +23,8 @@ import Options.Applicative
   , showHelpOnError
   )
 import Prodbox.CLI.Command
-  ( CommandListingFormat (..)
+  ( BootstrapBrokerCommand (..)
+  , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
   , GatewayCommand (..)
@@ -130,6 +131,7 @@ runCommandRequest request =
     exitWith exitCode
 
 canRunWithoutRepoRoot :: NativeCommand -> Bool
+canRunWithoutRepoRoot (NativeBootstrapBroker (BootstrapBrokerStart _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayDaemonCommand _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayStatusCommand _)) = True
 canRunWithoutRepoRoot (NativeWorkload (WorkloadStart _)) = True

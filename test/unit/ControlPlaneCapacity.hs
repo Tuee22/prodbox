@@ -213,6 +213,32 @@ controlPlaneCapacitySuite =
                 (completeService (RequestId 2) (completeService (RequestId 1) q3))
         queueDepth drained `shouldBe` 0
         isAdmit (decideAdmission drained (reqB 5)) `shouldBe` True
+      it "replaces a separately-ticketed continuation in its exact FIFO slot" $ do
+        let q3 = admitMany 3
+            replacement =
+              replaceAdmission
+                (RequestId 2)
+                q3
+                (AdmissionRequest (RequestId 9) (RemainingDuration 5000))
+        case replacement of
+          Nothing -> expectationFailure "expected replacement target" >> fail "unreachable"
+          Just (decision, replaced) -> do
+            admitInfo decision `shouldBe` Just (RequestId 9, WorkEstimate 1000, 1)
+            queueOrder replaced `shouldBe` [RequestId 1, RequestId 9, RequestId 3]
+      it "leaves the original FIFO slot intact when replacement misses its deadline" $ do
+        let q3 = admitMany 3
+            replacement =
+              replaceAdmission
+                (RequestId 3)
+                q3
+                (AdmissionRequest (RequestId 9) (RemainingDuration 1500))
+        case replacement of
+          Nothing -> expectationFailure "expected replacement target" >> fail "unreachable"
+          Just (decision, unchanged) -> do
+            decision
+              `shouldBe` AdmissionRejected
+                (RejectedDeadlineUnmeetable (WorkEstimate 2000) (RemainingDuration 1500))
+            queueOrder unchanged `shouldBe` queueOrder q3
       it "is deterministic over a fixed admit/complete script" $ do
         let (a1, s1) = admit (emptyAdmissionQueue p) (reqB 1)
             (a2, s2) = admit s1 (reqB 2)

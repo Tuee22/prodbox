@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
@@ -32,6 +33,10 @@ module Prodbox.Gateway.State
   , EventHash
   , mkEventHash
   , eventHashBytes
+  , EmitterIncarnation
+  , emitterIncarnationZero
+  , mkEmitterIncarnation
+  , emitterIncarnationValue
   , EmitterEpoch
   , emitterEpochValue
   , EmitterSequence
@@ -45,11 +50,20 @@ module Prodbox.Gateway.State
 
     -- * Signed semantic assertions
   , OwnershipDecision (..)
+  , OrdersMigrationScope
+  , mkOrdersMigrationScope
+  , ordersMigrationPreviousEpoch
+  , ordersMigrationPreviousSequence
+  , ordersMigrationPreviousOrdersDigest
   , AssertionKind (..)
   , GatewayAssertion
   , mkNextAssertion
+  , mkNextAssertionForIncarnation
   , mkEpochRotationAssertion
+  , mkEpochRotationAssertionForIncarnation
+  , mkOrdersMigrationAssertionForIncarnation
   , assertionEmitter
+  , assertionIncarnation
   , assertionOrdersAnchor
   , assertionKind
   , assertionPreviousHash
@@ -60,6 +74,7 @@ module Prodbox.Gateway.State
   , GatewayState
   , initializeGatewayState
   , restoreEmitterFromContinuity
+  , restoreEmitterFromContinuityForIncarnation
   , AssertionApplyOutcome (..)
   , applyGatewayAssertion
   , gatewayStateActiveOrders
@@ -69,13 +84,19 @@ module Prodbox.Gateway.State
   , gatewayStateDiagnosticHashes
   , gatewayStateLatestHeartbeat
   , gatewayStateLatestOwnership
+  , gatewayStateEmitterIncarnation
   , gatewayStateCursorVector
+  , armOrdersMigrationAdmission
+  , rearmOrdersMigrationAdmissionForEmitter
+  , gatewayStateOrdersMigrationPendingCount
 
     -- * Deterministic semantic compaction checkpoints
   , EmitterCheckpoint
   , mkEmitterCheckpoint
+  , mkEmitterCheckpointForIncarnation
   , emitterCheckpointOrdersAnchor
   , emitterCheckpointEmitter
+  , emitterCheckpointIncarnation
   , emitterCheckpointCursor
   , emitterCheckpointHeartbeat
   , emitterCheckpointOwnership
@@ -86,6 +107,7 @@ module Prodbox.Gateway.State
   , emitterRepairEncodedBytes
   , RepairApplyOutcome (..)
   , applyEmitterRepair
+  , restoreEmitterFromRetainedRepair
 
     -- * Orders promotion (active + one slot)
   , stageOrdersPromotion
@@ -120,6 +142,7 @@ module Prodbox.Gateway.State
   )
 where
 
+import Codec.Serialise (Serialise)
 import Control.Monad (foldM, unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
@@ -137,6 +160,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Gateway.Bounds
   ( GatewayBounds
@@ -263,7 +287,7 @@ validatedOrdersMemberIds = Map.keys . internalValidatedOrdersMembers
 validatedOrdersMemberCount :: ValidatedOrders -> Int
 validatedOrdersMemberCount = Map.size . internalValidatedOrdersMembers
 
-data HashKind = EventHashValue
+data HashKind = EventHashValue | OrdersMigrationOrdersDigest
   deriving (Eq, Show)
 
 -- | Validate raw Orders bytes and every member before constructing the member
@@ -424,6 +448,24 @@ mkEventHash raw
 eventHashBytes :: EventHash -> ByteString
 eventHashBytes (EventHash raw) = raw
 
+-- | A durable process-mount fence for one emitter.  It is deliberately
+-- separate from the fixed-width continuity cursor: restarting an emitter does
+-- not invent a semantic event, but every newly signed event attests the mount
+-- that was allowed to emit it.
+newtype EmitterIncarnation = EmitterIncarnation Word64
+  deriving (Eq, Generic, Ord, Show)
+
+instance Serialise EmitterIncarnation
+
+emitterIncarnationZero :: EmitterIncarnation
+emitterIncarnationZero = EmitterIncarnation 0
+
+mkEmitterIncarnation :: Word64 -> EmitterIncarnation
+mkEmitterIncarnation = EmitterIncarnation
+
+emitterIncarnationValue :: EmitterIncarnation -> Word64
+emitterIncarnationValue (EmitterIncarnation value) = value
+
 newtype EmitterEpoch = EmitterEpoch Word64
   deriving (Eq, Ord, Show)
 
@@ -470,15 +512,53 @@ emitterCursorHash = internalEmitterCursorHash
 data OwnershipDecision = OwnershipClaim | OwnershipYield
   deriving (Eq, Ord, Show)
 
+-- | HMAC-covered authority for the one exceptional epoch advance caused by an
+-- authenticated Orders promotion. The exact prior coordinate and prior Orders
+-- digest are signed, preventing the transition from being replayed from a
+-- different cursor or scope.
+data OrdersMigrationScope = OrdersMigrationScope
+  { ordersMigrationPreviousEpoch :: !Word64
+  , ordersMigrationPreviousSequence :: !Word64
+  , ordersMigrationPreviousOrdersDigest :: !ByteString
+  }
+  deriving (Eq, Generic, Ord, Show)
+
+instance Serialise OrdersMigrationScope
+
+mkOrdersMigrationScope
+  :: EmitterCursor
+  -> ByteString
+  -> Either GatewayStateError OrdersMigrationScope
+mkOrdersMigrationScope previousCursor previousOrdersDigest = do
+  unless
+    (BS.length previousOrdersDigest == hashWidth)
+    ( Left
+        ( HashLengthInvalid
+            OrdersMigrationOrdersDigest
+            hashWidth
+            (BS.length previousOrdersDigest)
+        )
+    )
+  Right
+    OrdersMigrationScope
+      { ordersMigrationPreviousEpoch =
+          emitterEpochValue (emitterCursorEpoch previousCursor)
+      , ordersMigrationPreviousSequence =
+          emitterSequenceValue (emitterCursorSequence previousCursor)
+      , ordersMigrationPreviousOrdersDigest = previousOrdersDigest
+      }
+
 data AssertionKind
   = HeartbeatAssertion Word64
   | OwnershipAssertion OwnershipDecision
   | EpochRotationAssertion
+  | OrdersMigrationAssertion !OrdersMigrationScope
   deriving (Eq, Ord, Show)
 
 data GatewayAssertion = GatewayAssertion
   { internalAssertionOrdersAnchor :: OrdersAnchor
   , internalAssertionEmitter :: NodeId
+  , internalAssertionIncarnation :: EmitterIncarnation
   , internalAssertionKind :: AssertionKind
   , internalAssertionPreviousHash :: EventHash
   , internalAssertionResultCursor :: EmitterCursor
@@ -496,28 +576,64 @@ mkNextAssertion
   -> AssertionKind
   -> Either GatewayStateError GatewayAssertion
 mkNextAssertion bounds orders emitter previousCursor resultHash encodedBytes kind = do
-  requireAdmittedEmitter orders emitter
-  when (kind == EpochRotationAssertion) (Left EpochRotationConstructorRequired)
-  validateAssertionBytes bounds encodedBytes
-  let previousSequence = emitterSequenceValue (emitterCursorSequence previousCursor)
-  when
-    (previousSequence == maxBound)
-    (Left (EmitterRotationRequired emitter previousCursor))
-  let resultCursor =
-        EmitterCursor
-          { internalEmitterCursorEpoch = emitterCursorEpoch previousCursor
-          , internalEmitterCursorSequence = EmitterSequence (previousSequence + 1)
-          , internalEmitterCursorHash = resultHash
-          }
-  Right
-    ( assertionFromCursor
-        orders
-        emitter
-        kind
-        previousCursor
-        resultCursor
-        encodedBytes
-    )
+  mkNextAssertionForIncarnation
+    bounds
+    orders
+    emitter
+    emitterIncarnationZero
+    previousCursor
+    resultHash
+    encodedBytes
+    kind
+
+-- | Construct a semantic successor attested by the supplied durable emitter
+-- incarnation.  The compatibility constructor above uses incarnation zero for
+-- pre-incarnation callers; peer and emitter boundaries use this constructor.
+mkNextAssertionForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> EventHash
+  -> Natural
+  -> AssertionKind
+  -> Either GatewayStateError GatewayAssertion
+mkNextAssertionForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  previousCursor
+  resultHash
+  encodedBytes
+  kind = do
+    requireAdmittedEmitter orders emitter
+    case kind of
+      EpochRotationAssertion -> Left EpochRotationConstructorRequired
+      OrdersMigrationAssertion _ -> Left OrdersMigrationConstructorRequired
+      _ -> Right ()
+    validateAssertionBytes bounds encodedBytes
+    let previousSequence = emitterSequenceValue (emitterCursorSequence previousCursor)
+    when
+      (previousSequence == maxBound)
+      (Left (EmitterRotationRequired emitter previousCursor))
+    let resultCursor =
+          EmitterCursor
+            { internalEmitterCursorEpoch = emitterCursorEpoch previousCursor
+            , internalEmitterCursorSequence = EmitterSequence (previousSequence + 1)
+            , internalEmitterCursorHash = resultHash
+            }
+    Right
+      ( assertionFromCursor
+          orders
+          emitter
+          incarnation
+          kind
+          previousCursor
+          resultCursor
+          encodedBytes
+      )
 
 -- | Construct the only legal sequence-exhaustion transition.  Ordinary
 -- assertions may occupy @maxBound@; only the signed invalidating checkpoint
@@ -531,42 +647,139 @@ mkEpochRotationAssertion
   -> Natural
   -> Either GatewayStateError GatewayAssertion
 mkEpochRotationAssertion bounds orders emitter previousCursor resultHash encodedBytes = do
-  requireAdmittedEmitter orders emitter
-  validateAssertionBytes bounds encodedBytes
-  let previousSequence = emitterSequenceValue (emitterCursorSequence previousCursor)
-      previousEpoch = emitterEpochValue (emitterCursorEpoch previousCursor)
-  unless
-    (previousSequence == maxBound)
-    (Left (EmitterRotationNotRequired emitter previousCursor))
-  when (previousEpoch == maxBound) (Left (EmitterEpochExhausted emitter))
-  let resultCursor =
-        EmitterCursor
-          { internalEmitterCursorEpoch = EmitterEpoch (previousEpoch + 1)
-          , internalEmitterCursorSequence = EmitterSequence 0
-          , internalEmitterCursorHash = resultHash
-          }
-  Right
-    ( assertionFromCursor
-        orders
-        emitter
-        EpochRotationAssertion
-        previousCursor
-        resultCursor
-        encodedBytes
-    )
+  mkEpochRotationAssertionForIncarnation
+    bounds
+    orders
+    emitter
+    emitterIncarnationZero
+    previousCursor
+    resultHash
+    encodedBytes
+
+-- | Construct the signed epoch invalidation for one durable emitter
+-- incarnation.
+mkEpochRotationAssertionForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> EventHash
+  -> Natural
+  -> Either GatewayStateError GatewayAssertion
+mkEpochRotationAssertionForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  previousCursor
+  resultHash
+  encodedBytes = do
+    requireAdmittedEmitter orders emitter
+    validateAssertionBytes bounds encodedBytes
+    let previousSequence = emitterSequenceValue (emitterCursorSequence previousCursor)
+        previousEpoch = emitterEpochValue (emitterCursorEpoch previousCursor)
+    unless
+      (previousSequence == maxBound)
+      (Left (EmitterRotationNotRequired emitter previousCursor))
+    when (previousEpoch == maxBound) (Left (EmitterEpochExhausted emitter))
+    let resultCursor =
+          EmitterCursor
+            { internalEmitterCursorEpoch = EmitterEpoch (previousEpoch + 1)
+            , internalEmitterCursorSequence = EmitterSequence 0
+            , internalEmitterCursorHash = resultHash
+            }
+    Right
+      ( assertionFromCursor
+          orders
+          emitter
+          incarnation
+          EpochRotationAssertion
+          previousCursor
+          resultCursor
+          encodedBytes
+      )
+
+-- | Construct the dedicated Orders-scope invalidation. Unlike ordinary epoch
+-- rotation, this transition is legal at any prior sequence, but only when the
+-- HMAC-covered migration scope names that exact prior cursor. It cannot wrap
+-- the epoch and is intentionally unavailable through 'mkNextAssertion'.
+mkOrdersMigrationAssertionForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> EventHash
+  -> Natural
+  -> OrdersMigrationScope
+  -> Either GatewayStateError GatewayAssertion
+mkOrdersMigrationAssertionForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  previousCursor
+  resultHash
+  encodedBytes
+  scope = do
+    requireAdmittedEmitter orders emitter
+    validateAssertionBytes bounds encodedBytes
+    let previousEpoch = emitterEpochValue (emitterCursorEpoch previousCursor)
+        previousSequence = emitterSequenceValue (emitterCursorSequence previousCursor)
+    unless
+      ( ordersMigrationPreviousEpoch scope == previousEpoch
+          && ordersMigrationPreviousSequence scope == previousSequence
+      )
+      ( Left
+          ( OrdersMigrationScopeMismatch
+              emitter
+              previousCursor
+              (ordersMigrationPreviousEpoch scope)
+              (ordersMigrationPreviousSequence scope)
+          )
+      )
+    unless
+      (BS.length (ordersMigrationPreviousOrdersDigest scope) == hashWidth)
+      ( Left
+          ( HashLengthInvalid
+              OrdersMigrationOrdersDigest
+              hashWidth
+              (BS.length (ordersMigrationPreviousOrdersDigest scope))
+          )
+      )
+    when (previousEpoch == maxBound) (Left (EmitterEpochExhausted emitter))
+    let resultCursor =
+          EmitterCursor
+            { internalEmitterCursorEpoch = EmitterEpoch (previousEpoch + 1)
+            , internalEmitterCursorSequence = EmitterSequence 0
+            , internalEmitterCursorHash = resultHash
+            }
+    Right
+      ( assertionFromCursor
+          orders
+          emitter
+          incarnation
+          (OrdersMigrationAssertion scope)
+          previousCursor
+          resultCursor
+          encodedBytes
+      )
 
 assertionFromCursor
   :: ValidatedOrders
   -> NodeId
+  -> EmitterIncarnation
   -> AssertionKind
   -> EmitterCursor
   -> EmitterCursor
   -> Natural
   -> GatewayAssertion
-assertionFromCursor orders emitter kind previousCursor resultCursor encodedBytes =
+assertionFromCursor orders emitter incarnation kind previousCursor resultCursor encodedBytes =
   GatewayAssertion
     { internalAssertionOrdersAnchor = validatedOrdersAnchor orders
     , internalAssertionEmitter = emitter
+    , internalAssertionIncarnation = incarnation
     , internalAssertionKind = kind
     , internalAssertionPreviousHash = emitterCursorHash previousCursor
     , internalAssertionResultCursor = resultCursor
@@ -591,6 +804,9 @@ validateAssertionBytes bounds encodedBytes = do
 assertionEmitter :: GatewayAssertion -> NodeId
 assertionEmitter = internalAssertionEmitter
 
+assertionIncarnation :: GatewayAssertion -> EmitterIncarnation
+assertionIncarnation = internalAssertionIncarnation
+
 assertionOrdersAnchor :: GatewayAssertion -> OrdersAnchor
 assertionOrdersAnchor = internalAssertionOrdersAnchor
 
@@ -607,7 +823,8 @@ assertionEncodedBytes :: GatewayAssertion -> Natural
 assertionEncodedBytes = internalAssertionEncodedBytes
 
 data EmitterReplica = EmitterReplica
-  { replicaCursor :: EmitterCursor
+  { replicaIncarnation :: EmitterIncarnation
+  , replicaCursor :: EmitterCursor
   , replicaLatestHeartbeat :: Maybe GatewayAssertion
   , replicaLatestOwnership :: Maybe GatewayAssertion
   , replicaCheckpoint :: EmitterCheckpoint
@@ -623,6 +840,7 @@ data EmitterReplica = EmitterReplica
 data EmitterCheckpoint = EmitterCheckpoint
   { internalCheckpointOrdersAnchor :: OrdersAnchor
   , internalCheckpointEmitter :: NodeId
+  , internalCheckpointIncarnation :: EmitterIncarnation
   , internalCheckpointCursor :: EmitterCursor
   , internalCheckpointHeartbeat :: Maybe GatewayAssertion
   , internalCheckpointOwnership :: Maybe GatewayAssertion
@@ -638,17 +856,50 @@ mkEmitterCheckpoint
   -> Maybe GatewayAssertion
   -> Either GatewayStateError EmitterCheckpoint
 mkEmitterCheckpoint bounds orders emitter cursor heartbeat ownership = do
-  requireAdmittedEmitter orders emitter
-  traverse_ (validateCheckpointEvidence bounds orders emitter cursor HeartbeatEvidence) heartbeat
-  traverse_ (validateCheckpointEvidence bounds orders emitter cursor OwnershipEvidence) ownership
-  Right
-    EmitterCheckpoint
-      { internalCheckpointOrdersAnchor = validatedOrdersAnchor orders
-      , internalCheckpointEmitter = emitter
-      , internalCheckpointCursor = cursor
-      , internalCheckpointHeartbeat = heartbeat
-      , internalCheckpointOwnership = ownership
-      }
+  mkEmitterCheckpointForIncarnation
+    bounds
+    orders
+    emitter
+    emitterIncarnationZero
+    cursor
+    heartbeat
+    ownership
+
+-- | Construct a semantic checkpoint bound to the emitter incarnation at its
+-- exact compaction frontier.
+mkEmitterCheckpointForIncarnation
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> Maybe GatewayAssertion
+  -> Maybe GatewayAssertion
+  -> Either GatewayStateError EmitterCheckpoint
+mkEmitterCheckpointForIncarnation
+  bounds
+  orders
+  emitter
+  incarnation
+  cursor
+  heartbeat
+  ownership = do
+    requireAdmittedEmitter orders emitter
+    traverse_
+      (validateCheckpointEvidence bounds orders emitter incarnation cursor HeartbeatEvidence)
+      heartbeat
+    traverse_
+      (validateCheckpointEvidence bounds orders emitter incarnation cursor OwnershipEvidence)
+      ownership
+    Right
+      EmitterCheckpoint
+        { internalCheckpointOrdersAnchor = validatedOrdersAnchor orders
+        , internalCheckpointEmitter = emitter
+        , internalCheckpointIncarnation = incarnation
+        , internalCheckpointCursor = cursor
+        , internalCheckpointHeartbeat = heartbeat
+        , internalCheckpointOwnership = ownership
+        }
 
 data CheckpointEvidenceKind = HeartbeatEvidence | OwnershipEvidence
 
@@ -656,35 +907,52 @@ validateCheckpointEvidence
   :: GatewayBounds
   -> ValidatedOrders
   -> NodeId
+  -> EmitterIncarnation
   -> EmitterCursor
   -> CheckpointEvidenceKind
   -> GatewayAssertion
   -> Either GatewayStateError ()
-validateCheckpointEvidence bounds orders emitter checkpointCursor evidenceKind assertion = do
-  unless
-    (assertionOrdersAnchor assertion == validatedOrdersAnchor orders)
-    ( Left
-        ( AssertionOrdersMismatch
-            (validatedOrdersAnchor orders)
-            (assertionOrdersAnchor assertion)
-        )
-    )
-  unless
-    (assertionEmitter assertion == emitter)
-    (Left (CheckpointEvidenceEmitterMismatch emitter (assertionEmitter assertion)))
-  unless
-    (checkpointKindMatches evidenceKind (assertionKind assertion))
-    (Left (CheckpointEvidenceKindMismatch emitter (assertionKind assertion)))
-  validateAssertionBytes bounds (assertionEncodedBytes assertion)
-  let evidenceCursor = assertionResultCursor assertion
-  when
-    (cursorPosition evidenceCursor > cursorPosition checkpointCursor)
-    (Left (CheckpointEvidenceAhead emitter evidenceCursor checkpointCursor))
-  when
-    ( cursorPosition evidenceCursor == cursorPosition checkpointCursor
-        && emitterCursorHash evidenceCursor /= emitterCursorHash checkpointCursor
-    )
-    (Left (CheckpointEvidenceCursorConflict emitter evidenceCursor checkpointCursor))
+validateCheckpointEvidence
+  bounds
+  orders
+  emitter
+  checkpointIncarnation
+  checkpointCursor
+  evidenceKind
+  assertion = do
+    unless
+      (assertionOrdersAnchor assertion == validatedOrdersAnchor orders)
+      ( Left
+          ( AssertionOrdersMismatch
+              (validatedOrdersAnchor orders)
+              (assertionOrdersAnchor assertion)
+          )
+      )
+    unless
+      (assertionEmitter assertion == emitter)
+      (Left (CheckpointEvidenceEmitterMismatch emitter (assertionEmitter assertion)))
+    unless
+      (checkpointKindMatches evidenceKind (assertionKind assertion))
+      (Left (CheckpointEvidenceKindMismatch emitter (assertionKind assertion)))
+    validateAssertionBytes bounds (assertionEncodedBytes assertion)
+    when
+      (assertionIncarnation assertion > checkpointIncarnation)
+      ( Left
+          ( CheckpointEvidenceIncarnationAhead
+              emitter
+              (assertionIncarnation assertion)
+              checkpointIncarnation
+          )
+      )
+    let evidenceCursor = assertionResultCursor assertion
+    when
+      (cursorPosition evidenceCursor > cursorPosition checkpointCursor)
+      (Left (CheckpointEvidenceAhead emitter evidenceCursor checkpointCursor))
+    when
+      ( cursorPosition evidenceCursor == cursorPosition checkpointCursor
+          && emitterCursorHash evidenceCursor /= emitterCursorHash checkpointCursor
+      )
+      (Left (CheckpointEvidenceCursorConflict emitter evidenceCursor checkpointCursor))
 
 checkpointKindMatches :: CheckpointEvidenceKind -> AssertionKind -> Bool
 checkpointKindMatches evidenceKind kind =
@@ -695,6 +963,9 @@ checkpointKindMatches evidenceKind kind =
 
 emitterCheckpointEmitter :: EmitterCheckpoint -> NodeId
 emitterCheckpointEmitter = internalCheckpointEmitter
+
+emitterCheckpointIncarnation :: EmitterCheckpoint -> EmitterIncarnation
+emitterCheckpointIncarnation = internalCheckpointIncarnation
 
 emitterCheckpointOrdersAnchor :: EmitterCheckpoint -> OrdersAnchor
 emitterCheckpointOrdersAnchor = internalCheckpointOrdersAnchor
@@ -711,6 +982,7 @@ emitterCheckpointOwnership = internalCheckpointOwnership
 data RejectionReason
   = RejectOrdersMismatch
   | RejectUnknownEmitter
+  | RejectStaleIncarnation
   | RejectDelayedOldEpoch
   | RejectEpochGap
   | RejectSequenceGap
@@ -749,9 +1021,20 @@ data GatewayState = GatewayState
   { internalGatewayBounds :: GatewayBounds
   , internalGatewayActiveOrders :: ValidatedOrders
   , internalGatewayStagedOrders :: Maybe ValidatedOrders
+  , internalGatewayOrdersMigrationAdmission :: Maybe OrdersMigrationAdmission
   , internalGatewayEmitters :: Map NodeId EmitterReplica
   , internalGatewayRecentHashes :: Seq EventHash
   , internalGatewayRejections :: RejectionSummary
+  }
+  deriving (Eq, Show)
+
+-- | A process may bridge the one same-coordinate/different-hash restart edge
+-- only when its own authenticated journal proves the prior Orders digest.
+-- Pending identities are bounded by the active Orders member set and are
+-- consumed independently after their signed migration is admitted.
+data OrdersMigrationAdmission = OrdersMigrationAdmission
+  { internalMigrationPriorOrdersDigest :: !ByteString
+  , internalMigrationPendingEmitters :: !(Set.Set NodeId)
   }
   deriving (Eq, Show)
 
@@ -767,10 +1050,116 @@ initializeGatewayState bounds orders cursorSeeds = do
       { internalGatewayBounds = bounds
       , internalGatewayActiveOrders = orders
       , internalGatewayStagedOrders = Nothing
+      , internalGatewayOrdersMigrationAdmission = Nothing
       , internalGatewayEmitters = emitters
       , internalGatewayRecentHashes = Seq.empty
       , internalGatewayRejections = emptyRejectionSummary
       }
+
+-- | Arm the narrow Orders-restart bridge from a digest read from an
+-- authenticated local journal. This does not permit an arbitrary cursor jump:
+-- the exceptional assertion must still name the receiver's exact current
+-- coordinates, and its result must be the dedicated next-epoch sequence-zero
+-- migration. A process without this authority remains fail-closed and must
+-- first install an authenticated peer repair.
+armOrdersMigrationAdmission
+  :: ByteString
+  -> GatewayState
+  -> Either GatewayStateError GatewayState
+armOrdersMigrationAdmission priorOrdersDigest state = do
+  validateOrdersMigrationAdmissionDigest priorOrdersDigest state
+  case internalGatewayOrdersMigrationAdmission state of
+    Just existing
+      | internalMigrationPriorOrdersDigest existing /= priorOrdersDigest ->
+          Left
+            ( OrdersMigrationAdmissionConflict
+                (internalMigrationPriorOrdersDigest existing)
+                priorOrdersDigest
+            )
+      | otherwise -> Right state
+    Nothing ->
+      Right
+        state
+          { internalGatewayOrdersMigrationAdmission =
+              Just
+                OrdersMigrationAdmission
+                  { internalMigrationPriorOrdersDigest = priorOrdersDigest
+                  , internalMigrationPendingEmitters =
+                      Map.keysSet (internalGatewayEmitters state)
+                  }
+          }
+
+-- | Re-arm exactly one emitter from authenticated local-journal recovery.
+-- Unlike 'armOrdersMigrationAdmission', this never grants the bridge to every
+-- member when no admission exists. It is the narrow rollback companion used
+-- after a volatile migration publication consumed the local admission before
+-- its durable transition committed.
+rearmOrdersMigrationAdmissionForEmitter
+  :: NodeId
+  -> ByteString
+  -> GatewayState
+  -> Either GatewayStateError GatewayState
+rearmOrdersMigrationAdmissionForEmitter emitter priorOrdersDigest state = do
+  validateOrdersMigrationAdmissionDigest priorOrdersDigest state
+  unless
+    (Map.member emitter (internalGatewayEmitters state))
+    (Left (AssertionUnknownEmitter emitter))
+  case internalGatewayOrdersMigrationAdmission state of
+    Just existing
+      | internalMigrationPriorOrdersDigest existing /= priorOrdersDigest ->
+          Left
+            ( OrdersMigrationAdmissionConflict
+                (internalMigrationPriorOrdersDigest existing)
+                priorOrdersDigest
+            )
+      | otherwise ->
+          Right
+            state
+              { internalGatewayOrdersMigrationAdmission =
+                  Just
+                    existing
+                      { internalMigrationPendingEmitters =
+                          Set.insert emitter (internalMigrationPendingEmitters existing)
+                      }
+              }
+    Nothing ->
+      Right
+        state
+          { internalGatewayOrdersMigrationAdmission =
+              Just
+                OrdersMigrationAdmission
+                  { internalMigrationPriorOrdersDigest = priorOrdersDigest
+                  , internalMigrationPendingEmitters = Set.singleton emitter
+                  }
+          }
+
+validateOrdersMigrationAdmissionDigest
+  :: ByteString
+  -> GatewayState
+  -> Either GatewayStateError ()
+validateOrdersMigrationAdmissionDigest priorOrdersDigest state = do
+  unless
+    (BS.length priorOrdersDigest == hashWidth)
+    ( Left
+        ( HashLengthInvalid
+            OrdersMigrationOrdersDigest
+            hashWidth
+            (BS.length priorOrdersDigest)
+        )
+    )
+  when
+    ( priorOrdersDigest
+        == ordersAnchorHashBytes
+          (validatedOrdersAnchor (internalGatewayActiveOrders state))
+    )
+    (Left (OrdersMigrationAdmissionCurrentOrdersDigest priorOrdersDigest))
+
+gatewayStateOrdersMigrationPendingCount :: GatewayState -> Int
+gatewayStateOrdersMigrationPendingCount state =
+  maybe
+    0
+    (Set.size . internalMigrationPendingEmitters)
+    (internalGatewayOrdersMigrationAdmission state)
 
 -- | Replace one emitter replica from the retained continuity authority during
 -- startup recovery.  Semantic/replay slots are cleared because the authority
@@ -782,12 +1171,27 @@ restoreEmitterFromContinuity
   -> GatewayState
   -> Either GatewayStateError GatewayState
 restoreEmitterFromContinuity emitter cursor state =
+  restoreEmitterFromContinuityForIncarnation
+    emitter
+    emitterIncarnationZero
+    cursor
+    state
+
+-- | Restore the retained cursor together with its durable mount fence.
+restoreEmitterFromContinuityForIncarnation
+  :: NodeId
+  -> EmitterIncarnation
+  -> EmitterCursor
+  -> GatewayState
+  -> Either GatewayStateError GatewayState
+restoreEmitterFromContinuityForIncarnation emitter incarnation cursor state =
   if Map.member emitter (internalGatewayEmitters state)
     then
       let checkpoint =
             emptyEmitterCheckpoint
               (validatedOrdersAnchor (internalGatewayActiveOrders state))
               emitter
+              incarnation
               cursor
        in Right
             state
@@ -795,7 +1199,8 @@ restoreEmitterFromContinuity emitter cursor state =
                   Map.insert
                     emitter
                     EmitterReplica
-                      { replicaCursor = cursor
+                      { replicaIncarnation = incarnation
+                      , replicaCursor = cursor
                       , replicaLatestHeartbeat = Nothing
                       , replicaLatestOwnership = Nothing
                       , replicaCheckpoint = checkpoint
@@ -821,13 +1226,15 @@ seedEmitters orders cursorSeeds = do
     ( Map.mapWithKey
         ( \emitter cursor ->
             EmitterReplica
-              { replicaCursor = cursor
+              { replicaIncarnation = emitterIncarnationZero
+              , replicaCursor = cursor
               , replicaLatestHeartbeat = Nothing
               , replicaLatestOwnership = Nothing
               , replicaCheckpoint =
                   emptyEmitterCheckpoint
                     (validatedOrdersAnchor orders)
                     emitter
+                    emitterIncarnationZero
                     cursor
               , replicaReplay = Seq.empty
               }
@@ -838,12 +1245,14 @@ seedEmitters orders cursorSeeds = do
 emptyEmitterCheckpoint
   :: OrdersAnchor
   -> NodeId
+  -> EmitterIncarnation
   -> EmitterCursor
   -> EmitterCheckpoint
-emptyEmitterCheckpoint ordersAnchor emitter cursor =
+emptyEmitterCheckpoint ordersAnchor emitter incarnation cursor =
   EmitterCheckpoint
     { internalCheckpointOrdersAnchor = ordersAnchor
     , internalCheckpointEmitter = emitter
+    , internalCheckpointIncarnation = incarnation
     , internalCheckpointCursor = cursor
     , internalCheckpointHeartbeat = Nothing
     , internalCheckpointOwnership = Nothing
@@ -883,27 +1292,134 @@ applyAssertionSemantic assertion state = do
     case Map.lookup (assertionEmitter assertion) (internalGatewayEmitters state) of
       Nothing -> Left (AssertionUnknownEmitter (assertionEmitter assertion))
       Just present -> Right present
-  disposition <- cursorDisposition (replicaCursor replica) assertion
+  case compare (assertionIncarnation assertion) (replicaIncarnation replica) of
+    LT ->
+      Left
+        ( AssertionStaleIncarnation
+            (assertionEmitter assertion)
+            (assertionIncarnation assertion)
+            (replicaIncarnation replica)
+        )
+    GT ->
+      when
+        ( cursorPosition (assertionResultCursor assertion)
+            <= cursorPosition (replicaCursor replica)
+        )
+        ( Left
+            ( AssertionIncarnationRequiresAdvance
+                (assertionEmitter assertion)
+                (replicaIncarnation replica)
+                (assertionIncarnation assertion)
+            )
+        )
+    EQ -> Right ()
+  disposition <-
+    cursorDispositionWithOrdersMigrationAdmission state replica assertion
+  let admissionAdvanced =
+        consumeOrdersMigrationAdmission disposition assertion state
   case disposition of
-    CursorDuplicate -> Right (ApplyDuplicate, state)
+    CursorDuplicate -> Right (ApplyDuplicate, admissionAdvanced)
     CursorAdvance -> do
       let updatedReplica = advanceReplica (internalGatewayBounds state) assertion replica
           updatedEmitters =
             Map.adjust
               (const updatedReplica)
               (assertionEmitter assertion)
-              (internalGatewayEmitters state)
+              (internalGatewayEmitters admissionAdvanced)
           updatedHashes =
             trimSeq
               gatewayDiagnosticHashCapacity
-              (internalGatewayRecentHashes state |> emitterCursorHash (assertionResultCursor assertion))
+              ( internalGatewayRecentHashes admissionAdvanced
+                  |> emitterCursorHash (assertionResultCursor assertion)
+              )
       Right
         ( ApplyAdvanced
-        , state
+        , admissionAdvanced
             { internalGatewayEmitters = updatedEmitters
             , internalGatewayRecentHashes = updatedHashes
             }
         )
+
+cursorDispositionWithOrdersMigrationAdmission
+  :: GatewayState
+  -> EmitterReplica
+  -> GatewayAssertion
+  -> Either GatewayStateError CursorDisposition
+cursorDispositionWithOrdersMigrationAdmission state replica assertion =
+  case ( internalGatewayOrdersMigrationAdmission state
+       , assertionKind assertion
+       ) of
+    (Just admission, OrdersMigrationAssertion scope)
+      | Set.member
+          (assertionEmitter assertion)
+          (internalMigrationPendingEmitters admission) -> do
+          unless
+            ( ordersMigrationPreviousOrdersDigest scope
+                == internalMigrationPriorOrdersDigest admission
+            )
+            ( Left
+                ( OrdersMigrationAdmissionDigestMismatch
+                    (assertionEmitter assertion)
+                    (internalMigrationPriorOrdersDigest admission)
+                    (ordersMigrationPreviousOrdersDigest scope)
+                )
+            )
+          let current = replicaCursor replica
+              currentEpoch = emitterEpochValue (emitterCursorEpoch current)
+              currentSequence = emitterSequenceValue (emitterCursorSequence current)
+          if assertionResultCursor assertion == current
+            then Right CursorDuplicate
+            else do
+              unless
+                ( ordersMigrationPreviousEpoch scope == currentEpoch
+                    && ordersMigrationPreviousSequence scope == currentSequence
+                )
+                ( Left
+                    ( OrdersMigrationAdmissionCoordinateMismatch
+                        (assertionEmitter assertion)
+                        current
+                        (ordersMigrationPreviousEpoch scope)
+                        (ordersMigrationPreviousSequence scope)
+                    )
+                )
+              -- The journal authority bridges only a genesis-hash conflict at
+              -- the receiver's exact coordinate. The signed assertion still
+              -- has to directly follow its own prior hash and satisfy the
+              -- dedicated epoch transition.
+              cursorDisposition (migrationPreviousCursor assertion) assertion
+    _ -> cursorDisposition (replicaCursor replica) assertion
+
+consumeOrdersMigrationAdmission
+  :: CursorDisposition
+  -> GatewayAssertion
+  -> GatewayState
+  -> GatewayState
+consumeOrdersMigrationAdmission disposition assertion state =
+  case disposition of
+    CursorAdvance ->
+      consumeOrdersMigrationAdmissionForEmitter (assertionEmitter assertion) state
+    CursorDuplicate ->
+      case assertionKind assertion of
+        OrdersMigrationAssertion _ ->
+          consumeOrdersMigrationAdmissionForEmitter (assertionEmitter assertion) state
+        _ -> state
+
+consumeOrdersMigrationAdmissionForEmitter
+  :: NodeId
+  -> GatewayState
+  -> GatewayState
+consumeOrdersMigrationAdmissionForEmitter emitter state =
+  case internalGatewayOrdersMigrationAdmission state of
+    Nothing -> state
+    Just admission ->
+      let pending = Set.delete emitter (internalMigrationPendingEmitters admission)
+       in state
+            { internalGatewayOrdersMigrationAdmission =
+                if Set.null pending
+                  then Nothing
+                  else
+                    Just admission {internalMigrationPendingEmitters = pending}
+            }
 
 data CursorDisposition = CursorDuplicate | CursorAdvance
   deriving (Eq, Show)
@@ -944,8 +1460,7 @@ cursorDisposition current assertion =
                 else
                   if targetEpoch == currentEpoch + 1
                     && targetSequence == 0
-                    && assertionKind assertion == EpochRotationAssertion
-                    && currentSequence == maxBound
+                    && validEpochAdvance currentEpoch currentSequence (assertionKind assertion)
                     then requirePreviousHash current assertion
                     else
                       Left
@@ -954,6 +1469,15 @@ cursorDisposition current assertion =
                             currentEpoch
                             targetEpoch
                         )
+ where
+  validEpochAdvance currentEpoch currentSequence kind =
+    case kind of
+      EpochRotationAssertion -> currentSequence == maxBound
+      OrdersMigrationAssertion scope ->
+        currentEpoch /= maxBound
+          && ordersMigrationPreviousEpoch scope == currentEpoch
+          && ordersMigrationPreviousSequence scope == currentSequence
+      _ -> False
 
 requirePreviousHash
   :: EmitterCursor
@@ -976,22 +1500,42 @@ advanceReplica
   -> EmitterReplica
   -> EmitterReplica
 advanceReplica bounds assertion replica =
-  let appendedReplay = replicaReplay replica |> assertion
+  let isMigration = case assertionKind assertion of
+        OrdersMigrationAssertion _ -> True
+        _ -> False
+      appendedReplay =
+        if isMigration
+          then Seq.singleton assertion
+          else replicaReplay replica |> assertion
       overflow =
         max
           0
           (Seq.length appendedReplay - gatewayReplayPerEmitter bounds)
       (compacted, replay) = Seq.splitAt overflow appendedReplay
       checkpoint =
-        foldl advanceCheckpoint (replicaCheckpoint replica) compacted
+        if isMigration
+          then
+            -- The migration commit is itself the first current-Orders repair
+            -- floor. A fresh member can therefore install an authenticated
+            -- snapshot immediately, including when the old and new genesis
+            -- coordinates are both (1,0), without waiting for later traffic
+            -- to trigger incidental compaction.
+            emptyEmitterCheckpoint
+              (assertionOrdersAnchor assertion)
+              (assertionEmitter assertion)
+              (assertionIncarnation assertion)
+              (assertionResultCursor assertion)
+          else foldl advanceCheckpoint (replicaCheckpoint replica) compacted
       (latestHeartbeat, latestOwnership) =
         case assertionKind assertion of
           HeartbeatAssertion _ -> (Just assertion, replicaLatestOwnership replica)
           OwnershipAssertion _ -> (replicaLatestHeartbeat replica, Just assertion)
           EpochRotationAssertion ->
             (replicaLatestHeartbeat replica, replicaLatestOwnership replica)
+          OrdersMigrationAssertion _ -> (Nothing, Nothing)
    in EmitterReplica
-        { replicaCursor = assertionResultCursor assertion
+        { replicaIncarnation = assertionIncarnation assertion
+        , replicaCursor = assertionResultCursor assertion
         , replicaLatestHeartbeat = latestHeartbeat
         , replicaLatestOwnership = latestOwnership
         , replicaCheckpoint = checkpoint
@@ -1013,11 +1557,23 @@ advanceCheckpoint checkpoint assertion =
             ( internalCheckpointHeartbeat checkpoint
             , internalCheckpointOwnership checkpoint
             )
+          OrdersMigrationAssertion _ -> (Nothing, Nothing)
    in checkpoint
-        { internalCheckpointCursor = assertionResultCursor assertion
+        { internalCheckpointIncarnation = assertionIncarnation assertion
+        , internalCheckpointCursor = assertionResultCursor assertion
         , internalCheckpointHeartbeat = heartbeat
         , internalCheckpointOwnership = ownership
         }
+
+migrationPreviousCursor :: GatewayAssertion -> EmitterCursor
+migrationPreviousCursor assertion =
+  case assertionKind assertion of
+    OrdersMigrationAssertion scope ->
+      restoredEmitterCursor
+        (ordersMigrationPreviousEpoch scope)
+        (ordersMigrationPreviousSequence scope)
+        (assertionPreviousHash assertion)
+    _ -> assertionResultCursor assertion
 
 gatewayStateActiveOrders :: GatewayState -> ValidatedOrders
 gatewayStateActiveOrders = internalGatewayActiveOrders
@@ -1044,6 +1600,10 @@ gatewayStateLatestHeartbeat emitter state =
 gatewayStateLatestOwnership :: NodeId -> GatewayState -> Maybe GatewayAssertion
 gatewayStateLatestOwnership emitter state =
   replicaLatestOwnership =<< Map.lookup emitter (internalGatewayEmitters state)
+
+gatewayStateEmitterIncarnation :: NodeId -> GatewayState -> Maybe EmitterIncarnation
+gatewayStateEmitterIncarnation emitter state =
+  replicaIncarnation <$> Map.lookup emitter (internalGatewayEmitters state)
 
 gatewayStateEmitterCheckpoint :: NodeId -> GatewayState -> Maybe EmitterCheckpoint
 gatewayStateEmitterCheckpoint emitter state =
@@ -1096,10 +1656,24 @@ activateOrdersPromotion cursorSeeds state =
     Nothing -> Left OrdersPromotionSlotEmpty
     Just staged -> do
       emitters <- seedEmitters staged cursorSeeds
+      let oldMembers = Map.keysSet (internalGatewayEmitters state)
+          continuingMembers = oldMembers `Set.intersection` Map.keysSet emitters
+          priorOrdersDigest =
+            ordersAnchorHashBytes
+              (validatedOrdersAnchor (internalGatewayActiveOrders state))
       Right
         state
           { internalGatewayActiveOrders = staged
           , internalGatewayStagedOrders = Nothing
+          , internalGatewayOrdersMigrationAdmission =
+              if Set.null continuingMembers
+                then Nothing
+                else
+                  Just
+                    OrdersMigrationAdmission
+                      { internalMigrationPriorOrdersDigest = priorOrdersDigest
+                      , internalMigrationPendingEmitters = continuingMembers
+                      }
           , internalGatewayEmitters = emitters
           , internalGatewayRecentHashes = Seq.empty
           }
@@ -1254,6 +1828,7 @@ sortAssertions =
   sortOn
     ( \assertion ->
         ( assertionEmitter assertion
+        , assertionIncarnation assertion
         , emitterCursorEpoch (assertionResultCursor assertion)
         , emitterCursorSequence (assertionResultCursor assertion)
         )
@@ -1304,10 +1879,11 @@ mkEmitterRepair bounds orders checkpoint assertions = do
         )
     )
   validatedCheckpoint <-
-    mkEmitterCheckpoint
+    mkEmitterCheckpointForIncarnation
       bounds
       orders
       (emitterCheckpointEmitter checkpoint)
+      (emitterCheckpointIncarnation checkpoint)
       (emitterCheckpointCursor checkpoint)
       (emitterCheckpointHeartbeat checkpoint)
       (emitterCheckpointOwnership checkpoint)
@@ -1349,7 +1925,8 @@ mkEmitterRepair bounds orders checkpoint assertions = do
 checkpointReplica :: EmitterCheckpoint -> EmitterReplica
 checkpointReplica checkpoint =
   EmitterReplica
-    { replicaCursor = emitterCheckpointCursor checkpoint
+    { replicaIncarnation = emitterCheckpointIncarnation checkpoint
+    , replicaCursor = emitterCheckpointCursor checkpoint
     , replicaLatestHeartbeat = emitterCheckpointHeartbeat checkpoint
     , replicaLatestOwnership = emitterCheckpointOwnership checkpoint
     , replicaCheckpoint = checkpoint
@@ -1375,6 +1952,27 @@ advanceRepairReplica bounds orders emitter replica assertion = do
   unless
     (assertionEmitter assertion == emitter)
     (Left (RepairAssertionEmitterMismatch emitter (assertionEmitter assertion)))
+  case compare (assertionIncarnation assertion) (replicaIncarnation replica) of
+    LT ->
+      Left
+        ( AssertionStaleIncarnation
+            emitter
+            (assertionIncarnation assertion)
+            (replicaIncarnation replica)
+        )
+    GT ->
+      when
+        ( cursorPosition (assertionResultCursor assertion)
+            <= cursorPosition (replicaCursor replica)
+        )
+        ( Left
+            ( AssertionIncarnationRequiresAdvance
+                emitter
+                (replicaIncarnation replica)
+                (assertionIncarnation assertion)
+            )
+        )
+    EQ -> Right ()
   disposition <- cursorDisposition (replicaCursor replica) assertion
   case disposition of
     CursorDuplicate ->
@@ -1429,6 +2027,27 @@ applyEmitterRepair repair state
   emitter = internalRepairEmitter repair
 
   applyAgainst current =
+    case compare (replicaIncarnation repaired) (replicaIncarnation current) of
+      LT ->
+        rejectRepair
+          ( RepairResultStaleIncarnation
+              emitter
+              (replicaIncarnation repaired)
+              (replicaIncarnation current)
+          )
+      GT
+        | cursorPosition (replicaCursor repaired)
+            <= cursorPosition (replicaCursor current) ->
+            rejectRepair
+              ( RepairIncarnationRequiresAdvance
+                  emitter
+                  (replicaIncarnation current)
+                  (replicaIncarnation repaired)
+              )
+        | otherwise -> applyAdvancing current
+      EQ -> applyAtSameIncarnation current
+
+  applyAtSameIncarnation current =
     case compare (cursorPosition (replicaCursor repaired)) (cursorPosition (replicaCursor current)) of
       LT -> rejectRepair (RepairResultBehind emitter (replicaCursor repaired) (replicaCursor current))
       EQ
@@ -1440,7 +2059,9 @@ applyEmitterRepair repair state
                   (replicaCursor repaired)
                   (replicaCursor current)
               )
-        | sameSemanticProjection repaired current -> RepairDuplicate state
+        | sameSemanticProjection repaired current ->
+            RepairDuplicate
+              (consumeOrdersMigrationAdmissionForEmitter emitter state)
         | otherwise ->
             RepairApplied
               ( replaceReplica
@@ -1449,15 +2070,17 @@ applyEmitterRepair repair state
                     , replicaLatestOwnership = replicaLatestOwnership repaired
                     }
               )
-      GT
-        | repairExtendsOrJumps current -> RepairApplied (replaceReplica repaired)
-        | otherwise ->
-            rejectRepair
-              ( RepairTargetNotOnSourceChain
-                  emitter
-                  (replicaCursor current)
-                  (emitterCheckpointCursor (internalRepairCheckpoint repair))
-              )
+      GT -> applyAdvancing current
+
+  applyAdvancing current
+    | repairExtendsOrJumps current = RepairApplied (replaceReplica repaired)
+    | otherwise =
+        rejectRepair
+          ( RepairTargetNotOnSourceChain
+              emitter
+              (replicaCursor current)
+              (emitterCheckpointCursor (internalRepairCheckpoint repair))
+          )
 
   repairExtendsOrJumps current =
     let target = replicaCursor current
@@ -1469,15 +2092,17 @@ applyEmitterRepair repair state
             (internalRepairAssertions repair)
 
   replaceReplica replacement =
-    let updatedHashes =
+    let admissionAdvanced =
+          consumeOrdersMigrationAdmissionForEmitter emitter state
+        updatedHashes =
           trimSeq
             gatewayDiagnosticHashCapacity
-            ( internalGatewayRecentHashes state
+            ( internalGatewayRecentHashes admissionAdvanced
                 |> emitterCursorHash (replicaCursor replacement)
             )
-     in state
+     in admissionAdvanced
           { internalGatewayEmitters =
-              Map.insert emitter replacement (internalGatewayEmitters state)
+              Map.insert emitter replacement (internalGatewayEmitters admissionAdvanced)
           , internalGatewayRecentHashes = updatedHashes
           }
 
@@ -1486,9 +2111,56 @@ applyEmitterRepair repair state
       (recordStateRejection err Nothing state)
       err
 
+-- | Restore the exact terminal replica proven by the authenticated local
+-- emitter journal. This authority is deliberately distinct from peer repair:
+-- a peer may never regress a cursor, while the local journal must be able to
+-- discard a volatile publication that ran ahead of its last committed
+-- projection. The opaque 'EmitterRepair' has already validated its checkpoint
+-- and contiguous suffix; this transition checks current Orders/membership and
+-- replaces only that emitter.
+restoreEmitterFromRetainedRepair
+  :: NodeId
+  -> EmitterRepair
+  -> GatewayState
+  -> Either GatewayStateError GatewayState
+restoreEmitterFromRetainedRepair expectedEmitter repair state = do
+  unless
+    (emitter == expectedEmitter)
+    (Left (RepairAssertionEmitterMismatch expectedEmitter emitter))
+  unless
+    ( internalCheckpointOrdersAnchor (internalRepairCheckpoint repair)
+        == validatedOrdersAnchor (internalGatewayActiveOrders state)
+    )
+    ( Left
+        ( CheckpointOrdersMismatch
+            (validatedOrdersAnchor (internalGatewayActiveOrders state))
+            (internalCheckpointOrdersAnchor (internalRepairCheckpoint repair))
+        )
+    )
+  unless
+    (Map.member expectedEmitter (internalGatewayEmitters state))
+    (Left (AssertionUnknownEmitter expectedEmitter))
+  let restoredAdmission = consumeOrdersMigrationAdmissionForEmitter expectedEmitter state
+      replacement = internalRepairResultReplica repair
+      updatedHashes =
+        trimSeq
+          gatewayDiagnosticHashCapacity
+          ( internalGatewayRecentHashes restoredAdmission
+              |> emitterCursorHash (replicaCursor replacement)
+          )
+  Right
+    restoredAdmission
+      { internalGatewayEmitters =
+          Map.insert expectedEmitter replacement (internalGatewayEmitters restoredAdmission)
+      , internalGatewayRecentHashes = updatedHashes
+      }
+ where
+  emitter = internalRepairEmitter repair
+
 sameSemanticProjection :: EmitterReplica -> EmitterReplica -> Bool
 sameSemanticProjection left right =
-  replicaLatestHeartbeat left == replicaLatestHeartbeat right
+  replicaIncarnation left == replicaIncarnation right
+    && replicaLatestHeartbeat left == replicaLatestHeartbeat right
     && replicaLatestOwnership left == replicaLatestOwnership right
 
 data DeltaApplyOutcome
@@ -1603,6 +2275,8 @@ rejectionReason err =
     AssertionOrdersMismatch {} -> RejectOrdersMismatch
     DeltaOrdersMismatch {} -> RejectOrdersMismatch
     AssertionUnknownEmitter {} -> RejectUnknownEmitter
+    AssertionStaleIncarnation {} -> RejectStaleIncarnation
+    AssertionIncarnationRequiresAdvance {} -> RejectStaleIncarnation
     AssertionDelayedOldEpoch {} -> RejectDelayedOldEpoch
     AssertionEpochGap {} -> RejectEpochGap
     AssertionSequenceGap {} -> RejectSequenceGap
@@ -1614,6 +2288,8 @@ rejectionReason err =
     CursorVectorAhead {} -> RejectCursorVector
     DeltaReplayUnavailable {} -> RejectReplayUnavailable
     RepairResultBehind {} -> RejectReplayUnavailable
+    RepairResultStaleIncarnation {} -> RejectStaleIncarnation
+    RepairIncarnationRequiresAdvance {} -> RejectStaleIncarnation
     RepairResultCursorConflict {} -> RejectCursorConflict
     RepairTargetNotOnSourceChain {} -> RejectCursorConflict
     DeltaAssertionCountExceeded {} -> RejectDeltaBound
@@ -1654,10 +2330,18 @@ data GatewayStateError
   | AssertionEncodedBytesMustBePositive
   | AssertionEncodedBytesExceeded Natural Natural
   | EpochRotationConstructorRequired
+  | OrdersMigrationConstructorRequired
   | EmitterRotationRequired NodeId EmitterCursor
   | EmitterRotationNotRequired NodeId EmitterCursor
   | EmitterEpochExhausted NodeId
+  | OrdersMigrationScopeMismatch NodeId EmitterCursor Word64 Word64
+  | OrdersMigrationAdmissionCurrentOrdersDigest ByteString
+  | OrdersMigrationAdmissionConflict ByteString ByteString
+  | OrdersMigrationAdmissionDigestMismatch NodeId ByteString ByteString
+  | OrdersMigrationAdmissionCoordinateMismatch NodeId EmitterCursor Word64 Word64
   | AssertionOrdersMismatch OrdersAnchor OrdersAnchor
+  | AssertionStaleIncarnation NodeId EmitterIncarnation EmitterIncarnation
+  | AssertionIncarnationRequiresAdvance NodeId EmitterIncarnation EmitterIncarnation
   | AssertionDelayedOldEpoch NodeId Word64 Word64
   | AssertionEpochGap NodeId Word64 Word64
   | AssertionSequenceGap NodeId Word64 Word64
@@ -1675,6 +2359,7 @@ data GatewayStateError
   | CheckpointOrdersMismatch OrdersAnchor OrdersAnchor
   | CheckpointEvidenceEmitterMismatch NodeId NodeId
   | CheckpointEvidenceKindMismatch NodeId AssertionKind
+  | CheckpointEvidenceIncarnationAhead NodeId EmitterIncarnation EmitterIncarnation
   | CheckpointEvidenceAhead NodeId EmitterCursor EmitterCursor
   | CheckpointEvidenceCursorConflict NodeId EmitterCursor EmitterCursor
   | RepairAssertionEmitterMismatch NodeId NodeId
@@ -1682,6 +2367,8 @@ data GatewayStateError
   | RepairAssertionCountExceeded Int Int
   | RepairFrameBytesExceeded Natural Natural
   | RepairResultBehind NodeId EmitterCursor EmitterCursor
+  | RepairResultStaleIncarnation NodeId EmitterIncarnation EmitterIncarnation
+  | RepairIncarnationRequiresAdvance NodeId EmitterIncarnation EmitterIncarnation
   | RepairResultCursorConflict NodeId EmitterCursor EmitterCursor
   | RepairTargetNotOnSourceChain NodeId EmitterCursor EmitterCursor
   deriving (Eq, Show)

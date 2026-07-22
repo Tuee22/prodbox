@@ -1,0 +1,82 @@
+{{- /*
+The physically separate pre-Vault Bootstrap Broker workload. A single-writer
+bootstrap singleton (replicas: 1, strategy Recreate): it initializes/unseals
+Vault and mediates bounded init/unseal/PKI/child-custody routes, so two
+overlapping instances must never race. It runs the `bootstrap-broker` runtime
+role via `bootstrap-broker start`, authenticates to Vault Kubernetes auth as its
+own bootstrap-only ServiceAccount, and exposes only the constant-time
+`/healthz`/`/readyz` route projections as kubelet probes.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bootstrap-broker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bootstrap-broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "bootstrap-broker.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: bootstrap-broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.bootstrapBroker | nindent 12 }}
+          args:
+            - bootstrap-broker
+            - start
+            - --config
+            - /etc/bootstrap-broker/config/config.dhall
+            {{- range .Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: broker
+              containerPort: {{ .Values.listener.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              # Directory-style mount (no subPath) so the kubelet's atomic
+              # `..data` symlink swap on ConfigMap update propagates to the
+              # broker's file-watch reload loop.
+              mountPath: /etc/bootstrap-broker/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness | quote }}
+              port: broker
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness | quote }}
+              port: broker
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.readiness.successThreshold }}
+      volumes:
+        - name: config
+          configMap:
+            name: bootstrap-broker-config

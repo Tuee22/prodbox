@@ -1193,18 +1193,13 @@ validateConfiguredCertScope domainSection awsSection
   | Text.null (Text.strip (demo_fqdn domainSection)) =
       Left "domain.demo_fqdn must not be empty"
   | otherwise = do
-      servedHost <-
-        mapLeft (\e -> "domain.demo_fqdn: " ++ renderScopeError e) (mkFqdn (demo_fqdn domainSection))
-      scopeSet <- configuredCertScopeSet domainSection awsSection
-      mapLeft (\e -> "domain.cert_scopes: " ++ renderScopeError e) (bindListener scopeSet servedHost)
-
--- | Build the configured 'CertScopeSet' from Tier-0 config. Delegated zones are
--- config-anchored (the served host's parent zone and, when set, the AWS subzone
--- plus its parent) — never the Public Suffix List. Empty @cert_scopes@ defaults
--- to the single exact served host.
-configuredCertScopeSet :: DomainSection -> AwsSubstrateSection -> Either String CertScopeSet
-configuredCertScopeSet domainSection awsSection =
-  certScopeSetForServedHost domainSection awsSection (demo_fqdn domainSection)
+      _ <- certScopeSetForServedHost domainSection awsSection (demo_fqdn domainSection)
+      let awsServedHost = Text.strip (subzone_name awsSection)
+      if Text.null awsServedHost
+        then Right ()
+        else do
+          _ <- certScopeSetForServedHost domainSection awsSection awsServedHost
+          Right ()
 
 -- | The configured 'CertScopeSet' as seen from a specific served host (the home
 -- served host on the home substrate, the AWS subzone on the AWS substrate). The
@@ -1215,9 +1210,16 @@ configuredCertScopeSet domainSection awsSection =
 certScopeSetForServedHost
   :: DomainSection -> AwsSubstrateSection -> Text -> Either String CertScopeSet
 certScopeSetForServedHost domainSection awsSection servedHost = do
+  parsedServedHost <-
+    mapLeft (\e -> "served hostname: " ++ renderScopeError e) (mkFqdn servedHost)
   zones <- traverse parseZone (configuredDelegatedZoneNames domainSection awsSection)
   scopes <- traverse parseScope rawScopeNames
-  mapLeft renderScopeError (mkScopeSet zones scopes)
+  scopeSet <- mapLeft renderScopeError (mkScopeSet zones scopes)
+  _ <-
+    mapLeft
+      (\e -> "domain.cert_scopes: " ++ renderScopeError e)
+      (bindListener scopeSet parsedServedHost)
+  Right scopeSet
  where
   rawScopeNames =
     case filter (not . Text.null . Text.strip) (cert_scopes domainSection) of

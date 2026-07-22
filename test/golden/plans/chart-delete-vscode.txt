@@ -1,6 +1,8 @@
 CHART_DELETE_PLAN
 ROOT_CHART=vscode
 NAMESPACE=vscode
+SUBSTRATE=home-local
+TLS_RETENTION_KEY=public-edge-tls/home-local/test.resolvefintech.com
 DELETE_RELEASE=vscode
 DELETE_RELEASE=keycloak
 DELETE_RELEASE=keycloak-postgres

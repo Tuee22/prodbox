@@ -48,9 +48,10 @@ Development Plan.
 
 Trust and unseal authority form a strict tree rooted at the root cluster. Each tier has exactly one
 Vault seal mode, exactly one unseal authority, and exactly one owner of its durable recovery
-material. Initial root tokens are encrypted to a pinned burn public key whose private key is never
-generated, stored, accepted, or available to `prodbox` and has no known holder; the encrypted token
-is never decrypted or used:
+material. Initial root tokens are encrypted to a pinned burn public key whose private material
+existed only inside an isolated destructive ceremony, was never exported, was destroyed before
+adoption, is never accepted, retained, or available to `prodbox`, and has no known holder; the
+encrypted token is never decrypted or used:
 
 | Tier | Vault seal mode | Who unseals it | Durable recovery material owned by |
 |------|-----------------|----------------|--------------------|
@@ -123,8 +124,9 @@ At child cluster initialization (`vault init` running exactly once against an em
 see [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
 [vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)), Vault PGP-encrypts recovery
 shares to the prepared parent-custody recipient and encrypts the initial root token to the pinned
-burn public key. Its private key is never generated, stored, accepted, or available to `prodbox`, has
-no known holder, and the encrypted initial token is never decrypted or used. The child journals only
+burn public key. Its private material existed only inside the isolated destructive ceremony, was
+never exported, was destroyed before adoption, is never accepted, retained, or available to
+`prodbox`, has no known holder, and the encrypted initial token is never decrypted or used. The child journals only
 the encrypted share receipt, delivers it
 to parent custody, and waits for exact generation read-back before deleting the local receipt. A
 separate short-lived generated root session performs/read-backs baseline and is accessor-revoked.

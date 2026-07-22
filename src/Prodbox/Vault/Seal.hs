@@ -93,6 +93,8 @@ initRequestForSealMode sealMode = case sealMode of
       , initRequestSecretThreshold = Just (shamirSealSecretThreshold config)
       , initRequestRecoveryShares = Nothing
       , initRequestRecoveryThreshold = Nothing
+      , initRequestPgpKeys = []
+      , initRequestRootTokenPgpKey = Nothing
       }
   VaultSealChildTransit config ->
     InitRequest
@@ -100,6 +102,8 @@ initRequestForSealMode sealMode = case sealMode of
       , initRequestSecretThreshold = Nothing
       , initRequestRecoveryShares = Just (transitSealRecoveryShares config)
       , initRequestRecoveryThreshold = Just (transitSealRecoveryThreshold config)
+      , initRequestPgpKeys = []
+      , initRequestRootTokenPgpKey = Nothing
       }
 
 renderVaultSealHcl :: VaultSealMode -> Text

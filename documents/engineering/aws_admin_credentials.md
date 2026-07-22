@@ -365,7 +365,7 @@ property of the operation:
 | Home public A-record observe/ensure/delete/read-back | `LongLived` Gateway-DNS identity scoped to the registered account/zone/name/type |
 | DNS01 TXT work on one substrate | That substrate's cert-manager-DNS01 identity: `LongLived` on home, `Operational` on AWS |
 | Authority backup S3 copies | LongLived Authority-backup-store identity, consumed only by Backup Adapter |
-| Retained TLS ciphertext objects/versions | LongLived TLS-retention-store identity, consumed only by TLS Retention Adapter under exact `public-edge-tls/<substrate>/<fqdn>` prefixes |
+| Retained TLS ciphertext objects/versions | LongLived TLS-retention-store identity, consumed only by TLS Retention Adapter under exact `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes |
 | Retained SES SMTP IAM identity/policy/key family | LongLived deterministic family; Credential Provisioner exclusively creates/rotates/remints and performs repair-time key deletion under `OperatorMaterialPermit`; its derived closed SMTP payload has retained-home Transit-sealed source custody for attested target rewrap without re-prompt/rotation |
 | ACME EAB source payload | Separately externally supplied closed `AcmeEabSource` schema under its own `OperatorMaterialPermit`; retained-home Transit-sealed custody supports attested selected-target restore and is never sourced from the AWS admin prompt or Tier-0 config |
 | Explicit destructive compatibility or quota request/status read-back | Ephemeral prompt delivered only to the attested Admin Action Runner under an exact committed permit |

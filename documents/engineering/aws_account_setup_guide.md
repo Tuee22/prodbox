@@ -176,7 +176,7 @@ prodbox config setup
 4. ACME provider selection
 5. non-secret coordinates for future Lifecycle-provider, Authority-backup, TLS-retention,
    Gateway-DNS, and per-substrate cert-manager-DNS01 identities, plus the shared bucket's disjoint
-   Authority-backup and `public-edge-tls/<substrate>/<fqdn>` prefixes; it does not create them
+   Authority-backup and `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes; it does not create them
 6. `prodbox.dhall` write carrying non-secret topology and role coordinates only, followed by
    direct-Dhall validation
 

@@ -34,6 +34,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox aws stack aws-ses reconcile` | Provision or inspect the aws-ses stack |
 | `prodbox aws stack aws-ses destroy` | Destroy the aws-ses stack |
 | `prodbox aws stack aws-ses migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
+| `prodbox bootstrap-broker start` | Start the Bootstrap Broker |
 | `prodbox charts list` | List supported charts |
 | `prodbox charts status` | Show detailed chart status |
 | `prodbox charts reconcile` | Reconcile a root chart stack |

@@ -84,7 +84,8 @@ data ServiceQuotaValue = ServiceQuotaValue
 
 data ServiceQuotasClient = ServiceQuotasClient
   { requestServiceQuotaIncrease
-      :: QuotaIncreaseRequest -> IO (Either AwsClientError RequestedQuotaChange)
+      :: QuotaIncreaseRequest
+      -> IO (Either AwsClientError RequestedQuotaChange)
   , getServiceQuota :: Text -> Text -> IO (Either AwsClientError ServiceQuotaValue)
   , getRequestedServiceQuotaChange :: Text -> IO (Either AwsClientError RequestedQuotaChange)
   }

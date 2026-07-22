@@ -647,7 +647,7 @@ putLongLivedObject
   -> [(String, String)]
   -> PulumiStateBackendSection
   -> String
-  -- ^ Object key, e.g. @public-edge-tls/\<substrate\>/\<fqdn\>@.
+  -- ^ Object key, e.g. @public-edge-tls/\<substrate\>/\<canonical-scope-key\>@.
   -> FilePath
   -- ^ Local body file to upload.
   -> IO (Either String ())

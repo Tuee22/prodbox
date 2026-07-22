@@ -42,6 +42,8 @@ import Options.Applicative
 import Prodbox.CLI.Command
   ( AwsCommand (..)
   , AwsTeardownFlags (..)
+  , BootstrapBrokerCommand (..)
+  , BrokerLaunchOptions (..)
   , ChartsCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
@@ -138,6 +140,7 @@ commandRegistry =
     , description = "Typed command registry for the supported prodbox command surface."
     , children =
         [ awsGroup
+        , bootstrapBrokerGroup
         , chartsGroup
         , clusterGroup
         , commandsLeaf
@@ -242,6 +245,11 @@ parserForPath path =
         fmap
           (RunNative . NativeAws . AwsReapTestEbs)
           (yesSwitchParser "Confirm deletion of test-scoped EBS volumes")
+    ["bootstrap-broker", "start"] ->
+      Just $
+        fmap
+          (RunNative . NativeBootstrapBroker . BootstrapBrokerStart)
+          brokerLaunchOptionsParser
     ["charts", "list"] -> Just (pure (RunNative (NativeCharts ChartsList)))
     ["charts", "status"] ->
       Just (fmap (RunNative . NativeCharts . ChartsStatus) (strArgument (metavar "CHART")))
@@ -749,6 +757,16 @@ daemonLaunchOptionsParser =
       )
     <*> planOptionsParser
 
+brokerLaunchOptionsParser :: Parser BrokerLaunchOptions
+brokerLaunchOptionsParser =
+  BrokerLaunchOptions
+    <$> strOption
+      ( long "config"
+          <> metavar "PATH"
+          <> help "Mounted Bootstrap Broker Dhall config path"
+      )
+    <*> planOptionsParser
+
 daemonStatusOptionsParser :: Parser DaemonStatusOptions
 daemonStatusOptionsParser =
   fmap
@@ -1208,6 +1226,59 @@ dnsGroup =
     ]
     []
     [example ["dns", "check"] "Inspect Route 53 ownership."]
+
+bootstrapBrokerGroup :: CommandSpec
+bootstrapBrokerGroup =
+  group
+    "bootstrap-broker"
+    "Pre-Vault Bootstrap Broker operations"
+    "Dedicated pre-Vault Bootstrap Broker runtime commands."
+    [ leaf
+        "start"
+        "Start the Bootstrap Broker"
+        "Start the dedicated loopback Bootstrap Broker from its mounted role-only Dhall config."
+        [ requiredOption
+            "config"
+            Nothing
+            "PATH"
+            "Mounted Bootstrap Broker Dhall config path"
+        , flagOption
+            "dry-run"
+            Nothing
+            Nothing
+            "Validate config and render the broker-start plan without starting the listener"
+        , optionalOption
+            "plan-file"
+            Nothing
+            "PATH"
+            "Write the rendered broker-start plan to a file"
+        ]
+        [ example
+            [ "bootstrap-broker"
+            , "start"
+            , "--config"
+            , "/etc/bootstrap-broker/config/config.dhall"
+            ]
+            "Start the dedicated Bootstrap Broker runtime."
+        , example
+            [ "bootstrap-broker"
+            , "start"
+            , "--config"
+            , "/etc/bootstrap-broker/config/config.dhall"
+            , "--dry-run"
+            ]
+            "Validate config and render the broker-start plan."
+        ]
+    ]
+    []
+    [ example
+        [ "bootstrap-broker"
+        , "start"
+        , "--config"
+        , "/etc/bootstrap-broker/config/config.dhall"
+        ]
+        "Start the dedicated Bootstrap Broker runtime."
+    ]
 
 gatewayGroup :: CommandSpec
 gatewayGroup =

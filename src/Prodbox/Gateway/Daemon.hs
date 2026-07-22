@@ -2,6 +2,14 @@
 
 module Prodbox.Gateway.Daemon
   ( runGatewayDaemon
+  , EmitterTopology (..)
+  , runGatewayDaemonWithTopology
+  , EmitterAdmissionMarker (..)
+  , EmitterRuntimeEvent (..)
+  , EmitterRuntimeDependencies (..)
+  , TargetOperation (..)
+  , productionEmitterRuntimeDependencies
+  , runGatewayDaemonWithRuntimeDependencies
   , daemonBootFieldsChanged
 
     -- * Sprint 1.44: operator-write REST endpoint (pure routing helpers)
@@ -12,26 +20,6 @@ module Prodbox.Gateway.Daemon
   , operatorSecretJwtHeader
   , requestBodyBytes
   , decodeOperatorSecretFields
-
-    -- * Sprint 2.29: pre-Vault bootstrap endpoint (pure routing helpers)
-  , BootstrapVaultRequest (..)
-  , BootstrapVaultRotateUnlockBundleRequest (..)
-  , BootstrapVaultRotateTransitKeyRequest (..)
-  , BootstrapVaultResponse (..)
-  , BootstrapVaultRequestError (..)
-  , bootstrapVaultPath
-  , bootstrapVaultPkiIssueTestCertPath
-  , bootstrapVaultPkiStatusPath
-  , bootstrapVaultRotateTransitKeyPath
-  , bootstrapVaultRotateUnlockBundlePath
-  , bootstrapVaultSealPath
-  , bootstrapVaultStatusPath
-  , bootstrapVaultRequestMaxBytes
-  , decodeBootstrapVaultAuthenticatedRequest
-  , decodeBootstrapVaultRequest
-  , decodeBootstrapVaultRotateTransitKeyRequest
-  , decodeBootstrapVaultRotateUnlockBundleRequest
-  , renderBootstrapVaultRequestError
 
     -- * Sprint 7.30: daemon object-store API for Pulumi backends
   , PulumiObjectRequestError (..)
@@ -56,6 +44,7 @@ import Control.Concurrent.STM
   , TVar
   , atomically
   , modifyTVar'
+  , newEmptyTMVarIO
   , newTBQueueIO
   , newTChanIO
   , newTMVarIO
@@ -70,6 +59,7 @@ import Control.Concurrent.STM
   , retry
   , takeTMVar
   , tryReadTQueue
+  , tryTakeTMVar
   , writeTBQueue
   , writeTChan
   , writeTQueue
@@ -90,17 +80,12 @@ import Control.Exception
 import Control.Monad (forever, replicateM_, unless, void, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
-  ( FromJSON (..)
-  , ToJSON (..)
+  ( FromJSON
   , Value (..)
   , eitherDecodeStrict'
   , encode
   , object
   , toJSON
-  , withObject
-  , (.!=)
-  , (.:)
-  , (.:?)
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
@@ -150,6 +135,14 @@ import Network.Socket
   )
 import Network.Socket.ByteString (recv, sendAll)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
+import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
+import Prodbox.Bootstrap.Broker.LegacyAdapter
+  ( LegacyGatewayBootstrapResponse (..)
+  , LegacyGatewayBootstrapRoute
+  , legacyGatewayBootstrapRouteForPath
+  , runLegacyGatewayBootstrapRequest
+  )
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential
@@ -171,6 +164,24 @@ import Prodbox.Config.Tier0
   , Tier0Source (..)
   , loadDaemonBinaryContext
   )
+import Prodbox.ControlPlane.Capacity
+  ( RawServiceCapacityPlan (..)
+  , ServiceCapacityPlan
+  , mkServiceCapacityPlan
+  , serviceCapacityServiceTimeMicros
+  )
+import Prodbox.ControlPlane.Deadline
+  ( Deadline
+  , DeadlineAdmission (..)
+  , DeadlineObservation (..)
+  , MonotonicInstant
+  , RemainingDuration (..)
+  , WorkEstimate (..)
+  , deadlineAdmission
+  , deadlineAtOffset
+  , deadlineObservation
+  )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Crypto.Envelope (DekCipher)
 import Prodbox.Error
   ( AppError (..)
@@ -204,6 +215,112 @@ import Prodbox.Gateway.ContinuityStore
   , modelBContinuityAuthority
   )
 import Prodbox.Gateway.DnsAuthority qualified as DnsAuthority
+import Prodbox.Gateway.Emitter.Actor
+  ( EmitterActor
+  , EmitterActorConfig
+  , EmitterActorError
+  , EmitterCompletion (..)
+  , EmitterInterpreter (..)
+  , acknowledgeEmitterPeerThrough
+  , emitterActorMailbox
+  , mkEmitterActorConfig
+  , submitEmitterRequest
+  , withEmitterActor
+  )
+import Prodbox.Gateway.Emitter.Journal
+  ( EmitterRetirementReceipt
+  , JournalAdmission (..)
+  , JournalConfig
+  , JournalIdentity
+  , JournalRecovery (..)
+  , JournalSession
+  , journalFilePath
+  , journalIdentityDigest
+  , journalSessionDigest
+  , journalSessionIncarnation
+  , mkJournalConfig
+  , mkJournalIdentity
+  , renderJournalError
+  , withEmitterJournal
+  , writeJournalPayload
+  )
+import Prodbox.Gateway.Emitter.Kernel
+  ( CheckpointCandidate
+  , CheckpointOutcome (..)
+  , DurableEmitterProjection
+  , DurableKind (..)
+  , DurableProjectionBounds
+  , EmitterPeer
+  , EmitterState
+  , RecoveryReplay
+  , StageOutcome (..)
+  , StagePlan
+  , StagedRecord
+  , ackPointAnchor
+  , ackPointIncarnation
+  , boundedSignedPayloadBytes
+  , checkpointCandidateAssertions
+  , checkpointCandidatePreviousFloor
+  , checkpointCandidateThrough
+  , decodeDurableEmitterProjection
+  , durableProjectionCommittedAnchor
+  , durableProjectionIncarnation
+  , durableProjectionLatestCommitted
+  , durableProjectionPeerAcknowledgements
+  , durableProjectionPreviousOrdersDigest
+  , durableProjectionStagedRecord
+  , emitterCommittedAnchor
+  , emitterIncarnation
+  , encodeDurableEmitterProjection
+  , incarnationValue
+  , migrateEmitterOrders
+  , mkBoundedSignedPayload
+  , mkDurableProjectionBounds
+  , mkEmitterPeer
+  , mkEmitterStateForPeers
+  , mkIncarnation
+  , projectDurableEmitterState
+  , rebaseEmitterIncarnation
+  , recoveryReplayAssertions
+  , recoveryReplayCheckpoint
+  , recoveryReplayGenesisAnchor
+  , recoveryReplayPreviousOrdersDigest
+  , repairFloorAnchor
+  , repairFloorSignedBytes
+  , restoreDurableEmitterState
+  , stagePlanIncarnation
+  , stagePlanKind
+  , stagePlanPreviousAnchor
+  , stagedRecordIncarnation
+  , stagedRecordKind
+  , stagedRecordNextAnchor
+  , stagedRecordPreviousAnchor
+  , stagedRecordSignedBytes
+  , unackedAssertionRecord
+  )
+import Prodbox.Gateway.Emitter.KubernetesLease (inClusterEmitterLeaseClient)
+import Prodbox.Gateway.Emitter.Lease
+  ( EmitterLeaseRuntime (..)
+  , LeaseBinding
+  , LeaseDuration
+  , LeaseName
+  , LeaseWitness
+  , acquireEmitterLease
+  , leaseDurationSeconds
+  , leaseWitnessCurrent
+  , leaseWitnessDeadline
+  , mkLeaseBinding
+  , mkLeaseDuration
+  , mkLeaseName
+  , renderLeaseError
+  , renewEmitterLease
+  )
+import Prodbox.Gateway.Emitter.Mailbox
+  ( EmitterRequest (..)
+  , HeartbeatPayload (..)
+  , Mailbox
+  , OwnershipTransition (..)
+  )
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , field
@@ -235,6 +352,8 @@ import Prodbox.Gateway.Peer
   , SignedAssertion
   , boundedSignedAssertionsToList
   , decodeSignedAssertion
+  , decodeSignedSemanticSnapshot
+  , encodeSignedSemanticSnapshot
   , handlePeerRequest
   , mkEventKey
   , parsePeerHttpRequest
@@ -245,6 +364,7 @@ import Prodbox.Gateway.Peer
   , peerRequestSemanticSnapshot
   , peerRequestSnapshotEvidence
   , peerResponseAccepted
+  , peerResponseAckPoint
   , peerResponseCursorVector
   , renderPeerCursorRequest
   , renderPeerDeltaRequest
@@ -253,19 +373,25 @@ import Prodbox.Gateway.Peer
   , selectSignedDelta
   , selectSignedRepairFromCheckpoint
   , signAndConvertAssertion
+  , signAndConvertAssertionForIncarnation
+  , signAndConvertOrdersMigrationForIncarnation
+  , signSemanticSnapshot
   , signedAssertionBytes
   , signedAssertionEmitter
   , signedAssertionEpoch
+  , signedAssertionIncarnation
   , signedAssertionKind
   , signedAssertionResultDigest
   , signedAssertionSequence
   , signedSemanticSnapshotEmitter
+  , signedSemanticSnapshotEvidence
   , validatePeerRequestHeartbeatSkew
+  , verifySemanticSnapshot
   , verifySignedAssertion
   )
 import Prodbox.Gateway.Readiness
   ( DrainPhase (..)
-  , ObjectStoreProof (..)
+  , EmitterAuthorityStatus (..)
   , ReadinessInputs (..)
   , ReadinessState (..)
   , WorkersStatus (..)
@@ -277,7 +403,6 @@ import Prodbox.Gateway.Routes
   , federationChildPathPrefix
   , operatorSecretPathPrefix
   , routeForPath
-  , routePattern
   )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.State qualified as BoundedState
@@ -303,6 +428,7 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
+import Prodbox.K8s.InCluster (loadInClusterCredentials)
 import Prodbox.Lifecycle.AuthorityObjectCore
   ( AuthorityCore (..)
   , compareAndSwapAuthorityObjectCore
@@ -336,47 +462,18 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Vault.BootstrapBundle
-  ( bootstrapObjectStoreConfigWithEndpoint
-  , getBundleObject
-  , putBundleObject
-  )
 import Prodbox.Vault.Client
-  ( BootstrapAction (..)
-  , KvV2Cas (..)
+  ( KvV2Cas (..)
   , KvV2VersionedSecret (..)
-  , SealStatus (..)
   , VaultAddress (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
-  , bootstrapAction
-  , defaultInitRequest
-  , initResponseToUnlockBundle
-  , vaultInit
   , vaultKubernetesLogin
   , vaultKubernetesLoginWithLease
   , vaultKvCasWriteV2
   , vaultKvReadV2
   , vaultKvReadVersionedV2
   , vaultKvWriteV2
-  , vaultListMounts
-  , vaultMountType
-  , vaultPkiIssueTestCertificate
-  , vaultRotateTransitKey
-  , vaultSeal
-  , vaultSealStatus
-  , vaultSubmitUnseal
-  )
-import Prodbox.Vault.Orchestration
-  ( UnsealOutcome (..)
-  , UnsealStep (..)
-  , interpretUnsealProgress
-  , planUnseal
-  )
-import Prodbox.Vault.Reconcile
-  ( defaultVaultReconcilePlan
-  , renderVaultReconcileError
-  , runVaultReconcile
   )
 import Prodbox.Vault.Session
   ( GatewaySessionKey (..)
@@ -393,14 +490,7 @@ import Prodbox.Vault.Session
   , withSessionToken
   )
 import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
-import Prodbox.Vault.UnlockBundle
-  ( UnlockBundle (..)
-  , decryptUnlockBundle
-  , encryptUnlockBundle
-  , renderUnlockBundleError
-  )
 import System.Directory (doesFileExist, findExecutable)
-import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FSNotify
   ( Event (..)
@@ -478,20 +568,25 @@ data DaemonHooks = DaemonHooks
 data DaemonEnv = DaemonEnv
   { envConfigPath :: Maybe FilePath
   , envBootConfig :: DaemonConfig
+  , envEmitterTopology :: EmitterTopology
+  , envEmitterDependencies :: EmitterRuntimeDependencies
   , envOrders :: Orders
   , envValidatedOrders :: BoundedState.ValidatedOrders
   , envGatewayBounds :: GatewayBounds
   , envChildScheduler :: TVar CapacityOneChildScheduler
   , envChildPermit :: TMVar ()
+  , envTargetOperationPermits :: Map TargetOperation (TMVar ())
   , envFramePermits :: TBQueue ()
   , envContinuity :: TVar (Maybe ContinuityRuntime)
+  , envEmitterRuntime :: TVar (Maybe EmitterRuntime)
+  , envEmitterMountGeneration :: TVar Word64
+  , envEmitterLeasePermit :: TMVar ()
+  , envEmitterRecoveryRequested :: TVar Bool
   , envState :: TVar DaemonState
-  , -- Sprint 2.34: readiness is no longer one cached three-state TVar written
-    -- unconditionally at serve-start. It is a pure projection
-    -- ('computeReadiness') over three orthogonal monotone boundary facts, so a
-    -- flapping backend signal can never be folded into @/readyz@.
+  , -- Readiness is a pure projection over cached boundary facts. Emitter
+    -- authority is cleared immediately when Lease renewal fails.
     envDrainPhase :: TVar DrainPhase
-  , envObjectStoreProof :: TVar ObjectStoreProof
+  , envEmitterAuthorityStatus :: TVar EmitterAuthorityStatus
   , envWorkersStatus :: TVar WorkersStatus
   , envLiveConfig :: TVar LiveConfig
   , envLiveConfigReloads :: TChan LiveConfig
@@ -506,10 +601,137 @@ data DrainSignal
   | ForceDrain
   deriving (Eq, Show)
 
+data EmitterRuntime = EmitterRuntime
+  { emitterRuntimeGeneration :: !Word64
+  , emitterRuntimeActor :: !EmitterActor
+  , emitterRuntimeAnchor :: !(TVar Continuity.ContinuityAnchor)
+  , emitterRuntimeLeaseRuntime :: !EmitterLeaseRuntime
+  , emitterRuntimeLeaseName :: !LeaseName
+  , emitterRuntimeLeaseDuration :: !LeaseDuration
+  , emitterRuntimeLeaseWitness :: !(TVar (Maybe LeaseWitness))
+  , emitterRuntimeLeaseBinding :: !LeaseBinding
+  }
+
 data ContinuityRuntime = ContinuityRuntime
   { continuityRuntimeAuthority :: Continuity.GatewayContinuityAuthority IO
   , continuityRuntimeCurrent :: TVar Continuity.CurrentContinuity
   }
+
+-- | Revision-scoped single-writer selection. The production wrapper remains
+-- on the rollback topology until Standard-P deployment qualification proves
+-- the actor composition. A process chooses exactly one constructor at boot;
+-- there is no dual-write or live topology switch.
+data EmitterTopology
+  = LegacyModelBEmitter
+  | JournalLeaseEmitter
+  deriving (Eq, Show)
+
+-- | Durable admission-marker observation at the injected authority boundary.
+-- The production dependency maps this to the Vault-backed continuity marker;
+-- tests may supply an in-memory authority only through the explicit injected
+-- runner below. There is no environment-variable selection path.
+data EmitterAdmissionMarker
+  = EmitterAdmissionMarkerMissing
+  | EmitterAdmissionMarkerPresent
+  | EmitterAdmissionMarkerRetired !EmitterRetirementReceipt
+  deriving (Eq, Show)
+
+-- | Deterministic observation points for composed-daemon tests. These are
+-- emitted only after the named boundary has succeeded. In particular,
+-- 'EmitterProjectionFsynced' denotes the final commit projection write, while
+-- 'EmitterRequestResponded' is emitted only after the actor submission has
+-- returned to its daemon caller.
+data EmitterRuntimeEvent
+  = EmitterAssertionPublished !ByteString
+  | EmitterProjectionFsynced !ByteString
+  | EmitterRequestResponded !ByteString
+  | EmitterCheckpointInstalled !ByteString
+  | EmitterMountUnavailable !String
+  | EmitterProjectionFsyncRefused !ByteString
+  | EmitterPeerAckProjectionFsyncRefused
+  | EmitterPeerAckProjectionFsynced
+  | EmitterOrdersMigrationAdmissionArmed !ByteString !Int
+  | EmitterOrdersMigrationApplied !Int
+  | EmitterMountProjectionFsynced
+  | EmitterRecoveryRequested
+  | EmitterTargetOperationAdmitted !TargetOperation !Deadline
+  deriving (Eq, Show)
+
+-- | Closed target-only operation taxonomy. Every constructor owns a distinct
+-- capacity-one permit, so an occupied operation refuses immediately without
+-- waiting behind unrelated work. The rollback topology never consults these
+-- lanes and retains its exact process-global 'CapacityOneChildScheduler'.
+data TargetOperation
+  = TargetFederationChildrenRead
+  | TargetFederationChildBootstrapRead
+  | TargetPulumiObjectGet
+  | TargetPulumiObjectPut
+  | TargetPulumiObjectDelete
+  | TargetAuthorityObjectGet
+  | TargetAuthorityObjectCas
+  | TargetSecretRead
+  | TargetSecretCas
+  | TargetOperatorSecretWrite
+  | TargetRoute53Write
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Explicit, process-construction dependencies for the actor-backed target.
+-- The production wrappers below always select
+-- 'productionEmitterRuntimeDependencies'. This constructor exists so the
+-- no-cluster daemon-lifecycle suite can exercise the exact target composition
+-- with a temporary journal and authoritative fake Lease, without env fallbacks
+-- or a second writer.
+data EmitterRuntimeDependencies = EmitterRuntimeDependencies
+  { emitterDependencyJournalRoot :: !FilePath
+  , emitterDependencyLoadLeaseRuntime :: IO (Either String EmitterLeaseRuntime)
+  , emitterDependencyObserveAdmission
+      :: DaemonConfig
+      -> BoundedState.NodeId
+      -> JournalIdentity
+      -> IO (Either String EmitterAdmissionMarker)
+  , emitterDependencyPersistAdmission
+      :: DaemonConfig
+      -> BoundedState.NodeId
+      -> IO (Either String ())
+  , emitterDependencyValidateRetirement
+      :: DaemonConfig
+      -> BoundedState.NodeId
+      -> JournalIdentity
+      -> EmitterRetirementReceipt
+      -> IO (Either String ())
+  , emitterDependencyProjectionFsyncGate :: IO (Either String ())
+  , emitterDependencyPeerAckProjectionFsyncGate
+      :: DurableEmitterProjection
+      -> IO (Either String ())
+  , emitterDependencyRenewalDelayMicros :: LeaseDuration -> Natural
+  , emitterDependencyObserveEvent :: EmitterRuntimeEvent -> IO ()
+  , emitterDependencyLegacyChildSlotInitiallyOccupied :: !Bool
+  }
+
+productionEmitterRuntimeDependencies :: EmitterRuntimeDependencies
+productionEmitterRuntimeDependencies =
+  EmitterRuntimeDependencies
+    { emitterDependencyJournalRoot = "/var/lib/prodbox/gateway-emitter"
+    , emitterDependencyLoadLeaseRuntime = loadProductionEmitterLeaseRuntime
+    , emitterDependencyObserveAdmission = \config localNode _identity -> do
+        observed <- observeContinuityAdmission config localNode
+        pure $ case observed of
+          Left err -> Left err
+          Right ContinuityFirstAdmission -> Right EmitterAdmissionMarkerMissing
+          Right ContinuityPreviouslyAdmitted -> Right EmitterAdmissionMarkerPresent
+    , emitterDependencyPersistAdmission = persistContinuityAdmission
+    , emitterDependencyValidateRetirement = \_ _ _ _ ->
+        pure
+          ( Left
+              "emitter retirement requires an indexed Lifecycle Authority receipt"
+          )
+    , emitterDependencyProjectionFsyncGate = pure (Right ())
+    , emitterDependencyPeerAckProjectionFsyncGate = const (pure (Right ()))
+    , emitterDependencyRenewalDelayMicros = \duration ->
+        max 1000000 (leaseDurationSeconds duration `div` 3 * 1000000)
+    , emitterDependencyObserveEvent = const (pure ())
+    , emitterDependencyLegacyChildSlotInitiallyOccupied = False
+    }
 
 data ContinuityDiagnostic
   = ContinuityDiagnosticUnavailable
@@ -550,156 +772,192 @@ initialState ordersVersion boundedGateway =
 -- (@live.log_level@, defaulting to @info@) and the REST port is sourced
 -- from the Orders file the daemon loads below.
 runGatewayDaemon :: Maybe FilePath -> DaemonConfig -> IO ExitCode
-runGatewayDaemon maybeConfigPath config = withSocketsDo $ do
-  let logLevel = fromMaybe "info" (daemonConfigLogLevel config)
-  logAtLevel
-    logLevel
-    Info
-    "gateway_starting"
-    [ field "node_id" (daemonNodeId config)
-    , field "log_level" logLevel
-    ]
-  -- Sprint 1.40: establish the Tier-0 binary context (config_doctrine.md §0).
-  -- The container ships a baked-in default `prodbox.dhall`; the
-  -- `gateway-config-<nodeId>` ConfigMap mount OVERWRITES it (a `prodbox.dhall`
-  -- sibling next to the runtime `config.dhall` in the same directory mount).
-  -- This is purely a non-secret binary-context observation logged at startup;
-  -- it does NOT replace the daemon's existing `DaemonConfig` runtime (secrets
-  -- stay `SecretRef.Vault` pointers resolved through Vault Kubernetes auth).
-  logDaemonBinaryContext logLevel maybeConfigPath
-  -- Sprint 2.22: dispatch by file extension via GatewaySettings.loadOrders
-  -- so the chart-rendered Dhall Orders content decodes through the native
-  -- dhall library. The legacy JSON Orders parser was removed with the
-  -- Sprint 2.27 CBOR wire-codec closure.
-  startupModelResult <- loadGatewayStartupModel maybeConfigPath config
-  case startupModelResult of
-    Left err -> do
-      logAtLevel logLevel Error "gateway_bounded_startup_failed" [field "detail" err]
-      pure (ExitFailure 1)
-    Right (gatewayBounds, childScheduler, orders, validatedOrders) ->
-      case validateDaemonTimingAgainstOrders config orders of
-        Left err -> do
-          logAtLevel logLevel Error "gateway_timing_invalid" [field "detail" err]
-          pure (ExitFailure 1)
-        Right () ->
-          case resolveLocalPeerEndpoint config orders of
-            Left err -> do
-              logAtLevel logLevel Error "local_gateway_node_invalid" [field "detail" err]
-              pure (ExitFailure 1)
-            Right localPeer -> do
-              startupValidationResult <- validateDaemonStartupInputs config
-              case startupValidationResult of
-                Left err -> do
-                  logAtLevel
-                    logLevel
-                    Error
-                    "gateway_startup_inputs_invalid"
-                    [ field "message" ("Failed to validate gateway startup inputs: " ++ err)
-                    , field "detail" err
-                    ]
-                  pure (ExitFailure 1)
-                Right () -> do
-                  now <- getCurrentTime
-                  case initializeBoundedGateway gatewayBounds validatedOrders of
-                    Left err -> do
-                      logAtLevel logLevel Error "gateway_state_initialization_failed" [field "detail" err]
-                      pure (ExitFailure 1)
-                    Right boundedGateway -> do
-                      let localNodeId = daemonNodeId config
-                          meshPeers =
-                            [ peerNodeId peer
-                            | peer <- ordersNodes orders
-                            , peerNodeId peer /= localNodeId
-                            ]
-                          initialDaemonState =
-                            (initialState (ordersVersionUtc orders) boundedGateway)
-                              { stateLastHeartbeatTimes = Map.singleton localNodeId now
-                              , stateMeshPeers = meshPeers
-                              , statePeerHealth =
-                                  Map.fromList
-                                    [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
-                              }
-                      stateVar <- newTVarIO initialDaemonState
-                      drainPhaseVar <- newTVarIO PhaseServing
-                      -- Sprint 2.34: 'PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH' is a
-                      -- sanctioned, in-memory, read-once, test-only seed for the
-                      -- object-store proof latch. It does NOT participate in
-                      -- config resolution (config still comes from the mounted
-                      -- @--config@ Dhall) and is never set by any production
-                      -- path, so production defaults to 'ObjectStoreUnproven'
-                      -- and the readiness gate stays fail-closed. It lets the
-                      -- 'prodbox-daemon-lifecycle' suite — which runs with no
-                      -- Vault and no MinIO — exercise the real projection and
-                      -- @/readyz@ handler without a live round trip.
-                      objectStoreProofSeed <-
-                        maybe
-                          ObjectStoreUnproven
-                          (\value -> if value == "1" then ObjectStoreProven else ObjectStoreUnproven)
-                          <$> lookupEnv "PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH"
-                      objectStoreProofVar <- newTVarIO objectStoreProofSeed
-                      workersStatusVar <- newTVarIO WorkersPending
-                      liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
-                      reloadBroadcast <- newTChanIO
-                      drainSignals <- newTQueueIO
-                      reloadSignals <- newTQueueIO
-                      childSchedulerVar <- newTVarIO childScheduler
-                      childPermit <- newTMVarIO ()
-                      framePermits <-
-                        newTBQueueIO
-                          (fromIntegral (gatewayMaxInFlightFrames gatewayBounds))
-                      atomically $
-                        replicateM_
-                          (gatewayMaxInFlightFrames gatewayBounds)
-                          (writeTBQueue framePermits ())
-                      continuityVar <- newTVarIO Nothing
-                      signalCount <- newTVarIO (0 :: Int)
-                      let env =
-                            DaemonEnv
-                              { envConfigPath = maybeConfigPath
-                              , envBootConfig = config
-                              , envOrders = orders
-                              , envValidatedOrders = validatedOrders
-                              , envGatewayBounds = gatewayBounds
-                              , envChildScheduler = childSchedulerVar
-                              , envChildPermit = childPermit
-                              , envFramePermits = framePermits
-                              , envContinuity = continuityVar
-                              , envState = stateVar
-                              , envDrainPhase = drainPhaseVar
-                              , envObjectStoreProof = objectStoreProofVar
-                              , envWorkersStatus = workersStatusVar
-                              , envLiveConfig = liveConfigVar
-                              , envLiveConfigReloads = reloadBroadcast
-                              , envMetrics = MetricsRegistry "gateway"
-                              , envDrainSignals = drainSignals
-                              , envReloadSignals = reloadSignals
-                              , envHooks = noopDaemonHooks
-                              }
-                      installDaemonSignalHandlers env signalCount
+runGatewayDaemon = runGatewayDaemonWithTopology LegacyModelBEmitter
 
-                      continuityResult <- bootstrapContinuity env
-                      case continuityResult of
-                        Left err ->
-                          logForEnv env Warn "gateway_continuity_unavailable" [field "detail" err]
-                        Right () ->
-                          logForEnv env Info "gateway_continuity_ready" []
+runGatewayDaemonWithTopology
+  :: EmitterTopology
+  -> Maybe FilePath
+  -> DaemonConfig
+  -> IO ExitCode
+runGatewayDaemonWithTopology emitterTopology =
+  runGatewayDaemonWithRuntimeDependencies
+    emitterTopology
+    productionEmitterRuntimeDependencies
 
-                      logForEnv
-                        env
-                        Info
-                        "orders_loaded"
-                        [ field "node_count" (length (ordersNodes orders))
-                        , field "orders_version_utc" (ordersVersionUtc orders)
-                        ]
+runGatewayDaemonWithRuntimeDependencies
+  :: EmitterTopology
+  -> EmitterRuntimeDependencies
+  -> Maybe FilePath
+  -> DaemonConfig
+  -> IO ExitCode
+runGatewayDaemonWithRuntimeDependencies
+  emitterTopology
+  emitterDependencies
+  maybeConfigPath
+  config = withSocketsDo $ do
+    let logLevel = fromMaybe "info" (daemonConfigLogLevel config)
+    logAtLevel
+      logLevel
+      Info
+      "gateway_starting"
+      [ field "node_id" (daemonNodeId config)
+      , field "log_level" logLevel
+      , field "emitter_topology" (show emitterTopology)
+      ]
+    -- Sprint 1.40: establish the Tier-0 binary context (config_doctrine.md §0).
+    -- The container ships a baked-in default `prodbox.dhall`; the
+    -- `gateway-config-<nodeId>` ConfigMap mount OVERWRITES it (a `prodbox.dhall`
+    -- sibling next to the runtime `config.dhall` in the same directory mount).
+    -- This is purely a non-secret binary-context observation logged at startup;
+    -- it does NOT replace the daemon's existing `DaemonConfig` runtime (secrets
+    -- stay `SecretRef.Vault` pointers resolved through Vault Kubernetes auth).
+    logDaemonBinaryContext logLevel maybeConfigPath
+    -- Sprint 2.22: dispatch by file extension via GatewaySettings.loadOrders
+    -- so the chart-rendered Dhall Orders content decodes through the native
+    -- dhall library. The legacy JSON Orders parser was removed with the
+    -- Sprint 2.27 CBOR wire-codec closure.
+    startupModelResult <- loadGatewayStartupModel maybeConfigPath config
+    case startupModelResult of
+      Left err -> do
+        logAtLevel logLevel Error "gateway_bounded_startup_failed" [field "detail" err]
+        pure (ExitFailure 1)
+      Right (clusterIdentity, gatewayBounds, childScheduler, orders, validatedOrders) ->
+        case validateDaemonTimingAgainstOrders config orders of
+          Left err -> do
+            logAtLevel logLevel Error "gateway_timing_invalid" [field "detail" err]
+            pure (ExitFailure 1)
+          Right () ->
+            case resolveLocalPeerEndpoint config orders of
+              Left err -> do
+                logAtLevel logLevel Error "local_gateway_node_invalid" [field "detail" err]
+                pure (ExitFailure 1)
+              Right localPeer -> do
+                startupValidationResult <- validateDaemonStartupInputs config
+                case startupValidationResult of
+                  Left err -> do
+                    logAtLevel
+                      logLevel
+                      Error
+                      "gateway_startup_inputs_invalid"
+                      [ field "message" ("Failed to validate gateway startup inputs: " ++ err)
+                      , field "detail" err
+                      ]
+                    pure (ExitFailure 1)
+                  Right () -> do
+                    now <- getCurrentTime
+                    case initializeBoundedGateway gatewayBounds validatedOrders of
+                      Left err -> do
+                        logAtLevel logLevel Error "gateway_state_initialization_failed" [field "detail" err]
+                        pure (ExitFailure 1)
+                      Right boundedGateway -> do
+                        let localNodeId = daemonNodeId config
+                            meshPeers =
+                              [ peerNodeId peer
+                              | peer <- ordersNodes orders
+                              , peerNodeId peer /= localNodeId
+                              ]
+                            initialDaemonState =
+                              (initialState (ordersVersionUtc orders) boundedGateway)
+                                { stateLastHeartbeatTimes = Map.singleton localNodeId now
+                                , stateMeshPeers = meshPeers
+                                , statePeerHealth =
+                                    Map.fromList
+                                      [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
+                                }
+                        stateVar <- newTVarIO initialDaemonState
+                        drainPhaseVar <- newTVarIO PhaseServing
+                        emitterAuthorityVar <- newTVarIO EmitterAuthorityUnavailable
+                        workersStatusVar <- newTVarIO WorkersPending
+                        liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
+                        reloadBroadcast <- newTChanIO
+                        drainSignals <- newTQueueIO
+                        reloadSignals <- newTQueueIO
+                        childSchedulerVar <- newTVarIO childScheduler
+                        childPermit <-
+                          if emitterDependencyLegacyChildSlotInitiallyOccupied emitterDependencies
+                            then newEmptyTMVarIO
+                            else newTMVarIO ()
+                        targetOperationPermits <- newTargetOperationPermits
+                        framePermits <-
+                          newTBQueueIO
+                            (fromIntegral (gatewayMaxInFlightFrames gatewayBounds))
+                        atomically $
+                          replicateM_
+                            (gatewayMaxInFlightFrames gatewayBounds)
+                            (writeTBQueue framePermits ())
+                        continuityVar <- newTVarIO Nothing
+                        emitterRuntimeVar <- newTVarIO Nothing
+                        emitterMountGenerationVar <- newTVarIO 0
+                        emitterLeasePermit <- newTMVarIO ()
+                        emitterRecoveryRequestedVar <- newTVarIO False
+                        signalCount <- newTVarIO (0 :: Int)
+                        let env =
+                              DaemonEnv
+                                { envConfigPath = maybeConfigPath
+                                , envBootConfig = config
+                                , envEmitterTopology = emitterTopology
+                                , envEmitterDependencies = emitterDependencies
+                                , envOrders = orders
+                                , envValidatedOrders = validatedOrders
+                                , envGatewayBounds = gatewayBounds
+                                , envChildScheduler = childSchedulerVar
+                                , envChildPermit = childPermit
+                                , envTargetOperationPermits = targetOperationPermits
+                                , envFramePermits = framePermits
+                                , envContinuity = continuityVar
+                                , envEmitterRuntime = emitterRuntimeVar
+                                , envEmitterMountGeneration = emitterMountGenerationVar
+                                , envEmitterLeasePermit = emitterLeasePermit
+                                , envEmitterRecoveryRequested = emitterRecoveryRequestedVar
+                                , envState = stateVar
+                                , envDrainPhase = drainPhaseVar
+                                , envEmitterAuthorityStatus = emitterAuthorityVar
+                                , envWorkersStatus = workersStatusVar
+                                , envLiveConfig = liveConfigVar
+                                , envLiveConfigReloads = reloadBroadcast
+                                , envMetrics = MetricsRegistry "gateway"
+                                , envDrainSignals = drainSignals
+                                , envReloadSignals = reloadSignals
+                                , envHooks = noopDaemonHooks
+                                }
+                        installDaemonSignalHandlers env signalCount
 
-                      result <- try (serveGatewayDaemon localPeer env) :: IO (Either SomeException ())
-                      case result of
-                        Left exc -> do
-                          logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
-                          pure (ExitFailure 1)
-                        Right () -> do
-                          logForEnv env Info "gateway_stopped" []
-                          pure ExitSuccess
+                        case emitterTopology of
+                          LegacyModelBEmitter -> do
+                            continuityResult <- bootstrapContinuity env
+                            case continuityResult of
+                              Left err ->
+                                logForEnv env Warn "gateway_continuity_unavailable" [field "detail" err]
+                              Right () ->
+                                logForEnv env Info "gateway_continuity_ready" []
+                          JournalLeaseEmitter -> pure ()
+
+                        logForEnv
+                          env
+                          Info
+                          "orders_loaded"
+                          [ field "node_count" (length (ordersNodes orders))
+                          , field "orders_version_utc" (ordersVersionUtc orders)
+                          ]
+
+                        result <-
+                          try
+                            ( case emitterTopology of
+                                LegacyModelBEmitter -> serveGatewayDaemon localPeer env
+                                JournalLeaseEmitter ->
+                                  serveGatewayDaemonWithEmitterAuthority clusterIdentity localPeer env
+                            )
+                            :: IO (Either SomeException ())
+                        case result of
+                          Left exc ->
+                            case fromException exc :: Maybe SomeAsyncException of
+                              Just _ -> throwIO exc
+                              Nothing -> do
+                                logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
+                                pure (ExitFailure 1)
+                          Right () -> do
+                            logForEnv env Info "gateway_stopped" []
+                            pure ExitSuccess
 
 -- | Sprint 1.40: load and log the Tier-0 binary context using hostbootstrap's
 -- per-frame context-init pattern — the `gateway-config-<nodeId>` ConfigMap
@@ -740,7 +998,8 @@ loadGatewayStartupModel
   -> IO
        ( Either
            String
-           ( GatewayBounds
+           ( Text.Text
+           , GatewayBounds
            , CapacityOneChildScheduler
            , Orders
            , BoundedState.ValidatedOrders
@@ -772,7 +1031,13 @@ loadGatewayStartupModel maybeConfigPath config = do
                   pure $ case ordersResult of
                     Left err -> Left err
                     Right (orders, validatedOrders) ->
-                      Right (bounds, childScheduler, orders, validatedOrders)
+                      Right
+                        ( cluster_id (context projectConfig)
+                        , bounds
+                        , childScheduler
+                        , orders
+                        , validatedOrders
+                        )
 
 initializeBoundedGateway
   :: GatewayBounds
@@ -1002,17 +1267,17 @@ installContinuityRecovery env localNode continuityBounds authority recovery =
  where
   installRuntime current = do
     currentVar <- newTVarIO current
-    -- Sprint 2.34: latch the object-store proof in the SAME STM transaction
+    -- The rollback topology publishes its authority fact in the same STM transaction
     -- that publishes the continuity runtime. Reaching here means a validated
     -- 'StartupRecovery' (a real read-back or CAS write — never a bare
     -- absent-object GET) has been decoded, restored, and is being installed as
     -- the live authority, so kubelet readiness can never be reported before a
-    -- proven durable-authority round trip. Written 'ObjectStoreProven' only,
+    -- proven durable-authority round trip. Written ready only,
     -- never cleared: a later transient object-store blip that resets
     -- 'envContinuity' does not un-ready the Pod (monotone latch).
     atomically $ do
       writeTVar (envContinuity env) (Just (ContinuityRuntime authority currentVar))
-      writeTVar (envObjectStoreProof env) ObjectStoreProven
+      writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityReady
     pure (Right ())
 
   restoreCommittedAnchor current = do
@@ -1098,9 +1363,12 @@ installContinuityRecovery env localNode continuityBounds authority recovery =
         transitionMatches =
           case (Continuity.publicationTransition witness, kind) of
             (Continuity.EpochInvalidation, BoundedState.EpochRotationAssertion) -> True
+            (Continuity.OrdersScopeInvalidation, BoundedState.OrdersMigrationAssertion _) -> True
             (Continuity.SemanticAdvance, BoundedState.EpochRotationAssertion) -> False
+            (Continuity.SemanticAdvance, BoundedState.OrdersMigrationAssertion _) -> False
             (Continuity.SemanticAdvance, _) -> True
             (Continuity.EpochInvalidation, _) -> False
+            (Continuity.OrdersScopeInvalidation, _) -> False
         previousDigest =
           Continuity.continuityDigestBytes
             (Continuity.publicationPreviousDigest witness)
@@ -1223,6 +1491,1499 @@ continuityLoop env = forever $ do
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveReconnectInterval liveConfig * 1000000))
 
+-- Actor-backed target topology ------------------------------------------------
+
+-- This path is additive until Standard-P deployment qualification. The
+-- process-level 'EmitterTopology' selection above makes the target and rollback
+-- writers mutually exclusive.
+serveGatewayDaemonWithEmitterAuthority
+  :: Text.Text
+  -> PeerEndpoint
+  -> DaemonEnv
+  -> IO ()
+serveGatewayDaemonWithEmitterAuthority clusterIdentity localPeer env =
+  race
+    (serveGatewayDaemon localPeer env)
+    (emitterMountSupervisor clusterIdentity env)
+    >>= either pure pure
+
+emitterMountSupervisor :: Text.Text -> DaemonEnv -> IO ()
+emitterMountSupervisor clusterIdentity env = forever $ do
+  result <- mountEmitterOnce clusterIdentity env
+  clearEmitterRuntime env
+  case result of
+    Left err -> do
+      emitterDependencyObserveEvent
+        (envEmitterDependencies env)
+        (EmitterMountUnavailable err)
+      logForEnv env Warn "gateway_emitter_authority_unavailable" [field "detail" err]
+    Right () ->
+      logForEnv env Warn "gateway_emitter_authority_stopped" []
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveReconnectInterval liveConfig * 1000000))
+
+mountEmitterOnce :: Text.Text -> DaemonEnv -> IO (Either String ())
+mountEmitterOnce clusterIdentity env =
+  case emitterMountInputs clusterIdentity env of
+    Left err -> pure (Left err)
+    Right inputs -> do
+      admissionResult <-
+        emitterJournalAdmission
+          env
+          (mountLocalNode inputs)
+          (mountJournalConfig inputs)
+          (mountJournalIdentity inputs)
+      case admissionResult of
+        Left err -> pure (Left err)
+        Right decision -> do
+          mounted <-
+            withEmitterJournal
+              (mountJournalConfig inputs)
+              (mountJournalIdentity inputs)
+              (emitterAdmissionMode decision)
+              (mountEventKeyBytes inputs)
+              (runMountedEmitter env inputs decision)
+          pure $ case mounted of
+            Left err -> Left (renderJournalError err)
+            Right result -> result
+
+runMountedEmitter
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> EmitterAdmissionDecision
+  -> JournalSession
+  -> JournalRecovery
+  -> IO (Either String ())
+runMountedEmitter env inputs admission session recovery = do
+  prepared <- prepareMountedEmitterState env inputs session recovery
+  case prepared of
+    Left err -> pure (Left err)
+    Right initialEmitterState -> do
+      markerResult <-
+        if emitterAdmissionMarkerNeedsPersist admission
+          then
+            persistAndReadBackEmitterAdmission
+              env
+              (mountLocalNode inputs)
+              (mountJournalIdentity inputs)
+          else pure (Right ())
+      case markerResult of
+        Left err -> pure (Left err)
+        Right () -> do
+          leaseResult <- acquireMountedEmitterLease env inputs session
+          case leaseResult of
+            Left err -> pure (Left err)
+            Right (leaseRuntime, leaseName, leaseDuration, leaseBinding, witness) -> do
+              witnessVar <- newTVarIO (Just witness)
+              anchorVar <- newTVarIO (emitterCommittedAnchor initialEmitterState)
+              let interpreter =
+                    mountedEmitterInterpreter
+                      env
+                      inputs
+                      session
+                      witnessVar
+                      leaseName
+                      leaseDuration
+                      leaseBinding
+              withEmitterActor (mountActorConfig inputs) initialEmitterState interpreter $ \actor -> do
+                generationResult <- atomically (allocateEmitterMountGeneration env)
+                case generationResult of
+                  Left err -> pure (Left err)
+                  Right generation -> do
+                    let runtime =
+                          EmitterRuntime
+                            { emitterRuntimeGeneration = generation
+                            , emitterRuntimeActor = actor
+                            , emitterRuntimeAnchor = anchorVar
+                            , emitterRuntimeLeaseRuntime = leaseRuntime
+                            , emitterRuntimeLeaseName = leaseName
+                            , emitterRuntimeLeaseDuration = leaseDuration
+                            , emitterRuntimeLeaseWitness = witnessVar
+                            , emitterRuntimeLeaseBinding = leaseBinding
+                            }
+                    recovered <- submitEmitterRequest actor ReqRecover
+                    case recovered of
+                      Left err -> pure (Left (renderEmitterActorError err))
+                      Right completion -> do
+                        installEmitterCompletion env runtime completion
+                        atomically
+                          ( do
+                              -- Publish the runtime and readiness in one STM
+                              -- transaction only after recovery has completed.
+                              -- Heartbeat/ownership loops therefore cannot
+                              -- enqueue ahead of ReqRecover, and /readyz can
+                              -- never expose a merely acquired-but-unrecovered
+                              -- journal/Lease mount.
+                              writeTVar (envEmitterRuntime env) (Just runtime)
+                              writeTVar
+                                (envEmitterAuthorityStatus env)
+                                EmitterAuthorityReady
+                              writeTVar (envEmitterRecoveryRequested env) False
+                          )
+                        logForEnv
+                          env
+                          Info
+                          "gateway_emitter_authority_ready"
+                          [ field "incarnation" (incarnationValue (emitterIncarnation initialEmitterState))
+                          ]
+                        -- The supervisor owns this scope. Cancellation from daemon
+                        -- shutdown tears down the actor, clears readiness, releases
+                        -- the long-held OS lock, and then exits the process.
+                        forever (threadDelay 1000000)
+
+allocateEmitterMountGeneration :: DaemonEnv -> STM (Either String Word64)
+allocateEmitterMountGeneration env = do
+  previous <- readTVar (envEmitterMountGeneration env)
+  if previous == maxBound
+    then pure (Left "emitter mount generation exhausted")
+    else do
+      let generation = previous + 1
+      writeTVar (envEmitterMountGeneration env) generation
+      pure (Right generation)
+
+data EmitterMountInputs = EmitterMountInputs
+  { mountLocalNode :: !BoundedState.NodeId
+  , mountEventKey :: !EventKey
+  , mountEventKeyBytes :: !ByteString
+  , mountJournalConfig :: !JournalConfig
+  , mountJournalIdentity :: !JournalIdentity
+  , mountProjectionBounds :: !DurableProjectionBounds
+  , mountMailbox :: !Mailbox
+  , mountActorConfig :: !EmitterActorConfig
+  , mountPeers :: ![EmitterPeer]
+  , mountUnackedThreshold :: !Natural
+  }
+
+-- The Lease safe-use margin is the validated maximum child-action budget. A
+-- witness must retain a full additional action budget beyond the caller's
+-- absolute transition deadline. Three budgets provide one for renewal cadence,
+-- one for the admitted action, and one non-overlap margin.
+emitterLeaseDurationSecondsFor :: DaemonEnv -> Natural
+emitterLeaseDurationSecondsFor env =
+  max 3 (ceilingDiv (3 * emitterTransitionBudgetMicros env) 1000000)
+
+emitterTransitionBudgetMicros :: DaemonEnv -> Natural
+emitterTransitionBudgetMicros = gatewayChildDeadlineMicros . envGatewayBounds
+
+ceilingDiv :: Natural -> Natural -> Natural
+ceilingDiv numerator denominator = (numerator + denominator - 1) `div` denominator
+
+emitterMountInputs :: Text.Text -> DaemonEnv -> Either String EmitterMountInputs
+emitterMountInputs clusterIdentity env = do
+  localNode <- localBoundedNode env
+  (eventKey, eventKeyBytes) <- localEventKeyMaterial env localNode
+  projectionBounds <-
+    either (Left . show) Right $
+      mkDurableProjectionBounds
+        maximumProjectionBytes
+        (gatewayMaxEncodedAssertionBytes bounds)
+        (gatewayMaxFrameBytes bounds)
+        peerBound
+        retainedBound
+  journalConfig <-
+    either (Left . renderJournalError) Right $
+      mkJournalConfig
+        (emitterDependencyJournalRoot (envEmitterDependencies env))
+        maximumProjectionBytes
+  identity <-
+    either (Left . renderJournalError) Right $
+      mkJournalIdentity
+        clusterIdentity
+        (BoundedState.nodeIdText localNode)
+        ( BoundedState.ordersAnchorHashBytes
+            (BoundedState.validatedOrdersAnchor (envValidatedOrders env))
+        )
+  capacityPlan <- mkEmitterServiceCapacityPlan env
+  actorConfig <-
+    maybe
+      (Left "emitter actor capacity plan must have exactly one worker")
+      Right
+      (mkEmitterActorConfig capacityPlan)
+  peers <- traverse peerFor (filter (/= localNode) members)
+  Right
+    EmitterMountInputs
+      { mountLocalNode = localNode
+      , mountEventKey = eventKey
+      , mountEventKeyBytes = eventKeyBytes
+      , mountJournalConfig = journalConfig
+      , mountJournalIdentity = identity
+      , mountProjectionBounds = projectionBounds
+      , mountMailbox = emitterActorMailbox actorConfig
+      , mountActorConfig = actorConfig
+      , mountPeers = peers
+      , mountUnackedThreshold = max 1 (fromIntegral (gatewayReplayPerEmitter bounds))
+      }
+ where
+  bounds = envGatewayBounds env
+  members = BoundedState.validatedOrdersMemberIds (envValidatedOrders env)
+  peerBound = max 1 (fromIntegral (length members - 1))
+  retainedBound =
+    max
+      1
+      ( fromIntegral (length members)
+          * fromIntegral (gatewayReplayPerEmitter bounds + 2)
+      )
+  maximumProjectionBytes =
+    max
+      65536
+      (gatewayMaxFrameBytes bounds * (retainedBound + peerBound + 4))
+  peerFor node =
+    maybe
+      (Left "emitter peer identity must not be empty")
+      Right
+      (mkEmitterPeer (BoundedState.nodeIdText node))
+
+-- Code-local target policy pending Standard-P production measurement. The
+-- arrival rate is derived from the validated live heartbeat cadence plus two
+-- transition requests/sec; the 10ms service target and 25% headroom remain
+-- unqualified until the composed deployment records its p99 profile.
+mkEmitterServiceCapacityPlan
+  :: DaemonEnv
+  -> Either String ServiceCapacityPlan
+mkEmitterServiceCapacityPlan env =
+  either (Left . show) Right $
+    mkServiceCapacityPlan
+      RawServiceCapacityPlan
+        { rawArrivalPerSecond = heartbeatArrival + 2
+        , rawServiceTimeMicros = 10000
+        , rawWorkerCount = 1
+        , rawQueueCapacity = queueCapacity
+        , rawRejectionThreshold = queueCapacity
+        , rawHeadroomPpm = 250000
+        }
+ where
+  heartbeatArrival =
+    max
+      1
+      (fromIntegral (ceiling (1 / daemonHeartbeatInterval (envBootConfig env)) :: Integer))
+  queueCapacity = max 1 (fromIntegral (gatewayMaxInFlightFrames (envGatewayBounds env)))
+
+localEventKeyMaterial
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> Either String (EventKey, ByteString)
+localEventKeyMaterial env nodeId = do
+  raw <-
+    maybe
+      (Left "local event-key authority is unavailable")
+      Right
+      ( Map.lookup
+          (Text.unpack (BoundedState.nodeIdText nodeId))
+          (Map.fromList (daemonEventKeys (envBootConfig env)))
+      )
+  let bytes = TextEncoding.encodeUtf8 (Text.pack raw)
+  when
+    (BS.length bytes < 32)
+    (Left "local event-key authority must contain at least 32 bytes for the encrypted journal")
+  key <- either (Left . show) Right (mkEventKey (envGatewayBounds env) bytes)
+  Right (key, bytes)
+
+emitterJournalAdmission
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> JournalConfig
+  -> JournalIdentity
+  -> IO (Either String EmitterAdmissionDecision)
+emitterJournalAdmission env localNode journalConfig identity = do
+  admitted <-
+    emitterDependencyObserveAdmission
+      (envEmitterDependencies env)
+      (envBootConfig env)
+      localNode
+      identity
+  case admitted of
+    Left err -> pure (Left err)
+    Right EmitterAdmissionMarkerPresent ->
+      pure (Right (EmitterAdmissionDecision ExistingEmitterAdmission False))
+    Right (EmitterAdmissionMarkerRetired receipt) -> do
+      let dependencies = envEmitterDependencies env
+      validated <-
+        emitterDependencyValidateRetirement
+          dependencies
+          (envBootConfig env)
+          localNode
+          identity
+          receipt
+      case validated of
+        Left err -> pure (Left err)
+        Right () -> do
+          readBack <-
+            emitterDependencyObserveAdmission
+              dependencies
+              (envBootConfig env)
+              localNode
+              identity
+          pure $ case readBack of
+            Right (EmitterAdmissionMarkerRetired exact)
+              | exact == receipt ->
+                  Right
+                    ( EmitterAdmissionDecision
+                        (RetiredEmitterAdmission receipt)
+                        False
+                    )
+            Right _ -> Left "emitter retirement receipt changed on authoritative read-back"
+            Left err -> Left err
+    Right EmitterAdmissionMarkerMissing -> do
+      -- A journal may exist when the first process fsynced it and crashed before
+      -- its independent Vault marker write. Its authenticated identity makes
+      -- resuming that file safe. The inverse (marker present, file missing)
+      -- remains fail-closed through ExistingEmitterAdmission.
+      exists <- doesFileExist (journalFilePath journalConfig)
+      pure
+        ( Right
+            ( EmitterAdmissionDecision
+                (if exists then ExistingEmitterAdmission else FirstEmitterAdmission)
+                True
+            )
+        )
+
+data EmitterAdmissionDecision = EmitterAdmissionDecision
+  { emitterAdmissionMode :: !JournalAdmission
+  , emitterAdmissionMarkerNeedsPersist :: !Bool
+  }
+
+persistAndReadBackEmitterAdmission
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> JournalIdentity
+  -> IO (Either String ())
+persistAndReadBackEmitterAdmission env localNode identity = do
+  let dependencies = envEmitterDependencies env
+  persisted <-
+    emitterDependencyPersistAdmission dependencies (envBootConfig env) localNode
+  case persisted of
+    Left err -> pure (Left err)
+    Right () -> do
+      observed <-
+        emitterDependencyObserveAdmission
+          dependencies
+          (envBootConfig env)
+          localNode
+          identity
+      pure $ case observed of
+        Right EmitterAdmissionMarkerPresent -> Right ()
+        Right (EmitterAdmissionMarkerRetired _) ->
+          Left "emitter admission marker changed to a retirement receipt during read-back"
+        Right EmitterAdmissionMarkerMissing ->
+          Left "emitter admission marker write was not visible on authoritative read-back"
+        Left err -> Left err
+
+prepareMountedEmitterState
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> JournalSession
+  -> JournalRecovery
+  -> IO (Either String EmitterState)
+prepareMountedEmitterState env inputs session recovery = do
+  (_, recoveryDeadline) <- mintEmitterTicket env
+  let sessionIncarnation = mkIncarnation (journalSessionIncarnation session)
+      freshState = do
+        anchor <- gatewayGenesisAnchor env (mountLocalNode inputs)
+        Right
+          ( mkEmitterStateForPeers
+              anchor
+              sessionIncarnation
+              (mountMailbox inputs)
+              (mountUnackedThreshold inputs)
+              (mountPeers inputs)
+          , anchor
+          , mkIncarnation (journalSessionIncarnation session - 1)
+          , Nothing
+          )
+      recoveredState payload = do
+        projection <-
+          either (Left . show) Right $
+            decodeDurableEmitterProjection (mountProjectionBounds inputs) payload
+        restored <-
+          either (Left . show) Right $
+            restoreDurableEmitterState (mountMailbox inputs) recoveryDeadline projection
+        rebased <-
+          either (Left . show) Right $
+            rebaseEmitterIncarnation sessionIncarnation restored
+        Right
+          ( rebased
+          , durableProjectionCommittedAnchor projection
+          , durableProjectionIncarnation projection
+          , Continuity.continuityDigestBytes
+              <$> durableProjectionPreviousOrdersDigest projection
+          )
+      migratedState priorOrdersDigestBytes payload
+        | BS.null payload =
+            Left "Orders migration requires a durable emitter projection"
+        | otherwise = do
+            priorOrdersDigest <-
+              either (Left . show) Right $
+                Continuity.mkContinuityDigest priorOrdersDigestBytes
+            projection <-
+              either (Left . show) Right $
+                decodeDurableEmitterProjection (mountProjectionBounds inputs) payload
+            restored <-
+              either (Left . show) Right $
+                restoreDurableEmitterState (mountMailbox inputs) recoveryDeadline projection
+            migrated <-
+              either (Left . show) Right $
+                migrateEmitterOrders
+                  priorOrdersDigest
+                  sessionIncarnation
+                  (mountMailbox inputs)
+                  (mountUnackedThreshold inputs)
+                  (mountPeers inputs)
+                  restored
+            Right
+              ( migrated
+              , durableProjectionCommittedAnchor projection
+              , durableProjectionIncarnation projection
+              , Just priorOrdersDigestBytes
+              )
+      decoded = case recovery of
+        JournalInitialized -> freshState
+        JournalRecovered payload
+          | BS.null payload -> freshState
+          | otherwise -> recoveredState payload
+        JournalOrdersMigrationRequired priorOrdersDigest payload ->
+          migratedState priorOrdersDigest payload
+  case decoded of
+    Left err -> pure (Left err)
+    Right (state, committedAnchor, semanticIncarnation, maybePriorOrdersDigest) -> do
+      restored <-
+        restoreDaemonEmitter
+          env
+          (mountLocalNode inputs)
+          semanticIncarnation
+          committedAnchor
+      case restored of
+        Left err -> pure (Left err)
+        Right () -> do
+          migrationAdmitted <-
+            armDaemonOrdersMigration
+              env
+              (mountLocalNode inputs)
+              maybePriorOrdersDigest
+          case migrationAdmitted of
+            Left err -> pure (Left err)
+            Right () -> do
+              for_ maybePriorOrdersDigest $ \priorOrdersDigest -> do
+                daemonState <- readTVarIO (envState env)
+                emitterDependencyObserveEvent
+                  (envEmitterDependencies env)
+                  ( EmitterOrdersMigrationAdmissionArmed
+                      priorOrdersDigest
+                      ( BoundedState.gatewayStateOrdersMigrationPendingCount
+                          (stateBoundedGateway daemonState)
+                      )
+                  )
+              persisted <- persistEmitterProjection inputs session state
+              case persisted of
+                Left err -> pure (Left err)
+                Right () -> do
+                  emitterDependencyObserveEvent
+                    (envEmitterDependencies env)
+                    EmitterMountProjectionFsynced
+                  pure (Right state)
+
+armDaemonOrdersMigration
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> Maybe ByteString
+  -> IO (Either String ())
+armDaemonOrdersMigration _ _ Nothing = pure (Right ())
+armDaemonOrdersMigration env localNode (Just priorOrdersDigest) =
+  atomically $ do
+    daemonState <- readTVar (envState env)
+    case do
+      broadlyArmed <-
+        BoundedState.armOrdersMigrationAdmission
+          priorOrdersDigest
+          (stateBoundedGateway daemonState)
+      BoundedState.rearmOrdersMigrationAdmissionForEmitter
+        localNode
+        priorOrdersDigest
+        broadlyArmed of
+      Left err -> pure (Left (show err))
+      Right admitted -> do
+        writeTVar
+          (envState env)
+          daemonState {stateBoundedGateway = admitted}
+        pure (Right ())
+
+gatewayGenesisAnchor
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> Either String Continuity.ContinuityAnchor
+gatewayGenesisAnchor env localNode = do
+  (_, scope) <- continuityScopeFor env localNode
+  digest <-
+    either (Left . show) Right $
+      Continuity.mkContinuityDigest
+        (gatewayGenesisDigest (envValidatedOrders env) localNode)
+  Right
+    ( Continuity.authorityRecordCommittedAnchor
+        (Continuity.mkInitialAuthorityRecord scope 1 0 digest)
+    )
+
+restoreDaemonEmitter
+  :: DaemonEnv
+  -> BoundedState.NodeId
+  -> BoundedState.EmitterIncarnation
+  -> Continuity.ContinuityAnchor
+  -> IO (Either String ())
+restoreDaemonEmitter env localNode incarnation anchor =
+  case BoundedState.mkEventHash
+    ( Continuity.continuityDigestBytes
+        (Continuity.continuityAnchorPreviousDigest anchor)
+    ) of
+    Left err -> pure (Left (show err))
+    Right eventHash ->
+      atomically $ do
+        daemonState <- readTVar (envState env)
+        let cursor =
+              BoundedState.restoredEmitterCursor
+                (Continuity.continuityAnchorEpoch anchor)
+                (Continuity.continuityAnchorSequence anchor)
+                eventHash
+        case BoundedState.restoreEmitterFromContinuityForIncarnation
+          localNode
+          incarnation
+          cursor
+          (stateBoundedGateway daemonState) of
+          Left err -> pure (Left (show err))
+          Right restored -> do
+            writeTVar (envState env) daemonState {stateBoundedGateway = restored}
+            pure (Right ())
+
+persistEmitterProjection
+  :: EmitterMountInputs
+  -> JournalSession
+  -> EmitterState
+  -> IO (Either String ())
+persistEmitterProjection inputs session state =
+  case encodeDurableEmitterProjection
+    (mountProjectionBounds inputs)
+    (projectDurableEmitterState state) of
+    Left err -> pure (Left (show err))
+    Right payload -> do
+      written <- writeJournalPayload session payload
+      pure (either (Left . renderJournalError) Right written)
+
+acquireMountedEmitterLease
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> JournalSession
+  -> IO
+       ( Either
+           String
+           (EmitterLeaseRuntime, LeaseName, LeaseDuration, LeaseBinding, LeaseWitness)
+       )
+acquireMountedEmitterLease env inputs session = do
+  runtimeResult <-
+    emitterDependencyLoadLeaseRuntime (envEmitterDependencies env)
+  case runtimeResult of
+    Left err -> pure (Left err)
+    Right runtime -> do
+      digest <- journalSessionDigest session
+      let localName = BoundedState.nodeIdText (mountLocalNode inputs)
+      case do
+        leaseName <-
+          either (Left . renderLeaseError) Right $
+            mkLeaseName ("prodbox-emitter-" <> localName)
+        duration <-
+          either (Left . renderLeaseError) Right $
+            mkLeaseDuration (emitterLeaseDurationSecondsFor env)
+        binding <-
+          either (Left . renderLeaseError) Right $
+            mkLeaseBinding
+              localName
+              (journalSessionIncarnation session)
+              digest
+              (journalIdentityDigest (mountJournalIdentity inputs))
+        Right (leaseName, duration, binding) of
+        Left err -> pure (Left err)
+        Right (leaseName, duration, binding) -> do
+          (_, deadline) <- mintEmitterTicket env
+          acquired <-
+            withEmitterLeaseMutation env $
+              acquireEmitterLease runtime deadline leaseName duration binding
+          pure $
+            case acquired of
+              Left err -> Left (renderLeaseError err)
+              Right witness -> Right (runtime, leaseName, duration, binding, witness)
+
+withEmitterLeaseMutation :: DaemonEnv -> IO value -> IO value
+withEmitterLeaseMutation env =
+  bracket_
+    (atomically (takeTMVar (envEmitterLeasePermit env)))
+    (atomically (putTMVar (envEmitterLeasePermit env) ()))
+
+loadProductionEmitterLeaseRuntime :: IO (Either String EmitterLeaseRuntime)
+loadProductionEmitterLeaseRuntime = do
+  credentialsResult <- loadInClusterCredentials
+  case credentialsResult of
+    Left err -> pure (Left err)
+    Right credentials -> do
+      clientResult <- inClusterEmitterLeaseClient credentials
+      pure $
+        case clientResult of
+          Left err -> Left err
+          Right client ->
+            Right
+              EmitterLeaseRuntime
+                { leaseRuntimeClient = client
+                , leaseRuntimeWallNow = getCurrentTime
+                , leaseRuntimeMonotonicNow = realMonotonicNow
+                }
+
+mountedEmitterInterpreter
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> JournalSession
+  -> TVar (Maybe LeaseWitness)
+  -> LeaseName
+  -> LeaseDuration
+  -> LeaseBinding
+  -> EmitterInterpreter
+mountedEmitterInterpreter env inputs session witnessVar leaseName leaseDuration binding =
+  EmitterInterpreter
+    { emitterMintTicket = mintEmitterTicket env
+    , emitterObserveNow = realMonotonicNow
+    , emitterStage = \_admission deadline plan ->
+        withCurrentEmitterLease env deadline witnessVar leaseName leaseDuration binding $
+          pure (stageEmitterPlan env inputs plan)
+    , emitterFsyncProjection = \deadline projection ->
+        withCurrentEmitterLease env deadline witnessVar leaseName leaseDuration binding $
+          do
+            admitted <-
+              emitterDependencyProjectionFsyncGate (envEmitterDependencies env)
+            case admitted of
+              Left err -> do
+                emitterDependencyObserveEvent
+                  (envEmitterDependencies env)
+                  (EmitterProjectionFsyncRefused (projectionWitnessBytes projection))
+                pure (Left (Text.pack err))
+              Right () -> do
+                peerAckAdmitted <-
+                  if projectionCarriesPeerAcknowledgement projection
+                    then
+                      emitterDependencyPeerAckProjectionFsyncGate
+                        (envEmitterDependencies env)
+                        projection
+                    else pure (Right ())
+                case peerAckAdmitted of
+                  Left err -> do
+                    emitterDependencyObserveEvent
+                      (envEmitterDependencies env)
+                      EmitterPeerAckProjectionFsyncRefused
+                    pure (Left (Text.pack err))
+                  Right () ->
+                    case encodeDurableEmitterProjection (mountProjectionBounds inputs) projection of
+                      Left err -> pure (Left (Text.pack (show err)))
+                      Right payload -> do
+                        written <- writeJournalPayload session payload
+                        case written of
+                          Left err -> pure (Left (Text.pack (renderJournalError err)))
+                          Right () -> do
+                            when (projectionCarriesPeerAcknowledgement projection) $
+                              emitterDependencyObserveEvent
+                                (envEmitterDependencies env)
+                                EmitterPeerAckProjectionFsynced
+                            case ( durableProjectionStagedRecord projection
+                                 , durableProjectionLatestCommitted projection
+                                 ) of
+                              (Nothing, Just committed) ->
+                                emitterDependencyObserveEvent
+                                  (envEmitterDependencies env)
+                                  (EmitterProjectionFsynced (stagedRecordSignedBytes committed))
+                              _ -> pure ()
+                            pure (Right ())
+    , emitterPublish = \deadline record ->
+        withCurrentEmitterLease env deadline witnessVar leaseName leaseDuration binding $
+          case decodeStagedSemantic env inputs record of
+            Left err -> pure (Left (Text.pack err))
+            Right (signed, semantic) -> do
+              published <- atomically (publishSignedAssertion env semantic signed)
+              case published of
+                Left err -> pure (Left (Text.pack err))
+                Right () -> do
+                  emitterDependencyObserveEvent
+                    (envEmitterDependencies env)
+                    (EmitterAssertionPublished (stagedRecordSignedBytes record))
+                  case BoundedState.assertionKind semantic of
+                    BoundedState.OrdersMigrationAssertion _ -> do
+                      daemonState <- readTVarIO (envState env)
+                      emitterDependencyObserveEvent
+                        (envEmitterDependencies env)
+                        ( EmitterOrdersMigrationApplied
+                            ( BoundedState.gatewayStateOrdersMigrationPendingCount
+                                (stateBoundedGateway daemonState)
+                            )
+                        )
+                    _ -> pure ()
+                  pure (Right ())
+    , emitterCommit = \deadline _ ->
+        withCurrentEmitterLease
+          env
+          deadline
+          witnessVar
+          leaseName
+          leaseDuration
+          binding
+          (pure (Right ()))
+    , emitterInstallCheckpoint = \deadline candidate ->
+        withCurrentEmitterLease env deadline witnessVar leaseName leaseDuration binding $
+          installPeerUsableEmitterCheckpoint env inputs candidate
+    , emitterRestoreRetained = \deadline replay ->
+        withCurrentEmitterLease env deadline witnessVar leaseName leaseDuration binding $
+          restoreRetainedEmitterCaches env inputs replay
+    }
+
+projectionCarriesPeerAcknowledgement :: DurableEmitterProjection -> Bool
+projectionCarriesPeerAcknowledgement projection =
+  any hasAcknowledgement $
+    Map.elems (durableProjectionPeerAcknowledgements projection)
+ where
+  hasAcknowledgement maybePoint = case maybePoint of
+    Nothing -> False
+    Just _ -> True
+
+projectionWitnessBytes :: DurableEmitterProjection -> ByteString
+projectionWitnessBytes projection =
+  case durableProjectionStagedRecord projection of
+    Just staged -> stagedRecordSignedBytes staged
+    Nothing ->
+      maybe
+        BS.empty
+        stagedRecordSignedBytes
+        (durableProjectionLatestCommitted projection)
+
+-- | Install the exact State-owned semantic checkpoint as the Kernel repair
+-- floor. The callback runs while the actor is stopped at the compaction
+-- boundary, so the State checkpoint produced by publication must equal the
+-- candidate's through-point. Only the canonical, independently decoded and
+-- verified peer snapshot crosses back into the Kernel.
+installPeerUsableEmitterCheckpoint
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> CheckpointCandidate
+  -> IO (Either Text.Text CheckpointOutcome)
+installPeerUsableEmitterCheckpoint env inputs candidate = do
+  pureResult <- pure $ do
+    baseEvidence <-
+      case repairFloorSignedBytes (checkpointCandidatePreviousFloor candidate) of
+        Nothing -> Right []
+        Just bytes -> do
+          snapshot <-
+            either (Left . Text.pack . show) Right $
+              decodeSignedSemanticSnapshot (envGatewayBounds env) bytes
+          _ <-
+            either (Left . Text.pack . show) Right $
+              verifySemanticSnapshot
+                (envGatewayBounds env)
+                (envValidatedOrders env)
+                (gatewayEventKeyLookup env)
+                snapshot
+          traverse decodeAndVerifySigned $
+            boundedSignedAssertionsToList (signedSemanticSnapshotEvidence snapshot)
+    let records = map unackedAssertionRecord (checkpointCandidateAssertions candidate)
+    (firstRecord, lastRecord) <-
+      case records of
+        [] -> Left "Kernel checkpoint candidate has no assertions"
+        first : rest -> Right (first, Prelude.foldl (\_ present -> present) first rest)
+    candidateEvidence <-
+      traverse
+        ( either (Left . Text.pack) Right
+            . decodeStagedSemantic env inputs
+        )
+        records
+    expectedBase <-
+      case repairFloorAnchor (checkpointCandidatePreviousFloor candidate) of
+        Just anchor -> Right anchor
+        Nothing ->
+          either (Left . Text.pack) Right $
+            gatewayGenesisAnchor env (mountLocalNode inputs)
+    unless
+      (stagedRecordPreviousAnchor firstRecord == expectedBase)
+      (Left "Kernel checkpoint prefix is not contiguous with its previous repair floor")
+    let through = checkpointCandidateThrough candidate
+    unless
+      ( stagedRecordNextAnchor lastRecord == ackPointAnchor through
+          && stagedRecordIncarnation lastRecord == ackPointIncarnation through
+      )
+      (Left "Kernel checkpoint through-point does not match its exact prefix")
+    expectedCursor <-
+      either (Left . Text.pack) Right $
+        emitterCursorFromAnchor (ackPointAnchor through)
+    let (heartbeat, ownership) =
+          Prelude.foldl
+            advanceEvidence
+            (Nothing, Nothing)
+            (baseEvidence ++ candidateEvidence)
+    checkpoint <-
+      either (Left . Text.pack . show) Right $
+        BoundedState.mkEmitterCheckpointForIncarnation
+          (envGatewayBounds env)
+          (envValidatedOrders env)
+          (mountLocalNode inputs)
+          ( BoundedState.mkEmitterIncarnation
+              (incarnationValue (ackPointIncarnation through))
+          )
+          expectedCursor
+          (snd <$> heartbeat)
+          (snd <$> ownership)
+    snapshot <-
+      either (Left . Text.pack . show) Right $
+        signSemanticSnapshot
+          (envGatewayBounds env)
+          (envValidatedOrders env)
+          checkpoint
+          (fst <$> heartbeat)
+          (fst <$> ownership)
+          (mountEventKey inputs)
+    encoded <-
+      either (Left . Text.pack . show) Right $
+        encodeSignedSemanticSnapshot (envGatewayBounds env) snapshot
+    decoded <-
+      either (Left . Text.pack . show) Right $
+        decodeSignedSemanticSnapshot (envGatewayBounds env) encoded
+    verified <-
+      either (Left . Text.pack . show) Right $
+        verifySemanticSnapshot
+          (envGatewayBounds env)
+          (envValidatedOrders env)
+          (gatewayEventKeyLookup env)
+          decoded
+    unless
+      (verified == checkpoint)
+      (Left "encoded emitter checkpoint did not verify back to its semantic authority")
+    payload <-
+      either (Left . Text.pack . show) Right $
+        mkBoundedSignedPayload (gatewayMaxFrameBytes (envGatewayBounds env)) encoded
+    Right (encoded, payload)
+  case pureResult of
+    Left err -> pure (Left err)
+    Right (encoded, payload) -> do
+      emitterDependencyObserveEvent
+        (envEmitterDependencies env)
+        (EmitterCheckpointInstalled encoded)
+      pure (Right (CheckpointInstalled payload))
+ where
+  decodeAndVerifySigned signed = do
+    semantic <-
+      either (Left . Text.pack . show) Right $
+        verifySignedAssertion
+          (envGatewayBounds env)
+          (envValidatedOrders env)
+          (gatewayEventKeyLookup env)
+          signed
+    Right (signed, semantic)
+
+  advanceEvidence (heartbeat, ownership) pair@(_, semantic) =
+    case BoundedState.assertionKind semantic of
+      BoundedState.HeartbeatAssertion _ -> (Just pair, ownership)
+      BoundedState.OwnershipAssertion _ -> (heartbeat, Just pair)
+      BoundedState.EpochRotationAssertion -> (heartbeat, ownership)
+      BoundedState.OrdersMigrationAssertion _ -> (Nothing, Nothing)
+
+-- | Rebuild volatile State semantics and exact signed replay from the
+-- authenticated repair floor plus the Kernel-owned contiguous suffix. This
+-- runs as the first ReqRecover effect and must succeed before the actor can
+-- resume an interrupted publication or the mount can become visible/ready.
+restoreRetainedEmitterCaches
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> RecoveryReplay
+  -> IO (Either Text.Text ())
+restoreRetainedEmitterCaches env inputs replay =
+  case (recoveryReplayCheckpoint replay, records, maybeMigrationDigest) of
+    (Nothing, [], Just priorOrdersDigest) ->
+      restoreMigrationBase priorOrdersDigest
+    (Nothing, [], Nothing) ->
+      pure (Left "recovery replay has neither checkpoint nor retained suffix")
+    _ -> restoreRepair
+ where
+  records = recoveryReplayAssertions replay
+  localNode = mountLocalNode inputs
+  maybeMigrationDigest =
+    Continuity.continuityDigestBytes
+      <$> recoveryReplayPreviousOrdersDigest replay
+
+  restoreMigrationBase priorOrdersDigest =
+    case emitterCursorFromAnchor (recoveryReplayGenesisAnchor replay) of
+      Left err -> pure (Left (Text.pack err))
+      Right baseCursor ->
+        atomically $ do
+          daemonState <- readTVar (envState env)
+          let bounded = stateBoundedGateway daemonState
+          case BoundedState.gatewayStateEmitterIncarnation localNode bounded of
+            Nothing -> pure (Left "local emitter is absent during retained migration recovery")
+            Just currentIncarnation ->
+              case BoundedState.restoreEmitterFromContinuityForIncarnation
+                localNode
+                currentIncarnation
+                baseCursor
+                bounded of
+                Left err -> pure (Left (Text.pack (show err)))
+                Right reset ->
+                  case BoundedState.rearmOrdersMigrationAdmissionForEmitter
+                    localNode
+                    priorOrdersDigest
+                    reset of
+                    Left err -> pure (Left (Text.pack (show err)))
+                    Right rearmed -> installCaches daemonState rearmed [] []
+
+  restoreRepair =
+    case rebuiltRepair of
+      Left err -> pure (Left err)
+      Right (repair, checkpointEvidence, suffixSigned) ->
+        atomically $ do
+          daemonState <- readTVar (envState env)
+          case BoundedState.restoreEmitterFromRetainedRepair
+            localNode
+            repair
+            (stateBoundedGateway daemonState) of
+            Left err -> pure (Left (Text.pack (show err)))
+            Right restored ->
+              case rearmActiveMigration restored of
+                Left err -> pure (Left (Text.pack (show err)))
+                Right rearmed ->
+                  installCaches daemonState rearmed checkpointEvidence suffixSigned
+
+  rearmActiveMigration bounded =
+    case maybeMigrationDigest of
+      Nothing -> Right bounded
+      Just priorOrdersDigest ->
+        BoundedState.rearmOrdersMigrationAdmissionForEmitter
+          localNode
+          priorOrdersDigest
+          bounded
+
+  rebuiltRepair = do
+    suffix <-
+      traverse
+        ( either (Left . Text.pack) Right
+            . decodeStagedSemantic env inputs
+        )
+        records
+    (checkpoint, checkpointSignedEvidence) <-
+      case recoveryReplayCheckpoint replay of
+        Just payload -> do
+          snapshot <-
+            either (Left . Text.pack . show) Right $
+              decodeSignedSemanticSnapshot
+                (envGatewayBounds env)
+                (boundedSignedPayloadBytes payload)
+          verified <-
+            either (Left . Text.pack . show) Right $
+              verifySemanticSnapshot
+                (envGatewayBounds env)
+                (envValidatedOrders env)
+                (gatewayEventKeyLookup env)
+                snapshot
+          unless
+            (BoundedState.emitterCheckpointEmitter verified == localNode)
+            (Left "recovery checkpoint emitter does not match the mounted emitter")
+          Right
+            ( verified
+            , boundedSignedAssertionsToList
+                (signedSemanticSnapshotEvidence snapshot)
+            )
+        Nothing ->
+          case records of
+            [] -> Left "active Orders migration recovery requires its genesis reset path"
+            firstRecord : _ -> do
+              unless
+                ( stagedRecordPreviousAnchor firstRecord
+                    == recoveryReplayGenesisAnchor replay
+                )
+                (Left "recovery suffix is not contiguous with its durable genesis anchor")
+              baseCursor <-
+                either (Left . Text.pack) Right $
+                  emitterCursorFromAnchor (recoveryReplayGenesisAnchor replay)
+              base <-
+                either (Left . Text.pack . show) Right $
+                  BoundedState.mkEmitterCheckpointForIncarnation
+                    (envGatewayBounds env)
+                    (envValidatedOrders env)
+                    (mountLocalNode inputs)
+                    ( BoundedState.mkEmitterIncarnation
+                        (incarnationValue (stagedRecordIncarnation firstRecord))
+                    )
+                    baseCursor
+                    Nothing
+                    Nothing
+              Right (base, [])
+    repair <-
+      either (Left . Text.pack . show) Right $
+        BoundedState.mkEmitterRepair
+          (envGatewayBounds env)
+          (envValidatedOrders env)
+          checkpoint
+          (map snd suffix)
+    Right (repair, checkpointSignedEvidence, map fst suffix)
+
+  installCaches daemonState bounded checkpointEvidence suffixSigned = do
+    let emitterName = Text.unpack (BoundedState.nodeIdText localNode)
+        restoredHeartbeat =
+          case BoundedState.gatewayStateLatestHeartbeat localNode bounded of
+            Just assertion -> case BoundedState.assertionKind assertion of
+              BoundedState.HeartbeatAssertion timestamp ->
+                Just (posixSecondsToUTCTime (fromIntegral timestamp))
+              _ -> Nothing
+            Nothing -> Nothing
+        restoredHeartbeatTimes =
+          case restoredHeartbeat of
+            Nothing -> Map.delete emitterName (stateLastHeartbeatTimes daemonState)
+            Just observed -> Map.insert emitterName observed (stateLastHeartbeatTimes daemonState)
+        cleared =
+          daemonState
+            { stateBoundedGateway = bounded
+            , stateSignedReplay = Map.delete emitterName (stateSignedReplay daemonState)
+            , stateSignedCheckpointHeartbeat =
+                Map.delete emitterName (stateSignedCheckpointHeartbeat daemonState)
+            , stateSignedCheckpointOwnership =
+                Map.delete emitterName (stateSignedCheckpointOwnership daemonState)
+            , stateLastHeartbeatTimes = restoredHeartbeatTimes
+            , stateDnsClaimAuthority = Nothing
+            }
+        withCheckpoint =
+          Prelude.foldl
+            (flip advanceSignedCheckpointEvidence)
+            cleared
+            checkpointEvidence
+        restored = retainSignedAssertions env suffixSigned withCheckpoint
+    writeTVar (envState env) restored
+    pure (Right ())
+
+mintEmitterTicket :: DaemonEnv -> IO (MonotonicInstant, Deadline)
+mintEmitterTicket env = do
+  now <- realMonotonicNow
+  pure
+    ( now
+    , deadlineAtOffset
+        now
+        (RemainingDuration (gatewayChildDeadlineMicros (envGatewayBounds env)))
+    )
+
+runWithinEmitterDeadline
+  :: Deadline
+  -> IO (Either Text.Text value)
+  -> IO (Either Text.Text value)
+runWithinEmitterDeadline deadline action = do
+  now <- realMonotonicNow
+  case deadlineObservation now deadline of
+    DeadlineExpired -> pure (Left "emitter transition deadline expired")
+    DeadlineOpen (RemainingDuration remaining) -> do
+      result <- timeout (naturalToTimeoutMicros remaining) action
+      case result of
+        Nothing -> pure (Left "emitter transition deadline expired")
+        Just completed -> do
+          after <- realMonotonicNow
+          case deadlineObservation after deadline of
+            DeadlineExpired -> pure (Left "emitter transition deadline expired")
+            DeadlineOpen _ -> pure completed
+
+naturalToTimeoutMicros :: Natural -> Int
+naturalToTimeoutMicros value =
+  fromIntegral (min value (fromIntegral (maxBound :: Int)))
+
+requireEmitterLease
+  :: TVar (Maybe LeaseWitness)
+  -> LeaseName
+  -> LeaseDuration
+  -> LeaseBinding
+  -> IO (Either Text.Text ())
+requireEmitterLease witnessVar leaseName leaseDuration binding = do
+  maybeWitness <- readTVarIO witnessVar
+  now <- realMonotonicNow
+  pure $
+    case maybeWitness of
+      Just witness
+        | leaseWitnessCurrent now leaseName leaseDuration binding witness -> Right ()
+      _ -> Left "emitter Kubernetes Lease witness is unavailable or expired"
+
+withCurrentEmitterLease
+  :: DaemonEnv
+  -> Deadline
+  -> TVar (Maybe LeaseWitness)
+  -> LeaseName
+  -> LeaseDuration
+  -> LeaseBinding
+  -> IO (Either Text.Text value)
+  -> IO (Either Text.Text value)
+withCurrentEmitterLease
+  env
+  callerDeadline
+  witnessVar
+  leaseName
+  leaseDuration
+  binding
+  action = do
+    maybeWitness <- readTVarIO witnessVar
+    now <- realMonotonicNow
+    case maybeWitness of
+      Nothing -> pure (Left "emitter Kubernetes Lease witness is unavailable")
+      Just witness
+        | not (leaseWitnessCurrent now leaseName leaseDuration binding witness) ->
+            pure (Left "emitter Kubernetes Lease witness identity changed or expired")
+        | otherwise ->
+            case deadlineObservation now (leaseWitnessDeadline witness) of
+              DeadlineExpired -> pure (Left "emitter Kubernetes Lease witness expired")
+              DeadlineOpen (RemainingDuration remaining)
+                | remaining <= safeUseMargin ->
+                    pure (Left "emitter Kubernetes Lease witness has no safe-use budget")
+                | otherwise -> do
+                    let leaseSafeDeadline =
+                          deadlineAtOffset
+                            now
+                            (RemainingDuration (remaining - safeUseMargin))
+                        effectiveDeadline = min callerDeadline leaseSafeDeadline
+                    completed <- runWithinEmitterDeadline effectiveDeadline action
+                    case completed of
+                      Left err -> pure (Left err)
+                      Right value -> do
+                        stillCurrent <-
+                          requireEmitterLease witnessVar leaseName leaseDuration binding
+                        pure (value <$ stillCurrent)
+   where
+    -- This uses the same validated bound that minted the transition deadline;
+    -- an admitted effect therefore completes with one whole worst-case action
+    -- budget still left on its Lease witness.
+    safeUseMargin = emitterTransitionBudgetMicros env
+
+stageEmitterPlan
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> StagePlan
+  -> Either Text.Text StageOutcome
+stageEmitterPlan env inputs plan
+  | durableKindRequiresSemanticSequence (stagePlanKind plan)
+      && Continuity.continuityAnchorSequence (stagePlanPreviousAnchor plan) == maxBound =
+      Right StageNeedsRotation
+  | otherwise = do
+      previous <-
+        either (Left . Text.pack . show) Right $
+          emitterCursorFromAnchor (stagePlanPreviousAnchor plan)
+      (signed, _) <-
+        case stagePlanKind plan of
+          KindOrdersMigration priorOrdersDigest ->
+            either (Left . Text.pack . show) Right $
+              signAndConvertOrdersMigrationForIncarnation
+                (envGatewayBounds env)
+                (envValidatedOrders env)
+                (mountLocalNode inputs)
+                (stagePlanIncarnation plan)
+                previous
+                (Continuity.continuityDigestBytes priorOrdersDigest)
+                (mountEventKey inputs)
+          durableKind -> do
+            kind <- durableKindToAssertionKind durableKind
+            either (Left . Text.pack . show) Right $
+              signAndConvertAssertionForIncarnation
+                (envGatewayBounds env)
+                (envValidatedOrders env)
+                (mountLocalNode inputs)
+                (stagePlanIncarnation plan)
+                previous
+                kind
+                (mountEventKey inputs)
+      payload <-
+        either (Left . Text.pack . show) Right $
+          mkBoundedSignedPayload
+            (gatewayMaxEncodedAssertionBytes (envGatewayBounds env))
+            (signedAssertionBytes signed)
+      Right (StageStaged payload)
+
+durableKindRequiresSemanticSequence :: DurableKind -> Bool
+durableKindRequiresSemanticSequence durable = case durable of
+  KindHeartbeat _ -> True
+  KindOwnership _ -> True
+  KindEpochRotation -> False
+  KindOrdersMigration _ -> False
+
+emitterCursorFromAnchor
+  :: Continuity.ContinuityAnchor
+  -> Either String BoundedState.EmitterCursor
+emitterCursorFromAnchor anchor = do
+  eventHash <-
+    either (Left . show) Right $
+      BoundedState.mkEventHash
+        ( Continuity.continuityDigestBytes
+            (Continuity.continuityAnchorPreviousDigest anchor)
+        )
+  Right
+    ( BoundedState.restoredEmitterCursor
+        (Continuity.continuityAnchorEpoch anchor)
+        (Continuity.continuityAnchorSequence anchor)
+        eventHash
+    )
+
+durableKindToAssertionKind
+  :: DurableKind
+  -> Either Text.Text BoundedState.AssertionKind
+durableKindToAssertionKind durable = case durable of
+  KindHeartbeat (HeartbeatPayload observed) ->
+    Right (BoundedState.HeartbeatAssertion observed)
+  KindOwnership OwnershipClaim ->
+    Right (BoundedState.OwnershipAssertion BoundedState.OwnershipClaim)
+  KindOwnership OwnershipYield ->
+    Right (BoundedState.OwnershipAssertion BoundedState.OwnershipYield)
+  KindEpochRotation -> Right BoundedState.EpochRotationAssertion
+  KindOrdersMigration _ ->
+    Left "Orders migration requires the dedicated scope-bound signer"
+
+decodeStagedSemantic
+  :: DaemonEnv
+  -> EmitterMountInputs
+  -> StagedRecord
+  -> Either String (SignedAssertion, BoundedState.GatewayAssertion)
+decodeStagedSemantic env inputs record = do
+  signed <-
+    either (Left . show) Right $
+      decodeSignedAssertion (envGatewayBounds env) (stagedRecordSignedBytes record)
+  semantic <-
+    either (Left . show) Right $
+      verifySignedAssertion
+        (envGatewayBounds env)
+        (envValidatedOrders env)
+        (gatewayEventKeyLookup env)
+        signed
+  kindMatches <-
+    stagedKindMatchesSigned
+      (stagedRecordPreviousAnchor record)
+      (stagedRecordKind record)
+      (signedAssertionKind signed)
+  unless
+    (signedAssertionEmitter signed == BoundedState.nodeIdText (mountLocalNode inputs))
+    (Left "staged assertion emitter does not match the mounted emitter")
+  unless
+    (signedAssertionIncarnation signed == incarnationValue (stagedRecordIncarnation record))
+    (Left "staged assertion incarnation does not match the immutable record")
+  unless
+    kindMatches
+    (Left "staged assertion kind does not match the immutable record")
+  let next = stagedRecordNextAnchor record
+  unless
+    ( signedAssertionEpoch signed == Continuity.continuityAnchorEpoch next
+        && signedAssertionSequence signed == Continuity.continuityAnchorSequence next
+        && signedAssertionResultDigest signed
+          == Continuity.continuityDigestBytes
+            (Continuity.continuityAnchorPreviousDigest next)
+    )
+    (Left "staged assertion anchor does not match the immutable record")
+  Right (signed, semantic)
+
+stagedKindMatchesSigned
+  :: Continuity.ContinuityAnchor
+  -> DurableKind
+  -> BoundedState.AssertionKind
+  -> Either String Bool
+stagedKindMatchesSigned previousAnchor durable signedKind =
+  case (durable, signedKind) of
+    (KindOrdersMigration priorOrdersDigest, BoundedState.OrdersMigrationAssertion scope) ->
+      Right
+        ( BoundedState.ordersMigrationPreviousEpoch scope
+            == Continuity.continuityAnchorEpoch previousAnchor
+            && BoundedState.ordersMigrationPreviousSequence scope
+              == Continuity.continuityAnchorSequence previousAnchor
+            && BoundedState.ordersMigrationPreviousOrdersDigest scope
+              == Continuity.continuityDigestBytes priorOrdersDigest
+        )
+    (KindOrdersMigration _, _) -> Right False
+    (_, BoundedState.OrdersMigrationAssertion _) -> Right False
+    _ ->
+      (== signedKind)
+        <$> either (Left . Text.unpack) Right (durableKindToAssertionKind durable)
+
+installEmitterCompletion
+  :: DaemonEnv
+  -> EmitterRuntime
+  -> EmitterCompletion
+  -> IO ()
+installEmitterCompletion _ _ EmitterNoTransition = pure ()
+installEmitterCompletion env runtime (EmitterCommitted record) = do
+  atomically (writeTVar (emitterRuntimeAnchor runtime) (stagedRecordNextAnchor record))
+  case durableKindToAssertionKind (stagedRecordKind record) of
+    Left _ -> pure ()
+    Right kind ->
+      refreshDnsClaimAuthorityFromAnchor env kind (stagedRecordNextAnchor record)
+
+clearEmitterRuntime :: DaemonEnv -> IO ()
+clearEmitterRuntime env =
+  atomically $ do
+    writeTVar (envEmitterRuntime env) Nothing
+    writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+    writeTVar (envEmitterRecoveryRequested env) False
+
+renderEmitterActorError :: EmitterActorError -> String
+renderEmitterActorError = show
+
+emitterLeaseLoop :: DaemonEnv -> IO ()
+emitterLeaseLoop env = forever $ do
+  maybeRuntime <- readTVarIO (envEmitterRuntime env)
+  case maybeRuntime of
+    Nothing ->
+      atomically $ do
+        current <- readTVar (envEmitterRuntime env)
+        case current of
+          Nothing -> writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+          Just _ -> pure ()
+    Just runtime -> do
+      (_, deadline) <- mintEmitterTicket env
+      renewed <-
+        withEmitterLeaseMutation env $ do
+          current <- atomically (emitterRuntimeGenerationCurrent env runtime)
+          if not current
+            then pure Nothing
+            else do
+              maybeWitness <- readTVarIO (emitterRuntimeLeaseWitness runtime)
+              let reacquiring = maybe True (const False) maybeWitness
+              result <- case maybeWitness of
+                Nothing ->
+                  acquireEmitterLease
+                    (emitterRuntimeLeaseRuntime runtime)
+                    deadline
+                    (emitterRuntimeLeaseName runtime)
+                    (emitterRuntimeLeaseDuration runtime)
+                    (emitterRuntimeLeaseBinding runtime)
+                Just witness ->
+                  renewEmitterLease
+                    (emitterRuntimeLeaseRuntime runtime)
+                    deadline
+                    (emitterRuntimeLeaseName runtime)
+                    (emitterRuntimeLeaseDuration runtime)
+                    witness
+              pure (Just (reacquiring, result))
+      case renewed of
+        Nothing -> pure ()
+        Just (_, Left err) -> do
+          atomically $ do
+            current <- emitterRuntimeGenerationCurrent env runtime
+            when current $ do
+              writeTVar (emitterRuntimeLeaseWitness runtime) Nothing
+              writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+          logForEnv env Error "gateway_emitter_lease_lost" [field "detail" (renderLeaseError err)]
+        Just (reacquiring, Right witness) -> do
+          (installed, needsRecovery) <- atomically $ do
+            current <- emitterRuntimeGenerationCurrent env runtime
+            if current
+              then do
+                writeTVar (emitterRuntimeLeaseWitness runtime) (Just witness)
+                authority <- readTVar (envEmitterAuthorityStatus env)
+                let shouldRecover =
+                      reacquiring || authority == EmitterAuthorityUnavailable
+                when shouldRecover $ do
+                  -- Reacquisition restores only the effect fence. The one
+                  -- recovery supervisor owns ReqRecover and readiness restore.
+                  writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+                  writeTVar (envEmitterRecoveryRequested env) True
+                pure (True, shouldRecover)
+              else pure (False, False)
+          when (installed && reacquiring) $
+            logForEnv env Info "gateway_emitter_lease_reacquired" []
+          when (installed && needsRecovery && not reacquiring) $
+            logForEnv env Info "gateway_emitter_recovery_witness_refreshed" []
+  let renewDelayMicros =
+        case maybeRuntime of
+          Nothing -> 1000000
+          Just runtime ->
+            emitterDependencyRenewalDelayMicros
+              (envEmitterDependencies env)
+              (emitterRuntimeLeaseDuration runtime)
+  threadDelay (naturalToTimeoutMicros (max 1 renewDelayMicros))
+
+-- | The sole post-mount ReqRecover submitter. Actor callers only raise the
+-- bounded cached request bit and clear readiness; this worker serially retries
+-- the exact retained phase with fresh tickets. Lease reacquisition raises the
+-- same bit, so renewal and interpreter-failure paths can never race two
+-- recoveries into the actor.
+emitterRecoveryLoop :: DaemonEnv -> IO ()
+emitterRecoveryLoop env = forever $ do
+  runtime <- atomically $ do
+    requested <- readTVar (envEmitterRecoveryRequested env)
+    maybeRuntime <- readTVar (envEmitterRuntime env)
+    case (requested, maybeRuntime) of
+      (True, Just active) -> do
+        writeTVar (envEmitterRecoveryRequested env) False
+        pure active
+      _ -> retry
+  leaseCurrent <-
+    requireEmitterLease
+      (emitterRuntimeLeaseWitness runtime)
+      (emitterRuntimeLeaseName runtime)
+      (emitterRuntimeLeaseDuration runtime)
+      (emitterRuntimeLeaseBinding runtime)
+  case leaseCurrent of
+    Left _ -> do
+      threadDelay emitterRecoveryRetryMicros
+      atomically $ do
+        current <- emitterRuntimeGenerationCurrent env runtime
+        when current (writeTVar (envEmitterRecoveryRequested env) True)
+    Right () -> do
+      recovered <- submitEmitterRequest (emitterRuntimeActor runtime) ReqRecover
+      case recovered of
+        Left err -> do
+          logForEnv
+            env
+            Warn
+            "gateway_emitter_recovery_retry"
+            [field "detail" (renderEmitterActorError err)]
+          threadDelay emitterRecoveryRetryMicros
+          atomically $ do
+            current <- emitterRuntimeGenerationCurrent env runtime
+            when current (writeTVar (envEmitterRecoveryRequested env) True)
+        Right completion -> do
+          current <- atomically (emitterRuntimeGenerationCurrent env runtime)
+          when current (installEmitterCompletion env runtime completion)
+          witnessCurrent <-
+            requireEmitterLease
+              (emitterRuntimeLeaseWitness runtime)
+              (emitterRuntimeLeaseName runtime)
+              (emitterRuntimeLeaseDuration runtime)
+              (emitterRuntimeLeaseBinding runtime)
+          restored <- atomically $ do
+            stillCurrent <- emitterRuntimeGenerationCurrent env runtime
+            moreRecovery <- readTVar (envEmitterRecoveryRequested env)
+            let leaseIsCurrent = either (const False) (const True) witnessCurrent
+            if stillCurrent && leaseIsCurrent && not moreRecovery
+              then do
+                writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityReady
+                pure True
+              else pure False
+          when restored $
+            logForEnv env Info "gateway_emitter_recovery_complete" []
+
+emitterRecoveryRetryMicros :: Int
+emitterRecoveryRetryMicros = 100000
+
+requestEmitterRecovery
+  :: DaemonEnv
+  -> EmitterRuntime
+  -> EmitterActorError
+  -> IO ()
+requestEmitterRecovery env runtime err = do
+  requested <- atomically $ do
+    current <- emitterRuntimeGenerationCurrent env runtime
+    when current $ do
+      writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+      writeTVar (envEmitterRecoveryRequested env) True
+    pure current
+  when requested $
+    do
+      emitterDependencyObserveEvent
+        (envEmitterDependencies env)
+        EmitterRecoveryRequested
+      logForEnv
+        env
+        Warn
+        "gateway_emitter_recovery_requested"
+        [field "detail" (renderEmitterActorError err)]
+
+emitterRuntimeGenerationCurrent :: DaemonEnv -> EmitterRuntime -> STM Bool
+emitterRuntimeGenerationCurrent env expected = do
+  current <- readTVar (envEmitterRuntime env)
+  pure $ case current of
+    Just runtime ->
+      emitterRuntimeGeneration runtime == emitterRuntimeGeneration expected
+    Nothing -> False
+
 localBoundedNode :: DaemonEnv -> Either String BoundedState.NodeId
 localBoundedNode env =
   case filter
@@ -1244,11 +3005,11 @@ gatewayEventKeyLookup env nodeId = do
     Just
     (mkEventKey (envGatewayBounds env) (TextEncoding.encodeUtf8 (Text.pack raw)))
 
-emitLocalAssertion
+emitLegacyLocalAssertion
   :: DaemonEnv
   -> BoundedState.AssertionKind
   -> IO (Either String SignedAssertion)
-emitLocalAssertion env kind = do
+emitLegacyLocalAssertion env kind = do
   continuityRuntime <- readTVarIO (envContinuity env)
   case continuityRuntime of
     Nothing -> pure (Left "retained continuity authority is unavailable")
@@ -1332,8 +3093,17 @@ emitLocalSemanticAssertion
   -> BoundedState.AssertionKind
   -> IO (Either String SignedAssertion)
 emitLocalSemanticAssertion env kind =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> emitLegacyLocalSemanticAssertion env kind
+    JournalLeaseEmitter -> emitActorLocalSemanticAssertion env kind
+
+emitLegacyLocalSemanticAssertion
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> IO (Either String SignedAssertion)
+emitLegacyLocalSemanticAssertion env kind =
   case kind of
-    BoundedState.EpochRotationAssertion -> emitLocalAssertion env kind
+    BoundedState.EpochRotationAssertion -> emitLegacyLocalAssertion env kind
     _ ->
       case localBoundedNode env of
         Left err -> pure (Left err)
@@ -1350,11 +3120,66 @@ emitLocalSemanticAssertion env kind =
                   (BoundedState.emitterCursorSequence cursor)
                   == maxBound -> do
                   rotated <-
-                    emitLocalAssertion env BoundedState.EpochRotationAssertion
+                    emitLegacyLocalAssertion env BoundedState.EpochRotationAssertion
                   case rotated of
                     Left err -> pure (Left err)
-                    Right _ -> emitLocalAssertion env kind
-              | otherwise -> emitLocalAssertion env kind
+                    Right _ -> emitLegacyLocalAssertion env kind
+              | otherwise -> emitLegacyLocalAssertion env kind
+
+emitActorLocalSemanticAssertion
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> IO (Either String SignedAssertion)
+emitActorLocalSemanticAssertion env kind = do
+  (authority, maybeRuntime) <-
+    atomically $
+      (,)
+        <$> readTVar (envEmitterAuthorityStatus env)
+        <*> readTVar (envEmitterRuntime env)
+  case (authority, maybeRuntime) of
+    (EmitterAuthorityUnavailable, _) ->
+      pure (Left "journal/Lease emitter authority is unavailable or recovering")
+    (_, Nothing) -> pure (Left "journal/Lease emitter authority is unavailable")
+    (EmitterAuthorityReady, Just runtime) ->
+      case assertionKindToEmitterRequest kind of
+        Left err -> pure (Left err)
+        Right request -> do
+          submitted <- submitEmitterRequest (emitterRuntimeActor runtime) request
+          case submitted of
+            Left err -> do
+              requestEmitterRecovery env runtime err
+              pure (Left (renderEmitterActorError err))
+            Right EmitterNoTransition ->
+              pure (Left "emitter request completed without a transition")
+            Right completion@(EmitterCommitted record) -> do
+              current <- atomically (emitterRuntimeGenerationCurrent env runtime)
+              if not current
+                then pure (Left "emitter mount was replaced before request completion")
+                else do
+                  emitterDependencyObserveEvent
+                    (envEmitterDependencies env)
+                    (EmitterRequestResponded (stagedRecordSignedBytes record))
+                  installEmitterCompletion env runtime completion
+                  case decodeSignedAssertion
+                    (envGatewayBounds env)
+                    (stagedRecordSignedBytes record) of
+                    Left err -> pure (Left (show err))
+                    Right signed -> pure (Right signed)
+
+assertionKindToEmitterRequest
+  :: BoundedState.AssertionKind
+  -> Either String EmitterRequest
+assertionKindToEmitterRequest kind = case kind of
+  BoundedState.HeartbeatAssertion observed ->
+    Right (ReqHeartbeat (HeartbeatPayload observed))
+  BoundedState.OwnershipAssertion BoundedState.OwnershipClaim ->
+    Right (ReqOwnership OwnershipClaim)
+  BoundedState.OwnershipAssertion BoundedState.OwnershipYield ->
+    Right (ReqOwnership OwnershipYield)
+  BoundedState.EpochRotationAssertion ->
+    Left "external epoch rotation is not admitted by the actor topology"
+  BoundedState.OrdersMigrationAssertion _ ->
+    Left "external Orders migration is not admitted by the actor topology"
 
 refreshDnsClaimAuthority
   :: DaemonEnv
@@ -1362,6 +3187,17 @@ refreshDnsClaimAuthority
   -> Continuity.CurrentContinuity
   -> IO ()
 refreshDnsClaimAuthority env kind current =
+  refreshDnsClaimAuthorityFromAnchor
+    env
+    kind
+    (Continuity.currentContinuityAnchor current)
+
+refreshDnsClaimAuthorityFromAnchor
+  :: DaemonEnv
+  -> BoundedState.AssertionKind
+  -> Continuity.ContinuityAnchor
+  -> IO ()
+refreshDnsClaimAuthorityFromAnchor env kind anchor =
   case kind of
     BoundedState.OwnershipAssertion BoundedState.OwnershipYield ->
       atomically $ modifyTVar' (envState env) $ \state ->
@@ -1381,7 +3217,7 @@ refreshDnsClaimAuthority env kind current =
           Just awsCreds ->
             case do
               generation <- credentialGenerationFor awsCreds
-              fence <- continuityFenceFromCurrent current
+              fence <- continuityFenceFromAnchor anchor
               DnsAuthority.mkCurrentDnsClaim
                 (Text.pack localNode)
                 generation
@@ -1393,19 +3229,18 @@ refreshDnsClaimAuthority env kind current =
                 atomically $ modifyTVar' (envState env) $ \currentState ->
                   currentState {stateDnsClaimAuthority = Just claim}
 
-continuityFenceFromCurrent
-  :: Continuity.CurrentContinuity
+continuityFenceFromAnchor
+  :: Continuity.ContinuityAnchor
   -> Either DnsAuthority.DnsAuthorityError DnsAuthority.ContinuityFence
-continuityFenceFromCurrent current =
-  let anchor = Continuity.currentContinuityAnchor current
-   in DnsAuthority.mkContinuityFence
-        (fromIntegral (Continuity.continuityAnchorEpoch anchor))
-        (fromIntegral (Continuity.continuityAnchorSequence anchor))
-        ( hexText
-            ( Continuity.continuityDigestBytes
-                (Continuity.continuityAnchorPreviousDigest anchor)
-            )
+continuityFenceFromAnchor anchor =
+  DnsAuthority.mkContinuityFence
+    (fromIntegral (Continuity.continuityAnchorEpoch anchor))
+    (fromIntegral (Continuity.continuityAnchorSequence anchor))
+    ( hexText
+        ( Continuity.continuityDigestBytes
+            (Continuity.continuityAnchorPreviousDigest anchor)
         )
+    )
 
 stageSignedForContinuity
   :: DaemonEnv
@@ -1566,6 +3401,13 @@ advanceSignedCheckpointEvidence signed state =
                 insertLatest (stateSignedCheckpointOwnership state)
             }
         BoundedState.EpochRotationAssertion -> state
+        BoundedState.OrdersMigrationAssertion _ ->
+          state
+            { stateSignedCheckpointHeartbeat =
+                Map.delete emitter (stateSignedCheckpointHeartbeat state)
+            , stateSignedCheckpointOwnership =
+                Map.delete emitter (stateSignedCheckpointOwnership state)
+            }
 
 newerSignedAssertion :: SignedAssertion -> SignedAssertion -> SignedAssertion
 newerSignedAssertion candidate existing =
@@ -1687,19 +3529,28 @@ daemonWorkers localPeer env = do
   -- serves @/readyz@ is spawned, so an observable ready projection structurally
   -- implies the workers are up.
   atomically (writeTVar (envWorkersStatus env) WorkersStarted)
-  withAsync (worker "continuity" (continuityLoop env)) $ \_ ->
-    withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
-      withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
-        withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
-          withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
-            withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
-              withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
-                void $
-                  concurrently
-                    (worker "peer_dialer" (peerDialerLoop env))
-                    (worker "config_reload" (reloadLoop env))
+  withAsync (worker authorityWorkerName authorityWorker) $ \_ ->
+    withAsync (worker "emitter_recovery" recoveryWorker) $ \_ ->
+      withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
+        withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
+          withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
+            withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
+              withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
+                withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
+                  void $
+                    concurrently
+                      (worker "peer_dialer" (peerDialerLoop env))
+                      (worker "config_reload" (reloadLoop env))
  where
   worker = runWorkerWithRetry env
+  (authorityWorkerName, authorityWorker) =
+    case envEmitterTopology env of
+      LegacyModelBEmitter -> ("continuity", continuityLoop env)
+      JournalLeaseEmitter -> ("emitter_lease", emitterLeaseLoop env)
+  recoveryWorker =
+    case envEmitterTopology env of
+      LegacyModelBEmitter -> atomically retry
+      JournalLeaseEmitter -> emitterRecoveryLoop env
 
 -- | File-watch worker: subscribes to events on the parent directory of the
 -- daemon's `--config` Dhall path so kubelet `..data` symlink swaps trigger
@@ -1771,31 +3622,33 @@ runWorkerWithRetry env workerName action = go 0
             logForEnv env Warn "daemon_worker_returned" [field "worker" workerName]
             go 0
       Left exc ->
-        do
-          drainPhase <- readTVarIO (envDrainPhase env)
-          if drainPhase == PhaseDraining
-            then pure ()
-            else case classifyWorkerFailure attemptIndex exc of
-              AppError {errorKind = Recoverable} -> do
-                logForEnv
-                  env
-                  Warn
-                  "daemon_worker_restarting"
-                  [ field "worker" workerName
-                  , field "attempt" (attemptIndex + 1)
-                  , field "detail" (displayException exc)
-                  ]
-                threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
-                go (attemptIndex + 1)
-              AppError {errorKind = Fatal} -> do
-                logForEnv
-                  env
-                  Error
-                  "daemon_worker_failed"
-                  [ field "worker" workerName
-                  , field "detail" (displayException exc)
-                  ]
-                throwIO exc
+        case fromException exc :: Maybe SomeAsyncException of
+          Just _ -> throwIO exc
+          Nothing -> do
+            drainPhase <- readTVarIO (envDrainPhase env)
+            if drainPhase == PhaseDraining
+              then pure ()
+              else case classifyWorkerFailure attemptIndex exc of
+                AppError {errorKind = Recoverable} -> do
+                  logForEnv
+                    env
+                    Warn
+                    "daemon_worker_restarting"
+                    [ field "worker" workerName
+                    , field "attempt" (attemptIndex + 1)
+                    , field "detail" (displayException exc)
+                    ]
+                  threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+                  go (attemptIndex + 1)
+                AppError {errorKind = Fatal} -> do
+                  logForEnv
+                    env
+                    Error
+                    "daemon_worker_failed"
+                    [ field "worker" workerName
+                    , field "detail" (displayException exc)
+                    ]
+                  throwIO exc
 
 classifyWorkerFailure :: Int -> SomeException -> AppError
 classifyWorkerFailure attemptIndex exc =
@@ -2109,10 +3962,14 @@ dnsWriteLoop env = forever $ do
                       Just lastIp -> lastIp /= currentIp
                 when shouldWrite $ do
                   writeResult <-
-                    withGatewayChild
-                      env
-                      "route53-dns-write"
-                      (reobserveAndWriteDns env awsCreds gate currentIp)
+                    case envEmitterTopology env of
+                      LegacyModelBEmitter ->
+                        withGatewayChild
+                          env
+                          "route53-dns-write"
+                          (reobserveAndWriteDns env awsCreds gate currentIp)
+                      JournalLeaseEmitter ->
+                        reobserveAndWriteDns env awsCreds gate currentIp
                   case writeResult of
                     Left err -> logForEnv env Error "dns_write_failed" [field "detail" err]
                     Right () -> do
@@ -2139,45 +3996,76 @@ dnsWriteAuthority
   -> GatewayAwsCreds
   -> IO (Either String DnsAuthority.DnsWriteAuthorized)
 dnsWriteAuthority env state awsCreds = do
-  runtime <- readTVarIO (envContinuity env)
-  case runtime of
-    Nothing -> pure (Left "retained continuity authority is unavailable")
-    Just active -> do
-      current <- readTVarIO (continuityRuntimeCurrent active)
-      pure $ do
-        generation <- mapDnsError (credentialGenerationFor awsCreds)
-        credentials <-
-          mapDnsError
-            ( DnsAuthority.mkDnsAwsCredentials
-                DnsAuthority.DnsCredentialInput
-                  { DnsAuthority.dnsCredentialAccessKeyId =
-                      Text.pack (gatewayAwsAccessKeyId awsCreds)
-                  , DnsAuthority.dnsCredentialSecretAccessKey =
-                      Text.pack (gatewayAwsSecretAccessKey awsCreds)
-                  , DnsAuthority.dnsCredentialSessionToken =
-                      Text.pack <$> gatewayAwsSessionToken awsCreds
-                  , DnsAuthority.dnsCredentialRegion =
-                      Text.pack (gatewayAwsRegion awsCreds)
-                  }
-            )
-        fence <- mapDnsError (continuityFenceFromCurrent current)
+  anchorResult <- currentEmitterAuthorityAnchor env
+  pure $ do
+    anchor <- anchorResult
+    do
+      generation <- mapDnsError (credentialGenerationFor awsCreds)
+      credentials <-
         mapDnsError
-          ( DnsAuthority.authorizeDnsWrite
-              (Text.pack (daemonNodeId (envBootConfig env)))
-              (DnsAuthority.CredentialsReady generation credentials)
-              (DnsAuthority.ContinuityReady fence)
-              ( if boundedNodeDisposition env state (daemonNodeId (envBootConfig env))
-                  == DispositionOwner
-                  then
-                    maybe
-                      DnsAuthority.DnsClaimAbsent
-                      DnsAuthority.DnsClaimCurrent
-                      (stateDnsClaimAuthority state)
-                  else DnsAuthority.DnsClaimAbsent
-              )
+          ( DnsAuthority.mkDnsAwsCredentials
+              DnsAuthority.DnsCredentialInput
+                { DnsAuthority.dnsCredentialAccessKeyId =
+                    Text.pack (gatewayAwsAccessKeyId awsCreds)
+                , DnsAuthority.dnsCredentialSecretAccessKey =
+                    Text.pack (gatewayAwsSecretAccessKey awsCreds)
+                , DnsAuthority.dnsCredentialSessionToken =
+                    Text.pack <$> gatewayAwsSessionToken awsCreds
+                , DnsAuthority.dnsCredentialRegion =
+                    Text.pack (gatewayAwsRegion awsCreds)
+                }
           )
+      fence <- mapDnsError (continuityFenceFromAnchor anchor)
+      mapDnsError
+        ( DnsAuthority.authorizeDnsWrite
+            (Text.pack (daemonNodeId (envBootConfig env)))
+            (DnsAuthority.CredentialsReady generation credentials)
+            (DnsAuthority.ContinuityReady fence)
+            ( if boundedNodeDisposition env state (daemonNodeId (envBootConfig env))
+                == DispositionOwner
+                then
+                  maybe
+                    DnsAuthority.DnsClaimAbsent
+                    DnsAuthority.DnsClaimCurrent
+                    (stateDnsClaimAuthority state)
+                else DnsAuthority.DnsClaimAbsent
+            )
+        )
  where
   mapDnsError = either (Left . show) Right
+
+currentEmitterAuthorityAnchor
+  :: DaemonEnv
+  -> IO (Either String Continuity.ContinuityAnchor)
+currentEmitterAuthorityAnchor env =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> do
+      runtime <- readTVarIO (envContinuity env)
+      case runtime of
+        Nothing -> pure (Left "retained continuity authority is unavailable")
+        Just active ->
+          Right . Continuity.currentContinuityAnchor
+            <$> readTVarIO (continuityRuntimeCurrent active)
+    JournalLeaseEmitter -> do
+      (authority, runtime) <-
+        atomically $
+          (,)
+            <$> readTVar (envEmitterAuthorityStatus env)
+            <*> readTVar (envEmitterRuntime env)
+      case (authority, runtime) of
+        (EmitterAuthorityUnavailable, _) ->
+          pure (Left "journal/Lease emitter authority is unavailable or recovering")
+        (_, Nothing) -> pure (Left "journal/Lease emitter authority is unavailable")
+        (EmitterAuthorityReady, Just active) -> do
+          current <-
+            requireEmitterLease
+              (emitterRuntimeLeaseWitness active)
+              (emitterRuntimeLeaseName active)
+              (emitterRuntimeLeaseDuration active)
+              (emitterRuntimeLeaseBinding active)
+          case current of
+            Left err -> pure (Left (Text.unpack err))
+            Right () -> Right <$> readTVarIO (emitterRuntimeAnchor active)
 
 -- | Re-observe the retained continuity object and consume the resulting
 -- credential/claim witness within the same capacity-one child lease as the
@@ -2190,38 +4078,74 @@ reobserveAndWriteDns
   -> String
   -> IO (Either String ())
 reobserveAndWriteDns env awsCreds gate currentIp = do
-  runtime <- readTVarIO (envContinuity env)
-  case runtime of
-    Nothing -> pure (Left "retained continuity authority is unavailable")
-    Just active -> do
-      observed <-
-        Continuity.recoverContinuityAtStartup
-          (continuityRuntimeAuthority active)
-      case observed of
+  (_, deadline) <- mintEmitterTicket env
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> do
+      runtime <- readTVarIO (envContinuity env)
+      case runtime of
+        Nothing -> pure (Left "retained continuity authority is unavailable")
+        Just active -> do
+          observed <-
+            Continuity.recoverContinuityAtStartup
+              (continuityRuntimeAuthority active)
+          case observed of
+            Left err -> pure (Left (show err))
+            Right (Continuity.StartupRepublish _) ->
+              pure (Left "retained continuity has an uncommitted staged assertion")
+            Right (Continuity.StartupCurrent current) -> do
+              atomically (writeTVar (continuityRuntimeCurrent active) current)
+              writeDnsWithCurrentAuthority deadline env awsCreds gate currentIp
+    JournalLeaseEmitter -> do
+      runtime <- readTVarIO (envEmitterRuntime env)
+      case runtime of
+        Nothing -> pure (Left "journal/Lease emitter authority is unavailable")
+        Just active -> do
+          result <-
+            withCurrentEmitterLease
+              env
+              deadline
+              (emitterRuntimeLeaseWitness active)
+              (emitterRuntimeLeaseName active)
+              (emitterRuntimeLeaseDuration active)
+              (emitterRuntimeLeaseBinding active)
+              (textPackEither <$> writeDnsWithCurrentAuthority deadline env awsCreds gate currentIp)
+          pure (either (Left . Text.unpack) Right result)
+
+writeDnsWithCurrentAuthority
+  :: Deadline
+  -> DaemonEnv
+  -> GatewayAwsCreds
+  -> DnsWriteGate
+  -> String
+  -> IO (Either String ())
+writeDnsWithCurrentAuthority deadline env awsCreds gate currentIp = do
+  freshState <- readTVarIO (envState env)
+  authority <- dnsWriteAuthority env freshState awsCreds
+  case authority of
+    Left err -> pure (Left err)
+    Right ready ->
+      case do
+        if dnsWriteGateTtl gate > 0
+          then Right ()
+          else Left (DnsAuthority.DnsWriteTtlInvalid 0)
+        request <-
+          DnsAuthority.mkDnsWriteRequest
+            (Text.pack (dnsWriteGateZoneId gate))
+            (Text.pack (dnsWriteGateFqdn gate))
+            (fromIntegral (dnsWriteGateTtl gate))
+            (Text.pack (dnsWriteGateAwsRegion gate))
+            (Text.pack currentIp)
+        DnsAuthority.authorizeDnsWriteRequest ready request of
         Left err -> pure (Left (show err))
-        Right (Continuity.StartupRepublish _) ->
-          pure (Left "retained continuity has an uncommitted staged assertion")
-        Right (Continuity.StartupCurrent current) -> do
-          atomically (writeTVar (continuityRuntimeCurrent active) current)
-          freshState <- readTVarIO (envState env)
-          authority <- dnsWriteAuthority env freshState awsCreds
-          case authority of
-            Left err -> pure (Left err)
-            Right ready ->
-              case do
-                if dnsWriteGateTtl gate > 0
-                  then Right ()
-                  else Left (DnsAuthority.DnsWriteTtlInvalid 0)
-                request <-
-                  DnsAuthority.mkDnsWriteRequest
-                    (Text.pack (dnsWriteGateZoneId gate))
-                    (Text.pack (dnsWriteGateFqdn gate))
-                    (fromIntegral (dnsWriteGateTtl gate))
-                    (Text.pack (dnsWriteGateAwsRegion gate))
-                    (Text.pack currentIp)
-                DnsAuthority.authorizeDnsWriteRequest ready request of
-                Left err -> pure (Left (show err))
-                Right action -> writeDnsRecord action
+        Right action ->
+          case envEmitterTopology env of
+            LegacyModelBEmitter -> writeLegacyDnsRecord action
+            JournalLeaseEmitter ->
+              withTargetOperationAtDeadline env TargetRoute53Write deadline $ \acceptedDeadline ->
+                writeNativeDnsRecord acceptedDeadline action
+
+textPackEither :: Either String value -> Either Text.Text value
+textPackEither = either (Left . Text.pack) Right
 
 hexText :: ByteString -> Text.Text
 hexText bytes =
@@ -2231,6 +4155,151 @@ hexText bytes =
             (foldMap ByteStringBuilder.word8HexFixed (BS.unpack bytes))
         )
     )
+
+newTargetOperationPermits :: IO (Map TargetOperation (TMVar ()))
+newTargetOperationPermits =
+  Map.fromList
+    <$> traverse
+      ( \operation -> do
+          permit <- newTMVarIO ()
+          pure (operation, permit)
+      )
+      [minBound .. maxBound]
+
+-- | Code-local Standard-P qualification plan for each target operation lane.
+-- Each constructor has its own worker and capacity-one rejection threshold;
+-- there is deliberately no waiting queue. The 10ms service estimate and 25%
+-- headroom match the still-unqualified actor policy and remain rollback-gated
+-- until composed deployment measurements replace them.
+targetOperationCapacityPlan
+  :: TargetOperation
+  -> Either String ServiceCapacityPlan
+targetOperationCapacityPlan _operation =
+  either (Left . show) Right $
+    mkServiceCapacityPlan
+      RawServiceCapacityPlan
+        { rawArrivalPerSecond = 1
+        , rawServiceTimeMicros = 10000
+        , rawWorkerCount = 1
+        , rawQueueCapacity = 1
+        , rawRejectionThreshold = 1
+        , rawHeadroomPpm = 250000
+        }
+
+-- | Target-only absolute-deadline admission. Feasibility is checked before a
+-- non-blocking permit acquisition; saturation is therefore an immediate
+-- refusal and can never create a hidden FIFO behind another capability.
+withTargetOperationAtDeadline
+  :: DaemonEnv
+  -> TargetOperation
+  -> Deadline
+  -> (Deadline -> IO (Either String value))
+  -> IO (Either String value)
+withTargetOperationAtDeadline env operation deadline action =
+  case envEmitterTopology env of
+    LegacyModelBEmitter ->
+      pure (Left "target operation lane is unavailable in legacy topology")
+    JournalLeaseEmitter -> do
+      now <- realMonotonicNow
+      case deadlineObservation now deadline of
+        DeadlineExpired -> pure (Left (targetOperationDeadlineError operation))
+        DeadlineOpen remaining ->
+          case targetOperationCapacityPlan operation of
+            Left err ->
+              pure
+                ( Left
+                    ( "target operation capacity plan invalid for "
+                        ++ show operation
+                        ++ ": "
+                        ++ err
+                    )
+                )
+            Right plan ->
+              case deadlineAdmission
+                remaining
+                (WorkEstimate (serviceCapacityServiceTimeMicros plan)) of
+                AdmissionMissesDeadline _ ->
+                  pure (Left (targetOperationDeadlineError operation))
+                AdmissionWithinDeadline _ ->
+                  case Map.lookup operation (envTargetOperationPermits env) of
+                    Nothing ->
+                      pure
+                        ( Left
+                            ( "target operation lane missing for "
+                                ++ show operation
+                            )
+                        )
+                    Just permit -> do
+                      acquired <- atomically (tryTakeTMVar permit)
+                      case acquired of
+                        Nothing ->
+                          pure
+                            ( Left
+                                ( "target operation saturated; immediate refusal: "
+                                    ++ show operation
+                                )
+                            )
+                        Just () ->
+                          ( do
+                              completed <-
+                                runWithinEmitterDeadline deadline $ do
+                                  emitterDependencyObserveEvent
+                                    (envEmitterDependencies env)
+                                    (EmitterTargetOperationAdmitted operation deadline)
+                                  textPackEither <$> action deadline
+                              pure (either (Left . Text.unpack) Right completed)
+                          )
+                            `finally` atomically (putTMVar permit ())
+
+targetOperationDeadlineError :: TargetOperation -> String
+targetOperationDeadlineError operation =
+  "target operation absolute deadline cannot be met: " ++ show operation
+
+-- | REST admission is target-only. Legacy executes the pre-existing handler
+-- directly, including all of its original nested 'withGatewayChild' calls.
+dispatchBoundedTargetOperation
+  :: Socket
+  -> DaemonEnv
+  -> TargetOperation
+  -> IO ()
+  -> IO ()
+dispatchBoundedTargetOperation sock env operation action =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> action
+    JournalLeaseEmitter -> do
+      (_, deadline) <- mintEmitterTicket env
+      actionStarted <- newTVarIO False
+      result <-
+        withTargetOperationAtDeadline env operation deadline $ \_acceptedDeadline -> do
+          atomically (writeTVar actionStarted True)
+          action
+          pure (Right ())
+      case result of
+        Left err -> do
+          started <- readTVarIO actionStarted
+          -- Once the handler owns the socket it is the sole response owner.
+          -- A late deadline or partial send closes with the handler; it must
+          -- never be followed by a contradictory second HTTP response.
+          unless started $
+            sendHttpResponse
+              sock
+              503
+              "text/plain"
+              ("target operation unavailable: " ++ err ++ "\n")
+        Right () -> pure ()
+
+-- | A target REST request already owns its operation-specific deadline lane,
+-- so nested object-store work runs directly under that outer cancellation
+-- scope. The rollback branch preserves its historical child scheduler.
+withGatewayChildForBoundedRest
+  :: DaemonEnv
+  -> Text.Text
+  -> IO (Either String value)
+  -> IO (Either String value)
+withGatewayChildForBoundedRest env childName action =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> withGatewayChild env childName action
+    JournalLeaseEmitter -> action
 
 withGatewayChild
   :: DaemonEnv
@@ -2317,7 +4386,13 @@ handleRestClient sock env =
     let path = requestPath rawRequest
     case routeForPath path of
       Just route -> dispatchGatewayRoute sock env now rawRequest route
-      Nothing -> dispatchPatternRoute sock env rawRequest path
+      Nothing ->
+        case envEmitterTopology env of
+          LegacyModelBEmitter ->
+            case legacyGatewayBootstrapRouteForPath path of
+              Just route -> dispatchLegacyGatewayBootstrapRoute sock env rawRequest route
+              Nothing -> dispatchPatternRoute sock env rawRequest path
+          JournalLeaseEmitter -> dispatchPatternRoute sock env rawRequest path
 
 -- | Sprint 2.34: the daemon request dispatcher as one total @case@ over the
 -- compiled 'GatewayRoute' registry ("Prodbox.Gateway.Routes"). Every path string
@@ -2336,14 +4411,16 @@ dispatchGatewayRoute sock env now rawRequest route = case route of
   RouteHealthz ->
     sendHttpResponse sock 200 "text/plain" "ok\n"
   RouteReadyz -> do
-    -- Constant-time projection: a consistent single-transaction snapshot of the
-    -- three cached monotone facts, folded by the pure 'computeReadiness'. No
-    -- backend I/O (bootstrap_readiness_doctrine §0.7 / §2.1).
+    -- Constant-time projection: one monotonic clock sample plus a consistent
+    -- STM snapshot. There is no backend I/O. Target-mode readiness verifies
+    -- that the current mount generation still carries an unexpired matching
+    -- Lease witness, so a delayed renewal cannot resurrect an obsolete mount.
+    monotonicNow <- realMonotonicNow
     inputs <-
       atomically $
         ReadinessInputs
           <$> readTVar (envDrainPhase env)
-          <*> readTVar (envObjectStoreProof env)
+          <*> currentEmitterReadinessAuthority env monotonicNow
           <*> readTVar (envWorkersStatus env)
     case computeReadiness inputs of
       Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
@@ -2362,30 +4439,87 @@ dispatchGatewayRoute sock env now rawRequest route = case route of
       "application/json"
       (renderStateJson now env dnsReady continuityDiagnostic state)
   RouteFederationChildren -> do
-    childrenResult <- readFederationChildren (envBootConfig env)
-    case childrenResult of
-      Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
-      Right children ->
-        sendLazyHttpResponse
-          sock
-          200
-          "application/json"
-          (encode (object ["children" .= children]))
-  RouteBootstrapVaultEnsure -> handleBootstrapVaultEnsure sock env rawRequest
-  RouteBootstrapVaultStatus -> handleBootstrapVaultStatus sock env rawRequest
-  RouteBootstrapVaultSeal -> handleBootstrapVaultSeal sock env rawRequest
-  RouteBootstrapVaultRotateUnlockBundle -> handleBootstrapVaultRotateUnlockBundle sock env rawRequest
-  RouteBootstrapVaultRotateTransitKey -> handleBootstrapVaultRotateTransitKey sock env rawRequest
-  RouteBootstrapVaultPkiStatus -> handleBootstrapVaultPkiStatus sock env rawRequest
-  RouteBootstrapVaultPkiIssueTestCert -> handleBootstrapVaultPkiIssueTestCert sock env rawRequest
-  RoutePulumiObjectGet -> handlePulumiObjectGet sock env rawRequest
-  RoutePulumiObjectPut -> handlePulumiObjectPut sock env rawRequest
-  RoutePulumiObjectDelete -> handlePulumiObjectDelete sock env rawRequest
-  RouteAuthorityObjectGet -> handleAuthorityObjectGet sock env rawRequest
-  RouteAuthorityObjectCas -> handleAuthorityObjectCas sock env rawRequest
+    dispatchBoundedTargetOperation sock env TargetFederationChildrenRead $ do
+      childrenResult <- readFederationChildren (envBootConfig env)
+      case childrenResult of
+        Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
+        Right children ->
+          sendLazyHttpResponse
+            sock
+            200
+            "application/json"
+            (encode (object ["children" .= children]))
+  RoutePulumiObjectGet ->
+    dispatchBoundedTargetOperation sock env TargetPulumiObjectGet $
+      handlePulumiObjectGet sock env rawRequest
+  RoutePulumiObjectPut ->
+    dispatchBoundedTargetOperation sock env TargetPulumiObjectPut $
+      handlePulumiObjectPut sock env rawRequest
+  RoutePulumiObjectDelete ->
+    dispatchBoundedTargetOperation sock env TargetPulumiObjectDelete $
+      handlePulumiObjectDelete sock env rawRequest
+  RouteAuthorityObjectGet ->
+    dispatchBoundedTargetOperation sock env TargetAuthorityObjectGet $
+      handleAuthorityObjectGet sock env rawRequest
+  RouteAuthorityObjectCas ->
+    dispatchBoundedTargetOperation sock env TargetAuthorityObjectCas $
+      handleAuthorityObjectCas sock env rawRequest
   RouteAuthorityClock -> handleAuthorityClock sock rawRequest
-  RouteTargetSecretRead -> handleTargetSecretRead sock env rawRequest
-  RouteTargetSecretCas -> handleTargetSecretCas sock env rawRequest
+  RouteTargetSecretRead ->
+    dispatchBoundedTargetOperation sock env TargetSecretRead $
+      handleTargetSecretRead sock env rawRequest
+  RouteTargetSecretCas ->
+    dispatchBoundedTargetOperation sock env TargetSecretCas $
+      handleTargetSecretCas sock env rawRequest
+
+-- | Explicit Standard-P rollback adapter. Bootstrap routes are absent from
+-- the Gateway registry/client and actor-backed target dispatch. The combined
+-- production wrapper reaches the isolated interpreter only while it selects
+-- 'LegacyModelBEmitter'; current-revision qualification owns later cutover.
+dispatchLegacyGatewayBootstrapRoute
+  :: Socket
+  -> DaemonEnv
+  -> BS.ByteString
+  -> LegacyGatewayBootstrapRoute
+  -> IO ()
+dispatchLegacyGatewayBootstrapRoute sock env rawRequest route = do
+  response <-
+    runLegacyGatewayBootstrapRequest
+      (envBootConfig env)
+      (withGatewayChild env)
+      route
+      rawRequest
+  sendLazyHttpResponse
+    sock
+    (legacyGatewayBootstrapStatus response)
+    (legacyGatewayBootstrapContentType response)
+    (legacyGatewayBootstrapBody response)
+
+currentEmitterReadinessAuthority
+  :: DaemonEnv
+  -> MonotonicInstant
+  -> STM EmitterAuthorityStatus
+currentEmitterReadinessAuthority env now =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> readTVar (envEmitterAuthorityStatus env)
+    JournalLeaseEmitter -> do
+      authority <- readTVar (envEmitterAuthorityStatus env)
+      maybeRuntime <- readTVar (envEmitterRuntime env)
+      case (authority, maybeRuntime) of
+        (EmitterAuthorityUnavailable, _) -> pure EmitterAuthorityUnavailable
+        (_, Nothing) -> pure EmitterAuthorityUnavailable
+        (EmitterAuthorityReady, Just runtime) -> do
+          maybeWitness <- readTVar (emitterRuntimeLeaseWitness runtime)
+          pure $ case maybeWitness of
+            Just witness
+              | leaseWitnessCurrent
+                  now
+                  (emitterRuntimeLeaseName runtime)
+                  (emitterRuntimeLeaseDuration runtime)
+                  (emitterRuntimeLeaseBinding runtime)
+                  witness ->
+                  EmitterAuthorityReady
+            _ -> EmitterAuthorityUnavailable
 
 -- | The two variable-suffix pattern routes (operator-secret write, federation
 -- child bootstrap) and the 404 fallthrough — the paths that are prefixes, not
@@ -2396,7 +4530,8 @@ dispatchPatternRoute sock env rawRequest path =
   case operatorSecretLogicalPath path of
     Just logical
       | operatorSecretRequestMethod rawRequest == "POST" ->
-          handleOperatorSecretWrite sock env rawRequest logical
+          dispatchBoundedTargetOperation sock env TargetOperatorSecretWrite $
+            handleOperatorSecretWrite sock env rawRequest logical
       | otherwise ->
           -- The write endpoint exists only for POST; a GET/PUT/etc. against
           -- it is a client error, never a Vault read (the secrets it owns are
@@ -2405,16 +4540,17 @@ dispatchPatternRoute sock env rawRequest path =
     Nothing ->
       case federationBootstrapChildId path of
         Just childId -> do
-          bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
-          case bootstrapResult of
-            Left err ->
-              case err of
-                FederationChildBootstrapMissing ->
-                  sendHttpResponse sock 404 "text/plain" "not found\n"
-                FederationVaultUnavailable detail ->
-                  sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
-            Right credential ->
-              sendLazyHttpResponse sock 200 "application/json" (encode credential)
+          dispatchBoundedTargetOperation sock env TargetFederationChildBootstrapRead $ do
+            bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
+            case bootstrapResult of
+              Left err ->
+                case err of
+                  FederationChildBootstrapMissing ->
+                    sendHttpResponse sock 404 "text/plain" "not found\n"
+                  FederationVaultUnavailable detail ->
+                    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
+              Right credential ->
+                sendLazyHttpResponse sock 200 "application/json" (encode credential)
         Nothing ->
           sendHttpResponse sock 404 "text/plain" "not found\n"
 
@@ -2540,240 +4676,6 @@ decodeOperatorSecretFields body
         Left err -> Left ("invalid secret JSON body: " ++ err)
         Right fields -> Right fields
 
--- Sprint 2.29: pre-Vault bootstrap route. The password-bearing request is
--- accepted only through the loopback-restricted daemon NodePort and is never
--- logged or echoed.
--- Sprint 2.34: these are projections of the compiled route registry
--- ("Prodbox.Gateway.Routes"), not independent literals, so the daemon's own
--- diagnostics cannot drift from the dispatcher and client.
-bootstrapVaultPath :: String
-bootstrapVaultPath = routePattern RouteBootstrapVaultEnsure
-
-bootstrapVaultStatusPath :: String
-bootstrapVaultStatusPath = routePattern RouteBootstrapVaultStatus
-
-bootstrapVaultSealPath :: String
-bootstrapVaultSealPath = routePattern RouteBootstrapVaultSeal
-
-bootstrapVaultRotateUnlockBundlePath :: String
-bootstrapVaultRotateUnlockBundlePath = routePattern RouteBootstrapVaultRotateUnlockBundle
-
-bootstrapVaultRotateTransitKeyPath :: String
-bootstrapVaultRotateTransitKeyPath = routePattern RouteBootstrapVaultRotateTransitKey
-
-bootstrapVaultPkiStatusPath :: String
-bootstrapVaultPkiStatusPath = routePattern RouteBootstrapVaultPkiStatus
-
-bootstrapVaultPkiIssueTestCertPath :: String
-bootstrapVaultPkiIssueTestCertPath = routePattern RouteBootstrapVaultPkiIssueTestCert
-
-bootstrapVaultRequestMaxBytes :: Int
-bootstrapVaultRequestMaxBytes = 64 * 1024
-
-data BootstrapVaultRequest = BootstrapVaultRequest
-  { bootstrapVaultUnlockPassword :: Text.Text
-  , bootstrapVaultLoopbackNodePortVerified :: Bool
-  }
-  deriving (Eq)
-
-instance Show BootstrapVaultRequest where
-  show request =
-    "BootstrapVaultRequest {bootstrapVaultUnlockPassword=<redacted>, bootstrapVaultLoopbackNodePortVerified="
-      ++ show (bootstrapVaultLoopbackNodePortVerified request)
-      ++ "}"
-
-instance FromJSON BootstrapVaultRequest where
-  parseJSON =
-    withObject "BootstrapVaultRequest" $ \o ->
-      BootstrapVaultRequest
-        <$> o .: "unlock_password"
-        <*> o .:? "loopback_nodeport_verified" .!= False
-
-instance ToJSON BootstrapVaultRequest where
-  toJSON request =
-    object
-      [ "unlock_password" .= bootstrapVaultUnlockPassword request
-      , "loopback_nodeport_verified" .= bootstrapVaultLoopbackNodePortVerified request
-      ]
-
-data BootstrapVaultRotateUnlockBundleRequest = BootstrapVaultRotateUnlockBundleRequest
-  { bootstrapVaultRotateCurrentPassword :: Text.Text
-  , bootstrapVaultRotateNewPassword :: Text.Text
-  , bootstrapVaultRotateLoopbackNodePortVerified :: Bool
-  }
-  deriving (Eq)
-
-instance Show BootstrapVaultRotateUnlockBundleRequest where
-  show request =
-    "BootstrapVaultRotateUnlockBundleRequest {bootstrapVaultRotateCurrentPassword=<redacted>, bootstrapVaultRotateNewPassword=<redacted>, bootstrapVaultRotateLoopbackNodePortVerified="
-      ++ show (bootstrapVaultRotateLoopbackNodePortVerified request)
-      ++ "}"
-
-instance FromJSON BootstrapVaultRotateUnlockBundleRequest where
-  parseJSON =
-    withObject "BootstrapVaultRotateUnlockBundleRequest" $ \o ->
-      BootstrapVaultRotateUnlockBundleRequest
-        <$> o .: "unlock_password"
-        <*> o .: "new_unlock_password"
-        <*> o .:? "loopback_nodeport_verified" .!= False
-
-instance ToJSON BootstrapVaultRotateUnlockBundleRequest where
-  toJSON request =
-    object
-      [ "unlock_password" .= bootstrapVaultRotateCurrentPassword request
-      , "new_unlock_password" .= bootstrapVaultRotateNewPassword request
-      , "loopback_nodeport_verified" .= bootstrapVaultRotateLoopbackNodePortVerified request
-      ]
-
-data BootstrapVaultRotateTransitKeyRequest = BootstrapVaultRotateTransitKeyRequest
-  { bootstrapVaultRotateTransitPassword :: Text.Text
-  , bootstrapVaultRotateTransitKeyName :: Text.Text
-  , bootstrapVaultRotateTransitLoopbackNodePortVerified :: Bool
-  }
-  deriving (Eq)
-
-instance Show BootstrapVaultRotateTransitKeyRequest where
-  show request =
-    "BootstrapVaultRotateTransitKeyRequest {bootstrapVaultRotateTransitPassword=<redacted>, bootstrapVaultRotateTransitKeyName="
-      ++ show (bootstrapVaultRotateTransitKeyName request)
-      ++ ", bootstrapVaultRotateTransitLoopbackNodePortVerified="
-      ++ show (bootstrapVaultRotateTransitLoopbackNodePortVerified request)
-      ++ "}"
-
-instance FromJSON BootstrapVaultRotateTransitKeyRequest where
-  parseJSON =
-    withObject "BootstrapVaultRotateTransitKeyRequest" $ \o ->
-      BootstrapVaultRotateTransitKeyRequest
-        <$> o .: "unlock_password"
-        <*> o .: "key_name"
-        <*> o .:? "loopback_nodeport_verified" .!= False
-
-instance ToJSON BootstrapVaultRotateTransitKeyRequest where
-  toJSON request =
-    object
-      [ "unlock_password" .= bootstrapVaultRotateTransitPassword request
-      , "key_name" .= bootstrapVaultRotateTransitKeyName request
-      , "loopback_nodeport_verified" .= bootstrapVaultRotateTransitLoopbackNodePortVerified request
-      ]
-
-data BootstrapVaultResponse = BootstrapVaultResponse
-  { bootstrapVaultResponseStatus :: Text.Text
-  , bootstrapVaultResponseAction :: Text.Text
-  , bootstrapVaultResponseReconcileStepCount :: Int
-  }
-  deriving (Eq, Show)
-
-instance FromJSON BootstrapVaultResponse where
-  parseJSON =
-    withObject "BootstrapVaultResponse" $ \o ->
-      BootstrapVaultResponse
-        <$> o .: "status"
-        <*> o .: "action"
-        <*> o .: "reconcile_step_count"
-
-instance ToJSON BootstrapVaultResponse where
-  toJSON response =
-    object
-      [ "status" .= bootstrapVaultResponseStatus response
-      , "action" .= bootstrapVaultResponseAction response
-      , "reconcile_step_count" .= bootstrapVaultResponseReconcileStepCount response
-      ]
-
-data BootstrapVaultRequestError
-  = BootstrapVaultMethodNotAllowed String
-  | BootstrapVaultRequestTooLarge Int
-  | BootstrapVaultRequestEmpty
-  | BootstrapVaultRequestMalformed String
-  | BootstrapVaultPasswordEmpty
-  | BootstrapVaultLoopbackUnverified
-  deriving (Eq, Show)
-
-decodeBootstrapVaultRequest
-  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRequest
-decodeBootstrapVaultRequest rawRequest
-  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
-  | BS.length body > bootstrapVaultRequestMaxBytes =
-      Left (BootstrapVaultRequestTooLarge (BS.length body))
-  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (BootstrapVaultRequestMalformed err)
-        Right request
-          | Text.null (Text.strip (bootstrapVaultUnlockPassword request)) ->
-              Left BootstrapVaultPasswordEmpty
-          | not (bootstrapVaultLoopbackNodePortVerified request) ->
-              Left BootstrapVaultLoopbackUnverified
-          | otherwise -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-decodeBootstrapVaultAuthenticatedRequest
-  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRequest
-decodeBootstrapVaultAuthenticatedRequest = decodeBootstrapVaultRequest
-
-decodeBootstrapVaultRotateUnlockBundleRequest
-  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRotateUnlockBundleRequest
-decodeBootstrapVaultRotateUnlockBundleRequest rawRequest
-  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
-  | BS.length body > bootstrapVaultRequestMaxBytes =
-      Left (BootstrapVaultRequestTooLarge (BS.length body))
-  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (BootstrapVaultRequestMalformed err)
-        Right request
-          | Text.null (Text.strip (bootstrapVaultRotateCurrentPassword request)) ->
-              Left BootstrapVaultPasswordEmpty
-          | Text.null (Text.strip (bootstrapVaultRotateNewPassword request)) ->
-              Left BootstrapVaultPasswordEmpty
-          | not (bootstrapVaultRotateLoopbackNodePortVerified request) ->
-              Left BootstrapVaultLoopbackUnverified
-          | otherwise -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-decodeBootstrapVaultRotateTransitKeyRequest
-  :: BS.ByteString -> Either BootstrapVaultRequestError BootstrapVaultRotateTransitKeyRequest
-decodeBootstrapVaultRotateTransitKeyRequest rawRequest
-  | method /= "POST" = Left (BootstrapVaultMethodNotAllowed method)
-  | BS.length body > bootstrapVaultRequestMaxBytes =
-      Left (BootstrapVaultRequestTooLarge (BS.length body))
-  | BS.null (BS8.dropWhile isSpace body) = Left BootstrapVaultRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (BootstrapVaultRequestMalformed err)
-        Right request
-          | Text.null (Text.strip (bootstrapVaultRotateTransitPassword request)) ->
-              Left BootstrapVaultPasswordEmpty
-          | Text.null (Text.strip (bootstrapVaultRotateTransitKeyName request)) ->
-              Left (BootstrapVaultRequestMalformed "key_name must not be empty")
-          | not (bootstrapVaultRotateTransitLoopbackNodePortVerified request) ->
-              Left BootstrapVaultLoopbackUnverified
-          | otherwise -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-renderBootstrapVaultRequestError :: BootstrapVaultRequestError -> String
-renderBootstrapVaultRequestError err = case err of
-  BootstrapVaultMethodNotAllowed method ->
-    "method " ++ method ++ " is not supported for " ++ bootstrapVaultPath
-  BootstrapVaultRequestTooLarge size ->
-    "bootstrap request body is too large: "
-      ++ show size
-      ++ " bytes; maximum is "
-      ++ show bootstrapVaultRequestMaxBytes
-  BootstrapVaultRequestEmpty ->
-    "empty request body; expected JSON object with unlock_password and loopback_nodeport_verified"
-  BootstrapVaultRequestMalformed detail ->
-    "invalid bootstrap JSON body: " ++ detail
-  BootstrapVaultPasswordEmpty ->
-    "unlock_password must not be empty"
-  BootstrapVaultLoopbackUnverified ->
-    "loopback NodePort restriction is not verified; refusing password-bearing bootstrap route"
-
 splitCrlfLines :: String -> [String]
 splitCrlfLines = foldr step [""] . filter (/= '\r')
  where
@@ -2783,425 +4685,6 @@ splitCrlfLines = foldr step [""] . filter (/= '\r')
 
 trimHeader :: String -> String
 trimHeader = f . f where f = reverse . dropWhile isSpace
-
-data BootstrapVaultEnsureError
-  = BootstrapVaultEnsureVaultUnavailable String
-  | BootstrapVaultEnsureBundleUnavailable String
-  | BootstrapVaultEnsureUnsealFailed String
-  | BootstrapVaultEnsureReconcileFailed String
-  deriving (Eq, Show)
-
-handleBootstrapVaultEnsure :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultEnsure sock env rawRequest =
-  case decodeBootstrapVaultRequest rawRequest of
-    Left (BootstrapVaultMethodNotAllowed _) ->
-      sendHttpResponse
-        sock
-        405
-        "text/plain"
-        ( renderBootstrapVaultRequestError
-            (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-            ++ "\n"
-        )
-    Left err ->
-      sendHttpResponse sock 400 "text/plain" (renderBootstrapVaultRequestError err ++ "\n")
-    Right request -> do
-      result <- ensureBootstrapVault env request
-      case result of
-        Left err ->
-          let (status, message) = renderBootstrapVaultEnsureError err
-           in sendHttpResponse sock status "text/plain" (message ++ "\n")
-        Right response ->
-          sendLazyHttpResponse sock 200 "application/json" (encode response)
-
-renderBootstrapVaultEnsureError :: BootstrapVaultEnsureError -> (Int, String)
-renderBootstrapVaultEnsureError err = case err of
-  BootstrapVaultEnsureVaultUnavailable detail ->
-    (503, "Vault bootstrap unavailable: " ++ detail)
-  BootstrapVaultEnsureBundleUnavailable detail ->
-    (503, "Vault bootstrap bundle unavailable: " ++ detail)
-  BootstrapVaultEnsureUnsealFailed detail ->
-    (502, "Vault unseal failed: " ++ detail)
-  BootstrapVaultEnsureReconcileFailed detail ->
-    (502, "Vault reconcile failed: " ++ detail)
-
-handleBootstrapVaultStatus :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultStatus sock env rawRequest =
-  case operatorSecretRequestMethod rawRequest of
-    "GET" -> do
-      result <- vaultSealStatus (bootstrapVaultAddress (envBootConfig env))
-      case result of
-        Left err ->
-          sendHttpResponse
-            sock
-            503
-            "text/plain"
-            ("Vault status unavailable: " ++ renderHttpError err ++ "\n")
-        Right status ->
-          sendLazyHttpResponse sock 200 "application/json" (encode status)
-    method ->
-      sendHttpResponse
-        sock
-        405
-        "text/plain"
-        ("method " ++ method ++ " is not supported for " ++ bootstrapVaultStatusPath ++ "\n")
-
-handleBootstrapVaultSeal :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultSeal sock env rawRequest =
-  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- sealBootstrapVault env request
-    pure $ encodeBootstrapActionResult result
-
-handleBootstrapVaultRotateUnlockBundle :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultRotateUnlockBundle sock env rawRequest =
-  case decodeBootstrapVaultRotateUnlockBundleRequest rawRequest of
-    Left (BootstrapVaultMethodNotAllowed _) ->
-      sendBootstrapRequestError
-        sock
-        405
-        rawRequest
-        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendBootstrapRequestError sock 400 rawRequest err
-    Right request -> do
-      result <- rotateBootstrapUnlockBundle env request
-      sendBootstrapActionResult sock result
-
-handleBootstrapVaultRotateTransitKey :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultRotateTransitKey sock env rawRequest =
-  case decodeBootstrapVaultRotateTransitKeyRequest rawRequest of
-    Left (BootstrapVaultMethodNotAllowed _) ->
-      sendBootstrapRequestError
-        sock
-        405
-        rawRequest
-        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendBootstrapRequestError sock 400 rawRequest err
-    Right request -> do
-      result <- rotateBootstrapTransitKey env request
-      sendBootstrapActionResult sock result
-
-handleBootstrapVaultPkiStatus :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultPkiStatus sock env rawRequest =
-  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- bootstrapVaultPkiStatus env request
-    pure $ encodeBootstrapActionResult result
-
-handleBootstrapVaultPkiIssueTestCert :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleBootstrapVaultPkiIssueTestCert sock env rawRequest =
-  handleBootstrapVaultPasswordAction sock rawRequest $ \request -> do
-    result <- bootstrapVaultPkiIssueTestCert env request
-    pure $ encodeBootstrapActionResult result
-
-handleBootstrapVaultPasswordAction
-  :: Socket
-  -> BS.ByteString
-  -> (BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError BL.ByteString))
-  -> IO ()
-handleBootstrapVaultPasswordAction sock rawRequest action =
-  case decodeBootstrapVaultAuthenticatedRequest rawRequest of
-    Left (BootstrapVaultMethodNotAllowed _) ->
-      sendBootstrapRequestError
-        sock
-        405
-        rawRequest
-        (BootstrapVaultMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendBootstrapRequestError sock 400 rawRequest err
-    Right request -> do
-      result <- action request
-      case result of
-        Left err ->
-          let (status, message) = renderBootstrapVaultEnsureError err
-           in sendHttpResponse sock status "text/plain" (message ++ "\n")
-        Right body ->
-          sendLazyHttpResponse sock 200 "application/json" body
-
-sendBootstrapRequestError :: Socket -> Int -> BS.ByteString -> BootstrapVaultRequestError -> IO ()
-sendBootstrapRequestError sock status _rawRequest err =
-  sendHttpResponse sock status "text/plain" (renderBootstrapVaultRequestError err ++ "\n")
-
-sendBootstrapActionResult
-  :: Socket -> Either BootstrapVaultEnsureError BL.ByteString -> IO ()
-sendBootstrapActionResult sock result =
-  case result of
-    Left err ->
-      let (status, message) = renderBootstrapVaultEnsureError err
-       in sendHttpResponse sock status "text/plain" (message ++ "\n")
-    Right body ->
-      sendLazyHttpResponse sock 200 "application/json" body
-
-encodeBootstrapActionResult
-  :: Either BootstrapVaultEnsureError Value
-  -> Either BootstrapVaultEnsureError BL.ByteString
-encodeBootstrapActionResult = fmap encode
-
-ensureBootstrapVault
-  :: DaemonEnv
-  -> BootstrapVaultRequest
-  -> IO (Either BootstrapVaultEnsureError BootstrapVaultResponse)
-ensureBootstrapVault env request = do
-  statusResult <- vaultSealStatus address
-  case statusResult of
-    Left err ->
-      pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
-    Right status ->
-      case bootstrapAction status of
-        BootstrapInitialize -> initializeUnsealAndReconcile
-        BootstrapUnseal -> unsealExistingAndReconcile status
-        BootstrapReady -> reconcileReadyVault
- where
-  config = envBootConfig env
-  address = bootstrapVaultAddress config
-  minioConfig = bootstrapVaultObjectStoreConfig config
-  password = bootstrapVaultUnlockPassword request
-
-  initializeUnsealAndReconcile = do
-    initResult <- vaultInit address defaultInitRequest
-    case initResult of
-      Left err ->
-        pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
-      Right initResponse -> do
-        now <- getCurrentTime
-        let bundle =
-              initResponseToUnlockBundle
-                (Text.pack (daemonNodeId config))
-                address
-                (Text.pack (formatShow iso8601Format now))
-                initResponse
-        encrypted <- encryptUnlockBundle password bundle
-        case encrypted of
-          Left err ->
-            pure
-              ( Left
-                  ( BootstrapVaultEnsureBundleUnavailable
-                      ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
-                  )
-              )
-          Right envelopeBytes -> do
-            writeResult <-
-              withGatewayChild
-                env
-                "vault-bootstrap-bundle-write"
-                (putAndVerifyBootstrapBundle minioConfig password envelopeBytes)
-            case writeResult of
-              Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
-              Right () -> do
-                currentStatus <- vaultSealStatus address
-                case currentStatus of
-                  Left err ->
-                    pure (Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err)))
-                  Right sealedStatus -> do
-                    unsealResult <- submitBootstrapUnsealSteps address sealedStatus bundle
-                    case unsealResult of
-                      Left err -> pure (Left (BootstrapVaultEnsureUnsealFailed err))
-                      Right () ->
-                        reconcileWithRootToken
-                          "initialized-unsealed-reconciled"
-                          (VaultToken (unlockBundleInitialRootToken bundle))
-
-  unsealExistingAndReconcile status = do
-    bundleResult <-
-      withGatewayChild
-        env
-        "vault-bootstrap-bundle-read"
-        (readBootstrapBundle minioConfig password)
-    case bundleResult of
-      Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
-      Right bundle -> do
-        unsealResult <- submitBootstrapUnsealSteps address status bundle
-        case unsealResult of
-          Left err -> pure (Left (BootstrapVaultEnsureUnsealFailed err))
-          Right () ->
-            reconcileWithRootToken "unsealed-reconciled" (VaultToken (unlockBundleInitialRootToken bundle))
-
-  reconcileReadyVault = do
-    bundleResult <-
-      withGatewayChild
-        env
-        "vault-bootstrap-bundle-read"
-        (readBootstrapBundle minioConfig password)
-    case bundleResult of
-      Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
-      Right bundle ->
-        reconcileWithRootToken "reconciled" (VaultToken (unlockBundleInitialRootToken bundle))
-
-  reconcileWithRootToken actionName token = do
-    reconcileResult <- runVaultReconcile address token defaultVaultReconcilePlan
-    pure $ case reconcileResult of
-      Left err ->
-        Left (BootstrapVaultEnsureReconcileFailed (renderVaultReconcileError err))
-      Right steps ->
-        Right
-          BootstrapVaultResponse
-            { bootstrapVaultResponseStatus = "ready"
-            , bootstrapVaultResponseAction = actionName
-            , bootstrapVaultResponseReconcileStepCount = length steps
-            }
-
-sealBootstrapVault
-  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-sealBootstrapVault env request = do
-  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token -> do
-      result <- vaultSeal (bootstrapVaultAddress (envBootConfig env)) token
-      pure $ case result of
-        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
-        Right () ->
-          Right
-            ( object
-                [ "status" .= ("sealed" :: Text.Text)
-                , "action" .= ("sealed" :: Text.Text)
-                ]
-            )
-
-rotateBootstrapUnlockBundle
-  :: DaemonEnv
-  -> BootstrapVaultRotateUnlockBundleRequest
-  -> IO (Either BootstrapVaultEnsureError BL.ByteString)
-rotateBootstrapUnlockBundle env request = do
-  bundleResult <-
-    withGatewayChild
-      env
-      "vault-bootstrap-bundle-read"
-      (readBootstrapBundle minioConfig (bootstrapVaultRotateCurrentPassword request))
-  case bundleResult of
-    Left err -> pure (Left (BootstrapVaultEnsureBundleUnavailable err))
-    Right bundle -> do
-      encrypted <- encryptUnlockBundle (bootstrapVaultRotateNewPassword request) bundle
-      case encrypted of
-        Left err ->
-          pure
-            ( Left
-                ( BootstrapVaultEnsureBundleUnavailable
-                    ("unlock bundle encryption failed: " ++ renderUnlockBundleError err)
-                )
-            )
-        Right envelopeBytes -> do
-          writeResult <-
-            withGatewayChild env "vault-bootstrap-bundle-write" $
-              putAndVerifyBootstrapBundle
-                minioConfig
-                (bootstrapVaultRotateNewPassword request)
-                envelopeBytes
-          pure $ case writeResult of
-            Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
-            Right () ->
-              Right
-                ( encode
-                    ( object
-                        [ "status" .= ("ready" :: Text.Text)
-                        , "action" .= ("unlock-bundle-rotated" :: Text.Text)
-                        ]
-                    )
-                )
- where
-  config = envBootConfig env
-  minioConfig = bootstrapVaultObjectStoreConfig config
-
-rotateBootstrapTransitKey
-  :: DaemonEnv
-  -> BootstrapVaultRotateTransitKeyRequest
-  -> IO (Either BootstrapVaultEnsureError BL.ByteString)
-rotateBootstrapTransitKey env request = do
-  tokenResult <- bootstrapRootToken env (bootstrapVaultRotateTransitPassword request)
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token -> do
-      result <-
-        vaultRotateTransitKey
-          (bootstrapVaultAddress (envBootConfig env))
-          token
-          (bootstrapVaultRotateTransitKeyName request)
-      pure $ case result of
-        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
-        Right () ->
-          Right
-            ( encode
-                ( object
-                    [ "status" .= ("ready" :: Text.Text)
-                    , "action" .= ("transit-key-rotated" :: Text.Text)
-                    , "key_name" .= bootstrapVaultRotateTransitKeyName request
-                    ]
-                )
-            )
-
-bootstrapVaultPkiStatus
-  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-bootstrapVaultPkiStatus env request = do
-  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token -> do
-      mountsResult <- vaultListMounts (bootstrapVaultAddress (envBootConfig env)) token
-      pure $ case mountsResult of
-        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
-        Right mounts ->
-          case Map.lookup "pki" mounts of
-            Nothing ->
-              Right
-                ( object
-                    [ "status" .= ("missing" :: Text.Text)
-                    , "mount" .= ("pki" :: Text.Text)
-                    ]
-                )
-            Just mount ->
-              Right
-                ( object
-                    [ "status" .= ("present" :: Text.Text)
-                    , "mount" .= ("pki" :: Text.Text)
-                    , "type" .= vaultMountType mount
-                    ]
-                )
-
-bootstrapVaultPkiIssueTestCert
-  :: DaemonEnv -> BootstrapVaultRequest -> IO (Either BootstrapVaultEnsureError Value)
-bootstrapVaultPkiIssueTestCert env request = do
-  tokenResult <- bootstrapRootToken env (bootstrapVaultUnlockPassword request)
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token -> do
-      result <-
-        vaultPkiIssueTestCertificate
-          (bootstrapVaultAddress (envBootConfig env))
-          token
-          "prodbox-test"
-          "prodbox-vault-test.internal"
-          "1m"
-      pure $ case result of
-        Left err -> Left (BootstrapVaultEnsureVaultUnavailable (renderHttpError err))
-        Right certPem ->
-          Right
-            ( object
-                [ "status" .= ("issued" :: Text.Text)
-                , "certificate" .= certPem
-                ]
-            )
-
-bootstrapRootToken :: DaemonEnv -> Text.Text -> IO (Either BootstrapVaultEnsureError VaultToken)
-bootstrapRootToken env password = do
-  bundleResult <-
-    withGatewayChild
-      env
-      "vault-bootstrap-bundle-read"
-      ( readBootstrapBundle
-          (bootstrapVaultObjectStoreConfig (envBootConfig env))
-          password
-      )
-  pure $ case bundleResult of
-    Left err -> Left (BootstrapVaultEnsureBundleUnavailable err)
-    Right bundle -> Right (VaultToken (unlockBundleInitialRootToken bundle))
-
-bootstrapVaultAddress :: DaemonConfig -> VaultAddress
-bootstrapVaultAddress config =
-  case daemonVaultAuth config of
-    Just auth -> VaultAddress (Text.pack (gatewayVaultAddress auth))
-    Nothing -> VaultAddress "http://vault.vault.svc.cluster.local:8200"
-
-bootstrapVaultObjectStoreConfig :: DaemonConfig -> ObjectStoreConfig
-bootstrapVaultObjectStoreConfig config =
-  bootstrapObjectStoreConfigWithEndpoint
-    (fromMaybe "http://minio.prodbox.svc.cluster.local:9000" (daemonMinioEndpointUrl config))
 
 data PulumiObjectRequestError
   = PulumiObjectMethodNotAllowed String
@@ -3771,7 +5254,7 @@ readDaemonPulumiObject env stackName = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "pulumi-object-get" $ do
+      withGatewayChildForBoundedRest env "pulumi-object-get" $ do
         result <-
           getLogical
             (daemonPulumiObjectStore material)
@@ -3790,7 +5273,7 @@ writeDaemonPulumiObject env stackName checkpoint = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "pulumi-object-put" $ do
+      withGatewayChildForBoundedRest env "pulumi-object-put" $ do
         result <-
           putLogical
             (daemonPulumiObjectStore material)
@@ -3828,7 +5311,7 @@ readDaemonAuthorityObject env logicalName = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "authority-object-get" $
+      withGatewayChildForBoundedRest env "authority-object-get" $
         readAuthorityObjectCore (daemonAuthorityCore material) logicalName
 
 compareAndSwapDaemonAuthorityObject
@@ -3840,7 +5323,7 @@ compareAndSwapDaemonAuthorityObject env request = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "authority-object-cas" $
+      withGatewayChildForBoundedRest env "authority-object-cas" $
         compareAndSwapAuthorityObjectCore (daemonAuthorityCore material) request
 
 deleteDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String ())
@@ -3849,7 +5332,7 @@ deleteDaemonPulumiObject env stackName = do
   case materialResult of
     Left err -> pure (Left err)
     Right material ->
-      withGatewayChild env "pulumi-object-delete" $ do
+      withGatewayChildForBoundedRest env "pulumi-object-delete" $ do
         let key =
               objectKeyForOpaqueId
                 (opaqueObjectId (daemonPulumiHmacKey material) (LogicalPulumiStack stackName))
@@ -3935,63 +5418,6 @@ daemonPulumiObjectStoreConfig config =
           , objectStoreAccessKey = gatewayMinioAccessKey creds
           , objectStoreSecretKey = gatewayMinioSecretKey creds
           }
-
-putAndVerifyBootstrapBundle
-  :: ObjectStoreConfig
-  -> Text.Text
-  -> BS.ByteString
-  -> IO (Either String ())
-putAndVerifyBootstrapBundle config password envelopeBytes = do
-  putResult <- putBundleObject config envelopeBytes
-  case putResult of
-    Left err -> pure (Left ("write failed: " ++ err))
-    Right () -> do
-      readResult <- getBundleObject config
-      pure $ case readResult of
-        Left err -> Left ("read-back failed: " ++ err)
-        Right Nothing -> Left "read-back returned no bootstrap unlock bundle"
-        Right (Just bytes) ->
-          case decryptUnlockBundle password bytes of
-            Right _ -> Right ()
-            Left err ->
-              Left ("read-back did not decrypt: " ++ renderUnlockBundleError err)
-
-readBootstrapBundle
-  :: ObjectStoreConfig
-  -> Text.Text
-  -> IO (Either String UnlockBundle)
-readBootstrapBundle config password = do
-  result <- getBundleObject config
-  pure $ case result of
-    Left err -> Left ("read failed: " ++ err)
-    Right Nothing -> Left "bootstrap unlock bundle is absent"
-    Right (Just bytes) ->
-      case decryptUnlockBundle password bytes of
-        Left err -> Left ("unlock bundle did not decrypt: " ++ renderUnlockBundleError err)
-        Right bundle -> Right bundle
-
-submitBootstrapUnsealSteps
-  :: VaultAddress
-  -> SealStatus
-  -> UnlockBundle
-  -> IO (Either String ())
-submitBootstrapUnsealSteps address status bundle =
-  case planUnseal status (unlockBundleUnsealKeys bundle) of
-    Left err -> pure (Left ("unseal plan failed: " ++ err))
-    Right steps -> go steps
- where
-  go [] =
-    pure (Left "unseal consumed every key share but Vault is still sealed")
-  go (step : rest) = do
-    result <- vaultSubmitUnseal address (unsealStepKey step)
-    case result of
-      Left err -> pure (Left ("unseal submission failed: " ++ renderHttpError err))
-      Right newStatus ->
-        case interpretUnsealProgress newStatus step of
-          UnsealCompleted -> pure (Right ())
-          UnsealAdvanced _ -> go rest
-          UnsealStalled ->
-            pure (Left "unseal stalled; a key share did not advance progress")
 
 -- | Errors from the operator-secret write path, mapped to HTTP status codes.
 data OperatorWriteError
@@ -4211,7 +5637,7 @@ resolveGatewayVaultSessionFor label config =
 readGatewayServiceAccountTokenFor
   :: String -> FilePath -> IO (Either String Text.Text)
 readGatewayServiceAccountTokenFor label path = do
-  result <- try (TextIO.readFile path) :: IO (Either SomeException Text.Text)
+  result <- try (TextIO.readFile path) :: IO (Either IOException Text.Text)
   pure $ case result of
     Left exc ->
       Left
@@ -4802,15 +6228,10 @@ pushToPeer env peer = do
         Right Nothing ->
           markPeerError stateVar (peerNodeId peer) "peer cursor response omitted its cursor"
         Right (Just peerCursor) -> do
-          atomically $ modifyTVar' stateVar $ \state ->
-            state
-              { statePeerCursors =
-                  Map.insert
-                    (peerNodeId peer)
-                    peerCursor
-                    (statePeerCursors state)
-              }
-          dispatchPeerCursor env peer peerHost peerCursor True
+          adopted <- adoptPeerCursorFromResponse env peer cursorResponse peerCursor
+          case adopted of
+            Left err -> markPeerError stateVar (peerNodeId peer) err
+            Right () -> dispatchPeerCursor env peer peerHost peerCursor True
 
 dispatchPeerCursor
   :: DaemonEnv
@@ -4895,20 +6316,23 @@ sendPeerRepair env peer peerHost peerCursor emitter retained state =
                   case result of
                     Left err -> markPeerError stateVar peerName err
                     Right response -> do
-                      updatePeerCursorFromResponse env peer response
-                      if peerResponseAccepted response
-                        then case peerResponseCursorVector
-                          bounds
-                          (envValidatedOrders env)
-                          response of
-                          Right (Just repairedCursor) ->
-                            dispatchPeerCursor env peer peerHost repairedCursor False
-                          _ ->
-                            markPeerError
-                              stateVar
-                              peerName
-                              "peer repair response omitted its cursor"
-                        else markPeerError stateVar peerName "peer rejected bounded repair"
+                      adopted <- updatePeerCursorFromResponse env peer response
+                      case adopted of
+                        Left err -> markPeerError stateVar peerName err
+                        Right () ->
+                          if peerResponseAccepted response
+                            then case peerResponseCursorVector
+                              bounds
+                              (envValidatedOrders env)
+                              response of
+                              Right (Just repairedCursor) ->
+                                dispatchPeerCursor env peer peerHost repairedCursor False
+                              _ ->
+                                markPeerError
+                                  stateVar
+                                  peerName
+                                  "peer repair response omitted its cursor"
+                            else markPeerError stateVar peerName "peer rejected bounded repair"
  where
   bounds = envGatewayBounds env
   stateVar = envState env
@@ -4924,10 +6348,13 @@ recordPeerExchange env peer frameLabel result =
   case result of
     Left err -> markPeerError stateVar peerName err
     Right response -> do
-      updatePeerCursorFromResponse env peer response
-      if peerResponseAccepted response
-        then markPeerOk stateVar peerName
-        else markPeerError stateVar peerName ("peer rejected " ++ frameLabel)
+      adopted <- updatePeerCursorFromResponse env peer response
+      case adopted of
+        Left err -> markPeerError stateVar peerName err
+        Right () ->
+          if peerResponseAccepted response
+            then markPeerOk stateVar peerName
+            else markPeerError stateVar peerName ("peer rejected " ++ frameLabel)
  where
   stateVar = envState env
   peerName = peerNodeId peer
@@ -4936,22 +6363,104 @@ updatePeerCursorFromResponse
   :: DaemonEnv
   -> PeerEndpoint
   -> PeerTransportResponse
-  -> IO ()
+  -> IO (Either String ())
 updatePeerCursorFromResponse env peer response =
   case peerResponseCursorVector
     (envGatewayBounds env)
     (envValidatedOrders env)
     response of
-    Right (Just cursor) ->
-      atomically $ modifyTVar' (envState env) $ \state ->
-        state
-          { statePeerCursors =
-              Map.insert
-                (peerNodeId peer)
-                cursor
-                (statePeerCursors state)
-          }
-    _ -> pure ()
+    Right (Just cursor) -> adoptPeerCursorFromResponse env peer response cursor
+    _ -> pure (Right ())
+
+-- | Legacy preserves its historical volatile-cursor-first ordering. Target
+-- mode reverses that dependency: the actor must fsync the peer acknowledgement
+-- before the cursor can suppress any resend from the volatile dialer cache.
+adoptPeerCursorFromResponse
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> PeerTransportResponse
+  -> BoundedState.CursorVector
+  -> IO (Either String ())
+adoptPeerCursorFromResponse env peer response cursor =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> writeCursor >> pure (Right ())
+    JournalLeaseEmitter -> do
+      acknowledged <- acknowledgeActorPeerResponse env peer response
+      case acknowledged of
+        Left err -> pure (Left err)
+        Right () -> writeCursor >> pure (Right ())
+ where
+  writeCursor =
+    atomically $ modifyTVar' (envState env) $ \state ->
+      state
+        { statePeerCursors =
+            Map.insert
+              (peerNodeId peer)
+              cursor
+              (statePeerCursors state)
+        }
+
+-- | Feed only an accepted peer's explicit incarnation-aware cursor response
+-- into the target actor. The actor serializes this acknowledgement with local
+-- emission and fsyncs the resulting projection before replying. An obsolete
+-- response after remount is rejected by the new actor's known-point check and
+-- can never mutate the replacement journal generation.
+acknowledgeActorPeerResponse
+  :: DaemonEnv
+  -> PeerEndpoint
+  -> PeerTransportResponse
+  -> IO (Either String ())
+acknowledgeActorPeerResponse env peer response =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> pure (Right ())
+    JournalLeaseEmitter
+      | not (peerResponseAccepted response) ->
+          refuse "peer response was not accepted"
+      | otherwise ->
+          case localBoundedNode env of
+            Left err -> refuse err
+            Right localNode ->
+              case peerResponseAckPoint
+                (envGatewayBounds env)
+                (envValidatedOrders env)
+                localNode
+                response of
+                Left err -> refuse (show err)
+                Right Nothing -> pure (Right ())
+                Right (Just point) -> do
+                  (authority, maybeRuntime) <-
+                    atomically $
+                      (,)
+                        <$> readTVar (envEmitterAuthorityStatus env)
+                        <*> readTVar (envEmitterRuntime env)
+                  case (authority, maybeRuntime, mkEmitterPeer (Text.pack (peerNodeId peer))) of
+                    (EmitterAuthorityUnavailable, _, _) ->
+                      refuse "journal/Lease emitter authority is unavailable"
+                    (_, Nothing, _) ->
+                      refuse "journal/Lease emitter runtime is unavailable"
+                    (_, _, Nothing) -> refuse "peer identity is empty"
+                    (EmitterAuthorityReady, Just runtime, Just emitterPeer) -> do
+                      acknowledged <-
+                        acknowledgeEmitterPeerThrough
+                          (emitterRuntimeActor runtime)
+                          emitterPeer
+                          point
+                      case acknowledged of
+                        Left err -> do
+                          requestEmitterRecovery env runtime err
+                          refuse (renderEmitterActorError err)
+                        Right () -> pure (Right ())
+ where
+  refuse :: String -> IO (Either String ())
+  refuse detail = do
+    logForEnv
+      env
+      Warn
+      "gateway_emitter_peer_ack_refused"
+      [ field "peer" (peerNodeId peer)
+      , field "detail" detail
+      ]
+    pure (Left detail)
 
 exchangePeerRequest
   :: DaemonEnv
@@ -4963,9 +6472,15 @@ exchangePeerRequest env host port request = do
   rawResult <-
     try (dialAndReceiveBounded env host port request)
       :: IO (Either SomeException (Either String ByteString))
-  pure $ do
-    raw <- either (Left . displayException) id rawResult
-    either (Left . show) Right (parsePeerHttpResponse (envGatewayBounds env) raw)
+  case rawResult of
+    Left exc ->
+      case fromException exc :: Maybe SomeAsyncException of
+        Just _ -> throwIO exc
+        Nothing -> pure (Left (displayException exc))
+    Right completed ->
+      pure $ do
+        raw <- completed
+        either (Left . show) Right (parsePeerHttpResponse (envGatewayBounds env) raw)
 
 dialAndReceiveBounded
   :: DaemonEnv
@@ -5054,13 +6569,21 @@ gatewayDnsWriteReady env state =
   config = envBootConfig env
 
 readContinuityDiagnostic :: DaemonEnv -> IO ContinuityDiagnostic
-readContinuityDiagnostic env = do
-  runtime <- readTVarIO (envContinuity env)
-  case runtime of
-    Nothing -> pure ContinuityDiagnosticUnavailable
-    Just active -> do
-      current <- readTVarIO (continuityRuntimeCurrent active)
-      pure (ContinuityDiagnosticReady (Continuity.currentContinuityAnchor current))
+readContinuityDiagnostic env =
+  case envEmitterTopology env of
+    LegacyModelBEmitter -> do
+      runtime <- readTVarIO (envContinuity env)
+      case runtime of
+        Nothing -> pure ContinuityDiagnosticUnavailable
+        Just active -> do
+          current <- readTVarIO (continuityRuntimeCurrent active)
+          pure (ContinuityDiagnosticReady (Continuity.currentContinuityAnchor current))
+    JournalLeaseEmitter -> do
+      runtime <- readTVarIO (envEmitterRuntime env)
+      case runtime of
+        Nothing -> pure ContinuityDiagnosticUnavailable
+        Just active ->
+          ContinuityDiagnosticReady <$> readTVarIO (emitterRuntimeAnchor active)
 
 renderStateJson
   :: UTCTime
@@ -5245,12 +6768,91 @@ fetchPublicIp = do
             else pure (Left ("unexpected public IP: " ++ ip))
 
 -- | Interpret a Route 53 write only from the opaque credential/continuity/
--- claim authority witness.  The child receives a sealed environment built
--- from an empty base; ambient AWS profiles and metadata are unreachable.
-writeDnsRecord
+-- claim authority witness. The native client consumes the typed in-memory
+-- credential handle directly, and the initial mutation plus every GetChange
+-- read-back share the caller's one absolute monotonic deadline.
+writeNativeDnsRecord
+  :: Deadline
+  -> DnsAuthority.DnsWriteAction
+  -> IO (Either String ())
+writeNativeDnsRecord deadline action =
+  case DnsAuthority.dnsWriteActionCredentialHandle action of
+    Left err -> pure (Left ("Route 53 credential handle refused: " ++ show err))
+    Right credentialHandle -> do
+      let client = NativeRoute53.newRoute53Client credentialHandle httpSend
+          recordSet =
+            NativeRoute53.ResourceRecordSet
+              { NativeRoute53.rrsName = DnsAuthority.dnsWriteActionFqdn action
+              , NativeRoute53.rrsType = NativeRoute53.RecordA
+              , NativeRoute53.rrsTtl =
+                  fromIntegral (DnsAuthority.dnsWriteActionTtl action)
+              , NativeRoute53.rrsRecords =
+                  [DnsAuthority.dnsWriteActionIpv4 action]
+              }
+      changed <-
+        runNativeAwsWithinDeadline deadline $
+          NativeRoute53.changeResourceRecordSets
+            client
+            (DnsAuthority.dnsWriteActionZoneId action)
+            [(NativeRoute53.Upsert, recordSet)]
+      case changed of
+        Left err -> pure (Left err)
+        Right (changeId, initialStatus) ->
+          awaitRoute53Change deadline client changeId initialStatus
+
+runNativeAwsWithinDeadline
+  :: Deadline
+  -> IO (Either AwsClientError value)
+  -> IO (Either String value)
+runNativeAwsWithinDeadline deadline action = do
+  completed <-
+    runWithinEmitterDeadline deadline $ do
+      result <- action
+      pure (either (Left . Text.pack . show) Right result)
+  pure (either (Left . Text.unpack) Right completed)
+
+awaitRoute53Change
+  :: Deadline
+  -> NativeRoute53.Route53Client
+  -> NativeRoute53.ChangeId
+  -> NativeRoute53.ChangeStatus
+  -> IO (Either String ())
+awaitRoute53Change _deadline _client _changeId NativeRoute53.ChangeInsync =
+  pure (Right ())
+awaitRoute53Change deadline client changeId NativeRoute53.ChangePending = do
+  delayed <- delayWithinAbsoluteDeadline deadline route53ReadBackDelayMicros
+  case delayed of
+    Left err -> pure (Left err)
+    Right () -> do
+      observed <-
+        runNativeAwsWithinDeadline deadline (NativeRoute53.getChange client changeId)
+      case observed of
+        Left err -> pure (Left err)
+        Right status -> awaitRoute53Change deadline client changeId status
+
+delayWithinAbsoluteDeadline :: Deadline -> Natural -> IO (Either String ())
+delayWithinAbsoluteDeadline deadline requestedDelay = do
+  now <- realMonotonicNow
+  case deadlineObservation now deadline of
+    DeadlineExpired -> pure (Left "Route 53 absolute deadline expired")
+    DeadlineOpen (RemainingDuration remaining)
+      | remaining <= requestedDelay ->
+          pure (Left "Route 53 absolute deadline cannot admit another read-back")
+      | otherwise -> do
+          threadDelay (naturalToTimeoutMicros requestedDelay)
+          pure (Right ())
+
+route53ReadBackDelayMicros :: Natural
+route53ReadBackDelayMicros = 100000
+
+-- | Exact Standard-P rollback interpreter. Legacy Model-B retains its sealed
+-- empty-base AWS CLI environment and the caller's capacity-one ChildSchedule;
+-- only the mutually exclusive Journal/Lease topology reaches the native
+-- interpreter above.
+writeLegacyDnsRecord
   :: DnsAuthority.DnsWriteAction
   -> IO (Either String ())
-writeDnsRecord action = do
+writeLegacyDnsRecord action = do
   let changeBatch =
         BL8.unpack $
           encode $
@@ -5296,7 +6898,8 @@ writeDnsRecord action = do
         Success output ->
           case processExitCode output of
             ExitSuccess -> pure (Right ())
-            ExitFailure _ -> pure (Left ("route53 update failed: " ++ trim (processStderr output)))
+            ExitFailure _ ->
+              pure (Left ("route53 update failed: " ++ trim (processStderr output)))
 
 formatUtcIso :: UTCTime -> String
 formatUtcIso = formatShow iso8601Format

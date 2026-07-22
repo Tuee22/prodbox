@@ -103,23 +103,30 @@ queue length scans, operational state rendering, and object-store or Vault calls
 A component may be live but not ready to admit work. Removing a saturated or degraded replica from
 a capability Service is correct; blocking an unbounded number of callers behind it is not.
 
-Sprint `2.34` makes the gateway daemon's readiness one pure latched projection,
-`Prodbox.Gateway.Readiness.computeReadiness`, over three orthogonal MONOTONE boundary facts: the
-drain phase, an object-store proof latch, and a workers-started latch. `/readyz` is a constant-time
-single-transaction snapshot of those three cached `TVar`s folded by the pure projection — no backend
-I/O. The former unconditional serve-start `Ready` write is deleted; the proof latch is set exactly
-once, in the same STM transaction that publishes the continuity runtime, on the continuity worker's
-first validated `StartupRecovery` install (a real conditional-write/read-back on the first-admission
-path or an authoritative validated GET-and-restore on the previously-admitted path — never the
-absent-object GET §2.3 forbids). Because every input is monotone, a later transient object-store
-degradation cannot un-ready the Pod: the observable `/readyz` sequence is
-`Starting* → Ready* → Draining*`. The production gate is unconditional/fail-closed; the sanctioned
-`PRODBOX_TEST_OBJECT_STORE_PROOF_LATCH` test-only seed lets the no-Vault/no-MinIO harnesses reach
-ready without a live round trip (the genuine gate is exercised by the live AWS/chaos validations).
-The lifecycle-restore gate additionally gains a `/readyz` precheck before its end-to-end
-object-store round trip, so lifecycle-ready implies kubelet-ready by construction. This closes the
-`F-READY` mechanism of counterexample `LCPC-2026-07-11` and absorbs the exact-readiness-evidence
-deliverable rescoped from Sprint `1.61`.
+`Prodbox.Gateway.Readiness.computeReadiness` is the daemon's one pure readiness projection. It folds
+three cached boundary facts: the terminal drain phase, current emitter authority, and the monotone
+workers-started fact. `/readyz` reads and folds those facts in constant time with no backend I/O.
+The former unconditional serve-start `Ready` write is deleted.
+
+The rollback `LegacyModelBEmitter` topology installed by Sprint `2.34` preserves its historical
+monotone authority latch. It sets the cached fact only in the STM transaction that publishes a
+validated continuity `StartupRecovery` (a real conditional-write/read-back on first admission or an
+authoritative validated GET-and-restore for a previously admitted emitter — never the absent-object
+GET §2.3 forbids). The harness reaches that boundary through its fake authority interpreter; there
+is no environment-variable bypass for readiness.
+
+Sprint `2.32` completes the code-local target `JournalLeaseEmitter` topology: emitter authority is
+deliberately non-monotone. `Ready` requires an identity-bound encrypted journal under its long-held
+filesystem lock, a current matching Kubernetes Lease witness, completed exact recovery, and started
+workers. Exact recovery normalizes every retained signed phase to the durable-stage boundary,
+republishes the same signed bytes, and re-arms an interrupted Orders migration from the authenticated
+prior digest before readiness. Lease loss or an expired witness clears authority and permits
+`Ready → Starting`; successful reacquisition may restore readiness only after that recovery completes.
+Drain remains absorbing, so no topology can
+leave `Draining`. The lifecycle-restore gate additionally has a `/readyz` precheck before its
+end-to-end capability round trip, so lifecycle-ready implies kubelet-ready by construction. This
+closes the `F-READY` mechanism of counterexample `LCPC-2026-07-11` and absorbs the
+exact-readiness-evidence deliverable rescoped from Sprint `1.61`.
 
 ### 2.2 Admission
 
@@ -211,6 +218,13 @@ gateway readiness. Normal Authority mutation additionally requires the exact fre
 reported ready for normal work. Credential Provisioner/Admin Action Runner readiness is permit-
 specific Pod UID/image/ServiceAccount attestation, never a standing component label.
 
+The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
+`--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway config or
+a generic endpoint. Until the physical adapters and workload rendering owned by Sprint `3.26`
+exist, the production boundary may report process liveness but keeps readiness and every
+non-health capability closed; a deterministic fake proves composition without becoming a
+production selection path.
+
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps
 the gate closed. TLS readiness is likewise operation-exact. Restore/retention resolves the TLS
@@ -230,6 +244,15 @@ permit or committed-intent reference.
 `runCapability` receives the resolved reference, absolute deadline, and compatible program. A
 target-secret reference cannot run a lifecycle CAS program; an observe-only reference cannot run a
 conditional write; and a probe endpoint cannot be supplied separately.
+
+For Bootstrap Broker, one strict `Protocol` decodes the method/route/body into the closed operation
+and one `Engine` prepares its GADT program. `brokerProgramCapabilityRef` exhaustively selects the
+same `CapabilityRef operation` used by admission and execution, so a route/program mismatch is a
+type error rather than a runtime label. Mutation admission is still not execution authority: every
+Vault effect and custody/journal-store transition also requires its own opaque permit minted from a
+fresh matching durable fence and Kubernetes Lease observation; fence acquire/retire uses an exact
+CAS plan and read-back. Expired-owner cleanup and exact CAS retirement must complete before a
+successor reference can execute a new fence generation.
 
 The same index separation applies to private roles: `AuthorityBackupCommitReadBack` cannot execute
 TLS-prefix work; `TlsRetentionCommitReadBack` cannot address Authority backup; Provider apply cannot
@@ -269,7 +292,9 @@ The capability/readiness design is incomplete without all of these layers:
 2. **Deterministic concurrency simulation**: queue saturation, cancellation, response loss,
    restart, stale fence, and actor interleaving through `io-sim` or an equivalent scheduler.
 3. **Production-adapter composition**: real binary, native MinIO conditional write/read-back,
-   renewable Vault session, exact service identity, and actual configured cgroups.
+   renewable Vault session, exact service identity, actual configured cgroups, and for Bootstrap
+   Broker the rendered TokenReview/Lease/one-shot-workload/OpenPGP boundary with persistent
+   receipt/session/accessor cleanup.
 4. **Load qualification**: authored background rates plus burst, CPU throttling, queue wait,
    deadline misses, and p95/p99 latency with declared headroom.
 5. **Chaos qualification**: restart or isolate Gateway Runtime, Lifecycle Authority, Backup/TLS

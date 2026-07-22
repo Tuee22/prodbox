@@ -32,7 +32,7 @@ validation environments.
   application environment in `haskell_code_guide.md`; generated artifacts and lint stack
   in `code_quality.md`; output rules and at-least-once event processing in
   `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`;
-  operation-indexed readiness and latched kubelet-facing admission in
+  operation-indexed readiness and current-authority kubelet admission in
   `bootstrap_readiness_doctrine.md`; the physical
   Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and gateway isolation boundary in
   `lifecycle_control_plane_architecture.md`;
@@ -151,8 +151,9 @@ validation environments.
   the final password-AEAD unlock bundle is atomically promoted and read back. The master-seed and
   Secret-mounted credential models are retired. Vault has retained storage, is initialized once,
   and is subsequently only unsealed/reconciled. Its initial root token is PGP-encrypted to a pinned
-  burn public key whose private key is never generated, stored, accepted, or available to `prodbox`
-  and has no known holder; that ciphertext is never decrypted or used. Bounded baseline work uses a
+  burn public key whose private material existed only inside an isolated destructive ceremony,
+  was never exported, was destroyed before adoption, is never accepted, retained, or available to
+  `prodbox`, and has no known holder; that ciphertext is never decrypted or used. Bounded baseline work uses a
   separately generated, accessor-audited session that is revoked and observed absent.
 - Lifecycle Authority, not a host or Gateway object proxy, owns the generation/digest references
   selecting immutable Transit-enveloped config and Pulumi checkpoint blobs. Pulumi decrypts only
@@ -172,11 +173,14 @@ The development-plan target architecture centers the local public edge on:
 
 - **MetalLB** for self-managed `LoadBalancer` IP allocation
 - **Envoy Gateway** and **Gateway API** for public HTTP(S) routing
-- **cert-manager** for listener TLS, rendering one ZeroSSL ACME `ClusterIssuer` whose
-  certificate is issued once and retained as a long-lived S3 resource, then restored before
-  every issuance so rebuild cycles never re-order it (Sprints 4.24/7.11/8.7;
-  see [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md) and
-  [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md))
+- **cert-manager** for listener TLS, rendering one ZeroSSL ACME `ClusterIssuer`. Each exact
+  canonical certificate SAN set is retained under its own long-lived, substrate-scoped S3 key and
+  restored before issuance evaluation, so rebuilds reuse that set without ordering again. Its
+  `dnsNames` are a total projection of the operator-configured `CertScopeSet`
+  (`domain.cert_scopes`), which defaults to the single served host; listeners/routes/DNS remain
+  explicit served-host bindings and are never enumerated from wildcard SAN coverage (see
+  [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md) and
+  [acme_provider_guide.md → Configurable Certificate Scope](./documents/engineering/acme_provider_guide.md#5-configurable-certificate-scope))
 - **Keycloak** as the OIDC identity provider
 - **Redis** only for shared realtime or rate-limit state, never for Envoy JWT caching
 
@@ -244,6 +248,9 @@ topology diagram and dependency order live only in
 [lifecycle_control_plane_architecture.md](./documents/engineering/lifecycle_control_plane_architecture.md#1-boundary-ownership).
 
 - The Bootstrap Broker owns only bounded pre-Vault initialization, unlock, status, and rotation.
+  Its dedicated `bootstrap-broker start --config <path>` role uses one strict secret-free protocol
+  and an exact operation-indexed engine; every Vault/store mutation additionally needs the current
+  durable fence and Lease permits.
 - Exactly one logical Lifecycle Authority in the retained home control plane owns durable
   operation IDs, authority epochs, fencing, checkpoints, provider revisions, credential
   generations, and target-delivery intents; the ephemeral AWS substrate receives a client
@@ -256,10 +263,19 @@ topology diagram and dependency order live only in
   owns payload-specific Transit-sealed custody/rewrap for the closed SMTP and ACME-EAB schemas, plus
   TLS DEK exchange. One-shot home/selected workers transfer only attestation-encrypted payloads;
   long-lived controllers receive ciphertext and typed receipts, never plaintext or a generic export.
-- The Gateway Runtime owns mesh, continuity, ownership projection and, on home only, the
-  registered Gateway-DNS effect. EKS Gateway DNS mutation is disabled.
+- The Gateway Runtime owns mesh, ownership projection, its encrypted identity-bound local emitter
+  journal and, on home only, the registered Gateway-DNS effect. One actor holds the whole
+  stage/fsync/publish/commit/fsync transition; EKS Gateway DNS mutation is disabled.
 - Capability observation, admission, and execution use one operation-indexed `CapabilityRef` and one
   propagated absolute deadline.
+
+The Broker role, protocol, custody journals, and deterministic runtime proof are code-local. The
+physical TokenReview, Lease, Kubernetes one-shot-worker, MinIO, Vault, and OpenPGP adapters and
+workload rendering remain Sprint `3.26`; deployment qualification and cutover are still pending.
+Until then the production Broker facade serves liveness and fails closed for readiness and every
+non-health request, while the combined gateway implementation remains an explicit
+[Standard-P](./DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+rollback path.
 
 The pure-functional types, interpreter boundaries, cutover invariants, and verification obligations
 are authoritative in
@@ -338,6 +354,9 @@ operator path is the explicit `prodbox` command surface documented here and in
   Runtime owns only mesh and home DNS. The old combined-daemon routes and direct host
   transports remain pre-cutover legacy tracked in
   [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+  Target Gateway routing contains no bootstrap handlers; only the isolated
+  `LegacyModelBEmitter` rollback can reach the registered legacy adapter while qualification is
+  pending.
 
 ## Quick Start
 
@@ -385,7 +404,12 @@ What this does:
 - `edge status` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
   the shared browser, API, WebSocket, and MinIO edge paths (the public edge uses the
   single ZeroSSL ACME issuer with retained-and-restored certificate material; see
-  [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md)).
+  [acme_provider_guide.md](./documents/engineering/acme_provider_guide.md)). It also reports a
+  `CERTIFICATE_EXPIRY=<rung>` line — a fail-closed rung observed from cert-manager
+  `status.renewalTime`/`notAfter` with no repo-side renewal-window recompute
+  (`certificate-current` / `certificate-renew-due` / `certificate-expired` /
+  `certificate-unobservable`; see
+  [envoy_gateway_edge_doctrine.md → Diagnostics and Validation Doctrine](./documents/engineering/envoy_gateway_edge_doctrine.md#11-diagnostics-and-validation-doctrine)).
 - `charts reconcile gateway` reconciles the separate mesh/DNS Gateway Runtime and is not required
   to bring up the Envoy Gateway public edge. Bootstrap Broker, Lifecycle Authority, and Target
   Secret Agent are distinct control-plane components in the target cluster plan, not gateway
@@ -510,6 +534,7 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `domain.demo_ttl` | DNS TTL in seconds |
+| `domain.cert_scopes` | Optional list of public-edge certificate scopes (exact hosts or `*.zone` wildcards, wildcards only at a config-delegated zone). Empty (default) means exactly the served host, so the public-edge certificate covers one FQDN until an operator widens scope. See [acme_provider_guide.md → Configurable Certificate Scope](./documents/engineering/acme_provider_guide.md#5-configurable-certificate-scope) |
 | `acme.server` | ZeroSSL ACME directory URL (the issuer for the once-issued, S3-retained public-edge certificate); defaults to the ZeroSSL endpoint |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
@@ -540,6 +565,7 @@ Validate the executable-sibling operator config:
 | Public edge | `edge status`, `edge reconcile` | You need to diagnose or reconcile public DNS, Gateway API, and certificate readiness |
 | Local cluster lifecycle | `cluster reconcile`, `cluster status`, `cluster health`, `cluster start`, `cluster stop`, `cluster restart`, `cluster logs`, `cluster wait`, `cluster workload-logs`, `cluster delete --yes`, `cluster delete --cascade`, `nuke` | You need to create, reconcile, inspect, or remove the local RKE2 environment. `cluster delete --yes` is a local uninstall that preserves retained roots and leaves per-run AWS stacks untouched. `--cascade` is the leak-safe "wipe and rebuild" path that also destroys per-run AWS stacks and drains K8s-controller-created AWS resources; `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared infrastructure. |
 | Chart lifecycle | `charts list`, `charts status`, `charts reconcile`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
+| Bootstrap Broker runtime | `bootstrap-broker start --config <path>` | You need to validate or launch the dedicated pre-Vault controller role. The code-local production boundary is fail-closed except for liveness until its physical adapters/workload land; `--dry-run` validates and renders the secret-free plan without starting the listener |
 | Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws quotas check`, `aws quotas request` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
@@ -624,7 +650,27 @@ Check the external Route 53 record and public edge state:
 `edge status` is the main supported readiness diagnostic for the public host. The successful
 state is `CLASSIFICATION=ready-for-external-proof`. That classification derives from Route 53,
 Envoy Gateway, Gateway API, `SecurityPolicy`, certificate readiness, and the shared-host path
-contract.
+contract. The report also carries a separate `CERTIFICATE_EXPIRY=<rung>` line — a fail-closed
+observation of the cert-manager `Certificate`'s committed `status.renewalTime`/`notAfter`
+(`certificate-current` / `certificate-renew-due` / `certificate-expired` /
+`certificate-unobservable`), with no repo-side renewal-window recompute; renewal itself stays
+cert-manager's and ZeroSSL's alone (see
+[envoy_gateway_edge_doctrine.md → Diagnostics and Validation Doctrine](./documents/engineering/envoy_gateway_edge_doctrine.md#11-diagnostics-and-validation-doctrine)).
+
+### Bootstrap Broker Runtime
+
+Validate the dedicated role-only config and inspect its secret-free plan:
+
+```bash
+./.build/prodbox bootstrap-broker start \
+  --config /etc/bootstrap-broker/config/config.dhall \
+  --dry-run
+```
+
+The command has no Gateway-config, binary-sibling, or environment fallback. An APPLY process binds
+only its validated loopback listener; until the Sprint `3.26` physical adapters are supplied it
+reports liveness but refuses readiness and every non-health request. This is not yet a replacement
+deployment or cutover claim.
 
 ### Gateway Operations
 
@@ -637,9 +683,17 @@ Generate a gateway config and inspect a daemon:
 ```
 
 `gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port. The
-state route is the deep-diagnostics surface: under Sprint `2.34`, kubelet-facing readiness is a
-separate latched projection that admits on the first proven object-store round trip since boot and
-does not flap on later transient backend degradation.
+state route is the deep-diagnostics surface. Kubelet-facing readiness is a separate constant-time
+projection over drain phase, emitter authority, and workers. The rollback topology latches validated
+continuity startup. The public `gateway start` command still selects that mutually exclusive
+`LegacyModelBEmitter` rollback topology; there is no operator switch or dual-write path. Target
+Gateway registry/client/actor dispatch contains no bootstrap handlers; the rollback reaches only
+the separately registered `LegacyAdapter`. Sprint
+`2.32` completes the locally validated `JournalLeaseEmitter` target, whose readiness requires its
+current journal lock, matching Lease witness, and exact recovery and returns to `starting` on Lease
+loss until recovery succeeds. Sprint `3.26` owns physical StatefulSet/PV consumption, and production
+cutover remains subject to the pending deployment-qualification ledger in
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md#deployment-qualification).
 This `gateway` command group refers to the Haskell distributed gateway daemon, not the Kubernetes
 Gateway API or Envoy Gateway edge controller.
 

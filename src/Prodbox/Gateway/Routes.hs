@@ -47,15 +47,7 @@ data GatewayRoute
   | RouteState
   | -- Federation inventory read.
     RouteFederationChildren
-  | -- Bootstrap-Vault authority.
-    RouteBootstrapVaultEnsure
-  | RouteBootstrapVaultStatus
-  | RouteBootstrapVaultSeal
-  | RouteBootstrapVaultRotateUnlockBundle
-  | RouteBootstrapVaultRotateTransitKey
-  | RouteBootstrapVaultPkiStatus
-  | RouteBootstrapVaultPkiIssueTestCert
-  | -- Object-store authority.
+  | -- Object-store authority (legacy pending Lifecycle Authority cutover).
     RoutePulumiObjectGet
   | RoutePulumiObjectPut
   | RoutePulumiObjectDelete
@@ -87,13 +79,6 @@ routePattern route = case route of
   RouteMetrics -> "/metrics"
   RouteState -> "/v1/state"
   RouteFederationChildren -> "/v1/federation/children"
-  RouteBootstrapVaultEnsure -> "/v1/bootstrap/vault/ensure"
-  RouteBootstrapVaultStatus -> "/v1/bootstrap/vault/status"
-  RouteBootstrapVaultSeal -> "/v1/bootstrap/vault/seal"
-  RouteBootstrapVaultRotateUnlockBundle -> "/v1/bootstrap/vault/rotate-unlock-bundle"
-  RouteBootstrapVaultRotateTransitKey -> "/v1/bootstrap/vault/rotate-transit-key"
-  RouteBootstrapVaultPkiStatus -> "/v1/bootstrap/vault/pki/status"
-  RouteBootstrapVaultPkiIssueTestCert -> "/v1/bootstrap/vault/pki/issue-test-cert"
   RoutePulumiObjectGet -> "/v1/object-store/pulumi/get"
   RoutePulumiObjectPut -> "/v1/object-store/pulumi/put"
   RoutePulumiObjectDelete -> "/v1/object-store/pulumi/delete"
@@ -111,13 +96,6 @@ routeClass route = case route of
   RouteMetrics -> RouteDiagnostic
   RouteState -> RouteDiagnostic
   RouteFederationChildren -> RouteRpc
-  RouteBootstrapVaultEnsure -> RouteRpc
-  RouteBootstrapVaultStatus -> RouteRpc
-  RouteBootstrapVaultSeal -> RouteRpc
-  RouteBootstrapVaultRotateUnlockBundle -> RouteRpc
-  RouteBootstrapVaultRotateTransitKey -> RouteRpc
-  RouteBootstrapVaultPkiStatus -> RouteRpc
-  RouteBootstrapVaultPkiIssueTestCert -> RouteRpc
   RoutePulumiObjectGet -> RouteRpc
   RoutePulumiObjectPut -> RouteRpc
   RoutePulumiObjectDelete -> RouteRpc

@@ -28,6 +28,7 @@ module Prodbox.TestValidation
   , volumeRebindReport
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
+  , gatewayPartitionValidationReport
   , renderGatewayValidationConfigDhall
   )
 where
@@ -56,6 +57,8 @@ import Control.Exception
   , try
   )
 import Control.Monad (foldM, void, when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( Value (..)
@@ -70,12 +73,15 @@ import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
 import Data.Foldable (asum)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
+import Data.Word (Word64)
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (..)
@@ -100,6 +106,15 @@ import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
   , overlayAwsCredentials
   )
+import Prodbox.Bootstrap.Broker.LegacyAdapter
+  ( bootstrapVaultPath
+  , bootstrapVaultPkiIssueTestCertPath
+  , bootstrapVaultPkiStatusPath
+  , bootstrapVaultRotateTransitKeyPath
+  , bootstrapVaultRotateUnlockBundlePath
+  , bootstrapVaultSealPath
+  , bootstrapVaultStatusPath
+  )
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
   )
@@ -118,6 +133,8 @@ import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Cbor
   ( CborPayload (..)
   )
+import Prodbox.ControlPlane.Capacity qualified as EmitterCapacity
+import Prodbox.ControlPlane.Deadline qualified as Deadline
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
@@ -125,15 +142,11 @@ import Prodbox.Dns
   )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Bounds qualified as GatewayBounds
-import Prodbox.Gateway.Daemon
-  ( bootstrapVaultPath
-  , bootstrapVaultPkiIssueTestCertPath
-  , bootstrapVaultPkiStatusPath
-  , bootstrapVaultRotateTransitKeyPath
-  , bootstrapVaultRotateUnlockBundlePath
-  , bootstrapVaultSealPath
-  , bootstrapVaultStatusPath
-  )
+import Prodbox.Gateway.Continuity qualified as GatewayContinuity
+import Prodbox.Gateway.Emitter.Actor qualified as EmitterActor
+import Prodbox.Gateway.Emitter.Kernel qualified as EmitterKernel
+import Prodbox.Gateway.Emitter.Mailbox qualified as EmitterMailbox
+import Prodbox.Gateway.Peer qualified as GatewayPeer
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.State qualified as GatewayState
 import Prodbox.Gateway.Types
@@ -2265,15 +2278,24 @@ provisionAndVerifyAwsTestStack repoRoot environment =
     ]
 
 runGatewayPartitionValidation :: IO ExitCode
-runGatewayPartitionValidation =
-  case gatewayPartitionValidationReport of
+runGatewayPartitionValidation = do
+  result <- gatewayPartitionValidationReport
+  case result of
     Left err -> failWith err
     Right report -> do
       writeOutput report
       pure ExitSuccess
 
-gatewayPartitionValidationReport :: Either String String
-gatewayPartitionValidationReport = do
+gatewayPartitionValidationReport :: IO (Either String String)
+gatewayPartitionValidationReport =
+  case gatewayPartitionLegacyReport of
+    Left err -> pure (Left err)
+    Right legacyReport -> do
+      composed <- gatewayPartitionEmitterReport
+      pure ((legacyReport ++) <$> composed)
+
+gatewayPartitionLegacyReport :: Either String String
+gatewayPartitionLegacyReport = do
   memoryPlan <-
     Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway"
   bounds <-
@@ -2445,6 +2467,883 @@ gatewayPartitionValidationReport = do
     mapGatewayStateError (GatewayState.mkEventHash (SHA256.hash (BS8.pack label)))
 
   mapGatewayStateError result = either (Left . show) Right result
+
+data PartitionEmitterModel = PartitionEmitterModel
+  { partitionBounds :: !GatewayBounds.GatewayBounds
+  , partitionOrders :: !GatewayState.ValidatedOrders
+  , partitionNodeA :: !GatewayState.NodeId
+  , partitionNodeB :: !GatewayState.NodeId
+  , partitionInitialGateway :: !GatewayState.GatewayState
+  , partitionEventKey :: !GatewayPeer.EventKey
+  , partitionEventKeyLookup :: !GatewayPeer.EventKeyLookup
+  , partitionActorConfig :: !EmitterActor.EmitterActorConfig
+  , partitionMailbox :: !EmitterMailbox.Mailbox
+  , partitionProjectionBounds :: !EmitterKernel.DurableProjectionBounds
+  , partitionInitialEmitter :: !EmitterKernel.EmitterState
+  , partitionPeerB :: !EmitterKernel.EmitterPeer
+  }
+
+data PartitionRestartProof = PartitionRestartProof
+  { restartProjectionBytes :: !BS8.ByteString
+  , restartCheckpointBytes :: !BS8.ByteString
+  , restartSuffixBytes :: ![BS8.ByteString]
+  }
+
+gatewayPartitionEmitterReport :: IO (Either String String)
+gatewayPartitionEmitterReport = runExceptT $ do
+  model <- partitionEither "composed partition model" partitionEmitterModel
+  sourceStateRef <- liftIO (newIORef (partitionInitialGateway model))
+  projectionBytesRef <- liftIO (newIORef [])
+  checkpointBytesRef <- liftIO (newIORef [])
+  recoveryReplayRef <- liftIO (newIORef [])
+  stagedBytesRef <- liftIO (newIORef [])
+  let interpreter =
+        partitionEmitterInterpreter
+          model
+          sourceStateRef
+          projectionBytesRef
+          checkpointBytesRef
+          recoveryReplayRef
+          stagedBytesRef
+  restartProof <- do
+    result <-
+      liftIO $
+        EmitterActor.withEmitterActor
+          (partitionActorConfig model)
+          (partitionInitialEmitter model)
+          interpreter
+          ( runExceptT
+              . partitionDriveOfflineRepair
+                model
+                sourceStateRef
+                projectionBytesRef
+                checkpointBytesRef
+                stagedBytesRef
+          )
+    either throwE pure result
+  stageCountBeforeRestart <- liftIO (length <$> readIORef stagedBytesRef)
+  restoredProjection <-
+    partitionEither
+      "restart durable projection decode"
+      ( EmitterKernel.decodeDurableEmitterProjection
+          (partitionProjectionBounds model)
+          (restartProjectionBytes restartProof)
+      )
+  let restartDeadline = partitionDeadline
+  restoredEmitter <-
+    partitionEither
+      "restart durable emitter restore"
+      ( EmitterKernel.restoreDurableEmitterState
+          (partitionMailbox model)
+          restartDeadline
+          restoredProjection
+      )
+  reencoded <-
+    partitionEither
+      "restart durable projection re-encode"
+      ( EmitterKernel.encodeDurableEmitterProjection
+          (partitionProjectionBounds model)
+          (EmitterKernel.projectDurableEmitterState restoredEmitter)
+      )
+  partitionRequire
+    (reencoded == restartProjectionBytes restartProof)
+    "restart changed the exact durable projection bytes"
+  recoverResult <-
+    liftIO $
+      EmitterActor.withEmitterActor
+        (partitionActorConfig model)
+        restoredEmitter
+        interpreter
+        (\actor -> EmitterActor.submitEmitterRequest actor EmitterMailbox.ReqRecover)
+  case recoverResult of
+    Right EmitterActor.EmitterNoTransition -> pure ()
+    other -> throwE ("restart recovery did not finish cleanly: " ++ show other)
+  replays <- liftIO (readIORef recoveryReplayRef)
+  replay <-
+    case replays of
+      [one] -> pure one
+      _ -> throwE ("restart recovery emitted an unexpected replay count: " ++ show (length replays))
+  recoveredCheckpoint <-
+    case EmitterKernel.recoveryReplayCheckpoint replay of
+      Nothing -> throwE "restart recovery omitted the installed checkpoint"
+      Just payload -> pure (EmitterKernel.boundedSignedPayloadBytes payload)
+  let recoveredSuffix =
+        map
+          EmitterKernel.stagedRecordSignedBytes
+          (EmitterKernel.recoveryReplayAssertions replay)
+  partitionRequire
+    (recoveredCheckpoint == restartCheckpointBytes restartProof)
+    "restart recovery changed the exact checkpoint bytes"
+  partitionRequire
+    (recoveredSuffix == restartSuffixBytes restartProof)
+    "restart recovery changed the exact retained suffix bytes"
+  partitionRequire
+    ( EmitterKernel.recoveryReplayAssertionCount replay
+        == fromIntegral (length (restartSuffixBytes restartProof))
+    )
+    "restart recovery assertion count did not match its exact suffix"
+  stageCountAfterRestart <- liftIO (length <$> readIORef stagedBytesRef)
+  partitionRequire
+    (stageCountAfterRestart == stageCountBeforeRestart)
+    "restart recovery re-signed retained assertions"
+  pure $
+    unlines
+      [ "EMITTER_PIPELINE_COMPOSED=true"
+      , "OFFLINE_REPAIR_EXACT=true"
+      , "DURABLE_ACK_ADVANCED=true"
+      , "CHECKPOINT_COMPACTION_BOUNDED=true"
+      , "RESTART_EXACT_BYTES=true"
+      , "WRONG_INCARNATION_REJECTED=true"
+      , "WRONG_DIGEST_REJECTED=true"
+      ]
+
+partitionDriveOfflineRepair
+  :: PartitionEmitterModel
+  -> IORef GatewayState.GatewayState
+  -> IORef [BS8.ByteString]
+  -> IORef [BS8.ByteString]
+  -> IORef [BS8.ByteString]
+  -> EmitterActor.EmitterActor
+  -> ExceptT String IO PartitionRestartProof
+partitionDriveOfflineRepair
+  model
+  sourceStateRef
+  projectionBytesRef
+  checkpointBytesRef
+  stagedBytesRef
+  actor = do
+    records <- traverse submit partitionRequests
+    partitionRequire (length records == 5) "actor did not commit the five deterministic assertions"
+    stagedBytes <- liftIO (readIORef stagedBytesRef)
+    partitionRequire
+      (stagedBytes == map EmitterKernel.stagedRecordSignedBytes records)
+      "actor stage boundary did not preserve the exact signed assertion bytes"
+    beforeAckBytes <- latestRef "pre-ack durable projection" projectionBytesRef
+    beforeAckProjection <-
+      partitionEither
+        "pre-ack durable projection decode"
+        ( EmitterKernel.decodeDurableEmitterProjection
+            (partitionProjectionBounds model)
+            beforeAckBytes
+        )
+    beforeAckState <-
+      partitionEither
+        "pre-ack emitter restore"
+        ( EmitterKernel.restoreDurableEmitterState
+            (partitionMailbox model)
+            partitionDeadline
+            beforeAckProjection
+        )
+    let retained = EmitterKernel.emitterUnacked beforeAckState
+        retainedBytes =
+          map
+            (EmitterKernel.stagedRecordSignedBytes . EmitterKernel.unackedAssertionRecord)
+            retained
+    partitionRequire
+      (length retained == 2)
+      "checkpoint compaction did not retain the configured two-assertion suffix"
+    partitionRequire
+      (EmitterKernel.durableProjectionUnackedCount beforeAckProjection <= 2)
+      "durable retained suffix exceeded its absolute threshold"
+    partitionRequire
+      (fromIntegral (BS8.length beforeAckBytes) <= partitionMaximumProjectionBytes)
+      "durable projection exceeded its absolute encoded-byte bound"
+    checkpointBytes <-
+      case EmitterKernel.repairFloorSignedBytes (EmitterKernel.emitterRepairFloor beforeAckState) of
+        Nothing -> throwE "checkpoint compaction did not install a signed repair floor"
+        Just bytes -> pure bytes
+    installedCheckpoints <- liftIO (readIORef checkpointBytesRef)
+    partitionRequire
+      (length installedCheckpoints == 3 && last installedCheckpoints == checkpointBytes)
+      "checkpoint installation count or final exact bytes were not deterministic"
+    snapshot <-
+      partitionEither
+        "repair-floor snapshot decode"
+        ( GatewayPeer.decodeSignedSemanticSnapshot
+            (partitionBounds model)
+            checkpointBytes
+        )
+    retainedSigned <-
+      traverse
+        ( partitionEither "retained assertion decode"
+            . GatewayPeer.decodeSignedAssertion (partitionBounds model)
+        )
+        retainedBytes
+    repair <-
+      partitionEither
+        "offline peer repair selection"
+        ( GatewayPeer.selectSignedRepair
+            (partitionBounds model)
+            (partitionOrders model)
+            (GatewayState.gatewayStateCursorVector (partitionInitialGateway model))
+            snapshot
+            retainedSigned
+        )
+    let repairRequest = GatewayPeer.PeerPushRepair repair
+    partitionRequire
+      (GatewayPeer.peerRequestSemanticSnapshot repairRequest == Just snapshot)
+      "offline repair did not carry the exact checkpoint floor"
+    partitionRequire
+      ( GatewayPeer.boundedSignedAssertionsToList
+          (GatewayPeer.peerRequestReplayAssertions repairRequest)
+          == retainedSigned
+      )
+      "offline repair did not carry the exact retained signed suffix"
+    encodedRepair <- pure (GatewayPeer.encodeSignedRepairFrame repair)
+    partitionRequire
+      ( fromIntegral (BS8.length encodedRepair)
+          <= GatewayBounds.gatewayMaxFrameBytes (partitionBounds model)
+      )
+      "offline repair exceeded the absolute peer-frame bound"
+    decodedRepair <-
+      partitionEither
+        "offline repair canonical decode"
+        (GatewayPeer.decodeSignedRepairFrame (partitionBounds model) encodedRepair)
+    partitionRequire (decodedRepair == repair) "offline repair bytes did not round-trip canonically"
+    repaired <-
+      case GatewayPeer.applySignedRepair
+        (partitionBounds model)
+        (partitionEventKeyLookup model)
+        decodedRepair
+        (partitionInitialGateway model) of
+        Left err -> throwE ("offline repair verification failed: " ++ show err)
+        Right (GatewayState.RepairApplied advanced) -> pure advanced
+        Right outcome -> throwE ("offline repair was not applied: " ++ show outcome)
+    source <- liftIO (readIORef sourceStateRef)
+    partitionRequire
+      (GatewayState.gatewayStateCursorVector repaired == GatewayState.gatewayStateCursorVector source)
+      "offline repair did not converge to the exact source cursor"
+    partitionRequire
+      ( GatewayState.gatewayStateLatestHeartbeat (partitionNodeA model) repaired
+          == GatewayState.gatewayStateLatestHeartbeat (partitionNodeA model) source
+      )
+      "offline repair did not converge heartbeat semantics"
+    partitionRequire
+      ( GatewayState.gatewayStateLatestOwnership (partitionNodeA model) repaired
+          == GatewayState.gatewayStateLatestOwnership (partitionNodeA model) source
+      )
+      "offline repair did not converge ownership semantics"
+    proveWrongIncarnationAndDigest model repaired
+    response <-
+      case GatewayPeer.handlePeerRequest
+        (partitionBounds model)
+        (partitionEventKeyLookup model)
+        GatewayPeer.PeerPullCursor
+        repaired of
+        Left err -> throwE ("offline cursor response failed: " ++ show err)
+        Right (_, value) -> pure value
+    point <-
+      case GatewayPeer.peerResponseAckPoint
+        (partitionBounds model)
+        (partitionOrders model)
+        (partitionNodeA model)
+        response of
+        Left err -> throwE ("offline cursor acknowledgement failed: " ++ show err)
+        Right Nothing -> throwE "offline cursor response omitted its acknowledgement"
+        Right (Just value) -> pure value
+    projectionCountBeforeAck <- liftIO (length <$> readIORef projectionBytesRef)
+    acknowledgement <-
+      liftIO
+        (EmitterActor.acknowledgeEmitterPeerThrough actor (partitionPeerB model) point)
+    case acknowledgement of
+      Right () -> pure ()
+      Left err -> throwE ("actor rejected the durable peer acknowledgement: " ++ show err)
+    projectionCountAfterAck <- liftIO (length <$> readIORef projectionBytesRef)
+    partitionRequire
+      (projectionCountAfterAck == projectionCountBeforeAck + 1)
+      "actor did not fsync exactly one acknowledgement projection"
+    afterAckBytes <- latestRef "post-ack durable projection" projectionBytesRef
+    afterAckProjection <-
+      partitionEither
+        "post-ack durable projection decode"
+        ( EmitterKernel.decodeDurableEmitterProjection
+            (partitionProjectionBounds model)
+            afterAckBytes
+        )
+    afterAckState <-
+      partitionEither
+        "post-ack emitter restore"
+        ( EmitterKernel.restoreDurableEmitterState
+            (partitionMailbox model)
+            partitionDeadline
+            afterAckProjection
+        )
+    partitionRequire
+      ( Map.lookup
+          (partitionPeerB model)
+          (EmitterKernel.emitterPeerAcknowledgements afterAckState)
+          == Just (Just point)
+      )
+      "peer cursor response did not advance the actor's durable acknowledgement"
+    partitionRequire
+      ( all
+          ( Set.notMember (partitionPeerB model)
+              . EmitterKernel.unackedAssertionWaitingPeers
+          )
+          (EmitterKernel.emitterUnacked afterAckState)
+      )
+      "durable acknowledgement did not remove the offline peer from retained waiters"
+    pure
+      PartitionRestartProof
+        { restartProjectionBytes = afterAckBytes
+        , restartCheckpointBytes = checkpointBytes
+        , restartSuffixBytes = retainedBytes
+        }
+   where
+    submit request = do
+      result <- liftIO (EmitterActor.submitEmitterRequest actor request)
+      case result of
+        Right (EmitterActor.EmitterCommitted record) -> pure record
+        other -> throwE ("actor request did not commit: " ++ show other)
+
+    partitionRequests =
+      [ EmitterMailbox.ReqOwnership EmitterMailbox.OwnershipClaim
+      , EmitterMailbox.ReqHeartbeat (EmitterMailbox.HeartbeatPayload 10)
+      , EmitterMailbox.ReqOwnership EmitterMailbox.OwnershipYield
+      , EmitterMailbox.ReqHeartbeat (EmitterMailbox.HeartbeatPayload 20)
+      , EmitterMailbox.ReqOwnership EmitterMailbox.OwnershipClaim
+      ]
+
+partitionEmitterModel :: Either String PartitionEmitterModel
+partitionEmitterModel = do
+  memoryPlan <-
+    either (Left . show) Right $
+      Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway"
+  bounds <-
+    either (Left . show) Right $
+      GatewayBounds.validateGatewayBounds memoryPlan GatewayBounds.defaultRawGatewayBounds
+  orders <-
+    either (Left . show) Right $
+      GatewayState.validateOrders
+        bounds
+        GatewayState.RawOrders
+          { GatewayState.rawOrdersDocument = "gateway-partition-v2"
+          , GatewayState.rawOrdersVersion = 2
+          , GatewayState.rawOrdersMembers =
+              [ partitionRawMember "node-a" 0
+              , partitionRawMember "node-b" 1
+              , partitionRawMember "node-c" 2
+              ]
+          }
+  nodeA <- partitionResolveNode orders "node-a"
+  nodeB <- partitionResolveNode orders "node-b"
+  nodeC <- partitionResolveNode orders "node-c"
+  initialGateway <- partitionInitializeGateway bounds orders
+  key <-
+    either (Left . show) Right $
+      GatewayPeer.mkEventKey bounds (SHA256.hash "gateway-partition-event-key-node-a")
+  capacityPlan <-
+    either (Left . show) Right $
+      EmitterCapacity.mkServiceCapacityPlan
+        EmitterCapacity.RawServiceCapacityPlan
+          { EmitterCapacity.rawArrivalPerSecond = 1
+          , EmitterCapacity.rawServiceTimeMicros = 2500
+          , EmitterCapacity.rawWorkerCount = 1
+          , EmitterCapacity.rawQueueCapacity = 8
+          , EmitterCapacity.rawRejectionThreshold = 8
+          , EmitterCapacity.rawHeadroomPpm = 100000
+          }
+  actorConfig <-
+    maybe
+      (Left "partition emitter capacity did not produce a single-worker actor")
+      Right
+      (EmitterActor.mkEmitterActorConfig capacityPlan)
+  projectionBounds <-
+    either (Left . show) Right $
+      EmitterKernel.mkDurableProjectionBounds
+        partitionMaximumProjectionBytes
+        (GatewayBounds.gatewayMaxEncodedAssertionBytes bounds)
+        (GatewayBounds.gatewayMaxFrameBytes bounds)
+        2
+        8
+  peerB <-
+    maybe
+      (Left "partition node-b did not produce an emitter peer")
+      Right
+      (EmitterKernel.mkEmitterPeer (GatewayState.nodeIdText nodeB))
+  peerC <-
+    maybe
+      (Left "partition node-c did not produce an emitter peer")
+      Right
+      (EmitterKernel.mkEmitterPeer (GatewayState.nodeIdText nodeC))
+  initialCursor <- partitionCursorFor nodeA initialGateway
+  initialAnchor <- partitionAnchorFromCursor initialCursor
+  let mailbox = EmitterActor.emitterActorMailbox actorConfig
+      incarnation = EmitterKernel.mkIncarnation 7
+      initialEmitter =
+        EmitterKernel.mkEmitterStateForPeers
+          initialAnchor
+          incarnation
+          mailbox
+          2
+          [peerB, peerC]
+      lookupKey candidate
+        | candidate == nodeA = Just key
+        | otherwise = Nothing
+  Right
+    PartitionEmitterModel
+      { partitionBounds = bounds
+      , partitionOrders = orders
+      , partitionNodeA = nodeA
+      , partitionNodeB = nodeB
+      , partitionInitialGateway = initialGateway
+      , partitionEventKey = key
+      , partitionEventKeyLookup = lookupKey
+      , partitionActorConfig = actorConfig
+      , partitionMailbox = mailbox
+      , partitionProjectionBounds = projectionBounds
+      , partitionInitialEmitter = initialEmitter
+      , partitionPeerB = peerB
+      }
+
+partitionRawMember :: String -> Word64 -> GatewayState.RawGatewayMember
+partitionRawMember nodeName rank =
+  GatewayState.RawGatewayMember
+    { GatewayState.rawMemberNodeId = Text.pack nodeName
+    , GatewayState.rawMemberEndpoint = Text.pack (nodeName ++ ".example.test:8444")
+    , GatewayState.rawMemberTrustKey = BS8.pack ("partition-key-" ++ nodeName)
+    , GatewayState.rawMemberRank = rank
+    }
+
+partitionResolveNode
+  :: GatewayState.ValidatedOrders
+  -> String
+  -> Either String GatewayState.NodeId
+partitionResolveNode orders nodeName =
+  case filter
+    ((== Text.pack nodeName) . GatewayState.nodeIdText)
+    (GatewayState.validatedOrdersMemberIds orders) of
+    [nodeId] -> Right nodeId
+    _ -> Left ("partition Orders did not contain exactly one " ++ nodeName)
+
+partitionInitializeGateway
+  :: GatewayBounds.GatewayBounds
+  -> GatewayState.ValidatedOrders
+  -> Either String GatewayState.GatewayState
+partitionInitializeGateway bounds orders = do
+  seeds <-
+    traverse
+      ( \nodeId -> do
+          digest <-
+            partitionHash
+              (Text.unpack (GatewayState.nodeIdText nodeId) ++ "-genesis")
+          Right (nodeId, GatewayState.initialEmitterCursor 1 digest)
+      )
+      (GatewayState.validatedOrdersMemberIds orders)
+  either (Left . show) Right $
+    GatewayState.initializeGatewayState bounds orders (Map.fromList seeds)
+
+partitionEmitterInterpreter
+  :: PartitionEmitterModel
+  -> IORef GatewayState.GatewayState
+  -> IORef [BS8.ByteString]
+  -> IORef [BS8.ByteString]
+  -> IORef [EmitterKernel.RecoveryReplay]
+  -> IORef [BS8.ByteString]
+  -> EmitterActor.EmitterInterpreter
+partitionEmitterInterpreter
+  model
+  sourceStateRef
+  projectionBytesRef
+  checkpointBytesRef
+  recoveryReplayRef
+  stagedBytesRef =
+    EmitterActor.EmitterInterpreter
+      { EmitterActor.emitterMintTicket = pure (partitionNow, partitionDeadline)
+      , EmitterActor.emitterObserveNow = pure partitionNow
+      , EmitterActor.emitterStage =
+          partitionEmitterStage model stagedBytesRef
+      , EmitterActor.emitterFsyncProjection =
+          partitionEmitterFsyncProjection model projectionBytesRef
+      , EmitterActor.emitterPublish = \_ record -> do
+          current <- readIORef sourceStateRef
+          case partitionApplyPublished model record current of
+            Left err -> pure (Left (Text.pack err))
+            Right advanced -> do
+              writeIORef sourceStateRef advanced
+              pure (Right ())
+      , EmitterActor.emitterCommit = \_ _ -> pure (Right ())
+      , EmitterActor.emitterInstallCheckpoint =
+          partitionEmitterInstallCheckpoint model checkpointBytesRef
+      , EmitterActor.emitterRestoreRetained = \_ replay -> do
+          modifyIORef' recoveryReplayRef (++ [replay])
+          pure (Right ())
+      }
+
+partitionEmitterStage
+  :: PartitionEmitterModel
+  -> IORef [BS8.ByteString]
+  -> EmitterKernel.TransitionAdmission
+  -> Deadline.Deadline
+  -> EmitterKernel.StagePlan
+  -> IO (Either Text.Text EmitterKernel.StageOutcome)
+partitionEmitterStage model stagedBytesRef _ _ plan =
+  case partitionStage model plan of
+    Left err -> pure (Left (Text.pack err))
+    Right outcome -> do
+      case outcome of
+        EmitterKernel.StageStaged payload ->
+          modifyIORef'
+            stagedBytesRef
+            (++ [EmitterKernel.boundedSignedPayloadBytes payload])
+        EmitterKernel.StageNeedsRotation -> pure ()
+      pure (Right outcome)
+
+partitionEmitterFsyncProjection
+  :: PartitionEmitterModel
+  -> IORef [BS8.ByteString]
+  -> Deadline.Deadline
+  -> EmitterKernel.DurableEmitterProjection
+  -> IO (Either Text.Text ())
+partitionEmitterFsyncProjection model projectionBytesRef _ projection =
+  case EmitterKernel.encodeDurableEmitterProjection
+    (partitionProjectionBounds model)
+    projection of
+    Left err -> pure (Left (Text.pack (show err)))
+    Right bytes -> do
+      modifyIORef' projectionBytesRef (++ [bytes])
+      pure (Right ())
+
+partitionEmitterInstallCheckpoint
+  :: PartitionEmitterModel
+  -> IORef [BS8.ByteString]
+  -> Deadline.Deadline
+  -> EmitterKernel.CheckpointCandidate
+  -> IO (Either Text.Text EmitterKernel.CheckpointOutcome)
+partitionEmitterInstallCheckpoint model checkpointBytesRef _ candidate =
+  case partitionCheckpoint model candidate of
+    Left err -> pure (Left (Text.pack err))
+    Right (bytes, outcome) -> do
+      modifyIORef' checkpointBytesRef (++ [bytes])
+      pure (Right outcome)
+
+partitionStage
+  :: PartitionEmitterModel
+  -> EmitterKernel.StagePlan
+  -> Either String EmitterKernel.StageOutcome
+partitionStage model plan = do
+  previous <- partitionCursorFromAnchor (EmitterKernel.stagePlanPreviousAnchor plan)
+  let incarnation = EmitterKernel.stagePlanIncarnation plan
+      bounds = partitionBounds model
+      orders = partitionOrders model
+      emitter = partitionNodeA model
+      key = partitionEventKey model
+      previousSequence =
+        GatewayState.emitterSequenceValue
+          (GatewayState.emitterCursorSequence previous)
+      semanticKind = case EmitterKernel.stagePlanKind plan of
+        EmitterKernel.KindHeartbeat payload ->
+          Right
+            ( GatewayState.HeartbeatAssertion
+                (EmitterMailbox.heartbeatObservedMicros payload)
+            )
+        EmitterKernel.KindOwnership EmitterMailbox.OwnershipClaim ->
+          Right (GatewayState.OwnershipAssertion GatewayState.OwnershipClaim)
+        EmitterKernel.KindOwnership EmitterMailbox.OwnershipYield ->
+          Right (GatewayState.OwnershipAssertion GatewayState.OwnershipYield)
+        EmitterKernel.KindEpochRotation -> Right GatewayState.EpochRotationAssertion
+        EmitterKernel.KindOrdersMigration _ ->
+          Left "partition emitter did not request an Orders migration"
+  if previousSequence == maxBound
+    && case EmitterKernel.stagePlanKind plan of
+      EmitterKernel.KindHeartbeat _ -> True
+      EmitterKernel.KindOwnership _ -> True
+      _ -> False
+    then Right EmitterKernel.StageNeedsRotation
+    else do
+      kind <- semanticKind
+      (signed, _) <-
+        either (Left . show) Right $
+          GatewayPeer.signAndConvertAssertionForIncarnation
+            bounds
+            orders
+            emitter
+            incarnation
+            previous
+            kind
+            key
+      payload <-
+        either (Left . show) Right $
+          EmitterKernel.mkBoundedSignedPayload
+            (GatewayBounds.gatewayMaxEncodedAssertionBytes bounds)
+            (GatewayPeer.signedAssertionBytes signed)
+      Right (EmitterKernel.StageStaged payload)
+
+partitionApplyPublished
+  :: PartitionEmitterModel
+  -> EmitterKernel.StagedRecord
+  -> GatewayState.GatewayState
+  -> Either String GatewayState.GatewayState
+partitionApplyPublished model record state = do
+  signed <-
+    either (Left . show) Right $
+      GatewayPeer.decodeSignedAssertion
+        (partitionBounds model)
+        (EmitterKernel.stagedRecordSignedBytes record)
+  semantic <-
+    either (Left . show) Right $
+      GatewayPeer.verifySignedAssertion
+        (partitionBounds model)
+        (partitionOrders model)
+        (partitionEventKeyLookup model)
+        signed
+  previous <- partitionCursorFromAnchor (EmitterKernel.stagedRecordPreviousAnchor record)
+  expectedResult <- partitionCursorFromAnchor (EmitterKernel.stagedRecordNextAnchor record)
+  if GatewayState.assertionEmitter semantic /= partitionNodeA model
+    || GatewayState.assertionIncarnation semantic /= EmitterKernel.stagedRecordIncarnation record
+    || GatewayState.assertionPreviousHash semantic /= GatewayState.emitterCursorHash previous
+    || GatewayState.assertionResultCursor semantic /= expectedResult
+    then Left "published signed assertion did not match its immutable Kernel record"
+    else case GatewayState.applyGatewayAssertion semantic state of
+      GatewayState.AssertionApplied advanced -> Right advanced
+      outcome -> Left ("published semantic assertion was not applied: " ++ show outcome)
+
+partitionCheckpoint
+  :: PartitionEmitterModel
+  -> EmitterKernel.CheckpointCandidate
+  -> Either String (BS8.ByteString, EmitterKernel.CheckpointOutcome)
+partitionCheckpoint model candidate = do
+  baseEvidence <-
+    case EmitterKernel.repairFloorSignedBytes
+      (EmitterKernel.checkpointCandidatePreviousFloor candidate) of
+      Nothing -> Right []
+      Just bytes -> do
+        snapshot <-
+          either (Left . show) Right $
+            GatewayPeer.decodeSignedSemanticSnapshot (partitionBounds model) bytes
+        _ <-
+          either (Left . show) Right $
+            GatewayPeer.verifySemanticSnapshot
+              (partitionBounds model)
+              (partitionOrders model)
+              (partitionEventKeyLookup model)
+              snapshot
+        Right
+          ( GatewayPeer.boundedSignedAssertionsToList
+              (GatewayPeer.signedSemanticSnapshotEvidence snapshot)
+          )
+  candidateSigned <-
+    traverse
+      ( either (Left . show) Right
+          . GatewayPeer.decodeSignedAssertion (partitionBounds model)
+          . EmitterKernel.stagedRecordSignedBytes
+          . EmitterKernel.unackedAssertionRecord
+      )
+      (EmitterKernel.checkpointCandidateAssertions candidate)
+  evidencePairs <- traverse verifyOne (baseEvidence ++ candidateSigned)
+  latest <-
+    case reverse (EmitterKernel.checkpointCandidateAssertions candidate) of
+      [] -> Left "Kernel proposed an empty checkpoint prefix"
+      value : _ -> Right (EmitterKernel.unackedAssertionRecord value)
+  let through = EmitterKernel.checkpointCandidateThrough candidate
+  if EmitterKernel.stagedRecordNextAnchor latest /= EmitterKernel.ackPointAnchor through
+    || EmitterKernel.stagedRecordIncarnation latest /= EmitterKernel.ackPointIncarnation through
+    then Left "Kernel checkpoint through-point did not match its exact prefix"
+    else pure ()
+  cursor <- partitionCursorFromAnchor (EmitterKernel.ackPointAnchor through)
+  let (heartbeat, ownership) = foldl partitionAdvanceEvidence (Nothing, Nothing) evidencePairs
+  checkpoint <-
+    either (Left . show) Right $
+      GatewayState.mkEmitterCheckpointForIncarnation
+        (partitionBounds model)
+        (partitionOrders model)
+        (partitionNodeA model)
+        (EmitterKernel.ackPointIncarnation through)
+        cursor
+        (snd <$> heartbeat)
+        (snd <$> ownership)
+  snapshot <-
+    either (Left . show) Right $
+      GatewayPeer.signSemanticSnapshot
+        (partitionBounds model)
+        (partitionOrders model)
+        checkpoint
+        (fst <$> heartbeat)
+        (fst <$> ownership)
+        (partitionEventKey model)
+  bytes <-
+    either (Left . show) Right $
+      GatewayPeer.encodeSignedSemanticSnapshot (partitionBounds model) snapshot
+  payload <-
+    either (Left . show) Right $
+      EmitterKernel.mkBoundedSignedPayload
+        (GatewayBounds.gatewayMaxFrameBytes (partitionBounds model))
+        bytes
+  Right (bytes, EmitterKernel.CheckpointInstalled payload)
+ where
+  verifyOne signed = do
+    semantic <-
+      either (Left . show) Right $
+        GatewayPeer.verifySignedAssertion
+          (partitionBounds model)
+          (partitionOrders model)
+          (partitionEventKeyLookup model)
+          signed
+    Right (signed, semantic)
+
+partitionAdvanceEvidence
+  :: ( Maybe (GatewayPeer.SignedAssertion, GatewayState.GatewayAssertion)
+     , Maybe (GatewayPeer.SignedAssertion, GatewayState.GatewayAssertion)
+     )
+  -> (GatewayPeer.SignedAssertion, GatewayState.GatewayAssertion)
+  -> ( Maybe (GatewayPeer.SignedAssertion, GatewayState.GatewayAssertion)
+     , Maybe (GatewayPeer.SignedAssertion, GatewayState.GatewayAssertion)
+     )
+partitionAdvanceEvidence (heartbeat, ownership) pair@(_, semantic) =
+  case GatewayState.assertionKind semantic of
+    GatewayState.HeartbeatAssertion _ -> (Just pair, ownership)
+    GatewayState.OwnershipAssertion _ -> (heartbeat, Just pair)
+    GatewayState.EpochRotationAssertion -> (heartbeat, ownership)
+    GatewayState.OrdersMigrationAssertion _ -> (Nothing, Nothing)
+
+proveWrongIncarnationAndDigest
+  :: PartitionEmitterModel
+  -> GatewayState.GatewayState
+  -> ExceptT String IO ()
+proveWrongIncarnationAndDigest model state = do
+  current <-
+    partitionEither "repaired emitter cursor" (partitionCursorFor (partitionNodeA model) state)
+  (staleSigned, _) <-
+    partitionEither
+      "stale-incarnation assertion signing"
+      ( GatewayPeer.signAndConvertAssertionForIncarnation
+          (partitionBounds model)
+          (partitionOrders model)
+          (partitionNodeA model)
+          (EmitterKernel.mkIncarnation 6)
+          current
+          (GatewayState.HeartbeatAssertion 999)
+          (partitionEventKey model)
+      )
+  stale <-
+    partitionEither "stale-incarnation assertion verification" (partitionVerify model staleSigned)
+  case GatewayState.applyGatewayAssertion stale state of
+    GatewayState.AssertionRejected unchanged GatewayState.AssertionStaleIncarnation {} ->
+      partitionRequire
+        (GatewayState.gatewayStateCursorVector unchanged == GatewayState.gatewayStateCursorVector state)
+        "stale incarnation changed the repaired cursor"
+    outcome -> throwE ("wrong incarnation did not fail closed: " ++ show outcome)
+  wrongHash <- partitionEither "wrong previous digest" (partitionHash "wrong-partition-digest")
+  let wrongCursor =
+        GatewayState.restoredEmitterCursor
+          ( GatewayState.emitterEpochValue
+              (GatewayState.emitterCursorEpoch current)
+          )
+          ( GatewayState.emitterSequenceValue
+              (GatewayState.emitterCursorSequence current)
+          )
+          wrongHash
+  (wrongSigned, _) <-
+    partitionEither
+      "wrong-digest assertion signing"
+      ( GatewayPeer.signAndConvertAssertionForIncarnation
+          (partitionBounds model)
+          (partitionOrders model)
+          (partitionNodeA model)
+          (EmitterKernel.mkIncarnation 7)
+          wrongCursor
+          (GatewayState.HeartbeatAssertion 1000)
+          (partitionEventKey model)
+      )
+  wrong <- partitionEither "wrong-digest assertion verification" (partitionVerify model wrongSigned)
+  case GatewayState.applyGatewayAssertion wrong state of
+    GatewayState.AssertionRejected unchanged GatewayState.AssertionPreviousHashMismatch {} ->
+      partitionRequire
+        (GatewayState.gatewayStateCursorVector unchanged == GatewayState.gatewayStateCursorVector state)
+        "wrong previous digest changed the repaired cursor"
+    outcome -> throwE ("wrong digest did not fail closed: " ++ show outcome)
+
+partitionVerify
+  :: PartitionEmitterModel
+  -> GatewayPeer.SignedAssertion
+  -> Either GatewayPeer.PeerError GatewayState.GatewayAssertion
+partitionVerify model signed = do
+  decoded <-
+    GatewayPeer.decodeSignedAssertion
+      (partitionBounds model)
+      (GatewayPeer.signedAssertionBytes signed)
+  GatewayPeer.verifySignedAssertion
+    (partitionBounds model)
+    (partitionOrders model)
+    (partitionEventKeyLookup model)
+    decoded
+
+partitionCursorFor
+  :: GatewayState.NodeId
+  -> GatewayState.GatewayState
+  -> Either String GatewayState.EmitterCursor
+partitionCursorFor emitter state =
+  maybe
+    (Left "partition emitter cursor was absent")
+    Right
+    ( GatewayState.cursorVectorLookup
+        emitter
+        (GatewayState.gatewayStateCursorVector state)
+    )
+
+partitionCursorFromAnchor
+  :: GatewayContinuity.ContinuityAnchor
+  -> Either String GatewayState.EmitterCursor
+partitionCursorFromAnchor anchor = do
+  eventHash <-
+    either (Left . show) Right $
+      GatewayState.mkEventHash
+        ( GatewayContinuity.continuityDigestBytes
+            (GatewayContinuity.continuityAnchorPreviousDigest anchor)
+        )
+  Right
+    ( GatewayState.restoredEmitterCursor
+        (GatewayContinuity.continuityAnchorEpoch anchor)
+        (GatewayContinuity.continuityAnchorSequence anchor)
+        eventHash
+    )
+
+partitionAnchorFromCursor
+  :: GatewayState.EmitterCursor
+  -> Either String GatewayContinuity.ContinuityAnchor
+partitionAnchorFromCursor cursor = do
+  digest <-
+    either (Left . show) Right $
+      GatewayContinuity.mkContinuityDigest
+        (GatewayState.eventHashBytes (GatewayState.emitterCursorHash cursor))
+  Right
+    ( GatewayContinuity.restoreContinuityAnchor
+        (GatewayState.emitterEpochValue (GatewayState.emitterCursorEpoch cursor))
+        (GatewayState.emitterSequenceValue (GatewayState.emitterCursorSequence cursor))
+        digest
+    )
+
+partitionHash :: String -> Either String GatewayState.EventHash
+partitionHash label =
+  either (Left . show) Right $
+    GatewayState.mkEventHash (SHA256.hash (BS8.pack label))
+
+partitionNow :: Deadline.MonotonicInstant
+partitionNow = Deadline.monotonicInstantFromMicros 1000
+
+partitionDeadline :: Deadline.Deadline
+partitionDeadline =
+  Deadline.deadlineAtOffset
+    partitionNow
+    (Deadline.RemainingDuration 1000000)
+
+partitionMaximumProjectionBytes :: Natural
+partitionMaximumProjectionBytes = 1048576
+
+partitionEither :: (Show err) => String -> Either err value -> ExceptT String IO value
+partitionEither context result =
+  either (throwE . ((context ++ ": ") ++) . show) pure result
+
+partitionRequire :: Bool -> String -> ExceptT String IO ()
+partitionRequire condition err =
+  if condition then pure () else throwE err
+
+latestRef :: String -> IORef [value] -> ExceptT String IO value
+latestRef label ref = do
+  values <- liftIO (readIORef ref)
+  case reverse values of
+    value : _ -> pure value
+    [] -> throwE (label ++ " was absent")
 
 ensurePartitionInvariant :: Bool -> String -> Either String ()
 ensurePartitionInvariant condition err =

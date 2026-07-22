@@ -297,8 +297,8 @@ k8sClusterReachable =
     { effectNodeId = K8sClusterReachable
     , effectNodeDescription = "Confirm Kubernetes API access via kubectl cluster-info"
     , effectNodeRemedyHint =
-        "Run `prodbox cluster reconcile` to bring up the local cluster, then confirm `kubectl cluster-info` succeeds."
-    , effectNodePrerequisites = [ToolKubectl, KubeconfigExists, Rke2ServiceActive]
+        "Select the intended substrate kubeconfig, then confirm `kubectl cluster-info` succeeds."
+    , effectNodePrerequisites = [ToolKubectl]
     , effectNodeEffect = Validate RequireKubectlClusterReachable
     }
 
@@ -318,8 +318,8 @@ k8sReady =
     { effectNodeId = K8sReady
     , effectNodeDescription = "Validate Kubernetes cluster is fully ready"
     , effectNodeRemedyHint =
-        "Run `prodbox cluster reconcile`, then wait for the cluster control plane and core workloads to become ready."
-    , effectNodePrerequisites = [K8sClusterReachable, Rke2ServiceActive]
+        "Select the intended substrate kubeconfig, then wait for the cluster control plane and core workloads to become ready."
+    , effectNodePrerequisites = [K8sClusterReachable]
     , effectNodeEffect = Noop
     }
 

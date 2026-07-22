@@ -1,24 +1,21 @@
 {-# LANGUAGE DerivingStrategies #-}
 
--- | Sprint 2.34: the gateway daemon's kubelet readiness as ONE pure latched
--- projection. This closes the @F-READY@ mechanism of counterexample
--- @LCPC-2026-07-11@: readiness is no longer written unconditionally at
--- serve-start, but computed from three monotone boundary-owned facts —
--- exactly the cached state
+-- | The gateway daemon's kubelet readiness as one pure cached projection.
+-- Readiness is never written unconditionally at serve-start. It is computed
+-- from the drain phase, the current durable emitter-authority witness, and the
+-- worker-started fact — exactly the cached state
 -- [bootstrap_readiness_doctrine §0.7](../../../documents/engineering/bootstrap_readiness_doctrine.md)
 -- permits @/readyz@ to project ("startup complete, not draining, required
 -- managed sessions available") — with zero backend I/O in the projection
 -- itself.
 --
--- Each input is monotone (set once, never cleared within a boot), so no
--- flapping backend signal can be folded into readiness: a slow or
--- intermittently failing object store after the first proven round trip never
--- yanks the Pod out of its Service endpoints. The observable @/readyz@
--- sequence is therefore exactly @Starting* -> Ready* -> Draining*@, with the
--- only downward edge being the intended shutdown transition.
+-- The drain and worker facts are monotone. Emitter authority deliberately is
+-- not: loss of the Kubernetes Lease witness must remove the Pod from ready
+-- endpoints before another publication can cross the actor boundary. The
+-- HTTP projection itself remains constant-time and performs no backend I/O.
 module Prodbox.Gateway.Readiness
   ( DrainPhase (..)
-  , ObjectStoreProof (..)
+  , EmitterAuthorityStatus (..)
   , WorkersStatus (..)
   , ReadinessState (..)
   , ReadinessInputs (..)
@@ -33,18 +30,14 @@ data DrainPhase
   | PhaseDraining
   deriving stock (Eq, Show)
 
--- | The object-store round-trip proof latch. Monotone:
--- @ObjectStoreUnproven -> ObjectStoreProven@, never back. Set once, when the
--- continuity worker installs the first validated @StartupRecovery@ since boot
--- — a real authoritative GET + read-back on the previously-admitted path, or a
--- CAS write on the first-admission path. It is NEVER a bare absent-object GET
--- (an absent object yields @Left ContinuityAuthorityMissing@ and never
--- latches), so it is materially stronger than the evidence
--- [bootstrap_readiness_doctrine §2.3](../../../documents/engineering/bootstrap_readiness_doctrine.md)
--- forbids.
-data ObjectStoreProof
-  = ObjectStoreUnproven
-  | ObjectStoreProven
+-- | Whether the local emitter currently owns every durable publication fence:
+-- an identity-bound encrypted journal under its long-held filesystem lock and
+-- a matching Kubernetes Lease mutation that has been authoritatively read
+-- back. Renewal failure clears this fact immediately; successful reacquisition
+-- may restore it.
+data EmitterAuthorityStatus
+  = EmitterAuthorityUnavailable
+  | EmitterAuthorityReady
   deriving stock (Eq, Show)
 
 -- | Whether the daemon's server workers have started. Monotone:
@@ -65,22 +58,23 @@ data ReadinessState
   | Draining
   deriving stock (Eq, Show)
 
--- | The boundary-owned cached facts 'computeReadiness' folds. Every field is
--- monotone, so no flapping backend signal can be threaded in.
+-- | The boundary-owned cached facts 'computeReadiness' folds. Drain and worker
+-- startup are monotone; emitter authority is an explicit fail-closed witness
+-- that may be cleared on Lease loss and restored only after reacquisition.
 data ReadinessInputs = ReadinessInputs
   { readinessDrainPhase :: DrainPhase
-  , readinessObjectStoreProof :: ObjectStoreProof
+  , readinessEmitterAuthority :: EmitterAuthorityStatus
   , readinessWorkersStatus :: WorkersStatus
   }
   deriving stock (Eq, Show)
 
 -- | The one readiness projection. Drain dominates (terminal, absorbing).
--- 'Ready' requires BOTH the object-store proof latch AND started workers.
+-- 'Ready' requires BOTH current durable emitter authority AND started workers.
 -- Everything else is 'Starting'. Total, pure, no I/O.
 computeReadiness :: ReadinessInputs -> ReadinessState
 computeReadiness inputs
   | readinessDrainPhase inputs == PhaseDraining = Draining
-  | readinessObjectStoreProof inputs == ObjectStoreProven
+  | readinessEmitterAuthority inputs == EmitterAuthorityReady
       && readinessWorkersStatus inputs == WorkersStarted =
       Ready
   | otherwise = Starting

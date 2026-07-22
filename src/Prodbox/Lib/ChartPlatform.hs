@@ -8,7 +8,9 @@ module Prodbox.Lib.ChartPlatform
   , PatroniAuthObservation (..)
   , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
+  , ResolvedCustomImage (..)
   , buildChartDeletePlan
+  , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
@@ -38,6 +40,7 @@ module Prodbox.Lib.ChartPlatform
   , resolveDependencyOrder
   , supportedChartNames
   , validateOperatorGatesWith
+  , valuesForBootstrapBroker
   )
 where
 
@@ -85,6 +88,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Bootstrap.Broker.ChartStatics qualified as BrokerChartStatics
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Config.Basics (basicsClusterId)
@@ -106,6 +110,7 @@ import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
+import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -185,6 +190,7 @@ import Prodbox.Settings
   , Route53Section (..)
   , ValidatedSettings (..)
   , certDnsNamesForServedHost
+  , certScopeSetForServedHost
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -193,6 +199,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
+import Prodbox.Tls.CertScope (CertScopeSet)
 import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
 import System.Directory
   ( createDirectoryIfMissing
@@ -334,6 +341,10 @@ data ChartDeploymentPlan = ChartDeploymentPlan
   , chartDeploymentPlanNamespace :: String
   , chartDeploymentPlanReleases :: [ChartReleasePlan]
   , chartDeploymentPlanPublicFqdn :: Maybe String
+  , chartDeploymentPlanCertScopeSet :: Maybe CertScopeSet
+  -- ^ Sprint 2.35: the exact canonical certificate scope compiled from the
+  -- selected substrate's served host. Retention consumes this typed value; it
+  -- never reconstructs a key from an independently supplied hostname.
   , chartDeploymentPlanOperatorGates :: [ComponentId]
   -- ^ Sprint 3.23: the operator components (readiness 'ProbeOperatorAvailable')
   -- this plan's charts depend on, projected from the component graph. Each is
@@ -461,6 +472,19 @@ resolveChart repoRoot chartName =
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = True
           }
+    "bootstrap-broker" ->
+      -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker. It is an
+      -- internal control-plane chart (like `redis`), resolvable and renderable but
+      -- deliberately absent from `supportedChartNames`, so it is not exposed on
+      -- the public `prodbox charts ...` surface. It owns no PVC and requires no
+      -- public host.
+      Right
+        ChartDefinition
+          { chartDefinitionName = "bootstrap-broker"
+          , chartDefinitionChartDir = repoRoot </> "charts" </> "bootstrap-broker"
+          , chartDefinitionStorage = []
+          , chartDefinitionRequiresPublicHost = False
+          }
     _ ->
       Left
         ( "Unsupported chart '"
@@ -525,11 +549,31 @@ buildChartDeletePlan
   -> Maybe ValidatedSettings
   -> String
   -> Either String ChartDeploymentPlan
-buildChartDeletePlan repoRoot maybeSettings chartName = do
+buildChartDeletePlan = buildChartDeletePlanForSubstrate SubstrateHomeLocal
+
+buildChartDeletePlanForSubstrate
+  :: Substrate
+  -> FilePath
+  -> Maybe ValidatedSettings
+  -> String
+  -> Either String ChartDeploymentPlan
+buildChartDeletePlanForSubstrate substrate repoRoot maybeSettings chartName = do
   let graph = maybe defaultComponentGraph (components . validatedConfig) maybeSettings
   releaseOrder <- resolveDependencyOrder graph repoRoot chartName
   let manualPvRoot = maybe (repoRoot </> defaultChartDataRootRelative) resolvedManualPvHostRoot maybeSettings
       reversedOrder = reverse releaseOrder
+      ownsPublicEdgeCertificate = chartName == publicEdgeTlsNamespace && "keycloak" `elem` releaseOrder
+  (maybePublicFqdn, maybeCertScopeSet) <-
+    case (ownsPublicEdgeCertificate, maybeSettings) of
+      (True, Just settings) -> do
+        fqdn <- resolveRootPublicFqdn substrate settings chartName
+        scopeSet <-
+          certScopeSetForServedHost
+            (domain (validatedConfig settings))
+            (aws_substrate (validatedConfig settings))
+            (Text.pack fqdn)
+        Right (Just fqdn, Just scopeSet)
+      _ -> Right (Nothing, Nothing)
   releases <-
     forM reversedOrder $ \releaseName -> do
       definition <- resolveChart repoRoot releaseName
@@ -551,9 +595,10 @@ buildChartDeletePlan repoRoot maybeSettings chartName = do
       , chartDeploymentPlanRootChart = chartName
       , chartDeploymentPlanNamespace = chartName
       , chartDeploymentPlanReleases = releases
-      , chartDeploymentPlanPublicFqdn = Nothing
+      , chartDeploymentPlanPublicFqdn = maybePublicFqdn
+      , chartDeploymentPlanCertScopeSet = maybeCertScopeSet
       , chartDeploymentPlanOperatorGates = []
-      , chartDeploymentPlanSubstrate = SubstrateHomeLocal
+      , chartDeploymentPlanSubstrate = substrate
       }
 
 renderChartList :: FilePath -> ValidatedSettings -> IO (Either String String)
@@ -1810,6 +1855,16 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
     if any chartDefinitionRequiresPublicHost definitions
       then Just <$> resolveRootPublicFqdn substrate settings chartName
       else Right Nothing
+  maybeCertScopeSet <-
+    case maybePublicFqdn of
+      Just fqdn
+        | chartName == publicEdgeTlsNamespace && "keycloak" `elem` releaseOrder ->
+            Just
+              <$> certScopeSetForServedHost
+                (domain (validatedConfig settings))
+                (aws_substrate (validatedConfig settings))
+                (Text.pack fqdn)
+      _ -> Right Nothing
   releases <-
     forM definitions $ \definition -> do
       let storageBindings =
@@ -1847,6 +1902,7 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
       , chartDeploymentPlanNamespace = chartName
       , chartDeploymentPlanReleases = releases
       , chartDeploymentPlanPublicFqdn = maybePublicFqdn
+      , chartDeploymentPlanCertScopeSet = maybeCertScopeSet
       , chartDeploymentPlanOperatorGates = operatorGates
       , chartDeploymentPlanSubstrate = substrate
       }
@@ -2034,6 +2090,8 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           (Nothing, _, _) -> Left "gateway requires a public host"
           (_, Nothing, _) -> Left "gateway requires a Route 53 hosted zone id"
           (_, _, Nothing) -> Left "gateway requires a substrate-specific Tier-0 document"
+      "bootstrap-broker" ->
+        valuesForBootstrapBroker namespace rootChart maybeRuntimeImage
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   values <- attachResourcePlanValues settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
@@ -2083,6 +2141,10 @@ chartResourceProfiles chartName =
     "api" -> [("api", "api")]
     "websocket" -> [("websocket", "websocket")]
     "gateway" -> [("gateway", "gateway")]
+    -- Sprint 3.26: the value key is camelCase (`bootstrapBroker`) to match the
+    -- broker deployment template's `.Values.resources.bootstrapBroker`, while the
+    -- profile id is the kebab-case `bootstrap-broker` capacity profile.
+    "bootstrap-broker" -> [("bootstrapBroker", "bootstrap-broker")]
     other -> [(other, other)]
 
 resourceGuardrailsValue :: Capacity.ResourcePlan -> String -> Bool -> Either String Value
@@ -2431,6 +2493,74 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
         ]
     )
 
+-- | Sprint 3.26: deployed values for the physically separate Bootstrap Broker
+-- workload. Every identity/probe value is projected from the one compiled
+-- 'BrokerChartStatics.brokerChartStatics', so the deployed values, the generated
+-- @values.yaml@ block, and the hand-written templates cannot diverge. The
+-- Guaranteed-QoS resource envelope is attached from the typed capacity plan by
+-- 'attachResourcePlanValues' (the @bootstrap-broker@ workload profile), so it is
+-- intentionally absent here.
+valuesForBootstrapBroker
+  :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
+  resolvedImage <-
+    case maybeRuntimeImage of
+      Just imageInfo -> Right imageInfo
+      Nothing -> Left "bootstrap-broker chart requires a resolved image reference"
+  let statics = BrokerChartStatics.brokerChartStatics
+  pure
+    ( object
+        [ "global"
+            .= object
+              [ "namespace" .= namespace
+              , "rootChart" .= rootChart
+              ]
+        , "podAnnotations"
+            .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedImage)
+        , "image"
+            .= object
+              [ "repository" .= resolvedCustomImageRepository resolvedImage
+              , "tag" .= resolvedCustomImageTag resolvedImage
+              , "pullPolicy" .= ("IfNotPresent" :: String)
+              ]
+        , "runtime" .= object ["rtsArguments" .= ([] :: [String])]
+        , -- ServiceAccount / Vault role / probe paths are projections of the one
+          -- compiled BrokerChartStatics, matching the generated @values.yaml@
+          -- block and the hand-written templates.
+          "serviceAccount" .= BrokerChartStatics.brokerChartStaticsServiceAccountValue
+        , "vault"
+            .= object
+              [ "role" .= BrokerChartStatics.brokerStaticVaultRole statics
+              ]
+        , "probes"
+            .= object
+              [ "liveness" .= BrokerChartStatics.brokerStaticLivenessPath statics
+              , "readiness" .= BrokerChartStatics.brokerStaticReadinessPath statics
+              ]
+        , "probeTiming"
+            .= object
+              [ "liveness"
+                  .= object
+                    [ "initialDelaySeconds" .= (5 :: Int)
+                    , "periodSeconds" .= (15 :: Int)
+                    , "timeoutSeconds" .= (1 :: Int)
+                    , "failureThreshold" .= (3 :: Int)
+                    , "successThreshold" .= (1 :: Int)
+                    ]
+              , "readiness"
+                  .= object
+                    [ "initialDelaySeconds" .= (3 :: Int)
+                    , "periodSeconds" .= (10 :: Int)
+                    , "timeoutSeconds" .= (1 :: Int)
+                    , "failureThreshold" .= (6 :: Int)
+                    , "successThreshold" .= (1 :: Int)
+                    ]
+              ]
+        , "listener" .= object ["port" .= (8600 :: Int)]
+        , "config" .= object ["brokerDhall" .= ("" :: String)]
+        ]
+    )
+
 valuesForGateway
   :: Substrate
   -> String
@@ -2461,6 +2591,10 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left "gateway chart requires a resolved image reference"
+  emitterPersistence <-
+    EmitterPersistence.emitterPersistenceValues
+      substrate
+      (map Text.pack gatewayNodeIds)
   let gatewayRepository = resolvedCustomImageRepository resolvedGatewayImage
       gatewayTag = resolvedCustomImageTag resolvedGatewayImage
   pure
@@ -2501,6 +2635,10 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , "heartbeatTimeoutSeconds" .= (5 :: Int)
               ]
         , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
+        , -- Sprint 2.32: typed stable-controller, journal-volume, and native
+          -- Lease/RBAC inputs. Sprint 3.26 consumes this exact projection when
+          -- it renders the physically separated StatefulSet workloads.
+          "emitterPersistence" .= emitterPersistence
         , "tier0" .= object ["prodboxDhall" .= gatewayTier0Dhall]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
         , "vault"
@@ -3488,38 +3626,39 @@ preservePublicEdgeTlsSecretBeforeDelete plan
                 (other, _) -> pure (Right other)
 
 -- | Sprint 8.7: write the live public-edge cert Secret into the
--- long-lived S3 retention store under the substrate-scoped key. Degrades
+-- long-lived S3 retention store under the substrate + exact-scope key. Degrades
 -- gracefully: when the retention store (admin creds / long-lived bucket)
--- or the deploy FQDN is unavailable, the live cert is left in place and a
+-- or the compiled scope is unavailable, the live cert is left in place and a
 -- non-fatal 'PreserveSkippedNoRetentionStore' is returned — the delete is
 -- not failed, and the certificate still exists in-cluster.
 retainPublicEdgeSecretToStore
   :: ChartDeploymentPlan -> Value -> IO (Either String PublicEdgePreserveOutcome)
 retainPublicEdgeSecretToStore plan secretValue =
-  case chartDeploymentPlanPublicFqdn plan of
+  case chartDeploymentPlanCertScopeSet plan of
     Nothing ->
-      pure (Right (PreserveSkippedNoRetentionStore "no public FQDN resolved for the deployment"))
-    Just fqdn ->
+      pure
+        (Right (PreserveSkippedNoRetentionStore "no canonical certificate scope resolved for the deployment"))
+    Just scopeSet ->
       putPublicEdgeCertToStore
         (chartDeploymentPlanRepoRoot plan)
         (chartDeploymentPlanSubstrate plan)
-        fqdn
+        scopeSet
         secretValue
 
 -- | Sprint 8.8: the shared S3 write for the public-edge production cert
 -- retention store. Writes @secretValue@ (the full @kubectl get secret -o
--- json@ payload) under the substrate-scoped retention key
--- (@public-edge-tls/\<substrate\>/\<fqdn\>@). Degrades to a typed
+-- json@ payload) under the substrate + exact canonical-scope retention key.
+-- Degrades to a typed
 -- 'PreserveSkippedNoRetentionStore' when the admin S3 context is unavailable;
 -- only a genuine put failure is fatal ('Left').
 putPublicEdgeCertToStore
-  :: FilePath -> Substrate -> String -> Value -> IO (Either String PublicEdgePreserveOutcome)
-putPublicEdgeCertToStore repoRoot substrate fqdn secretValue = do
+  :: FilePath -> Substrate -> CertScopeSet -> Value -> IO (Either String PublicEdgePreserveOutcome)
+putPublicEdgeCertToStore repoRoot substrate scopeSet secretValue = do
   contextResult <- resolveLongLivedAdminS3Context repoRoot
   case contextResult of
     Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
     Right (environment, section) -> do
-      let key = publicEdgeTlsRetentionKey substrate (Text.pack fqdn)
+      let key = publicEdgeTlsRetentionKey substrate scopeSet
       putResult <-
         withTempFile "prodbox-public-edge-tls-retain-" $ \path handle -> do
           BL.hPutStr handle (Pretty.encodePretty' prettyJsonConfig secretValue)
@@ -3549,14 +3688,20 @@ retainReadyPublicEdgeCertificate repoRoot substrate = do
     Right settings ->
       case resolveRootPublicFqdn substrate settings publicEdgeTlsNamespace of
         Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
-        Right fqdn -> do
-          secretResult <-
-            readOptionalKubernetesSecret publicEdgeTlsNamespace publicEdgeTlsSecretName
-          case secretResult of
+        Right fqdn ->
+          case certScopeSetForServedHost
+            (domain (validatedConfig settings))
+            (aws_substrate (validatedConfig settings))
+            (Text.pack fqdn) of
             Left err -> pure (Left err)
-            Right Nothing -> pure (Right PreserveNothingToRetain)
-            Right (Just secretValue) ->
-              putPublicEdgeCertToStore repoRoot substrate fqdn secretValue
+            Right scopeSet -> do
+              secretResult <-
+                readOptionalKubernetesSecret publicEdgeTlsNamespace publicEdgeTlsSecretName
+              case secretResult of
+                Left err -> pure (Left err)
+                Right Nothing -> pure (Right PreserveNothingToRetain)
+                Right (Just secretValue) ->
+                  putPublicEdgeCertToStore repoRoot substrate scopeSet secretValue
 
 restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeTlsSecretAfterNamespaceCreate plan
@@ -3577,21 +3722,24 @@ restorePublicEdgeTlsSecretAfterNamespaceCreate plan
 -- fresh certificate. Because the S3 store is durable across cluster
 -- lifetime, this restore-before-issue works on EVERY rebuild path —
 -- including a fresh cluster / post-@rke2 delete@ — not just a
--- chart-delete → redeploy. Degrades gracefully: if the store is
+-- chart-delete → redeploy. Restore addresses only the exact canonical scope
+-- key compiled into the deployment plan; a changed SAN set is intentionally
+-- absent at that coordinate so cert-manager issues it once. Degrades
+-- gracefully: if the store is
 -- unavailable (no admin creds / bucket on this host) or holds no retained
 -- cert, the deploy proceeds and cert-manager issues a fresh certificate.
 restorePublicEdgeSecretFromStore :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeSecretFromStore plan =
-  case chartDeploymentPlanPublicFqdn plan of
+  case chartDeploymentPlanCertScopeSet plan of
     Nothing -> pure (Right ())
-    Just fqdn -> do
+    Just scopeSet -> do
       contextResult <- resolveLongLivedAdminS3Context (chartDeploymentPlanRepoRoot plan)
       case contextResult of
         -- No retention store on this host; cert-manager issues fresh.
         Left _ -> pure (Right ())
         Right (environment, section) -> do
           let key =
-                publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) (Text.pack fqdn)
+                publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) scopeSet
           fetchResult <-
             withTempFile "prodbox-public-edge-tls-restore-" $ \path handle -> do
               hClose handle

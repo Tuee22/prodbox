@@ -3,6 +3,7 @@ module Parser
   )
 where
 
+import Data.Maybe (isNothing)
 import Data.Set qualified as Set
 import Options.Applicative
   ( ParserResult (..)
@@ -10,12 +11,17 @@ import Options.Applicative
   , execParserPure
   , renderFailure
   )
+import Prodbox.App (canRunWithoutRepoRoot)
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , BootstrapBrokerCommand (..)
+  , BrokerLaunchOptions (..)
   , ChartsCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
   , DnsCommand (..)
   , DocsCommand (..)
   , EdgeCommand (..)
@@ -26,6 +32,7 @@ import Prodbox.CLI.Command
   , LintCommand (..)
   , NativeCommand (..)
   , PerRunPruneTarget (..)
+  , PlanOptions (..)
   , PulumiCommand (..)
   , Rke2Command (..)
   , TestCommand (..)
@@ -45,6 +52,13 @@ import Prodbox.CLI.Spec
   , commandRegistry
   , leafCommandPaths
   )
+import Prodbox.Native
+  ( commandPrerequisites
+  , nativeRuntimeCommand
+  , nativeRuntimeConfigIdentity
+  , nativeRuntimeRole
+  )
+import Prodbox.Runtime.Role qualified as RuntimeRole
 import TestSupport
 
 parserSuite :: SuiteBuilder ()
@@ -57,6 +71,67 @@ parserSuite =
     mapM_ happyCase (collectLeafExamples commandRegistry)
     mapM_ unhappyCase (collectLeafExamples commandRegistry)
     mapM_ forbiddenCase forbiddenArgvCases
+    it "parses the typed Bootstrap Broker launch and Plan/Apply options" $
+      parseArgs
+        [ "bootstrap-broker"
+        , "start"
+        , "--config"
+        , "/etc/bootstrap-broker/config/config.dhall"
+        , "--dry-run"
+        , "--plan-file"
+        , "/tmp/bootstrap-broker.plan"
+        ]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeBootstrapBroker
+                      ( BootstrapBrokerStart
+                          BrokerLaunchOptions
+                            { brokerConfigPath = "/etc/bootstrap-broker/config/config.dhall"
+                            , brokerPlanOptions =
+                                PlanOptions
+                                  { dryRun = True
+                                  , planFile = Just "/tmp/bootstrap-broker.plan"
+                                  }
+                            }
+                      )
+                  )
+              )
+          )
+    it "requires an explicit mounted Bootstrap Broker config path" $
+      parseArgs ["bootstrap-broker", "start"] `shouldSatisfy` isLeft
+    it "classifies Bootstrap Broker start as repo-rootless with no prerequisites" $ do
+      let command =
+            NativeBootstrapBroker
+              ( BootstrapBrokerStart
+                  BrokerLaunchOptions
+                    { brokerConfigPath = "/etc/bootstrap-broker/config/config.dhall"
+                    , brokerPlanOptions = PlanOptions False Nothing
+                    }
+              )
+      canRunWithoutRepoRoot command `shouldBe` True
+      commandPrerequisites command `shouldBe` []
+      fmap nativeRuntimeRole (nativeRuntimeCommand command)
+        `shouldBe` Just RuntimeRole.BootstrapBroker
+      fmap nativeRuntimeConfigIdentity (nativeRuntimeCommand command)
+        `shouldBe` Just RuntimeRole.BootstrapBrokerConfig
+    it "projects only long-running native commands to their exact runtime role/config" $ do
+      let gatewayStart =
+            NativeGateway
+              ( GatewayDaemonCommand
+                  DaemonLaunchOptions
+                    { daemonConfigPath = Just "/etc/gateway/config/config.dhall"
+                    , daemonPlanOptions = PlanOptions False Nothing
+                    }
+              )
+          gatewayStatus =
+            NativeGateway (GatewayStatusCommand (DaemonStatusOptions Nothing))
+      fmap nativeRuntimeRole (nativeRuntimeCommand gatewayStart)
+        `shouldBe` Just RuntimeRole.GatewayRuntime
+      fmap nativeRuntimeConfigIdentity (nativeRuntimeCommand gatewayStart)
+        `shouldBe` Just RuntimeRole.GatewayRuntimeConfig
+      nativeRuntimeCommand gatewayStatus `shouldSatisfy` isNothing
 
 happyCase :: ([String], Example) -> SuiteBuilder ()
 happyCase (commandPath, exampleSpec) =
@@ -166,6 +241,10 @@ commandPathOfRequest request =
               AwsCheckQuotas -> ["quotas", "check"]
               AwsRequestQuotas _ -> ["quotas", "request"]
               AwsReapTestEbs _ -> ["ebs", "reap-test"]
+        NativeBootstrapBroker brokerCommand ->
+          "bootstrap-broker"
+            : case brokerCommand of
+              BootstrapBrokerStart _ -> ["start"]
         NativeCharts chartsCommand ->
           "charts"
             : case chartsCommand of

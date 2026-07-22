@@ -2908,10 +2908,10 @@ Render one cert-manager `ClusterIssuer` (`zerossl-dns01`, built from `acme.serve
 factored DNS-01 Route 53 solver and the ZeroSSL external account binding, and add the
 substrate-scoped long-lived cert retention store. The retained cert material is stored in the
 long-lived `pulumi_state_backend` S3 bucket under a substrate-scoped key
-(`public-edge-tls/<substrate>/<fqdn>`), reusing the `LongLivedPulumiBackend` access path, so
-rebuild cycles restore the certificate rather than re-order it (and never consume ZeroSSL
-issuance quota). This is the substrate-aware extension of the Sprint 7.5.b cert-manager DNS-01
-ClusterIssuer rendering; the substrate-equivalence doctrine (home + AWS both ZeroSSL) is
+(`public-edge-tls/<substrate>/<canonical-scope-key>`), reusing the `LongLivedPulumiBackend` access
+path, so rebuild cycles restore the certificate rather than re-order it (and never consume
+ZeroSSL issuance quota). This is the substrate-aware extension of the Sprint 7.5.b cert-manager
+DNS-01 ClusterIssuer rendering; the substrate-equivalence doctrine (home + AWS both ZeroSSL) is
 preserved.
 
 > **Supersession note.** This sprint originally rendered an earlier multi-issuer model with a
@@ -4790,10 +4790,10 @@ fault behavior without using the EKS gateway as an authority proxy.
 ## Sprint 7.34: Per-Run Postflight Residue Narrowing [✅ Done]
 
 **Status**: Done
-**Deployment qualification**: Code-owned deliverables landed and proven pre-cluster. Standard O:
-the live confirmation that a harness run with `aws-ses` live still ends with operational `aws.*`
-cleared while the retained stack is untouched is the non-blocking live axis (the policy decision
-itself is fully unit-proven without IO).
+**Deployment qualification**: pending
+**Live-proof**: pending — a harness run with `aws-ses` live must still confirm that operational
+`aws.*` is cleared while the retained stack remains untouched; the policy decision itself is
+unit-proven without I/O.
 **Implementation**: ✅ **Landed.** The new per-run-scoped `PulumiResiduePolicy` constructor
 `BypassPerRunResidueForHarnessRefresh` (`src/Prodbox/CLI/Command.hs`), the `applyAwsTeardown`
 decision arm and the pure `residuePolicyBypassesLongLivedProtection` SSoT predicate

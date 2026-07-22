@@ -55,6 +55,7 @@ usable by developers or externally invoked automation; it does not authorize a r
 | Command | Kind | Purpose |
 |---------|------|---------|
 | `aws` | Group | AWS IAM and quota management |
+| `bootstrap-broker` | Group | Pre-Vault Bootstrap Broker operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `cluster` | Group | Local cluster lifecycle |
 | `commands` | Command | Render the command registry |
@@ -183,6 +184,12 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws stack aws-ses reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses migrate-backend` | none | `--dry-run`, `--plan-file` |
+
+### `prodbox bootstrap-broker`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox bootstrap-broker start` | none | `--config`, `--dry-run`, `--plan-file` |
 
 ### `prodbox charts`
 
@@ -1005,6 +1012,24 @@ The generator owns both marker-delimited artifacts and fully generated files:
 Operators may use either name; future contributors must not split the surfaces or add a third
 validator command.
 
+### `prodbox bootstrap-broker`
+
+`prodbox bootstrap-broker start --config <path>` is the dedicated pre-Vault controller entrypoint.
+It selects the Bootstrap Broker runtime role before decoding its strict role-only Dhall document;
+there is no repository-config, Gateway-config, or environment fallback. `--dry-run` validates the
+document and renders the secret-free bounded listener/store/limit plan, while `--plan-file` uses the
+ordinary plan-output contract.
+
+The controller accepts only loopback listeners and a closed fifteen-route protocol. Client,
+server, deterministic fake, and execution engine share that exact schema, and the engine carries
+the same indexed `CapabilityRef` through admission and execution. The production APPLY boundary
+currently exposes liveness and refuses readiness and all non-health operations. Sprint `3.26` owns
+the physical TokenReview, Lease, Kubernetes worker, MinIO, Vault, and OpenPGP adapters plus workload
+rendering. The command row therefore records a code-local runtime surface, not deployment
+qualification or operational cutover. The combined gateway bootstrap routes remain only in the
+registered `LegacyModelBEmitter` rollback adapter under
+[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+
 ### `prodbox vault`
 
 The `prodbox vault` group is the operator-facing Vault lifecycle surface — `status`,
@@ -1024,11 +1049,12 @@ config contract or the managed-resource-registry teardown.
 
 ### Daemon-launching flags
 
-`prodbox gateway start`, `prodbox gateway status`, and `prodbox workload start` accept
-exactly one startup-time CLI knob — `--config <path>` — per
+`prodbox bootstrap-broker start`, `prodbox gateway start`, `prodbox gateway status`, and
+`prodbox workload start` accept exactly one startup-time CLI knob — `--config <path>` — per
 [config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance)
-(`gateway start` additionally exposes only the universal `--dry-run` / `--plan-file` plan
-renderers). Foreground execution is the only supported mode; self-daemonization (`--detach`,
+(`bootstrap-broker start` and `gateway start` additionally expose only the universal `--dry-run` /
+`--plan-file` plan renderers). Foreground execution is the only supported mode;
+self-daemonization (`--detach`,
 double-fork, `setsid`, `forkProcess`) is forbidden per
 [CLI-to-Daemon Plumbing](./distributed_gateway_architecture.md).
 `--log-level`, `--port`, `--node-id`, and similar runtime-override flags are **not part of
@@ -1042,7 +1068,7 @@ from both `prodbox gateway start` and `prodbox workload start`, along with the
 `src/Prodbox/Gateway.hs` threading. The gateway daemon now sources its log level from the
 mounted Dhall (`live.log_level`, defaulting to `info`) and its REST port from the Orders
 file; the workload daemon sources its port and log level from its mounted Dhall config.
-Both daemon-launch surfaces conform to the single-`--config` contract (see the
+All daemon-launch surfaces conform to the single-`--config` contract (see the
 [generated command matrix](#3-command-matrix)).
 
 ### One-shot output flags

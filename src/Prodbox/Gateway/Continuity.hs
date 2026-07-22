@@ -28,6 +28,7 @@ module Prodbox.Gateway.Continuity
   , mkContinuityDigest
   , continuityDigestBytes
   , ContinuityAnchor
+  , restoreContinuityAnchor
   , continuityAnchorEpoch
   , continuityAnchorSequence
   , continuityAnchorPreviousDigest
@@ -246,6 +247,12 @@ data ContinuityAnchor = ContinuityAnchor
 
 instance Serialise ContinuityAnchor
 
+-- | Restore an anchor whose fixed-width digest has already passed
+-- 'mkContinuityDigest'. Epoch and sequence span their complete 'Word64'
+-- domains, so no additional partial validation remains at this boundary.
+restoreContinuityAnchor :: Word64 -> Word64 -> ContinuityDigest -> ContinuityAnchor
+restoreContinuityAnchor = ContinuityAnchor
+
 continuityAnchorEpoch :: ContinuityAnchor -> Word64
 continuityAnchorEpoch = internalContinuityEpoch
 
@@ -258,6 +265,7 @@ continuityAnchorPreviousDigest = internalContinuityPreviousDigest
 data StagedTransition
   = SemanticAdvance
   | EpochInvalidation
+  | OrdersScopeInvalidation
   deriving (Eq, Generic, Ord, Show)
 
 instance Serialise StagedTransition
@@ -746,6 +754,16 @@ nextAnchorFor transition committed resultDigest =
           unless
             (sequenceNumber == maxBound)
             (Left (ContinuityRotationBeforeSequenceExhaustion sequenceNumber))
+          when
+            (epoch == maxBound)
+            (Left (ContinuityCountersExhausted epoch sequenceNumber))
+          Right
+            ContinuityAnchor
+              { internalContinuityEpoch = epoch + 1
+              , internalContinuitySequence = 0
+              , internalContinuityPreviousDigest = resultDigest
+              }
+        OrdersScopeInvalidation -> do
           when
             (epoch == maxBound)
             (Left (ContinuityCountersExhausted epoch sequenceNumber))

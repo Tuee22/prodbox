@@ -21,7 +21,14 @@ module Prodbox.Vault.Client
   , VaultToken (..)
   , SealStatus (..)
   , InitRequest (..)
+  , initRequestWithPgpRecipientsLegacy
+  , initRequestForPreparedRecipients
   , InitResponse (..)
+  , EncryptedVaultInitResponse
+  , GenerateRootRequest (..)
+  , GenerateRootUpdateRequest
+  , GenerateRootResponse (..)
+  , TokenAccessorListing (..)
   , BootstrapAction (..)
   , KvV2WriteRequest (..)
   , KvV2ReadResponse (..)
@@ -55,7 +62,15 @@ module Prodbox.Vault.Client
   , initResponseToUnlockBundle
   , vaultSealStatus
   , vaultInit
+  , vaultInitEncrypted
   , vaultSubmitUnseal
+  , vaultObserveGenerateRoot
+  , vaultStartGenerateRoot
+  , vaultSubmitGenerateRootShareLegacy
+  , vaultCancelGenerateRoot
+  , vaultListTokenAccessors
+  , vaultRevokeTokenAccessor
+  , vaultTokenAccessorAbsent
   , vaultSeal
   , vaultKvReadV2
   , vaultKvReadVersionedV2
@@ -107,6 +122,14 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Network.HTTP.Types.Header (Header)
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.PgpBoundary
+  ( PreparedInitRecipients
+  , preparedInitBurnPublicKeyBase64
+  , preparedInitRecipientShareCount
+  , preparedInitRecipientThreshold
+  , preparedInitRecoveryPublicKeysBase64
+  )
+import Prodbox.Bootstrap.Broker.VaultWire (EncryptedVaultInitResponse)
 import Prodbox.Http.Client
   ( HttpError (..)
   , defaultHttpConfig
@@ -156,12 +179,16 @@ instance ToJSON SealStatus where
       , "progress" .= sealStatusProgress status
       ]
 
--- | The @POST \/v1\/sys\/init@ request body.
+-- | The retained Standard-P @POST \/v1\/sys\/init@ DTO.  Target Broker code
+-- obtains this value only from 'initRequestForPreparedRecipients'; legacy
+-- callers still construct the raw DTO until the rollback path is removed.
 data InitRequest = InitRequest
   { initRequestSecretShares :: Maybe Natural
   , initRequestSecretThreshold :: Maybe Natural
   , initRequestRecoveryShares :: Maybe Natural
   , initRequestRecoveryThreshold :: Maybe Natural
+  , initRequestPgpKeys :: [Text]
+  , initRequestRootTokenPgpKey :: Maybe Text
   }
   deriving (Eq, Show)
 
@@ -172,6 +199,8 @@ instance ToJSON InitRequest where
           ++ maybeField "secret_threshold" (initRequestSecretThreshold req)
           ++ maybeField "recovery_shares" (initRequestRecoveryShares req)
           ++ maybeField "recovery_threshold" (initRequestRecoveryThreshold req)
+          ++ listField "pgp_keys" (initRequestPgpKeys req)
+          ++ maybeField "root_token_pgp_key" (initRequestRootTokenPgpKey req)
       )
 
 -- | The standard 5-share / 3-threshold Shamir init parameters.
@@ -182,6 +211,48 @@ defaultInitRequest =
     , initRequestSecretThreshold = Just 3
     , initRequestRecoveryShares = Nothing
     , initRequestRecoveryThreshold = Nothing
+    , initRequestPgpKeys = []
+    , initRequestRootTokenPgpKey = Nothing
+    }
+
+-- | Bind every initialization share and the initial root token to explicit
+-- OpenPGP recipients before @sys/init@ is called.  Vault requires one share
+-- recipient per configured Shamir/recovery share.  The broker supplies a
+-- pinned burn recipient for the root token; no corresponding private key is
+-- accepted by this API.
+initRequestWithPgpRecipientsLegacy :: [Text] -> Text -> InitRequest -> Either String InitRequest
+initRequestWithPgpRecipientsLegacy shareRecipients burnRecipient request
+  | expectedShares == Nothing =
+      Left "Vault init request does not declare a share count for PGP recipients"
+  | Just (fromIntegral (length shareRecipients)) /= expectedShares =
+      Left "Vault init PGP recipient count must equal the configured share count"
+  | any (Text.null . Text.strip) shareRecipients =
+      Left "Vault init PGP share recipients must not be empty"
+  | Text.null (Text.strip burnRecipient) =
+      Left "Vault init burn recipient must not be empty"
+  | otherwise =
+      Right
+        request
+          { initRequestPgpKeys = fmap Text.strip shareRecipients
+          , initRequestRootTokenPgpKey = Just (Text.strip burnRecipient)
+          }
+ where
+  expectedShares =
+    case initRequestSecretShares request of
+      Just shares -> Just shares
+      Nothing -> initRequestRecoveryShares request
+
+-- | The target Broker request can be produced only from the evidence that the
+-- exact recovery array and burn key match the durable prepared envelope.
+initRequestForPreparedRecipients :: PreparedInitRecipients -> InitRequest
+initRequestForPreparedRecipients recipients =
+  InitRequest
+    { initRequestSecretShares = Just (preparedInitRecipientShareCount recipients)
+    , initRequestSecretThreshold = Just (preparedInitRecipientThreshold recipients)
+    , initRequestRecoveryShares = Nothing
+    , initRequestRecoveryThreshold = Nothing
+    , initRequestPgpKeys = preparedInitRecoveryPublicKeysBase64 recipients
+    , initRequestRootTokenPgpKey = Just (preparedInitBurnPublicKeyBase64 recipients)
     }
 
 -- | The decoded @POST \/v1\/sys\/init@ response. Recovery keys are present
@@ -205,6 +276,105 @@ maybeField :: (ToJSON a) => Text -> Maybe a -> [Pair]
 maybeField fieldName value = case value of
   Nothing -> []
   Just concrete -> [fromString (Text.unpack fieldName) .= concrete]
+
+listField :: (ToJSON a) => Text -> [a] -> [Pair]
+listField _ [] = []
+listField fieldName values = [fromString (Text.unpack fieldName) .= values]
+
+-- | Request used to start a PGP-protected generated-root attempt.  There is
+-- intentionally no OTP constructor: the broker only admits the pinned PGP
+-- custody path.
+newtype GenerateRootRequest = GenerateRootRequest
+  { generateRootPgpKey :: Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON GenerateRootRequest where
+  toJSON request = object ["pgp_key" .= generateRootPgpKey request]
+
+-- | One unseal/recovery share contribution to an existing generated-root
+-- attempt.  The nonce binds the share to exactly that attempt.
+data GenerateRootUpdateRequest = GenerateRootUpdateRequest
+  { generateRootUpdateKey :: Text
+  , generateRootUpdateNonce :: Text
+  }
+  deriving (Eq)
+
+instance Show GenerateRootUpdateRequest where
+  show request =
+    "GenerateRootUpdateRequest {key = <redacted>, noncePresent = "
+      ++ show (not (Text.null (generateRootUpdateNonce request)))
+      ++ "}"
+
+instance ToJSON GenerateRootUpdateRequest where
+  toJSON request =
+    object
+      [ "key" .= generateRootUpdateKey request
+      , "nonce" .= generateRootUpdateNonce request
+      ]
+
+-- | The non-secret progress/result fields returned by Vault's generated-root
+-- protocol.  @encoded_token@ is PGP ciphertext when complete; plaintext/OTP
+-- token fields are deliberately absent from the model.
+data GenerateRootResponse = GenerateRootResponse
+  { generateRootStarted :: Bool
+  , generateRootNonce :: Maybe Text
+  , generateRootProgress :: Natural
+  , generateRootRequired :: Natural
+  , generateRootComplete :: Bool
+  , generateRootEncodedToken :: Maybe Text
+  , generateRootPgpFingerprint :: Maybe Text
+  }
+  deriving (Eq)
+
+instance Show GenerateRootResponse where
+  show response =
+    "GenerateRootResponse {started = "
+      ++ show (generateRootStarted response)
+      ++ ", nonce = "
+      ++ show (generateRootNonce response)
+      ++ ", progress = "
+      ++ show (generateRootProgress response)
+      ++ ", required = "
+      ++ show (generateRootRequired response)
+      ++ ", complete = "
+      ++ show (generateRootComplete response)
+      ++ ", encodedToken = <redacted>, pgpFingerprint = "
+      ++ show (generateRootPgpFingerprint response)
+      ++ "}"
+
+instance FromJSON GenerateRootResponse where
+  parseJSON =
+    withObject "GenerateRootResponse" $ \o ->
+      GenerateRootResponse
+        <$> o .:? "started" .!= False
+        <*> o .:? "nonce"
+        <*> o .:? "progress" .!= 0
+        <*> o .:? "required" .!= 0
+        <*> o .:? "complete" .!= False
+        <*> o .:? "encoded_token"
+        <*> o .:? "pgp_fingerprint"
+
+-- | Accessors are non-secret token identifiers.  The broker journals the
+-- accessor before using the short-lived generated-root token and proves its
+-- absence by listing again after revocation.
+newtype TokenAccessorListing = TokenAccessorListing
+  { tokenAccessorKeys :: [Text]
+  }
+  deriving (Eq, Show)
+
+instance FromJSON TokenAccessorListing where
+  parseJSON =
+    withObject "TokenAccessorListing" $ \o -> do
+      body <- o .: "data"
+      TokenAccessorListing <$> body .:? "keys" .!= []
+
+newtype RevokeTokenAccessorRequest = RevokeTokenAccessorRequest
+  { revokeTokenAccessor :: Text
+  }
+
+instance ToJSON RevokeTokenAccessorRequest where
+  toJSON request = object ["accessor" .= revokeTokenAccessor request]
 
 -- | The @POST \/v1\/auth\/kubernetes\/login@ request body.
 data KubernetesLoginRequest = KubernetesLoginRequest
@@ -304,6 +474,19 @@ vaultInit :: VaultAddress -> InitRequest -> IO (Either HttpError InitResponse)
 vaultInit address request =
   httpPostJsonResponseJson defaultHttpConfig (vaultUrl address "/v1/sys/init") request
 
+-- | Target Broker initialization decoder.  Unlike the retained Standard-P
+-- legacy 'vaultInit', this result has no printable/plaintext root-token field:
+-- Vault's PGP outputs are projected directly into opaque custody values.
+vaultInitEncrypted
+  :: VaultAddress
+  -> PreparedInitRecipients
+  -> IO (Either HttpError EncryptedVaultInitResponse)
+vaultInitEncrypted address recipients =
+  httpPostJsonResponseJson
+    defaultHttpConfig
+    (vaultUrl address "/v1/sys/init")
+    (initRequestForPreparedRecipients recipients)
+
 -- | @POST \/v1\/sys\/unseal@ — submit one unseal key share; the response is
 -- the updated seal status (progress advances until @sealed@ flips false).
 vaultSubmitUnseal :: VaultAddress -> Text -> IO (Either HttpError SealStatus)
@@ -312,6 +495,71 @@ vaultSubmitUnseal address key =
     defaultHttpConfig
     (vaultUrl address "/v1/sys/unseal")
     (UnsealRequest key)
+
+-- | Observe an in-progress generated-root attempt.  No token is required;
+-- possession of the threshold unseal/recovery shares authorizes completion.
+vaultObserveGenerateRoot :: VaultAddress -> IO (Either HttpError GenerateRootResponse)
+vaultObserveGenerateRoot address =
+  httpGetJson defaultHttpConfig (vaultUrl address "/v1/sys/generate-root/attempt")
+
+-- | Start a generated-root attempt whose result can only be decrypted by the
+-- supplied short-lived recipient.  The broker never starts Vault's OTP mode.
+vaultStartGenerateRoot :: VaultAddress -> Text -> IO (Either HttpError GenerateRootResponse)
+vaultStartGenerateRoot address pgpPublicKey =
+  httpPostJsonResponseJson
+    defaultHttpConfig
+    (vaultUrl address "/v1/sys/generate-root/attempt")
+    (GenerateRootRequest pgpPublicKey)
+
+-- | Standard-P raw-share wrapper.  Target Broker generated-root submission is
+-- confined to its one-shot secret-worker/PGP port and never calls this Text
+-- API from the long-lived controller.
+vaultSubmitGenerateRootShareLegacy
+  :: VaultAddress
+  -> Text
+  -> Text
+  -> IO (Either HttpError GenerateRootResponse)
+vaultSubmitGenerateRootShareLegacy address nonce share =
+  httpPostJsonResponseJson
+    defaultHttpConfig
+    (vaultUrl address "/v1/sys/generate-root/update")
+    (GenerateRootUpdateRequest share nonce)
+
+-- | Cancel an ambiguous or abandoned generated-root attempt before retrying.
+vaultCancelGenerateRoot :: VaultAddress -> IO (Either HttpError ())
+vaultCancelGenerateRoot address =
+  httpRequestNoBody
+    defaultHttpConfig
+    "DELETE"
+    []
+    (vaultUrl address "/v1/sys/generate-root/attempt")
+
+-- | List all token accessors through Vault's bounded list query.  The token
+-- value itself never appears in the response model.
+vaultListTokenAccessors
+  :: VaultAddress -> VaultToken -> IO (Either HttpError TokenAccessorListing)
+vaultListTokenAccessors address token =
+  httpGetJsonWithHeaders
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address "/v1/auth/token/accessors?list=true")
+
+-- | Revoke a token by its journaled accessor.
+vaultRevokeTokenAccessor
+  :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError ())
+vaultRevokeTokenAccessor address token accessor =
+  httpPostJsonNoResponse
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address "/v1/auth/token/revoke-accessor")
+    (RevokeTokenAccessorRequest accessor)
+
+-- | Authoritative post-revocation readback used before the broker may report
+-- generated-root session cleanup complete.
+vaultTokenAccessorAbsent
+  :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError Bool)
+vaultTokenAccessorAbsent address token accessor =
+  fmap (fmap (notElem accessor . tokenAccessorKeys)) (vaultListTokenAccessors address token)
 
 -- | A Vault authentication token, sent as the @X-Vault-Token@ header on every
 -- authenticated request. Never logged.

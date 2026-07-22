@@ -26,7 +26,7 @@ because ZeroSSL is the only supported provider.
 > Sprint 7.13 renamed it from the historically-inaccurate HTTP-01-claiming name (which named
 > HTTP-01 but ran DNS-01). Because the issuer name is baked into retained ACME account and
 > certificate state, the live rename lands on a wipe-and-rebuild boundary; the S3 cert
-> retention key is keyed on substrate + FQDN (not the issuer name), so the retained certificate
+> retention key is keyed on substrate + the exact canonical certificate scope (not the issuer name), so the retained certificate
 > restores under the new issuer name without re-ordering from ZeroSSL.
 
 ---
@@ -126,17 +126,17 @@ The prodbox canonical test suite repeatedly tears down and rebuilds the substrat
 fresh certificate for the same FQDN on every rebuild would consume ZeroSSL issuance quota
 needlessly. Instead, the issued public-edge certificate is retained once as a `LongLived` managed
 resource as ciphertext in the long-lived `pulumi_state_backend` S3 bucket under the
-substrate-scoped key `public-edge-tls/<substrate>/<fqdn>`. Once configurable certificate scope
-sets land (Sprint `2.35`), the `<fqdn>` component generalizes to a canonical scope-set
-serialization key, so retention is keyed by `(substrate, canonical scope-set)` rather than a
-single FQDN (see
+substrate-scoped key `public-edge-tls/<substrate>/<canonical-scope-key>`. Sprint `2.35` makes the
+final component a path-safe encoding of the canonical scope-set serialization, so retention is
+keyed by `(substrate, exact canonical scope-set)` rather than independently supplied hostname text
+(see
 [lifecycle_control_plane_architecture.md §5.4](./lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow)).
 The selected Target Secret Agent encrypts
 the exact cert-manager TLS Secret locally; the retained home Agent's
 `transit/keys/prodbox-tls-envelope` lane wraps its DEK; and the separately credentialed TLS
 Retention Adapter stores/read-backs only that envelope. Restore follows the reverse Agent-mediated
-path before issuance on every rebuild, so the certificate is issued once and restored thereafter
-rather than re-ordered each cycle. Corrupt, mismatched, rollback, or unobservable retention state
+path before issuance evaluation on every rebuild, so each exact canonical SAN set is issued once
+and restored thereafter rather than re-ordered each cycle. Corrupt, mismatched, rollback, or unobservable retention state
 fails closed and is never treated as absence.
 
 For the retention, restore-before-issuance, and bucket-key mechanics, see
@@ -154,14 +154,14 @@ the Authority-backup decommission tail after every registered prefix is absent.
 ## 5. Configurable Certificate Scope
 
 The public-edge certificate scope is operator-configurable: a Tier-0 `CertScopeSet` of exact and
-wildcard scopes, not a hardcoded wildcard anchor. The certificate `dnsNames`, the Gateway listener
-hostnames, the served-FQDN list, and the `public-edge-tls/<substrate>/<fqdn>` retention key are
-total projections of that one configured set — so the drift that produced the orphan, unmanaged
-dashboard certificate cannot recur on the prodbox-managed side. Illegal states are unrepresentable
-there: a served hostname with no covering configured scope, or a wildcard anchored at a zone the
-operator has not delegated in config, is rejected by smart constructors plus fail-fast config
-validation. The default configured scope set is today's exact served hosts, so there is no behavior
-change until an operator widens scope.
+wildcard scopes, not a hardcoded wildcard anchor. The certificate `dnsNames` and the
+`public-edge-tls/<substrate>/<canonical-scope-key>` retention coordinate are total projections of
+that set. Each substrate still has one explicit served hostname; Gateway listeners, HTTPRoutes,
+and DNS records project that bound host rather than attempting to enumerate a wildcard's infinite
+coverage. `bindListener` makes the relationship total: a served hostname with no covering scope,
+or a wildcard anchored at a zone the operator has not delegated in config, is rejected by smart
+constructors plus fail-fast config validation. The default configured scope set is the selected
+substrate's exact served host, so there is no behavior change until an operator widens scope.
 
 ### Coverage and narrowing semantics
 
@@ -175,7 +175,7 @@ and the narrower-or-equal partial order (`impliedBy`) are RFC-6125-correct:
 | `Wildcard z` covers `x.z` | yes | one label under the delegated zone `z` |
 | `Wildcard z` covers apex `z` | no | a wildcard never matches the apex — apex needs its own exact scope |
 | `Wildcard z` covers `a.b.z` | no | a wildcard matches exactly one label |
-| `Exact x.z` impliedBy `Wildcard z` | yes | an exact host reuses the wildcard material |
+| `Exact x.z` impliedBy `Wildcard z` | yes | every host admitted by the exact scope is covered by the wildcard scope |
 | `Wildcard a.z` impliedBy `Wildcard z` | no | `*.z` covers `a.z` but not `foo.a.z`; a child wildcard needs its own order |
 
 Doctrine advises delegated-zone anchoring and discourages org-apex wildcards: an org-apex wildcard
@@ -189,12 +189,17 @@ Wildcard scopes need no new solver. ZeroSSL over ACME DNS-01 / Route 53 already 
 certificates, and the existing `zerossl-dns01` DNS-01 solver is unchanged (zero solver change). No
 repo-documented ZeroSSL wildcard prohibition exists.
 
-### Scope-change: restore-vs-reissue
+### Scope-change: exact restore vs reissue
 
-Restore-before-issue reuses retained material iff the configured scope set is `impliedBy` the
-retained certificate's scope: a narrower-or-equal change reuses the retained envelope, and only a
-widening change triggers one fresh, quota-conscious ACME order. A canonical (deduped, ordered)
-scope-set serialization keys retention deterministically, generalizing the `<fqdn>` key of
+Restore-before-issue reuses retained material only when the retained certificate has the exact
+canonical scope set requested by `Certificate.spec.dnsNames`. cert-manager treats a different SAN
+set as an issuance-spec mismatch; restoring a wider certificate for a narrower spec would therefore
+trigger another order rather than reuse it. A new canonical scope set gets its own path-safe
+retention coordinate and one quota-conscious ACME order; once retain-on-ready stores that exact set,
+subsequent rebuilds reuse it. Returning later to an exact set whose still-valid retained object
+already exists may reuse that object. `impliedBy` remains the narrower-or-equal coverage/admission
+order used to prove that explicit served hosts are covered; it does not make distinct SAN sets
+interchangeable. The canonical (deduped, ordered) serialization generalizes the `<fqdn>` key of
 [§ 4](#4-single-issuer-and-rebuild-safe-certificate-retention).
 
 ### Standing rules
@@ -208,8 +213,9 @@ scope-set serialization keys retention deterministically, generalizing the `<fqd
   `certificate-renew-due` / `certificate-expired`, with an absent cert-manager `status.renewalTime`
   treated as `certificate-unobservable`, never as "not due") and never drives ACME renewal from the
   Gateway daemon.
-- Every served public hostname is a total projection of the configured scope set; a hostname with
-  no covering scope is unrepresentable (bind-time `Left` plus config fail-fast).
+- Every served public hostname is an explicit binding admitted only when the configured scope set
+  covers it; a hostname with no covering scope is unrepresentable (bind-time `Left` plus config
+  fail-fast). Wildcard coverage never creates listeners, routes, or DNS records by enumeration.
 
 ### CA-layer investigation note
 
@@ -220,9 +226,9 @@ detection backstop — not a shipped or guaranteed mechanism — are CAA restric
 ZeroSSL/Sectigo; plain CAA does not block same-CA dashboard issuance) together with CT-log
 observation. These are recorded as investigation, not a shipped control.
 
-Implementation of the scope algebra and its derived edge projections is owned by Sprint
-[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), with serving-level validation owned by
-Sprint [`5.22`](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
+Implementation of the scope algebra and its derived edge projections is complete in Sprint
+[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md). The unblocked serving-level validation is
+Planned Sprint [`5.22`](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
 
 ## ACME credentials and TLS key material under Vault
 

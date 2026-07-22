@@ -194,6 +194,19 @@ Options:
 Examples:
 - prodbox aws stack aws-ses migrate-backend  # Migrate aws-ses state onto the long-lived S3 backend.
 
+## prodbox bootstrap-broker start
+prodbox bootstrap-broker start - Start the Bootstrap Broker
+
+Start the dedicated loopback Bootstrap Broker from its mounted role-only Dhall config.
+Options:
+- --config <PATH> - Mounted Bootstrap Broker Dhall config path
+- --dry-run - Validate config and render the broker-start plan without starting the listener
+- --plan-file <PATH> - Write the rendered broker-start plan to a file
+
+Examples:
+- prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall  # Start the dedicated Bootstrap Broker runtime.
+- prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall --dry-run  # Validate config and render the broker-start plan.
+
 ## prodbox charts list
 prodbox charts list - List supported charts
 

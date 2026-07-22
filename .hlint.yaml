@@ -52,3 +52,4 @@
 - ignore: {name: "Use zipWithFrom"}
 - ignore: {name: "Use <$>"}
 - ignore: {name: "Use enumerate"}
+- ignore: {name: "Use nubSort"}

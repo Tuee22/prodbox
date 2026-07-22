@@ -4,6 +4,9 @@ module Prodbox.CheckCode
   , awsCreateProbeVerbs
   , awsCreateSiteViolations
   , awsCreateVerbs
+  , bootstrapBrokerChartStaticViolations
+  , bootstrapBrokerChartStaticsConformanceViolations
+  , bootstrapBrokerIsolationViolations
   , checkCreateCallSiteCoverage
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
@@ -35,6 +38,7 @@ module Prodbox.CheckCode
   , rendererSourceViolations
   , runCheckCode
   , serviceErrorRetryableLiteralViolations
+  , secretPayloadInternalSourceViolations
   , runDocsCommand
   , runLintCommand
   , substrateImagePinningViolations
@@ -46,11 +50,12 @@ module Prodbox.CheckCode
 where
 
 import Control.Monad (forM)
-import Data.Char (isAlphaNum, isDigit, toLower)
-import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
+import Data.Char (isAlpha, isAlphaNum, isDigit, toLower)
+import Data.List (findIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.ChartStatics qualified as BrokerChartStatics
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , syncBuiltOperatorBinary
@@ -203,6 +208,19 @@ generatedSectionRules =
       , generatedSectionEndMarker = "# prodbox:gateway-chart-statics.values:end"
       , generatedSectionRender = const ChartStatics.renderGatewayChartStaticsYaml
       , generatedSectionRendererSources = ["src/Prodbox/Gateway/ChartStatics.hs"]
+      }
+  , -- Sprint 3.26: the Bootstrap Broker chart's ServiceAccount / bootstrap-only
+    -- Vault role / lifecycle probe-path defaults are generated from the one
+    -- compiled Prodbox.Bootstrap.Broker.ChartStatics source of truth, so the
+    -- committed values.yaml cannot drift from the compiled broker identity or
+    -- the closed BrokerRoute registry.
+    GeneratedSectionRule
+      { generatedSectionKey = "bootstrap-broker-chart-statics.values"
+      , generatedSectionPath = "charts/bootstrap-broker/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:bootstrap-broker-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:bootstrap-broker-chart-statics.values:end"
+      , generatedSectionRender = const BrokerChartStatics.renderBrokerChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Bootstrap/Broker/ChartStatics.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
     -- are rendered into substrates.md so `prodbox docs check` fails the
@@ -456,34 +474,288 @@ runConformanceTier repoRoot = do
             )
         )
     [] -> do
-      measuredViolations <- checkMeasuredCapacityProfiles repoRoot
-      case measuredViolations of
+      brokerIsolationViolations <- checkBootstrapBrokerIsolation repoRoot
+      case brokerIsolationViolations of
         (_ : _) ->
           failWith
             ( unlines
-                ( ( "Measured-capacity certification failed. Authored Guaranteed-QoS "
-                      ++ "envelopes must be justified by their committed measured profiles "
-                      ++ "under dhall/capacity/measured/ (see resource_scaling_doctrine.md § 2F):"
+                ( ( "Bootstrap Broker isolation conformance failed. Gateway target registries "
+                      ++ "must contain no pre-Vault route and the broker registry must remain "
+                      ++ "a fixed allowlist (Sprint 2.33):"
                   )
-                    : map ("- " ++) measuredViolations
-                    ++ ["Recapture the profile (Sprint 5.21 recorder) or correct the authored envelope."]
+                    : map ("- " ++) brokerIsolationViolations
+                    ++ ["Reconcile the closed role/route registries; do not add a generic transport escape."]
                 )
             )
         [] -> do
-          staticsViolations <- checkGatewayChartStatics repoRoot
-          case staticsViolations of
-            [] -> pure ExitSuccess
-            violations ->
+          measuredViolations <- checkMeasuredCapacityProfiles repoRoot
+          case measuredViolations of
+            (_ : _) ->
               failWith
                 ( unlines
-                    ( ( "Gateway chart-statics conformance failed. The committed "
-                          ++ "charts/gateway/values.yaml defaults must equal the compiled "
-                          ++ "Prodbox.Gateway.ChartStatics projection (Sprint 2.34):"
+                    ( ( "Measured-capacity certification failed. Authored Guaranteed-QoS "
+                          ++ "envelopes must be justified by their committed measured profiles "
+                          ++ "under dhall/capacity/measured/ (see resource_scaling_doctrine.md § 2F):"
                       )
-                        : map ("- " ++) violations
-                        ++ ["Run `./.build/prodbox dev docs generate` and reconcile the raw values.yaml literals."]
+                        : map ("- " ++) measuredViolations
+                        ++ ["Recapture the profile (Sprint 5.21 recorder) or correct the authored envelope."]
                     )
                 )
+            [] -> do
+              staticsViolations <- checkGatewayChartStatics repoRoot
+              case staticsViolations of
+                [] -> pure ExitSuccess
+                violations ->
+                  failWith
+                    ( unlines
+                        ( ( "Gateway chart-statics conformance failed. The committed "
+                              ++ "charts/gateway/values.yaml defaults must equal the compiled "
+                              ++ "Prodbox.Gateway.ChartStatics projection (Sprint 2.34):"
+                          )
+                            : map ("- " ++) violations
+                            ++ ["Run `./.build/prodbox dev docs generate` and reconcile the raw values.yaml literals."]
+                        )
+                    )
+
+checkBootstrapBrokerIsolation :: FilePath -> IO [String]
+checkBootstrapBrokerIsolation repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let additionalIsolationPaths =
+        [ path
+        | path <- repoPaths
+        , any
+            (`isPrefixOf` path)
+            [ "src/Prodbox/Gateway/"
+            , "src/Prodbox/Bootstrap/Broker/"
+            ]
+        , ".hs" `isSuffixOf` path
+        , path `notElem` bootstrapIsolationSourcePaths
+        ]
+  sources <-
+    forM (bootstrapIsolationSourcePaths ++ additionalIsolationPaths) $ \relativePath -> do
+      let absolutePath = repoRoot </> relativePath
+      exists <- doesFileExist absolutePath
+      contents <- if exists then readFile absolutePath else pure ""
+      pure (relativePath, contents)
+  pure (bootstrapBrokerIsolationViolations sources)
+
+bootstrapIsolationSourcePaths :: [FilePath]
+bootstrapIsolationSourcePaths =
+  [ "src/Prodbox/Gateway/Routes.hs"
+  , "src/Prodbox/Gateway/Client.hs"
+  , "src/Prodbox/Gateway/Daemon.hs"
+  , "src/Prodbox/Bootstrap/Broker/Client.hs"
+  , "src/Prodbox/Bootstrap/Broker/Routes.hs"
+  , "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
+  ]
+
+-- | Pure Sprint-2.33 role-isolation check.  Comments are ignored for path
+-- checks by scanning string literals; constructor/adapter checks intentionally
+-- inspect source tokens because they prove ownership, not prose wording.
+bootstrapBrokerIsolationViolations :: [(FilePath, String)] -> [String]
+bootstrapBrokerIsolationViolations sources =
+  missingViolations
+    ++ gatewayRouteViolations
+    ++ gatewayClientViolations
+    ++ gatewayModuleViolations
+    ++ brokerClientViolations
+    ++ brokerEscapeViolations
+    ++ legacyAdapterViolations
+ where
+  sourceAt path = lookup path sources
+  missingViolations =
+    [ path ++ " is missing from the Bootstrap Broker isolation proof."
+    | path <- bootstrapIsolationSourcePaths
+    , maybe True null (sourceAt path)
+    ]
+  gatewayRouteViolations =
+    sourceViolations
+      "src/Prodbox/Gateway/Routes.hs"
+      ["RouteBootstrapVault", "/v1/bootstrap/vault"]
+  gatewayClientViolations =
+    sourceViolations
+      "src/Prodbox/Gateway/Client.hs"
+      [ "ensureVaultBootstrap"
+      , "queryVaultStatus"
+      , "sealVault"
+      , "rotateVaultUnlockBundle"
+      , "rotateVaultTransitKey"
+      , "/v1/bootstrap/vault"
+      ]
+  gatewayModuleViolations =
+    concatMap
+      gatewayModuleSourceViolations
+      [ source
+      | source@(path, _) <- sources
+      , "src/Prodbox/Gateway/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      ]
+  brokerClientViolations =
+    case sourceAt "src/Prodbox/Bootstrap/Broker/Client.hs" of
+      Nothing -> []
+      Just contents ->
+        let rollbackMarker = "-- Standard-P rollback adapter"
+            targetSurface = sourceBefore rollbackMarker contents
+         in [ "Bootstrap Broker target client is missing its explicit Standard-P rollback boundary."
+            | not (rollbackMarker `isInfixOf` contents)
+            ]
+              ++ [ "Bootstrap Broker target client can represent forbidden secret field `"
+                     ++ token
+                     ++ "` before the rollback boundary."
+                 | token <- ["unlock_password", "new_unlock_password", "initial_root_token"]
+                 , token `isInfixOf` targetSurface
+                 ]
+              ++ [ "Bootstrap Broker target client is missing authenticated request binding `"
+                     ++ token
+                     ++ "`."
+                 | token <-
+                     [ "x-prodbox-service-identity"
+                     , "x-prodbox-transport-credential"
+                     , "idempotency-key"
+                     , "x-prodbox-request-sha256"
+                     , "requestDigestForBytes"
+                     ]
+                 , not (token `isInfixOf` targetSurface)
+                 ]
+  brokerEscapeViolations =
+    case sourceAt "src/Prodbox/Bootstrap/Broker/Routes.hs" of
+      Nothing -> []
+      Just contents ->
+        [ "Bootstrap Broker route registry contains forbidden generic literal `"
+            ++ literal
+            ++ "`."
+        | literal <- extractStringLiterals contents
+        , any (`isInfixOf` map toLower literal) brokerForbiddenFragments
+        ]
+  legacyAdapterViolations =
+    case ( sourceAt "src/Prodbox/Gateway/Daemon.hs"
+         , sourceAt "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
+         ) of
+      (Just daemonContents, Just adapterContents) ->
+        let daemonIdentifiers = sourceIdentifiers daemonContents
+            daemonExportIdentifiers =
+              sourceIdentifiers (sourceBefore "where" daemonContents)
+            adapterIdentifiers = sourceIdentifiers adapterContents
+            adapterLiterals = extractStringLiterals adapterContents
+            dispatchRegion =
+              sourceBetween
+                "handleParsedRequest rawRequest"
+                "currentEmitterReadinessAuthority"
+                daemonContents
+         in [ "Gateway rollback bootstrap dispatch is not isolated behind LegacyAdapter."
+            | not
+                ( all
+                    (`elem` daemonIdentifiers)
+                    [ "legacyGatewayBootstrapRouteForPath"
+                    , "runLegacyGatewayBootstrapRequest"
+                    , "LegacyModelBEmitter"
+                    , "JournalLeaseEmitter"
+                    ]
+                )
+            ]
+              ++ [ "Gateway target dispatch does not topology-gate the rollback adapter."
+                 | not
+                     ( tokensOccurInOrder
+                         [ "LegacyModelBEmitter"
+                         , "legacyGatewayBootstrapRouteForPath"
+                         , "JournalLeaseEmitter"
+                         , "dispatchPatternRoute"
+                         ]
+                         dispatchRegion
+                     )
+                 ]
+              ++ [ "Gateway daemon exports a rollback bootstrap endpoint or request type."
+                 | any
+                     (`elem` daemonExportIdentifiers)
+                     [ "BootstrapVaultRequest"
+                     , "bootstrapVaultPath"
+                     , "decodeBootstrapVaultRequest"
+                     ]
+                 ]
+              ++ [ "Registered rollback adapter is missing executable bootstrap ownership."
+                 | not
+                     ( all
+                         (`elem` adapterIdentifiers)
+                         [ "LegacyGatewayBootstrapRoute"
+                         , "runLegacyGatewayBootstrapRequest"
+                         , "bootstrapObjectStoreConfigWithEndpoint"
+                         , "unlockBundleInitialRootToken"
+                         ]
+                     )
+                     || not
+                       (all (`elem` adapterLiterals) ["unlock_password", "new_unlock_password"])
+                 ]
+      _ -> []
+  brokerForbiddenFragments =
+    [ "/v1/object-store"
+    , "/v1/secret"
+    , "pulumi"
+    , "route53"
+    , "target-secret"
+    , "/authority"
+    , "/mesh"
+    , "/ses"
+    , "/kv/"
+    ]
+  sourceViolations path forbiddenTokens =
+    case sourceAt path of
+      Nothing -> []
+      Just contents ->
+        [ path ++ " retains forbidden Bootstrap Broker target token `" ++ token ++ "`."
+        | token <- forbiddenTokens
+        , token `isInfixOf` contents
+        ]
+  sourceBefore marker contents =
+    case findIndex (isPrefixOf marker) (tails contents) of
+      Nothing -> contents
+      Just markerOffset -> take markerOffset contents
+
+  gatewayModuleSourceViolations (path, contents) =
+    [ path ++ " retains forbidden pre-Vault literal `" ++ literal ++ "`."
+    | literal <- extractStringLiterals contents
+    , literal
+        `elem` [ "/v1/bootstrap/vault/ensure"
+               , "unlock_password"
+               , "new_unlock_password"
+               , "initial_root_token"
+               ]
+    ]
+      ++ [ path ++ " retains forbidden pre-Vault identifier `" ++ identifier ++ "`."
+         | identifier <- sourceIdentifiers contents
+         , identifier
+             `elem` [ "BootstrapVaultRequest"
+                    , "BootstrapVaultRotateUnlockBundleRequest"
+                    , "BootstrapVaultRotateTransitKeyRequest"
+                    , "TargetBootstrapVaultEnsure"
+                    , "TargetBootstrapVaultStatus"
+                    , "TargetBootstrapVaultSeal"
+                    , "TargetBootstrapVaultRotateUnlockBundle"
+                    , "TargetBootstrapVaultRotateTransitKey"
+                    , "TargetBootstrapVaultPkiStatus"
+                    , "TargetBootstrapVaultPkiIssueTestCert"
+                    , "handleBootstrapVaultEnsure"
+                    , "bootstrapRootToken"
+                    , "bootstrapObjectStoreConfigWithEndpoint"
+                    , "minioRootPassword"
+                    , "minioRootUser"
+                    ]
+         ]
+
+  sourceBetween startMarker endMarker contents =
+    case findIndex (isPrefixOf startMarker) (tails contents) of
+      Nothing -> ""
+      Just startOffset ->
+        let afterStart = drop startOffset contents
+         in case findIndex (isPrefixOf endMarker) (tails afterStart) of
+              Nothing -> afterStart
+              Just endOffset -> take endOffset afterStart
+
+  tokensOccurInOrder [] _ = True
+  tokensOccurInOrder (token : remaining) contents =
+    case findIndex (isPrefixOf token) (tails contents) of
+      Nothing -> False
+      Just offset ->
+        tokensOccurInOrder remaining (drop (offset + length token) contents)
 
 -- | Certify that the committed @charts/gateway/values.yaml@ static defaults
 -- equal the compiled 'ChartStatics.gatewayChartStatics' projection. Reads the
@@ -520,6 +792,40 @@ gatewayChartStaticsConformanceViolations valuesContents =
     , ("nodePort.rest", "rest: " ++ show (ChartStatics.gatewayStaticNodePort statics))
     , ("serviceAccount.name", "name: " ++ Text.unpack (ChartStatics.gatewayStaticServiceAccount statics))
     , ("vault.role", "role: " ++ Text.unpack (ChartStatics.gatewayStaticVaultRole statics))
+    ]
+
+-- | Sprint 3.26 (pure). Prove the committed @charts/bootstrap-broker/values.yaml@
+-- static defaults equal the compiled 'BrokerChartStatics.brokerChartStatics'
+-- projection: the ServiceAccount name, the bootstrap-only Vault role, and both
+-- lifecycle probe paths must appear verbatim in @values.yaml@. The
+-- generated-section drift gate enforces byte-equality of the marked block; this
+-- is the complementary field-level check exposed for the conformance unit suite.
+bootstrapBrokerChartStaticsConformanceViolations :: String -> [String]
+bootstrapBrokerChartStaticsConformanceViolations valuesContents =
+  [ "charts/bootstrap-broker/values.yaml drifted from the compiled BrokerChartStatics `"
+      ++ field
+      ++ "` (expected `"
+      ++ expected
+      ++ "`)."
+  | (field, expected) <- expectedStatics
+  , not (expected `isInfixOf` valuesContents)
+  ]
+ where
+  statics = BrokerChartStatics.brokerChartStatics
+  expectedStatics =
+    [
+      ( "serviceAccount.name"
+      , "name: " ++ Text.unpack (BrokerChartStatics.brokerStaticServiceAccount statics)
+      )
+    , ("vault.role", "role: " ++ Text.unpack (BrokerChartStatics.brokerStaticVaultRole statics))
+    ,
+      ( "probes.liveness"
+      , "liveness: " ++ Text.unpack (BrokerChartStatics.brokerStaticLivenessPath statics)
+      )
+    ,
+      ( "probes.readiness"
+      , "readiness: " ++ Text.unpack (BrokerChartStatics.brokerStaticReadinessPath statics)
+      )
     ]
 
 -- | Certify every committed measured-capacity profile against the authored
@@ -664,6 +970,7 @@ haskellStyleViolations repoRoot = do
   envVarConfigViolations <- checkEnvVarConfigReads repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
+  secretPayloadInternalViolations <- checkSecretPayloadInternalBoundary repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -678,6 +985,7 @@ haskellStyleViolations repoRoot = do
         ++ envVarConfigViolations
         ++ testSuiteTypeViolations
         ++ forbidDotProdboxStateViolations
+        ++ secretPayloadInternalViolations
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -719,6 +1027,52 @@ checkHlintDoctrineCoverage repoRoot = do
             ]
         , null (filter (isInfixOf marker) (lines contents))
         ]
+
+checkSecretPayloadInternalBoundary :: FilePath -> IO [String]
+checkSecretPayloadInternalBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFile (repoRoot </> path)
+          pure (secretPayloadInternalSourceViolations (path, contents))
+      )
+
+secretPayloadInternalSourceViolations :: (FilePath, String) -> [String]
+secretPayloadInternalSourceViolations (path, contents) =
+  internalModuleViolations ++ eliminatorViolations
+ where
+  internalModuleName = "Prodbox.Bootstrap.Broker.Request.Internal"
+  eliminatorName = "withSecretPayloadBytes"
+  internalModuleAllowedPaths =
+    [ "src/Prodbox/Bootstrap/Broker/Request.hs"
+    , "src/Prodbox/Bootstrap/Broker/Request/Internal.hs"
+    , "src/Prodbox/Bootstrap/Broker/PgpBoundary.hs"
+    ]
+  eliminatorAllowedPaths =
+    [ "src/Prodbox/Bootstrap/Broker/Request/Internal.hs"
+    , "src/Prodbox/Bootstrap/Broker/PgpBoundary.hs"
+    ]
+  internalModuleViolations =
+    [ path
+        ++ " imports or names the package-internal SecretPayload representation; "
+        ++ "only Request and PgpBoundary may cross that boundary."
+    | internalModuleName `isInfixOf` contents
+    , path `notElem` internalModuleAllowedPaths
+    ]
+  eliminatorViolations =
+    [ path
+        ++ " uses the SecretPayload byte eliminator outside its definition or "
+        ++ "the PgpBoundary primitive adapter."
+    | eliminatorName `isInfixOf` contents
+    , path `notElem` eliminatorAllowedPaths
+    ]
 
 verifyThinMainEntrypoint :: FilePath -> IO (Either String ())
 verifyThinMainEntrypoint repoRoot = do
@@ -2371,6 +2725,43 @@ extractStringLiterals = goOutside []
   skipBlockComment ('-' : '}' : rest) = rest
   skipBlockComment (_ : rest) = skipBlockComment rest
 
+-- | Extract Haskell identifiers while ignoring comments and string/character
+-- literals. This is deliberately a small lexical scan, not a formatting or
+-- marker check: isolation rules use it to distinguish executable ownership
+-- from prose that merely names a legacy surface.
+sourceIdentifiers :: String -> [String]
+sourceIdentifiers = goOutside
+ where
+  goOutside [] = []
+  goOutside ('-' : '-' : rest) = goOutside (dropWhile (/= '\n') rest)
+  goOutside ('{' : '-' : rest) = goOutside (skipBlockComment 1 rest)
+  goOutside ('"' : rest) = goOutside (skipQuoted '"' rest)
+  goOutside ('\'' : rest) = goOutside (skipQuoted '\'' rest)
+  goOutside (first : rest)
+    | isIdentifierStart first =
+        let (suffix, remaining) = span isIdentifierContinue rest
+         in (first : suffix) : goOutside remaining
+    | otherwise = goOutside rest
+
+  isIdentifierStart character = isAlpha character || character == '_'
+  isIdentifierContinue character =
+    isAlphaNum character || character == '_' || character == '\''
+
+  skipQuoted _ [] = []
+  skipQuoted quote ('\\' : _escaped : rest) = skipQuoted quote rest
+  skipQuoted quote (candidate : rest)
+    | candidate == quote = rest
+    | otherwise = skipQuoted quote rest
+
+  skipBlockComment :: Int -> String -> String
+  skipBlockComment _ [] = []
+  skipBlockComment depth ('{' : '-' : rest) =
+    skipBlockComment (depth + 1) rest
+  skipBlockComment depth ('-' : '}' : rest)
+    | depth == 1 = rest
+    | otherwise = skipBlockComment (depth - 1) rest
+  skipBlockComment depth (_ : rest) = skipBlockComment depth rest
+
 checkTestSuiteInterfaces :: FilePath -> IO [String]
 checkTestSuiteInterfaces repoRoot = do
   let cabalPath = repoRoot </> "prodbox.cabal"
@@ -2645,6 +3036,7 @@ chartViolationsFor repoRoot relativeChartPath = do
   guardrailViolations <- chartRootGuardrailViolations (takeFileName chartDir) chartDir
   probeViolations <- gatewayProbeChartViolations (takeFileName chartDir) chartDir
   staticsViolations <- gatewayStaticsChartViolations (takeFileName chartDir) chartDir
+  brokerStaticsViolations <- bootstrapBrokerStaticsChartViolations (takeFileName chartDir) chartDir
   pure
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
@@ -2652,6 +3044,7 @@ chartViolationsFor repoRoot relativeChartPath = do
         ++ guardrailViolations
         ++ probeViolations
         ++ staticsViolations
+        ++ brokerStaticsViolations
     )
  where
   manifestViolations path contents =
@@ -2765,6 +3158,74 @@ gatewayChartStaticViolations serviceAccountTemplate deploymentTemplate valuesCon
   generatedStaticsViolations =
     [ "charts/gateway/values.yaml must contain the generated GatewayChartStatics defaults (ports/nodePort/serviceAccount)."
     | not (ChartStatics.renderGatewayChartStaticsYaml `isInfixOf` valuesContents)
+    ]
+
+-- | Sprint 3.26: enforce that the Bootstrap Broker chart's static identities
+-- flow from the one compiled 'BrokerChartStatics.brokerChartStatics' rather than
+-- raw literals. The hand-written ServiceAccount name and lifecycle probe paths
+-- must be @.Values@-driven and @values.yaml@ must carry the generated statics
+-- block. Guarded to the @bootstrap-broker@ chart so it is inert elsewhere.
+bootstrapBrokerStaticsChartViolations :: String -> FilePath -> IO [String]
+bootstrapBrokerStaticsChartViolations chartName chartDir =
+  if chartName /= "bootstrap-broker"
+    then pure []
+    else do
+      let serviceAccountPath = chartDir </> "templates" </> "serviceaccount.yaml"
+          deploymentPath = chartDir </> "templates" </> "deployment.yaml"
+          valuesPath = chartDir </> "values.yaml"
+      serviceAccountContents <- readFileIfExists serviceAccountPath
+      deploymentContents <- readFileIfExists deploymentPath
+      valuesContents <- readFileIfExists valuesPath
+      pure
+        ( bootstrapBrokerChartStaticViolations
+            serviceAccountContents
+            deploymentContents
+            valuesContents
+        )
+ where
+  readFileIfExists path = do
+    exists <- doesFileExist path
+    if exists then readFile path else pure ""
+
+-- | Sprint 3.26 (pure). The Bootstrap Broker chart's ServiceAccount identity and
+-- lifecycle probe paths must render from @.Values@ (fed by the compiled
+-- 'BrokerChartStatics.brokerChartStatics'), never raw literals, and @values.yaml@
+-- must carry the generated statics block. Exposed for the conformance unit suite.
+bootstrapBrokerChartStaticViolations :: String -> String -> String -> [String]
+bootstrapBrokerChartStaticViolations serviceAccountTemplate deploymentTemplate valuesContents =
+  serviceAccountLiteralViolations ++ probePathLiteralViolations ++ generatedStaticsViolations
+ where
+  statics = BrokerChartStatics.brokerChartStatics
+  serviceAccountName = Text.unpack (BrokerChartStatics.brokerStaticServiceAccount statics)
+  serviceAccountLiteralViolations =
+    [ "charts/bootstrap-broker/templates/"
+        ++ file
+        ++ " hard-codes the ServiceAccount identity `"
+        ++ serviceAccountName
+        ++ "`; render `{{ .Values.serviceAccount.name }}` from BrokerChartStatics instead."
+    | (file, contents, needle) <-
+        [ ("serviceaccount.yaml", serviceAccountTemplate, "name: " ++ serviceAccountName)
+        , ("deployment.yaml", deploymentTemplate, "serviceAccountName: " ++ serviceAccountName)
+        ]
+    , needle `isInfixOf` contents
+    ]
+  probePathLiteralViolations =
+    [ "charts/bootstrap-broker/templates/deployment.yaml hard-codes the "
+        ++ probeName
+        ++ " probe path `"
+        ++ path
+        ++ "`; render `{{ .Values.probes."
+        ++ probeName
+        ++ " | quote }}` from BrokerChartStatics instead."
+    | (probeName, path) <-
+        [ ("liveness", Text.unpack (BrokerChartStatics.brokerStaticLivenessPath statics))
+        , ("readiness", Text.unpack (BrokerChartStatics.brokerStaticReadinessPath statics))
+        ]
+    , ("path: " ++ path) `isInfixOf` deploymentTemplate
+    ]
+  generatedStaticsViolations =
+    [ "charts/bootstrap-broker/values.yaml must contain the generated BrokerChartStatics defaults (serviceAccount/vault.role/probes)."
+    | not (BrokerChartStatics.renderBrokerChartStaticsYaml `isInfixOf` valuesContents)
     ]
 
 gatewayProbeTemplateBlocks :: [(String, String)]

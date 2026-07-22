@@ -41,6 +41,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Prodbox.Bootstrap.Broker.Client qualified as BrokerClient
 import Prodbox.CLI.Command (VaultCommand (..))
 import Prodbox.CLI.Output (writeOutput, writeOutputLine)
 import Prodbox.Config.Tier0
@@ -333,13 +334,13 @@ runVaultBootstrapViaDaemonAt repoRoot endpoint = do
       pure (ExitFailure 1)
     Right password -> do
       result <-
-        retryDaemonTransient
+        retryBrokerTransient
           GatewayClient.daemonRestartBridgeRetryPolicy
           "daemon-mediated Vault bootstrap"
-          (GatewayClient.ensureVaultBootstrap endpoint password)
+          (BrokerClient.ensureVaultBootstrapLegacy endpoint password)
       case result of
         Left err -> do
-          writeOutput ("daemon-mediated Vault bootstrap failed: " ++ GatewayClient.renderGatewayError err)
+          writeOutput ("broker-mediated Vault bootstrap failed: " ++ BrokerClient.renderBrokerError err)
           pure (ExitFailure 1)
         Right value -> do
           writeOutput ("Vault daemon bootstrap complete: " ++ renderJsonValue value)
@@ -382,13 +383,41 @@ retryDaemonTransient policy label action = go 0
             go (attemptIndex + 1)
         | otherwise -> pure result
 
+retryBrokerTransient
+  :: RetryPolicy
+  -> String
+  -> IO (Either BrokerClient.BrokerError a)
+  -> IO (Either BrokerClient.BrokerError a)
+retryBrokerTransient policy label action = go 0
+ where
+  go attemptIndex = do
+    result <- action
+    case result of
+      Right _ -> pure result
+      Left err
+        | BrokerClient.brokerErrorIsTransient err
+        , attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
+            writeOutput
+              ( label
+                  ++ ": transient broker transport failure ("
+                  ++ BrokerClient.renderBrokerError err
+                  ++ "); retrying (attempt "
+                  ++ show (attemptIndex + 2)
+                  ++ "/"
+                  ++ show (retryPolicyMaxAttempts policy)
+                  ++ ")"
+              )
+            threadDelay (retryDelayMicros policy attemptIndex)
+            go (attemptIndex + 1)
+        | otherwise -> pure result
+
 runDaemonVaultStatus :: IO ExitCode
 runDaemonVaultStatus = do
   endpoint <- gatewayEndpointFromEnv
-  result <- GatewayClient.queryVaultStatus endpoint
+  result <- BrokerClient.queryVaultStatusLegacy endpoint
   case result of
     Left err -> do
-      writeOutput ("daemon-mediated Vault status failed: " ++ GatewayClient.renderGatewayError err)
+      writeOutput ("broker-mediated Vault status failed: " ++ BrokerClient.renderBrokerError err)
       pure (ExitFailure 1)
     Right status -> do
       writeOutput (renderSealStatus status)
@@ -396,7 +425,7 @@ runDaemonVaultStatus = do
 
 runDaemonVaultSeal :: FilePath -> IO ExitCode
 runDaemonVaultSeal repoRoot =
-  runDaemonPasswordAction repoRoot GatewayClient.sealVault $ \_ -> do
+  runDaemonPasswordAction repoRoot BrokerClient.sealVaultLegacy $ \_ -> do
     writeOutput "Vault sealed."
     pure ExitSuccess
 
@@ -409,11 +438,11 @@ runDaemonVaultRotateUnlockBundle repoRoot = do
     (_, Left err) -> writeOutput err >> pure (ExitFailure 1)
     (Right password, Right newPassword) -> do
       endpoint <- gatewayEndpointFromEnv
-      result <- GatewayClient.rotateVaultUnlockBundle endpoint password newPassword
+      result <- BrokerClient.rotateVaultUnlockBundleLegacy endpoint password newPassword
       case result of
         Left err -> do
           writeOutput
-            ("daemon-mediated Vault unlock-bundle rotation failed: " ++ GatewayClient.renderGatewayError err)
+            ("broker-mediated Vault unlock-bundle rotation failed: " ++ BrokerClient.renderBrokerError err)
           pure (ExitFailure 1)
         Right _ -> do
           writeOutput "Vault unlock bundle re-encrypted in the durable MinIO bucket."
@@ -423,7 +452,7 @@ runDaemonVaultRotateTransitKey :: FilePath -> Text -> IO ExitCode
 runDaemonVaultRotateTransitKey repoRoot keyName =
   runDaemonPasswordAction
     repoRoot
-    (\endpoint password -> GatewayClient.rotateVaultTransitKey endpoint password keyName)
+    (\endpoint password -> BrokerClient.rotateVaultTransitKeyLegacy endpoint password keyName)
     $ \_ -> do
       writeOutput ("Vault Transit key rotated: " ++ Text.unpack keyName)
       pure ExitSuccess
@@ -432,7 +461,7 @@ runDaemonVaultPkiStatus :: FilePath -> IO ExitCode
 runDaemonVaultPkiStatus repoRoot =
   runDaemonPasswordAction
     repoRoot
-    GatewayClient.queryVaultPkiStatus
+    BrokerClient.queryVaultPkiStatusLegacy
     handleDaemonVaultPkiStatusResponse
 
 handleDaemonVaultPkiStatusResponse :: Value -> IO ExitCode
@@ -452,7 +481,7 @@ runDaemonVaultPkiIssueTestCert :: FilePath -> IO ExitCode
 runDaemonVaultPkiIssueTestCert repoRoot =
   runDaemonPasswordAction
     repoRoot
-    GatewayClient.issueVaultPkiTestCert
+    BrokerClient.issueVaultPkiTestCertLegacy
     handleDaemonVaultPkiIssueTestCertResponse
 
 handleDaemonVaultPkiIssueTestCertResponse :: Value -> IO ExitCode
@@ -467,7 +496,7 @@ handleDaemonVaultPkiIssueTestCertResponse value =
 
 runDaemonPasswordAction
   :: FilePath
-  -> (PeerEndpoint -> Text -> IO (Either GatewayClient.GatewayError Value))
+  -> (PeerEndpoint -> Text -> IO (Either BrokerClient.BrokerError Value))
   -> (Value -> IO ExitCode)
   -> IO ExitCode
 runDaemonPasswordAction repoRoot action onSuccess = do
@@ -481,7 +510,7 @@ runDaemonPasswordAction repoRoot action onSuccess = do
       result <- action endpoint password
       case result of
         Left err -> do
-          writeOutput ("daemon-mediated Vault command failed: " ++ GatewayClient.renderGatewayError err)
+          writeOutput ("broker-mediated Vault command failed: " ++ BrokerClient.renderBrokerError err)
           pure (ExitFailure 1)
         Right value -> onSuccess value
 

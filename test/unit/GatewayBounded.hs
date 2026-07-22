@@ -6,8 +6,10 @@ module GatewayBounded
   )
 where
 
+import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
+import Data.Either (isLeft)
 import Data.List (isInfixOf, isPrefixOf, tails)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -17,6 +19,8 @@ import Data.Word (Word64, Word8)
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Gateway.Bounds qualified as Bounds
+import Prodbox.Gateway.Continuity qualified as Continuity
+import Prodbox.Gateway.Emitter.Kernel qualified as EmitterKernel
 import Prodbox.Gateway.Peer qualified as Peer
 import Prodbox.Gateway.Settings qualified as Settings
 import Prodbox.Gateway.State qualified as State
@@ -175,6 +179,12 @@ gatewayBoundedSuite =
           )
           cases
 
+    it "shares the journal's 32-byte minimum event-key boundary" $ do
+      Peer.mkEventKey gatewayBounds (BS.replicate 31 7)
+        `shouldBe` Left (Peer.PeerEventKeyTooSmall 31 32)
+      Peer.mkEventKey gatewayBounds (BS.replicate 32 7)
+        `shouldSatisfy` isRight
+
     it "keeps health and readiness branches structurally independent of operational state" $ do
       -- Sprint 2.34: the dispatcher is now a total case over the compiled
       -- GatewayRoute registry; the health/readiness arms still touch no
@@ -305,6 +315,212 @@ gatewayBoundedSuite =
         `shouldSatisfy` isRight
       State.initializeGatewayState gatewayBounds orders (Map.delete nodeA seeds)
         `shouldSatisfy` isCursorSeedMembershipFailure
+
+    describe "emitter incarnation fencing" $ do
+      it "binds the incarnation into signed bytes and recovers it through verification" $ do
+        let orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey gatewayBounds 7
+            incarnation = State.mkEmitterIncarnation 7
+            cursor0 = cursorAt nodeA (cursorSeeds orders)
+            (signed, semantic) =
+              case Peer.signAndConvertAssertionForIncarnation
+                gatewayBounds
+                orders
+                nodeA
+                incarnation
+                cursor0
+                (State.HeartbeatAssertion 10)
+                key of
+                Left err -> error (show err)
+                Right value -> value
+            decoded =
+              case Peer.decodeSignedAssertion gatewayBounds (Peer.signedAssertionBytes signed) of
+                Left err -> error (show err)
+                Right value -> value
+            verified =
+              Peer.verifySignedAssertion
+                gatewayBounds
+                orders
+                (eventKeyLookup nodeA key)
+                decoded
+        Peer.signedAssertionIncarnation signed `shouldBe` 7
+        State.assertionIncarnation semantic `shouldBe` incarnation
+        verified `shouldBe` Right semantic
+      it "returns an explicit incarnation-aware AckPoint in peer responses" $ do
+        let orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey gatewayBounds 7
+            incarnation = State.mkEmitterIncarnation 7
+            (_, assertion) =
+              signedAssertionAtIncarnation
+                gatewayBounds
+                orders
+                nodeA
+                incarnation
+                (cursorAt nodeA (cursorSeeds orders))
+                (State.HeartbeatAssertion 10)
+                key
+            advanced = appliedAssertion assertion (gatewayStateFor gatewayBounds orders)
+            response =
+              case Peer.handlePeerRequest
+                gatewayBounds
+                (eventKeyLookup nodeA key)
+                Peer.PeerPullCursor
+                advanced of
+                Left err -> error (show err)
+                Right (_, value) -> value
+            point =
+              case Peer.peerResponseAckPoint gatewayBounds orders nodeA response of
+                Left err -> error (show err)
+                Right Nothing -> error "missing peer acknowledgement"
+                Right (Just value) -> value
+            cursor = State.assertionResultCursor assertion
+        EmitterKernel.ackPointIncarnation point `shouldBe` incarnation
+        Continuity.continuityAnchorEpoch (EmitterKernel.ackPointAnchor point)
+          `shouldBe` State.emitterEpochValue (State.emitterCursorEpoch cursor)
+        Continuity.continuityAnchorSequence (EmitterKernel.ackPointAnchor point)
+          `shouldBe` State.emitterSequenceValue (State.emitterCursorSequence cursor)
+        Continuity.continuityDigestBytes
+          (Continuity.continuityAnchorPreviousDigest (EmitterKernel.ackPointAnchor point))
+          `shouldBe` State.eventHashBytes (State.emitterCursorHash cursor)
+      it "rejects a lower incarnation even when its cursor would otherwise advance" $ do
+        let orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey gatewayBounds 7
+            cursor0 = cursorAt nodeA (cursorSeeds orders)
+            incarnation2 = State.mkEmitterIncarnation 2
+            incarnation1 = State.mkEmitterIncarnation 1
+            (_, assertion1) =
+              signedAssertionAtIncarnation
+                gatewayBounds
+                orders
+                nodeA
+                incarnation2
+                cursor0
+                (State.HeartbeatAssertion 10)
+                key
+            advanced = appliedAssertion assertion1 (gatewayStateFor gatewayBounds orders)
+            (_, staleAssertion) =
+              signedAssertionAtIncarnation
+                gatewayBounds
+                orders
+                nodeA
+                incarnation1
+                (State.assertionResultCursor assertion1)
+                (State.HeartbeatAssertion 20)
+                key
+        case State.applyGatewayAssertion staleAssertion advanced of
+          State.AssertionRejected unchanged err -> do
+            State.gatewayStateCursorVector unchanged
+              `shouldBe` State.gatewayStateCursorVector advanced
+            err
+              `shouldBe` State.AssertionStaleIncarnation nodeA incarnation1 incarnation2
+          outcome -> expectationFailure ("expected stale-incarnation rejection, got " ++ show outcome)
+      it "carries checkpoint incarnation through signed repair and rejects a stale repair" $ do
+        let bounds = gatewayBounds
+            orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey bounds 7
+            incarnation5 = State.mkEmitterIncarnation 5
+            (source, history) =
+              signedHistoryAtIncarnation
+                bounds
+                orders
+                nodeA
+                incarnation5
+                key
+                [ State.HeartbeatAssertion 10
+                , State.OwnershipAssertion State.OwnershipClaim
+                , State.HeartbeatAssertion 30
+                , State.OwnershipAssertion State.OwnershipYield
+                , State.HeartbeatAssertion 50
+                , State.HeartbeatAssertion 60
+                ]
+            signedAssertions = map fst history
+            checkpoint = emitterCheckpoint nodeA source
+            snapshot =
+              case Peer.signSemanticSnapshot
+                bounds
+                orders
+                checkpoint
+                (Just (signedAt 0 signedAssertions))
+                (Just (signedAt 1 signedAssertions))
+                key of
+                Left err -> error (show err)
+                Right value -> value
+            target0 = gatewayStateFor bounds orders
+            repair =
+              case Peer.selectSignedRepair
+                bounds
+                orders
+                (State.gatewayStateCursorVector target0)
+                snapshot
+                (drop 2 signedAssertions) of
+                Left err -> error (show err)
+                Right value -> value
+            repaired = appliedSignedRepair bounds nodeA key repair target0
+            incarnation6 = State.mkEmitterIncarnation 6
+            (_, newerAssertion) =
+              signedAssertionAtIncarnation
+                bounds
+                orders
+                nodeA
+                incarnation6
+                (cursorFromState nodeA target0)
+                (State.HeartbeatAssertion 1)
+                key
+            newerTarget = appliedAssertion newerAssertion target0
+            staleRepair =
+              case Peer.selectSignedRepair
+                bounds
+                orders
+                (State.gatewayStateCursorVector newerTarget)
+                snapshot
+                (drop 2 signedAssertions) of
+                Left err -> error (show err)
+                Right value -> value
+        State.emitterCheckpointIncarnation checkpoint `shouldBe` incarnation5
+        Peer.signedSemanticSnapshotIncarnation snapshot `shouldBe` 5
+        let encodedSnapshot =
+              either
+                (error . show)
+                id
+                (Peer.encodeSignedSemanticSnapshot bounds snapshot)
+            decodedSnapshot =
+              either
+                (error . show)
+                id
+                (Peer.decodeSignedSemanticSnapshot bounds encodedSnapshot)
+            tamperedSnapshot =
+              BS.init encodedSnapshot
+                <> BS.singleton (BS.last encodedSnapshot `xor` 1)
+        decodedSnapshot `shouldBe` snapshot
+        Peer.verifySemanticSnapshot
+          bounds
+          orders
+          (eventKeyLookup nodeA key)
+          decodedSnapshot
+          `shouldBe` Right checkpoint
+        case Peer.decodeSignedSemanticSnapshot bounds tamperedSnapshot of
+          Left _ -> pure ()
+          Right tampered ->
+            Peer.verifySemanticSnapshot
+              bounds
+              orders
+              (eventKeyLookup nodeA key)
+              tampered
+              `shouldSatisfy` isLeft
+        State.gatewayStateEmitterIncarnation nodeA repaired `shouldBe` Just incarnation5
+        case Peer.applySignedRepair
+          bounds
+          (eventKeyLookup nodeA key)
+          staleRepair
+          newerTarget of
+          Right (State.RepairRejected _ err) ->
+            err
+              `shouldBe` State.RepairResultStaleIncarnation nodeA incarnation5 incarnation6
+          outcome -> expectationFailure ("expected stale repair rejection, got " ++ show outcome)
 
     it "retains one semantic value, bounded replay, and exactly 64 diagnostic hashes" $ do
       let orders = validatedOrders 1 ["node-a", "node-b"]
@@ -483,6 +699,329 @@ gatewayBoundedSuite =
         (eventHash 51)
         200
         `shouldBe` Left (State.EmitterEpochExhausted nodeA)
+
+    it "binds an arbitrary-cursor Orders migration to its prior scope and dedicated wire path" $ do
+      let orders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          nodeB = memberId orders "node-b"
+          previous = State.restoredEmitterCursor 7 42 (eventHash 60)
+          previousOrdersDigest = BS.replicate 32 61
+          incarnation = State.mkEmitterIncarnation 2
+          key = eventKey gatewayBounds 62
+          scope =
+            either
+              (error . show)
+              id
+              (State.mkOrdersMigrationScope previous previousOrdersDigest)
+          seeds =
+            Map.fromList
+              [ (nodeA, previous)
+              , (nodeB, State.initialEmitterCursor 1 (eventHash 2))
+              ]
+          initial = gatewayStateWithSeeds orders seeds
+      State.mkNextAssertionForIncarnation
+        gatewayBounds
+        orders
+        nodeA
+        incarnation
+        previous
+        (eventHash 63)
+        200
+        (State.OrdersMigrationAssertion scope)
+        `shouldBe` Left State.OrdersMigrationConstructorRequired
+      Peer.signAndConvertAssertionForIncarnation
+        gatewayBounds
+        orders
+        nodeA
+        incarnation
+        previous
+        (State.OrdersMigrationAssertion scope)
+        key
+        `shouldBe` Left Peer.PeerOrdersMigrationRequiresDedicatedPath
+      let (signed, semantic) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  incarnation
+                  previous
+                  previousOrdersDigest
+                  key
+              )
+          decoded =
+            either
+              (error . show)
+              id
+              (Peer.decodeSignedAssertion gatewayBounds (Peer.signedAssertionBytes signed))
+          verified =
+            Peer.verifySignedAssertion
+              gatewayBounds
+              orders
+              (eventKeyLookup nodeA key)
+              decoded
+          differentScopeSigned =
+            fst
+              ( either
+                  (error . show)
+                  id
+                  ( Peer.signAndConvertOrdersMigrationForIncarnation
+                      gatewayBounds
+                      orders
+                      nodeA
+                      incarnation
+                      previous
+                      (BS.replicate 32 99)
+                      key
+                  )
+              )
+          migrated = appliedAssertion semantic initial
+          result = State.assertionResultCursor semantic
+      decoded `shouldBe` signed
+      Peer.signedAssertionBytes differentScopeSigned
+        `shouldNotBe` Peer.signedAssertionBytes signed
+      verified `shouldBe` Right semantic
+      State.assertionKind semantic `shouldBe` State.OrdersMigrationAssertion scope
+      State.ordersMigrationPreviousEpoch scope `shouldBe` 7
+      State.ordersMigrationPreviousSequence scope `shouldBe` 42
+      State.ordersMigrationPreviousOrdersDigest scope `shouldBe` previousOrdersDigest
+      State.emitterEpochValue (State.emitterCursorEpoch result) `shouldBe` 8
+      State.emitterSequenceValue (State.emitterCursorSequence result) `shouldBe` 0
+      cursorFromState nodeA migrated `shouldBe` result
+      State.gatewayStateEmitterIncarnation nodeA migrated `shouldBe` Just incarnation
+      State.gatewayStateReplayCount nodeA migrated `shouldBe` 1
+
+    it "rejects malformed, mismatched, and epoch-overflowing Orders migration scope" $ do
+      let orders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          previous = State.restoredEmitterCursor 7 42 (eventHash 70)
+          mismatchedPrevious = State.restoredEmitterCursor 7 41 (eventHash 70)
+          digest = BS.replicate 32 71
+          mismatchedScope =
+            either (error . show) id (State.mkOrdersMigrationScope mismatchedPrevious digest)
+          terminal = State.restoredEmitterCursor maxBound 17 (eventHash 72)
+          key = eventKey gatewayBounds 73
+      State.mkOrdersMigrationScope previous (BS.replicate 31 71)
+        `shouldBe` Left (State.HashLengthInvalid State.OrdersMigrationOrdersDigest 32 31)
+      State.mkOrdersMigrationAssertionForIncarnation
+        gatewayBounds
+        orders
+        nodeA
+        (State.mkEmitterIncarnation 2)
+        previous
+        (eventHash 74)
+        200
+        mismatchedScope
+        `shouldBe` Left (State.OrdersMigrationScopeMismatch nodeA previous 7 41)
+      Peer.signAndConvertOrdersMigrationForIncarnation
+        gatewayBounds
+        orders
+        nodeA
+        (State.mkEmitterIncarnation 2)
+        terminal
+        digest
+        key
+        `shouldBe` Left (Peer.PeerEmitterCountersExhausted nodeA)
+
+    it "bridges only an authenticated same-coordinate Orders restart and consumes its bounded admission" $ do
+      let orders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          current = cursorFromState nodeA (gatewayState orders)
+          prior = State.restoredEmitterCursor 1 0 (eventHash 80)
+          priorOrdersDigest = BS.replicate 32 81
+          wrongOrdersDigest = BS.replicate 32 82
+          incarnation = State.mkEmitterIncarnation 2
+          key = eventKey gatewayBounds 83
+          (_, migration) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  incarnation
+                  prior
+                  priorOrdersDigest
+                  key
+              )
+          (_, wrongDigestMigration) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  incarnation
+                  prior
+                  wrongOrdersDigest
+                  key
+              )
+          wrongCoordinate = State.restoredEmitterCursor 1 1 (eventHash 84)
+          (_, wrongCoordinateMigration) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  incarnation
+                  wrongCoordinate
+                  priorOrdersDigest
+                  key
+              )
+          fresh = gatewayState orders
+          armed =
+            either
+              (error . show)
+              id
+              (State.armOrdersMigrationAdmission priorOrdersDigest fresh)
+      State.gatewayStateOrdersMigrationPendingCount armed `shouldBe` 2
+      case State.applyGatewayAssertion migration fresh of
+        State.AssertionRejected _ err ->
+          err
+            `shouldBe` State.AssertionPreviousHashMismatch
+              nodeA
+              (State.emitterCursorHash current)
+              (State.emitterCursorHash prior)
+        outcome -> expectationFailure ("expected fail-closed migration, got " ++ show outcome)
+      case State.applyGatewayAssertion wrongDigestMigration armed of
+        State.AssertionRejected _ err ->
+          err
+            `shouldBe` State.OrdersMigrationAdmissionDigestMismatch
+              nodeA
+              priorOrdersDigest
+              wrongOrdersDigest
+        outcome -> expectationFailure ("expected digest rejection, got " ++ show outcome)
+      case State.applyGatewayAssertion wrongCoordinateMigration armed of
+        State.AssertionRejected _ err ->
+          err
+            `shouldBe` State.OrdersMigrationAdmissionCoordinateMismatch
+              nodeA
+              current
+              1
+              1
+        outcome -> expectationFailure ("expected coordinate rejection, got " ++ show outcome)
+      let currentIncarnation = State.mkEmitterIncarnation 3
+          withNewerIncarnation =
+            either
+              (error . show)
+              id
+              ( State.restoreEmitterFromContinuityForIncarnation
+                  nodeA
+                  currentIncarnation
+                  current
+                  armed
+              )
+      case State.applyGatewayAssertion migration withNewerIncarnation of
+        State.AssertionRejected _ err ->
+          err
+            `shouldBe` State.AssertionStaleIncarnation
+              nodeA
+              incarnation
+              currentIncarnation
+        outcome -> expectationFailure ("expected stale-incarnation rejection, got " ++ show outcome)
+      let migrated = appliedAssertion migration armed
+          result = State.assertionResultCursor migration
+          (_, suffix) =
+            signedAssertionAtIncarnation
+              gatewayBounds
+              orders
+              nodeA
+              incarnation
+              result
+              (State.HeartbeatAssertion 1)
+              key
+          advanced = appliedAssertion suffix migrated
+      State.gatewayStateOrdersMigrationPendingCount migrated `shouldBe` 1
+      cursorFromState nodeA migrated `shouldBe` result
+      cursorFromState nodeA advanced `shouldBe` State.assertionResultCursor suffix
+
+    it "gives a fresh no-digest member an immediate authenticated post-migration repair floor" $ do
+      let orders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          prior = State.restoredEmitterCursor 1 0 (eventHash 90)
+          priorOrdersDigest = BS.replicate 32 91
+          incarnation = State.mkEmitterIncarnation 2
+          key = eventKey gatewayBounds 92
+          (signedMigration, migration) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  incarnation
+                  prior
+                  priorOrdersDigest
+                  key
+              )
+          sourceSeeds = Map.insert nodeA prior (cursorSeeds orders)
+          source = appliedAssertion migration (gatewayStateWithSeeds orders sourceSeeds)
+          fresh = gatewayState orders
+          checkpoint = emitterCheckpoint nodeA source
+          repair =
+            signedRepair
+              gatewayBounds
+              orders
+              (State.gatewayStateCursorVector fresh)
+              checkpoint
+              Nothing
+              Nothing
+              key
+              [signedMigration]
+          repaired = appliedSignedRepair gatewayBounds nodeA key repair fresh
+          result = State.assertionResultCursor migration
+          (signedSuffix, suffix) =
+            signedAssertionAtIncarnation
+              gatewayBounds
+              orders
+              nodeA
+              incarnation
+              result
+              (State.HeartbeatAssertion 1)
+              key
+          suffixFrame =
+            either
+              (error . show)
+              id
+              ( Peer.selectSignedDelta
+                  gatewayBounds
+                  orders
+                  (State.gatewayStateCursorVector repaired)
+                  [signedSuffix]
+              )
+          converged = appliedSignedDelta gatewayBounds nodeA key suffixFrame repaired
+          response =
+            case Peer.handlePeerRequest
+              gatewayBounds
+              (eventKeyLookup nodeA key)
+              Peer.PeerPullCursor
+              converged of
+              Left err -> error (show err)
+              Right (_, value) -> value
+          acknowledged =
+            case Peer.peerResponseAckPoint gatewayBounds orders nodeA response of
+              Left err -> error (show err)
+              Right Nothing -> error "missing post-migration acknowledgement"
+              Right (Just point) -> point
+      case State.applyGatewayAssertion migration fresh of
+        State.AssertionRejected _ State.AssertionPreviousHashMismatch {} -> pure ()
+        outcome -> expectationFailure ("expected direct migration rejection, got " ++ show outcome)
+      State.emitterCheckpointCursor checkpoint `shouldBe` result
+      Peer.signedRepairAssertionCount repair `shouldBe` 0
+      cursorFromState nodeA repaired `shouldBe` result
+      State.gatewayStateEmitterIncarnation nodeA repaired `shouldBe` Just incarnation
+      cursorFromState nodeA converged `shouldBe` State.assertionResultCursor suffix
+      EmitterKernel.ackPointIncarnation acknowledged `shouldBe` incarnation
+      Continuity.continuityAnchorSequence (EmitterKernel.ackPointAnchor acknowledged)
+        `shouldBe` State.emitterSequenceValue
+          (State.emitterCursorSequence (State.assertionResultCursor suffix))
 
     it "retains only active Orders plus the highest staged promotion and evicts old evidence" $ do
       let orders1 = validatedOrders 1 ["node-a", "node-b"]
@@ -671,6 +1210,183 @@ gatewayBoundedSuite =
       case Peer.applySignedRepair bounds (eventKeyLookup nodeA key) repair repaired of
         Right (State.RepairDuplicate unchanged) -> unchanged `shouldBe` repaired
         outcome -> expectationFailure ("expected duplicate repair, got " ++ show outcome)
+
+    it "keeps peer repair monotonic while local journal authority rewinds exactly one emitter" $ do
+      let bounds = gatewayBounds
+          orders = validatedOrders 1 ["node-a", "node-b"]
+          otherOrders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          nodeB = memberId orders "node-b"
+          key = eventKey bounds 31
+          initial = gatewayStateFor bounds orders
+          (signedA, assertionA) =
+            case Peer.signAndConvertAssertion
+              bounds
+              orders
+              nodeA
+              (cursorFromState nodeA initial)
+              (State.HeartbeatAssertion 10)
+              key of
+              Left err -> error (show err)
+              Right value -> value
+          retainedA = appliedAssertion assertionA initial
+          (_, assertionB) =
+            case Peer.signAndConvertAssertion
+              bounds
+              orders
+              nodeA
+              (cursorFromState nodeA retainedA)
+              (State.HeartbeatAssertion 20)
+              key of
+              Left err -> error (show err)
+              Right value -> value
+          volatileB = appliedAssertion assertionB retainedA
+          retainedCheckpoint =
+            case State.mkEmitterCheckpointForIncarnation
+              bounds
+              orders
+              nodeA
+              (State.assertionIncarnation assertionA)
+              (State.assertionResultCursor assertionA)
+              (Just assertionA)
+              Nothing of
+              Left err -> error (show err)
+              Right value -> value
+          retainedRepair =
+            case State.mkEmitterRepair bounds orders retainedCheckpoint [] of
+              Left err -> error (show err)
+              Right value -> value
+          priorOrdersDigest = BS.replicate 32 39
+          broadlyArmedVolatile =
+            either
+              (error . show)
+              id
+              (State.armOrdersMigrationAdmission priorOrdersDigest volatileB)
+          restored =
+            case State.restoreEmitterFromRetainedRepair nodeA retainedRepair volatileB of
+              Left err -> error (show err)
+              Right value -> value
+          restoredArmed =
+            case State.restoreEmitterFromRetainedRepair
+              nodeA
+              retainedRepair
+              broadlyArmedVolatile of
+              Left err -> error (show err)
+              Right value -> value
+          (_, migrationB) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  bounds
+                  orders
+                  nodeB
+                  (State.mkEmitterIncarnation 1)
+                  (cursorFromState nodeB restoredArmed)
+                  priorOrdersDigest
+                  (eventKey bounds 40)
+              )
+          migratedB = appliedAssertion migrationB restoredArmed
+      Peer.signedAssertionBytes signedA `shouldNotBe` BS.empty
+      case State.applyEmitterRepair retainedRepair volatileB of
+        State.RepairRejected unchanged err -> do
+          cursorFromState nodeA unchanged `shouldBe` cursorFromState nodeA volatileB
+          State.gatewayStateLatestHeartbeat nodeA unchanged
+            `shouldBe` State.gatewayStateLatestHeartbeat nodeA volatileB
+          err
+            `shouldBe` State.RepairResultBehind
+              nodeA
+              (State.assertionResultCursor assertionA)
+              (State.assertionResultCursor assertionB)
+        outcome -> expectationFailure ("expected behind peer repair rejection, got " ++ show outcome)
+      cursorFromState nodeA restored `shouldBe` cursorFromState nodeA retainedA
+      State.gatewayStateLatestHeartbeat nodeA restored
+        `shouldBe` State.gatewayStateLatestHeartbeat nodeA retainedA
+      cursorFromState nodeB restored `shouldBe` cursorFromState nodeB volatileB
+      State.gatewayStateReplayCount nodeA restored `shouldBe` 0
+      length (State.gatewayStateDiagnosticHashes restored) `shouldSatisfy` (<= 64)
+      State.gatewayStateOrdersMigrationPendingCount broadlyArmedVolatile `shouldBe` 2
+      State.gatewayStateOrdersMigrationPendingCount restoredArmed `shouldBe` 1
+      State.gatewayStateOrdersMigrationPendingCount migratedB `shouldBe` 0
+      State.restoreEmitterFromRetainedRepair nodeB retainedRepair volatileB
+        `shouldBe` Left (State.RepairAssertionEmitterMismatch nodeB nodeA)
+      State.restoreEmitterFromRetainedRepair
+        nodeA
+        retainedRepair
+        (gatewayStateFor bounds otherOrders)
+        `shouldBe` Left
+          ( State.CheckpointOrdersMismatch
+              (State.validatedOrdersAnchor otherOrders)
+              (State.validatedOrdersAnchor orders)
+          )
+
+    it "re-arms only the journal-proven emitter for an interrupted Orders migration" $ do
+      let orders = validatedOrders 2 ["node-a", "node-b"]
+          nodeA = memberId orders "node-a"
+          nodeB = memberId orders "node-b"
+          nodeC = memberId (validatedOrders 2 ["node-c"]) "node-c"
+          priorOrdersDigest = BS.replicate 32 41
+          conflictingDigest = BS.replicate 32 42
+          initial = gatewayState orders
+          singleton =
+            either
+              (error . show)
+              id
+              ( State.rearmOrdersMigrationAdmissionForEmitter
+                  nodeA
+                  priorOrdersDigest
+                  initial
+              )
+          broadlyArmed =
+            either
+              (error . show)
+              id
+              (State.armOrdersMigrationAdmission priorOrdersDigest initial)
+          (_, migrationA) =
+            either
+              (error . show)
+              id
+              ( Peer.signAndConvertOrdersMigrationForIncarnation
+                  gatewayBounds
+                  orders
+                  nodeA
+                  (State.mkEmitterIncarnation 1)
+                  (cursorFromState nodeA broadlyArmed)
+                  priorOrdersDigest
+                  (eventKey gatewayBounds 43)
+              )
+          remainingPeer = appliedAssertion migrationA broadlyArmed
+          rearmedLocal =
+            either
+              (error . show)
+              id
+              ( State.rearmOrdersMigrationAdmissionForEmitter
+                  nodeA
+                  priorOrdersDigest
+                  remainingPeer
+              )
+      State.gatewayStateOrdersMigrationPendingCount singleton `shouldBe` 1
+      State.rearmOrdersMigrationAdmissionForEmitter nodeA priorOrdersDigest singleton
+        `shouldBe` Right singleton
+      State.gatewayStateOrdersMigrationPendingCount remainingPeer `shouldBe` 1
+      State.gatewayStateOrdersMigrationPendingCount rearmedLocal `shouldBe` 2
+      State.rearmOrdersMigrationAdmissionForEmitter nodeA conflictingDigest remainingPeer
+        `shouldBe` Left
+          (State.OrdersMigrationAdmissionConflict priorOrdersDigest conflictingDigest)
+      State.rearmOrdersMigrationAdmissionForEmitter nodeC priorOrdersDigest initial
+        `shouldBe` Left (State.AssertionUnknownEmitter nodeC)
+      State.rearmOrdersMigrationAdmissionForEmitter
+        nodeB
+        ( State.ordersAnchorHashBytes
+            (State.validatedOrdersAnchor orders)
+        )
+        initial
+        `shouldBe` Left
+          ( State.OrdersMigrationAdmissionCurrentOrdersDigest
+              ( State.ordersAnchorHashBytes
+                  (State.validatedOrdersAnchor orders)
+              )
+          )
 
     it "rejects a forged repair without exposing a partial semantic transition" $ do
       let bounds = gatewayBounds
@@ -963,6 +1679,56 @@ signedHistory bounds orders emitter key kinds =
         , State.assertionResultCursor semantic
         , (signed, semantic) : assertions
         )
+
+signedHistoryAtIncarnation
+  :: Bounds.GatewayBounds
+  -> State.ValidatedOrders
+  -> State.NodeId
+  -> State.EmitterIncarnation
+  -> Peer.EventKey
+  -> [State.AssertionKind]
+  -> (State.GatewayState, [(Peer.SignedAssertion, State.GatewayAssertion)])
+signedHistoryAtIncarnation bounds orders emitter incarnation key kinds =
+  let initial = gatewayStateFor bounds orders
+      cursor0 = cursorFromState emitter initial
+      (finalState, _, reversed) = foldl' stepOne (initial, cursor0, []) kinds
+   in (finalState, reverse reversed)
+ where
+  stepOne (state, cursor, assertions) kind =
+    let (signed, semantic) =
+          signedAssertionAtIncarnation
+            bounds
+            orders
+            emitter
+            incarnation
+            cursor
+            kind
+            key
+     in ( appliedAssertion semantic state
+        , State.assertionResultCursor semantic
+        , (signed, semantic) : assertions
+        )
+
+signedAssertionAtIncarnation
+  :: Bounds.GatewayBounds
+  -> State.ValidatedOrders
+  -> State.NodeId
+  -> State.EmitterIncarnation
+  -> State.EmitterCursor
+  -> State.AssertionKind
+  -> Peer.EventKey
+  -> (Peer.SignedAssertion, State.GatewayAssertion)
+signedAssertionAtIncarnation bounds orders emitter incarnation cursor kind key =
+  case Peer.signAndConvertAssertionForIncarnation
+    bounds
+    orders
+    emitter
+    incarnation
+    cursor
+    kind
+    key of
+    Left err -> error (show err)
+    Right value -> value
 
 gatewayStateFor
   :: Bounds.GatewayBounds

@@ -1742,9 +1742,11 @@ Adopt an operator-configurable certificate-scope policy that makes an unmanaged 
 hostname unrepresentable on the prodbox-managed side, and dispose of the orphan ZeroSSL dashboard
 (portal) certificate for `vscode.resolvefintech.com` as redundant drift rather than an automation
 gap. Certificate scope becomes a Tier-0-configured scope set (exact + wildcard scopes) rather than a
-hardcoded wildcard anchor; the Certificate `dnsNames`, Gateway listener hostnames, served-FQDN list,
-and the `public-edge-tls/<substrate>/<fqdn>` retention key are total projections of that one set, so
-the drift that produced the orphan certificate cannot recur on the prodbox-managed side. This is a
+hardcoded wildcard anchor. The Certificate `dnsNames` and exact
+`public-edge-tls/<substrate>/<canonical-scope-key>` retention coordinate are total projections of
+that set; each explicit Gateway listener/route/DNS served hostname is bound to and covered by the
+same set, without attempting to enumerate wildcard coverage. This prevents the independent-list
+drift that produced the orphan certificate on the prodbox-managed side. This is a
 plan-only governance addition on Phase 0's already-reclosed surface: it registers implementation
 Sprints `2.35` (Phase 2) and `5.22` (Phase 5) and claims no implementation sprint or deployment
 qualification.
@@ -1755,17 +1757,19 @@ qualification.
   `https://test.resolvefintech.com/vscode` on the shared public host under the cert-manager
   `zerossl-dns01` (ZeroSSL ACME over DNS-01 / Route 53) certificate that auto-renews silently and is
   retained across rebuilds as a Vault-Transit-wrapped envelope under
-  `public-edge-tls/<substrate>/<fqdn>`; the operator revokes the orphan certificate and unsubscribes
-  from its click-to-renew mail — a manual ZeroSSL-console action outside the prodbox-managed surface.
+  `public-edge-tls/<substrate>/<canonical-scope-key>`; the operator revokes the orphan certificate
+  and unsubscribes from its click-to-renew mail — a manual ZeroSSL-console action outside the
+  prodbox-managed surface.
 - The target-shape doctrine is encoded in the governed engineering docs: certificate scope is an
   operator-configurable `CertScopeSet`, illegal states (a served hostname not covered by the
   configured scope set; a wildcard anchored at a zone the operator has not delegated in config) are
   made unrepresentable by smart constructors plus fail-fast config validation, wildcard scopes are
   supported only when anchored at a config-declared delegated zone (org-apex wildcards discouraged on
   blast-radius grounds), and the apex requires an explicit exact scope because a wildcard never
-  matches the apex or more than one label. Retained restore-vs-reissue is keyed by the narrowing
-  partial order `impliedBy` over a canonical scope-set serialization (reuse on narrower-or-equal, one
-  fresh ACME order on widening).
+  matches the apex or more than one label. Retained restore-vs-reissue matches the exact canonical
+  scope-set serialization because cert-manager treats a changed SAN set as a changed issuance
+  specification. `impliedBy` remains the narrower-or-equal coverage/admission relation and never
+  aliases two retention coordinates.
 - Parent→child certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial`
   self-issuance: child clusters self-issue in their own delegated zone and a parent never copies a
   certificate private key into a routinely-destroyed test substrate; certificate material is not a
@@ -1789,9 +1793,10 @@ qualification.
 1. `prodbox dev check` exit 0.
 2. `prodbox dev lint docs` exit 0.
 3. `prodbox dev docs check` exit 0.
-4. Sprint-status and cross-reference audits confirm Standard H / N / J compliance: the new
-   `Blocked by` edges are Sprint `2.35` → Sprint `2.34` and Sprint `5.22` → Sprint `2.35`, and no
-   `Blocked by` names a higher-numbered sprint or later phase.
+4. Sprint-status and cross-reference audits confirm Standard H / N / J compliance: the registered
+   forward dependencies were Sprint `2.35` → Sprint `2.34` and Sprint `5.22` → Sprint `2.35`;
+   both prerequisites are now Done, so Sprint `2.35` is Done and Sprint `5.22` is Planned/unblocked.
+   No `Blocked by` names a higher-numbered sprint or later phase.
 
 ### Remaining Work
 
@@ -1802,10 +1807,11 @@ None on this surface — implementation is owned by Sprints `2.35` and `5.22`.
 **Engineering docs to create/update:**
 
 - `documents/engineering/acme_provider_guide.md` — a new "Configurable Certificate Scope" section:
-  the certificate `dnsNames`, listener hostnames, served-FQDN list, and
-  `public-edge-tls/<substrate>/<fqdn>` retention key as total projections of one configured
-  `CertScopeSet`; the coverage / narrowing truth table; wildcard DNS-01 issuance over Route 53
-  (existing solver unchanged); the restore-vs-reissue rule keyed by `impliedBy`; the standing
+  the certificate `dnsNames` and
+  `public-edge-tls/<substrate>/<canonical-scope-key>` retention key as exact projections of one
+  configured `CertScopeSet`; explicit listener/route/DNS served-host binding; the coverage /
+  narrowing truth table; wildcard DNS-01 issuance over Route 53 (existing solver unchanged); the
+  exact-SAN restore-vs-reissue rule and `impliedBy` admission role; the standing
   ZeroSSL-sole-provider and dashboard-cert-is-drift rules; and the CA-layer investigation note.
   Implementation owned by Sprints `2.35` / `5.22`.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` — canonical statement 11 rewritten so

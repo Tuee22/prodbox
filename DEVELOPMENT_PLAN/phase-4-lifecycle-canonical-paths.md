@@ -4242,7 +4242,8 @@ a best-effort release response.
 - Own `ConfigObserve`/`ConfigProposeCas`: validate and encrypt immutable in-force-config blobs,
   CAS their schema/generation/digest/reference in the aggregate, and serve role-scoped projections
   while starting only from the bounded Tier-0 authority boot projection.
-- Own a versioned TLS-retention fold/outbox serialized by substrate/FQDN. One fenced candidate binds
+- Own a versioned TLS-retention fold/outbox serialized by substrate plus exact canonical certificate
+  scope set. One fenced candidate binds
   Kubernetes Secret UID/resourceVersion, certificate serial/validity/SPKI, ciphertext/wrapped-DEK
   digests, immutable S3 object version, and target read-back. Only exact source re-observation plus
   Adapter byte read-back may CAS-promote the Authority's current reference; stale/out-of-order

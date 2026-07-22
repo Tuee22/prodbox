@@ -101,6 +101,13 @@ The supported chart doctrine is:
     PVs and do not claim CSI enforcement. Both substrates require the OS filesystem lock, durable
     incarnation, Kubernetes Lease, and journal/admission-marker read-back before readiness.
 
+Item 17 is the target rendering contract, not cutover evidence. Sprint `2.32` supplies only the
+typed claim-side inputs in `Prodbox.Gateway.Emitter.Persistence`: stable identity, the home retained
+node-pinned claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Sprint
+`3.26` owns consuming them into StatefulSet templates, PVs, EBS `volumeHandle`s, `Retain` policy,
+and rendered RBAC. Production-default and deployment-qualification status remain owned only by the
+Development Plan.
+
 ## 1A. Chart Lint and Route Inventory Generation
 
 The supported chart-maintenance surface is split between `prodbox dev lint chart` and
@@ -158,7 +165,7 @@ The target renderer projects the topology from
 | Admin Action Runner | closed `AdminActionPermit` exact SES+SMTP destroy/migrate/compatibility/quota program with stable read-back | distinct on-demand one-shot Job/SA/NetworkPolicy/resource envelope; `DestroyAwsSes` binds consumer, non-credential SES/S3, SMTP IAM, target-generation, and custody absence stages; no credential-provision, provider, or decommission program |
 | Fenced Provider Worker | closed normal provider intents, including non-credential SES/S3, and bounded scratch checkpoint execution/read-back | dedicated Deployment/Service/SA/queue/scratch budget and lifecycle-provider-only Vault role; no SMTP IAM identity/policy/key, prompt, credential permit, backup/TLS, or Authority-state policy |
 | Authority Backup Adapter | closed Authority prepare/blob/receipt/restore/GC protocol against the exact long-lived S3 prefix | dedicated Deployment/Service/SA/NetworkPolicy, `secret/aws/authority-backup-store`-only Vault role, managed session, bounded queue/resource envelope, and no provider/target/Gateway API |
-| TLS Retention Adapter | ciphertext/wrapped-DEK retain/read-back and restore-byte protocol for exact `public-edge-tls/<substrate>/<fqdn>` versions | dedicated Deployment/Service/SA/NetworkPolicy, `secret/aws/tls-retention-store`-only Vault role, bounded queue/resource envelope, and no plaintext/backup/provider/target policy |
+| TLS Retention Adapter | ciphertext/wrapped-DEK retain/read-back and restore-byte protocol for exact `public-edge-tls/<substrate>/<canonical-scope-key>` versions | dedicated Deployment/Service/SA/NetworkPolicy, `secret/aws/tls-retention-store`-only Vault role, bounded queue/resource envelope, and no plaintext/backup/provider/target policy |
 | Target Secret Agent | durable receipt sealing/continuation, allowlisted generation-checked Vault KV, opaque HMAC commitments, dedicated TLS Kubernetes-Secret capabilities, and on home the TLS-envelope plus closed SMTP/EAB custody/rewrap Transit lanes | one controller identity per substrate plus isolated one-shot secret-worker SA/session; exact receipt/target-KV and `prodbox-target-secret-commitment-<substrate>` HMAC-only policy, exact TLS Secret RBAC, and home-only non-exportable TLS/custody Transit policies; separately bounded normal, custody/rewrap, and selected-target materialization queues/envelopes |
 | Gateway Runtime | mesh membership, bounded signed state, ownership projection, DNS, and one encrypted identity-bound local emitter journal per node | stable per-emitter StatefulSet, Service/SA, registered journal PVC, OS lock/incarnation/Lease, bounded emitter mailbox and transport queues, gateway-only Vault policy, and readiness identity |
 
@@ -411,6 +418,15 @@ All non-PV chart state lives inside the cluster as native k8s Secrets and Config
 emitter continuity is PV state by design: each admitted node has one encrypted identity-bound
 retained journal volume registered in the lifecycle inventory; it is never reconstructed from peer
 state or stored in a generic gateway Model-B object.
+The target retained-volume contract is journal-first: initialization and the initial projection
+fsync before the independent admission marker is written and read back. A crash in that gap resumes
+the authenticated journal and retries the marker; marker presence with a missing journal fails
+closed. Every signed in-flight phase in a valid projection normalizes to the durable-stage boundary
+and re-fsyncs and republishes the exact bytes before the final projection fsync. The version-3
+projection preserves the authenticated prior-Orders digest so a migrated-projection crash before
+publication re-arms the exact migration admission rather than relabelling evidence. Local restart
+uses only that journal's authenticated floor, contiguous suffix, and retained stage; peer
+checkpoint/suffix repair updates a remote replica only.
 No `prodbox` command writes to `.prodbox-state/`; the directory is removed from the
 supported architecture and the `forbidDotProdboxState` lint in `prodbox dev check`
 enforces this. Every chart secret — Patroni roles, Keycloak admin, OIDC client
@@ -479,7 +495,7 @@ Target-Agent or Authority work.
 Primary Model-B/provider/outbox coordinates and typed Worker/Adapter references live only in
 Lifecycle Authority. `secret/aws/lifecycle-provider` lives only in Provider Worker config/policy;
 the exact Authority-backup prefix and `secret/aws/authority-backup-store` live only in Authority
-Backup Adapter; exact `public-edge-tls/<substrate>/<fqdn>` prefixes and
+Backup Adapter; exact `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes and
 `secret/aws/tls-retention-store` live only in TLS Retention Adapter; pre-Vault and exact
 genesis-signing/TLS-envelope-key specifications live only in Bootstrap Broker. Gateway config
 carries none of those coordinates.
@@ -547,9 +563,11 @@ Sprint `3.25` landed this chart binding over the constant-time endpoints from Sp
 negative fixtures pin that refusal, and a golden pins the typed generated defaults. See
 [Bootstrap Readiness Doctrine §2.4](./bootstrap_readiness_doctrine.md#24-dependency-readiness-vs-runtime-stability)
 and [Distributed Gateway Architecture §11](./distributed_gateway_architecture.md#11-rest-api).
-Sprint `2.34` raised the readiness probe `failureThreshold` 3 → 6 (liveness stays at 3) so the
-now-latched readiness has grace to earn its first proven object-store round trip before the kubelet
-pulls the Pod from its Service endpoints.
+Sprint `2.34` raised the readiness probe `failureThreshold` 3 → 6 (liveness stays at 3) so startup
+has grace to establish the daemon's authority boundary before the kubelet pulls the Pod from its
+Service endpoints. Under the Sprint `2.32` target topology, Lease loss still fails closed
+immediately in the cached readiness projection; the threshold controls kubelet endpoint eviction,
+not the daemon's authority decision.
 
 ### Gateway chart-statics single source
 
@@ -618,6 +636,17 @@ chart names.
 | `api` | root | none | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
 | `websocket` | root | `redis` | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
 | `gateway` | root | none | none | one retained encrypted emitter-journal PVC per admitted node | yes |
+| `bootstrap-broker` | internal | none | Vault (pre-unseal), object store | none | no |
+
+The `bootstrap-broker` chart is the physically separate pre-Vault control-plane
+workload (Sprint 3.26). It is resolvable and renderable through the chart platform
+(`resolveChart`, `valuesForBootstrapBroker`, and the `bootstrap-broker` capacity
+profile), with every identity/probe value projected from the compiled
+`Prodbox.Bootstrap.Broker.ChartStatics`; its Guaranteed-QoS envelope is injected
+from the typed `capacity.resource_plan` like the gateway's. It is deliberately
+absent from `supportedChartNames`, so it is not exposed on the public
+`prodbox charts ...` surface. Its reconcile-graph ordering (deploy before Vault
+unseal) is scheduled as a following Sprint 3.26 increment.
 
 Root charts:
 
@@ -669,12 +698,16 @@ The current implementation boundary is:
   **production** TLS certificate is reclassified from disposable PerRun chart state to a
   rate-limit-safe `LongLived` resource (Sprints 4.24/7.11/8.7). Its material is retained in the
   long-lived `pulumi_state_backend` S3 bucket by the separately credentialed TLS Retention Adapter
-  under the substrate-scoped key `public-edge-tls/<substrate>/<fqdn>`. The Adapter receives only
+  under the substrate-scoped key
+  `public-edge-tls/<substrate>/<canonical-scope-key>`. The key is a path-safe projection of the
+  exact canonical `Certificate.spec.dnsNames` scope set; a distinct SAN set gets a distinct
+  retained coordinate rather than borrowing material through the broader `impliedBy` coverage
+  relation. The Adapter receives only
   ciphertext, retained-home-Transit-wrapped DEK bytes, public certificate metadata, and digests;
-  it has no Authority-backup/provider credential or plaintext path. The per-substrate/FQDN
+  it has no Authority-backup/provider credential or plaintext path. The per-substrate/scope-set
   Authority fold serializes immutable versions and promotes only a source-Secret-reobserved,
   Adapter-read-back current ref. Restore always names that committed ref, never S3 latest. Material
-  is restored before every issuance on **all** rebuild
+  for the exact configured SAN set is restored before issuance evaluation on **all** rebuild
   paths — including a fresh cluster after `prodbox cluster delete`, not only the
   chart-delete→redeploy path that the superseded `vscode/public-edge-tls` →
   `prodbox/public-edge-tls-retained` in-cluster Secret copy covered. The
@@ -682,8 +715,8 @@ The current implementation boundary is:
   typed/logged outcomes and never reports silent success when the owned certificate is absent (the
   soundness rule restored in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
   The high-churn canonical validation loop does not re-order the certificate against a separate test
-  issuer; the single `zerossl-dns01` `ClusterIssuer` issues the production certificate once and the
-  S3 retain-and-restore path restores it on every rebuild. See
+  issuer; the single `zerossl-dns01` `ClusterIssuer` issues each exact production SAN set once and
+  the S3 retain-and-restore path restores it on every rebuild. See
   [acme_provider_guide.md](./acme_provider_guide.md#2-zerossl) for the ZeroSSL ACME provider and the
   single-issuer rebuild-safe certificate retention model, and
   [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)

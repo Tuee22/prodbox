@@ -42,8 +42,7 @@ data SCapability (k :: CapabilityKind) where
   SProcessAvailability :: SCapability 'ProcessAvailability
   SWorkloadAvailability :: SCapability 'WorkloadAvailability
   SOperatorAvailability :: SCapability 'OperatorAvailability
-  SVaultBaseline :: SCapability 'VaultBaseline
-  SVaultPki :: SCapability 'VaultPki
+  SVaultBootstrapObserve :: SCapability 'VaultBootstrapObserve
   SGatewayFrontDoor :: SCapability 'GatewayFrontDoor
   SLifecycleObserve :: SCapability 'LifecycleObserve
   SConfigObserve :: SCapability 'ConfigObserve
@@ -60,7 +59,9 @@ data SCapability (k :: CapabilityKind) where
   SAuthorityEpochCutover :: SCapability 'AuthorityEpochCutover
   SAuthorityBackupCommit :: SCapability 'AuthorityBackupCommit
   SGatewayContinuityCommit :: SCapability 'GatewayContinuityCommit
-  SVaultBootstrap :: SCapability 'VaultBootstrap
+  SVaultBootstrapMutate :: SCapability 'VaultBootstrapMutate
+  SVaultBaselineReconcile :: SCapability 'VaultBaselineReconcile
+  SVaultPkiOperate :: SCapability 'VaultPkiOperate
   SProviderApply :: SCapability 'ProviderApply
   STargetSeal :: SCapability 'TargetSeal
   SGatewayDns :: SCapability 'GatewayDns
@@ -90,8 +91,7 @@ sCapabilityOp singleton = case singleton of
   SProcessAvailability -> OpProcessAvailability
   SWorkloadAvailability -> OpWorkloadAvailability
   SOperatorAvailability -> OpOperatorAvailability
-  SVaultBaseline -> OpVaultBaseline
-  SVaultPki -> OpVaultPki
+  SVaultBootstrapObserve -> OpVaultBootstrapObserve
   SGatewayFrontDoor -> OpGatewayFrontDoor
   SLifecycleObserve -> OpLifecycleObserve
   SConfigObserve -> OpConfigObserve
@@ -108,7 +108,9 @@ sCapabilityOp singleton = case singleton of
   SAuthorityEpochCutover -> OpAuthorityEpochCutover
   SAuthorityBackupCommit -> OpAuthorityBackupCommit
   SGatewayContinuityCommit -> OpGatewayContinuityCommit
-  SVaultBootstrap -> OpVaultBootstrap
+  SVaultBootstrapMutate -> OpVaultBootstrapMutate
+  SVaultBaselineReconcile -> OpVaultBaselineReconcile
+  SVaultPkiOperate -> OpVaultPkiOperate
   SProviderApply -> OpProviderApply
   STargetSeal -> OpTargetSeal
   SGatewayDns -> OpGatewayDns
@@ -139,8 +141,7 @@ opToSCapability op = case op of
   OpProcessAvailability -> SomeSCapability SProcessAvailability
   OpWorkloadAvailability -> SomeSCapability SWorkloadAvailability
   OpOperatorAvailability -> SomeSCapability SOperatorAvailability
-  OpVaultBaseline -> SomeSCapability SVaultBaseline
-  OpVaultPki -> SomeSCapability SVaultPki
+  OpVaultBootstrapObserve -> SomeSCapability SVaultBootstrapObserve
   OpGatewayFrontDoor -> SomeSCapability SGatewayFrontDoor
   OpLifecycleObserve -> SomeSCapability SLifecycleObserve
   OpConfigObserve -> SomeSCapability SConfigObserve
@@ -157,7 +158,9 @@ opToSCapability op = case op of
   OpAuthorityEpochCutover -> SomeSCapability SAuthorityEpochCutover
   OpAuthorityBackupCommit -> SomeSCapability SAuthorityBackupCommit
   OpGatewayContinuityCommit -> SomeSCapability SGatewayContinuityCommit
-  OpVaultBootstrap -> SomeSCapability SVaultBootstrap
+  OpVaultBootstrapMutate -> SomeSCapability SVaultBootstrapMutate
+  OpVaultBaselineReconcile -> SomeSCapability SVaultBaselineReconcile
+  OpVaultPkiOperate -> SomeSCapability SVaultPkiOperate
   OpProviderApply -> SomeSCapability SProviderApply
   OpTargetSeal -> SomeSCapability STargetSeal
   OpGatewayDns -> SomeSCapability SGatewayDns
@@ -184,8 +187,7 @@ withKnownCapability singleton body = case singleton of
   SProcessAvailability -> body
   SWorkloadAvailability -> body
   SOperatorAvailability -> body
-  SVaultBaseline -> body
-  SVaultPki -> body
+  SVaultBootstrapObserve -> body
   SGatewayFrontDoor -> body
   SLifecycleObserve -> body
   SConfigObserve -> body
@@ -202,7 +204,9 @@ withKnownCapability singleton body = case singleton of
   SAuthorityEpochCutover -> body
   SAuthorityBackupCommit -> body
   SGatewayContinuityCommit -> body
-  SVaultBootstrap -> body
+  SVaultBootstrapMutate -> body
+  SVaultBaselineReconcile -> body
+  SVaultPkiOperate -> body
   SProviderApply -> body
   STargetSeal -> body
   SGatewayDns -> body

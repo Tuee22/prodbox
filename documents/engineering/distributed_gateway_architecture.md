@@ -38,15 +38,17 @@ historical event set on every interval is forbidden.
 Each emitter cursor is a fixed-width `(epoch, sequence)` value. One actor per daemon exclusively
 owns the local emitter transition and an encrypted, identity-bound retained journal containing the
 admission/incarnation, active Orders anchor, committed epoch/sequence/previous-emitter-digest
-anchor, at most one exact staged assertion, at most one committed-but-unacknowledged assertion, and
-a bounded peer-ack/repair-floor projection. Before publishing any assertion, that actor
+anchor, at most one exact staged assertion, a bounded contiguous retained committed suffix, and a
+bounded peer-ack/authenticated-checkpoint-floor projection. Before publishing any assertion, that actor
 performs `stage -> fsync -> publish -> commit -> fsync`; epoch rotation uses the same serialized
 protocol with a signed invalidation. Heartbeats never perform a shared remote Model-B transaction,
 call Vault, or call MinIO. A renewable Vault session supplies the journal key at startup, and
 plaintext exists only in bounded memory. Remote Model-B continuity is a migration adapter only.
-Peer state may repair bounded heartbeat/ownership projections, but it is never the source of an
-emitter's continuity coordinates. A simultaneous restart of every peer therefore recovers every
-emitter's safe continuation anchor, not the discarded semantic history.
+Local emitter recovery reads only the authenticated journal floor, contiguous suffix, and retained
+in-flight projection for that same emitter. Peer checkpoint/suffix repair updates a lagging remote
+replica only; it never reconstructs or advances the local emitter journal and is never the source
+of an emitter's continuity coordinates. A simultaneous restart of every peer therefore recovers
+every emitter's safe continuation anchor, not the discarded semantic history.
 Missing, corrupt, or unobservable journal state after admission is fail closed — the daemon may serve diagnostics and
 ingest bounded peer state, but it cannot initialize or advance an emitter, claim ownership, or
 write DNS. Sequence wrap is forbidden; failure to persist a pre-exhaustion rotation stops emission,
@@ -64,11 +66,12 @@ usable credential generation. Missing or unobservable credentials refuse the eff
 native Route 53 request starts.
 
 Kubernetes `/healthz` and `/readyz` probes are constant-time projections over lifecycle flags.
-Kubelet-facing readiness is one pure latched projection over phase, object-store-session, and
-worker inputs: it admits only after the first proven object-store round trip since boot, the proof
-is latched by the continuity loop rather than performed in the probe handler, and a later transient
-backend degradation does not clear the latch. An unconditional serve-start readiness write is a
-superseded defect. Restart/OOM/high-water stability is a separate, time-windowed external
+Kubelet-facing readiness is one pure projection over drain phase, current emitter authority, and
+worker-started state. The rollback topology latches a validated continuity startup. The target
+topology instead requires the current identity-bound journal lock, matching Kubernetes Lease
+witness, and completed recovery; Lease loss may move `Ready` back to `Starting`, while drain is
+absorbing. No probe handler performs backend I/O and no environment hook bypasses authority. An
+unconditional serve-start readiness write is a superseded defect. Restart/OOM/high-water stability is a separate, time-windowed external
 observation; a point-in-time `StatefulSet Ready=True` result is not stability proof.
 
 This doctrine covers the Haskell distributed gateway daemon only. The Kubernetes Gateway API
@@ -178,6 +181,7 @@ Assertion classes:
 - `OwnershipAssertion OwnershipClaim`
 - `OwnershipAssertion OwnershipYield`
 - `EpochRotationAssertion`
+- `OrdersMigrationAssertion scope` (exact prior cursor and authenticated prior Orders digest)
 
 The accepted runtime projection is finite:
 
@@ -188,7 +192,7 @@ The accepted runtime projection is finite:
 | Orders view | Active version plus at most one highest-observed/staged version needed by the restart gate |
 | Replay window | Bounded original signed assertions per emitter; the default capacity is eight |
 | Emitter continuity (hot) | Current fixed-width epoch/sequence and previous-emitter hash per Orders member; no historical epoch list |
-| Durable continuity anchor | One encrypted identity-bound retained journal per daemon: admission/incarnation, committed epoch/sequence/previous anchor, at most one staged assertion, at most one committed-unacknowledged assertion, and bounded peer-ack/repair-floor projection |
+| Durable continuity anchor | One encrypted identity-bound retained journal per daemon: stable identity/admission/incarnation, active/prior Orders digests, immutable trusted floor, committed cursor, at most one staged assertion, a bounded contiguous retained suffix, and bounded known-peer ack/checkpoint projection |
 | Diagnostic history | Exactly 64 recent assertion digests process-wide; no logical audit history is retained by the gateway |
 
 Replication is anti-entropy gossip over the stable peer endpoints carried in Orders. Each accepted
@@ -286,19 +290,26 @@ the additional host-failure independence.
 
 When a silent node returns:
 
-1. Its single emitter actor acquires the substrate-appropriate volume fence, OS lock, durable
-   incarnation, and Kubernetes Lease, then reconciles the journal/admission-marker transaction.
-   Genesis is `JournalPrepared -> EmitterAdmissionPrepared -> read back both -> JournalActive ->
-   EmitterAdmissionActive`. A matching prepared pair resumes; either half missing, corrupt, or
-   mismatched refuses emission and requires receipt-committed retirement plus a new identity.
-2. It restores the local emitter cursor, latest committed canonical signed assertion, previous
-   anchor, incarnation, and peer-ack projection. An unacknowledged committed assertion is
-   idempotently republished; a staged assertion resumes publication before commit.
+1. Its single emitter actor takes the substrate-appropriate volume fence and OS lock, loads and
+   increments the durable incarnation, and reconciles the journal/admission-marker transaction.
+   On first admission, authoritative marker absence permits the exclusively locked journal to be
+   initialized and fsynced before the marker is conditionally written and read back. A crash after
+   the journal fsync but before marker read-back resumes that authenticated journal and retries the
+   marker operation. Marker presence with a missing journal, or any corrupt or mismatched journal,
+   refuses emission and requires receipt-committed retirement plus a new identity. Only after that
+   reconciliation succeeds does the mount acquire the matching Kubernetes Lease and expose the
+   actor.
+2. It restores the authenticated checkpoint floor, complete contiguous retained committed suffix,
+   previous anchor, incarnation, peer-ack projection, and any exact signed in-flight record. Every
+   retained signed phase rewinds to the durable-stage boundary, clears its volatile publication
+   witness, and re-fsyncs and republishes the same canonical bytes before commit and the final
+   projection fsync. This includes a migrated projection that crashed before publication. Only
+   committed suffix records still waiting on at least one current peer are otherwise republished.
 3. It reconnects via the stable peer endpoints carried in Orders and advertises its bounded receive
    cursor vector.
 4. A peer sends a contiguous bounded delta after that vector. If a component lies behind the replay
-   frontier, the peer sends a signed per-emitter semantic snapshot plus a bounded contiguous suffix,
-   then resumes delta exchange.
+   frontier, the peer sends the authenticated per-emitter checkpoint floor plus its bounded
+   contiguous suffix, then resumes delta exchange.
 5. It validates Orders version, emitter identity, signature, sequence/cursor monotonicity, schema,
    and frame bounds before applying anything.
 6. It folds peer evidence into bounded hot state only when verification succeeds. Peer evidence does
@@ -311,9 +322,9 @@ When a silent node returns:
 
 This provides deterministic convergence without using peers as continuity authority. If every peer
 restarts together, each recovers its own safe emitter anchor and any unacknowledged ownership
-transition, then resumes without sequence reset or wrap. Heartbeat semantics may be coalesced and
-later refreshed; claim/yield/rotation evidence is never discarded before peer acknowledgment or a
-signed repair-floor checkpoint.
+transition, then resumes without sequence reset or wrap. Heartbeat requests may be coalesced before
+admission; committed canonical bytes are retained until an authenticated checkpoint compacts their
+prefix. Peer acknowledgement controls republish selection, not chain deletion.
 
 ---
 
@@ -367,17 +378,17 @@ drop rather than a `Fatal` worker error, including during `Draining`.
   bounded assertion batch keyed by emitter epoch/sequence; the response carries the resulting
   cursor vector.
 - When delta selection reports that one emitter is behind the retained replay frontier, the sender
-  builds `POST /v1/peer/repair` from that emitter's signed compaction checkpoint: its cursor,
-  original signed heartbeat/ownership evidence, and a contiguous bounded suffix. After repair it
+  builds `POST /v1/peer/repair` from that emitter's authenticated compaction checkpoint: its exact
+  floor cursor and projection plus a contiguous bounded suffix. After repair it
   retries delta selection once. Repair size is bounded by the same assertion-count and frame-byte
   limits, not by daemon uptime.
 - Acceptance is idempotent: the receiver's pure fold advances only monotonic semantic keys and
   cursors. Repeated frames are acknowledged without changing retained cardinality.
 - Local publication is persistence-first and single-owner: prepare and sign the next assertion,
   stage its exact bytes and next anchor in the encrypted local journal, `fsync`, publish, promote
-  the stage to `committedUnacknowledged` with its exact bytes/previous anchor and `fsync` again.
-  Peer acknowledgments update the durable ack projection; only the compaction rule below may clear
-  the committed bytes. A journal conflict, unavailable observation,
+  the stage into the bounded retained suffix with its exact bytes/previous anchor and `fsync` again.
+  Peer acknowledgments update the durable ack projection and republish selection; only checkpoint
+  installation may clear a committed prefix. A journal conflict, unavailable observation,
   or durability failure emits nothing. No independent continuity loop may stage or commit another
   transition, and the heartbeat path does not call a remote Model-B authority.
 - Restart/overflow never resets a sequence in place. The emitter either resumes the recovered
@@ -457,7 +468,7 @@ removal as history.
   `/v1/state` as `max_clock_skew_seconds_observed` so operators can
   detect drift before it crosses the configured bound.
 
-## 7.5 Orders Promotion (Restart-Based)
+## 7.5 Orders Promotion (Restart-Based, Journal-Migrated)
 
 Orders is a `BootConfig` field (cluster topology / ranked-node membership),
 not a live-reloadable knob. Promotion of a newer Orders document is therefore
@@ -466,37 +477,54 @@ not a live-reloadable knob. Promotion of a newer Orders document is therefore
 when the watcher observes a changed Orders mount, the daemon logs
 `config_reload_boot_change_detected`, drains within the bounded deadline, and
 exits `ExitSuccess`; the kubelet restarts the Pod, which decodes the new Orders
-fresh at startup and binds its rank, peer set, and timing from it. The daemon
-never advances its Orders version in process — `stateOrdersVersionUtc` is bound
-once at startup and stays fixed for the life of the process.
+fresh at startup and binds its rank, peer set, and timing from it. The new process
+must not merely relabel the retained journal. If the authenticated journal Orders
+digest differs, it preserves the committed cursor and suffix, adopts a fresh
+incarnation/current peer set, clears old-Orders acknowledgements and in-flight work,
+and performs a separately-ticketed authenticated Orders-scope invalidation bound to
+the exact prior digest and cursor. That transition advances to `(epoch + 1, 0)` even
+when the old sequence is below exhaustion, rejects epoch overflow, and must finish
+`stage -> fsync -> publish -> commit -> fsync` before readiness or any new-Orders
+assertion. Normal epoch rotation remains legal only at sequence exhaustion.
+
+The version-3 durable projection preserves that authenticated prior-Orders digest through ordinary
+commits, acknowledgement fsyncs, checkpoint compaction, incarnation rebases, and encode/decode.
+Recovery re-arms the exact State admission from the retained digest before replay. A crash after the
+projection migrates but before publication, or a refusal at the final projection fsync, therefore
+rewinds to the durable-stage boundary and republishes the same signed migration bytes; conflicting
+pending, in-flight, suffix, latest, or checkpoint evidence fails closed instead of relabelling the
+journal.
 
 - Each peer push includes the sender's current `orders_version_utc`, and the
   receiver returns `409 Conflict` when the sender's view is older than the
   receiver's. This prevents a stale peer from pushing events that predate the
   receiver's (startup-bound) Orders version.
-- The daemon tracks the highest observed Orders version on `/v1/state` as
+- The running process tracks the highest observed Orders version on `/v1/state` as
   `latest_observed_orders_version_utc`. When the peer view advances past the
   local (startup-bound) Orders, the daemon **refuses to claim ownership** until
   it is restarted against the newer Orders — the refuse-to-reclaim-while-behind
-  gate. Because in-process promotion never happens, the only way to clear the
-  gate is the restart path above; a daemon rebooting against a stale Orders
-  version cannot reclaim DNS write authority.
-- There is no in-process `orders_promoted` transition. The
+  gate. The only way to clear the gate is the restart, journal migration, and
+  completed recovery path above; a daemon rebooting against stale Orders or an
+  incomplete invalidation cannot reclaim DNS write authority.
+- There is no live-reload `orders_promoted` semantic event. The
   `eventTypeOrdersPromoted` / `orders_promoted` event class and its threading
-  are dead machinery: nothing advances `stateOrdersVersionUtc`, so no
-  promotion event is ever emitted or consumed. Sprint 2.25 removes that dead
-  `orders_promoted` machinery and keeps promotion entirely restart-driven.
+  remain removed. The journal-migration invalidation is a distinct authenticated
+  continuity transition executed only during the new mount's recovery boundary;
+  it is not an ordinary peer-supplied promotion event.
 
 ---
 
 ## 8. TLA+ Scope
 
-TLA+ model must cover:
-
-1. `UniqueOwner`: at most one intended gateway owner per modeled state.
-2. `DeterministicRule`: same Orders + same observed state => same owner.
-3. `RejoinConvergence`: after gossip convergence, owners converge.
-4. `SingletonTakeover`: if one node remains alive, it eventually self-elects.
+The finite TLA+ safety model covers the representative two-node protocol's bounded types, complete
+journal phase shape, exact admission identity and expiry, stale-completion fencing, monotone durable
+incarnation, OS-lock/Lease binding, Orders-scoped semantics, durable bounded pending/ack/checkpoint
+slots, and the complete DNS authority gate. It does not claim liveness, real-time clock behavior, or
+the production three-member cardinality. This actor-local refinement deliberately holds
+`activeOrders` fixed; the concrete authenticated Orders migration and migrated-projection re-arm are
+native-test obligations, composed with the earlier Orders/ranked-owner/partition proof axis. The
+exact 16-invariant catalog, action correspondence, canonical exhaustive-run counts, and proof boundary are owned by
+[TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
 
 Model files:
 
@@ -820,12 +848,20 @@ rejection or transport failure is authoritative and does not bypass to a host ro
 
 ### Historical Pre-Vault Bootstrap Endpoint (`POST /v1/bootstrap/vault/ensure`, Legacy Cutover Surface)
 
-This gateway route is a historical implementation record. In the target architecture the
-Bootstrap Broker is the only pre-Vault process and sole owner of bounded init/unlock/seal/rotation;
-Gateway Runtime never receives an unlock proof or calls the bootstrap object store. Historically,
-the daemon owns a deliberately small pre-Vault REST surface for the root-cluster bootstrap path. It
-exists so the host binary uses the Kubernetes control plane only for initial substrate bootstrap
-and daemon deployment; once MinIO, Vault, and the daemon NodePort are up, further host requests go
+This gateway route is a historical implementation record and an explicit
+[Standard-P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+rollback path.
+In the target architecture the Bootstrap Broker is the only pre-Vault process and sole owner of
+bounded init/unlock/seal/rotation; Gateway Runtime never receives an unlock proof or calls the
+bootstrap object store. Bootstrap paths are absent from the compiled `GatewayRoute` registry,
+gateway client, and `JournalLeaseEmitter` dispatch. The combined wrapper consults the separately
+registered `Prodbox.Bootstrap.Broker.LegacyAdapter` only while the mutually exclusive
+`LegacyModelBEmitter` topology is selected; there is no target/legacy dual write.
+
+The rollback adapter preserves the old deliberately small pre-Vault REST surface so current
+operators retain an explicit rollback while replacement qualification is pending. Historically it
+let the host binary use the Kubernetes control plane only for initial substrate bootstrap and
+daemon deployment; once MinIO, Vault, and the daemon NodePort were up, further host requests went
 through the daemon service.
 
 The endpoint accepts one bounded request carrying the operator/test unlock-bundle password, never
@@ -843,11 +879,12 @@ the shares while Vault is sealed. A sealed Vault still bricks the cluster until 
 input arrives. The endpoint is reachable only through the loopback-restricted NodePort described in
 §12.1, with the firewall restriction treated as mandatory for this password-bearing route.
 
-Sprint `2.29` implements the pre-Vault bootstrap mode by decoding the daemon's non-secret boot/live
+Sprint `2.29` implemented the pre-Vault bootstrap mode by decoding the daemon's non-secret boot/live
 fields without resolving Vault-backed event keys, AWS credentials, or MinIO credentials. The REST
 listener can therefore bind diagnostics and this endpoint before those Vault-resolved fields are
-available. Sprint `4.42` routes root Vault lifecycle through this daemon boundary; Sprint `7.30`
-adds the same daemon boundary for supported Pulumi/object-store paths.
+available. Sprint `4.42` routed root Vault lifecycle through this daemon boundary; Sprint `7.30`
+added the same daemon boundary for supported Pulumi/object-store paths. Those statements describe
+the rollback implementation, not target Gateway authority.
 
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 
@@ -855,20 +892,21 @@ The gateway REST listener also exposes daemon-health endpoints on the same in-po
 
 - `/healthz` is a constant-time read of the process-alive lifecycle flag and returns `200 ok` while
   the listener can serve.
-- `/readyz` is a constant-time read of one pure latched readiness projection and returns
-  `200 ready` only after the daemon enters `serve`, its managed gateway sessions and emitter actor
-  are usable, documented queue lanes can admit work, and the first object-store round trip since
-  boot has been proven and latched by the continuity loop; a later transient backend degradation
-  does not clear the latch. After SIGTERM or SIGINT it returns `503 draining` during the bounded
-  drain window.
+- `/readyz` is a constant-time read of one pure readiness projection and returns `200 ready` only
+  after the daemon enters `serve`, its managed gateway sessions and emitter actor are usable, and
+  documented queue lanes can admit work. The rollback topology retains its validated continuity
+  startup latch. The target topology instead requires the current encrypted-journal lock and
+  matching Kubernetes Lease witness after successful recovery; Lease loss returns `503 starting`
+  until reacquisition and recovery complete. After SIGTERM or SIGINT it returns `503 draining`
+  during the bounded drain window.
 - `/metrics` emits Prometheus exposition text from `envMetrics`, including bounded signed-replay and
   semantic-member gauges plus peer-connectivity and heartbeat-age gauges.
 
 Neither health endpoint may inspect or sort semantic state, encode `/v1/state`, contact Vault,
-MinIO, Route 53, or peers, or spawn a subprocess. `/readyz` is only a cached read of the latched
-readiness projection over the Gateway Runtime's phase, object-store-session, and worker inputs;
-the round-trip proof is latched outside the handler, and deep diagnostics stay on the state
-route. A dependency requirement is resolved to an operation-indexed `CapabilityRef`, and that same
+MinIO, Route 53, or peers, or spawn a subprocess. `/readyz` is only a cached read of the readiness
+projection over the Gateway Runtime's drain phase, current emitter-authority witness, and worker
+inputs; authority acquisition/recovery happens outside the handler, and deep diagnostics stay on
+the state route. A dependency requirement is resolved to an operation-indexed `CapabilityRef`, and that same
 opaque reference is used for observation, admission, and execution—never a separately injected
 probe endpoint. Sustained restart/OOM stability is observed by the test harness over a window.
 These are distinct facts; the capability and readiness algebra is owned by
@@ -879,11 +917,12 @@ These constant-time endpoints landed in Sprint `2.10`; Sprint `2.31` preserved t
 and added a source regression guard proving that state traversal, sorting, or encoding cannot enter
 either route.
 
-The latched readiness projection supersedes the earlier unconditional serve-start readiness write.
-Readiness is computed as one pure projection over phase, object-store-session, and worker inputs;
-the lifecycle gate keeps its end-to-end object-store round trip and gains a `/readyz` precheck, so
-lifecycle-ready implies kubelet-ready by construction. Implementation is owned by Sprint `2.34` in
-the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
+The pure readiness projection supersedes the earlier unconditional serve-start readiness write.
+Readiness is computed over drain phase, current emitter authority, and worker inputs; the lifecycle
+gate keeps its end-to-end capability round trip and `/readyz` precheck, so lifecycle-ready implies
+kubelet-ready by construction. Sprint `2.34` owns the compiled projection and rollback latch;
+Sprint `2.32` owns the journal/Lease authority refinement in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 Filesystem readiness markers and `sd_notify` are not supported readiness signals. The
 `prodbox-daemon-lifecycle` Cabal stanza starts the real `prodbox gateway start` process, waits on
@@ -914,11 +953,28 @@ probes from the typed `GatewayProbeSpec` values: `/healthz` for liveness and `/r
 readiness. Sprint `3.25` changed only that chart binding and did not change the landed daemon
 endpoint contract.
 
+This is the target workload contract, not evidence that the physical chart has cut over.
+Sprint `2.32` supplies the typed claim-side persistence inputs in
+`Prodbox.Gateway.Emitter.Persistence`: stable StatefulSet identity, the node-pinned retained home
+claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Sprint `3.26` owns
+their consumption into workload templates, PVs, EBS `volumeHandle`s, and `Retain` rendering.
+Production-default and deployment-qualification status remain owned only by the Development Plan.
+
 Gateway Runtime has no pre-Vault mode in the target topology. Bootstrap Broker is a distinct
 Deployment, Service, ServiceAccount, Vault/MinIO policy, queue, resource envelope, and readiness
 identity; it alone accepts the bounded bootstrap requests needed before Vault is unsealed. The
-same-binary pre-Vault gateway mode and its route are historical implementation records. Their
-cutover and deletion status is owned by the Development Plan.
+same-binary pre-Vault gateway mode and routes remain usable only through the isolated
+`LegacyModelBEmitter`/`LegacyAdapter` rollback boundary.
+[Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+retains that explicit rollback
+until the replacement is the sole supported route and current-revision deployment qualification is
+proven; cutover and deletion status are owned by the Development Plan.
+
+The separate binary role is `prodbox bootstrap-broker start` with
+`--config /etc/bootstrap-broker/config/config.dhall`. Its code-local production boundary remains fail closed
+apart from liveness until Sprint `3.26` supplies TokenReview, Lease, Kubernetes workload, MinIO,
+Vault, and OpenPGP adapters and renders that Deployment. This section therefore specifies the
+failure-domain split without asserting that the replacement workload is deployed or qualified.
 
 `prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
@@ -996,27 +1052,30 @@ an explicitly registered retained volume. Vault supplies a renewable journal-key
 startup; the heartbeat hot path performs no Vault or MinIO call. The journal is bound to one
 admitted emitter identity and contains exactly:
 
-- the bounded emitter id, admission nonce/state, validated active Orders anchor, and current durable
-  `EmitterIncarnation`;
-- the committed fixed-width epoch/sequence/digest anchor and its previous anchor;
+- the stable cluster/emitter identity, admission state, authenticated active and prior Orders
+  digests, and current durable `EmitterIncarnation`;
+- an immutable trusted genesis or authenticated checkpoint floor plus the committed fixed-width
+  epoch/sequence/digest anchor;
 - at most one staged assertion containing the transition kind, exact canonical signed bytes,
   previous digest, and next anchor;
-- at most one latest committed-but-unacknowledged canonical signed assertion; and
-- a bounded current-peer acknowledgment projection plus signed repair-floor checkpoint reference.
+- one bounded contiguous retained suffix of canonical committed assertions; and
+- a bounded known-current-peer acknowledgement projection plus authenticated repair-floor checkpoint.
 
 One actor exclusively owns `stage -> fsync -> publish -> commit -> fsync`. A crash before the first
-`fsync` publishes nothing. A crash after staging recovers and idempotently republishes the exact
-bytes before committing. A crash after commit but before peer response republishes the retained
-committed bytes. Claim/yield/rotation bytes compact only after every current peer acknowledges or a
-signed checkpoint includes them as the repair floor. Missing journal state after prior admission is
-recovery failure, never permission to reset the epoch.
+durability barrier publishes nothing. Every recoverable signed phase is normalized to the durable-
+stage boundary and re-fsyncs and republishes the exact retained bytes before rewriting commit and
+completing the final projection fsync; recovery never synthesizes a replacement signature. A crash
+after commit but before peer response republishes only records still waiting on a current peer.
+Acknowledgements never delete committed chain links; compaction occurs only when an authenticated
+checkpoint installs the exact prefix frontier as the new floor. Missing journal state after prior
+admission is recovery failure, never permission to reset the epoch.
 
 Cross-process exclusion is substrate-specific. EKS uses its static retained EBS CSI volume with
 `ReadWriteOncePod`, the OS lock, durable incarnation, and Kubernetes Lease. Home `hostPath`/local PV
 is CSI-free: the StatefulSet is pinned to the PV's node and relies on that node affinity plus the OS
 lock, durable incarnation, and Lease; it does not claim that `ReadWriteOncePod` protects hostPath.
 The actor publishes only while the cached lease remains inside its renewal deadline. First admission
-uses the recoverable journal/marker prepare-and-promote transaction in
+uses the recoverable journal-first initialization plus conditional marker write/read-back transaction in
 [Lifecycle Control-Plane Architecture §8](./lifecycle_control_plane_architecture.md#8-gateway-emitter-actor).
 
 Remote Model-B continuity may exist only as an explicitly named adapter during the plan-owned
@@ -1031,7 +1090,7 @@ daemon's arbitrary allocation behavior. The gateway has a separate validated run
 
 ```text
 bounded semantic state
-+ one bounded staged and one bounded committed-unacknowledged local-journal assertion
++ one bounded staged assertion and one bounded retained journal suffix
 + bounded in-heap transport/decode/in-flight scratch
 + other Haskell heap reserve
 <= GHC heap cap
@@ -1049,8 +1108,8 @@ Haskell-resident semantic/transport values both as sub-budgets and again beside 
 pure validator rejects a sub-budget that exceeds the heap or an outer plan that exceeds the
 container envelope; chart/runtime rendering derives the RTS heap policy and transport bounds from
 the validated plan. Orders `max_members` and its per-member bounds determine the semantic-state,
-signed replay, hot repair-checkpoint, and peer-cursor maxima; persistence-first publication permits
-at most one staged and one committed-unacknowledged local continuity assertion. Gateway Runtime
+signed replay, hot repair-checkpoint, peer-cursor, and retained-suffix maxima; persistence-first
+publication permits at most one staged local transition. Gateway Runtime
 spawns no operational subprocess on the target path; the native DNS/peer clients have fixed
 in-flight and buffer bounds included in the transport/session reserves. The RTS heap cap leaves
 headroom for non-heap memory and native client buffers; it does not replace semantic or transport bounds.
@@ -1115,11 +1174,14 @@ Gateway verification lives in five canonical places:
 Property coverage proves that duplicate or reordered bounded deltas do not increase retained
 cardinality, snapshot repair is semantically equivalent to applying the retained delta sequence,
 and every admitted state remains within its configured cardinality/byte bounds. Continuity tests
-additionally prove persistence-before-publication across both crash windows, conditional-write
-serialization of overlapping emitter incarnations, fixed-width sequence exhaustion followed only
-by a durably acknowledged epoch rotation, safe-anchor recovery after simultaneous restart of all
-peers, and fail-closed behavior for missing/corrupt/unreachable authority. There is no audit tail to
-recover; the mandatory local continuity record may not be absent after first admission. Sprint
+additionally prove journal-first initialization followed by marker write/read-back, authenticated
+journal resume when a crash lands between them, fail-closed inverse marker/journal mismatch, exact
+durable-stage rewind and republication from every signed phase, migrated-projection/pre-publication
+re-arm, conditional-write serialization of overlapping emitter incarnations, fixed-width sequence
+exhaustion followed only by a durably acknowledged epoch rotation, safe-anchor recovery after
+simultaneous restart of all peers, and fail-closed behavior for missing/corrupt/unreachable
+authority. There is no audit tail to recover; the mandatory local continuity record may not be
+absent after first admission. Sprint
 `5.16`'s post-refresh stability classifier/monitor/gate is covered by 17/17 focused unit tests, 2/2
 built-frontend `gateway-pods` fixtures (healthy and a background-only OOM retained through later
 healthy samples), 1494/1494 full unit tests, and the exact post-refresh full CLI integration suite
@@ -1209,9 +1271,10 @@ and `withAsync`:
   registrations — are released even on crash.
 - **Readiness signaling** is HTTP `/readyz`. Every daemon exposes it; it
   returns 200 only while the daemon's readiness projection admits —
-  startup complete plus any latched backend proof the daemon's doctrine
-  requires (the gateway latches the first proven object-store round trip
-  since boot) — and 503 during startup or drain.
+  startup complete plus the current cached authority facts its doctrine
+  requires. The gateway rollback topology latches validated continuity
+  startup; its target topology requires a current journal/Lease/recovery
+  witness and may return to 503 on Lease loss. Drain always returns 503.
   Filesystem readiness markers and `sd_notify(READY=1)` are forbidden.
   `threadDelay` "wait long enough" probes are forbidden. Polling logs for
   a ready string is forbidden.

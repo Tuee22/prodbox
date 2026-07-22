@@ -206,18 +206,26 @@ defaultResourcePlan =
     , eviction_floor = ResourceVector 500 1024 10240 1024
     , namespace_quotas =
         [ NamespaceQuota "keycloak" (ResourceVector 2025 4448 12000 61440)
-        , -- Sprint 1.65: vscode CPU ceiling trimmed 2425m -> 1400m (draw is 800m)
-          -- to keep the concurrent-quota sum within allocatable (host 8000m -
-          -- rke2_reserved 1000m - eviction_floor 500m = 6500m) after the gateway
-          -- CPU bump; only the ceiling drops, no vscode pod is starved
-          -- (concurrent CPU sum = 1400+500+500+2750+1000+300 = 6450 <= 6500).
-          NamespaceQuota "vscode" (ResourceVector 1400 5216 10944 112640)
+        , -- Sprint 1.65 trimmed the over-provisioned vscode CPU ceiling 2425m ->
+          -- 1400m (draw is 800m). Sprint 3.26 (operator-approved) trims a further
+          -- 100m (1400m -> 1300m) to fund the physically separate Bootstrap
+          -- Broker's own namespace quota while keeping the single-node
+          -- concurrent-quota sum within allocatable (host 8000m - rke2_reserved
+          -- 1000m - eviction_floor 500m = 6500m); the draw stays 800m, so no
+          -- vscode pod is starved. Concurrent CPU sum =
+          -- 1300+500+500+2750+1000+300+100 = 6450 <= 6500.
+          NamespaceQuota "vscode" (ResourceVector 1300 5216 10944 112640)
         , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
         , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
         , -- Sprint 1.65: gateway CPU quota 1250m -> 2750m for the 750m x3 bump.
           NamespaceQuota "gateway" (ResourceVector 2750 3584 6000 20480)
         , NamespaceQuota "prodbox" (ResourceVector 1000 1792 5000 20480)
         , NamespaceQuota "vault" (ResourceVector 300 512 2000 1024)
+        , -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker gets
+          -- its own namespace quota (funded by the vscode ceiling trim above), so
+          -- control-plane demand is never hidden behind a combined gateway
+          -- envelope (resource_scaling_doctrine.md § 2E).
+          NamespaceQuota "bootstrap-broker" (ResourceVector 100 128 512 1024)
         ]
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
@@ -295,6 +303,15 @@ defaultResourcePlan =
             (ResourceVector 100 128 512 1)
             (ResourceVector 150 256 1024 1)
         , workload "vault" "vault" 1 (ResourceVector 200 256 1024 1) (ResourceVector 250 512 1024 1)
+        , -- Sprint 3.26: the pre-Vault Bootstrap Broker runs the union runtime
+          -- image with a Guaranteed-QoS (request == limit) envelope in its own
+          -- namespace, fitting the Sprint 3.26 bootstrap-broker quota above.
+          workload
+            "bootstrap-broker"
+            "bootstrap-broker"
+            1
+            (ResourceVector 100 128 256 1)
+            (ResourceVector 100 128 256 1)
         ]
     }
  where

@@ -4,7 +4,9 @@
 -- boundary semantics (apex / single-label / deeper), the 'impliedBy' partial-order
 -- laws, 'mkScopeSet' rejection of undelegated-zone wildcards, 'bindListener'
 -- rejection of uncovered hosts, and coverage preservation under the
--- narrower-or-equal order (the restore-vs-reissue soundness). No cluster required.
+-- narrower-or-equal admission order. Retention itself is exact-scope keyed:
+-- cert-manager treats distinct SAN sets as distinct issuance specifications.
+-- No cluster required.
 module CertScopeSuite
   ( certScopeSuite
   )
@@ -135,6 +137,16 @@ certScopeSuite =
               either (error . renderScopeError) id $
                 mkScopeSet poolZones [ScopeWildcard parent, ScopeExact (fq "vscode.resolvefintech.com")]
         certScopeSetDnsNames scopeSet `shouldBe` ["*.resolvefintech.com"]
+      it "serializes narrower and wider SAN sets to distinct retention coordinates" $ do
+        let exactSet =
+              either (error . renderScopeError) id $
+                mkScopeSet poolZones [ScopeExact (fq "vscode.resolvefintech.com")]
+            wildcardSet =
+              either (error . renderScopeError) id $
+                mkScopeSet poolZones [ScopeWildcard parent]
+        impliedBy exactSet wildcardSet `shouldBe` True
+        renderCertScopeSet exactSet `shouldBe` "vscode.resolvefintech.com"
+        renderCertScopeSet wildcardSet `shouldBe` "*.resolvefintech.com"
 
     describe "partial-order laws (property)" $ do
       propertyTest "impliedBy is reflexive" $
@@ -149,7 +161,7 @@ certScopeSuite =
         forAll genScopeSet $ \a ->
           forAll genScopeSet $ \b ->
             not (impliedBy a b && impliedBy b a) || a == b
-      propertyTest "coverage is preserved by widening (restore-vs-reissue soundness)" $
+      propertyTest "coverage is preserved by widening (admission-order soundness)" $
         forAll genScopeSet $ \narrower ->
           forAll genScopeSet $ \wider ->
             forAll (elements poolHosts) $ \host ->

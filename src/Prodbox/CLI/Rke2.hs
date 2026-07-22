@@ -121,6 +121,7 @@ import Prodbox.Aws (adminAwsEnvironment)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
+import Prodbox.Bootstrap.Broker.Client qualified as BrokerClient
 import Prodbox.CLI.Command
   ( EdgeCommand (..)
   , FederationRegisterOptions (..)
@@ -2113,10 +2114,10 @@ observeVaultUnsealedOnce = do
 
 observeVaultUnsealedOnceAt :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
 observeVaultUnsealedOnceAt endpoint = do
-  result <- GatewayClient.queryVaultStatus endpoint
+  result <- BrokerClient.queryVaultStatusLegacy endpoint
   pure $
     case result of
-      Left err -> Left (Text.pack (GatewayClient.renderGatewayError err))
+      Left err -> Left (Text.pack (BrokerClient.renderBrokerError err))
       Right status
         | sealStatusInitialized status && not (sealStatusSealed status) ->
             Right ReadinessProbeReady

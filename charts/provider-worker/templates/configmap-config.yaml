@@ -1,0 +1,17 @@
+{{- /*
+Mounted provider-worker Dhall for the `provider-worker` runtime role. The empty
+default lets generic `helm template`/lint invocations omit the body; the
+supported ChartPlatform render supplies the complete, non-secret worker config.
+Directory mount (see deployment.yaml) so a ConfigMap update fires the worker's
+file-watch.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: provider-worker-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "provider-worker.labels" . | nindent 4 }}
+data:
+  config.dhall: |
+    {{- .Values.config.roleDhall | nindent 4 }}

@@ -1,0 +1,18 @@
+{{- /*
+The Provider Worker is a single-writer provider singleton, so a voluntary
+disruption (node drain) must not evict it while it holds in-flight provider
+effects. `minAvailable: 1` over its one replica blocks voluntary eviction;
+involuntary disruption and the Recreate rollout are unaffected.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: provider-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "provider-worker.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "provider-worker.selectorLabels" . | nindent 6 }}

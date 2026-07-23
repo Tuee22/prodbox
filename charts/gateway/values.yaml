@@ -75,13 +75,50 @@ timing:
   heartbeatTimeoutSeconds: 5
 
 # Mesh node ranking. The first entry is the preferred Route 53 writer.
-# Each entry is a stable node id; the chart renders one Deployment +
-# Service named `gateway-<nodeId>` per entry.
+# Each entry is a stable node id; the chart renders one StatefulSet +
+# Service named `gateway-<nodeId>` per entry (Sprint 3.26).
 nodes:
   rankedIds:
     - node-a
     - node-b
     - node-c
+
+# Sprint 3.26: per-emitter stable-workload + retained-journal + Lease inputs. The
+# supported ChartPlatform render injects this from the validated
+# `Prodbox.Gateway.Emitter.Persistence` projection (keyed on substrate); this
+# home-substrate default lets bare `helm template` / chart lint render the
+# per-node StatefulSets and the emitter-journal volumes. The `nodes` order
+# matches `nodes.rankedIds` by index.
+emitterPersistence:
+  substrate: home-local
+  controllerKind: StatefulSet
+  journalMountPath: /var/lib/prodbox/gateway-emitter
+  lease:
+    apiVersion: coordination.k8s.io/v1
+    resource: leases
+    verbs:
+      - get
+      - create
+      - update
+  nodes:
+    - nodeId: node-a
+      leaseName: prodbox-emitter-node-a
+      serviceAccountName: prodbox-gateway-daemon
+      journal:
+        kind: nodePinnedHostPath
+        hostPath: /var/lib/prodbox/gateway-emitter-journals/node-a
+    - nodeId: node-b
+      leaseName: prodbox-emitter-node-b
+      serviceAccountName: prodbox-gateway-daemon
+      journal:
+        kind: nodePinnedHostPath
+        hostPath: /var/lib/prodbox/gateway-emitter-journals/node-b
+    - nodeId: node-c
+      leaseName: prodbox-emitter-node-c
+      serviceAccountName: prodbox-gateway-daemon
+      journal:
+        kind: nodePinnedHostPath
+        hostPath: /var/lib/prodbox/gateway-emitter-journals/node-c
 
 # Production values inject a complete, non-secret daemon-frame Tier-0 document
 # with the selected substrate's cluster identity. The empty chart default lets
@@ -114,9 +151,10 @@ vault:
   role: prodbox-gateway-daemon
   serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
   paths:
-    eventKeyNodeA: gateway/gateway/node-a/event-key
-    eventKeyNodeB: gateway/gateway/node-b/event-key
-    eventKeyNodeC: gateway/gateway/node-c/event-key
+    # Sprint 3.26: per-node event-key paths are derived parametrically from
+    # `nodes.rankedIds` in configmap-config.yaml (`gateway/gateway/<nodeId>/event-key`),
+    # so the event-key set is substrate-variable (2 on home, 3 on AWS) and matches
+    # Orders membership exactly. No fixed eventKeyNode{A,B,C} default is kept here.
     aws: gateway/gateway/aws
     minio: gateway/gateway/minio
 

@@ -1,0 +1,18 @@
+{{- /*
+The TLS Retention Adapter is a single-writer control-plane singleton, so a
+voluntary disruption (node drain) must not evict it while it holds an in-flight
+S3 retain/restore. `minAvailable: 1` over its one replica blocks voluntary
+eviction; involuntary disruption and the Recreate rollout are unaffected.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tls-retention
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "tls-retention.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "tls-retention.selectorLabels" . | nindent 6 }}

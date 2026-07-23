@@ -1,0 +1,82 @@
+{{- /*
+The fenced home-only Provider Worker control-plane workload. A single-writer
+provider singleton (replicas: 1, strategy Recreate): it runs normal Pulumi/AWS
+provider effects and must never have two overlapping instances racing on the same
+provider state. It runs the `provider-worker` runtime role via
+`provider-worker start`, authenticates to Vault Kubernetes auth as its own fenced
+ServiceAccount (reading only `secret/aws/lifecycle-provider`), and exposes only
+the constant-time `/healthz`/`/readyz` route projections as kubelet probes.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "provider-worker.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "provider-worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "provider-worker.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: provider-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.providerWorker | nindent 12 }}
+          args:
+            - provider-worker
+            - start
+            - --config
+            - /etc/provider-worker/config/config.dhall
+            {{- range .Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: provider
+              containerPort: {{ .Values.listener.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              # Directory-style mount (no subPath) so the kubelet's atomic
+              # `..data` symlink swap on ConfigMap update propagates to the
+              # worker's file-watch reload loop.
+              mountPath: /etc/provider-worker/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness | quote }}
+              port: provider
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness | quote }}
+              port: provider
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.readiness.successThreshold }}
+      volumes:
+        - name: config
+          configMap:
+            name: provider-worker-config

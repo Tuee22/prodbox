@@ -4143,21 +4143,41 @@ warning-clean library/executable/unit builds, and `prodbox dev check` exit 0.
 - Keep `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, `system-components.md`, `substrates.md`, and
   `legacy-tracking-for-deletion.md` synchronized with the completed sprint.
 
-## Sprint 4.48: Retained Lifecycle Authority and Durable Operation Journal [⏸️ Blocked]
+## Sprint 4.48: Retained Lifecycle Authority and Durable Operation Journal [🔄 Active]
 
-**Status**: Blocked
+**Status**: Active — unblocked (Sprint `3.26`'s control-plane charts, including the Lifecycle
+Authority StatefulSet, landed). **Increment A (the pure genesis admission fold) landed 2026-07-23.**
 **Deployment qualification**: pending
-**Implementation**: planned `src/Prodbox/Lifecycle/Authority/` and
+**Implementation**: **Increment A landed** — `src/Prodbox/Lifecycle/Authority/Genesis.hs` is the pure
+`GenesisFrozen -> EstablishAuthorityBackup -> BackupEstablished` admission fold (`AuthorityAdmissionState`
++ `AuthorityGenesisCommand` / `GenesisDecision` / `AuthorityGenesisEvent` with total `decideGenesis` /
+`evolveGenesis` / `stepGenesis`, modeled on the `Prodbox.ControlPlane.Capacity` decide/evolve shape),
+enforcing the genesis invariant that normal admission (`admitsNormalOperations`) opens ONLY after BOTH
+the home Target Agent generation receipt AND the Authority Backup Adapter receipt are read back, under
+the genesis `AuthorityEpoch`. Forward plan: `src/Prodbox/Lifecycle/Authority/` and
 `src/Prodbox/Lifecycle/AuthorityBackup/`, `src/Prodbox/Lifecycle/TlsRetention/`,
 `src/Prodbox/Lifecycle/ProviderWorker/`, `src/Prodbox/Lifecycle/CredentialProvisioner/`,
 `src/Prodbox/Lifecycle/AdminAction/`, and `src/Prodbox/Lifecycle/Decommission/` modules, separate
 runtime-role dispatch/clients, versioned
 journal/genesis codecs, native primary/backup/Vault interpreters, and deterministic simulator tests;
 migrations from existing `Lease*`, `CheckpointAuthority*`, and `TargetCommit*` modules
-**Blocked by**: Sprint `3.26`
 **Independent Validation**: pure transition tables and a deterministic crash/restart interpreter
 exercise every journal boundary with fake object-store, Vault, clock, and provider capabilities;
-no AWS, Kubernetes, or later phase is required.
+no AWS, Kubernetes, or later phase is required. **Increment A** is validated by
+`test/unit/LifecycleAuthorityGenesis.hs` (8 cases: frozen refuses operations; begin-from-frozen;
+one-receipt-does-not-open; both-receipts-open-under-epoch; order-independence; same-plan-idempotent /
+divergent-plan-refused; post-admission refusal; replay-idempotent evolve) plus `prodbox dev check`
+exit 0.
+**Remaining Work**: the normal-admission durable `OperationRecord` + outbox (generalizing
+`Prodbox.Bootstrap.Broker.RequestJournal`'s idempotency-keyed `Armed -> Terminal` + at-most-once
+recovery); the `AuthorityState` aggregate over the three retained `'ClusterRetained` projections
+(`LeaseProjection` / `TargetIntentProjection` / `SmtpCommittedProjection`); the host-direct
+interpreter (built on the Sprint-4.51 `AuthorityObjectCore` + the durable `ControlPlane.AuthorityClock`,
+replacing the gateway-hosted `gatewayModelBCasAdapter` / `observeGatewayAuthorityTime`); the
+`BackupRepair` post-genesis reopen under a greater epoch; and the migrations off `Lease*` /
+`CheckpointAuthority*` / `TargetCommit*`. The physically-separate Authority Backup / TLS Retention /
+Provider Worker interpreters land alongside, and this flow defines the credential-field schemas that
+close Sprint 3.26's remaining least-privilege Vault policies.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `documents/engineering/pure_fp_standards.md`,

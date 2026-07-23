@@ -1,0 +1,81 @@
+{{- /*
+The substrate-local Target Secret Agent workload. It runs the
+`target-secret-agent` runtime role via `target-secret-agent start`,
+authenticates to Vault Kubernetes auth as its own least-privilege
+ServiceAccount, and delivers/reads allowlisted target-secret KV. A single
+replica with a RollingUpdate strategy; it exposes only the constant-time
+`/healthz`/`/readyz` paths as kubelet probes.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: target-secret-agent
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "target-secret-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "target-secret-agent.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: target-secret-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.targetSecretAgent | nindent 12 }}
+          args:
+            - target-secret-agent
+            - start
+            - --config
+            - /etc/target-secret-agent/config/config.dhall
+            {{- range .Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: target
+              containerPort: {{ .Values.listener.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              # Directory-style mount (no subPath) so the kubelet's atomic
+              # `..data` symlink swap on ConfigMap update propagates to the
+              # agent's file-watch reload loop.
+              mountPath: /etc/target-secret-agent/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness | quote }}
+              port: target
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness | quote }}
+              port: target
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.readiness.successThreshold }}
+      volumes:
+        - name: config
+          configMap:
+            name: target-secret-agent-config

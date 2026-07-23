@@ -86,6 +86,7 @@ import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import HostDirectAuthorityCas (hostDirectAuthorityCasSuite)
+import LifecycleAuthorityGenesis (lifecycleAuthorityGenesisSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
@@ -255,7 +256,7 @@ import Prodbox.CLI.Rke2
   , cascadeOrderNarration
   , classifyGatewayObjectStoreProbe
   , classifyRegistryStorageEdgeProbe
-  , gatewayDaemonDeploymentRefs
+  , gatewayDaemonWorkloadRefs
   , harborRegistryStorageBackend
   , homeSubstratePlatformComponents
   , hostCapacityCoversPlan
@@ -388,10 +389,13 @@ import Prodbox.Config.ComponentGraph
   , EdgeKind (..)
   , ProbeDepth (..)
   , ReadinessProbe (..)
+  , chartNameForComponent
   , componentCapabilityRequirement
   , componentDagOrder
   , componentDagRequirements
   , componentDependencyIds
+  , componentIdForChartName
+  , componentIdText
   , componentReconcileOrder
   , defaultComponentGraph
   , edgeKindOf
@@ -1336,6 +1340,7 @@ unitSuite = do
   gatewayEmitterKernelSuite
   gatewayEmitterLeaseSuite
   gatewayEmitterPersistenceSuite
+  lifecycleAuthorityGenesisSuite
   gatewayProbeSuite
   gatewayReadinessSuite
   gatewayRoutesSuite
@@ -1751,6 +1756,14 @@ unitSuite = do
         [spec] ->
           VaultInventory.vaultSecretObjectFieldNames spec `shouldBe` ["password"]
         _ -> expectationFailure "expected one keycloak/admin seed object"
+    it "keeps the compiled Vault identity registry collision-free (Sprint 3.26)" $ do
+      -- No two workloads may share a Vault Kubernetes-auth role name or a
+      -- chart-secret policy name across the cross-module VaultRoleId registry
+      -- (Gateway Runtime, Bootstrap Broker) and the data-driven chart-secret
+      -- consumers; a shared name would silently widen one workload's authority
+      -- (lifecycle_control_plane_architecture.md § 10.2). `prodbox dev check`
+      -- enforces the same invariant in its conformance tier.
+      VaultInventory.vaultIdentityRegistryViolations `shouldBe` []
     it "keeps externally-owned Vault KV objects out of the automatic seed set" $ do
       let managedPaths =
             Set.fromList
@@ -2785,6 +2798,32 @@ unitSuite = do
       order "api" `shouldBe` Right ["api"]
       order "websocket" `shouldBe` Right ["redis", "websocket"]
       order "gateway" `shouldBe` Right ["pulsar", "gateway"]
+      -- Sprint 3.26: the internal Bootstrap Broker chart is graph-connected
+      -- (behind the non-chart Registry), so the plan builder resolves it to
+      -- exactly itself (no chart dependencies).
+      order "bootstrap-broker" `shouldBe` Right ["bootstrap-broker"]
+      componentIdForChartName "bootstrap-broker" `shouldBe` Just ComponentChartBootstrapBroker
+      chartNameForComponent ComponentChartBootstrapBroker `shouldBe` Just "bootstrap-broker"
+      componentIdText ComponentChartBootstrapBroker `shouldBe` "chart_bootstrap_broker"
+      -- Sprint 3.26: the five standing control-plane charts are likewise
+      -- graph-connected chart-only leaves that resolve to exactly themselves,
+      -- with a total name<->id bijection (semantic arms the -Werror build cannot
+      -- catch on its own).
+      order "lifecycle-authority" `shouldBe` Right ["lifecycle-authority"]
+      order "provider-worker" `shouldBe` Right ["provider-worker"]
+      order "authority-backup" `shouldBe` Right ["authority-backup"]
+      order "tls-retention" `shouldBe` Right ["tls-retention"]
+      order "target-secret-agent" `shouldBe` Right ["target-secret-agent"]
+      componentIdForChartName "lifecycle-authority" `shouldBe` Just ComponentChartLifecycleAuthority
+      componentIdForChartName "provider-worker" `shouldBe` Just ComponentChartProviderWorker
+      componentIdForChartName "authority-backup" `shouldBe` Just ComponentChartAuthorityBackup
+      componentIdForChartName "tls-retention" `shouldBe` Just ComponentChartTlsRetention
+      componentIdForChartName "target-secret-agent" `shouldBe` Just ComponentChartTargetSecretAgent
+      chartNameForComponent ComponentChartLifecycleAuthority `shouldBe` Just "lifecycle-authority"
+      chartNameForComponent ComponentChartProviderWorker `shouldBe` Just "provider-worker"
+      chartNameForComponent ComponentChartAuthorityBackup `shouldBe` Just "authority-backup"
+      chartNameForComponent ComponentChartTlsRetention `shouldBe` Just "tls-retention"
+      chartNameForComponent ComponentChartTargetSecretAgent `shouldBe` Just "target-secret-agent"
     it "rejects a chart dependency cycle sourced from the graph" $ do
       let cyclicGraph =
             [ ComponentNode ComponentChartApi [orderingOn ComponentChartWebsocket] ProbeRolloutComplete
@@ -8905,11 +8944,10 @@ unitSuite = do
               gatewayVaultAddress vaultAuth `shouldBe` "http://vault.vault.svc.cluster.local:8200"
 
   describe "gateway daemon full-mode reconcile (post-Vault pre-Vault-boot fix)" $ do
-    it "gatewayDaemonDeploymentRefs targets one Deployment per gateway node" $
-      gatewayDaemonDeploymentRefs
-        `shouldBe` [ "deployment/gateway-node-a"
-                   , "deployment/gateway-node-b"
-                   , "deployment/gateway-node-c"
+    it "gatewayDaemonWorkloadRefs targets one StatefulSet per home gateway node (Sprint 3.26: home = 2)" $
+      gatewayDaemonWorkloadRefs
+        `shouldBe` [ "statefulset/gateway-node-a"
+                   , "statefulset/gateway-node-b"
                    ]
 
     it "classifyGatewayObjectStoreProbe: a reachable object-store (present or absent) is healthy" $ do
@@ -15936,7 +15974,7 @@ resourceGuardrailQuotaFixture =
               , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "112640Mi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20480Mi"
+              , resourceGuardrailQuota "gateway" "2000m" "3072Mi" "6000Mi" "20480Mi"
               ]
           )
     ]
@@ -15951,7 +15989,7 @@ resourceGuardrailCanonicalQuotaFixture =
               , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "110Gi"
               , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
               , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "2750m" "3584Mi" "6000Mi" "20Gi"
+              , resourceGuardrailQuota "gateway" "2000m" "3072Mi" "6000Mi" "20Gi"
               ]
           )
     ]

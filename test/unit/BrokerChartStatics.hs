@@ -17,8 +17,11 @@ import Data.List (isInfixOf, nub, sort)
 import Prodbox.Bootstrap.Broker.ChartStatics
 import Prodbox.Bootstrap.Broker.Routes qualified as Routes
 import Prodbox.CheckCode
-  ( bootstrapBrokerChartStaticViolations
+  ( ControlPlaneChartLint (..)
+  , bootstrapBrokerChartStaticViolations
   , bootstrapBrokerChartStaticsConformanceViolations
+  , controlPlaneChartLints
+  , controlPlaneChartStaticViolations
   )
 import Prodbox.Gateway.ChartStatics (gatewayChartStatics, gatewayStaticVaultRole)
 import Prodbox.Vault.RoleId
@@ -51,7 +54,10 @@ brokerChartStaticsSuite =
     it "keeps every Vault role name in the closed inventory distinct" $ do
       let names = map vaultRoleIdText allVaultRoleIds
       sort (nub names) `shouldBe` sort names
-      length names `shouldBe` 2
+      -- Sprint 3.26: gateway daemon + bootstrap broker + the five standing
+      -- control-plane roles (Lifecycle Authority, Provider Worker, Authority
+      -- Backup, TLS Retention, Target Secret Agent).
+      length names `shouldBe` 7
 
     it "projects the liveness and readiness paths from the closed route registry" $ do
       brokerStaticLivenessPath brokerChartStatics
@@ -117,3 +123,28 @@ brokerChartStaticsSuite =
         valuesBackedDeployment
         "serviceAccount:\n  name: prodbox-bootstrap-broker\n"
         `shouldSatisfy` any ("generated BrokerChartStatics defaults" `isInfixOf`)
+
+    it "accepts the values-backed hand-written control-plane role templates (Sprint 3.26)" $ do
+      repoRoot <- getCurrentDirectory
+      mapM_
+        ( \lint -> do
+            let chartDir = repoRoot </> "charts" </> cplChartName lint
+            serviceAccountContents <- readFile (chartDir </> "templates" </> "serviceaccount.yaml")
+            workloadContents <- readFile (chartDir </> "templates" </> cplWorkloadFile lint)
+            valuesContents <- readFile (chartDir </> "values.yaml")
+            controlPlaneChartStaticViolations lint serviceAccountContents workloadContents valuesContents
+              `shouldBe` []
+        )
+        controlPlaneChartLints
+
+    it "rejects a control-plane chart hard-coding raw ServiceAccount / probe literals (Sprint 3.26)" $ do
+      let lint = head controlPlaneChartLints
+          rawServiceAccount = "metadata:\n  name: " ++ cplServiceAccount lint ++ "\n"
+          rawWorkload =
+            "spec:\n  serviceAccountName: "
+              ++ cplServiceAccount lint
+              ++ "\n          livenessProbe:\n            httpGet:\n              path: "
+              ++ cplLiveness lint
+              ++ "\n"
+      controlPlaneChartStaticViolations lint rawServiceAccount rawWorkload (cplRenderYaml lint)
+        `shouldSatisfy` (\violations -> length violations >= 2)

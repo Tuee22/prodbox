@@ -1,0 +1,57 @@
+{{- /*
+Isolation policy for the fenced Provider Worker. Egress is limited to what the
+provider role actually needs — DNS, the Vault API (fenced
+`secret/aws/lifecycle-provider` read), and external HTTPS to the AWS / Pulumi
+control plane. The worker has NO mesh, object-store, authority-CAS, or
+target-secret egress. Ingress is restricted to its own namespace; kubelet
+liveness/readiness probes are node-local and unaffected.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: provider-worker-isolation
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "provider-worker.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prodbox-provider-worker
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+      ports:
+        - protocol: TCP
+          port: provider
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

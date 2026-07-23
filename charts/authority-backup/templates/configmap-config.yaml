@@ -1,0 +1,16 @@
+{{- /*
+Mounted adapter Dhall for the `authority-backup` runtime role. The empty default
+lets generic `helm template`/lint invocations omit the body; the supported
+ChartPlatform render supplies the complete, non-secret adapter config. Directory
+mount (see deployment.yaml) so a ConfigMap update fires the adapter's file-watch.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authority-backup-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "authority-backup.labels" . | nindent 4 }}
+data:
+  config.dhall: |
+    {{- .Values.config.roleDhall | nindent 4 }}

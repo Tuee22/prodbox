@@ -150,6 +150,12 @@ library
         Prodbox.CLI.Nuke
         Prodbox.Legacy.EscapeRegistry
         Prodbox.Lifecycle.EbsVolume
+        Prodbox.Lifecycle.Authority.ChartStatics
+        Prodbox.Lifecycle.Authority.Genesis
+        Prodbox.Lifecycle.AuthorityBackup.ChartStatics
+        Prodbox.Lifecycle.ProviderWorker.ChartStatics
+        Prodbox.Lifecycle.TargetSecretAgent.ChartStatics
+        Prodbox.Lifecycle.TlsRetention.ChartStatics
         Prodbox.Lifecycle.AnchoredReconcile
         Prodbox.Lifecycle.CapabilityReadinessBarrier
         Prodbox.Lifecycle.StoreLifetime
@@ -349,6 +355,7 @@ test-suite prodbox-unit
         GatewayEmitterKernel
         GatewayEmitterLease
         GatewayEmitterPersistence
+        LifecycleAuthorityGenesis
         GatewayProbe
         GatewayReadiness
         GatewayRoutes

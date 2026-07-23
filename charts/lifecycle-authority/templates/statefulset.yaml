@@ -1,0 +1,109 @@
+{{- /*
+Sprint 3.26: the retained home Lifecycle Authority workload — the durable
+operation journal + Model-B CAS coordinator. It renders as ONE fixed
+single-replica StatefulSet (serviceName lifecycle-authority) that mounts its
+registered retained operation journal from the `authority-journal`
+volumeClaimTemplate (a ReadWriteOnce retained PV, storageClassName from
+`.Values.journal.storageClassName`) at /var/lib/prodbox/lifecycle-authority-journal.
+A single-replica StatefulSet update deletes the old pod before creating its
+replacement, so two overlapping journal writers can never race. It runs the
+`lifecycle-authority` runtime role via `lifecycle-authority start`,
+authenticates to Vault Kubernetes auth as its own least-privilege ServiceAccount,
+and exposes only the constant-time `/healthz`/`/readyz` route projections as
+kubelet probes.
+*/ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lifecycle-authority
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: lifecycle-authority
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "lifecycle-authority.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "lifecycle-authority.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: lifecycle-authority
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.lifecycleAuthority | nindent 12 }}
+          args:
+            - lifecycle-authority
+            - start
+            - --config
+            - /etc/lifecycle-authority/config/config.dhall
+            {{- range .Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: lifecycle
+              containerPort: {{ .Values.listener.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              # Directory-style mount (no subPath) so the kubelet's atomic
+              # `..data` symlink swap on ConfigMap update propagates to the
+              # authority's file-watch reload loop.
+              mountPath: /etc/lifecycle-authority/config
+              readOnly: true
+            - name: authority-journal
+              # Sprint 3.26: the registered retained operation journal. The
+              # single-writer journal actor owns it; the single-replica
+              # StatefulSet guarantees no second writer overlaps this path.
+              mountPath: /var/lib/prodbox/lifecycle-authority-journal
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness | quote }}
+              port: lifecycle
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness | quote }}
+              port: lifecycle
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.readiness.successThreshold }}
+      volumes:
+        - name: config
+          configMap:
+            name: lifecycle-authority-config
+  volumeClaimTemplates:
+    - metadata:
+        name: authority-journal
+        labels:
+          {{- include "lifecycle-authority.labels" . | nindent 10 }}
+      spec:
+        # The retained home operation journal. The physical retained PV (Retain
+        # reclaim policy) is provisioned by the harness under this storage class,
+        # mirroring the gateway emitter journal and the other retained-PV
+        # workloads.
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.journal.storageClassName | quote }}
+        resources:
+          requests:
+            storage: 1Gi

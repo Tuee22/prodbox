@@ -45,7 +45,7 @@ module Prodbox.CLI.Rke2
   , GatewayObjectStoreProbe (..)
   , KubernetesReadinessCheck (..)
   , classifyGatewayObjectStoreProbe
-  , gatewayDaemonDeploymentRefs
+  , gatewayDaemonWorkloadRefs
   , gatewayNamespace
   , minioNamespace
   , minioReleaseName
@@ -210,7 +210,7 @@ import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
   ( buildChartDeploymentPlanForSubstrate
   , deployChartPlan
-  , gatewayNodeIds
+  , gatewayNodeIdsForSubstrate
   , keycloakRealmName
   , keycloakVscodeClientId
   , operatorAvailableTarget
@@ -1453,6 +1453,15 @@ stepsForComponent component = case component of
   ComponentChartApi -> []
   ComponentChartWebsocket -> []
   ComponentChartGateway -> []
+  -- Sprint 3.26: chart-only control-plane nodes; the physically separate broker
+  -- and the five standing control-plane roles are deployed by the chart
+  -- platform, not the native home-platform install (no native step).
+  ComponentChartBootstrapBroker -> []
+  ComponentChartLifecycleAuthority -> []
+  ComponentChartProviderWorker -> []
+  ComponentChartAuthorityBackup -> []
+  ComponentChartTlsRetention -> []
+  ComponentChartTargetSecretAgent -> []
 
 edgeReconcileSteps :: [ReconcileStepId]
 edgeReconcileSteps =
@@ -1954,7 +1963,7 @@ nativeComponentReadinessTarget repoRoot settings component =
             ( observeKubernetesReadinessOnce
                 repoRoot
                 [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
-                | nodeId <- gatewayNodeIds
+                | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal
                 ]
             )
         )
@@ -1968,6 +1977,12 @@ nativeComponentReadinessTarget repoRoot settings component =
     ComponentChartApi -> unsupportedNativeReadiness component
     ComponentChartWebsocket -> unsupportedNativeReadiness component
     ComponentChartGateway -> unsupportedNativeReadiness component
+    ComponentChartBootstrapBroker -> unsupportedNativeReadiness component
+    ComponentChartLifecycleAuthority -> unsupportedNativeReadiness component
+    ComponentChartProviderWorker -> unsupportedNativeReadiness component
+    ComponentChartAuthorityBackup -> unsupportedNativeReadiness component
+    ComponentChartTlsRetention -> unsupportedNativeReadiness component
+    ComponentChartTargetSecretAgent -> unsupportedNativeReadiness component
 
 unsupportedNativeReadiness :: ComponentId -> Either Text.Text value
 unsupportedNativeReadiness component =
@@ -4692,8 +4707,8 @@ ensureGatewayDaemonFullModeAt repoRoot endpoint = do
         )
       restartExit <-
         runSequentially
-          ( [rolloutRestart repoRoot gatewayNamespace ref | ref <- gatewayDaemonDeploymentRefs]
-              ++ [rolloutStatus repoRoot gatewayNamespace ref | ref <- gatewayDaemonDeploymentRefs]
+          ( [rolloutRestart repoRoot gatewayNamespace ref | ref <- gatewayDaemonWorkloadRefs]
+              ++ [rolloutStatus repoRoot gatewayNamespace ref | ref <- gatewayDaemonWorkloadRefs]
           )
       case restartExit of
         ExitFailure _ -> pure restartExit
@@ -4712,11 +4727,14 @@ ensureGatewayDaemonFullModeAt repoRoot endpoint = do
               failWith
                 ("gateway daemon object-store was not reachable after restart: " ++ detail)
 
--- | The gateway daemon Deployments to restart, derived from the canonical
--- 'gatewayNodeIds' SSoT (one @gateway-\<nodeId>@ Deployment per node).
-gatewayDaemonDeploymentRefs :: [String]
-gatewayDaemonDeploymentRefs =
-  ["deployment/gateway-" ++ nodeId | nodeId <- gatewayNodeIds]
+-- | The gateway daemon workloads to restart, derived from the canonical
+-- 'gatewayNodeIds' SSoT (one @gateway-\<nodeId>@ StatefulSet per node). Sprint
+-- 3.26 renders the gateway emitters as stable per-node StatefulSet identities
+-- (each with a registered retained journal), so rollout restart/status target
+-- @statefulset/@ refs.
+gatewayDaemonWorkloadRefs :: [String]
+gatewayDaemonWorkloadRefs =
+  ["statefulset/gateway-" ++ nodeId | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal]
 
 -- | A synthetic, never-provisioned per-run stack name used only to PROBE the
 -- daemon object-store health (a read-only @getPulumiObject@; an absent object is

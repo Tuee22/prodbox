@@ -209,16 +209,25 @@ defaultResourcePlan =
         , -- Sprint 1.65 trimmed the over-provisioned vscode CPU ceiling 2425m ->
           -- 1400m (draw is 800m). Sprint 3.26 (operator-approved) trims a further
           -- 100m (1400m -> 1300m) to fund the physically separate Bootstrap
-          -- Broker's own namespace quota while keeping the single-node
-          -- concurrent-quota sum within allocatable (host 8000m - rke2_reserved
-          -- 1000m - eviction_floor 500m = 6500m); the draw stays 800m, so no
-          -- vscode pod is starved. Concurrent CPU sum =
-          -- 1300+500+500+2750+1000+300+100 = 6450 <= 6500.
+          -- Broker's own namespace quota; the draw stays 800m, so no vscode pod
+          -- is starved.
           NamespaceQuota "vscode" (ResourceVector 1300 5216 10944 112640)
         , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
         , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
         , -- Sprint 1.65: gateway CPU quota 1250m -> 2750m for the 750m x3 bump.
-          NamespaceQuota "gateway" (ResourceVector 2750 3584 6000 20480)
+          -- Sprint 3.26 (operator-approved) reduces the HOME gateway from three
+          -- emitter StatefulSet identities to two (see 'gatewayNodeIdsForSubstrate'):
+          -- the gateway namespace quota drops 2750m -> 2000m and 3584 -> 3072 MiB
+          -- (draw = 2x 750m gateway + 500m pulsar = 2000m; 2x 512 + 2048 = 3072
+          -- MiB), freeing 750m CPU / 512 MiB that funds the physically separated
+          -- control-plane workloads on the maxed single-node budget. The AWS
+          -- substrate keeps three gateway identities (its own render + EBS). New
+          -- concurrent CPU sum (excludes co-located keycloak) =
+          -- 1300+500+500+2000+1000+300+100 = 5700 <= 6500 allocatable (host 8000m
+          -- - rke2_reserved 1000m - eviction_floor 500m); the remaining 800m CPU /
+          -- 544 MiB headroom is consumed by the Sprint 3.26 control-plane quotas
+          -- below.
+          NamespaceQuota "gateway" (ResourceVector 2000 3072 6000 20480)
         , NamespaceQuota "prodbox" (ResourceVector 1000 1792 5000 20480)
         , NamespaceQuota "vault" (ResourceVector 300 512 2000 1024)
         , -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker gets
@@ -226,6 +235,18 @@ defaultResourcePlan =
           -- control-plane demand is never hidden behind a combined gateway
           -- envelope (resource_scaling_doctrine.md § 2E).
           NamespaceQuota "bootstrap-broker" (ResourceVector 100 128 512 1024)
+        , -- Sprint 3.26: the five standing control-plane role namespaces, funded
+          -- by the operator-approved home gateway 3 -> 2 reduction (Increment G,
+          -- which freed 750m CPU / 512 MiB). Guaranteed-QoS (request == limit).
+          -- New concurrent CPU sum (excludes co-located keycloak) =
+          -- 1300+500+500+2000+1000+300+100 + 150+100+60+60+60 = 6130 <= 6500;
+          -- memory sum = 12736 <= 12800 MiB allocatable. The Lifecycle Authority
+          -- namespace reserves 1Gi durable for its retained journal PVC.
+          NamespaceQuota "lifecycle-authority" (ResourceVector 150 128 1024 1024)
+        , NamespaceQuota "provider-worker" (ResourceVector 100 112 512 1)
+        , NamespaceQuota "authority-backup" (ResourceVector 60 80 512 1)
+        , NamespaceQuota "tls-retention" (ResourceVector 60 80 512 1)
+        , NamespaceQuota "target-secret-agent" (ResourceVector 60 80 512 1)
         ]
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
@@ -284,10 +305,13 @@ defaultResourcePlan =
           -- (request == limit; Guaranteed QoS retained) to give the throttled
           -- gateway hot path (`LCPC-2026-07-11`: 96-99% cgroup throttle at 250m)
           -- ~3x headroom until the first committed measured profile activates the
-          -- certification check. The gateway namespace quota rises to 2750m and
-          -- the over-provisioned vscode quota ceiling drops to 1500m (draw stays
-          -- 800m) to keep the single-node concurrent-quota sum within allocatable.
-          workload "gateway" "gateway" 3 (ResourceVector 750 256 512 1) (ResourceVector 750 512 512 1)
+          -- certification check. Sprint 3.26 (operator-approved) reduces the HOME
+          -- emitter identity count 3 -> 2 (this replica count models the home
+          -- single node; AWS keeps three via 'gatewayNodeIdsForSubstrate'), so the
+          -- gateway namespace draw is 2x 750m = 1500m + 500m pulsar = 2000m,
+          -- matching the trimmed 2000m gateway quota and freeing budget for the
+          -- physically separated control-plane workloads.
+          workload "gateway" "gateway" 2 (ResourceVector 750 256 512 1) (ResourceVector 750 512 512 1)
         , workload "pulsar" "gateway" 1 (ResourceVector 250 1024 1024 1) (ResourceVector 500 2048 4096 1)
         , workload
             "minio"
@@ -312,6 +336,35 @@ defaultResourcePlan =
             1
             (ResourceVector 100 128 256 1)
             (ResourceVector 100 128 256 1)
+        , -- Sprint 3.26: the five standing control-plane roles run the union
+          -- runtime image with Guaranteed-QoS (request == limit) envelopes in
+          -- their own namespaces (Phase 4 binds the production interpreters). The
+          -- Lifecycle Authority is a StatefulSet with a 1Gi retained journal PVC.
+          workload
+            "lifecycle-authority"
+            "lifecycle-authority"
+            1
+            (ResourceVector 150 128 256 1024)
+            (ResourceVector 150 128 256 1024)
+        , workload
+            "provider-worker"
+            "provider-worker"
+            1
+            (ResourceVector 100 112 256 1)
+            (ResourceVector 100 112 256 1)
+        , workload
+            "authority-backup"
+            "authority-backup"
+            1
+            (ResourceVector 60 80 256 1)
+            (ResourceVector 60 80 256 1)
+        , workload "tls-retention" "tls-retention" 1 (ResourceVector 60 80 256 1) (ResourceVector 60 80 256 1)
+        , workload
+            "target-secret-agent"
+            "target-secret-agent"
+            1
+            (ResourceVector 60 80 256 1)
+            (ResourceVector 60 80 256 1)
         ]
     }
  where

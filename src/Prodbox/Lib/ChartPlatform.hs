@@ -19,7 +19,7 @@ module Prodbox.Lib.ChartPlatform
   , deleteChartPlan
   , deployChartPlan
   , deploymentConditionReportsTrue
-  , gatewayNodeIds
+  , gatewayNodeIdsForSubstrate
   , gatewayRestServiceName
   , gatewayRestServicePort
   , keycloakVscodeClientId
@@ -41,6 +41,12 @@ module Prodbox.Lib.ChartPlatform
   , supportedChartNames
   , validateOperatorGatesWith
   , valuesForBootstrapBroker
+  , controlPlaneRoleChartNames
+  , valuesForLifecycleAuthority
+  , valuesForProviderWorker
+  , valuesForAuthorityBackup
+  , valuesForTlsRetention
+  , valuesForTargetSecretAgent
   )
 where
 
@@ -131,13 +137,18 @@ import Prodbox.Lib.Storage
   , renderStorageReport
   , storageBinding
   )
+import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
+import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
 import Prodbox.Lifecycle.ReadinessObservation
   ( ComponentReadinessTarget (OperatorAvailableTarget)
   , ReadinessObservation (..)
   , ReadinessProbeResult (..)
   , observeComponentReadiness
   )
+import Prodbox.Lifecycle.TargetSecretAgent.ChartStatics qualified as TargetSecretAgentStatics
+import Prodbox.Lifecycle.TlsRetention.ChartStatics qualified as TlsRetentionStatics
 import Prodbox.PostgresPlatform
   ( patroniClusterName
   , patroniCredentialsSecretName
@@ -297,8 +308,23 @@ publicEdgeWebsocketSecurityPolicyName = "websocket-jwt"
 publicEdgeRouteClaimName :: String
 publicEdgeRouteClaimName = "prodbox_route"
 
-gatewayNodeIds :: [String]
-gatewayNodeIds = ["node-a", "node-b", "node-c"]
+-- | The gateway emitter node identities, per substrate. Each id renders one
+-- stable @gateway-\<nodeId>@ StatefulSet with its own registered retained
+-- emitter journal (Sprint 2.32 / 3.26 Increment E).
+--
+-- Sprint 3.26 reduces the HOME substrate from three emitter identities to two.
+-- The home cluster is a single physical node whose allocatable budget was
+-- already fully committed (6450m of 6500m); dropping one 750m Guaranteed-QoS
+-- gateway StatefulSet frees the 750m CPU / 512 MiB that funds the physically
+-- separated control-plane workloads (Lifecycle Authority, Authority Backup /
+-- TLS Retention Adapters, fenced Provider Worker, Target Secret Agent) on the
+-- maxed single-node budget (operator-approved). The AWS substrate keeps three
+-- identities across its EKS nodes with their own retained-EBS journals, so its
+-- gateway resilience and its Sprint 7.28 static retained EBS provisioning are
+-- unchanged.
+gatewayNodeIdsForSubstrate :: Substrate -> [String]
+gatewayNodeIdsForSubstrate SubstrateHomeLocal = ["node-a", "node-b"]
+gatewayNodeIdsForSubstrate SubstrateAws = ["node-a", "node-b", "node-c"]
 
 gatewayRestServiceName :: String
 gatewayRestServiceName = "gateway"
@@ -388,6 +414,19 @@ instance FromJSON ChartInstallSnapshot where
 
 supportedChartNames :: [String]
 supportedChartNames = ["keycloak", "vscode", "api", "websocket", "gateway"]
+
+-- | Sprint 3.26: the five standing control-plane role charts. They are internal
+-- (deliberately NOT in 'supportedChartNames', so off the public
+-- @prodbox charts ...@ surface) but are resolvable/renderable by the chart
+-- platform and run the union runtime image, selected by their container args.
+controlPlaneRoleChartNames :: [String]
+controlPlaneRoleChartNames =
+  [ "lifecycle-authority"
+  , "provider-worker"
+  , "authority-backup"
+  , "tls-retention"
+  , "target-secret-agent"
+  ]
 
 resolveChart :: FilePath -> String -> Either String ChartDefinition
 resolveChart repoRoot chartName =
@@ -485,6 +524,20 @@ resolveChart repoRoot chartName =
           , chartDefinitionStorage = []
           , chartDefinitionRequiresPublicHost = False
           }
+    _
+      | chartName `elem` controlPlaneRoleChartNames ->
+          -- Sprint 3.26: the five standing control-plane role charts are internal
+          -- (absent from `supportedChartNames`, so off the public `prodbox charts`
+          -- surface), own no separately-provisioned PVC (the Lifecycle Authority's
+          -- journal is a StatefulSet-managed volumeClaimTemplate), and require no
+          -- public host.
+          Right
+            ChartDefinition
+              { chartDefinitionName = chartName
+              , chartDefinitionChartDir = repoRoot </> "charts" </> chartName
+              , chartDefinitionStorage = []
+              , chartDefinitionRequiresPublicHost = False
+              }
     _ ->
       Left
         ( "Unsupported chart '"
@@ -518,7 +571,11 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
     Left err -> pure (Left err)
     Right releaseOrder -> do
       runtimeImageResult <-
-        if any (`elem` releaseOrder) ["gateway", "api", "websocket"]
+        -- Sprint 3.26: the Bootstrap Broker runs the union runtime image, so the
+        -- plan builder must resolve it when the broker is in the release order.
+        if any
+          (`elem` releaseOrder)
+          (["gateway", "api", "websocket", "bootstrap-broker"] ++ controlPlaneRoleChartNames)
           then resolveRuntimeChartImageForSubstrate substrate
           else pure (Right Nothing)
       gatewayHostedZoneIdResult <-
@@ -946,6 +1003,12 @@ operatorAvailableTarget component =
     ComponentChartApi -> unsupportedOperatorGate component
     ComponentChartWebsocket -> unsupportedOperatorGate component
     ComponentChartGateway -> unsupportedOperatorGate component
+    ComponentChartBootstrapBroker -> unsupportedOperatorGate component
+    ComponentChartLifecycleAuthority -> unsupportedOperatorGate component
+    ComponentChartProviderWorker -> unsupportedOperatorGate component
+    ComponentChartAuthorityBackup -> unsupportedOperatorGate component
+    ComponentChartTlsRetention -> unsupportedOperatorGate component
+    ComponentChartTargetSecretAgent -> unsupportedOperatorGate component
 
 unsupportedOperatorGate :: ComponentId -> Either Text.Text value
 unsupportedOperatorGate component =
@@ -2092,6 +2155,16 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           (_, _, Nothing) -> Left "gateway requires a substrate-specific Tier-0 document"
       "bootstrap-broker" ->
         valuesForBootstrapBroker namespace rootChart maybeRuntimeImage
+      "lifecycle-authority" ->
+        valuesForLifecycleAuthority namespace rootChart maybeRuntimeImage
+      "provider-worker" ->
+        valuesForProviderWorker namespace rootChart maybeRuntimeImage
+      "authority-backup" ->
+        valuesForAuthorityBackup namespace rootChart maybeRuntimeImage
+      "tls-retention" ->
+        valuesForTlsRetention namespace rootChart maybeRuntimeImage
+      "target-secret-agent" ->
+        valuesForTargetSecretAgent namespace rootChart maybeRuntimeImage
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   values <- attachResourcePlanValues settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
@@ -2145,6 +2218,11 @@ chartResourceProfiles chartName =
     -- broker deployment template's `.Values.resources.bootstrapBroker`, while the
     -- profile id is the kebab-case `bootstrap-broker` capacity profile.
     "bootstrap-broker" -> [("bootstrapBroker", "bootstrap-broker")]
+    "lifecycle-authority" -> [("lifecycleAuthority", "lifecycle-authority")]
+    "provider-worker" -> [("providerWorker", "provider-worker")]
+    "authority-backup" -> [("authorityBackup", "authority-backup")]
+    "tls-retention" -> [("tlsRetention", "tls-retention")]
+    "target-secret-agent" -> [("targetSecretAgent", "target-secret-agent")]
     other -> [(other, other)]
 
 resourceGuardrailsValue :: Capacity.ResourcePlan -> String -> Bool -> Either String Value
@@ -2561,6 +2639,151 @@ valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
         ]
     )
 
+-- | Sprint 3.26: shared deployed-values builder for the five standing
+-- control-plane role charts. Every identity/probe value is projected from the
+-- role's one compiled @ChartStatics@ (passed in by the thin per-role wrappers),
+-- so the deployed values, the generated @values.yaml@ block, and the
+-- hand-written templates cannot diverge. The Guaranteed-QoS envelope is attached
+-- separately from the typed capacity plan by 'attachResourcePlanValues', so it
+-- is intentionally absent here. StatefulSet-specific values (the Lifecycle
+-- Authority journal storage class) come from the chart's @values.yaml@ default.
+valuesForControlPlaneRole
+  :: String
+  -> Value
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForControlPlaneRole chartName serviceAccountValue vaultRole livenessPath readinessPath namespace rootChart maybeRuntimeImage = do
+  resolvedImage <-
+    case maybeRuntimeImage of
+      Just imageInfo -> Right imageInfo
+      Nothing -> Left (chartName ++ " chart requires a resolved image reference")
+  pure
+    ( object
+        [ "global"
+            .= object
+              [ "namespace" .= namespace
+              , "rootChart" .= rootChart
+              ]
+        , "podAnnotations"
+            .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedImage)
+        , "image"
+            .= object
+              [ "repository" .= resolvedCustomImageRepository resolvedImage
+              , "tag" .= resolvedCustomImageTag resolvedImage
+              , "pullPolicy" .= ("IfNotPresent" :: String)
+              ]
+        , "runtime" .= object ["rtsArguments" .= ([] :: [String])]
+        , "serviceAccount" .= serviceAccountValue
+        , "vault" .= object ["role" .= vaultRole]
+        , "probes"
+            .= object
+              [ "liveness" .= livenessPath
+              , "readiness" .= readinessPath
+              ]
+        , "probeTiming" .= controlPlaneProbeTimingValue
+        , "listener" .= object ["port" .= (8600 :: Int)]
+        , "config" .= object ["roleDhall" .= ("" :: String)]
+        ]
+    )
+
+-- | The constant-time liveness/readiness probe timing shared by every standing
+-- control-plane role chart (identical to the Bootstrap Broker's).
+controlPlaneProbeTimingValue :: Value
+controlPlaneProbeTimingValue =
+  object
+    [ "liveness"
+        .= object
+          [ "initialDelaySeconds" .= (5 :: Int)
+          , "periodSeconds" .= (15 :: Int)
+          , "timeoutSeconds" .= (1 :: Int)
+          , "failureThreshold" .= (3 :: Int)
+          , "successThreshold" .= (1 :: Int)
+          ]
+    , "readiness"
+        .= object
+          [ "initialDelaySeconds" .= (3 :: Int)
+          , "periodSeconds" .= (10 :: Int)
+          , "timeoutSeconds" .= (1 :: Int)
+          , "failureThreshold" .= (6 :: Int)
+          , "successThreshold" .= (1 :: Int)
+          ]
+    ]
+
+valuesForLifecycleAuthority :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForLifecycleAuthority namespace rootChart maybeRuntimeImage =
+  valuesForControlPlaneRole
+    "lifecycle-authority"
+    AuthorityStatics.lifecycleAuthorityChartStaticsServiceAccountValue
+    (AuthorityStatics.lifecycleAuthorityStaticVaultRole s)
+    (AuthorityStatics.lifecycleAuthorityStaticLivenessPath s)
+    (AuthorityStatics.lifecycleAuthorityStaticReadinessPath s)
+    namespace
+    rootChart
+    maybeRuntimeImage
+ where
+  s = AuthorityStatics.lifecycleAuthorityChartStatics
+
+valuesForProviderWorker :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForProviderWorker namespace rootChart maybeRuntimeImage =
+  valuesForControlPlaneRole
+    "provider-worker"
+    ProviderWorkerStatics.providerWorkerChartStaticsServiceAccountValue
+    (ProviderWorkerStatics.providerWorkerStaticVaultRole s)
+    (ProviderWorkerStatics.providerWorkerStaticLivenessPath s)
+    (ProviderWorkerStatics.providerWorkerStaticReadinessPath s)
+    namespace
+    rootChart
+    maybeRuntimeImage
+ where
+  s = ProviderWorkerStatics.providerWorkerChartStatics
+
+valuesForAuthorityBackup :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForAuthorityBackup namespace rootChart maybeRuntimeImage =
+  valuesForControlPlaneRole
+    "authority-backup"
+    AuthorityBackupStatics.authorityBackupChartStaticsServiceAccountValue
+    (AuthorityBackupStatics.authorityBackupStaticVaultRole s)
+    (AuthorityBackupStatics.authorityBackupStaticLivenessPath s)
+    (AuthorityBackupStatics.authorityBackupStaticReadinessPath s)
+    namespace
+    rootChart
+    maybeRuntimeImage
+ where
+  s = AuthorityBackupStatics.authorityBackupChartStatics
+
+valuesForTlsRetention :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForTlsRetention namespace rootChart maybeRuntimeImage =
+  valuesForControlPlaneRole
+    "tls-retention"
+    TlsRetentionStatics.tlsRetentionChartStaticsServiceAccountValue
+    (TlsRetentionStatics.tlsRetentionStaticVaultRole s)
+    (TlsRetentionStatics.tlsRetentionStaticLivenessPath s)
+    (TlsRetentionStatics.tlsRetentionStaticReadinessPath s)
+    namespace
+    rootChart
+    maybeRuntimeImage
+ where
+  s = TlsRetentionStatics.tlsRetentionChartStatics
+
+valuesForTargetSecretAgent :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForTargetSecretAgent namespace rootChart maybeRuntimeImage =
+  valuesForControlPlaneRole
+    "target-secret-agent"
+    TargetSecretAgentStatics.targetSecretAgentChartStaticsServiceAccountValue
+    (TargetSecretAgentStatics.targetSecretAgentStaticVaultRole s)
+    (TargetSecretAgentStatics.targetSecretAgentStaticLivenessPath s)
+    (TargetSecretAgentStatics.targetSecretAgentStaticReadinessPath s)
+    namespace
+    rootChart
+    maybeRuntimeImage
+ where
+  s = TargetSecretAgentStatics.targetSecretAgentChartStatics
+
 valuesForGateway
   :: Substrate
   -> String
@@ -2594,12 +2817,12 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
   emitterPersistence <-
     EmitterPersistence.emitterPersistenceValues
       substrate
-      (map Text.pack gatewayNodeIds)
+      (map Text.pack (gatewayNodeIdsForSubstrate substrate))
   let gatewayRepository = resolvedCustomImageRepository resolvedGatewayImage
       gatewayTag = resolvedCustomImageTag resolvedGatewayImage
   pure
     ( object
-        [ "replicaCount" .= length gatewayNodeIds
+        [ "replicaCount" .= length (gatewayNodeIdsForSubstrate substrate)
         , "podAntiAffinity" .= podAntiAffinityValue settings
         , "podAnnotations"
             .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedGatewayImage)
@@ -2634,7 +2857,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , "syncIntervalSeconds" .= (1.0 :: Double)
               , "heartbeatTimeoutSeconds" .= (5 :: Int)
               ]
-        , "nodes" .= object ["rankedIds" .= gatewayNodeIds]
+        , "nodes" .= object ["rankedIds" .= gatewayNodeIdsForSubstrate substrate]
         , -- Sprint 2.32: typed stable-controller, journal-volume, and native
           -- Lease/RBAC inputs. Sprint 3.26 consumes this exact projection when
           -- it renders the physically separated StatefulSet workloads.
@@ -2652,12 +2875,16 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
                 "role" .= ChartStatics.gatewayStaticVaultRole ChartStatics.gatewayChartStatics
               , "serviceAccountTokenFile"
                   .= ("/var/run/secrets/kubernetes.io/serviceaccount/token" :: String)
-              , "paths"
+              , -- Sprint 3.26: the per-node event-key paths are no longer projected
+                -- as fixed `eventKeyNode{A,B,C}` values; the gateway config template
+                -- derives each peer's `gateway/gateway/<nodeId>/event-key` path
+                -- parametrically from `nodes.rankedIds`, so the event-key set is
+                -- substrate-variable (2 on home, 3 on AWS) and matches Orders
+                -- membership exactly. The Vault inventory still seeds/grants all
+                -- node event keys (VaultInventory).
+                "paths"
                   .= object
-                    [ "eventKeyNodeA" .= ("gateway/gateway/node-a/event-key" :: String)
-                    , "eventKeyNodeB" .= ("gateway/gateway/node-b/event-key" :: String)
-                    , "eventKeyNodeC" .= ("gateway/gateway/node-c/event-key" :: String)
-                    , "aws" .= ("gateway/gateway/aws" :: String)
+                    [ "aws" .= ("gateway/gateway/aws" :: String)
                     , "minio" .= ("gateway/gateway/minio" :: String)
                     ]
               ]

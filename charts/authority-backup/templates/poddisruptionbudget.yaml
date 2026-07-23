@@ -1,0 +1,18 @@
+{{- /*
+The Authority Backup Adapter is a single-writer backup singleton, so a voluntary
+disruption (node drain) must not evict it while it is mid-backup. `minAvailable:
+1` over its one replica blocks voluntary eviction; involuntary disruption and the
+Recreate rollout are unaffected.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: authority-backup
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "authority-backup.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "authority-backup.selectorLabels" . | nindent 6 }}

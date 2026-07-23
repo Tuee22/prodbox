@@ -150,6 +150,25 @@ data ComponentId
   | ComponentChartApi
   | ComponentChartWebsocket
   | ComponentChartGateway
+  | -- Control-plane charts (internal; not on the public `prodbox charts` surface)
+    -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker. It is a
+    -- chart-only node (no native home-platform install step) so it is resolvable
+    -- and renderable by the chart platform without altering the production
+    -- `cluster reconcile` topology; wiring it as the sole pre-Vault unsealer
+    -- ahead of `ComponentVaultUnsealed` is a Standard-P cutover, deliberately not
+    -- done here.
+    ComponentChartBootstrapBroker
+  | -- Sprint 3.26: the five standing control-plane role charts — the retained
+    -- home Lifecycle Authority, the fenced Provider Worker, the Authority Backup
+    -- and TLS Retention Adapters, and the substrate-local Target Secret Agent.
+    -- Each is a chart-only node (no native install step) whose production
+    -- interpreter lands in Phase 4, so rendering the charts here does not alter
+    -- the production `cluster reconcile` topology.
+    ComponentChartLifecycleAuthority
+  | ComponentChartProviderWorker
+  | ComponentChartAuthorityBackup
+  | ComponentChartTlsRetention
+  | ComponentChartTargetSecretAgent
   deriving (Eq, Ord, Show, Enum, Bounded, Generic, FromDhall, ToDhall)
 
 -- | The stable display/wire string for a 'ComponentId'. This is the SSoT for the
@@ -176,6 +195,12 @@ componentIdText = \case
   ComponentChartApi -> "chart_api"
   ComponentChartWebsocket -> "chart_websocket"
   ComponentChartGateway -> "chart_gateway"
+  ComponentChartBootstrapBroker -> "chart_bootstrap_broker"
+  ComponentChartLifecycleAuthority -> "chart_lifecycle_authority"
+  ComponentChartProviderWorker -> "chart_provider_worker"
+  ComponentChartAuthorityBackup -> "chart_authority_backup"
+  ComponentChartTlsRetention -> "chart_tls_retention"
+  ComponentChartTargetSecretAgent -> "chart_target_secret_agent"
 
 -- | Map a chart's on-disk name ("keycloak-postgres", …) to its 'ComponentId'.
 -- The chart platform (Sprint `3.23`) uses this to source chart dependency
@@ -191,6 +216,12 @@ componentIdForChartName = \case
   "api" -> Just ComponentChartApi
   "websocket" -> Just ComponentChartWebsocket
   "gateway" -> Just ComponentChartGateway
+  "bootstrap-broker" -> Just ComponentChartBootstrapBroker
+  "lifecycle-authority" -> Just ComponentChartLifecycleAuthority
+  "provider-worker" -> Just ComponentChartProviderWorker
+  "authority-backup" -> Just ComponentChartAuthorityBackup
+  "tls-retention" -> Just ComponentChartTlsRetention
+  "target-secret-agent" -> Just ComponentChartTargetSecretAgent
   _ -> Nothing
 
 -- | The inverse of 'componentIdForChartName': the chart's on-disk name for a
@@ -205,6 +236,12 @@ chartNameForComponent = \case
   ComponentChartApi -> Just "api"
   ComponentChartWebsocket -> Just "websocket"
   ComponentChartGateway -> Just "gateway"
+  ComponentChartBootstrapBroker -> Just "bootstrap-broker"
+  ComponentChartLifecycleAuthority -> Just "lifecycle-authority"
+  ComponentChartProviderWorker -> Just "provider-worker"
+  ComponentChartAuthorityBackup -> Just "authority-backup"
+  ComponentChartTlsRetention -> Just "tls-retention"
+  ComponentChartTargetSecretAgent -> Just "target-secret-agent"
   _ -> Nothing
 
 -- | The depth rank of a readiness probe — how strong an interface it exercises.
@@ -531,6 +568,16 @@ componentCapabilityOp = \case
   ComponentChartApi -> OpWorkloadAvailability
   ComponentChartWebsocket -> OpWorkloadAvailability
   ComponentChartGateway -> OpGatewayFrontDoor
+  -- Sprint 3.26: the broker is a standard rollout-readiness workload chart, so
+  -- it proves availability like the other charts (not the gateway front door).
+  ComponentChartBootstrapBroker -> OpWorkloadAvailability
+  -- Sprint 3.26: the five standing control-plane charts each prove availability
+  -- through an ordinary rollout-readiness workload gate.
+  ComponentChartLifecycleAuthority -> OpWorkloadAvailability
+  ComponentChartProviderWorker -> OpWorkloadAvailability
+  ComponentChartAuthorityBackup -> OpWorkloadAvailability
+  ComponentChartTlsRetention -> OpWorkloadAvailability
+  ComponentChartTargetSecretAgent -> OpWorkloadAvailability
 
 componentServiceText :: ComponentId -> Text
 componentServiceText = Text.pack . componentIdText
@@ -783,6 +830,25 @@ defaultComponentGraph =
   , node ComponentChartApi [orderingOn ComponentRegistry] ProbeRolloutComplete
   , node ComponentChartWebsocket [orderingOn ComponentChartRedis] ProbeRolloutComplete
   , node ComponentChartGateway [orderingOn ComponentChartPulsar] ProbeRolloutComplete
+  , -- Sprint 3.26: the pre-Vault Bootstrap Broker chart deploys behind the
+    -- registry (its image is mirrored there), like the other charts. It is a
+    -- chart-only node: nothing in the production reconcile depends on it and it
+    -- contributes no native install step, so it is resolvable/renderable by the
+    -- plan builder without changing the production topology. Making
+    -- `ComponentVaultUnsealed` depend on it (broker as the sole pre-Vault
+    -- unsealer, retiring `ComponentGatewayDaemonPreVault`) is a Standard-P
+    -- cutover, deliberately not wired here.
+    node ComponentChartBootstrapBroker [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , -- Sprint 3.26: the five standing control-plane charts are chart-only nodes
+    -- behind the registry (their images are mirrored there), each with no
+    -- dependants and no native install step, so they are resolvable/renderable
+    -- without changing the production `cluster reconcile` topology. Phase 4 binds
+    -- their production interpreters and any real ordering edges.
+    node ComponentChartLifecycleAuthority [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , node ComponentChartProviderWorker [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , node ComponentChartAuthorityBackup [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , node ComponentChartTlsRetention [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , node ComponentChartTargetSecretAgent [orderingOn ComponentRegistry] ProbeRolloutComplete
   ]
  where
   node cid deps probe =

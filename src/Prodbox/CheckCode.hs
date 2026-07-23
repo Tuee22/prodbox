@@ -7,6 +7,9 @@ module Prodbox.CheckCode
   , bootstrapBrokerChartStaticViolations
   , bootstrapBrokerChartStaticsConformanceViolations
   , bootstrapBrokerIsolationViolations
+  , ControlPlaneChartLint (..)
+  , controlPlaneChartLints
+  , controlPlaneChartStaticViolations
   , checkCreateCallSiteCoverage
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
@@ -51,7 +54,7 @@ where
 
 import Control.Monad (forM)
 import Data.Char (isAlpha, isAlphaNum, isDigit, toLower)
-import Data.List (findIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
+import Data.List (find, findIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
@@ -92,12 +95,17 @@ import Prodbox.Legacy.EscapeRegistry
   ( escapeRegistryViolations
   , isLegacyEscapeScanFile
   )
+import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
+import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
+import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
   , renderRegisteredResourcesMarkdown
   , resourceLifecycleClasses
   , resourceNamesOfClass
   )
+import Prodbox.Lifecycle.TargetSecretAgent.ChartStatics qualified as TargetSecretAgentStatics
+import Prodbox.Lifecycle.TlsRetention.ChartStatics qualified as TlsRetentionStatics
 import Prodbox.Lint
   ( ensureSandboxedStyleTools
   , missingStyleToolViolations
@@ -105,6 +113,7 @@ import Prodbox.Lint
   )
 import Prodbox.PublicEdge (renderHelmRouteInventory)
 import Prodbox.Result (Result (..))
+import Prodbox.Secret.VaultInventory (vaultIdentityRegistryViolations)
 import Prodbox.Subprocess qualified as Subprocess
 import System.Directory
   ( copyFile
@@ -221,6 +230,49 @@ generatedSectionRules =
       , generatedSectionEndMarker = "# prodbox:bootstrap-broker-chart-statics.values:end"
       , generatedSectionRender = const BrokerChartStatics.renderBrokerChartStaticsYaml
       , generatedSectionRendererSources = ["src/Prodbox/Bootstrap/Broker/ChartStatics.hs"]
+      }
+  , -- Sprint 3.26: the five standing control-plane role charts each project their
+    -- ServiceAccount / Vault role / probe paths from one compiled ChartStatics,
+    -- drift-gated the same way as the broker.
+    GeneratedSectionRule
+      { generatedSectionKey = "lifecycle-authority-chart-statics.values"
+      , generatedSectionPath = "charts/lifecycle-authority/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-chart-statics.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "provider-worker-chart-statics.values"
+      , generatedSectionPath = "charts/provider-worker/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:provider-worker-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:provider-worker-chart-statics.values:end"
+      , generatedSectionRender = const ProviderWorkerStatics.renderProviderWorkerChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/ProviderWorker/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "authority-backup-chart-statics.values"
+      , generatedSectionPath = "charts/authority-backup/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:authority-backup-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:authority-backup-chart-statics.values:end"
+      , generatedSectionRender = const AuthorityBackupStatics.renderAuthorityBackupChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/AuthorityBackup/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "tls-retention-chart-statics.values"
+      , generatedSectionPath = "charts/tls-retention/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:tls-retention-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:tls-retention-chart-statics.values:end"
+      , generatedSectionRender = const TlsRetentionStatics.renderTlsRetentionChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/TlsRetention/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "target-secret-agent-chart-statics.values"
+      , generatedSectionPath = "charts/target-secret-agent/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:target-secret-agent-chart-statics.values:start"
+      , generatedSectionEndMarker = "# prodbox:target-secret-agent-chart-statics.values:end"
+      , generatedSectionRender = const TargetSecretAgentStatics.renderTargetSecretAgentChartStaticsYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/TargetSecretAgent/ChartStatics.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
     -- are rendered into substrates.md so `prodbox docs check` fails the
@@ -504,7 +556,22 @@ runConformanceTier repoRoot = do
             [] -> do
               staticsViolations <- checkGatewayChartStatics repoRoot
               case staticsViolations of
-                [] -> pure ExitSuccess
+                [] ->
+                  case vaultIdentityRegistryViolations of
+                    [] -> pure ExitSuccess
+                    vaultViolations ->
+                      failWith
+                        ( unlines
+                            ( ( "Vault identity-registry conformance failed. Every Vault "
+                                  ++ "Kubernetes-auth role name and chart-secret policy name must be "
+                                  ++ "bound by exactly one identity across the VaultRoleId registry and "
+                                  ++ "the chart-secret consumers (lifecycle_control_plane_architecture.md § 10.2, "
+                                  ++ "Sprint 3.26):"
+                              )
+                                : map ("- " ++) vaultViolations
+                                ++ ["Rename the colliding role/policy so each identity is defined exactly once."]
+                            )
+                        )
                 violations ->
                   failWith
                     ( unlines
@@ -3037,6 +3104,7 @@ chartViolationsFor repoRoot relativeChartPath = do
   probeViolations <- gatewayProbeChartViolations (takeFileName chartDir) chartDir
   staticsViolations <- gatewayStaticsChartViolations (takeFileName chartDir) chartDir
   brokerStaticsViolations <- bootstrapBrokerStaticsChartViolations (takeFileName chartDir) chartDir
+  controlPlaneStaticsViolations <- controlPlaneChartStaticsViolations (takeFileName chartDir) chartDir
   pure
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
@@ -3045,6 +3113,7 @@ chartViolationsFor repoRoot relativeChartPath = do
         ++ probeViolations
         ++ staticsViolations
         ++ brokerStaticsViolations
+        ++ controlPlaneStaticsViolations
     )
  where
   manifestViolations path contents =
@@ -3226,6 +3295,178 @@ bootstrapBrokerChartStaticViolations serviceAccountTemplate deploymentTemplate v
   generatedStaticsViolations =
     [ "charts/bootstrap-broker/values.yaml must contain the generated BrokerChartStatics defaults (serviceAccount/vault.role/probes)."
     | not (BrokerChartStatics.renderBrokerChartStaticsYaml `isInfixOf` valuesContents)
+    ]
+
+-- | Sprint 3.26: the negative-lint registry for the five standing control-plane
+-- role charts. Each entry pins a chart to its compiled ServiceAccount identity,
+-- constant-time probe paths, generated @values.yaml@ block, and hand-written
+-- workload template file, so the regression guard below can reject a raw literal
+-- that drifts from the compiled @ChartStatics@.
+data ControlPlaneChartLint = ControlPlaneChartLint
+  { cplChartName :: String
+  , cplServiceAccount :: String
+  , cplLiveness :: String
+  , cplReadiness :: String
+  , cplRenderYaml :: String
+  , cplWorkloadFile :: String
+  }
+
+controlPlaneChartLints :: [ControlPlaneChartLint]
+controlPlaneChartLints =
+  [ ControlPlaneChartLint
+      "lifecycle-authority"
+      ( Text.unpack
+          ( AuthorityStatics.lifecycleAuthorityStaticServiceAccount
+              AuthorityStatics.lifecycleAuthorityChartStatics
+          )
+      )
+      ( Text.unpack
+          ( AuthorityStatics.lifecycleAuthorityStaticLivenessPath
+              AuthorityStatics.lifecycleAuthorityChartStatics
+          )
+      )
+      ( Text.unpack
+          ( AuthorityStatics.lifecycleAuthorityStaticReadinessPath
+              AuthorityStatics.lifecycleAuthorityChartStatics
+          )
+      )
+      AuthorityStatics.renderLifecycleAuthorityChartStaticsYaml
+      "statefulset.yaml"
+  , ControlPlaneChartLint
+      "provider-worker"
+      ( Text.unpack
+          ( ProviderWorkerStatics.providerWorkerStaticServiceAccount
+              ProviderWorkerStatics.providerWorkerChartStatics
+          )
+      )
+      ( Text.unpack
+          ( ProviderWorkerStatics.providerWorkerStaticLivenessPath
+              ProviderWorkerStatics.providerWorkerChartStatics
+          )
+      )
+      ( Text.unpack
+          ( ProviderWorkerStatics.providerWorkerStaticReadinessPath
+              ProviderWorkerStatics.providerWorkerChartStatics
+          )
+      )
+      ProviderWorkerStatics.renderProviderWorkerChartStaticsYaml
+      "deployment.yaml"
+  , ControlPlaneChartLint
+      "authority-backup"
+      ( Text.unpack
+          ( AuthorityBackupStatics.authorityBackupStaticServiceAccount
+              AuthorityBackupStatics.authorityBackupChartStatics
+          )
+      )
+      ( Text.unpack
+          ( AuthorityBackupStatics.authorityBackupStaticLivenessPath
+              AuthorityBackupStatics.authorityBackupChartStatics
+          )
+      )
+      ( Text.unpack
+          ( AuthorityBackupStatics.authorityBackupStaticReadinessPath
+              AuthorityBackupStatics.authorityBackupChartStatics
+          )
+      )
+      AuthorityBackupStatics.renderAuthorityBackupChartStaticsYaml
+      "deployment.yaml"
+  , ControlPlaneChartLint
+      "tls-retention"
+      ( Text.unpack
+          (TlsRetentionStatics.tlsRetentionStaticServiceAccount TlsRetentionStatics.tlsRetentionChartStatics)
+      )
+      ( Text.unpack
+          (TlsRetentionStatics.tlsRetentionStaticLivenessPath TlsRetentionStatics.tlsRetentionChartStatics)
+      )
+      ( Text.unpack
+          (TlsRetentionStatics.tlsRetentionStaticReadinessPath TlsRetentionStatics.tlsRetentionChartStatics)
+      )
+      TlsRetentionStatics.renderTlsRetentionChartStaticsYaml
+      "deployment.yaml"
+  , ControlPlaneChartLint
+      "target-secret-agent"
+      ( Text.unpack
+          ( TargetSecretAgentStatics.targetSecretAgentStaticServiceAccount
+              TargetSecretAgentStatics.targetSecretAgentChartStatics
+          )
+      )
+      ( Text.unpack
+          ( TargetSecretAgentStatics.targetSecretAgentStaticLivenessPath
+              TargetSecretAgentStatics.targetSecretAgentChartStatics
+          )
+      )
+      ( Text.unpack
+          ( TargetSecretAgentStatics.targetSecretAgentStaticReadinessPath
+              TargetSecretAgentStatics.targetSecretAgentChartStatics
+          )
+      )
+      TargetSecretAgentStatics.renderTargetSecretAgentChartStaticsYaml
+      "deployment.yaml"
+  ]
+
+-- | Sprint 3.26 (IO). Dispatch a chart to its control-plane negative-lint if it
+-- is one of the five standing control-plane role charts; otherwise no-op.
+controlPlaneChartStaticsViolations :: String -> FilePath -> IO [String]
+controlPlaneChartStaticsViolations chartName chartDir =
+  case find ((== chartName) . cplChartName) controlPlaneChartLints of
+    Nothing -> pure []
+    Just lint -> do
+      serviceAccountContents <- readFileIfExists (chartDir </> "templates" </> "serviceaccount.yaml")
+      workloadContents <- readFileIfExists (chartDir </> "templates" </> cplWorkloadFile lint)
+      valuesContents <- readFileIfExists (chartDir </> "values.yaml")
+      pure (controlPlaneChartStaticViolations lint serviceAccountContents workloadContents valuesContents)
+ where
+  readFileIfExists path = do
+    exists <- doesFileExist path
+    if exists then readFile path else pure ""
+
+-- | Sprint 3.26 (pure). A standing control-plane role chart's ServiceAccount
+-- identity and lifecycle probe paths must render from @.Values@ (fed by the
+-- compiled per-role @ChartStatics@), never raw literals, and @values.yaml@ must
+-- carry the generated statics block. Exposed for the conformance unit suite.
+controlPlaneChartStaticViolations :: ControlPlaneChartLint -> String -> String -> String -> [String]
+controlPlaneChartStaticViolations lint serviceAccountTemplate workloadTemplate valuesContents =
+  serviceAccountLiteralViolations ++ probePathLiteralViolations ++ generatedStaticsViolations
+ where
+  chart = cplChartName lint
+  serviceAccountName = cplServiceAccount lint
+  serviceAccountLiteralViolations =
+    [ "charts/"
+        ++ chart
+        ++ "/templates/"
+        ++ file
+        ++ " hard-codes the ServiceAccount identity `"
+        ++ serviceAccountName
+        ++ "`; render `{{ .Values.serviceAccount.name }}` from the compiled ChartStatics instead."
+    | (file, contents, needle) <-
+        [ ("serviceaccount.yaml", serviceAccountTemplate, "name: " ++ serviceAccountName)
+        , (cplWorkloadFile lint, workloadTemplate, "serviceAccountName: " ++ serviceAccountName)
+        ]
+    , needle `isInfixOf` contents
+    ]
+  probePathLiteralViolations =
+    [ "charts/"
+        ++ chart
+        ++ "/templates/"
+        ++ cplWorkloadFile lint
+        ++ " hard-codes the "
+        ++ probeName
+        ++ " probe path `"
+        ++ path
+        ++ "`; render `{{ .Values.probes."
+        ++ probeName
+        ++ " | quote }}` from the compiled ChartStatics instead."
+    | (probeName, path) <-
+        [ ("liveness", cplLiveness lint)
+        , ("readiness", cplReadiness lint)
+        ]
+    , ("path: " ++ path) `isInfixOf` workloadTemplate
+    ]
+  generatedStaticsViolations =
+    [ "charts/"
+        ++ chart
+        ++ "/values.yaml must contain the generated ChartStatics defaults (serviceAccount/vault.role/probes)."
+    | not (cplRenderYaml lint `isInfixOf` valuesContents)
     ]
 
 gatewayProbeTemplateBlocks :: [(String, String)]

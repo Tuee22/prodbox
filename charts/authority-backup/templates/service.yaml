@@ -1,0 +1,21 @@
+{{- /*
+In-cluster ClusterIP Service for the Authority Backup Adapter. It fronts the
+adapter's constant-time `/healthz`/`/readyz` probe surface for in-cluster
+reachability and stable DNS.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: authority-backup
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "authority-backup.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "authority-backup.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: authority
+      port: {{ .Values.listener.port }}
+      targetPort: authority
+      protocol: TCP

@@ -1,0 +1,17 @@
+{{- /*
+Mounted Dhall for the `lifecycle-authority` runtime role. The empty default lets
+generic `helm template`/lint invocations omit the body; the supported
+ChartPlatform render supplies the complete, non-secret authority config.
+Directory mount (see statefulset.yaml) so a ConfigMap update fires the
+authority's file-watch.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lifecycle-authority-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+data:
+  config.dhall: |
+    {{- .Values.config.roleDhall | nindent 4 }}

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: tls-retention
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Home-only TLS Retention Adapter control-plane workload. It runs the
+  `tls-retention` runtime role with its own ServiceAccount / least-privilege
+  Vault Kubernetes-auth role and failure domain. Reading only
+  `secret/aws/tls-retention-store`, it retains and restores the
+  `public-edge-tls/<substrate>/<scope-key>` ciphertext in S3. Rendered from the
+  compiled `Prodbox.Lifecycle.TlsRetention.ChartStatics` source of truth
+  (Sprint 3.26).

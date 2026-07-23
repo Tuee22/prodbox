@@ -22,6 +22,7 @@ module Prodbox.Secret.VaultInventory
   , chartVaultSecretObjects
   , chartVaultSecretConsumers
   , vaultSecretConsumerByName
+  , vaultIdentityRegistryViolations
   , generateVaultSecretFieldValue
   , runVaultSecretBootstrapWith
   )
@@ -43,6 +44,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
+import Prodbox.Vault.RoleId (allVaultRoleIds, vaultRoleIdText)
 
 data VaultSecretPath = VaultSecretPath
   { vaultSecretPathMount :: Text
@@ -130,6 +132,48 @@ vaultSecretConsumerPolicyDocument consumer =
 vaultSecretConsumerByName :: Text -> Maybe VaultSecretConsumer
 vaultSecretConsumerByName name =
   find ((== name) . vaultSecretConsumerName) chartVaultSecretConsumers
+
+-- | Sprint 3.26: the compiled Vault identity registry must be collision-free.
+-- Every Vault Kubernetes-auth role name and every chart-secret policy name is
+-- bound by at most one identity across BOTH the cross-module 'VaultRoleId'
+-- inventory (the workloads whose role identity is a compiled constant, e.g. the
+-- Gateway Runtime and the Bootstrap Broker) AND the data-driven chart-secret
+-- consumers. If two identities shared a role name, materializing them would
+-- silently widen one workload's authority to the other's ServiceAccounts; if two
+-- shared a policy name, one policy document would overwrite the other. This is
+-- the "identities exist exactly once as a compiled closed registry value"
+-- invariant (lifecycle_control_plane_architecture.md § 10.2), previously
+-- unenforced between the two role-name sources. Returns a violation per
+-- colliding name; empty means the registry is collision-free.
+vaultIdentityRegistryViolations :: [String]
+vaultIdentityRegistryViolations =
+  concat
+    [ [ "chart-secret consumer role name `"
+          <> Text.unpack name
+          <> "` is defined by more than one consumer in the closed Vault identity registry"
+      | name <- duplicateNames consumerRoleNames
+      ]
+    , [ "chart-secret consumer policy name `"
+          <> Text.unpack name
+          <> "` is defined by more than one consumer in the closed Vault identity registry"
+      | name <- duplicateNames consumerPolicyNames
+      ]
+    , [ "Vault Kubernetes-auth role name `"
+          <> Text.unpack name
+          <> "` collides between the cross-module VaultRoleId registry and a chart-secret consumer"
+      | name <- roleIdNames
+      , name `elem` consumerRoleNames
+      ]
+    ]
+ where
+  roleIdNames = map vaultRoleIdText allVaultRoleIds
+  consumerRoleNames = map vaultSecretConsumerRoleName chartVaultSecretConsumers
+  consumerPolicyNames = map vaultSecretConsumerPolicyName chartVaultSecretConsumers
+  duplicateNames names =
+    [ name
+    | (name, count) <- Map.toList (Map.fromListWith (+) [(n, 1 :: Int) | n <- names])
+    , count > (1 :: Int)
+    ]
 
 chartVaultSecretConsumers :: [VaultSecretConsumer]
 chartVaultSecretConsumers =

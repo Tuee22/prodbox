@@ -2581,6 +2581,15 @@ deployed cluster, Vault, AWS, or later phase. Evidence: `prodbox dev check` exit
 test that passes in isolation and is unrelated to this change), including the regenerated
 `prodbox-config-types.dhall` drift guard and the Sprint 5.13 guardrail-report fixtures synced to the
 trimmed vscode quota.
+**Independent Validation (Increment D)**: the extended graph suite proves
+`resolveDependencyOrder "bootstrap-broker"` yields exactly `["bootstrap-broker"]` (graph-connected,
+no chart dependencies) and the `componentIdText` / `componentIdForChartName` / `chartNameForComponent`
+bijection round-trips; the warning-clean `-Werror` build proves every exhaustive `ComponentId` match
+(capability op, native/AWS steps, operator-gate + readiness registries) covers the new chart-only
+node; and the full suite proves the regenerated schema + graph decode round-trip (the test-fixture
+`ComponentId` union in `TestSupport.hs` was synced) — all with no deployed cluster, Vault, AWS, or
+later phase. Evidence: `prodbox dev check` exit 0; full `prodbox test unit` 2207/2207 (of 2208, the
+one excluded case being the pre-existing env-flaky AWS-SSH test).
 **Independent Validation**: Helm rendering, typed-values goldens, resource-plan tables, route/RBAC
 negative fixtures, and chart lint validate the platform surface without a deployed cluster, AWS,
 or a later phase.
@@ -2689,18 +2698,141 @@ readiness, deployment cardinality, and failure domains match their typed authori
   `resolveChart` arm, and the `chartResourceProfiles` mapping to the camelCase `bootstrapBroker`
   value key. The chart stays an internal control-plane chart (absent from `supportedChartNames`, so
   off the public `prodbox charts ...` surface).
-- **Remaining increments**: add the reconcile-graph ordering (deploy the broker before Vault
-  unseal) via a `ComponentGraph.hs` node + `prodbox-config-types.dhall` regeneration, plus the
-  runtime-image list entry, so the broker is driven end-to-end by the plan builder; render the
-  Gateway Runtime StatefulSet with a per-emitter retained journal identity; render the retained
-  home Lifecycle Authority,
-  its physically separate Authority Backup and TLS Retention Adapters, the fenced Provider Worker,
-  the Target Secret Agent, and the permit-indexed Credential Provisioner / External Material
-  Ingress / Admin Action Runner Jobs; wire least-privilege Vault roles and separate Vault
-  paths/SecretRefs/policies for each; extend the typed capacity plan with independent
-  CPU/memory/ephemeral/queue limits; and add the negative-lint fixtures (shared ServiceAccount,
-  cross-role policy, gateway lifecycle routes, missing limits, deep work in kubelet probes) and
-  generated-values goldens.
+- **Increment D landed** (reconcile-graph wiring): `ComponentGraph.hs` gains
+  `ComponentChartBootstrapBroker` (an internal chart-only node behind the registry) with its
+  `componentIdText` / `componentIdForChartName` / `chartNameForComponent` bijection,
+  `componentCapabilityOp` (`OpWorkloadAvailability`), and the exhaustive-match cases in
+  `stepsForComponent` / `AwsSubstratePlatform` / the operator-gate and native/AWS readiness
+  registries (each chart-only, so the broker contributes **no** native install step — the
+  production `cluster reconcile` topology is unchanged); `ChartPlatform.hs` adds the broker to the
+  runtime-image resolution list; and `prodbox-config-types.dhall` was regenerated for the new graph.
+  `resolveDependencyOrder "bootstrap-broker"` now yields `["bootstrap-broker"]`, so the plan builder
+  drives the broker end-to-end. Making `ComponentVaultUnsealed` depend on the broker (broker as the
+  sole pre-Vault unsealer, retiring `ComponentGatewayDaemonPreVault`) is a **Standard-P cutover**,
+  deliberately not done here.
+- **Increment E landed** (Gateway Runtime StatefulSet): `charts/gateway/templates/deployments.yaml`
+  now renders one stable **`gateway-<nodeId>` StatefulSet per ranked id** (replicas 1) consuming the
+  Sprint-2.32 `emitterPersistence` projection by index — each mounts its registered retained emitter
+  journal at `/var/lib/prodbox/gateway-emitter` (home: a node-pinned `hostPath`; AWS: a
+  `ReadWriteOncePod` retained-EBS `volumeClaimTemplate`) — and a single-replica StatefulSet update
+  deletes the old pod before creating its replacement, so two admitted writers can never overlap for
+  one emitter identity. `rbac.yaml` adds a namespace-scoped `coordination.k8s.io` Lease Role +
+  RoleBinding (from `emitterPersistence.lease`) for the incarnation fence; `values.yaml` gains a
+  home-substrate `emitterPersistence` default; and `Rke2.gatewayDaemonDeploymentRefs` →
+  `gatewayDaemonWorkloadRefs` targeting `statefulset/gateway-<node>` for rollout restart/status. The
+  file name is retained so the gateway probe/statics lint keeps its anchor, and the probe/SA/resources
+  content is preserved verbatim. Both substrate renders were verified in-session with `helm template`
+  (home hostPath and AWS `volumeClaimTemplate`, exit 0). The **live** StatefulSet/PV-bind/Lease
+  rollout is a non-blocking Standard-O proof (cleared by `prodbox test all`).
+- **Increment F landed** (Vault identity-registry cross-check): `Prodbox.Secret.VaultInventory`
+  gains a compiled `vaultIdentityRegistryViolations` invariant proving the Vault Kubernetes-auth
+  role names and chart-secret policy names are each bound by exactly one identity across BOTH the
+  cross-module `VaultRoleId` registry (Gateway Runtime, Bootstrap Broker) AND the data-driven
+  chart-secret consumers — the previously-unenforced "identities exist exactly once as a compiled
+  closed registry value" invariant (lifecycle_control_plane_architecture.md § 10.2). It is enforced
+  by a unit test and by the `prodbox dev check` conformance tier, so a future control-plane role
+  that accidentally reused a name fails the build in seconds. This hardens the registry ahead of the
+  remaining control-plane roles.
+- **Increment G landed** (capacity funding via the home gateway 3 → 2 reduction, operator-approved):
+  the physically separated control-plane workloads are funded on the maxed single node (an
+  i7-4790K: 8 threads / ~15.5 GiB, so `host_capacity` `8000m / 15872 MiB` already claims the whole
+  machine — there is no under-declared capacity to raise). `Prodbox.Lib.ChartPlatform.gatewayNodeIds`
+  becomes the substrate-aware `gatewayNodeIdsForSubstrate :: Substrate -> [String]` (home
+  `[node-a, node-b]`, AWS `[node-a, node-b, node-c]`), so the AWS substrate keeps three emitter
+  identities and its Sprint-7.28 static retained-EBS provisioning unchanged, while the home substrate
+  runs two. The `gateway` namespace quota drops `2750m → 2000m` and `3584 → 3072 MiB` and the
+  `gateway` workload profile drops `replicas 3 → 2` (draw matches: `2 × 750m` gateway `+ 500m` pulsar
+  `= 2000m`), freeing `750m CPU / 512 MiB`; the new single-node concurrent-quota sum is
+  `5700m / 12256 MiB ≤ 6500m / 12800 MiB` allocatable, leaving `800m CPU / 544 MiB` headroom for the
+  standing control-plane workloads. Because the gateway daemon rejects any `event_keys` set that does
+  not match Orders membership exactly (`Prodbox.Gateway.Settings.compileBoundedOrders`),
+  `charts/gateway/templates/configmap-config.yaml` now renders the per-peer `event_keys`
+  parametrically over `nodes.rankedIds` (each peer's key path derived as
+  `gateway/gateway/<nodeId>/event-key`), retiring the previously hard-coded three-node mesh
+  assumption and the fixed `eventKeyNode{A,B,C}` values. Evidence: `prodbox dev check` exit 0; the
+  targeted capacity / resource-plan / guardrail-golden / `gatewayDaemonWorkloadRefs` /
+  emitter-persistence / Orders suite 204/204; and a `helm template` of the gateway config on the home
+  two-node case producing exactly a two-member `event_keys` list. (The full `prodbox test unit` run
+  is intermittently environment-flaky on this host — daemon/concurrency tests hang under fd pressure
+  from stray suite processes — so per the project's validation-toolchain guidance the code-owned
+  surface is validated with `dev check` plus targeted `-p` patterns.) The **live** two-emitter
+  StatefulSet rollout remains a non-blocking Standard-O proof.
+- **Coupling note (why the remaining Vault-inventory + workload charts are not additive in the same
+  way B–F were).** Adding the control-plane roles' least-privilege consumers themselves
+  (`secret/aws/{lifecycle-provider,authority-backup-store,tls-retention-store}`, the target-agent KV)
+  is coupled to two decisions outside a clean code change: (1) the seed-object **credential field
+  schemas** each new consumer path requires (enforced by the "every consumer path has a seed object"
+  invariant) are defined by the Phase-4/8 credential flow; and (2) each control-plane **workload
+  chart** needs an independent Guaranteed-QoS envelope on the single-node home budget, which is
+  already at 6450m ≤ 6500m concurrent — so each addition needs an operator capacity-architecture
+  decision. These are tracked below and are best landed alongside their Phase-4 interpreters.
+- **Capacity funding resolved (Increment G, above).** The operator-approved home gateway 3 → 2
+  reduction frees `800m CPU / 544 MiB` of single-node headroom, which sizes the five **standing**
+  control-plane workloads (Guaranteed-QoS, `request == limit`): Lifecycle Authority (`150m / 128Mi`,
+  StatefulSet), fenced Provider Worker (`100m / 112Mi`), Authority Backup Adapter (`60m / 80Mi`),
+  TLS Retention Adapter (`60m / 80Mi`), Target Secret Agent (`60m / 80Mi`) — concurrent sum
+  `6130m / 12736 MiB ≤ 6500m / 12800 MiB`.
+- **Increment H landed** (the five standing control-plane role charts): `charts/lifecycle-authority/`
+  (a StatefulSet with a retained journal `volumeClaimTemplate`), `charts/provider-worker/`,
+  `charts/authority-backup/`, `charts/tls-retention/`, and `charts/target-secret-agent/` (Deployments)
+  are rendered as internal control-plane charts — chart-only `ComponentGraph` nodes
+  (`ComponentChart{LifecycleAuthority,ProviderWorker,AuthorityBackup,TlsRetention,TargetSecretAgent}`)
+  behind the registry with no native install step, so the production `cluster reconcile` topology is
+  unchanged and they are deliberately absent from `supportedChartNames` (off the public
+  `prodbox charts …` surface). Each role has its own compiled `ChartStatics`
+  (`src/Prodbox/Lifecycle/<Role>/ChartStatics.hs`) projecting its ServiceAccount / Vault role (a new
+  least-privilege `VaultRoleId` — the closed inventory is now 7 roles, still collision-free under the
+  `vaultIdentityRegistryViolations` conformance gate) and constant-time `/healthz`+`/readyz` probe
+  paths; a `<role>-chart-statics.values` generated-section drift gate holds the committed
+  `values.yaml` byte-identical to the compiled statics. `ChartPlatform` gains
+  `controlPlaneRoleChartNames`, a shared `valuesForControlPlaneRole` renderer with five thin per-role
+  wrappers, a `resolveChart` arm, the runtime-image list entries, and the `chartResourceProfiles`
+  camelCase mappings; the typed capacity plan reserves the five independent namespace quotas +
+  Guaranteed-QoS workload profiles funded by Increment G (concurrent sum `6130m / 12736 MiB ≤
+  6500 / 12800`, the Lifecycle Authority reserving 1Gi durable for its journal); and the six
+  `ComponentId` exhaustive-match sites (native/AWS step + readiness registries, operator gate,
+  capability op) plus the `TestSupport` Dhall mirror and `prodbox-config-types.dhall` are regenerated.
+  Evidence: `prodbox dev check` exit 0 (warning-clean build, fourmolu/HLint, the 7-role Vault
+  identity conformance, and the five generated-section drift gates); the targeted capacity /
+  ComponentId-bijection / chart-statics suite 248/248 plus the extended graph test proving
+  `resolveDependencyOrder` for each of the five new charts yields `[<chart>]`; and a `helm template`
+  of all five charts (six objects each: Deployment/StatefulSet, Service, ServiceAccount,
+  NetworkPolicy, PodDisruptionBudget, ConfigMap). The **live** rollout is a non-blocking Standard-O
+  proof.
+- **Increment I landed** (per-role negative-lint fixtures): `CheckCode.hs` gains a generic
+  `controlPlaneChartStaticViolations` regression guard driven by a compiled `controlPlaneChartLints`
+  registry (chart → compiled ServiceAccount identity, `/healthz`+`/readyz` probe paths, generated
+  `values.yaml` block, and hand-written workload template — `statefulset.yaml` for the Authority,
+  `deployment.yaml` for the four adapters). It is wired into `chartViolationsFor` (so `prodbox dev
+  check` runs it on every chart) and rejects a hand-written ServiceAccount identity or probe path
+  hard-coded to a raw literal instead of `.Values.serviceAccount.name` / `.Values.probes.*`, or a
+  `values.yaml` missing the generated statics block. Two conformance tests prove the five committed
+  charts produce no violations and that raw literals are rejected. Evidence: `prodbox dev check`
+  exit 0 (the lint runs clean against all five real charts); the extended `Bootstrap Broker chart
+  statics` suite (broker + control-plane cases) green.
+- **Remaining in 3.26 (Phase-4-coupled Vault least-privilege):** wire each role's least-privilege
+  Vault policy / Kubernetes-auth role / consumer / seed object in `defaultVaultReconcilePlan` per the
+  authoritative inventory
+  ([secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md) §
+  inventory table: `secret/aws/{lifecycle-provider,authority-backup-store,tls-retention-store}`, the
+  Target-Agent KV lanes, and the Lifecycle Authority Transit domains) — deliberately deferred because
+  the credential-field schemas, the Authority Transit domains, and the Target-Agent KV lanes are
+  defined by the Phase-4/8 credential flow, so they co-land with the Sprint 4.48 interpreters. The
+  generated-section drift gate and the Increment I negative-lint already hold each chart's identity
+  values to its compiled statics.
+- **Deferred to co-land with Sprint 4.48 (permit machinery).** The ephemeral permit-indexed Jobs —
+  Credential Provisioner, External Material Ingress, Admin Action Runner, and the post-export
+  Decommission Runner — are on-demand runners whose attestation/permit logic *is* Sprint 4.48
+  (`GenesisPermit` / `BackupRepair` / `OperatorMaterial`). Per the coupling note above they are
+  rendered alongside their 4.48 interpreters, in a shared on-demand `control-plane-jobs` namespace
+  excluded from the steady-state concurrent-quota sum (mutually-exclusive genesis/repair/admin
+  windows, not peak-serving concurrent). This keeps the standing footprint within the option-B
+  funding.
+- **Pre-Vault cutover (Standard-P).** Making the Bootstrap Broker the sole unsealer (retiring
+  `ComponentGatewayDaemonPreVault`, switching the CLI transport to the broker routes, replacing the
+  broker's `failClosedProductionEngine` with real adapters, and removing the `LegacyModelBEmitter`
+  gateway bootstrap branch) is a Standard-P cutover requiring live proof; it stays behind the
+  `LegacyModelBEmitter` rollback discipline and is sequenced with Sprint 4.50.
 - Phase 4 binds the rendered Lifecycle Authority and Target Secret Agent to their production
   interpreters.
 

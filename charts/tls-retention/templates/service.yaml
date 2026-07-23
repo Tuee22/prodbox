@@ -1,0 +1,21 @@
+{{- /*
+In-cluster ClusterIP Service for the TLS Retention Adapter. It fronts the
+adapter's constant-time `/healthz`/`/readyz` route surface for in-cluster
+reachability and stable DNS.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: tls-retention
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "tls-retention.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "tls-retention.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: tls
+      port: {{ .Values.listener.port }}
+      targetPort: tls
+      protocol: TCP

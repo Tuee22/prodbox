@@ -50,19 +50,19 @@ data:
       , key_file = "/tls/tls.key"
       , ca_file = "/ca/ca.crt"
       , orders_file = "/etc/gateway/orders.dhall"
+      -- Sprint 3.26: the per-peer event-signing key set is rendered parametrically
+      -- from `.Values.nodes.rankedIds` (substrate-variable: 2 on home, 3 on AWS)
+      -- so `event_keys` matches Orders membership exactly (the daemon rejects any
+      -- mismatch: `compileBoundedOrders`). Each peer's key path is
+      -- `gateway/gateway/<nodeId>/event-key`, derived from the node id.
       , event_keys =
-        [ { name = "node-a"
+        [ {{- range $idx, $nodeId := $.Values.nodes.rankedIds }}
+          {{- if gt $idx 0 }},{{ end }}
+          { name = {{ $nodeId | quote }}
           , value =
-{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeA "field" "key") | nindent 14 }}
+{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" (printf "gateway/gateway/%s/event-key" $nodeId) "field" "key") | nindent 14 }}
           }
-        , { name = "node-b"
-          , value =
-{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeB "field" "key") | nindent 14 }}
-          }
-        , { name = "node-c"
-          , value =
-{{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.eventKeyNodeC "field" "key") | nindent 14 }}
-          }
+          {{- end }}
         ]
       , dns_write_gate =
           {{- if $.Values.dnsWriteGate.enabled }}

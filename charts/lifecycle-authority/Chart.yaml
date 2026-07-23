@@ -1,0 +1,12 @@
+apiVersion: v2
+name: lifecycle-authority
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Retained home Lifecycle Authority workload: the durable operation journal and
+  Model-B CAS coordinator. It runs the `lifecycle-authority` runtime role as a
+  single-replica StatefulSet with its own retained journal PV, ServiceAccount /
+  least-privilege Vault Kubernetes-auth role, and failure domain, distinct from
+  the Gateway Runtime. Rendered from the compiled
+  `Prodbox.Lifecycle.Authority.ChartStatics` source of truth (Sprint 3.26).

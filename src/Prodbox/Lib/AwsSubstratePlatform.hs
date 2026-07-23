@@ -132,7 +132,7 @@ import Prodbox.Infra.AwsEksTestStack
   )
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lib.ChartPlatform
-  ( gatewayNodeIds
+  ( gatewayNodeIdsForSubstrate
   , gatewayRestServiceName
   , gatewayRestServicePort
   , operatorAvailableTarget
@@ -377,6 +377,13 @@ awsStepsForComponent component = case component of
   ComponentChartApi -> []
   ComponentChartWebsocket -> []
   ComponentChartGateway -> []
+  -- Sprint 3.26: chart-only control-plane nodes; no AWS substrate-platform step.
+  ComponentChartBootstrapBroker -> []
+  ComponentChartLifecycleAuthority -> []
+  ComponentChartProviderWorker -> []
+  ComponentChartAuthorityBackup -> []
+  ComponentChartTlsRetention -> []
+  ComponentChartTargetSecretAgent -> []
 
 awsEdgeSteps :: [AwsPlatformStepId]
 awsEdgeSteps = [StepAwsAcmeRuntime, StepAwsAdminPublicEdgeRoutes]
@@ -1368,7 +1375,7 @@ awsComponentReadinessTarget repoRoot endpoint component =
             ( observeKubernetesReadinessOnce
                 repoRoot
                 [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
-                | nodeId <- gatewayNodeIds
+                | nodeId <- gatewayNodeIdsForSubstrate SubstrateAws
                 ]
             )
         )
@@ -1383,6 +1390,12 @@ awsComponentReadinessTarget repoRoot endpoint component =
     ComponentChartApi -> unsupportedAwsReadiness component
     ComponentChartWebsocket -> unsupportedAwsReadiness component
     ComponentChartGateway -> unsupportedAwsReadiness component
+    ComponentChartBootstrapBroker -> unsupportedAwsReadiness component
+    ComponentChartLifecycleAuthority -> unsupportedAwsReadiness component
+    ComponentChartProviderWorker -> unsupportedAwsReadiness component
+    ComponentChartAuthorityBackup -> unsupportedAwsReadiness component
+    ComponentChartTlsRetention -> unsupportedAwsReadiness component
+    ComponentChartTargetSecretAgent -> unsupportedAwsReadiness component
 
 requiredReadinessEndpoint
   :: ComponentId

@@ -21,3 +21,43 @@ metadata:
     helm.sh/resource-policy: keep
 {{- end }}
 {{- end }}
+---
+{{- /*
+Sprint 3.26: the per-emitter StatefulSet's single-writer journal actor fences on
+a current Kubernetes Lease incarnation. The gateway ServiceAccount is granted
+exactly the `coordination.k8s.io` Lease verbs the emitter-persistence contract
+declares (`.Values.emitterPersistence.lease`) — namespace-scoped, no cluster
+role, no other resource. The legacy Model-B emitter does not exercise it.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-emitter-lease
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - {{ .Values.emitterPersistence.lease.resource }}
+    verbs:
+      {{- range .Values.emitterPersistence.lease.verbs }}
+      - {{ . }}
+      {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-emitter-lease
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gateway-emitter-lease
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.global.namespace }}

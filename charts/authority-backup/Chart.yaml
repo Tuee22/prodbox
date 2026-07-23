@@ -1,0 +1,12 @@
+apiVersion: v2
+name: authority-backup
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Always-on Authority Backup Adapter workload (home-only). It runs the
+  `authority-backup` runtime role with its own ServiceAccount / least-privilege
+  Vault Kubernetes-auth role and failure domain, reads ONLY
+  `secret/aws/authority-backup-store`, and backs up authority envelope/blob
+  state to its S3 prefix. Rendered from the compiled
+  `Prodbox.Lifecycle.AuthorityBackup.ChartStatics` source of truth (Sprint 3.26).

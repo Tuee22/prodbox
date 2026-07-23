@@ -1,0 +1,12 @@
+apiVersion: v2
+name: provider-worker
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Fenced home-only Provider Worker control-plane workload. It runs the
+  `provider-worker` runtime role with its own ServiceAccount / least-privilege
+  Vault Kubernetes-auth role and failure domain, executing normal Pulumi/AWS
+  provider effects while reading only `secret/aws/lifecycle-provider`. Rendered
+  from the compiled `Prodbox.Lifecycle.ProviderWorker.ChartStatics` source of
+  truth (Sprint 3.26).

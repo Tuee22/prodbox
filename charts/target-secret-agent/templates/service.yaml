@@ -1,0 +1,21 @@
+{{- /*
+In-cluster ClusterIP Service for the Target Secret Agent. It fronts the agent's
+allowlisted target-secret delivery surface plus the constant-time
+`/healthz`/`/readyz` probes, providing stable in-cluster reachability and DNS.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: target-secret-agent
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "target-secret-agent.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: target
+      port: {{ .Values.listener.port }}
+      targetPort: target
+      protocol: TCP

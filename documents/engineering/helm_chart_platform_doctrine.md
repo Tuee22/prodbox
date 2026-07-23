@@ -645,8 +645,13 @@ profile), with every identity/probe value projected from the compiled
 `Prodbox.Bootstrap.Broker.ChartStatics`; its Guaranteed-QoS envelope is injected
 from the typed `capacity.resource_plan` like the gateway's. It is deliberately
 absent from `supportedChartNames`, so it is not exposed on the public
-`prodbox charts ...` surface. Its reconcile-graph ordering (deploy before Vault
-unseal) is scheduled as a following Sprint 3.26 increment.
+`prodbox charts ...` surface. It is a graph-connected chart node
+(`ComponentChartBootstrapBroker`, behind the registry) so the plan builder
+resolves it end-to-end, but as a chart-only node it contributes no native
+`cluster reconcile` install step — so it does not change the production
+reconcile topology. Making Vault-unseal depend on the broker (broker as the sole
+pre-Vault unsealer, retiring the pre-Vault gateway daemon) is a Standard-P
+cutover, deliberately deferred.
 
 Root charts:
 

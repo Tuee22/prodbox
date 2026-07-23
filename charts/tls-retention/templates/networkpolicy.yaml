@@ -1,0 +1,58 @@
+{{- /*
+Isolation policy for the home-only TLS Retention Adapter. Egress is limited to
+what the bounded adapter surface actually needs — DNS, the Vault API (reading
+only `secret/aws/tls-retention-store`), and external HTTPS to AWS S3 (retain /
+restore of the `public-edge-tls/<substrate>/<scope-key>` ciphertext). The
+adapter has NO mesh, generic-KV, MinIO, Pulumi, SES, authority-CAS, or
+target-secret egress. Ingress is restricted to its own namespace; kubelet
+liveness/readiness probes are node-local and unaffected.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tls-retention-isolation
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "tls-retention.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prodbox-tls-retention
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+      ports:
+        - protocol: TCP
+          port: tls
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

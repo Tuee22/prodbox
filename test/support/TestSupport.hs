@@ -108,7 +108,10 @@ componentIdUnionDhall =
     ++ " | ComponentPerconaPostgresOperator | ComponentGatewayDaemonPreVault | ComponentGatewayDaemonFull | ComponentChartPulsar"
     ++ " | ComponentChartRedis | ComponentChartKeycloakPostgres | ComponentChartKeycloak"
     ++ " | ComponentChartVscode | ComponentChartApi | ComponentChartWebsocket"
-    ++ " | ComponentChartGateway >"
+    ++ " | ComponentChartGateway | ComponentChartBootstrapBroker"
+    ++ " | ComponentChartLifecycleAuthority | ComponentChartProviderWorker"
+    ++ " | ComponentChartAuthorityBackup | ComponentChartTlsRetention"
+    ++ " | ComponentChartTargetSecretAgent >"
 
 componentNodeTypeDhall :: String
 componentNodeTypeDhall =

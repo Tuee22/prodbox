@@ -1,0 +1,12 @@
+apiVersion: v2
+name: target-secret-agent
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Substrate-local Target Secret Agent workload. It runs the
+  `target-secret-agent` runtime role, authenticating to Vault Kubernetes auth as
+  its own least-privilege ServiceAccount / role to deliver and read allowlisted
+  target-secret KV. Rendered from the compiled
+  `Prodbox.Lifecycle.TargetSecretAgent.ChartStatics` source of truth
+  (Sprint 3.26).

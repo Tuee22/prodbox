@@ -1,0 +1,18 @@
+{{- /*
+The Lifecycle Authority is a single-writer retained singleton, so a voluntary
+disruption (node drain) must not evict it while it holds the durable operation
+journal. `minAvailable: 1` over its one replica blocks voluntary eviction;
+involuntary disruption and the RollingUpdate rollout are unaffected.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lifecycle-authority
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "lifecycle-authority.selectorLabels" . | nindent 6 }}

@@ -1,0 +1,83 @@
+{{- /*
+The home-only TLS Retention Adapter control-plane workload. A single-writer
+adapter (replicas: 1, strategy Recreate): it retains and restores the
+`public-edge-tls/<substrate>/<scope-key>` ciphertext in S3, so two overlapping
+instances must never race a retain/restore. It runs the `tls-retention` runtime
+role via `tls-retention start`, authenticates to Vault Kubernetes auth as its
+own least-privilege ServiceAccount (reading only
+`secret/aws/tls-retention-store`), and exposes only the constant-time
+`/healthz`/`/readyz` route projections as kubelet probes.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tls-retention
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "tls-retention.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tls-retention.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "tls-retention.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: tls-retention
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources.tlsRetention | nindent 12 }}
+          args:
+            - tls-retention
+            - start
+            - --config
+            - /etc/tls-retention/config/config.dhall
+            {{- range .Values.runtime.rtsArguments }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: tls
+              containerPort: {{ .Values.listener.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              # Directory-style mount (no subPath) so the kubelet's atomic
+              # `..data` symlink swap on ConfigMap update propagates to the
+              # adapter's file-watch reload loop.
+              mountPath: /etc/tls-retention/config
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness | quote }}
+              port: tls
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness | quote }}
+              port: tls
+              scheme: HTTP
+            initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.readiness.successThreshold }}
+      volumes:
+        - name: config
+          configMap:
+            name: tls-retention-config

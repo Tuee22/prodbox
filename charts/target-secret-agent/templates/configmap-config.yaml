@@ -1,0 +1,16 @@
+{{- /*
+Mounted role Dhall for the `target-secret-agent` runtime role. The empty default
+lets generic `helm template`/lint invocations omit the body; the supported
+ChartPlatform render supplies the complete, non-secret role config. Directory
+mount (see deployment.yaml) so a ConfigMap update fires the agent's file-watch.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: target-secret-agent-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+data:
+  config.dhall: |
+    {{- .Values.config.roleDhall | nindent 4 }}

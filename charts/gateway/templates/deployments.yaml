@@ -1,7 +1,18 @@
+{{- /*
+Sprint 3.26: the gateway emitters render as stable per-node StatefulSet
+identities (one `gateway-<nodeId>` StatefulSet per ranked id, replicas 1), each
+mounting its registered retained emitter journal from `.Values.emitterPersistence`
+(home: a node-pinned hostPath; AWS: a `ReadWriteOncePod` retained-EBS
+volumeClaimTemplate). A single-replica StatefulSet update deletes the old pod
+before creating its replacement, so two admitted writers can never overlap for
+one emitter identity. The historical file name (`deployments.yaml`) is retained
+so the gateway chart-statics / lifecycle-probe lint keeps its filename anchor.
+*/ -}}
 {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
+{{- $emitter := index $.Values.emitterPersistence.nodes $idx }}
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: gateway-{{ $nodeId }}
   labels:
@@ -9,8 +20,7 @@ metadata:
     gateway-node: {{ $nodeId | quote }}
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
+  serviceName: gateway-{{ $nodeId }}
   selector:
     matchLabels:
       {{- include "gateway.selectorLabels" $ | nindent 6 }}
@@ -82,6 +92,11 @@ spec:
               # daemon's file-watch reload loop.
               mountPath: /etc/gateway/config
               readOnly: true
+            - name: emitter-journal
+              # Sprint 3.26: the registered retained emitter journal for this
+              # stable identity. The single-writer journal actor owns it; the
+              # legacy Model-B emitter leaves it unused.
+              mountPath: {{ $.Values.emitterPersistence.journalMountPath }}
           livenessProbe:
             httpGet:
               path: {{ $.Values.probes.liveness.path | quote }}
@@ -123,4 +138,31 @@ spec:
         - name: config
           configMap:
             name: gateway-config-{{ $nodeId }}
+        {{- if eq $emitter.journal.kind "nodePinnedHostPath" }}
+        - name: emitter-journal
+          # Home substrate: a node-pinned hostPath. On the single-node home
+          # cluster this pins the journal to the operator host's disk; the
+          # StatefulSet identity keeps the pod on that path across restarts.
+          hostPath:
+            path: {{ $emitter.journal.hostPath | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+  {{- if eq $emitter.journal.kind "retainedEbsClaim" }}
+  volumeClaimTemplates:
+    - metadata:
+        name: emitter-journal
+        labels:
+          {{- include "gateway.labels" $ | nindent 10 }}
+          gateway-node: {{ $nodeId | quote }}
+      spec:
+        # AWS substrate: a ReadWriteOncePod retained-EBS claim. The physical
+        # retained PV (Retain reclaim policy, concrete EBS volume) is provisioned
+        # by the harness/AWS stack, mirroring the other retained-PV workloads.
+        accessModes:
+          - {{ $emitter.journal.accessMode | quote }}
+        storageClassName: {{ $emitter.journal.storageClassName | quote }}
+        resources:
+          requests:
+            storage: {{ $emitter.journal.requestedStorage | quote }}
+  {{- end }}
 {{- end }}

@@ -1,0 +1,21 @@
+{{- /*
+In-cluster ClusterIP Service for the Lifecycle Authority. It fronts the
+authority's operation-journal / Model-B CAS coordination route surface plus the
+constant-time `/healthz`/`/readyz` probes and provides stable in-cluster DNS.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: lifecycle-authority
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lifecycle-authority.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: lifecycle
+      port: {{ .Values.listener.port }}
+      targetPort: lifecycle
+      protocol: TCP

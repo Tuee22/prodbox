@@ -6,6 +6,7 @@ module Prodbox.Capacity.Config
   ( CapacityBudget (..)
   , CapacitySection (..)
   , ChildProcessBudgetConfig (..)
+  , concurrentNamespaceQuotas
   , MilliCpu (..)
   , MebiBytes (..)
   , NamespaceQuota (..)
@@ -25,10 +26,13 @@ module Prodbox.Capacity.Config
   , resourceVectorFitsWithin
   , resourceVectorMinus
   , resourceVectorScale
+  , resourceVectorSubtractChecked
   , runtimeMemoryPlanForProfile
   , storageFitsWithin
   , plusBudget
+  , reserveAllocatable
   , validateCapacitySection
+  , validateRawResourcePlanShape
   , validateResourcePlan
   )
 where
@@ -450,6 +454,25 @@ resourceVectorScale factor vector =
     , durable_storage_mib = factor * durable_storage_mib vector
     }
 
+-- | Non-saturating vector subtraction (Sprint 1.68). Returns 'Nothing' on
+-- underflow on any axis — never a clamp-to-zero. This is the building block that
+-- makes over-commitment unrepresentable: the saturating 'resourceVectorMinus'
+-- silently absorbs an over-draw, whereas a subtraction that can fail lets
+-- 'Prodbox.Capacity.Allocation.compileResourcePlan' turn @allocatable ≤
+-- host_capacity@ and @Σ draw ≤ allocatable@ into construction witnesses. When
+-- @inner ≤ outer@ on every axis the result equals 'resourceVectorMinus'.
+resourceVectorSubtractChecked :: ResourceVector -> ResourceVector -> Maybe ResourceVector
+resourceVectorSubtractChecked outer inner
+  | inner `resourceVectorFitsWithin` outer =
+      Just
+        ResourceVector
+          { milli_cpu = milli_cpu outer - milli_cpu inner
+          , memory_mib = memory_mib outer - memory_mib inner
+          , ephemeral_storage_mib = ephemeral_storage_mib outer - ephemeral_storage_mib inner
+          , durable_storage_mib = durable_storage_mib outer - durable_storage_mib inner
+          }
+  | otherwise = Nothing
+
 validateCapacitySection :: CapacitySection -> Either String ()
 validateCapacitySection section = do
   unlessFits
@@ -595,20 +618,45 @@ positiveBytes
 positiveBytes label term value =
   either (Left . ((label ++ ": ") ++) . show) Right (RuntimeMemory.mkPositiveBytes term value)
 
+-- | Sprint 1.68: the decode-time shape checks that survive the extraction of the
+-- nesting inequalities into 'Prodbox.Capacity.Allocation.compileResourcePlan'.
+-- Every value is positive, both quota and workload lists are non-empty, each
+-- namespace name is non-empty, and every workload references a declared namespace
+-- with positive replicas and a request that fits its limit. It performs no host,
+-- allocatable, or namespace-budget inequality — those are the proof's job.
+validateRawResourcePlanShape :: ResourcePlan -> Either String ()
+validateRawResourcePlanShape plan = do
+  validatePositiveResourceVector "capacity.resource_plan.host_capacity" (host_capacity plan)
+  validatePositiveResourceVector "capacity.resource_plan.rke2_reserved" (rke2_reserved plan)
+  validatePositiveResourceVector "capacity.resource_plan.eviction_floor" (eviction_floor plan)
+  unless
+    (not (null (namespace_quotas plan)))
+    (Left "capacity.resource_plan.namespace_quotas must not be empty")
+  forM_ (namespace_quotas plan) validateNamespaceQuota
+  unless
+    (not (null (workload_profiles plan)))
+    (Left "capacity.resource_plan.workload_profiles must not be empty")
+  forM_ (workload_profiles plan) (validateWorkloadProfile plan)
+
+-- | Derive the cluster-allocatable vector by subtracting the RKE2 reservation and
+-- eviction floor from host capacity, failing (rather than saturating) when the
+-- reservation exceeds host capacity. The 'Left' message is preserved verbatim so
+-- decode-time validation and the Sprint-1.68 proof agree on the same boundary.
+reserveAllocatable :: ResourcePlan -> Either String ResourceVector
+reserveAllocatable plan =
+  case resourceVectorSubtractChecked
+    (host_capacity plan)
+    (rke2_reserved plan `plusResourceVector` eviction_floor plan) of
+    Just allocatable -> Right allocatable
+    Nothing ->
+      Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity"
+
 validateResourcePlan :: ResourcePlan -> Either String ()
 validateResourcePlan plan = do
   validatePositiveResourceVector "capacity.resource_plan.host_capacity" (host_capacity plan)
   validatePositiveResourceVector "capacity.resource_plan.rke2_reserved" (rke2_reserved plan)
   validatePositiveResourceVector "capacity.resource_plan.eviction_floor" (eviction_floor plan)
-  unless
-    ( (rke2_reserved plan `plusResourceVector` eviction_floor plan)
-        `resourceVectorFitsWithin` host_capacity plan
-    )
-    (Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity")
-  let allocatable =
-        host_capacity plan
-          `resourceVectorMinus` rke2_reserved plan
-          `resourceVectorMinus` eviction_floor plan
+  allocatable <- reserveAllocatable plan
   unless
     (not (null (namespace_quotas plan)))
     (Left "capacity.resource_plan.namespace_quotas must not be empty")

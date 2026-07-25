@@ -82,6 +82,7 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
 import Prodbox.Error (fatalError)
@@ -511,7 +512,36 @@ runTrackedGeneratedPathLint repoRoot = do
 -- escape-path guard); later Foundation Epoch sprints (@2.34@, @4.51@, @5.20@,
 -- @7.34@) add their own conformance suites under this same surface.
 runConformanceTier :: FilePath -> IO ExitCode
-runConformanceTier repoRoot = do
+runConformanceTier repoRoot =
+  case resourcePlanOverCommitViolations of
+    (_ : _) ->
+      failWith
+        ( unlines
+            ( ( "Resource-plan over-commit gate failed. The committed defaultResourcePlan "
+                  ++ "must compile into an AllocatedResourcePlan proof — host_capacity ≥ "
+                  ++ "cluster allocatable ≥ Σ workload draw (see resource_scaling_doctrine.md "
+                  ++ "§ 2G, Sprint 1.68):"
+              )
+                : map ("- " ++) resourcePlanOverCommitViolations
+                ++ ["Correct capacity/Config.hs defaultResourcePlan so the nesting proof holds."]
+            )
+        )
+    [] -> runConformanceTierChecks repoRoot
+
+-- | Sprint 1.68 over-commit compile gate: the committed 'defaultResourcePlan' must
+-- compile into an 'Allocation.AllocatedResourcePlan' proof. No committed measured
+-- profile is required — every workload compiles as
+-- @WorkloadUncertifiedUntilFirstProfile@, which is deployable — so this asserts
+-- only the host/allocatable/quota nesting, failing an over-committed default in
+-- seconds rather than at runtime.
+resourcePlanOverCommitViolations :: [String]
+resourcePlanOverCommitViolations =
+  case Allocation.compileResourcePlan [] (const Text.empty) 0 defaultResourcePlan of
+    Right _ -> []
+    Left err -> [Allocation.renderCompileError err]
+
+runConformanceTierChecks :: FilePath -> IO ExitCode
+runConformanceTierChecks repoRoot = do
   escapeViolations <- checkLegacyEscapeRegistry repoRoot
   case escapeViolations of
     (_ : _) ->

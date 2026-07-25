@@ -1148,6 +1148,11 @@ Add canonical-suite coverage for the resource-governor contract introduced by Sp
 - 🧪 Live-proof (non-blocking, Standard O): run the optional real over-limit pod stress proof on a
   disposable home substrate and the AWS `--substrate aws` parity row once the AWS substrate is
   provisioned. The code-owned command/planner/body/oracle surface is complete.
+- 📋 Sprints `1.68`/`3.27`/`4.52` strengthen this validation's contract: over-reserved host, namespace
+  quota overcommit, and observed-host over-commit move from a runtime `Either` refusal to a compile-time
+  `AllocatedResourcePlan` impossibility, and the namespace `ResourceQuota` becomes a derived projection
+  of workload draws. When they land, the negative-config fixtures here are retargeted to prove the
+  compile-time rejection; no new Phase-5 sprint is required unless the oracle fixtures change materially.
 
 ## Sprint 5.14: Daemon-Mediated Bootstrap Validation [✅ Done]
 

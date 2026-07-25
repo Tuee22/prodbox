@@ -19,7 +19,6 @@ import Prodbox.Gateway.Routes
   ( KubeletProbeRoute
   , healthzProbeRoute
   , kubeletProbeRoutePattern
-  , readyzProbeRoute
   )
 
 -- | Sprint 2.34: a kubelet probe's endpoint is a 'KubeletProbeRoute' — a

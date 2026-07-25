@@ -231,7 +231,13 @@ The `HostSubstrate` says which execution frame the binary is in; host capacity i
 inside that frame. For the home RKE2 substrate, `cluster reconcile` observes cpu, memory, node
 filesystem capacity, and image filesystem capacity from the Linux frame and compares that observation
 with `capacity.resource_plan.host_capacity`. A host that is smaller than the authored declaration is
-rejected before RKE2 files or chart workloads are mutated.
+rejected before RKE2 files or chart workloads are mutated. Beyond that under-declaration check,
+`cluster reconcile` re-compiles the resource plan against the observed host (Sprint `4.52`): the
+host/cluster/workload nesting is fed to `compileResourcePlan` (`Prodbox.Capacity.Allocation`) using
+the *observed* host facts rather than only the authored `host_capacity`, so a cluster whose
+allocations exceed the observed host refuses at compile — invariant (b) `cluster <= host` is closed
+against observed facts, and an over-committed plan is a `Left`, never a constructible
+`AllocatedResourcePlan`. (Planned/Blocked — see `DEVELOPMENT_PLAN/README.md` for status.)
 
 This keeps the host-provider model pure: macOS/Windows only choose the Lima/WSL2 Linux frame; the
 capacity contract is then evaluated against facts observed in that frame. The resource algebra and

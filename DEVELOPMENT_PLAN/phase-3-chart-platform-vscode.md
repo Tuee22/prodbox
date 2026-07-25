@@ -2855,6 +2855,76 @@ readiness, deployment cardinality, and failure domains match their typed authori
 
 - Link each rendered role to its Phase-2 or Phase-4 behavior owner.
 
+## Sprint 3.27: Derived-Quota Chart Rendering [⏸️ Blocked]
+
+**Status**: Blocked — own-surface Phase-3 reopen (Standard A/N); consumes the Sprint `1.68` proof.
+**Deployment qualification**: pending — changes the Standard-P resource-envelope render surface.
+**Implementation**: planned revisions to `src/Prodbox/Lib/ChartPlatform.hs` —
+`attachResourcePlanValues`/`chartResourcesValue`/`resourceGuardrailsValue`/`requireResourceProfile`/
+`requireNamespaceQuota`/`namespaceLimitEnvelope` consume the opaque `AllocatedResourcePlan` proof (via
+`withAllocatedPlan`), and `ResourceQuota`/`LimitRange` become derived projections of workload draws
+through `planNamespaceQuota`/`planNamespaceLimits`; the `WorkloadConcurrency` (`Steady | ExclusiveWindow`)
+placement model plus a `renderedNamespace substrate` resolver (keycloak→vscode on home); deletion of
+authored `namespace_quotas`, the `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the
+keycloak↔vscode hand-fold from `src/Prodbox/Capacity/Config.hs`; and regenerated chart goldens
+**Blocked by**: Sprint `1.68`
+**Independent Validation**: Helm rendering + typed-values goldens prove the rendered `ResourceQuota`
+equals Σ(replicas×limit) of the namespace's workloads (home-substrate keycloak co-location counted
+exactly once), and a negative fixture proves a namespace quota below its workloads' draw is now
+unrepresentable; no deployed cluster, AWS, or later phase.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make the rendered namespace `ResourceQuota`/`LimitRange` derived projections of the workloads' actual
+draws rather than independently-authored numbers, so the "authored quota disagrees with its workloads"
+drift — the exact class behind the 2026-07-25 vscode-quota regression, whose fix was an add-here/
+subtract-there hand-synced identity — is unrepresentable.
+
+### Deliverables
+
+- Every render path consumes the opaque `AllocatedResourcePlan` proof (no raw `find`-over-quotas join),
+  so cluster config can only be emitted from a proven plan.
+- `planNamespaceQuota substrate plan ns = Σ allocationDraw` over the allocations whose rendered
+  namespace matches; keycloak co-location on home renders into the vscode quota (counted once),
+  retiring the folded vscode ceiling and the `concurrentNamespaceQuotas` subtract-back.
+- `WorkloadConcurrency` models co-location/burst structurally: `Steady` members sum; each
+  `ExclusiveWindow` group draws its peak member (max, not sum) — no hand-maintained exclusion list.
+- Delete authored `namespace_quotas`/`NamespaceQuota`/`concurrentNamespaceQuotas` + the keycloak fold.
+
+### Validation
+
+1. Regenerated `chart-deploy-vscode.txt`/`chart-delete-vscode.txt` goldens: the rendered quota equals
+   the tighter derived Σ(replicas×limit); the diff is the acceptance evidence.
+2. A negative fixture proves "a namespace quota lower than the sum of its rendered profiles" cannot be
+   represented; keycloak is counted exactly once against allocatable.
+3. Chart lint, unit/integration suites, and `prodbox dev check` pass. Watch: a derived quota with zero
+   surge headroom admits Guaranteed-QoS workloads exactly; a namespace running non-Guaranteed rolling
+   workloads adds a bounded `surge_headroom` factor funded within `planAllocatable`.
+
+### Remaining Work
+
+- Blocked until Sprint `1.68` provides the opaque proof, the `WorkloadConcurrency` model, and the
+  `planNamespaceQuota` projection.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` - derived `ResourceQuota`/`LimitRange`.
+- `documents/engineering/config_doctrine.md` - the retired authored-quota surface.
+- `documents/engineering/resource_scaling_doctrine.md` - quotas as projections, not authored.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the derived quota to the Sprint `1.68` `AllocatedResourcePlan` proof and the
+  `WorkloadConcurrency` model.
+
 ## Related Documents
 
 - [README.md](README.md)

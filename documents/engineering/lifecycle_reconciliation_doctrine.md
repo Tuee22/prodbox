@@ -1131,10 +1131,17 @@ manifests:
   carries accounting plus `CPUQuota`, `MemoryHigh`, `MemoryMax`, and `TasksMax`
   for the RKE2 process tree.
 
-The reconciler observes host cpu, memory, and filesystem capacity first. If the
-observed host is smaller than the authored `host_capacity`, it refuses before
-mutating these files. This is the runtime counterpart of the static
-`rke2.reserved + eviction.floor <= host.physical` lemma in
+The reconciler observes host cpu, memory, and filesystem capacity first, then
+compiles the opaque proof-carrying `AllocatedResourcePlan`
+(`Prodbox.Capacity.Allocation`, built by the total `compileResourcePlan`) against
+those observed host facts (Sprint `4.52`, Planned). Closing invariant (b)
+`cluster <= host` this way makes an observed host that cannot cover the plan's
+allocatable a `Left` — an over-committed plan is not a constructible value — so
+reconcile refuses at compile time, before mutating these files. This supersedes
+the authored-only `hostCapacityCoversPlan` boolean (deleted alongside
+`clusterAllocatable`): the invariant is now closed against the observed machine,
+not merely the authored `host_capacity`. This is the runtime counterpart of the
+static `rke2.reserved + eviction.floor <= host.physical` lemma in
 [resource_scaling_doctrine.md](./resource_scaling_doctrine.md). It bounds
 RKE2/kubelet/containerd; pod-level runaway behavior is separately bounded by
 the chart-rendered Kubernetes `resources`, `ResourceQuota`, and `LimitRange`.

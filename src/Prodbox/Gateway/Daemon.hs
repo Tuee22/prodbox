@@ -44,9 +44,9 @@ import Control.Concurrent.STM
   , TVar
   , atomically
   , modifyTVar'
+  , newBroadcastTChanIO
   , newEmptyTMVarIO
   , newTBQueueIO
-  , newTChanIO
   , newTMVarIO
   , newTQueueIO
   , newTVarIO

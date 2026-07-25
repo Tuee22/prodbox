@@ -46,6 +46,7 @@ library
         Prodbox.Bootstrap.Broker.Types
         Prodbox.Bootstrap.Broker.VaultWire
         Prodbox.BuildSupport
+        Prodbox.Capacity.Allocation
         Prodbox.Capacity.Config
         Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.RuntimeMemory
@@ -330,6 +331,7 @@ test-suite prodbox-unit
     main-is:          Main.hs
     hs-source-dirs:   test/unit test/support
     other-modules:
+        Allocation
         AwsNativeClients
         AwsSesLifecycle
         AwsSesLeaseRole

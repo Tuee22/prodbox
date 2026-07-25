@@ -2243,12 +2243,22 @@ The pure capacity validator proves the authored service-demand inequality with h
 runtime stability fold proves that deployed behavior remained inside it. The exact algebra and
 threshold ownership belong to [Resource Scaling Doctrine](./resource_scaling_doctrine.md).
 
-Every authored envelope is additionally certified against the committed `MeasuredResourceProfile`
-for its profile id: authored CPU must sit at or above measured p99 × 4/3, throttle observations
-must sit at or below 20000 parts per million while any CPU cap is authored, and a stale profile —
-a hot-path source-digest mismatch or a profile older than 30 days — fails the canonical quality
-gate. Guaranteed QoS remains mandated; an uncertified authored number is the defect. Profile
-artifact shape, certification thresholds, and the recorder gate belong to
+Memory sufficiency is already structural: the opaque proof-carrying `RuntimeMemoryPlan` makes an
+over-committed memory envelope non-constructible, so no separate memory demand certification is
+owed. CPU sufficiency is the one obligation measurement cannot erase — authored CPU stays an
+`uncertified-until-first-profile` measured seam certified against the committed
+`MeasuredResourceProfile` for its profile id, never against raw current demand: authored CPU must
+sit at or above measured p99 × 4/3 with throttle-freedom (throttle observations at or below 20000
+parts per million while any CPU cap is authored) proven by a healthy recorder-gated run, and a
+stale profile — a hot-path source-digest mismatch or a profile older than 30 days — fails the
+canonical quality gate. The over-commit proof is orthogonal to this demand certification: the
+opaque `AllocatedResourcePlan` (module `Prodbox.Capacity.Allocation`, built by the total smart
+constructor `compileResourcePlan`) makes an over-committed host/cluster/workload nesting a `Left`
+rather than a constructible value, and a `dev check` compile gate fails the build when
+`defaultResourcePlan` over-commits — an (a)/(b) structural guarantee, not a demand certification.
+Guaranteed QoS remains mandated (a `GuaranteedEnvelope` witness makes `request == limit` a
+constructor invariant); an uncertified authored CPU number is the defect. Profile artifact shape,
+certification thresholds, and the recorder gate belong to
 [Resource Scaling Doctrine](./resource_scaling_doctrine.md) (§ Measured Resource Profiles).
 
 Health handling is isolated from deep work. Process liveness remains constant time. Operational

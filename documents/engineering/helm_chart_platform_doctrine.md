@@ -131,7 +131,10 @@ The supported chart-maintenance surface is split between `prodbox dev lint chart
 
 ## 1B. Resource Requirement Rendering
 
-The chart platform consumes a validated resource plan, not raw settings. `Prodbox.Lib.ChartPlatform`
+The chart platform consumes the opaque, proof-carrying `AllocatedResourcePlan` (module
+`Prodbox.Capacity.Allocation`, built by the total smart constructor `compileResourcePlan`, a sibling
+of the `ServiceCapacityPlan` and `RuntimeMemoryPlan` proofs), not raw settings — an over-committed
+plan is a `Left`, never a constructible value. `Prodbox.Lib.ChartPlatform`
 resolves a `ResourceProfileId` for each root chart, internal dependency release, init container, and
 sidecar; the resulting profile renders exactly one Kubernetes `resources` stanza per container. The
 profile includes request and limit values for cpu, memory, and ephemeral storage. Persistent volumes
@@ -143,14 +146,19 @@ The chart-side illegal states are:
 - a workload or init container without a resource profile
 - a `resources.requests` field without a matching `resources.limits` field
 - a limit lower than its request
-- a namespace quota lower than the sum of the profiles rendered into that namespace
 - a PVC capacity that is not present in the durable-storage budget
 
 Those states are rejected before Helm is invoked. The structural lint scans chart templates so a
 future template edit cannot accidentally omit the values-backed resource stanza; the live
 `BestEffort`/QoS proof is owned by the canonical `resource-guardrails` validation. Namespace
-`ResourceQuota` and `LimitRange` manifests are rendered from the same profile set, making quota and
-container limits agree by construction.
+`ResourceQuota` and `LimitRange` manifests are not authored — they are derived projections of the
+workloads' actual draws (replicas x limit) carried by the `AllocatedResourcePlan`, so a namespace
+quota lower than the sum of its profiles is unrepresentable rather than a checked error, and quota
+and container limits agree by construction (Sprint `3.27`). The authored `namespace_quotas` input,
+its `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the keycloak-vscode hand-fold are retired
+in favor of a typed `WorkloadConcurrency` (`Steady | ExclusiveWindow`) that models co-location and
+burst structurally; a `GuaranteedEnvelope` witness makes `request == limit` a constructor invariant
+for Guaranteed-QoS workloads.
 
 ## 1C. Lifecycle Control-Plane Workload Rendering
 

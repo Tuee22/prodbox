@@ -4919,6 +4919,67 @@ synchronous HTTP bracket.
 - Link the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row for
   chart-lifetime custody of retained SES authority CAS objects to this sprint.
 
+## Sprint 4.52: Observed-Host Over-commit Rejection [⏸️ Blocked]
+
+**Status**: Blocked — own-surface Phase-4 reopen (Standard A/N); consumes the Sprint `1.68` proof.
+**Deployment qualification**: pending — changes the Standard-P resource-envelope guardrail surface.
+**Implementation**: planned revisions to `src/Prodbox/CLI/Rke2.hs` — `ensureRke2ResourceGuardrails`
+compiles the resource plan against an `ObservedHostRoot` (from `observeHostCapacity`), so
+`cluster ≤ host` and `Σ draw ≤ observed − reserved` are proven against physical facts; the guardrail
+manifests (`rootChartNamespaceGuardrailItemsFor`/`requireGuardrailNamespaceQuota`/`…LimitEnvelope`/
+`rootChartResourceQuotaManifest`) consume the proof's projections; and `hostCapacityCoversPlan` +
+`clusterAllocatable` are deleted (the duplicate `clusterAllocatable` in `src/Prodbox/Settings.hs` too)
+**Blocked by**: Sprint `1.68`
+**Independent Validation**: `rke2-reconcile.txt` goldens plus fake-`observeHostCapacity` traces prove
+that an observed host below the plan's allocatable **refuses at compile**, superseding the authored-only
+`4.41` `hostCapacityCoversPlan` boolean; no deployed cluster, AWS, or later phase.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/host_platform_doctrine.md`, `documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Close invariant (b) `cluster ≤ host` at reconcile against the **observed** host, not the authored
+declaration. Sprint `4.41` checks only that the authored `host_capacity` is not larger than the
+observed host; it never re-proves that the cluster's allocations fit the *observed* machine. Compiling
+the `AllocatedResourcePlan` against an `ObservedHostRoot` makes an observed-host over-commit unbuildable
+rather than a late boolean refusal.
+
+### Deliverables
+
+- `ensureRke2ResourceGuardrails` compiles against `ObservedHostRoot observed`; on `Left CompileError`
+  it fails with a per-dimension over-commit message.
+- Guardrail `ResourceQuota`/`LimitRange`/kubelet-reservation manifests render from the proof's
+  projections (the `rke2_reserved`/`eviction_floor` host reservations still read the raw fields).
+- Delete `hostCapacityCoversPlan` and both `clusterAllocatable` copies; retarget dumps to the proof's
+  `planAllocatable`/`planTotalDraw`.
+
+### Validation
+
+1. `rke2-reconcile.txt` (+ `-with-edge.txt`) goldens regenerated; observed-host over-commit fixtures
+   ⇒ compile refusal with the offending dimension.
+2. Unit/integration suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+- Blocked until Sprint `1.68` provides the opaque proof and the `ObservedHostRoot` compile entrypoint.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - observed-host compile-time (b) closure.
+- `documents/engineering/host_platform_doctrine.md` - the observed-host over-commit rejection.
+- `documents/engineering/resource_scaling_doctrine.md` - (b) closed at reconcile against observed facts.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rows for
+  `hostCapacityCoversPlan`/`clusterAllocatable` to this sprint.
+
 ## Related Documents
 
 - [README.md](README.md)

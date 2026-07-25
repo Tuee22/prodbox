@@ -102,10 +102,13 @@ Build a clean-room Haskell `prodbox` repository with:
     `.data/<namespace>/<StatefulSet>/<replica>` — one deterministic PV per StatefulSet ordinal,
     no machine-id prefix, provisioned by a single reconciler.
 17. One explicit resource-governance model: host physical capacity, RKE2/kubelet reservations,
-    eviction floors, namespace quotas, every chart container's cpu/memory/ephemeral-storage
-    request+limit envelope, and every durable PVC capacity are declared in the typed capacity plan.
-    A configuration that over-reserves the host, schedules workloads beyond cluster allocatable
-    capacity, or renders an uncapped container is invalid before mutation. Runtime memory is a
+    eviction floors, every chart container's cpu/memory/ephemeral-storage request+limit envelope,
+    and every durable PVC capacity are declared in the typed capacity plan, and namespace quotas are
+    **derived** from the workloads' actual draws rather than authored. The `host ≥ cluster ≥ Σworkloads`
+    nesting is an opaque proof-carrying `AllocatedResourcePlan` (Sprint `1.68`): a configuration that
+    over-reserves the host, schedules workloads beyond cluster allocatable capacity, or renders an
+    uncapped container **cannot be built into a plan** — a non-saturating budget subtraction refuses it —
+    and `cluster reconcile` re-proves `cluster ≤ host` against the **observed** host. Runtime memory is a
     separate nested proof: bounded retained state plus maximum heap scratch fits the RTS heap cap;
     the heap cap plus native/non-heap, serialized child-process, kernel/cgroup, and safety reserves
     fits the container limit. External restart/OOM/high-water observation remains required. See
@@ -208,6 +211,23 @@ Build a clean-room Haskell `prodbox` repository with:
 > container has cpu/memory/ephemeral-storage requests and limits, root chart namespace
 > `ResourceQuota`/`LimitRange` objects match the resource plan, and over-budget configs fail before
 > mutation. The optional live stress proof remains a non-blocking Standard O live-proof axis.
+
+> **Resource over-commitment made unrepresentable (2026-07-25 own-surface reopen).** A live
+> `test all --substrate home-local` gateway CPU-throttle counterexample — the gateway pinned at its
+> 750m limit, ~93% cgroup throttle, periodic RTS heap-overflow — **passed every capacity validation
+> yet still failed at runtime**, showing the runtime-`Either` capacity model still lets an illegal
+> state be represented. Phase `1` reopened and reclosed on Sprint `1.68` (✅ Done; own-surface, Standard A/N):
+> the `host ≥ cluster ≥ Σworkloads` nesting becomes an opaque proof-carrying `AllocatedResourcePlan`
+> (total `compileResourcePlan`, matching `ServiceCapacityPlan`/`RuntimeMemoryPlan`) with a
+> non-saturating `resourceVectorSubtractChecked`, a `GuaranteedEnvelope` witness, and a `dev check`
+> gate that fails the build if `defaultResourcePlan` over-commits. Consumer Sprint `3.27` (Phase `3`)
+> makes namespace `ResourceQuota`/`LimitRange` derived projections of the workloads' draws (retiring
+> authored `namespace_quotas`/`concurrentNamespaceQuotas`/the keycloak↔vscode fold); Sprint `4.52`
+> (Phase `4`) closes `cluster ≤ host` at reconcile against **observed** host facts (superseding the
+> authored-only `4.41` check). Memory-(c) is already structural via `RuntimeMemoryPlan`; CPU demand-(c)
+> stays the non-erasable `uncertified-until-first-profile` seam. Sprint `1.68` code landed (`src/Prodbox/Capacity/Allocation.hs`,
+> `prodbox dev check` exit 0, 18/18 `test/unit/Allocation.hs`); its consumers `3.27`/`4.52` are now
+> 📋 Planned. `Deployment qualification: pending` (Standard-P resource-envelope surface).
 
 > **Runtime-memory correction (2026-07-10).** The July 10 gateway OOM evidence does not invalidate
 > those authored-admission and containment lemmas; it invalidates the stronger inference that they
@@ -478,7 +498,9 @@ objects together with a postflight residue policy able to destroy the retained s
 fail-fast restore fold that silently discards independent restorations. The corrective doctrine is
 "one typed model, many generated projections": cross-artifact contracts are single-sourced in
 compiled values and generated outward, coverage is derived by total folds over closed registries,
-resource envelopes are certified against measured profiles, and drift fails the seconds-fast
+resource envelopes are certified against measured profiles, over-commitment of the
+host/cluster/workload nesting is made unrepresentable by an opaque compile-time proof (Sprint `1.68`),
+and drift fails the seconds-fast
 canonical quality gate rather than the multi-hour aggregate suite. Foundation Epoch Sprints
 `1.63`–`1.66`, `2.34`, `5.20`, and `7.34` are Done; Sprints `4.51` and `5.21` retain their own
 Active status. Sprints `1.61`/`1.62` are also Done after their shrink-rescoped work landed
@@ -808,7 +830,7 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the operation-indexed capability graph, opaque references, absolute-deadline and
-  service-capacity algebra, native object-store protocol, managed Vault-session boundary, and the
+  service-capacity algebra, the resource-envelope over-commitment proof, native object-store protocol, managed Vault-session boundary, and the
   substrate-neutral Kubernetes prerequisite boundary: `K8sClusterReachable` is
   `ToolKubectl` plus authoritative `kubectl cluster-info` against the selected substrate
   kubeconfig, while RKE2 file/install/service nodes remain explicitly home-local. It also owns the CLI,

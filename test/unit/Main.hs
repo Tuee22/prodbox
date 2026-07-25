@@ -5,6 +5,7 @@
 
 module Main (main) where
 
+import Allocation (allocationSuite)
 import AuthorityLogicalObjectTaxonomy (authorityLogicalObjectTaxonomySuite)
 import AwsNativeClients (awsNativeClientsSuite)
 import AwsSesLeaseRole (awsSesLeaseRoleSuite)
@@ -1331,6 +1332,7 @@ unitSuite = do
   brokerChartStaticsSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
+  allocationSuite
   capabilityReadinessBarrierSuite
   certScopeSuite
   controlPlaneAuthorityClockSuite
@@ -15171,14 +15173,22 @@ unitSuite = do
                     )
                     (Capacity.namespace_quotas Capacity.defaultResourcePlan)
               }
-          shrinkKeycloakQuota namespaceQuota =
-            if Capacity.namespace_name namespaceQuota == "keycloak"
-              then Capacity.NamespaceQuota "keycloak" (Capacity.ResourceVector 1 1 1 1)
+          -- Shrink the `api` quota CPU (100m) below its workload draw (2×250m =
+          -- 500m). `api` is neither `keycloak` nor `vscode`, so the co-located
+          -- 'concurrentNamespaceQuotas' fold leaves it untouched and the earlier
+          -- gates still pass; only the per-namespace draw check trips.
+          shrinkApiQuotaCpu namespaceQuota =
+            if Capacity.namespace_name namespaceQuota == "api"
+              then
+                namespaceQuota
+                  { Capacity.quota =
+                      (Capacity.quota namespaceQuota) {Capacity.milli_cpu = 100}
+                  }
               else namespaceQuota
           workloadOverQuotaPlan =
             Capacity.defaultResourcePlan
               { Capacity.namespace_quotas =
-                  map shrinkKeycloakQuota (Capacity.namespace_quotas Capacity.defaultResourcePlan)
+                  map shrinkApiQuotaCpu (Capacity.namespace_quotas Capacity.defaultResourcePlan)
               }
       Capacity.mkMilliCpu 0 `shouldBe` Left "cpu must be positive"
       Capacity.mkMebiBytes 0 `shouldBe` Left "MiB value must be positive"
@@ -15196,7 +15206,7 @@ unitSuite = do
           "capacity.resource_plan.concurrent_namespace_quotas must fit within cluster allocatable capacity"
       Capacity.validateResourcePlan workloadOverQuotaPlan
         `shouldBe` Left
-          "capacity.resource_plan.workload_profiles for namespace keycloak must fit within that namespace quota"
+          "capacity.resource_plan.workload_profiles for namespace api must fit within that namespace quota"
 
     it "reserves a fitting capacity slot for the Bootstrap Broker (Sprint 3.26)" $ do
       -- Sprint 3.26 (Increment C): the over-provisioned vscode ceiling was

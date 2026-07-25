@@ -677,6 +677,21 @@ child-process, kernel/cgroup, and safety reserves under the container limit. `Po
 exact failed term or inequality. The authoritative algebra is in
 [Resource Scaling Doctrine §2D](./resource_scaling_doctrine.md#2d-runtime-memory-decomposition-and-observation).
 
+A sibling in the same opaque-proof family widens the pattern past a single role's heap.
+`Prodbox.Capacity.Allocation` (Sprint `1.68`, ✅ landed) carries the host/cluster/workload nesting as an
+opaque, proof-carrying `AllocatedResourcePlan (c :: Certification)`, built by the total smart constructor
+`compileResourcePlan` alongside the sibling opaque proofs `ServiceCapacityPlan` and `RuntimeMemoryPlan`:
+an over-committed plan is not a constructible value (a `Left`, never a value), the plan and its
+`HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload` components hide their
+constructors, and a non-saturating `resourceVectorSubtractChecked` replaces the saturating budget
+subtraction (`boundedMinus`) on the budget path so an underflow returns `Left` rather than clamping to
+zero. A `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness proves `request == limit`, and a per-workload
+`WorkloadCertification` phantom-indexes the plan (`Certified` iff every workload certifies against a
+committed measured profile). This keeps the honest split — memory sufficiency is already structural via
+`RuntimeMemoryPlan`, while CPU sufficiency stays an `uncertified-until-first-profile` measured seam.
+Threading the proof into the write-side renderers and the observed-host reconcile check is Sprints
+`3.27`/`4.52`; DEVELOPMENT_PLAN/README.md carries status.
+
 `Prodbox.Capacity.Config.runtimeMemoryPlanForProfile` derives the cgroup authority from the matching
 workload profile's `ResourceEnvelope.limit.memory_mib`; runtime config cannot author a second
 container limit. The validator rejects unbounded or malformed child schedules. Capacity one uses

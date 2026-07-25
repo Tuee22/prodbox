@@ -226,10 +226,18 @@ namespace quotas, and workload request/limit profiles for cpu, memory, ephemeral
 durable storage. `Settings.validateLocalConfig` validates the pure resource lemmas before any
 command mutates the host or cluster: `rke2_reserved + eviction_floor <= host_capacity`,
 each namespace quota individually fits within `cluster_allocatable`, the concurrent supported-runtime
-quota set fits within `cluster_allocatable`, each workload profile references a declared namespace,
-every profile has positive replicas, and each `ResourceEnvelope` has positive bounded requests and
-limits. The older `node_budget` / `workload_budget` / `region_quota` fields remain as
-compatibility projections for callers not yet migrated to the resource plan.
+quota set fits within `cluster_allocatable` (the `concurrentNamespaceQuotas` fold), each workload
+profile references a declared namespace, every profile has positive replicas, and each
+`ResourceEnvelope` has positive bounded requests and limits. Sprints `1.68`/`3.27` (Planned)
+supersede this: namespace `ResourceQuota`/`LimitRange` become **derived** projections of the
+workloads' actual draws (replicas × limit) rather than authored, so the authored
+`namespace_quotas`/`NamespaceQuota` type and the `concurrentNamespaceQuotas` fold (historically the
+keycloak–vscode hand-fold) are retired in favor of a typed `WorkloadConcurrency`
+(`Steady | ExclusiveWindow`) that models co-location/burst structurally. The raw `ResourcePlan`
+stays the `FromDhall` decode surface, while the host/cluster/workload nesting becomes the opaque
+proof-carrying `AllocatedResourcePlan` (`Prodbox.Capacity.Allocation`, Sprint `1.68`). The older
+`node_budget` / `workload_budget` / `region_quota` fields remain as compatibility projections for
+callers not yet migrated to the resource plan.
 
 **Historical implementation record.** Sprint `1.56` extended the Tier-0 `parameters` with a typed **component dependency/readiness graph**
 (`depends_on` edges plus a `ReadinessProbe` per component), owned by

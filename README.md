@@ -91,12 +91,23 @@ validation environments.
   for postflight sweep visibility, and the test harness always provisions a fresh test VPC. See
   [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
 - Resource admission and containment are explicit: host capacity, RKE2 reservations, eviction floors,
-  namespace quotas, per-container cpu/memory/ephemeral-storage request+limit envelopes, and durable
-  PVC capacities are part of the typed capacity plan, not template-local defaults. A prodbox cluster
-  that reserves more than the host has, a workload set that exceeds cluster allocatable capacity, or
-  a chart container without a limit is invalid before render; runtime reconciliation installs the
-  matching RKE2/kubelet guardrails, Kubernetes `ResourceQuota` / `LimitRange`, and chart
-  `resources` stanzas. Those declarations do not by themselves prove an arbitrary program's peak
+  per-container cpu/memory/ephemeral-storage request+limit envelopes, and durable PVC capacities are
+  part of the typed capacity plan, not template-local defaults. Over-commitment is unrepresentable,
+  not merely rejected before render: the host/cluster/workload nesting is an opaque proof-carrying
+  `AllocatedResourcePlan` (module `Prodbox.Capacity.Allocation`) built by the total smart constructor
+  `compileResourcePlan` — a sibling to the opaque proofs `ServiceCapacityPlan` and `RuntimeMemoryPlan`
+  — so a cluster that reserves more than the host has, a workload set that exceeds cluster allocatable
+  capacity, or a chart container without a limit is not a constructible value (a `Left`, never a
+  value). A non-saturating `resourceVectorSubtractChecked` (an underflow returns `Left`, never clamps
+  to zero) replaces the saturating budget subtraction, and a `GuaranteedEnvelope` witness makes
+  `request == limit` a constructor invariant for Guaranteed-QoS workloads; a `dev check` over-commit
+  compile gate fails the build if the default plan over-commits. Namespace `ResourceQuota` /
+  `LimitRange` are derived projections of the workloads' actual draws (replicas × limit), not authored
+  quotas — the hand-folded `namespace_quotas` type is retired for a typed `WorkloadConcurrency`
+  (`Steady | ExclusiveWindow`) that models co-location and burst structurally. Invariant (b),
+  `cluster <= host`, is re-proved at `cluster reconcile` by compiling the plan against the observed
+  host facts; runtime reconciliation then installs the matching RKE2/kubelet guardrails together with
+  those derived `ResourceQuota` / `LimitRange` and the chart `resources` stanzas. Those declarations do not by themselves prove an arbitrary program's peak
   working set. Sprint `1.60` adds a validated nested runtime-memory plan (bounded heap state/scratch
   within an RTS heap cap, then heap cap plus native/subprocess/kernel reserves and margin within the
   profile-derived cgroup limit) and generates the gateway RTS argv. Sprint `5.16` now feeds that

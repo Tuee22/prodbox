@@ -4647,6 +4647,125 @@ lacks `/etc/rancher/rke2/rke2.yaml` or an active `rke2-server.service`.
   [system-components.md](system-components.md), and record the removed coupling in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+## Sprint 1.68: Resource-Envelope Over-commitment Proof [✅ Done]
+
+**Status**: Done — this reopens Phase `1` on its **own** capacity-algebra surface (Standard A/N),
+a peer of the `ServiceCapacityPlan` (Sprint `1.62`) and measured-certification (Sprint `1.65`) work.
+**Deployment qualification**: pending — the sprint changes the Standard-P **resource-envelope**
+surface; the revision must not be called deployment-ready on the strength of the new compile-time
+proof alone.
+**Implementation**: new module `src/Prodbox/Capacity/Allocation.hs` — the opaque
+proof-carrying `AllocatedResourcePlan (c :: Certification)` (DataKinds phantom + `SCertification`
+singleton + `SomeAllocatedPlan` existential) plus `HostCapacity`, `ClusterBudget`,
+`CertifiedWorkload`, and `WorkloadAllocation` (all hidden constructors), the single total smart
+constructor `compileResourcePlan`, and the `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness; the
+non-saturating `resourceVectorSubtractChecked` added to `src/Prodbox/Capacity/Config.hs` (the
+`validateResourcePlan` inequality body is re-derived through it and now also lives in
+`compileResourcePlan`; a slim `validateRawResourcePlanShape` was extracted for decode-time shape
+checks); the `runConformanceTier` over-commit compile gate in `src/Prodbox/CheckCode.hs`
+(`resourcePlanOverCommitViolations`, run first in the tier); and unit suite `test/unit/Allocation.hs`
+(18 cases). The raw `ResourcePlan` stays a public `FromDhall`/`ToDhall` record (config-types
+generation and the in-force render depend on it — `prodbox-config-types.dhall` is unchanged because
+the opaque proof is not Dhall-facing); the proof is derived, never stored.
+**Independent Validation**: pure decode/compile tables prove `host ≥ cluster ≥ Σworkloads` holds by
+construction — `reserveCluster`/`allocate` refuse an over-draw through the non-saturating checked
+subtraction (no silent clamp-to-zero), `compileResourcePlan defaultResourcePlan` returns `Right`, and
+the over-reserved / namespace-over-allocatable / concurrent-over-commit / workload-over-quota fixtures
+return `Left` with distinct `CompileError` constructors; the `dev check` conformance gate fails the
+build if `defaultResourcePlan` over-commits. No cluster, AWS, or later phase is required.
+**Current Validation State**: `prodbox dev check` exit 0 (warning-clean `-Werror` build, fourmolu,
+HLint, conformance tier incl. the new over-commit gate); 18/18 `test/unit/Allocation.hs`; the
+`validateResourcePlan` over-commit lemmas in `test/unit/Main.hs` green (the `workloadOverQuotaPlan`
+fixture retargeted to the `api` namespace so it isolates the per-namespace draw check under the
+co-located `concurrentNamespaceQuotas` fold). Two pre-existing `test/unit/Main.hs` rendering
+assertions (guardrail ResourceQuota and chart-values injection) still encode pre-`2026-07-25` vscode
+quota values and disagree with each other; unifying the rendered quota is Sprint `3.27`'s
+derived-from-draw charter, not this sprint's algebra surface.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/code_quality.md`,
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Make cluster/host resource over-commitment **unrepresentable**. A live
+`prodbox test all --substrate home-local` gateway CPU-throttle counterexample (the gateway pinned at
+its 750m limit, ~93% cgroup throttle, periodic RTS heap-overflow) **passed every capacity validation
+yet still failed at runtime** — proof that the runtime-`Either` `validateResourcePlan` model still lets
+an illegal state be represented and then rejected, rather than making it unbuildable. Move the nesting
+into an opaque proof so an over-committed plan has no deployable representation, matching the in-tree
+`ServiceCapacityPlan`/`RuntimeMemoryPlan` opaque-proof idiom.
+
+### Deliverables
+
+- An opaque `AllocatedResourcePlan` built only by the total `compileResourcePlan :: HostRoot ->
+  [MeasuredResourceProfile] -> (Text -> Text) -> Natural -> ResourcePlan -> Either CompileError
+  SomeAllocatedPlan`. `HostCapacity`/`ClusterBudget` draw the allocatable via a **non-saturating**
+  `resourceVectorSubtractChecked` (`Left` on underflow, never a clamp-to-zero), so
+  `allocatable ≤ host_capacity` is a construction witness; each `WorkloadAllocation` reduces the
+  threaded budget, so `Σ draw ≤ allocatable` holds by construction.
+- A `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness requiring `request == limit` on every axis for
+  workloads that must be Guaranteed-QoS (the current `mkResourceEnvelope` only checks `request ≤ limit`;
+  the gateway's `256 req / 512 limit` memory is silently Burstable today).
+- A non-defaultable, non-erasable certification status on each allocation
+  (`Certified MeasuredResourceProfile | UncertifiedUntilFirstProfile`), threaded through the proof and
+  surfaced. `certifyWorkload` reuses `certifyMeasuredProfile` (Sprint `1.65`); with no committed profile
+  every workload is `UncertifiedUntilFirstProfile`, which stays **deployable** (blocking it would
+  deadlock the run that produces the first profile). Memory sufficiency-(c) is already structural via
+  `RuntimeMemoryPlan`; CPU demand-(c) remains this latent seam until Sprint `5.21`.
+- A `runConformanceTier` `dev check` gate asserting `compileResourcePlan` of the committed
+  `defaultResourcePlan` returns `Right` — an over-committed default fails the build in seconds.
+- The raw `ResourcePlan` remains the `FromDhall`/`ToDhall` decode/round-trip surface; the opaque proof
+  is derived once at the config boundary and is the sole input the write-side renderers consume
+  (threading into the Phase-3/4 consumers is Sprints `3.27`/`4.52`).
+
+### Validation
+
+1. Decode/compile tables: `resourceVectorSubtractChecked` returns `Nothing` on any-axis underflow;
+   `reserveCluster` refuses an over-reserved host; `allocate` reduces the remaining budget and refuses
+   an over-draw; `Σ draw == allocatable − remaining`.
+2. `compileResourcePlan defaultResourcePlan` ⇒ `Right`; the over-reserved / over-committed /
+   workload-over-quota fixtures ⇒ `Left`.
+3. `certifyWorkload` with a satisfying measured profile ⇒ `Certified`; a violating one ⇒ `Left`; none
+   ⇒ `UncertifiedUntilFirstProfile`. The `SomeAllocatedPlan` tag is `Certified` iff every workload is.
+4. Unit/CLI/env suites and `prodbox dev check` (including the new over-commit compile gate) pass.
+
+### Downstream Consumers (other sprints — not this sprint's surface)
+
+The proof is derived at the config boundary but not yet threaded into the write-side renderers; that
+is deliberately scoped out of this algebra sprint and owned downstream:
+
+- Consumer Sprint `3.27` (Phase `3`) threads the proof into chart rendering and derives namespace
+  quotas from workload draws (retiring the authored `namespace_quotas` and unifying the two
+  currently-divergent rendered-quota paths); Sprint `4.52` (Phase `4`) closes `cluster ≤ host` at
+  reconcile against the observed host; Phase `5`'s `resource-guardrails` validation (`5.13`) is
+  reframed to prove compile-time rejection.
+- CPU demand-(c) certification stays latent until Sprint `5.21` commits the first healthy-run gateway
+  profile (which itself needs the gateway CPU-contention fix); certifying against the current
+  bug-inflated demand is explicitly refused.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - the opaque `AllocatedResourcePlan` model,
+  the non-saturating subtraction, derived quotas, observed-host closure, and the honest memory-(c)-
+  structural / CPU-(c)-latent split.
+- `documents/engineering/config_doctrine.md` - the raw-vs-proof config split and the retired authored
+  `namespace_quotas` fold.
+- `documents/engineering/code_quality.md` - the `defaultResourcePlan` over-commit compile gate.
+- `documents/engineering/haskell_code_guide.md` - `Prodbox.Capacity.Allocation` beside the sibling
+  `RuntimeMemoryPlan`.
+
+**Product docs to create/update:**
+
+- `README.md` - the resource-governance model (over-commitment unrepresentable).
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md), [00-overview.md](00-overview.md),
+  and [system-components.md](system-components.md), and add the removed-surface rows to
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Related Documents
 
 - [README.md](README.md)

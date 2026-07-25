@@ -122,37 +122,46 @@ schema projects from; the resource-governor surface uses closed, unit-specific n
 memory, ephemeral storage, and durable storage cannot be accidentally added together.
 
 ```haskell
--- Implemented in src/Prodbox/Capacity/Config.hs
+-- Raw decode surface in src/Prodbox/Capacity/Config.hs (stays FromDhall/ToDhall).
 newtype MilliCpu = MilliCpu Natural
 newtype MebiBytes = MebiBytes Natural
 
 data ResourceVector = ResourceVector
-  { milli_cpu :: Natural
-  , memory_mib :: Natural
-  , ephemeral_storage_mib :: Natural
-  , durable_storage_mib :: Natural
-  }
+  { milli_cpu :: Natural, memory_mib :: Natural
+  , ephemeral_storage_mib :: Natural, durable_storage_mib :: Natural }
 
-data ResourceEnvelope = ResourceEnvelope
-  { request :: ResourceVector
-  , limit :: ResourceVector
-  }
+data ResourceEnvelope = ResourceEnvelope { request :: ResourceVector, limit :: ResourceVector }
 
+-- No authored namespace_quotas: the namespace ResourceQuota is DERIVED from the workloads'
+-- draws. Each WorkloadResourceProfile carries `concurrency` (Steady | ExclusiveWindow),
+-- which models co-location/burst structurally instead of a hand-synced fold.
 data ResourcePlan = ResourcePlan
   { host_capacity :: ResourceVector
   , rke2_reserved :: ResourceVector
   , eviction_floor :: ResourceVector
-  , namespace_quotas :: [NamespaceQuota]
-  , workload_profiles :: [WorkloadResourceProfile]
-  }
+  , workload_profiles :: [WorkloadResourceProfile] }
+
+-- The opaque proof in src/Prodbox/Capacity/Allocation.hs (constructor hidden) is the
+-- sole builder, matching ServiceCapacityPlan / RuntimeMemoryPlan. Over-commitment is a
+-- Left, never a value: an AllocatedResourcePlan witnesses host >= cluster >= sum(draws).
+compileResourcePlan
+  :: [MeasuredResourceProfile] -> (Text -> Text) -> Natural
+  -> ResourcePlan -> Either CompileError SomeAllocatedPlan
 ```
 
-Dhall mirrors this with smart-constructor style records plus `assert`-carried lemmas in
-`dhall/capacity/Schema.dhall`. The assertion is the static ring for authored capacity documents:
-if a plan over-reserves the host, omits a limit, or sums pod requirements beyond cluster
-allocatable capacity, the Dhall capacity contract fails before Haskell decodes anything. Haskell
-repeats the same checks in `validateResourcePlan`, which is called from `Settings.validateLocalConfig`
-for every supported config load.
+Dhall mirrors the raw records with smart-constructor style plus `assert`-carried lemmas in
+`dhall/capacity/Schema.dhall`. Haskell then decodes the raw `ResourcePlan`. Sprint `1.68` landed
+`compileResourcePlan` as the sole builder of the opaque `AllocatedResourcePlan` and a `dev check`
+conformance gate (`runConformanceTier`) that fails the build unless the committed `defaultResourcePlan`
+compiles to a proof. The config boundary
+(`Settings.validateLocalConfig` → `validateCapacitySection` → `validateResourcePlan`) rejects an
+over-committed **authored** plan at decode through the same non-saturating `resourceVectorSubtractChecked`;
+the slim `validateRawResourcePlanShape` is the decode-time shape slice that `compileResourcePlan` reuses.
+Threading the proof into the write-side renderers — so they consume only the proof and namespace
+`ResourceQuota`s become derived from workload draws — is Sprints `3.27`/`4.52`. The budget draw uses a
+**non-saturating** `resourceVectorSubtractChecked`: an over-reservation or an over-committed workload set
+underflows and returns `Left`, so it can never silently clamp to zero — an over-committed plan is simply
+not a constructible value. This realizes what the enforcement rings below describe.
 
 ## 2B. Host, RKE2, Cluster, Namespace, and Pod Lemmas
 
@@ -162,17 +171,24 @@ after subtracting the reservations that protect the host and Kubernetes control 
 | Rule | Statement | The illegal state it forbids |
 |------|-----------|------------------------------|
 | **a** | `rke2.reserved + eviction.floor <= host.physical` | An RKE2 cluster reserving more cpu/ram/storage than the host has. |
-| **b** | `cluster.allocatable = host.physical - rke2.reserved - eviction.floor` | Pods being scheduled against the host's survival margin. |
-| **c** | `sum(namespace.quotas) <= cluster.allocatable` | Namespace quotas that promise more than the cluster can admit. |
-| **d** | `sum(workload.requirements) <= namespace.quota` | Pods/deployments that need more resources than their namespace has. |
-| **e** | `forall container. request <= limit && limit > 0` | Undefined or uncapped declared container envelopes, including Kubernetes `BestEffort` pods. |
+| **b** | `cluster.allocatable = host.physical - rke2.reserved - eviction.floor` via a **non-saturating** checked subtraction; re-proved at reconcile against the **observed** host | Pods scheduled against the host's survival margin, or an authored host figure that exceeds the physical machine. |
+| **c** | `sum(workload.draws) <= cluster.allocatable`, where each namespace `ResourceQuota` is the **derived** sum of its workloads' draws (not authored) | Namespace quotas that promise more than the cluster can admit, or a quota that disagrees with its workloads. |
+| **d** | Trivial by construction: a namespace's quota **is** `sum(workload.draws)` for that namespace (`Steady` members sum; an `ExclusiveWindow` group draws its peak) | Pods that need more than their namespace has — the quota can no longer be authored below the draw. |
+| **e** | `forall container. request <= limit && limit > 0`; a `GuaranteedEnvelope` witness additionally requires `request == limit` on every axis | Undefined or uncapped declared container envelopes, including Kubernetes `BestEffort` pods, and a workload silently authored `Burstable` where Guaranteed QoS is mandated. |
+
+The subtraction on this budget path is `resourceVectorSubtractChecked` — non-saturating, so an
+under-flow is a `Left`, never a clamp-to-zero that would let a later `<=` pass vacuously. Co-location
+and mutually-exclusive burst windows are modeled by each workload's `WorkloadConcurrency`
+(`Steady | ExclusiveWindow`), so "counted exactly once" and "burst draws its own lane" hold by
+construction rather than through an add-here/subtract-there hand fold.
 
 The rendered Kubernetes shape follows directly from these values:
 
 - kubelet args for `system-reserved`, `kube-reserved`, `eviction-hard`, `eviction-soft`,
   image-garbage-collection thresholds, and container log caps
 - optional systemd drop-in limits for the `rke2-server` service process tree
-- one `ResourceQuota` and `LimitRange` per prodbox-owned namespace
+- one `ResourceQuota` and `LimitRange` per prodbox-owned namespace, **derived** as the sum of that
+  namespace's workload draws rather than authored (Sprint `3.27`)
 - one non-empty `resources.requests` and `resources.limits` stanza for every container and init
   container in every repo-owned chart
 - explicit PVC sizes and retained PV capacities drawn from the durable-storage budget
@@ -189,14 +205,18 @@ The same resource facts are enforced in three rings:
 1. **Static Dhall ring**: generated `dhall/capacity/Schema.dhall` exports the constructors, sums,
    `fitsWithin` lemmas, and self-checking `assert`s. Illegal resource declarations fail at
    `dhall type`.
-2. **Pure Haskell ring**: `validateCapacitySection` decodes to an opaque `ValidatedResourcePlan`
-   only when host reservations, namespace quotas, pod requirements, and durable claims all fit.
-   Renderers accept the validated plan, not raw settings.
-3. **Runtime cgroup/Kubernetes ring**: `prodbox cluster reconcile` writes RKE2/kubelet guardrails,
-   reconciles namespace quotas and limit ranges, renders container limits, and verifies that no
-   prodbox pod is `BestEffort`. A live host whose observed cpu, memory, or filesystem capacity is
-   lower than the authored host declaration is `Unreachable/Insufficient -> refuse`; prodbox does not
-   "best effort" its way into bring-up.
+2. **Pure Haskell ring**: `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (constructor
+   hidden) only when host reservations, workload draws, and durable claims all fit under a
+   non-saturating budget — a sibling of the opaque `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan`
+   (§2D). The write-side renderers accept the proof, not raw settings, so cluster config can only be
+   emitted from a witnessed plan, and a `dev check` gate fails the build if `defaultResourcePlan`
+   over-commits.
+3. **Runtime cgroup/Kubernetes ring**: `prodbox cluster reconcile` re-compiles the plan against an
+   `ObservedHostRoot` (from `observeHostCapacity`), so invariant (b) `cluster <= host` is closed against
+   the **observed** machine — an observed host that cannot cover the plan's allocatable refuses at
+   compile, not through a late boolean. It then writes RKE2/kubelet guardrails, reconciles the derived
+   namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is
+   `BestEffort`; prodbox does not "best effort" its way into bring-up.
 
 This three-ring model is intentionally redundant. Dhall makes illegal authored states impossible,
 Haskell makes illegal generated states impossible, and Kubernetes/systemd contain runtime runaway
@@ -207,7 +227,11 @@ it is never evidence that the authored limit proved sufficient.
 A cgroup can correctly contain repeated OOMs while a replacement process later appears healthy.
 Likewise, a process can remain within its memory ceiling while a CPU cap prevents it from meeting
 its service deadline. Containment evidence never upgrades a resource limit into a sufficiency
-proof; runtime demand and service capacity require the separate obligations below.
+proof; runtime demand and service capacity require the separate obligations below. Note the split
+these obligations enforce: **memory sufficiency-(c) is structural** — `RuntimeMemoryPlan` proves the
+heap-sum fits the envelope's container memory limit (an overrun is an OOM, a hard bound) — while
+**CPU sufficiency-(c) is not** a limit relation (an overrun throttles, it does not crash) and stays
+the measured, recorder-gated seam of §2E/§2F.
 
 ## 2D. Runtime Memory Decomposition and Observation
 
@@ -316,7 +340,12 @@ operator decision (2026-07-12): Guaranteed QoS is retained — the answer to CFS
 never CPU-limit removal. Honesty comes from measured certification instead: an authored CPU value
 under a hard cap must be certified against the committed measured profile for its workload (§2F).
 Equality `request == limit` remains valid; zero-headroom authoring without certification is the
-defect.
+defect. A `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness (Sprint `1.68`) makes `request == limit`
+a constructor invariant for the workloads that must be Guaranteed, so a workload silently authored
+`Burstable` (the gateway's `256 req / 512 limit` memory) is no longer representable. The 2026-07-25
+live counterexample — the gateway pinned at its 750m limit, ~93% cgroup throttle — is exactly this
+class: a zero-headroom CPU envelope that passed every static check yet throttled at runtime, and the
+recorder gate of §2F is what prevents its bug-inflated demand from ever being certified.
 
 Every execution lane has a bounded queue and an explicit saturation result. Admission rejects
 immediately when the lane cannot meet the caller's monotonic absolute deadline. Queue wait,
@@ -423,6 +452,15 @@ minutes, and at least 300 samples. An unhealthy run or a short window refuses to
 that id is committed. Until the first committed gateway profile lands, the interim authored
 gateway envelope (750m, `request == limit`, Guaranteed QoS retained) is recorded as
 uncertified-until-first-profile — an explicitly tracked interim value, not a certified one.
+
+This is the honest ceiling: **memory sufficiency-(c) is already structural** (`RuntimeMemoryPlan`),
+while **CPU sufficiency-(c) is not closed** by any static proof — it flips from `uncertified` to
+enforced (`authored_cpu >= ceil(p99 x 4/3)` and throttle `<= 20000 ppm`) only when a **healthy** run
+commits the first profile. A gateway thrashing at 93% throttle is an *unhealthy* run, so it can never
+write a profile, so its bug-inflated demand can never be certified in; certifying against raw current
+demand is explicitly refused. Sprint `1.68` adds the sibling **over-commitment compile gate** (a
+`dev check` that fails the build if `defaultResourcePlan` over-commits) — an orthogonal (a)/(b)
+structural proof, not a demand-(c) certification.
 
 Implementation is owned by Sprints `1.65` and `5.21`; status lives in the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md).
@@ -570,16 +608,23 @@ acting on unobserved capacity.
 This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-placement doctrine.
 
 - **Owned statement**: prodbox is its own autoscaler and resource governor; over-committed authored
-  host, RKE2, namespace, pod-envelope, cluster, and region plans are made unrepresentable by the
-  `fitsWithin` budget lemmas; missing cpu/memory/ephemeral-storage envelopes are unrepresentable;
+  host, RKE2, namespace, pod-envelope, cluster, and region plans are made unrepresentable — the
+  host/cluster/workload nesting by the opaque proof-carrying `AllocatedResourcePlan` (Sprint `1.68`: a
+  non-saturating budget draw; namespace quotas derived from workload draws; `cluster <= host` re-proved
+  at reconcile against the observed host), and region plans by the `fitsWithin` budget lemmas; missing
+  cpu/memory/ephemeral-storage envelopes are unrepresentable;
   enumerated runtime consumers must fit separate validated memory and service-capacity
   decompositions and remain healthy under external observation; every execution lane has a bounded
   queue, one absolute deadline, and measured headroom; illegal elasticity is unrepresentable by the substrate-indexed
   `ScalingPolicy`; and every scaling or capacity-observation gate is `Unreachable -> refuse`.
-- **Linked dependents** (the modules Sprints 1.51 / 1.55 / 3.22 / 4.34 / 4.36 / 4.41 / 7.27
-  implement this in):
+- **Linked dependents** (the modules Sprints 1.51 / 1.55 / 1.68 / 3.22 / 3.27 / 4.34 / 4.36 / 4.41 /
+  4.52 / 7.27 implement this in):
   `dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs` (the shared `Budget` /
-  `fitsWithin` / `storageFitsWithin` algebra plus the scheduled resource-governor envelope),
+  `fitsWithin` / `storageFitsWithin` algebra, the raw `ResourcePlan` decode surface, and the
+  non-saturating `resourceVectorSubtractChecked`),
+  `src/Prodbox/Capacity/Allocation.hs` (the opaque `AllocatedResourcePlan` proof, `compileResourcePlan`,
+  the hidden-constructor `HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload`, and the
+  `GuaranteedEnvelope` witness),
   `src/Prodbox/Settings.hs` (`DeploymentSection` scaling fields plus the binary-sibling `capacity`
   block), `src/Prodbox/Substrate.hs`
   (`ScalingPolicy`, `ScalingPolicyBySubstrate`, and substrate validation),

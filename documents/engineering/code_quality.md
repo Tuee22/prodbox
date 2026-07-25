@@ -159,8 +159,8 @@ registry:
 - a **relative-link check** asserting that in-repo relative links (with anchors) in governed
   docs resolve to an existing target file (and, where checkable, anchor).
 
-Three further check families join the canonical quality gate under the Foundation Epoch
-(implementation owned by Sprints `1.63`, `1.65`, and `2.34`; see the
+Four further check families join the canonical quality gate under the Foundation Epoch
+(implementation owned by Sprints `1.63`, `1.65`, `1.68`, and `2.34`; see the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md)):
 
 - the **chart forbidden-literal lint** (Sprint `2.34`): chart-rendered probe paths, service
@@ -185,8 +185,18 @@ Three further check families join the canonical quality gate under the Foundatio
   once the first committed profile exists for a profile id (recorder owned by Sprint `5.21`).
   Certification rules are owned by
   [resource_scaling_doctrine.md § 2F](./resource_scaling_doctrine.md#2f-measured-resource-profiles).
+- the **default-plan over-commit gate** (Sprint `1.68`): a sibling conformance tier —
+  `runConformanceTier` fails the build when `compileResourcePlan` of the committed
+  `defaultResourcePlan` does not return `Right`, so an over-committed default fails
+  `dev check` in seconds rather than surfacing at reconcile. `compileResourcePlan`
+  (module `Prodbox.Capacity.Allocation`) is the total smart constructor for the opaque
+  proof-carrying `AllocatedResourcePlan`, so an over-committed host/cluster/workload nesting is
+  a `Left`, never a constructible value. This is an orthogonal structural over-commit proof of
+  invariants (a) and (b) — distinct from the measured-profile check above, it certifies nothing
+  about demand (CPU sufficiency-(c) remains the non-erasable `uncertified-until-first-profile`
+  measured seam).
 
-All three families run inside `prodbox dev check` on the seconds-fast lint surface and follow
+All four families run inside `prodbox dev check` on the seconds-fast lint surface and follow
 the same registry discipline as the generated-section and forbidden-path registries: the
 in-code registries and committed artifacts remain the SSoT, and this doctrine names the check
 families without duplicating their entry tables.

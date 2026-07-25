@@ -766,9 +766,16 @@ s3ObjectLifecycleActions =
   , "s3:DeleteObject"
   , "s3:DeleteObjectVersion"
   , "s3:GetObject"
+  , -- The Pulumi @aws:s3:BucketObjectv2@ managing the SES capture-readiness probe
+    -- object does a @GetObjectTagging@ (and, when tags are managed,
+    -- @PutObjectTagging@) on every refresh/create; without these the lease-session
+    -- role gets a 403 @AccessDenied@ and the @aws-ses@ reconcile fails with
+    -- @pulumi up failed@ / @captureReadinessObject creating failed@.
+    "s3:GetObjectTagging"
   , "s3:GetObjectVersion"
   , "s3:ListMultipartUploadParts"
   , "s3:PutObject"
+  , "s3:PutObjectTagging"
   ]
 
 awsCommand

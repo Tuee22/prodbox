@@ -86,7 +86,16 @@ import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import HostDirectAuthorityCas (hostDirectAuthorityCasSuite)
+import HostDirectModelBAdapter (hostDirectModelBAdapterSuite)
+import LifecycleAuthorityAdminAction (lifecycleAuthorityAdminActionSuite)
+import LifecycleAuthorityBackupRepair (lifecycleAuthorityBackupRepairSuite)
+import LifecycleAuthorityConfig (lifecycleAuthorityConfigSuite)
 import LifecycleAuthorityGenesis (lifecycleAuthorityGenesisSuite)
+import LifecycleAuthorityOperation (lifecycleAuthorityOperationSuite)
+import LifecycleAuthorityOutboxSim (lifecycleAuthorityOutboxSimSuite)
+import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
+import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
+import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
@@ -1340,12 +1349,21 @@ unitSuite = do
   gatewayEmitterKernelSuite
   gatewayEmitterLeaseSuite
   gatewayEmitterPersistenceSuite
+  lifecycleAuthorityAdminActionSuite
+  lifecycleAuthorityBackupRepairSuite
+  lifecycleAuthorityConfigSuite
   lifecycleAuthorityGenesisSuite
+  lifecycleAuthorityOperationSuite
+  lifecycleAuthorityOutboxSimSuite
+  lifecycleAuthorityStateSuite
+  lifecycleAuthoritySubmissionSuite
+  lifecycleAuthorityTlsRetentionSuite
   gatewayProbeSuite
   gatewayReadinessSuite
   gatewayRoutesSuite
   gatewayRuntimeStabilitySuite
   hostDirectAuthorityCasSuite
+  hostDirectModelBAdapterSuite
   lifecycleLeaseSuite
   measuredProfileSuite
   objectStoreNativeSuite

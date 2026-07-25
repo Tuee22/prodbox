@@ -32,6 +32,9 @@ module Prodbox.Lifecycle.Authority.Genesis
     -- * State
   , AuthorityAdmissionState (..)
   , GenesisProgress (..)
+  , BackupRepairPermit (..)
+  , BackupRepairProgress (..)
+  , initialBackupRepairProgress
   , initialGenesisState
   , admitsNormalOperations
   , establishedEpoch
@@ -45,6 +48,7 @@ module Prodbox.Lifecycle.Authority.Genesis
     -- * Folds
   , decideGenesis
   , evolveGenesis
+  , genesisDecisionEvents
   , stepGenesis
   )
 where
@@ -100,12 +104,51 @@ data GenesisProgress = GenesisProgress
   }
   deriving (Eq, Show)
 
--- | The pre-normal-admission genesis lifecycle. Normal lifecycle operations are
--- admitted ONLY in 'BackupEstablished'.
+-- | A deterministic, signed one-time backup-repair permit. Like 'GenesisPlan' it
+-- carries a stable digest over the exact ordered deterministic
+-- create\/rotate\/copy repair intent plus the backup-store coordinate, and no
+-- secret material. It is primary-journaled before any repair effect and is
+-- consumed at most once: replay against the same permit is idempotent, a
+-- divergent permit is refused as a mismatch. Owned by
+-- @Prodbox.Lifecycle.Authority.BackupRepair@.
+data BackupRepairPermit = BackupRepairPermit
+  { backupRepairPermitDigest :: !Text
+  -- ^ stable digest over the ordered deterministic repair intent
+  , backupRepairPermitBackupStoreCoordinate :: !Text
+  -- ^ the registered backup-store coordinate the adapter re-copies and reads back
+  }
+  deriving (Eq, Show)
+
+-- | Progress within 'BackupRepairFrozen'. While the permit is absent the
+-- authority is frozen and merely waiting (a temporary or unobservable backup
+-- outage). Once the deterministic permit is minted the primary-only repair runs;
+-- both the next @LongLived@ generation receipt and the Authority Backup Adapter's
+-- first new backup receipt must read back before admission reopens under a
+-- strictly greater epoch.
+data BackupRepairProgress = BackupRepairProgress
+  { backupRepairPermit :: !(Maybe BackupRepairPermit)
+  , backupRepairGeneration :: !(Maybe TargetAgentGenerationReceipt)
+  , backupRepairNewReceipt :: !(Maybe BackupReceipt)
+  }
+  deriving (Eq, Show)
+
+-- | The frozen-and-waiting progress with no repair permit minted yet.
+initialBackupRepairProgress :: BackupRepairProgress
+initialBackupRepairProgress = BackupRepairProgress Nothing Nothing Nothing
+
+-- | The pre-normal-admission genesis lifecycle plus the post-genesis backup
+-- repair freeze. Normal lifecycle operations are admitted ONLY in
+-- 'BackupEstablished'; 'BackupRepairFrozen' closes admission again while a
+-- primary-only repair runs.
 data AuthorityAdmissionState
   = GenesisFrozen
   | EstablishingBackup !GenesisProgress
   | BackupEstablished !AuthorityEpoch
+  | -- | Post-genesis backup repair: admission is FROZEN (no normal operation is
+    -- admitted) while the primary-only repair runs. The epoch is the one being
+    -- superseded; reopen is always under 'nextAuthorityEpoch'. Owned by
+    -- @Prodbox.Lifecycle.Authority.BackupRepair@.
+    BackupRepairFrozen !AuthorityEpoch !BackupRepairProgress
   deriving (Eq, Show)
 
 initialGenesisState :: AuthorityAdmissionState
@@ -117,6 +160,7 @@ admitsNormalOperations state = case state of
   GenesisFrozen -> False
   EstablishingBackup _ -> False
   BackupEstablished _ -> True
+  BackupRepairFrozen _ _ -> False
 
 -- | The epoch under which normal admission is open, or @Nothing@ before genesis
 -- completes.
@@ -125,6 +169,7 @@ establishedEpoch state = case state of
   GenesisFrozen -> Nothing
   EstablishingBackup _ -> Nothing
   BackupEstablished epoch -> Just epoch
+  BackupRepairFrozen _ _ -> Nothing
 
 data AuthorityGenesisCommand
   = -- | Begin backup establishment from 'GenesisFrozen' with the deterministic plan.
@@ -191,6 +236,7 @@ decideGenesis state command = case state of
         (progress {genesisProgressBackupReceipt = Just receipt})
         (BackupReceiptRecorded receipt)
   BackupEstablished _ -> GenesisRefused GenesisAlreadyEstablished
+  BackupRepairFrozen _ _ -> GenesisRefused GenesisAlreadyEstablished
  where
   resolveReceipt updated event
     | genesisProgressComplete updated = GenesisOpenAdmission event authorityEpochGenesis
@@ -230,12 +276,15 @@ stepGenesis
   -> (GenesisDecision, AuthorityAdmissionState)
 stepGenesis state command =
   let decision = decideGenesis state command
-   in (decision, applyGenesisDecision state decision)
+   in (decision, foldl evolveGenesis state (genesisDecisionEvents decision))
 
-applyGenesisDecision :: AuthorityAdmissionState -> GenesisDecision -> AuthorityAdmissionState
-applyGenesisDecision state decision = case decision of
-  GenesisRefused _ -> state
-  GenesisBeginEstablishment plan -> evolveGenesis state (GenesisEstablishmentBegun plan)
-  GenesisRecordReceipt event -> evolveGenesis state event
-  GenesisOpenAdmission event epoch ->
-    evolveGenesis (evolveGenesis state event) (NormalAdmissionOpened epoch)
+-- | The authoritative event(s) a 'GenesisDecision' commits, in order. A refusal
+-- commits nothing; opening admission commits the triggering receipt read-back
+-- before the admission-open event. Applying these via 'evolveGenesis' reproduces
+-- 'stepGenesis', so the fold is fully event-sourced.
+genesisDecisionEvents :: GenesisDecision -> [AuthorityGenesisEvent]
+genesisDecisionEvents decision = case decision of
+  GenesisRefused _ -> []
+  GenesisBeginEstablishment plan -> [GenesisEstablishmentBegun plan]
+  GenesisRecordReceipt event -> [event]
+  GenesisOpenAdmission event epoch -> [event, NormalAdmissionOpened epoch]

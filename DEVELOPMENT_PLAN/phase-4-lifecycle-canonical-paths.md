@@ -4168,16 +4168,114 @@ no AWS, Kubernetes, or later phase is required. **Increment A** is validated by
 one-receipt-does-not-open; both-receipts-open-under-epoch; order-independence; same-plan-idempotent /
 divergent-plan-refused; post-admission refusal; replay-idempotent evolve) plus `prodbox dev check`
 exit 0.
-**Remaining Work**: the normal-admission durable `OperationRecord` + outbox (generalizing
-`Prodbox.Bootstrap.Broker.RequestJournal`'s idempotency-keyed `Armed -> Terminal` + at-most-once
-recovery); the `AuthorityState` aggregate over the three retained `'ClusterRetained` projections
-(`LeaseProjection` / `TargetIntentProjection` / `SmtpCommittedProjection`); the host-direct
-interpreter (built on the Sprint-4.51 `AuthorityObjectCore` + the durable `ControlPlane.AuthorityClock`,
-replacing the gateway-hosted `gatewayModelBCasAdapter` / `observeGatewayAuthorityTime`); the
-`BackupRepair` post-genesis reopen under a greater epoch; and the migrations off `Lease*` /
-`CheckpointAuthority*` / `TargetCommit*`. The physically-separate Authority Backup / TLS Retention /
-Provider Worker interpreters land alongside, and this flow defines the credential-field schemas that
-close Sprint 3.26's remaining least-privilege Vault policies.
+**Implementation**: **Increment B landed** — `src/Prodbox/Lifecycle/Authority/Operation.hs` is the
+polymorphic durable operation journal / outbox: `OperationRecord binding intent result` with an
+append-only `OperationPhase` (`OperationArmed intent` -> `OperationCompleted result`),
+`newArmedOperation` / `resumeOperation` / `completeOperation` (terminal recorded at most once; rewrite
+refused), and `decideOperationRecovery` — the at-most-once recovery that authorizes execution ONLY
+when the source is provably still current, recovers (never repeats) a matching applied effect, and
+fails closed on a mismatched / diverged / unobservable target. It generalizes
+`Prodbox.Bootstrap.Broker.RequestJournal`. Validated by `test/unit/LifecycleAuthorityOperation.hs`
+(8 cases) plus `prodbox dev check` exit 0.
+**Implementation**: **Increment C landed** — `src/Prodbox/Lifecycle/Authority/State.hs` is the
+`AuthorityState` aggregate composing the genesis fold with the operation journal: it holds the
+admission state plus one `FencedOperation` per operation binding, and provides total
+`decideAuthority` / `evolveAuthority` / `stepAuthority` (fully event-sourced via
+`authorityDecisionEvents`; `Genesis` now exports `genesisDecisionEvents`). Normal operations are
+admitted ONLY after genesis opens admission (`OperationRefusedAdmissionClosed` otherwise) and are
+fenced by the admitting epoch; decisions are idempotent (`AuthorityOperationAlreadyArmed` /
+`AuthorityOperationAlreadyComplete` commit no event) and conflict-checked
+(`OperationRefusedBindingIntentConflict` / `OperationRefusedResultConflict`). Validated by
+`test/unit/LifecycleAuthorityState.hs` (6 cases) plus `prodbox dev check` exit 0.
+**Implementation**: **Increment D landed** — `src/Prodbox/Lifecycle/Authority/BackupRepair.hs` is the
+pure post-genesis backup-repair reopen fold over the shared `AuthorityAdmissionState` (now carrying a
+`BackupRepairFrozen !AuthorityEpoch !BackupRepairProgress` constructor). It is the ONLY post-genesis,
+primary-only fold: a temporary/unobservable backup outage freezes admission and merely waits (no
+permit, no external effect), reopening under a strictly greater epoch only once the backup reads
+healthy again; a positively-absent key/bucket or proven policy drift primary-journals a signed
+one-time `BackupRepairPermit` (replay idempotent, divergent permit refused) and — after BOTH the next
+`LongLived` generation receipt AND the Authority Backup Adapter's first new backup receipt read back —
+reopens admission under `nextAuthorityEpoch`. Total `decideBackupRepair` / `evolveBackupRepair` /
+`backupRepairDecisionEvents` / `stepBackupRepair` mirror the genesis fold and compose into the
+`AuthorityState` aggregate (new `AuthorityBackupRepair` command/decision/event arms) so admission is
+frozen for the whole repair and a post-repair operation is fenced under the greater epoch. Validated by
+`test/unit/LifecycleAuthorityBackupRepair.hs` (12 cases: repair-before-genesis; healthy no-op;
+freeze-on-unhealthy; temporary-outage freeze→reopen; unobservable wait; positive-absence full
+repair→greater-epoch reopen; policy-drift order-independent repair; receipt-before-permit refusal;
+permit replay idempotent + divergent mismatch; response-loss re-observe idempotence; evolve/step
+consistency; aggregate freeze+reopen) plus `prodbox dev check` exit 0 and the full `LifecycleAuthority*`
+suite 34/34.
+**Implementation**: **Increment E landed** — `src/Prodbox/Lifecycle/Authority/Submission.hs` is the pure,
+standalone idempotent operation-submission front-door (closes Validation items 1–2). An `OperationId`
+binds the admitting `AuthorityEpoch` plus the caller's `(client, client-sequence, request digest)`.
+`decideSubmit` / `applySubmit` / `stepSubmit` accept a fresh submission, return the SAME id on an exact
+resubmission (a lost response converges by id rather than becoming a second operation), refuse a sequence
+reused with a different digest, refuse at live-population capacity, and return `SubmissionRefusedExpired`
+for a sequence at or below the compacted per-client sequence floor (an old id is never treated as new).
+`cancelSubmission` / `completeSubmission` settle in-flight submissions idempotently (cancel-after-complete
+and complete-after-cancel refused); `compactClientTerminalsBelow` advances the floor and drops settled
+tombstones, refusing across an in-flight submission; `submissionStatus` reports in-flight / settled /
+expired / unknown. A client disconnect never determines an outcome — cancellation is an explicit command
+and there is no disconnect input. Validated by `test/unit/LifecycleAuthoritySubmission.hs` (10 cases) plus
+`prodbox dev check` exit 0 and the full `LifecycleAuthority*` suite 44/44.
+**Implementation**: **Increment F landed** — `src/Prodbox/Lifecycle/Authority/AdminAction.hs` is the pure
+disjoint admin-action permit family plus the Admin Action Runner's one-time acceptance fold (closes
+Validation item 6). The `AdminAction` family (`DestroyAwsSes` / `MigrateLegacyBackend` / `ReconcileQuota`)
+excludes normal provider intents, credential creation/delivery, and decommission by construction; an
+`AdminActionPermit` names its audience `RunnerRole` and its single bound action. `decideAdminPermit` /
+`applyAdminPermit` / `stepAdminPermit` accept a permit only if its audience is the `AdminActionRunner` AND
+its action is the runner's instantiated one AND it is fresh — exactly once. A cross-role or cross-action
+permit is refused (audience/action are checked before state), an expired permit is refused, replaying the
+consumed nonce is idempotent (a lost response recovers by the stable nonce), and a divergent nonce after
+consumption conflicts. Validated by `test/unit/LifecycleAuthorityAdminAction.hs` (8 cases) plus
+`prodbox dev check` exit 0 and the full `LifecycleAuthority*` suite 52/52.
+**Implementation**: **Increment G landed** — `src/Prodbox/Lifecycle/Authority/TlsRetention.hs` is the pure
+versioned TLS-retention promotion/restore fold (closes Validation item 7). A `RetainedTlsRef` binds the
+immutable `RetentionVersion`, the certificate serial / SPKI / `notAfter`, the ciphertext / wrapped-DEK
+digest, and the source Kubernetes Secret UID / resourceVersion. `decideTlsPromotion` / `applyTlsPromotion`
+/ `stepTlsPromotion` CAS-promote the current reference only after exact source re-observation AND Adapter
+byte read-back, refusing an out-of-order / stale version, a validity regression, or an unapproved key
+(SPKI) change; the exact current version is an idempotent no-op (response-loss recovery). `decideTlsRestore`
+is a total ADT that applies the exact committed reference on an intact read-back (never S3 latest / list
+order), permits fresh issuance only on positive authoritative absence or trusted-time expiry, and fails
+closed on corrupt, digest-mismatched, or unobservable state. Validated by
+`test/unit/LifecycleAuthorityTlsRetention.hs` (10 cases) plus `prodbox dev check` exit 0 and the full
+`LifecycleAuthority*` suite 62/62.
+**Implementation**: **Increment H landed** — `src/Prodbox/Lifecycle/Authority/Config.hs` is the pure
+in-force-config observe / propose-CAS fold. The Authority owns the in-force configuration as a monotone
+generation (`ConfigGeneration` + `ConfigSchemaVersion` + `ConfigDigest` + opaque `ConfigReference`),
+seeded exactly once from the bounded Tier-0 boot projection and thereafter advanced only by a
+compare-and-set. `decideConfigPropose` / `applyConfigPropose` / `stepConfigPropose` refuse an unsupported
+schema, a CAS before seed, a re-seed after seed, and a mismatched expected-prior generation; re-proposing
+the in-force schema+digest is an idempotent no-op (a lost response converges rather than forking a
+generation). `observeInForceConfig` serves the current generation; encryption and role-scoped projection
+of the referenced blob remain the interpreter's. Validated by `test/unit/LifecycleAuthorityConfig.hs`
+(8 cases) plus `prodbox dev check` exit 0 and the full `LifecycleAuthority*` suite 70/70. This completes
+the pure authority-core Deliverables (Increments A–H).
+**Implementation**: **Increment I landed** — `src/Prodbox/Lifecycle/Authority/OutboxSim.hs` is the pure,
+deterministic crash/restart reference interpreter the Independent Validation calls for. It composes the
+durable operation journal and `decideOperationRecovery` over an in-memory fake substrate (a durable journal
+plus a keyed effect target whose cell carries an apply-counter), with no object store, Vault, clock, AWS,
+Kubernetes, or later phase. `armOperation` journals the intent before the effect; `runEffect` applies and
+completes (the crash-free path); `armAndApply` is the "crash after effect, response lost" substrate; and
+`recoverOperation` re-observes and either executes the armed intent (source still current), recovers the
+observed result WITHOUT re-applying (proven by the apply-counter staying at 1 — at-most-once), or fails
+closed leaving the record armed (diverged / unobservable). Validated by
+`test/unit/LifecycleAuthorityOutboxSim.hs` (7 cases: crash-free once; crash-before-effect execute;
+lost-response at-most-once recovery; diverged fail-closed; idempotent re-arm; completed-operation no-op
+recovery/re-run + result lookup; unknown-operation no-op) plus `prodbox dev check` exit 0 and the full
+`LifecycleAuthority*` suite 77/77.
+**Remaining Work**: bind the aggregate's operation records to the three retained `'ClusterRetained`
+projections (`LeaseProjection` / `TargetIntentProjection` / `SmtpCommittedProjection`) via a
+host-direct interpreter (built on the Sprint-4.51 `AuthorityObjectCore` + the durable
+`ControlPlane.AuthorityClock`, replacing the gateway-hosted `gatewayModelBCasAdapter` /
+`observeGatewayAuthorityTime`, and using the Increment-B `decideOperationRecovery` for at-most-once
+outbox execution) and the migrations off `Lease*` / `CheckpointAuthority*` / `TargetCommit*` — together
+the byte-compat-critical live-transaction cutover, coupled to Sprint `4.51` Increment B. The
+physically-separate Authority Backup / TLS Retention / Provider Worker interpreters land alongside, and
+this flow defines the credential-field schemas that close Sprint 3.26's remaining least-privilege Vault
+policies. (The `BackupRepair` post-genesis reopen under a greater epoch **landed** as Increment D,
+above.)
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `documents/engineering/pure_fp_standards.md`,
@@ -4680,11 +4778,29 @@ through ONE function and their sealed envelopes are byte-identical by constructi
 compatible"). `test/unit/AuthorityLogicalObjectTaxonomy.hs` pins the exact stored-key namespace
 (`long-lived-state/…` for lease / target-commit-intent / SMTP families; `pulumi-stack/…` for the
 checkpoint), the AAD (`clusterId|<stored-key>`), and the opaque-key HMAC derivation, so any drift
-that would silently orphan retained objects fails the build pre-cluster. 🔄 **Increment B remaining
-(indivisible, cluster-adjacent)**: retype the gateway transport to `'ChartLifetime'`-only, add the
-host-direct `'ClusterRetained'` adapter (a port of the daemon CAS over `HostDirectPulumiHandle`,
-now reusing the shared `authorityLogicalObject`), cut `productionLeaseInterpreter` + the `AwsSesStack`
-transaction over to it, and add `OperationRecord`.
+that would silently orphan retained objects fails the build pre-cluster.
+✅ **Increment B Stage B landed (2026-07-24)**: the Model-B ↔ authority-object translation is lifted
+into the shared SSoT `src/Prodbox/Lifecycle/ModelBCasTransport.hs` (`ModelBTransport` +
+`modelBCasAdapterOverTransport`), and BOTH transports now delegate to it — `gatewayModelBCasAdapter`
+(`CheckpointAuthorityStore.hs`, refactored to a thin gateway-HTTP transport, signature unchanged) and
+the NEW `src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs` `hostDirectModelBCasAdapter ::
+HostDirectPulumiHandle -> LongLivedCheckpointAuthority -> ModelBCodec value -> ModelBCasAdapter
+'ClusterRetained IO value` (over the Stage-A `AuthorityObjectCore` host-direct primitives). This
+extends Stage A's structural byte-compat one level up: the coordinate-authority guard, guard-coordinate
+validation, payload encode/decode, and every `ModelBObservation`/`ModelBCasResult` mapping now exist
+exactly once, so the two transports cannot silently diverge. `test/unit/HostDirectModelBAdapter.hs`
+(11 cases) proves the shared adapter preserves observe/CAS/conflict/guard/coordinate-authority/
+corrupt-encode semantics over the same in-memory conditional-put fake, plus a `'ClusterRetained` type
+witness. Evidence: `prodbox dev check` exit 0 (warning-clean, fourmolu, HLint, conformance); the new
+suite 11/11; existing `LifecycleAuthority*`/`AuthorityObjectCore` suites unaffected. The host-direct
+adapter is not yet a live-transaction writer — that is Stage D. 🔄 **Increment B remaining (Stage D,
+indivisible, cluster-adjacent, Standard-O live-validated)**: retype the gateway transport to
+`'ChartLifetime'`-only, cut `productionLeaseInterpreter` + the `AwsSesStack` transaction over to the
+host-direct `'ClusterRetained'` adapter, dissolve the ~70-minute lease bracket into windows (keeping
+the gateway forward reachable for the authority clock per the verified flaw correction), and add
+`OperationRecord` — its correctness (no double `CreateAccessKey` across a window interruption;
+cannot-observe never re-fires) is provable only by a live `prodbox test all --substrate aws`. Stage E
+reclassifies the `host-direct-object-store` escape entry to sanctioned-4.51.
 **Discovery**: Increment B's transport cutover and `OperationRecord` are MORE coupled than first
 scoped — a host-direct adapter would hold a MinIO port-forward across the entire ~70-minute lease
 bracket, so the bracket removal must land WITH the transport cutover, not after it.
@@ -4765,11 +4881,20 @@ synchronous HTTP bracket.
   byte-identical envelopes by construction) + `AuthorityLogicalObjectTaxonomy.hs` pinning the exact
   `long-lived-state/`/`pulumi-stack/` stored-key namespace, AAD, and opaque-key derivation. dev check
   exit 0, unit PASS.
-- 🔄 Increment B remaining (indivisible, cluster-adjacent): the host-direct `'ClusterRetained'`
-  adapter (reusing the shared `authorityLogicalObject`), the gateway-transport retype to
-  `'ChartLifetime'`, the `productionLeaseInterpreter` + `AwsSesStack` transaction cutover,
-  `OperationRecord`, the CAS taxonomy tables vs. an in-memory fake, and the operation-record
-  crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat is Standard-O.
+- ✅ Increment B Stage B landed (2026-07-24): the shared `ModelBCasTransport` seam
+  (`modelBCasAdapterOverTransport`) that both `gatewayModelBCasAdapter` (refactored) and the new
+  `hostDirectModelBCasAdapter` (`HostDirectAuthorityStore.hs`, `'ClusterRetained`) delegate to, plus
+  the `HostDirectModelBAdapter` differential suite (11 cases over the same in-memory conditional-put
+  fake + a `'ClusterRetained` type witness). dev check exit 0, warning-clean, existing suites
+  unaffected. The host-direct adapter is not yet a live-transaction writer.
+- 🔄 Increment B Stage D remaining (indivisible, cluster-adjacent, Standard-O live-validated): the
+  gateway-transport retype to `'ChartLifetime'`, the `productionLeaseInterpreter` + `AwsSesStack`
+  transaction cutover onto `hostDirectModelBCasAdapter`, the ~70-min lease-bracket dissolution into
+  windows (gateway forward kept reachable for the authority clock), `OperationRecord`, and the
+  operation-record crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat and the
+  double-`CreateAccessKey`/cannot-observe-never-re-fires correctness are Standard-O — provable only by
+  a live `prodbox test all --substrate aws`. Stage E reclassifies the `host-direct-object-store`
+  escape entry (`EscapeRegistry.hs`) to sanctioned-4.51.
 - Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts Increment A already
   registers; Sprint `4.50` deletes the legacy transports (and Increment B's gateway retype is the
   retained-SES subset of that removal landing early).

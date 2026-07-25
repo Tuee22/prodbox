@@ -150,8 +150,16 @@ library
         Prodbox.CLI.Nuke
         Prodbox.Legacy.EscapeRegistry
         Prodbox.Lifecycle.EbsVolume
+        Prodbox.Lifecycle.Authority.AdminAction
+        Prodbox.Lifecycle.Authority.BackupRepair
         Prodbox.Lifecycle.Authority.ChartStatics
+        Prodbox.Lifecycle.Authority.Config
         Prodbox.Lifecycle.Authority.Genesis
+        Prodbox.Lifecycle.Authority.Operation
+        Prodbox.Lifecycle.Authority.OutboxSim
+        Prodbox.Lifecycle.Authority.State
+        Prodbox.Lifecycle.Authority.Submission
+        Prodbox.Lifecycle.Authority.TlsRetention
         Prodbox.Lifecycle.AuthorityBackup.ChartStatics
         Prodbox.Lifecycle.ProviderWorker.ChartStatics
         Prodbox.Lifecycle.TargetSecretAgent.ChartStatics
@@ -162,6 +170,8 @@ library
         Prodbox.Lifecycle.AuthorityObjectCore
         Prodbox.Lifecycle.CheckpointAuthority
         Prodbox.Lifecycle.CheckpointAuthorityStore
+        Prodbox.Lifecycle.ModelBCasTransport
+        Prodbox.Lifecycle.HostDirectAuthorityStore
         Prodbox.Lifecycle.AuthorityConfig
         Prodbox.Lifecycle.DesiredPresence
         Prodbox.Lifecycle.FederatedVault
@@ -355,12 +365,21 @@ test-suite prodbox-unit
         GatewayEmitterKernel
         GatewayEmitterLease
         GatewayEmitterPersistence
+        LifecycleAuthorityAdminAction
+        LifecycleAuthorityBackupRepair
+        LifecycleAuthorityConfig
         LifecycleAuthorityGenesis
+        LifecycleAuthorityOperation
+        LifecycleAuthorityOutboxSim
+        LifecycleAuthorityState
+        LifecycleAuthoritySubmission
+        LifecycleAuthorityTlsRetention
         GatewayProbe
         GatewayReadiness
         GatewayRoutes
         GatewayRuntimeStability
         HostDirectAuthorityCas
+        HostDirectModelBAdapter
         LifecycleLease
         MeasuredProfile
         ObjectStoreNative

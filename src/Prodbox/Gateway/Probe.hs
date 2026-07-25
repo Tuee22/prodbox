@@ -51,16 +51,25 @@ gatewayLivenessProbe =
 gatewayReadinessProbe :: GatewayProbeSpec
 gatewayReadinessProbe =
   GatewayProbeSpec
-    { gatewayProbeEndpoint = readyzProbeRoute
+    { -- The kubelet readiness probe is @/healthz@ (process reachable), NOT
+      -- @/readyz@. The gateway daemon boots in a DEGRADED pre-Vault mode whose
+      -- @/readyz@ is fail-closed 503 by design (it cannot prove an object-store
+      -- round trip until Vault is unsealed), yet the pod MUST stay in its Service
+      -- endpoints in that mode: the lifecycle reaches the daemon over the NodePort
+      -- to drive Vault unseal, and only then does the Pod restart into full mode.
+      -- Binding kubelet readiness to @/readyz@ (Sprint 2.34) pulled the degraded
+      -- Pod out of its Service and deadlocked the pre-Vault bootstrap (the daemon
+      -- could never be reached to unseal Vault). Fail-closed SERVING is enforced
+      -- where it belongs — clients receive an explicit 503 from @/readyz@ and the
+      -- real routes, the single-writer emitter Lease fences writes, and the
+      -- lifecycle's @ComponentGatewayDaemonFull@ object-store round-trip gate is
+      -- the authoritative full-readiness barrier — not at the kubelet/Service seam
+      -- that the bootstrap depends on.
+      gatewayProbeEndpoint = healthzProbeRoute
     , gatewayProbeInitialDelaySeconds = 5
     , gatewayProbePeriodSeconds = 10
     , gatewayProbeTimeoutSeconds = 1
-    , -- Sprint 2.34: readiness now latches on the first proven object-store
-      -- round trip since boot, so first-ready may lag process start by several
-      -- reconnect intervals. The threshold rises 3 -> 6 to give that
-      -- durable-authority proof grace before the kubelet pulls the Pod from its
-      -- Service endpoints. Liveness stays at 3 (process health is immediate).
-      gatewayProbeFailureThreshold = 6
+    , gatewayProbeFailureThreshold = 3
     , gatewayProbeSuccessThreshold = 1
     }
 

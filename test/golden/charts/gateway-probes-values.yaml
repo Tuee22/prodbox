@@ -7,9 +7,9 @@ probes:
     failureThreshold: 3
     successThreshold: 1
   readiness:
-    path: /readyz
+    path: /healthz
     initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 1
-    failureThreshold: 6
+    failureThreshold: 3
     successThreshold: 1

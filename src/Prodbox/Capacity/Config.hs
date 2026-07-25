@@ -211,7 +211,20 @@ defaultResourcePlan =
           -- 100m (1400m -> 1300m) to fund the physically separate Bootstrap
           -- Broker's own namespace quota; the draw stays 800m, so no vscode pod
           -- is starved.
-          NamespaceQuota "vscode" (ResourceVector 1300 5216 10944 112640)
+          --
+          -- Home-substrate capacity correction (live-surfaced 2026-07-25): the
+          -- supported runtime deploys Keycloak + its keycloak-postgres CO-LOCATED
+          -- in the `vscode` namespace (see 'concurrentNamespaceQuotas'), so the
+          -- rendered vscode ResourceQuota MUST carry the keycloak allowance or the
+          -- vscode Pod is refused admission (`exceeded quota: vscode-resource-quota`)
+          -- once Keycloak + the 3-instance postgres already occupy the namespace.
+          -- The vscode ceiling therefore folds in the standalone `keycloak` quota
+          -- (1300 + 2025 = 3325m CPU, 5216 + 4448 = 9664 MiB, etc.). This is
+          -- budget-neutral: 'concurrentNamespaceQuotas' subtracts that same
+          -- co-located keycloak allowance back out of the vscode contribution, so
+          -- the single-node concurrent sum is unchanged and Keycloak is still
+          -- counted exactly once.
+          NamespaceQuota "vscode" (ResourceVector 3325 9664 22944 174080)
         , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
         , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
         , -- Sprint 1.65: gateway CPU quota 1250m -> 2750m for the 750m x3 bump.
@@ -638,9 +651,24 @@ validateResourcePlan plan = do
 concurrentNamespaceQuotas :: ResourcePlan -> [NamespaceQuota]
 concurrentNamespaceQuotas plan =
   -- `keycloak` is a standalone root-chart surface. The supported runtime deploys
-  -- Keycloak and its PostgreSQL dependency under `vscode`, so adding both quotas
-  -- would double-count the same workload shape against the single-node host.
-  filter ((/= "keycloak") . namespace_name) (namespace_quotas plan)
+  -- Keycloak and its PostgreSQL dependency co-located UNDER `vscode`, whose
+  -- rendered ResourceQuota folds in the keycloak allowance so the Pods admit (see
+  -- the `vscode` NamespaceQuota above). To count that co-located workload shape
+  -- exactly once against the single-node host, the standalone `keycloak` quota is
+  -- excluded AND the same allowance is subtracted back out of the `vscode`
+  -- contribution, leaving the concurrent sum identical to sizing `vscode` for its
+  -- own workloads.
+  [ if namespace_name nq == "vscode"
+      then nq {quota = quota nq `resourceVectorMinus` keycloakColocatedAllowance}
+      else nq
+  | nq <- namespace_quotas plan
+  , namespace_name nq /= "keycloak"
+  ]
+ where
+  keycloakColocatedAllowance =
+    case [quota nq | nq <- namespace_quotas plan, namespace_name nq == "keycloak"] of
+      (q : _) -> q
+      [] -> ResourceVector 0 0 0 0
 
 unlessFits :: String -> CapacityBudget -> CapacityBudget -> Either String ()
 unlessFits message inner outer =

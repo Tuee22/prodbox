@@ -4,146 +4,90 @@
 -- lease, intent, SMTP projection, and fenced Pulumi checkpoint objects.
 -- Coordinates carry the retained control-plane endpoint explicitly; this
 -- module never consults an ambient kube context or selected target sink.
+--
+-- Sprint 4.51 Increment B (Stage B): the Model-B ↔ authority-object translation
+-- (coordinate-authority guard, payload encode/decode, observation/response
+-- mapping) is lifted into the shared 'Prodbox.Lifecycle.ModelBCasTransport'.
+-- This adapter is now the thin GATEWAY transport: it delegates to
+-- 'modelBCasAdapterOverTransport' over the gateway daemon's authority-object HTTP
+-- routes, so it can never drift from the host-direct transport
+-- ('Prodbox.Lifecycle.HostDirectAuthorityStore.hostDirectModelBCasAdapter'), which
+-- delegates to the same shared adapter.
 module Prodbox.Lifecycle.CheckpointAuthorityStore
   ( ModelBCodec (..)
   , gatewayModelBCasAdapter
   )
 where
 
+import Data.Bifunctor (first)
+import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.ObjectStore
-  ( AuthorityObjectCasResponse (..)
-  , AuthorityObjectLeaseGuard (..)
-  , AuthorityObjectObservation (..)
+  ( AuthorityObjectCasRequest (..)
+  , AuthorityObjectCasResponse
+  , AuthorityObjectObservation
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
-  , ModelBCasAdapter (..)
-  , ModelBCasRequest (..)
-  , ModelBCasResult (..)
+  , ModelBCasAdapter
   , ModelBCodec (..)
-  , ModelBLeaseGuard (..)
-  , ModelBObjectCoordinate
-  , ModelBObservation (..)
   , checkpointAuthorityGatewayEndpoint
-  , mkModelBObjectVersion
-  , modelBObjectAuthority
-  , modelBObjectLogicalName
-  , modelBObjectVersionText
+  )
+import Prodbox.Lifecycle.ModelBCasTransport
+  ( ModelBTransport (..)
+  , modelBCasAdapterOverTransport
   )
 
 -- | The gateway daemon object-store transport is polymorphic in the storage
 -- lifetime it carries: it validates the coordinate's authority and logical name
--- only, so it serves any lifetime the caller demands.
+-- only, so it serves any lifetime the caller demands. (Sprint 4.51 Stage D
+-- retypes this to @'ChartLifetime@ once the retained coordinates move host-direct.)
 gatewayModelBCasAdapter
   :: LongLivedCheckpointAuthority
   -> ModelBCodec value
   -> ModelBCasAdapter l IO value
 gatewayModelBCasAdapter authority codec =
-  ModelBCasAdapter
-    { modelBObserve = observe
-    , modelBCompareAndSwap = compareAndSwap
+  modelBCasAdapterOverTransport authority (gatewayTransport authority) codec
+
+-- | The gateway HTTP transport: authority-object reads and conditional writes go
+-- to the retained control-plane endpoint over the daemon's authority-object
+-- routes. Rendered gateway errors are normalised to 'Text' exactly as the
+-- pre-Stage-B adapter did, so the shared adapter's 'ModelBUnobservable' /
+-- 'ModelBCasUnobservable' mappings are byte-identical.
+gatewayTransport :: LongLivedCheckpointAuthority -> ModelBTransport
+gatewayTransport authority =
+  ModelBTransport
+    { transportObserveObject = gatewayObserveObject endpoint
+    , transportCasObject = gatewayCasObject endpoint
     }
  where
-  observe coordinate =
-    case coordinateEndpoint authority coordinate of
-      Left err -> pure (ModelBUnobservable (Text.pack err))
-      Right endpoint -> do
-        result <-
-          GatewayClient.getAuthorityObject
-            endpoint
-            (modelBObjectLogicalName coordinate)
-        pure $ case result of
-          Left err -> ModelBUnobservable (Text.pack (GatewayClient.renderGatewayError err))
-          Right observation -> decodeObservation codec observation
+  endpoint = Text.unpack (checkpointAuthorityGatewayEndpoint authority)
 
-  compareAndSwap request =
-    case requestParts request of
-      Left err -> pure (ModelBCasUnobservable (Text.pack err))
-      Right (coordinate, expectedVersion, maybeGuard, value) ->
-        case coordinateEndpoint authority coordinate of
-          Left err -> pure (ModelBCasUnobservable (Text.pack err))
-          Right endpoint ->
-            case encodeModelBValue codec value of
-              Left err -> pure (ModelBCasRefusedCorrupt (Text.pack err))
-              Right encodedValue -> do
-                result <-
-                  case maybeGuard of
-                    Nothing ->
-                      GatewayClient.compareAndSwapAuthorityObject
-                        endpoint
-                        (modelBObjectLogicalName coordinate)
-                        expectedVersion
-                        encodedValue
-                    Just guard ->
-                      GatewayClient.compareAndSwapAuthorityObjectGuarded
-                        endpoint
-                        (modelBObjectLogicalName coordinate)
-                        expectedVersion
-                        (authorityObjectLeaseGuard guard)
-                        encodedValue
-                pure $ case result of
-                  Left err ->
-                    ModelBCasUnobservable (Text.pack (GatewayClient.renderGatewayError err))
-                  Right (AuthorityObjectCasApplied versionText) ->
-                    case mkModelBObjectVersion versionText of
-                      Left err -> ModelBCasUnobservable (Text.pack (show err))
-                      Right version -> ModelBCasApplied version value
-                  Right (AuthorityObjectCasConflict observation) ->
-                    ModelBCasConflict (decodeObservation codec observation)
+gatewayObserveObject
+  :: String -> Text -> IO (Either Text AuthorityObjectObservation)
+gatewayObserveObject endpoint logicalName =
+  mapGatewayError <$> GatewayClient.getAuthorityObject endpoint logicalName
 
-  requestParts request =
-    case request of
-      ModelBInitialize coordinate value -> Right (coordinate, Nothing, Nothing, value)
-      ModelBReplace coordinate version value ->
-        Right (coordinate, Just (modelBObjectVersionText version), Nothing, value)
-      ModelBInitializeGuarded coordinate guard value ->
-        case coordinateEndpoint authority (modelBLeaseGuardCoordinate guard) of
-          Left err -> Left err
-          Right _ -> Right (coordinate, Nothing, Just guard, value)
-      ModelBReplaceGuarded coordinate version guard value ->
-        case coordinateEndpoint authority (modelBLeaseGuardCoordinate guard) of
-          Left err -> Left err
-          Right _ ->
-            Right
-              ( coordinate
-              , Just (modelBObjectVersionText version)
-              , Just guard
-              , value
-              )
+gatewayCasObject
+  :: String -> AuthorityObjectCasRequest -> IO (Either Text AuthorityObjectCasResponse)
+gatewayCasObject endpoint request =
+  case authorityObjectCasLeaseGuard request of
+    Nothing ->
+      mapGatewayError
+        <$> GatewayClient.compareAndSwapAuthorityObject
+          endpoint
+          (authorityObjectCasLogicalName request)
+          (authorityObjectCasExpectedVersion request)
+          (authorityObjectCasPayload request)
+    Just guard ->
+      mapGatewayError
+        <$> GatewayClient.compareAndSwapAuthorityObjectGuarded
+          endpoint
+          (authorityObjectCasLogicalName request)
+          (authorityObjectCasExpectedVersion request)
+          guard
+          (authorityObjectCasPayload request)
 
-authorityObjectLeaseGuard :: ModelBLeaseGuard -> AuthorityObjectLeaseGuard
-authorityObjectLeaseGuard guard =
-  AuthorityObjectLeaseGuard
-    { authorityLeaseGuardLogicalName =
-        modelBObjectLogicalName (modelBLeaseGuardCoordinate guard)
-    , authorityLeaseGuardExpectedVersion =
-        modelBObjectVersionText (modelBLeaseGuardExpectedVersion guard)
-    , authorityLeaseGuardOwnerNonce = modelBLeaseGuardOwnerNonceText guard
-    , authorityLeaseGuardFencingToken =
-        modelBLeaseGuardFencingTokenValue guard
-    }
-
-coordinateEndpoint
-  :: LongLivedCheckpointAuthority
-  -> ModelBObjectCoordinate l
-  -> Either String String
-coordinateEndpoint expected coordinate
-  | modelBObjectAuthority coordinate /= expected =
-      Left "Model-B coordinate does not belong to the configured long-lived checkpoint authority"
-  | otherwise =
-      Right (Text.unpack (checkpointAuthorityGatewayEndpoint expected))
-
-decodeObservation
-  :: ModelBCodec value
-  -> AuthorityObjectObservation
-  -> ModelBObservation value
-decodeObservation codec observation =
-  case observation of
-    AuthorityObjectMissing -> ModelBMissing
-    AuthorityObjectObserved versionText payload ->
-      case (mkModelBObjectVersion versionText, decodeModelBValue codec payload) of
-        (Left err, _) -> ModelBUnobservable (Text.pack (show err))
-        (_, Left err) -> ModelBCorrupt (Text.pack err)
-        (Right version, Right value) -> ModelBObserved version value
+mapGatewayError :: Either GatewayClient.GatewayError a -> Either Text a
+mapGatewayError = first (Text.pack . GatewayClient.renderGatewayError)

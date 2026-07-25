@@ -1957,12 +1957,19 @@ nativeComponentReadinessTarget repoRoot settings component =
         )
     ComponentPerconaPostgresOperator -> operatorAvailableTarget component
     ComponentGatewayDaemonPreVault ->
+      -- Sprint 3.26-E rendered the gateway emitters as per-node StatefulSets, so
+      -- the pre-Vault readiness gate observes @StatefulSetReady gateway-<node>@
+      -- (was @DeploymentAvailable@, which no longer matches the workload kind).
+      -- With the kubelet readiness probe on @/healthz@ (see
+      -- 'Prodbox.Gateway.Probe.gatewayReadinessProbe'), the degraded pre-Vault Pod
+      -- becomes Ready once its process is reachable, so this gate resolves before
+      -- Vault is unsealed — the lifecycle can then drive unseal over the NodePort.
       Right
         ( RolloutCompleteTarget
             component
             ( observeKubernetesReadinessOnce
                 repoRoot
-                [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
+                [ StatefulSetReady gatewayNamespace ("gateway-" ++ nodeId)
                 | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal
                 ]
             )

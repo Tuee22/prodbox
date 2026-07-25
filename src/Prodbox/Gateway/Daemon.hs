@@ -869,7 +869,10 @@ runGatewayDaemonWithRuntimeDependencies
                         emitterAuthorityVar <- newTVarIO EmitterAuthorityUnavailable
                         workersStatusVar <- newTVarIO WorkersPending
                         liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
-                        reloadBroadcast <- newTChanIO
+                        -- Broadcast (not a plain TChan): with no active dupTChan
+                        -- reader, writes are discarded rather than retained, so
+                        -- reload notifications cannot accumulate an unbounded FIFO.
+                        reloadBroadcast <- newBroadcastTChanIO
                         drainSignals <- newTQueueIO
                         reloadSignals <- newTQueueIO
                         childSchedulerVar <- newTVarIO childScheduler
@@ -6170,12 +6173,14 @@ refreshBoundedPeerObservations env now before after initial =
                     let skew = abs (realToFrac (diffUTCTime now timestamp) :: Double)
                      in withHeartbeat
                           { stateMaxObservedSkewSeconds =
-                              Just
-                                ( maybe
-                                    skew
-                                    (max skew)
-                                    (stateMaxObservedSkewSeconds withHeartbeat)
-                                )
+                              -- Force the accumulator: a lazy Just (max skew <old>)
+                              -- otherwise builds an unbounded thunk chain retaining
+                              -- every prior observation until the rare /status scrape.
+                              Just $!
+                                maybe
+                                  skew
+                                  (max skew)
+                                  (stateMaxObservedSkewSeconds withHeartbeat)
                           }
 
   heartbeatTimestamp assertion =

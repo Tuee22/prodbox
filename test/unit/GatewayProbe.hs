@@ -25,12 +25,16 @@ gatewayProbeSuite =
       gatewayProbeTimeoutSeconds gatewayLivenessProbe `shouldBe` 1
       gatewayProbeFailureThreshold gatewayLivenessProbe `shouldBe` 3
       gatewayProbeSuccessThreshold gatewayLivenessProbe `shouldBe` 1
+      -- Kubelet readiness is @/healthz@ (process reachable), not @/readyz@: the
+      -- degraded pre-Vault daemon must stay in its Service endpoints so the
+      -- lifecycle can reach it over the NodePort to unseal Vault. Full-readiness
+      -- (@/readyz@ object-store round trip) is the lifecycle gate, not the probe.
       gatewayProbeEndpointPath (gatewayProbeEndpoint gatewayReadinessProbe)
-        `shouldBe` "/readyz"
+        `shouldBe` "/healthz"
       gatewayProbeInitialDelaySeconds gatewayReadinessProbe `shouldBe` 5
       gatewayProbePeriodSeconds gatewayReadinessProbe `shouldBe` 10
       gatewayProbeTimeoutSeconds gatewayReadinessProbe `shouldBe` 1
-      gatewayProbeFailureThreshold gatewayReadinessProbe `shouldBe` 6
+      gatewayProbeFailureThreshold gatewayReadinessProbe `shouldBe` 3
       gatewayProbeSuccessThreshold gatewayReadinessProbe `shouldBe` 1
 
     goldenTest

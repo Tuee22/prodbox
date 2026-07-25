@@ -3157,7 +3157,7 @@ gatewayProbeViolations deploymentTemplate valuesContents =
   forbiddenStateProbeViolations =
     [ "charts/gateway "
         ++ surface
-        ++ " uses forbidden kubelet probe path `/v1/state`; liveness must use `/healthz` and readiness must use `/readyz`."
+        ++ " uses forbidden kubelet probe path `/v1/state`; kubelet liveness and readiness must use `/healthz` (process reachability) so the degraded pre-Vault daemon stays reachable — full `/readyz` readiness is the lifecycle gate, never a kubelet probe."
     | (surface, contents) <-
         [ ("Deployment template", deploymentTemplate)
         , ("values", valuesContents)

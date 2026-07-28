@@ -4,7 +4,7 @@ _prodbox() {
   local -a words
   case "$CURRENT" in
     2)
-      words=("aws" "bootstrap-broker" "charts" "cluster" "commands" "config" "dev" "dns" "edge" "gateway" "help" "host" "nuke" "test" "users" "vault" "workload")
+      words=("aws" "bootstrap-broker" "lifecycle-authority" "provider-worker" "authority-backup" "tls-retention" "target-secret-agent" "charts" "cluster" "commands" "config" "dev" "dns" "edge" "gateway" "help" "host" "nuke" "test" "users" "vault" "workload")
       _describe 'command group' words
       ;;
     3)
@@ -74,6 +74,46 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "bootstrap-broker")
+          words=("start")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "lifecycle-authority")
+          words=("start")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "provider-worker")
+          words=("start")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "authority-backup")
+          words=("start")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "tls-retention")
+          words=("start")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    3)
+      case "$words[2,2]" in
+        "target-secret-agent")
           words=("start")
           _describe 'subcommand' words
           ;;

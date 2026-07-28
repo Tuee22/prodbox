@@ -106,4 +106,4 @@ spec:
         storageClassName: {{ .Values.journal.storageClassName | quote }}
         resources:
           requests:
-            storage: 1Gi
+            storage: {{ .Values.storage.size | quote }}

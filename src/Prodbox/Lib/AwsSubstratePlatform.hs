@@ -1037,10 +1037,10 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
 -- | Install the shared Vault chart on the AWS substrate. This intentionally
 -- reuses the same @charts/vault@ Helm helper as the home substrate so both
 -- substrates run the same Vault StatefulSet, Service, and PVC shape.
-ensureAwsSubstrateVaultRuntime :: FilePath -> IO ExitCode
-ensureAwsSubstrateVaultRuntime repoRoot = do
+ensureAwsSubstrateVaultRuntime :: FilePath -> ValidatedSettings -> IO ExitCode
+ensureAwsSubstrateVaultRuntime repoRoot settings = do
   writeOutputLine "Installing Vault on the AWS-substrate EKS cluster"
-  ensureVaultRuntime repoRoot
+  ensureVaultRuntime repoRoot settings
 
 -- | Orchestrate the full AWS-substrate platform install: AWS Load
 -- Balancer Controller, Envoy Gateway, cert-manager, the substrate-aware
@@ -1172,9 +1172,9 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
     StepAwsClusterBaseReady -> pure ExitSuccess
     StepAwsRetainedStorage -> ensureAwsSubstrateRetainedStorage repoRoot snapshot
     StepAwsMinioRuntimeBootstrap ->
-      ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
+      ensureMinioRuntime repoRoot settings SubstrateAws MinioBootstrapPublic
     StepAwsMinioReady -> pure ExitSuccess
-    StepAwsVaultRuntime -> ensureAwsSubstrateVaultRuntime repoRoot
+    StepAwsVaultRuntime -> ensureAwsSubstrateVaultRuntime repoRoot settings
     StepAwsVaultWorkloadReady -> pure ExitSuccess
     StepAwsContainerdMirror -> applyEksContainerdMirrorDaemonSet repoRoot
     StepAwsRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot

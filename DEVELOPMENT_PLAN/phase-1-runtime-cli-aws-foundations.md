@@ -4766,6 +4766,241 @@ is deliberately scoped out of this algebra sprint and owned downstream:
   and [system-components.md](system-components.md), and add the removed-surface rows to
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+## Sprint 1.69: Resource-Plan Decode Gate and Draw/Allocatable Projections [✅ Done]
+
+**Status**: Done (validated 2026-07-25) — the decoded in-force `resource_plan` now compiles into the
+required `validatedAllocatedPlan` field before `ValidatedSettings` can be constructed.
+**Implementation**: `src/Prodbox/Capacity/Allocation.hs` gains `compileResourcePlanUncertified`
+(a clock/profile-free, budget-only builder threading the same non-saturating
+`resourceVectorSubtractChecked` nesting as `compileResourcePlan`), the projections
+`planAllocatable`/`planTotalDraw`/`planWorkloadDraws`, and stores the validated source `ResourcePlan`
+inside the opaque proof; `src/Prodbox/Settings.hs` `ValidatedSettings` gains a **required** field
+`validatedAllocatedPlan :: Allocation.SomeAllocatedPlan`, built in `validateConfig` over the
+**decoded** in-force `resource_plan`; `src/Prodbox/Capacity/Config.hs` retires the runtime-`Either`
+`validateResourcePlan` inequality body (its callers `validateCapacitySection`/
+`runtimeMemoryPlanForProfile` fall back to the slim `validateRawResourcePlanShape` decode-time shape
+check); `src/Prodbox/CheckCode.hs` `runConformanceTier` reads the in-force proof and adds a
+conformance grep gate forbidding raw `resource_plan` (capacity config) reads outside `validateConfig`,
+and the stray `§ 2G` reference in that gate's message is corrected to `§2B/§2C`.
+**Blocked by**: none — the Sprint `1.68` proof it builds on is ✅ Done (own-surface Phase-1 reopen,
+Standard A/N).
+**Deployment qualification**: pending — changes the Standard-P **resource-envelope** decode surface;
+the revision must not be called deployment-ready on the strength of the decode gate alone.
+**Independent Validation**: a unit table proving an over-committed **decoded** config (not merely the
+hardcoded `defaultResourcePlan`) fails `validateConfig` with a structured `CompileError`, so there is
+no `ValidatedSettings` and therefore no renderer input; `compileResourcePlanUncertified
+defaultResourcePlan` still returns `Right`, so `prodbox dev check` stays exit 0. No cluster, AWS,
+unsealed Vault, or later phase is required — this is the pure decode boundary
+([resource_scaling_doctrine.md §2A decode gate](../documents/engineering/resource_scaling_doctrine.md),
+[§2C three-ring boundary](../documents/engineering/resource_scaling_doctrine.md)).
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/code_quality.md`
+
+### Objective
+
+Close the gap that Sprint `1.68`'s over-commit proof only gated the **hardcoded** `defaultResourcePlan`.
+Make an over-committed *decoded* in-force config **unrepresentable**: the opaque `AllocatedResourcePlan`
+becomes a required field of `ValidatedSettings`, so **no proof ⇒ no `ValidatedSettings` ⇒ no renderer
+input**. This is the Ring-2 Haskell **decode gate** of the three-ring boundary
+([resource_scaling_doctrine.md §2C three-ring boundary](../documents/engineering/resource_scaling_doctrine.md)) —
+the one ring where "unrepresentable" is actually delivered (Ring-1 Dhall is defense-in-depth generator
+cross-check only; the observed host is re-proved at reconcile in Ring-3).
+
+### Deliverables
+
+- `compileResourcePlanUncertified :: HostRoot -> (Text -> Text) -> Natural -> ResourcePlan -> Either
+  CompileError SomeAllocatedPlan` — a clock/profile-free, budget-only builder threading the same
+  non-saturating `resourceVectorSubtractChecked` nesting as `compileResourcePlan`, used at the config
+  boundary where no measured profile yet exists.
+- The projections `planAllocatable` (host − reservations), `planTotalDraw` (Σ workload draw), and
+  `planWorkloadDraws` (per-workload draw vector) read off the proof; the validated source `ResourcePlan`
+  is stored inside the proof so downstream renderers consume the proof, never the raw record.
+- `ValidatedSettings` gains the **required** `validatedAllocatedPlan :: Allocation.SomeAllocatedPlan`,
+  built in `validateConfig` over the decoded in-force `resource_plan`; the field is non-optional so no
+  code path can hold a `ValidatedSettings` for an over-committed decoded config.
+- `src/Prodbox/Capacity/Config.hs` retires the runtime-`Either` `validateResourcePlan` inequality body;
+  `validateCapacitySection`/`runtimeMemoryPlanForProfile` fall back to the slim
+  `validateRawResourcePlanShape`, and the nesting inequality now lives solely in the proof.
+- `runConformanceTier` reads the in-force proof and adds a conformance grep gate forbidding raw
+  `resource_plan` (capacity config) reads outside `validateConfig`; the stray `§ 2G` doc reference in
+  the gate message is corrected to `§2B/§2C`.
+
+### Validation
+
+1. Unit: an over-committed **decoded** config fixture fails `validateConfig` with a distinct
+   `CompileError`; a well-formed decoded config yields a `ValidatedSettings` carrying its
+   `SomeAllocatedPlan`.
+2. `compileResourcePlanUncertified defaultResourcePlan` ⇒ `Right`; `planAllocatable`/`planTotalDraw`/
+   `planWorkloadDraws` agree with the hand-computed vectors.
+3. The conformance grep gate fails a fixture that reads `resource_plan` outside `validateConfig`; the
+   corrected `§2B/§2C` message renders.
+4. `prodbox dev check` exit 0; unit/CLI/env suites pass. No cluster, AWS, or later phase.
+
+### Remaining Work
+
+- None on the owned surface. The derived-quota consumer (Sprint `3.27`) and the
+  observed-host closure (Sprint `4.52`) consume `planAllocatable`/`planWorkloadDraws` downstream.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - the decode gate (§2A) and the Ring-2 boundary
+  (§2C three-ring boundary) where the proof becomes a required field of `ValidatedSettings`, plus the
+  `planAllocatable`/`planTotalDraw`/`planWorkloadDraws` projections.
+- `documents/engineering/config_doctrine.md` - the decoded-plan decode gate and the retired runtime
+  `validateResourcePlan` inequality.
+- `documents/engineering/code_quality.md` - the raw-`resource_plan`-read conformance gate and the
+  corrected `§2B/§2C` gate message.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md), [00-overview.md](00-overview.md),
+  and [system-components.md](system-components.md).
+
+## Sprint 1.70: Guaranteed-QoS Envelope Wiring [✅ Done]
+
+**Status**: Done (validated 2026-07-25) — `WorkloadQoS` is decoded and the six standing
+control-plane workloads must carry both the `Guaranteed` tag and an equal request/limit envelope.
+**Implementation**: `src/Prodbox/Capacity/Config.hs` adds a `WorkloadQoS (Guaranteed | Burstable)`
+field to `WorkloadResourceProfile`; `src/Prodbox/Capacity/Allocation.hs` `compileResourcePlan` runs
+the currently exported-but-unused `mkGuaranteedEnvelope` witness (Sprint `1.68`) for every
+`Guaranteed` workload, so a control-plane workload authored with `request /= limit` on any axis fails
+compile with `EnvelopeNotGuaranteed`. The standing control-plane set — `bootstrap-broker`,
+`lifecycle-authority`, `provider-worker`, `authority-backup`, `tls-retention`,
+`target-secret-agent` — is tagged `Guaranteed`.
+**Blocked by**: Sprint `1.69` (satisfied — `1.69` is Done).
+**Deployment qualification**: pending — changes the Standard-P **resource-envelope** surface.
+**Independent Validation**: a unit table proving that flipping any control-plane workload's
+`WorkloadQoS` to `Burstable` (or authoring `request /= limit` on a `Guaranteed` one) fails compile with
+`EnvelopeNotGuaranteed`, while the current config compiles cleanly, so `prodbox dev check` stays exit
+0. No cluster, AWS, or later phase — the QoS witness is a pure construction lemma
+([resource_scaling_doctrine.md §2C three-ring boundary](../documents/engineering/resource_scaling_doctrine.md)).
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Wire the Sprint `1.68` `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness — currently exported but
+never called, so the control-plane workloads are only *assumed* Guaranteed-QoS (the gateway's
+`256 req / 512 limit` memory is silently Burstable today) — into `compileResourcePlan` so a
+`request /= limit` authoring mistake on a control-plane workload is a **compile-time** refusal rather
+than a silent Burstable pod at runtime
+([resource_scaling_doctrine.md §2C three-ring boundary](../documents/engineering/resource_scaling_doctrine.md)).
+
+### Deliverables
+
+- A `WorkloadQoS (Guaranteed | Burstable)` field on `WorkloadResourceProfile`, decoded from config, so
+  each workload's QoS class is explicit rather than inferred.
+- `compileResourcePlan` runs `mkGuaranteedEnvelope` for every `Guaranteed` workload, requiring
+  `request == limit` on cpu, memory, and ephemeral storage; a mismatch returns `Left
+  EnvelopeNotGuaranteed`.
+- The standing control-plane set — `bootstrap-broker`, `lifecycle-authority`, `provider-worker`,
+  `authority-backup`, `tls-retention`, `target-secret-agent` — is tagged `Guaranteed`.
+
+### Validation
+
+1. Unit: flipping any control-plane workload to `Burstable`, or authoring `request /= limit` on a
+   `Guaranteed` workload, fails compile with `EnvelopeNotGuaranteed`; the committed config compiles.
+2. `prodbox dev check` exit 0; unit/CLI/env suites pass. No cluster, AWS, or later phase.
+
+### Remaining Work
+
+- None on the owned surface at authoring time.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - the `WorkloadQoS` tag and the
+  `mkGuaranteedEnvelope` compile-time Guaranteed-QoS witness for the control-plane set.
+- `documents/engineering/haskell_code_guide.md` - `WorkloadQoS` on `WorkloadResourceProfile` and the
+  `EnvelopeNotGuaranteed` compile refusal.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+
+## Sprint 1.71: Derived Workload Resource Contracts [✅ Done]
+
+**Status**: Done (validated 2026-07-25) — raw workload envelopes no longer decode; the derived
+request/limit proof is the only workload-resource input to allocation and rendering.
+**Implementation**: new `src/Prodbox/Capacity/Derivation.hs`; refactors
+`src/Prodbox/Capacity/Config.hs`, `src/Prodbox/Capacity/RuntimeMemory.hs`,
+`src/Prodbox/ControlPlane/Capacity.hs`, `src/Prodbox/Capacity/Allocation.hs`, and generated Dhall
+schema surfaces.
+**Deployment qualification**: pending — this changes the Standard-P resource-envelope identity.
+**Independent Validation**: pure table tests compile typed workload-demand inputs into exact
+envelopes, reject a missing or uncertified empirical coefficient, prove memory/storage projections
+equal their source plans, and prove that no raw `ResourceEnvelope` can enter `ValidatedSettings`.
+No chart, cluster, AWS, or later-phase dependency.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Make a deployable workload envelope a deterministic projection of the workload's bounded proof
+inputs rather than a separately authored number. Arithmetic fit and resource sufficiency then share
+one source: runtime-memory terms derive memory, service demand plus a calibrated reference cost
+derive CPU, bounded scratch derives ephemeral storage, the durable-storage plan derives PVC demand,
+and QoS derives request/limit equality or explicit burst headroom.
+
+### Deliverables
+
+- `WorkloadDemandSpec` contains typed references/inputs for runtime memory, service demand,
+  empirical calibration provenance, bounded ephemeral scratch, durable storage, QoS, replicas,
+  concurrency, and surge.
+- `deriveResourceEnvelope` is the sole constructor of the deployable envelope. It uses exact
+  `Natural`/ratio arithmetic and returns structured defects for missing terms, stale/uncertified
+  calibration, overflow, or an impossible QoS relation.
+- `WorkloadResourceProfile` stores the demand specification and derived envelope proof; raw Dhall
+  can no longer provide `resources.request` or `resources.limit`.
+- `compileResourcePlan` consumes only derived workload contracts. Its allocation proof therefore
+  establishes containment over values whose provenance is structural.
+- Measured artifacts certify empirical calibration inputs; they never directly author or replace
+  the derived envelope.
+
+### Validation
+
+1. Pure golden tables cover CPU, memory, ephemeral, durable, QoS, replicas, surge, and concurrency
+   projections, including exact rounding boundaries.
+2. Negative tables reject missing runtime-memory terms, absent/stale calibration, a durable-size
+   mismatch, and any attempted raw-envelope decode.
+3. The default workload catalog derives deterministically and the allocation proof either compiles
+   or names the exact unsatisfied demand term—never an independently tunable quota.
+4. Generated Dhall schema, unit/CLI/env integration suites, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/resource_scaling_doctrine.md` - authoritative derivation chain and the
+  structural-versus-empirical proof boundary.
+- `documents/engineering/config_doctrine.md` - derived workload contracts replace raw envelopes.
+- `documents/engineering/haskell_code_guide.md` - opaque derivation proof and structured defects.
+
+**Product docs to create/update:**
+
+- `README.md` - link the resource-governance overview to Sprint `1.71`.
+
+**Cross-references to add:**
+
+- Link consumer Sprints `3.27`, `4.52`, and calibration-recorder Sprint `5.21` without making a
+  later phase a Phase-1 validation prerequisite.
+
 ## Related Documents
 
 - [README.md](README.md)

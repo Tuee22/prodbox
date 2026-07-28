@@ -83,6 +83,11 @@ The current supported worktree has started converging on a small shared foundati
 - `src/Prodbox/Lifecycle/ReadinessObservation.hs` owns flat exhaustive projections of externally
   authoritative readiness. GADT-indexed transitions remain reserved for real in-process authority;
   the former unused `Prodbox.StateMachine` experiment is deleted.
+- Long-running runtimes use structured concurrency and a proof-carrying shutdown result. A bounded
+  cancellation or join may return `ShutdownIncomplete`; callers must not discard that result or
+  publish `Stopped`. Terminal completion requires joined children, resolved waiters, and an empty
+  owned-resource postcondition. The Bootstrap Broker contract is authoritative in
+  [Lifecycle Control-Plane Architecture §7.1](./lifecycle_control_plane_architecture.md#71-shutdown-completion-is-proof-carrying).
 
 These modules are closed doctrine-adoption surfaces. New code should prefer them over ad-hoc
 reimplementations.
@@ -678,6 +683,11 @@ exact failed term or inequality. The authoritative algebra is in
 [Resource Scaling Doctrine §2D](./resource_scaling_doctrine.md#2d-runtime-memory-decomposition-and-observation).
 
 A sibling in the same opaque-proof family widens the pattern past a single role's heap.
+`Prodbox.Capacity.Derivation` is the sole bridge from workload proof inputs to a deployable
+`ResourceEnvelope`: runtime memory and durable/scratch storage are structural projections, while
+service demand consumes a provenance-bound calibrated coefficient and exact ratio arithmetic.
+Neither Dhall nor a measurement artifact can directly author request/limit values.
+
 `Prodbox.Capacity.Allocation` (Sprint `1.68`, ✅ landed) carries the host/cluster/workload nesting as an
 opaque, proof-carrying `AllocatedResourcePlan (c :: Certification)`, built by the total smart constructor
 `compileResourcePlan` alongside the sibling opaque proofs `ServiceCapacityPlan` and `RuntimeMemoryPlan`:
@@ -685,16 +695,31 @@ an over-committed plan is not a constructible value (a `Left`, never a value), t
 `HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload` components hide their
 constructors, and a non-saturating `resourceVectorSubtractChecked` replaces the saturating budget
 subtraction (`boundedMinus`) on the budget path so an underflow returns `Left` rather than clamping to
-zero. A `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness proves `request == limit`, and a per-workload
-`WorkloadCertification` phantom-indexes the plan (`Certified` iff every workload certifies against a
-committed measured profile). This keeps the honest split — memory sufficiency is already structural via
-`RuntimeMemoryPlan`, while CPU sufficiency stays an `uncertified-until-first-profile` measured seam.
-Threading the proof into the write-side renderers and the observed-host reconcile check is Sprints
-`3.27`/`4.52`; DEVELOPMENT_PLAN/README.md carries status.
+zero. A `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness proves `request == limit`, tagged by a
+`WorkloadQoS` (`Guaranteed | Burstable`) so a workload that must be Guaranteed cannot be authored
+`Burstable` (Sprint `1.70` wiring), and a per-workload `WorkloadCertification` phantom-indexes the
+plan (`Certified` iff every workload certifies against a committed measured profile). This keeps the
+honest split — memory sufficiency is already structural via `RuntimeMemoryPlan`, while CPU sufficiency
+stays an `uncertified-until-first-profile` measured seam.
 
-`Prodbox.Capacity.Config.runtimeMemoryPlanForProfile` derives the cgroup authority from the matching
-workload profile's `ResourceEnvelope.limit.memory_mib`; runtime config cannot author a second
-container limit. The validator rejects unbounded or malformed child schedules. Capacity one uses
+The [Development Plan](../../DEVELOPMENT_PLAN/README.md) sequences and carries status for the rest of
+the family; each item below is a forward reference, not a landed claim. The proof is threaded onto
+`ValidatedSettings` as the required `validatedAllocatedPlan` field — the **decode gate**, where no
+proof means no validated settings and therefore no renderer input (Sprint `1.69`).
+`Prodbox.Capacity.Render` is the one shared `ResourceQuota`/`LimitRange`/runtime-vector renderer that
+consumes the proof (Sprint `3.28`). `Prodbox.Capacity.Placement` owns `renderedNamespace`,
+`planNamespaceQuota`, and the `WorkloadConcurrency` (`Steady | ExclusiveWindow`) that makes namespace
+quotas derived from workload draws rather than authored (Sprint `3.27`), with each durable PVC sized
+from the workload's one `durable_storage_mib` source that simultaneously sizes the quota and the fit
+proof (Sprint `3.29`). `Prodbox.Capacity.ObservedHost` carries the dual-device observed-host root plus
+`compileResourcePlanAgainstObserved`, re-proving `cluster <= host` against the machine discovered at
+reconcile across distinct durable and ephemeral devices (Sprint `4.52`). The over-commit algebra and
+the honest three-ring boundary are owned by
+[resource_scaling_doctrine.md § 2A–§2C](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped).
+
+`Prodbox.Capacity.Config.runtimeMemoryPlanForProfile` supplies the compiled memory input used to
+derive the matching workload contract; the resulting cgroup memory limit is a projection rather
+than a second authored value. The validator rejects unbounded or malformed child schedules. Capacity one uses
 the maximum serialized peak, while greater concurrency requires one peak per simultaneous permit
 and sums them.
 
@@ -738,7 +763,8 @@ newtype App a = App
 This keeps configuration, logging, and dependencies organized.
 
 Daemons need a richer `Env` (resource handles, structured logger, metrics
-registry, shutdown signal, hot-reloadable live config). See
+registry, shutdown signal, hot-reloadable live config). Their terminal lifecycle state is private
+and proof-carrying: timeout is an observation, never evidence that child ownership ended. See
 [distributed_gateway_architecture.md → Daemon Lifecycle → The Env record grows](./distributed_gateway_architecture.md#daemon-lifecycle).
 
 ## Cross-References

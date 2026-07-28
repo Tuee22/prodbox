@@ -943,6 +943,13 @@ Decommission Runner only through a separate linear `SecretRef.Prompt` ingress; t
 capability-program field or persisted value. Tests may simulate that prompt only with
 `aws_admin_for_test_simulation.*` in `test-secrets.dhall`.
 
+The default Vault reconcile plan materializes a distinct Kubernetes-auth role and policy for every
+standing control-plane process. Lifecycle Authority receives only retained-store HMAC/MinIO/Transit
+access; Provider Worker, Authority Backup, and TLS Retention each read only the exact credential
+path named above; Target Secret Agent receives only its registered target-secret lanes. Each
+schema-v2 mounted configuration binds the exact role before its cached renewable session is
+constructed. A process cannot borrow the Gateway identity or another standing role.
+
 For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
 the exact-trust `prodbox-ses-lease-session` role. The fenced provider worker receives a session
 bounded by one narrow non-credential SES identity/DKIM/receipt-rule/S3 provider mutation and the

@@ -79,6 +79,9 @@ bootstrapBrokerServerSafetySuite =
     it
       "bounds deadline-forced worker joins and clears runtime residue"
       drainDeadlineJoinProof
+    it
+      "cannot publish Stopped while a cancelled worker finalizer is stalled"
+      finalizerStallProof
 
 data TestLimits = TestLimits
   { testRequestDeadlineMilliseconds :: !Natural
@@ -194,6 +197,7 @@ atomicWorkerClaimProof = do
   let hooks =
         Server.BrokerServerHooks
           { Server.brokerBeforeWorkerAccounting = readTMVar claimGate
+          , Server.brokerBeforeWorkerFinalized = pure ()
           }
       interpreter = firstInvocationBlocks entered calls
       wire = probeWire Routes.BrokerHealth
@@ -260,6 +264,52 @@ drainDeadlineJoinProof = do
       clientSettled `shouldSatisfy` maybe False (const True)
       assertStoppedWithoutRuntimeResidue server
       readTVarIO calls `shouldReturn` 1
+
+finalizerStallProof :: Expectation
+finalizerStallProof = do
+  entered <- newEmptyTMVarIO
+  finalizerGate <- newEmptyTMVarIO
+  calls <- newTVarIO (0 :: Natural)
+  let limits =
+        defaultTestLimits
+          { testDrainDeadlineMilliseconds = 50
+          }
+      hooks =
+        Server.BrokerServerHooks
+          { Server.brokerBeforeWorkerAccounting = pure ()
+          , Server.brokerBeforeWorkerFinalized = readTMVar finalizerGate
+          }
+      interpreter = firstInvocationBlocks entered calls
+      wire =
+        rpcWire
+          Routes.BrokerVaultInitialize
+          "proof-carrying-finalizer-stall"
+          "{\"action\":\"initialize\"}"
+  withTestServerWithHooks
+    limits
+    hooks
+    permissiveAuthenticator
+    interpreter
+    $ \server ->
+      withAsync (exchange server wire) $ \client -> do
+        _ <- awaitSignal "finalizer-stall owner did not enter the interpreter" entered
+        Server.forceBrokerDrain (testServerHandle server)
+        Server.waitBrokerServer (testServerHandle server)
+          `shouldReturn` Left Server.BrokerShutdownIncomplete
+        incomplete <- Server.brokerServerSnapshot (testServerHandle server)
+        Server.snapshotPhase incomplete `shouldBe` Server.BrokerForceDraining
+        Server.snapshotActiveConnections incomplete `shouldBe` 1
+        Server.snapshotIdempotencyEntries incomplete `shouldBe` 0
+        atomically (putTMVar finalizerGate ())
+        settledAfterRelease <-
+          timeout
+            2_000_000
+            (Server.waitBrokerServer (testServerHandle server))
+        settledAfterRelease `shouldBe` Just (Left Server.BrokerForcedShutdown)
+        waitServerWithin server `shouldReturn` Left Server.BrokerForcedShutdown
+        clientSettled <- timeout 2_000_000 (waitCatch client)
+        clientSettled `shouldSatisfy` maybe False (const True)
+        assertStoppedWithoutRuntimeResidue server
 
 firstInvocationBlocks
   :: TMVar ()

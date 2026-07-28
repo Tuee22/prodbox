@@ -228,16 +228,22 @@ shape as `Prodbox.Lifecycle.ResidueStatus`'s `ResidueUnreachable` and `Prodbox.G
 ## 8. Host Capacity Is Observed, Not Configured
 
 The `HostSubstrate` says which execution frame the binary is in; host capacity is a measured fact
-inside that frame. For the home RKE2 substrate, `cluster reconcile` observes cpu, memory, node
-filesystem capacity, and image filesystem capacity from the Linux frame and compares that observation
-with `capacity.resource_plan.host_capacity`. A host that is smaller than the authored declaration is
-rejected before RKE2 files or chart workloads are mutated. Beyond that under-declaration check,
-`cluster reconcile` re-compiles the resource plan against the observed host (Sprint `4.52`): the
-host/cluster/workload nesting is fed to `compileResourcePlan` (`Prodbox.Capacity.Allocation`) using
-the *observed* host facts rather than only the authored `host_capacity`, so a cluster whose
-allocations exceed the observed host refuses at compile — invariant (b) `cluster <= host` is closed
-against observed facts, and an over-committed plan is a `Left`, never a constructible
-`AllocatedResourcePlan`. (Planned/Blocked — see `DEVELOPMENT_PLAN/README.md` for status.)
+inside that frame. For the home RKE2 substrate, `cluster reconcile` observes cpu, memory, and — on
+**distinct devices** — ephemeral storage (the kubelet root filesystem) and durable storage (the
+retained-PV host path, `.data/`) from the Linux frame, collapsing the two to a single shared-device
+joint budget when they resolve to one filesystem so the same bytes are never double-counted against
+both axes. That four-axis observation is folded into `compileResourcePlanAgainstObserved`
+(`Prodbox.Capacity.Allocation`): the host/cluster/workload nesting is re-proved against the
+*observed* host rather than only the authored `capacity.resource_plan.host_capacity`, so a cluster
+whose allocations exceed the observed host refuses at compile — invariant (b) `cluster <= host`
+closed against observed facts, an over-committed plan a `Left`, never a constructible
+`AllocatedResourcePlan`. Folding the observation into that opaque proof supersedes the late
+`hostCapacityCoversPlan` boolean, so no RKE2/kubelet guardrail writes without the observed proof. The
+algebra and its three-ring enforcement boundary are owned by
+[resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+/ [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); observed-host recompile is the
+Sprint `4.52` implementation (Done on its code-owned surface — see
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) for status).
 
 This keeps the host-provider model pure: macOS/Windows only choose the Lima/WSL2 Linux frame; the
 capacity contract is then evaluated against facts observed in that frame. The resource algebra and

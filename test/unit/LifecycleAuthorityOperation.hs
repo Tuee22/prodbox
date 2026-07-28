@@ -6,8 +6,11 @@ module LifecycleAuthorityOperation
   )
 where
 
+import Data.Either (isLeft)
 import Data.Text (Text)
 import Prodbox.Lifecycle.Authority.Operation
+import Prodbox.Lifecycle.Authority.OperationStore (operationRecordCodec)
+import Prodbox.Lifecycle.CheckpointAuthority (ModelBCodec (..))
 import TestSupport
 
 lifecycleAuthorityOperationSuite :: SuiteBuilder ()
@@ -53,8 +56,29 @@ lifecycleAuthorityOperationSuite =
         `shouldBe` Left OperationRecoveryTargetDiverged
       decideOperationRecovery matches intent OperationTargetUnobservable
         `shouldBe` Left OperationRecoveryObservationUnavailable
+
+    it "round-trips armed and completed records through bounded canonical CBOR" $ do
+      let codec = operationRecordCodec 4096
+          armed = newArmedOperation key intent :: OperationRecord Text Text Text
+          completed = expectRight (completeOperation key "action-done" armed)
+      mapM_
+        ( \record -> do
+            let bytes = expectRight (encodeModelBValue codec record)
+            decodeModelBValue codec bytes `shouldBe` Right record
+        )
+        [armed, completed]
+
+    it "refuses operation records at the configured byte boundary" $ do
+      let codec = operationRecordCodec 1
+          record = newArmedOperation key intent :: OperationRecord Text Text Text
+      encodeModelBValue codec record `shouldSatisfy` isLeft
  where
   key = "op-1" :: Text
   intent = "action" :: Text
   matches :: Text -> Text -> Bool
   matches i r = r == i <> "-done"
+
+expectRight :: (Show err) => Either err value -> value
+expectRight value = case value of
+  Left err -> error ("expected Right, got " ++ show err)
+  Right result -> result

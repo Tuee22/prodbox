@@ -21,6 +21,12 @@
 
 ## Phase Status
 
+📋 **Expanded 2026-07-26 with Sprint `5.23`; unblocked 2026-07-27 by Sprint `2.36`.** The
+canonical validation must reproduce forced shutdown under deterministic finalizer stalls and
+full-suite scheduler contention, and must fail on any leaked worker, waiter, queue entry, or
+idempotency record. One hundred isolated focused passes do not close a source-reachable illegal
+transition.
+
 📋 **Expanded 2026-07-12 for the Foundation Epoch.** Counterexample `LCPC-2026-07-11` froze four
 aggregate-suite failure mechanisms; this phase gains the two suite-side structural owners, adopted
 by governance Sprint `0.17` ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)).
@@ -1117,7 +1123,15 @@ run is the first real substrate proof, with AWS parity tracked normally in [subs
 ### Objective
 
 Add canonical-suite coverage for the resource-governor contract introduced by Sprints `1.55`,
-`3.22`, and `4.41`.
+`3.22`, and `4.41`. Once the resource-governance sprints land, the namespace oracle asserts the
+observed cluster `ResourceQuota`/`LimitRange` JSON against the **same** shared `Prodbox.Capacity.Render`
+functions the chart platform renders from (Sprint `3.28`) — one renderer, byte-identical on both sides
+— rather than a validation-local expected-value oracle, so this validation confirms
+observed-equals-rendered instead of re-deriving the ceiling. The "namespace quota below its workloads'
+draw" case is then no longer a runtime string comparison here: it is a **compile-time** refusal in the
+derived-quota proof (Sprint `3.27`), which makes an under-provisioned quota unrepresentable before any
+render or mutation. This sprint stays code-owned and home-substrate-scoped (Standard M); AWS parity of
+the same validation is tracked in [substrates.md](substrates.md), never as a blocker.
 
 ### Deliverables
 
@@ -1142,6 +1156,13 @@ Add canonical-suite coverage for the resource-governor contract introduced by Sp
 3. ✅ `prodbox test integration cli` — 41/41.
 4. ✅ `prodbox test integration env` — 41/41.
 5. ✅ `prodbox dev check`
+6. 📋 Once the resource-governance sprints land, the namespace oracle asserts the observed cluster
+   `ResourceQuota`/`LimitRange` JSON against the **same** shared `Prodbox.Capacity.Render` functions the
+   chart platform renders from (Sprint `3.28`) — byte-identical on both sides — instead of a
+   validation-local expected-value oracle, and the "namespace quota below its workloads' draw" fixture
+   becomes a **compile-time** refusal in the derived-quota proof (Sprint `3.27`) rather than a runtime
+   string comparison. This validation then confirms observed-equals-rendered on the home substrate
+   (Standard M); AWS parity in [substrates.md](substrates.md).
 
 ### Remaining Work
 
@@ -1751,10 +1772,11 @@ position.
 - Link the derived fact tables to the managed-resource registry lifecycle classes and the
   storage-lifetime index owned by Sprint `4.51` (no `Blocked by` edge).
 
-## Sprint 5.21: Measured Resource Profile Recorder [🔄 Active]
+## Sprint 5.21: Resource Calibration Recorder [🔄 Active]
 
-**Status**: Active (Sprint `1.65` unblocked; the pure recorder gate landed 2026-07-12, the live
-metric sampling + first committed profile remain)
+**Status**: Active — the pure healthy-run gate exists; the artifact is being refactored from a
+parallel envelope-certification record into certified empirical inputs consumed by Sprint `1.71`'s
+pure derivation algebra.
 **Deployment qualification**: pending
 **Live-proof**: pending — recording the first committed gateway profile requires a healthy live
 ≥30-minute run and extending the gateway-runtime-stability observer to sample CPU, throttle, heap,
@@ -1776,17 +1798,18 @@ first committed profile activates the Sprint 1.65 certification for `gateway`.
 
 ### Objective
 
-Close the measurement loop opened by Sprint `1.65`: authored Guaranteed-QoS envelopes are certified
-against committed measured profiles, and this sprint produces those profile artifacts from real
-healthy suite runs. The recorded profile also evidences the hot-path CPU reduction delivered by
-Sprints `1.64` and `1.66`.
+Close the empirical-input loop without creating a second resource-authoring surface. Healthy runs
+record service cost at a named reference CPU, runtime overhead/high-water evidence, throttle
+observations, workload identity, and provenance. Phase 1 consumes those calibrated inputs and derives
+the envelope deterministically.
 
 ### Deliverables
 
-- A `--record-profile` mode of the gateway-runtime-stability suite that writes the committed
-  `MeasuredResourceProfile` artifact only from a healthy run with at least a thirty-minute steady
-  window.
-- The first committed gateway profile, which activates the Sprint `1.65` certification check.
+- A `--record-profile` mode writes a committed calibration artifact only from a healthy run with at
+  least a thirty-minute steady window.
+- The artifact records derivation inputs and provenance, never request/limit envelope values.
+- A pure round trip proves the Phase-1 derivation consumes the artifact and deterministically
+  reproduces the expected CPU/runtime-overhead terms.
 
 ### Validation
 
@@ -1797,9 +1820,9 @@ Sprints `1.64` and `1.66`.
 
 ### Remaining Work
 
-- Blocked until Sprint `1.65` lands the `MeasuredResourceProfile` type and certification check.
-- Recording the first committed gateway profile requires a healthy live run; until it lands, the
-  interim authored gateway envelope remains uncertified-until-first-profile.
+- Refactor the artifact into the calibrated input/provenance shape consumed by Sprint `1.71`.
+- Add live metric collection and `--record-profile` wiring.
+- Record the first healthy gateway calibration in a non-blocking live run.
 
 ## Documentation Requirements
 
@@ -1889,6 +1912,85 @@ condition alone is not accepted as proof.
 - Link the serving validation to the `CertScope` algebra owned by Sprint `2.35`
   ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)) and the AWS-substrate parity axis in
   [substrates.md](substrates.md).
+
+## Sprint 5.23: Deterministic Shutdown-Race and Residue Oracle [✅ Done]
+
+**Status**: Done — the deterministic shutdown model, exhaustive scheduler, and residue oracle
+landed and are fixture-proven on the code-owned surface. The live full-suite-contention exercise is
+the non-blocking Standard-O axis.
+**Implementation**: ✅ `src/Prodbox/Bootstrap/Broker/ShutdownModel.hs` — a pure, exhaustively
+schedulable model of the Bootstrap Broker forced-drain shutdown. It reproduces the Sprint-2.36
+proof-carrying boundary as two variants over one step relation (drain / finalize-worker /
+resolve-waiter / prove-shutdown): `FrozenPreFix` proves completion on `queued == 0 && active == 0`
+alone, while `ProofCarrying` additionally requires every replay waiter resolved (the `Map.null
+entries` term of `Prodbox.Bootstrap.Broker.Server.proveShutdownComplete`). `reachableStates`
+enumerates every interleaving of the finite, monotone state space; `stoppedWithLiveWaiter` is the
+counterexample predicate; and `shutdownResidue` / `residueClean` are the run-final residue oracle
+over queued connections, unfinalized workers, and live replay-waiter cells. Evidence:
+`test/unit/BootstrapBrokerShutdownModel.hs` — the frozen model reaches `Stopped + live replay
+waiter`, the proof-carrying model cannot under exhaustive bounded scheduling, every proof-carrying
+terminal state is a clean stop, and a frozen terminal leaks typed residue rather than passing
+silently (shutdown suite 6/6, broker regression 132/132, `prodbox dev check` exit 0, warning- and
+lint-clean).
+**Live-proof**: pending — wiring the residue oracle into the real broker daemon-lifecycle fixture
+teardown and exercising full-suite contention (not just isolated green repetition) over the live
+STM/`Async` runtime is the non-blocking Standard-O axis.
+**Deployment qualification**: pending
+**Independent Validation**: ✅ after Sprint `2.36` exposes the proof-carrying shutdown boundary, the
+pure model's fake cancellation/finalizer/waiter scheduling validates every interleaving locally with
+no live substrate or later phase — `reachableStates` is an exhaustive closure over the finite
+monotone state space, so the counterexample and its absence are proofs, not sampled observations.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/chaos_hardening_doctrine.md`
+
+### Objective
+
+Turn the full-suite-only Bootstrap Broker shutdown failure into a stable repository-owned
+counterexample and prevent a test fixture from returning while its structured child tree survives.
+
+### Deliverables
+
+- Deterministically pause cancellation delivery and worker finalization around forced drain.
+- Assert `ForceDraining`/`ShutdownIncomplete` while any child or waiter remains and assert
+  `ShutdownComplete` only after the exact empty postcondition.
+- Make fixture cleanup acquire the terminal witness or fail with typed residue; never discard a
+  second timeout.
+- Add a run-final residue check for broker worker/manager threads and unresolved completion cells.
+- Exercise focused repetition and full-suite contention without treating isolated green repetition
+  as sufficient proof.
+
+### Validation
+
+1. The frozen pre-fix simulator reaches `Stopped + live replay waiter`.
+2. The replacement simulator cannot reach that state under exhaustive bounded scheduling.
+3. A deliberately stalled finalizer makes cleanup fail visibly rather than leak into later tests.
+4. The focused shutdown suite, complete unit suite, and `prodbox dev check` pass consecutively.
+
+### Remaining Work
+
+- ✅ The pure code-owned closure — the frozen/proof-carrying shutdown model, the exhaustive bounded
+  scheduler, the counterexample (`stoppedWithLiveWaiter`), and the run-final residue oracle
+  (`shutdownResidue` / `residueClean`) — landed and is fixture-proven against Sprint `2.36`'s
+  proof-carrying postcondition and explicit incomplete state.
+- 🧪 Wiring the run-final residue oracle into the canonical-suite (broker daemon-lifecycle) fixture
+  teardown so real broker worker/manager threads and unresolved completion cells fail the run with
+  typed residue, and exercising full-suite contention over the live runtime, is the non-blocking
+  Standard-O live axis.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/unit_testing_policy.md` - deterministic shutdown scheduling and residue.
+- `documents/engineering/chaos_hardening_doctrine.md` - forced-drain/finalizer fault point.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the Sprint `2.36` runtime owner and the timeout-discarding test-fixture ledger row.
 
 ## Related Documents
 

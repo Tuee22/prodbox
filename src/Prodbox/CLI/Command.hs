@@ -3,6 +3,7 @@ module Prodbox.CLI.Command
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
+  , ControlPlaneLaunchOptions (..)
   , PulumiResiduePolicy (..)
   , ChartsCommand (..)
   , buildPlan
@@ -43,6 +44,7 @@ module Prodbox.CLI.Command
 where
 
 import Prodbox.CLI.Output (writeOutput)
+import Prodbox.Runtime.Role (RuntimeRole)
 import Prodbox.Substrate (Substrate (..))
 import System.Exit
   ( ExitCode (ExitSuccess)
@@ -63,6 +65,7 @@ data CommandListingFormat
 data NativeCommand
   = NativeAws AwsCommand
   | NativeBootstrapBroker BootstrapBrokerCommand
+  | NativeControlPlane RuntimeRole ControlPlaneLaunchOptions
   | NativeCharts ChartsCommand
   | NativeCheckCode
   | NativeConfig ConfigCommand
@@ -152,6 +155,12 @@ data BootstrapBrokerCommand
 data BrokerLaunchOptions = BrokerLaunchOptions
   { brokerConfigPath :: FilePath
   , brokerPlanOptions :: PlanOptions
+  }
+  deriving (Eq, Show)
+
+data ControlPlaneLaunchOptions = ControlPlaneLaunchOptions
+  { controlPlaneConfigPath :: FilePath
+  , controlPlanePlanOptions :: PlanOptions
   }
   deriving (Eq, Show)
 

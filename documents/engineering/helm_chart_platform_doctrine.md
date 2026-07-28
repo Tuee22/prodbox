@@ -80,10 +80,12 @@ The supported chart doctrine is:
     traffic, cluster DNS, external HTTPS for issuer/OIDC paths, and the configured SMTP port from
     `.Values.smtp.port` for SES-backed invite email.
 14. Every repo-owned chart renders explicit cpu, memory, and ephemeral-storage
-    `resources.requests` and `resources.limits` for every container and init container, plus explicit
-    PVC capacities for every durable claim. A chart without a resource profile is invalid; the chart
-    renderer consumes the validated resource plan from
-    [resource_scaling_doctrine.md](./resource_scaling_doctrine.md), never a template-local default.
+    `resources.requests` and `resources.limits` for every container and init container, plus, for
+    every durable claim, a PVC `size:` injected from the workload's durable-storage draw. A chart
+    without a resource profile is invalid; the chart renderer consumes the validated resource plan
+    from
+    [resource_scaling_doctrine.md § 2A](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped),
+    never a template-local default.
 15. Gateway kubelet liveness uses `/healthz` and readiness uses `/readyz`; `/v1/state` is an
     operator diagnostic and is forbidden as either lifecycle probe. Sprint `3.25` binds the
     existing endpoints through the typed `GatewayProbeSpec` source, generated chart defaults, and
@@ -137,28 +139,49 @@ of the `ServiceCapacityPlan` and `RuntimeMemoryPlan` proofs), not raw settings �
 plan is a `Left`, never a constructible value. `Prodbox.Lib.ChartPlatform`
 resolves a `ResourceProfileId` for each root chart, internal dependency release, init container, and
 sidecar; the resulting profile renders exactly one Kubernetes `resources` stanza per container. The
-profile includes request and limit values for cpu, memory, and ephemeral storage. Persistent volumes
-continue to use the retained-storage inventory, but their requested capacity must also be represented
-as a durable-storage draw in the capacity plan.
+profile includes request and limit values for cpu, memory, and ephemeral storage. Every durable
+claim's PVC `size:` is **injected** from that workload's `durable_storage_mib` draw in the capacity
+plan through the resource-plan values injection — never a chart-local `size:` literal and never a
+Haskell string constant. That one durable value simultaneously sizes the PVC, the namespace
+`requests.storage` quota, and the over-commit fit proof, so the three cannot drift (Sprint `3.29`).
+Durable storage is non-burstable (`request == limit`) and may be `0`, in which case the stateless
+workload renders no PVC. The retained-storage inventory still owns the PV binding; the capacity plan
+owns the size. See
+[resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+for the durable-draw lemma.
 
 The chart-side illegal states are:
 
 - a workload or init container without a resource profile
 - a `resources.requests` field without a matching `resources.limits` field
 - a limit lower than its request
-- a PVC capacity that is not present in the durable-storage budget
+- a durable claim whose PVC `size:` is a chart-local literal instead of the injected
+  `durable_storage_mib` draw
 
 Those states are rejected before Helm is invoked. The structural lint scans chart templates so a
 future template edit cannot accidentally omit the values-backed resource stanza; the live
 `BestEffort`/QoS proof is owned by the canonical `resource-guardrails` validation. Namespace
 `ResourceQuota` and `LimitRange` manifests are not authored — they are derived projections of the
-workloads' actual draws (replicas x limit) carried by the `AllocatedResourcePlan`, so a namespace
-quota lower than the sum of its profiles is unrepresentable rather than a checked error, and quota
-and container limits agree by construction (Sprint `3.27`). The authored `namespace_quotas` input,
-its `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the keycloak-vscode hand-fold are retired
-in favor of a typed `WorkloadConcurrency` (`Steady | ExclusiveWindow`) that models co-location and
-burst structurally; a `GuaranteedEnvelope` witness makes `request == limit` a constructor invariant
-for Guaranteed-QoS workloads.
+namespace's workload draws (Σ replicas × limit) carried by the `AllocatedResourcePlan`, with
+keycloak's cross-namespace co-location counted exactly once through a substrate `renderedNamespace`
+resolver, so a namespace quota lower than the sum of its profiles is unrepresentable rather than a
+checked error, and quota and container limits agree by construction (Sprint `3.27`). The authored
+`namespace_quotas` input, its `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the
+keycloak-vscode hand-fold are retired in favor of a typed `WorkloadConcurrency`
+(`Steady | ExclusiveWindow`) that models co-location and burst structurally; a `GuaranteedEnvelope`
+witness makes `request == limit` a constructor invariant for Guaranteed-QoS workloads. The nesting
+lemmas are owned by
+[resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+and the three-ring enforcement boundary by
+[§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); this doctrine links that algebra rather
+than restating it.
+
+All three resource-render surfaces — the chart-platform values injection in
+`Prodbox.Lib.ChartPlatform`, the RKE2 native guardrail manifests, and the test-validation expected
+specs — emit through the one shared renderer `Prodbox.Capacity.Render` (Sprint `3.28`). The
+`resource-guardrails` validator therefore asserts the observed cluster JSON against the same function
+that rendered it, not a hand-mirrored expectation, so a rendered `ResourceQuota`, `LimitRange`, or
+`resources` stanza and its assertion cannot diverge.
 
 ## 1C. Lifecycle Control-Plane Workload Rendering
 

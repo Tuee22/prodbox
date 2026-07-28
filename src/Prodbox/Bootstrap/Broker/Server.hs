@@ -58,7 +58,6 @@ import Control.Concurrent.Async
   ( Async
   , async
   , cancel
-  , cancelMany
   , waitCatch
   , waitCatchSTM
   )
@@ -75,11 +74,13 @@ import Control.Concurrent.STM
   , newEmptyTMVarIO
   , newTBQueueIO
   , newTVarIO
+  , orElse
   , readTBQueue
   , readTMVar
   , readTVar
   , readTVarIO
   , retry
+  , takeTMVar
   , tryPutTMVar
   , writeTBQueue
   , writeTVar
@@ -364,12 +365,17 @@ failClosedBrokerInterpreter =
 -- production runtime always installs 'noBrokerServerHooks'.  A hook executes
 -- inside the worker-acquisition STM transaction, so retrying it cannot expose
 -- a dequeued connection before that connection is counted as active.
-newtype BrokerServerHooks = BrokerServerHooks
+data BrokerServerHooks = BrokerServerHooks
   { brokerBeforeWorkerAccounting :: STM ()
+  , brokerBeforeWorkerFinalized :: STM ()
   }
 
 noBrokerServerHooks :: BrokerServerHooks
-noBrokerServerHooks = BrokerServerHooks {brokerBeforeWorkerAccounting = pure ()}
+noBrokerServerHooks =
+  BrokerServerHooks
+    { brokerBeforeWorkerAccounting = pure ()
+    , brokerBeforeWorkerFinalized = pure ()
+    }
 
 data BrokerServerPhase
   = BrokerServing
@@ -391,6 +397,7 @@ data BrokerServerError
   | BrokerListenerFailed
   | BrokerDrainDeadlineExceeded
   | BrokerForcedShutdown
+  | BrokerShutdownIncomplete
   deriving stock (Eq, Show)
 
 renderBrokerServerError :: BrokerServerError -> String
@@ -403,6 +410,8 @@ renderBrokerServerError err = case err of
     "bootstrap broker drain deadline elapsed before admitted work completed"
   BrokerForcedShutdown ->
     "bootstrap broker was force-drained by a second termination signal"
+  BrokerShutdownIncomplete ->
+    "bootstrap broker shutdown deadline elapsed before every owned child joined"
 
 data BrokerServerHandle = BrokerServerHandle
   { handleRuntime :: !BrokerRuntime
@@ -422,6 +431,7 @@ data BrokerRuntime = BrokerRuntime
   , runtimeActive :: !(TVar Natural)
   , runtimeAdmission :: !(TVar AdmissionLane)
   , runtimeIdempotency :: !(TVar IdempotencyState)
+  , runtimeShutdownIncomplete :: !(TMVar ())
   , runtimeHooks :: !BrokerServerHooks
   }
 
@@ -486,6 +496,7 @@ startBrokerServerWithHooks settings hooks authenticator interpreter = withSocket
           active <- newTVarIO 0
           admission <- newTVarIO emptyAdmissionLane
           idempotency <- newTVarIO (IdempotencyState Map.empty [])
+          shutdownIncomplete <- newEmptyTMVarIO
           done <- newEmptyTMVarIO
           let runtime =
                 BrokerRuntime
@@ -500,6 +511,7 @@ startBrokerServerWithHooks settings hooks authenticator interpreter = withSocket
                   , runtimeActive = active
                   , runtimeAdmission = admission
                   , runtimeIdempotency = idempotency
+                  , runtimeShutdownIncomplete = shutdownIncomplete
                   , runtimeHooks = hooks
                   }
           workers <- replicateM brokerFixedWorkerCount (async (workerLoop runtime))
@@ -595,7 +607,16 @@ forceBrokerDrain handle = do
 
 waitBrokerServer :: BrokerServerHandle -> IO (Either BrokerServerError ())
 waitBrokerServer handle = do
-  outcome <- atomically (readTMVar (handleDone handle))
+  outcome <-
+    atomically
+      ( readTMVar (handleDone handle)
+          `orElse` do
+            void (takeTMVar (runtimeShutdownIncomplete (handleRuntime handle)))
+            pure (Left BrokerShutdownIncomplete)
+          `orElse` do
+            void (waitCatchSTM (handleManager handle))
+            pure (Left BrokerShutdownIncomplete)
+      )
   let managerJoinMicros =
         1000
           * brokerDrainDeadlineMilliseconds
@@ -706,7 +727,9 @@ workerLoop runtime = mask $ \restore -> do
           ( restore (serveQueuedConnection runtime connection)
               `finally` do
                 closeQuietly (queuedSocket connection)
-                atomically (modifyTVar' (runtimeActive runtime) decreaseNatural)
+                atomically $ do
+                  brokerBeforeWorkerFinalized (runtimeHooks runtime)
+                  modifyTVar' (runtimeActive runtime) decreaseNatural
           )
           :: IO (Either SomeException ())
       case outcome of
@@ -1383,14 +1406,14 @@ managerLoop runtime acceptThread workers done = do
       drainDeadline
       (atomically (waitForRuntimeSettlement runtime acceptThread))
   phaseAfterWait <- readTVarIO (runtimePhase runtime)
-  outcome <- case (phaseAfterWait, settled) of
+  completed <- case (phaseAfterWait, settled) of
     (BrokerForceDraining, _) -> do
-      forceStopRuntime runtime acceptThread workers
-      pure (Left BrokerForcedShutdown)
+      proof <- forceStopRuntime runtime acceptThread workers
+      pure (Just (Left BrokerForcedShutdown, proof))
     (_, Nothing) -> do
       atomically (writeTVar (runtimePhase runtime) BrokerForceDraining)
-      forceStopRuntime runtime acceptThread workers
-      pure (Left BrokerDrainDeadlineExceeded)
+      proof <- forceStopRuntime runtime acceptThread workers
+      pure (Just (Left BrokerDrainDeadlineExceeded, proof))
     (_, Just ()) -> do
       stopped <-
         runUntilDrainDeadline
@@ -1399,22 +1422,31 @@ managerLoop runtime acceptThread workers done = do
       phaseAfterStop <- readTVarIO (runtimePhase runtime)
       case (phaseAfterStop, stopped) of
         (BrokerForceDraining, _) -> do
-          forceStopRuntime runtime acceptThread workers
-          pure (Left BrokerForcedShutdown)
+          proof <- forceStopRuntime runtime acceptThread workers
+          pure (Just (Left BrokerForcedShutdown, proof))
         (_, Nothing) -> do
           atomically (writeTVar (runtimePhase runtime) BrokerForceDraining)
-          forceStopRuntime runtime acceptThread workers
-          pure (Left BrokerDrainDeadlineExceeded)
-        (_, Just ()) ->
-          pure $ if acceptFailure then Left BrokerListenerFailed else Right ()
-  atomically $ do
-    terminalPhase <- readTVar (runtimePhase runtime)
-    let terminalOutcome = case (terminalPhase, outcome) of
-          (BrokerForceDraining, Right ()) -> Left BrokerForcedShutdown
-          (BrokerForceDraining, Left BrokerListenerFailed) -> Left BrokerForcedShutdown
-          _ -> outcome
-    writeTVar (runtimePhase runtime) BrokerStopped
-    void (tryPutTMVar done terminalOutcome)
+          proof <- forceStopRuntime runtime acceptThread workers
+          pure (Just (Left BrokerDrainDeadlineExceeded, proof))
+        (_, Just ()) -> do
+          proof <- atomically (proveShutdownComplete runtime)
+          pure
+            ( Just
+                ( if acceptFailure then Left BrokerListenerFailed else Right ()
+                , proof
+                )
+            )
+  case completed of
+    Nothing -> pure ()
+    Just (outcome, ShutdownComplete) ->
+      atomically $ do
+        terminalPhase <- readTVar (runtimePhase runtime)
+        let terminalOutcome = case (terminalPhase, outcome) of
+              (BrokerForceDraining, Right ()) -> Left BrokerForcedShutdown
+              (BrokerForceDraining, Left BrokerListenerFailed) -> Left BrokerForcedShutdown
+              _ -> outcome
+        writeTVar (runtimePhase runtime) BrokerStopped
+        void (tryPutTMVar done terminalOutcome)
 
 waitForManagerTrigger :: BrokerRuntime -> Async AcceptOutcome -> STM ManagerTrigger
 waitForManagerTrigger runtime acceptThread = do
@@ -1450,14 +1482,52 @@ stopWorkersNormally runtime workers = do
     (atomically (writeTBQueue (runtimeQueue runtime) Nothing))
   mapM_ waitCatch workers
 
-forceStopRuntime :: BrokerRuntime -> Async AcceptOutcome -> [Async ()] -> IO ()
+data ShutdownComplete = ShutdownComplete
+
+forceStopRuntime
+  :: BrokerRuntime
+  -> Async AcceptOutcome
+  -> [Async ()]
+  -> IO ShutdownComplete
 forceStopRuntime runtime acceptThread workers = do
   forceDeadline <- newDrainDeadline runtime
-  void $ runUntilDrainDeadline forceDeadline $ do
-    queuedSockets <- atomically (drainQueuedSockets (runtimeQueue runtime))
-    mapM_ closeQuietly queuedSockets
-    cancelMany workers
-    cancel acceptThread
+  atomically (resolveRunningWaitersForShutdown runtime)
+  queuedSockets <- atomically (drainQueuedSockets (runtimeQueue runtime))
+  mapM_ closeQuietly queuedSockets
+  workerCancellations <- mapM (async . cancel) workers
+  acceptCancellation <- async (cancel acceptThread)
+  let joinChildren = do
+        mapM_ waitCatch workerCancellations
+        void (waitCatch acceptCancellation)
+        atomically (proveShutdownComplete runtime)
+  firstAttempt <- runUntilDrainDeadline forceDeadline joinChildren
+  case firstAttempt of
+    Just proof -> pure proof
+    Nothing -> do
+      atomically (void (tryPutTMVar (runtimeShutdownIncomplete runtime) ()))
+      joinChildren
+
+resolveRunningWaitersForShutdown :: BrokerRuntime -> STM ()
+resolveRunningWaitersForShutdown runtime = do
+  executions <- readTVar (runtimeIdempotency runtime)
+  mapM_ resolve (Map.elems (idempotencyEntries executions))
+  writeTVar
+    (runtimeIdempotency runtime)
+    (IdempotencyState Map.empty [])
+ where
+  resolve entry = case entry of
+    RuntimeRequestRunning completion ->
+      void (tryPutTMVar completion unavailableReply)
+    RuntimeRequestCompleted _ _ -> pure ()
+
+proveShutdownComplete :: BrokerRuntime -> STM ShutdownComplete
+proveShutdownComplete runtime = do
+  queued <- lengthTBQueue (runtimeQueue runtime)
+  active <- readTVar (runtimeActive runtime)
+  entries <- idempotencyEntries <$> readTVar (runtimeIdempotency runtime)
+  if queued == 0 && active == 0 && Map.null entries
+    then pure ShutdownComplete
+    else retry
 
 newDrainDeadline :: BrokerRuntime -> IO DrainDeadline
 newDrainDeadline runtime = do

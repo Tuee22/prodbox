@@ -70,7 +70,8 @@ integrationEnvSuite = do
             ""
 
         exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "rke2_reserved + eviction_floor must fit within host_capacity"
+        stderrText `shouldContain` "rke2_reserved + eviction_floor"
+        stderrText `shouldContain` "exceeds host_capacity"
 
     it "requires repo-root commands to run from the repository root instead of searching upward" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
@@ -261,15 +262,6 @@ resourcePlanDhallFragmentWithReserved reservedVector =
     [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = " ++ reservedVector
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
-    , "  ]"
     , ", workload_profiles ="
     , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
@@ -330,11 +322,32 @@ resourceProfileDhall profile namespace count req lim =
     ++ show namespace
     ++ ", replicas = "
     ++ show count
-    ++ ", resources = { request = "
-    ++ resourceVectorDhall req
-    ++ ", limit = "
-    ++ resourceVectorDhall lim
-    ++ " } }"
+    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
+    ++ ", surge = 0"
+    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
+    ++ ", workload_demand = "
+    ++ workloadDemandDhall profile req lim
+    ++ " }"
+
+workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
+workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
+  "{ cpu_demand = { requests_per_second = "
+    ++ show reqCpu
+    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
+    ++ show (limCpu - reqCpu)
+    ++ ", calibration_profile_id = "
+    ++ show profile
+    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
+    ++ show reqMemory
+    ++ " ], bounded_memory_burst_mib = "
+    ++ show (limMemory - reqMemory)
+    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
+    ++ show reqEphemeral
+    ++ " ], bounded_ephemeral_burst_mib = "
+    ++ show (limEphemeral - reqEphemeral)
+    ++ " }, demanded_durable_storage_mib = "
+    ++ show limDurable
+    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
 
 resourceVectorDhall :: (Int, Int, Int, Int) -> String
 resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =

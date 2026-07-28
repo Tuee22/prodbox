@@ -220,24 +220,32 @@ for all of these fields while CBOR is the at-rest / wire serialization per
 secret — secrets stay `SecretRef`-by-name (§6.2), with no literal secret at rest except the flagged
 `test-secrets.dhall`.
 
-Sprint `1.55` makes `capacity.resource_plan` part of the generated Tier-0 schema. It is non-secret
-operator-authored Dhall and carries host physical capacity, RKE2 reservation, eviction floor,
-namespace quotas, and workload request/limit profiles for cpu, memory, ephemeral storage, and
-durable storage. `Settings.validateLocalConfig` validates the pure resource lemmas before any
-command mutates the host or cluster: `rke2_reserved + eviction_floor <= host_capacity`,
-each namespace quota individually fits within `cluster_allocatable`, the concurrent supported-runtime
-quota set fits within `cluster_allocatable` (the `concurrentNamespaceQuotas` fold), each workload
-profile references a declared namespace, every profile has positive replicas, and each
-`ResourceEnvelope` has positive bounded requests and limits. Sprints `1.68`/`3.27` (Planned)
-supersede this: namespace `ResourceQuota`/`LimitRange` become **derived** projections of the
-workloads' actual draws (replicas × limit) rather than authored, so the authored
+`capacity.resource_plan` is non-secret operator-authored Dhall and carries host physical capacity,
+RKE2 reservation, eviction floor, and typed workload-demand inputs. It does **not** carry an
+independently authored request/limit envelope. Sprint `1.71` derives that envelope from the referenced
+runtime-memory plan, service-demand/calibration contract, bounded scratch, durable storage, topology,
+and QoS before `Settings.validateConfig` / `validateLocalConfig` compile the **decoded in-force**
+`resource_plan` into the opaque proof-carrying `AllocatedResourcePlan`
+(`Prodbox.Capacity.Allocation`) and carry it as a **required field of `ValidatedSettings`** — the
+**decode gate**: an over-committed *authored* config produces no `AllocatedResourcePlan`, hence no
+`ValidatedSettings`, hence no renderer input, so the illegal state is unrepresentable rather than
+caught by a later inequality. This supersedes the runtime-`Either` `validateResourcePlan` inequality
+body (`rke2_reserved + eviction_floor <= host_capacity`, quota-fits-`cluster_allocatable`, positive
+bounded envelopes); only the slim `validateRawResourcePlanShape` survives, as the decode-time shape
+slice `compileResourcePlan` reuses. Namespace `ResourceQuota`/`LimitRange` are **derived**
+projections of Kubernetes scheduling units built from those workload contracts rather than authored, so the authored
 `namespace_quotas`/`NamespaceQuota` type and the `concurrentNamespaceQuotas` fold (historically the
 keycloak–vscode hand-fold) are retired in favor of a typed `WorkloadConcurrency`
 (`Steady | ExclusiveWindow`) that models co-location/burst structurally. The raw `ResourcePlan`
-stays the `FromDhall` decode surface, while the host/cluster/workload nesting becomes the opaque
-proof-carrying `AllocatedResourcePlan` (`Prodbox.Capacity.Allocation`, Sprint `1.68`). The older
-`node_budget` / `workload_budget` / `region_quota` fields remain as compatibility projections for
-callers not yet migrated to the resource plan.
+stays the `FromDhall` decode surface. The over-commit algebra and the honest three-ring boundary are
+owned by
+[resource_scaling_doctrine.md § 2A](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped)
+and [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); the sprint sequencing (`1.69` decode
+gate, `1.70` `GuaranteedEnvelope` wiring, `1.71` derived workload contracts, `3.27` derived namespace admission, `3.28` unified
+`Capacity.Render`, `3.29` durable-PVC single source, `4.52` observed-host proof) and its status live
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md). The older `node_budget` /
+`workload_budget` / `region_quota` fields remain as compatibility projections for callers not yet
+migrated to the resource plan.
 
 **Historical implementation record.** Sprint `1.56` extended the Tier-0 `parameters` with a typed **component dependency/readiness graph**
 (`depends_on` edges plus a `ReadinessProbe` per component), owned by

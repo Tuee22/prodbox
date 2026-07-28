@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
 -- | Effectful, exception-safe interpreter around the pure SMTP IAM-key repair
@@ -24,6 +25,13 @@ import Control.Monad.Catch
   )
 import Data.ByteString (ByteString)
 import Data.Text (Text)
+import Data.Text qualified as Text
+import Prodbox.Lifecycle.Authority.Operation
+  ( OperationPhase (..)
+  , OperationRecord (..)
+  , completeOperation
+  , newArmedOperation
+  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -40,9 +48,11 @@ import Prodbox.Lifecycle.Lease
   , FencedCommitPermit
   , LeasePolicy
   , addAuthorityDuration
+  , fencingTokenValue
   , leasePolicyProviderVisibilityGrace
   , leasePolicyStableObservationCount
   , modelBLeaseGuardFromPermit
+  , ownerNonceText
   )
 import Prodbox.Lifecycle.SmtpKeyRepair
   ( SmtpAccessKeyId
@@ -63,6 +73,7 @@ import Prodbox.Lifecycle.SmtpKeyRepair
   , committedSmtpCredentialKeyId
   , confirmSmtpKeyCleanup
   , confirmSmtpReuseAfterCleanup
+  , decodeSmtpCommittedProjection
   , encodeSmtpCommittedProjection
   , mkCommittedSmtpCredential
   , planSmtpKeyRepair
@@ -71,6 +82,9 @@ import Prodbox.Lifecycle.SmtpKeyRepair
   , smtpCommitCandidateGeneration
   , smtpCommitCandidateKeyId
   , smtpCommitCandidateMaterial
+  , smtpKeyCreateActionFencingToken
+  , smtpKeyCreateActionGeneration
+  , smtpKeyCreateActionOwnerNonce
   )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
@@ -82,6 +96,8 @@ import Prodbox.Lifecycle.TargetCommitIntent
 
 data SmtpKeyRepairInterpreter m = SmtpKeyRepairInterpreter
   { smtpKeyRepairModelB :: !(ModelBCasAdapter 'ClusterRetained m SmtpCommittedProjection)
+  , smtpKeyRepairOperationModelB
+      :: !(ModelBCasAdapter 'ClusterRetained m SmtpCreateOperation)
   , smtpKeyRepairAuthorityNow :: !(m (Either Text AuthorityTime))
   , smtpKeyRepairWaitUntil :: !(AuthorityTime -> m (Either Text ()))
   , smtpKeyRepairObserveInventory :: !(m SmtpKeyInventoryObservation)
@@ -97,10 +113,13 @@ data SmtpKeyRepairInterpreter m = SmtpKeyRepairInterpreter
 data SmtpKeyRepairRequest = SmtpKeyRepairRequest
   { smtpKeyRepairProjectionCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
   , smtpKeyRepairLeaseCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
+  , smtpKeyRepairOperationCoordinate
+      :: !(CredentialGeneration -> Either Text (ModelBObjectCoordinate 'ClusterRetained))
   , smtpKeyRepairInventoryBound :: !SmtpKeyInventoryBound
   , smtpKeyRepairLeasePolicy :: !LeasePolicy
   }
-  deriving (Eq, Show)
+
+type SmtpCreateOperation = OperationRecord Text Text ByteString
 
 data SmtpKeyRepairOutcome
   = SmtpKeyRepairReused !SmtpCommittedProjection
@@ -155,6 +174,7 @@ data SmtpKeyRepairExecutionError
   | SmtpKeyRepairGenerationInvalid !TargetCommitValueError
   | SmtpKeyRepairFreshPermitFailed !Text
   | SmtpKeyRepairCreateFailed !Text
+  | SmtpKeyRepairOperationFailed !Text
   | SmtpKeyRepairCommitFailed !SmtpKeyCommitFailure
   | SmtpKeyRepairCommitFailedAndCleanupRefused
       !SmtpKeyCommitFailure
@@ -172,6 +192,7 @@ data LoadedSmtpProjection
 
 data CreatedCommitResult
   = CreatedCreateFailed !Text
+  | CreatedOperationCompleted !SmtpCommittedProjection
   | CreatedCommitSucceeded !SmtpKeyRepairOutcome
   | CreatedCommitNotApplied !SmtpKeyCommitFailure
   | CreatedCommitUnconfirmed !SmtpKeyCommitPostconditionFailure
@@ -201,13 +222,80 @@ runSmtpKeyRepairWith interpreter request = do
   case loadProjection observedProjection of
     Left err -> pure (Left err)
     Right loaded -> do
-      inventory <- smtpKeyRepairObserveInventory interpreter
-      let plan =
-            planSmtpKeyRepair
-              (smtpKeyRepairInventoryBound request)
-              inventory
-              (loadedCommittedProjection loaded)
-      runRepairPlan interpreter request loaded plan
+      recovered <- recoverCompletedOperation interpreter request loaded
+      case recovered of
+        Just result -> pure result
+        Nothing -> do
+          inventory <- smtpKeyRepairObserveInventory interpreter
+          let plan =
+                planSmtpKeyRepair
+                  (smtpKeyRepairInventoryBound request)
+                  inventory
+                  (loadedCommittedProjection loaded)
+          runRepairPlan interpreter request loaded plan
+
+recoverCompletedOperation
+  :: (Monad m)
+  => SmtpKeyRepairInterpreter m
+  -> SmtpKeyRepairRequest
+  -> LoadedSmtpProjection
+  -> m (Maybe (Either SmtpKeyRepairExecutionError SmtpKeyRepairOutcome))
+recoverCompletedOperation interpreter request loaded =
+  case nextCredentialGeneration loaded of
+    Left _ -> pure Nothing
+    Right generation ->
+      case smtpKeyRepairOperationCoordinate request generation of
+        Left _ -> pure Nothing
+        Right coordinate -> do
+          observed <-
+            modelBObserve (smtpKeyRepairOperationModelB interpreter) coordinate
+          case observed of
+            ModelBObserved _ record ->
+              if operationBinding record /= smtpOperationBindingFor generation
+                then
+                  pure
+                    ( Just
+                        ( Left
+                            (SmtpKeyRepairOperationFailed "operation binding conflict")
+                        )
+                    )
+                else case operationPhase record of
+                  OperationArmed _ -> pure Nothing
+                  OperationCompleted encoded ->
+                    case decodeSmtpCommittedProjection encoded of
+                      Left err ->
+                        pure
+                          ( Just
+                              ( Left
+                                  (SmtpKeyRepairOperationFailed (Text.pack (show err)))
+                              )
+                          )
+                      Right committed
+                        | committedSmtpCredentialGeneration committed /= generation ->
+                            pure
+                              ( Just
+                                  ( Left
+                                      ( SmtpKeyRepairOperationFailed
+                                          "operation result generation mismatch"
+                                      )
+                                  )
+                              )
+                        | otherwise -> do
+                            permitResult <- smtpKeyRepairFreshFencedPermit interpreter
+                            case permitResult of
+                              Left detail ->
+                                pure (Just (Left (SmtpKeyRepairFreshPermitFailed detail)))
+                              Right permit -> do
+                                result <-
+                                  commitProjection
+                                    interpreter
+                                    request
+                                    loaded
+                                    permit
+                                    committed
+                                pure
+                                  (Just (interpretCreatedCommitResult result Nothing))
+            _ -> pure Nothing
 
 loadProjection
   :: ModelBObservation SmtpCommittedProjection
@@ -378,7 +466,87 @@ createAndCommit interpreter request loaded continuation witness = do
             Left refusal ->
               pure (Left (SmtpKeyRepairStableInventoryRefused refusal))
             Right createAction ->
-              createBracketed interpreter request loaded permit createAction
+              resumeOrCreate interpreter request loaded permit createAction
+
+resumeOrCreate
+  :: (MonadMask m)
+  => SmtpKeyRepairInterpreter m
+  -> SmtpKeyRepairRequest
+  -> LoadedSmtpProjection
+  -> FencedCommitPermit
+  -> SmtpKeyCreateAction
+  -> m (Either SmtpKeyRepairExecutionError SmtpKeyRepairOutcome)
+resumeOrCreate interpreter request loaded permit action = do
+  case smtpKeyRepairOperationCoordinate request (smtpKeyCreateActionGeneration action) of
+    Left detail -> operationFailure detail
+    Right coordinate -> resumeAt coordinate
+ where
+  operationFailure = pure . Left . SmtpKeyRepairOperationFailed
+  resumeAt coordinate = do
+    let
+      binding = smtpOperationBinding action
+      intent = smtpOperationIntent action
+      adapter = smtpKeyRepairOperationModelB interpreter
+      armed = newArmedOperation binding intent
+    observed <- modelBObserve adapter coordinate
+    case observed of
+      ModelBMissing -> do
+        result <-
+          modelBCompareAndSwap
+            adapter
+            (ModelBInitializeGuarded coordinate (operationGuard request permit) armed)
+        case result of
+          ModelBCasApplied version _ -> do
+            confirmed <- modelBObserve adapter coordinate
+            case confirmed of
+              ModelBObserved actualVersion actual
+                | actualVersion == version && actual == armed ->
+                    createBracketed interpreter request loaded permit action armed
+              _ -> operationFailure "armed operation postcondition failed"
+          ModelBCasConflict _ -> operationFailure "operation arm conflict"
+          ModelBCasRefusedCorrupt detail -> operationFailure detail
+          ModelBCasUnobservable detail -> operationFailure detail
+      ModelBObserved _ record
+        | operationBinding record /= binding ->
+            operationFailure "operation binding conflict"
+        | otherwise -> case operationPhase record of
+            OperationArmed observedIntent
+              | observedIntent == intent ->
+                  createBracketed interpreter request loaded permit action record
+              | otherwise -> operationFailure "operation intent conflict"
+            OperationCompleted encoded ->
+              case decodeSmtpCommittedProjection encoded of
+                Left err -> operationFailure (Text.pack (show err))
+                Right committed -> do
+                  result <-
+                    commitProjection interpreter request loaded permit committed
+                  pure (interpretCreatedCommitResult result Nothing)
+      ModelBCorrupt detail ->
+        operationFailure ("corrupt operation record: " <> detail)
+      ModelBUnobservable detail ->
+        operationFailure ("unobservable operation record: " <> detail)
+
+smtpOperationBinding :: SmtpKeyCreateAction -> Text
+smtpOperationBinding action =
+  smtpOperationBindingFor (smtpKeyCreateActionGeneration action)
+
+smtpOperationBindingFor :: CredentialGeneration -> Text
+smtpOperationBindingFor generation =
+  "smtp-create/"
+    <> Text.pack
+      (show (credentialGenerationValue generation))
+
+smtpOperationIntent :: SmtpKeyCreateAction -> Text
+smtpOperationIntent action =
+  ownerNonceText (smtpKeyCreateActionOwnerNonce action)
+    <> "/"
+    <> Text.pack
+      (show (fencingTokenValue (smtpKeyCreateActionFencingToken action)))
+
+operationGuard
+  :: SmtpKeyRepairRequest -> FencedCommitPermit -> ModelBLeaseGuard
+operationGuard request =
+  modelBLeaseGuardFromPermit (smtpKeyRepairLeaseCoordinate request)
 
 nextCredentialGeneration
   :: LoadedSmtpProjection
@@ -402,31 +570,59 @@ createBracketed
   -> LoadedSmtpProjection
   -> FencedCommitPermit
   -> SmtpKeyCreateAction
+  -> SmtpCreateOperation
   -> m (Either SmtpKeyRepairExecutionError SmtpKeyRepairOutcome)
-createBracketed interpreter request loaded permit createAction = do
+createBracketed interpreter request loaded permit createAction operation = do
   (commitResult, maybeCleanupFailure) <-
     generalBracket
       (smtpKeyRepairCreateKey interpreter createAction)
-      (releaseCreatedKey interpreter)
-      (commitCreatedKey interpreter request loaded permit createAction)
-  pure (interpretCreatedCommitResult commitResult maybeCleanupFailure)
+      (releaseCreatedKey interpreter request createAction)
+      (commitCreatedKey interpreter request permit createAction operation)
+  case commitResult of
+    CreatedOperationCompleted committed -> do
+      projectionResult <-
+        commitProjection interpreter request loaded permit committed
+      pure (interpretCreatedCommitResult projectionResult maybeCleanupFailure)
+    _ -> pure (interpretCreatedCommitResult commitResult maybeCleanupFailure)
 
 releaseCreatedKey
   :: (Monad m)
   => SmtpKeyRepairInterpreter m
+  -> SmtpKeyRepairRequest
+  -> SmtpKeyCreateAction
   -> Either Text (SmtpAccessKeyId, ByteString)
   -> ExitCase CreatedCommitResult
   -> m (Maybe CreatedCleanupFailure)
-releaseCreatedKey interpreter acquired exitCase = case acquired of
+releaseCreatedKey interpreter request action acquired exitCase = case acquired of
   Left _ -> pure Nothing
   Right (keyId, _) ->
     if createdKeyMustBeDeleted exitCase
-      then deleteCreatedKey interpreter keyId
+      then do
+        let coordinateResult =
+              smtpKeyRepairOperationCoordinate
+                request
+                (smtpKeyCreateActionGeneration action)
+        case coordinateResult of
+          Left _ -> pure Nothing
+          Right coordinate -> do
+            observed <-
+              modelBObserve (smtpKeyRepairOperationModelB interpreter) coordinate
+            case observed of
+              ModelBObserved _ record ->
+                case operationPhase record of
+                  OperationCompleted _ -> pure Nothing
+                  OperationArmed _ -> deleteCreatedKey interpreter keyId
+              -- Unknown completion status must not authorize destructive
+              -- compensation; recovery will reconcile the bounded inventory.
+              ModelBMissing -> deleteCreatedKey interpreter keyId
+              ModelBCorrupt _ -> pure Nothing
+              ModelBUnobservable _ -> pure Nothing
       else pure Nothing
 
 createdKeyMustBeDeleted :: ExitCase CreatedCommitResult -> Bool
 createdKeyMustBeDeleted exitCase = case exitCase of
   ExitCaseSuccess (CreatedCreateFailed _) -> False
+  ExitCaseSuccess (CreatedOperationCompleted _) -> False
   ExitCaseSuccess (CreatedCommitSucceeded _) -> False
   ExitCaseSuccess (CreatedCommitUnconfirmed _) -> False
   ExitCaseSuccess (CreatedCommitNotApplied _) -> True
@@ -449,12 +645,12 @@ commitCreatedKey
   :: (Monad m)
   => SmtpKeyRepairInterpreter m
   -> SmtpKeyRepairRequest
-  -> LoadedSmtpProjection
   -> FencedCommitPermit
   -> SmtpKeyCreateAction
+  -> SmtpCreateOperation
   -> Either Text (SmtpAccessKeyId, ByteString)
   -> m CreatedCommitResult
-commitCreatedKey interpreter request loaded permit createAction acquired =
+commitCreatedKey interpreter request permit createAction operation acquired =
   case acquired of
     Left detail -> pure (CreatedCreateFailed detail)
     Right (keyId, material) -> do
@@ -476,40 +672,113 @@ commitCreatedKey interpreter request loaded permit createAction acquired =
             ( CreatedCommitNotApplied
                 (SmtpKeyCommitProjectionInvalid codecError)
             )
-        Right _ -> do
-          let guard =
-                modelBLeaseGuardFromPermit
-                  (smtpKeyRepairLeaseCoordinate request)
-                  permit
-              casRequest =
-                committedProjectionCasRequest
-                  (smtpKeyRepairProjectionCoordinate request)
-                  guard
-                  loaded
-                  committed
-          casResult <-
-            modelBCompareAndSwap
-              (smtpKeyRepairModelB interpreter)
-              casRequest
-          case casResult of
-            ModelBCasApplied version _ ->
-              confirmCommittedProjection
-                interpreter
-                request
-                version
-                committed
-            ModelBCasConflict _ ->
-              pure (CreatedCommitNotApplied SmtpKeyCommitConflict)
-            ModelBCasRefusedCorrupt detail ->
-              pure
-                ( CreatedCommitNotApplied
-                    (SmtpKeyCommitRefusedCorrupt detail)
-                )
-            ModelBCasUnobservable detail ->
-              pure
-                ( CreatedCommitNotApplied
-                    (SmtpKeyCommitUnobservable detail)
-                )
+        Right encoded -> do
+          completed <-
+            completeSmtpOperation
+              interpreter
+              request
+              permit
+              createAction
+              operation
+              encoded
+          case completed of
+            Left failure -> pure (CreatedCommitNotApplied failure)
+            Right () -> pure (CreatedOperationCompleted committed)
+
+completeSmtpOperation
+  :: (Monad m)
+  => SmtpKeyRepairInterpreter m
+  -> SmtpKeyRepairRequest
+  -> FencedCommitPermit
+  -> SmtpKeyCreateAction
+  -> SmtpCreateOperation
+  -> ByteString
+  -> m (Either SmtpKeyCommitFailure ())
+completeSmtpOperation interpreter request permit action armed encoded =
+  case ( completeOperation (smtpOperationBinding action) encoded armed
+       , smtpKeyRepairOperationCoordinate request (smtpKeyCreateActionGeneration action)
+       ) of
+    (_, Left detail) -> pure (Left (SmtpKeyCommitUnobservable detail))
+    (Left refusal, _) ->
+      pure (Left (SmtpKeyCommitRefusedCorrupt (Text.pack (show refusal))))
+    (Right completed, Right coordinate) -> do
+      let adapter = smtpKeyRepairOperationModelB interpreter
+      observed <- modelBObserve adapter coordinate
+      case observed of
+        ModelBObserved version actual
+          | actual == armed -> do
+              result <-
+                modelBCompareAndSwap
+                  adapter
+                  ( ModelBReplaceGuarded
+                      coordinate
+                      version
+                      (operationGuard request permit)
+                      completed
+                  )
+              case result of
+                ModelBCasApplied appliedVersion _ -> do
+                  confirmation <- modelBObserve adapter coordinate
+                  pure $ case confirmation of
+                    ModelBObserved actualVersion actualCompleted
+                      | actualVersion == appliedVersion
+                          && actualCompleted == completed ->
+                          Right ()
+                    _ ->
+                      Left
+                        ( SmtpKeyCommitUnobservable
+                            "operation completion postcondition failed"
+                        )
+                ModelBCasConflict _ -> pure (Left SmtpKeyCommitConflict)
+                ModelBCasRefusedCorrupt detail ->
+                  pure (Left (SmtpKeyCommitRefusedCorrupt detail))
+                ModelBCasUnobservable detail ->
+                  pure (Left (SmtpKeyCommitUnobservable detail))
+        _ ->
+          pure
+            ( Left
+                (SmtpKeyCommitUnobservable "armed operation disappeared")
+            )
+
+commitProjection
+  :: (Monad m)
+  => SmtpKeyRepairInterpreter m
+  -> SmtpKeyRepairRequest
+  -> LoadedSmtpProjection
+  -> FencedCommitPermit
+  -> SmtpCommittedProjection
+  -> m CreatedCommitResult
+commitProjection interpreter request loaded permit committed = do
+  let guard = operationGuard request permit
+      casRequest =
+        committedProjectionCasRequest
+          (smtpKeyRepairProjectionCoordinate request)
+          guard
+          loaded
+          committed
+  casResult <-
+    modelBCompareAndSwap
+      (smtpKeyRepairModelB interpreter)
+      casRequest
+  case casResult of
+    ModelBCasApplied version _ ->
+      confirmCommittedProjection
+        interpreter
+        request
+        version
+        committed
+    ModelBCasConflict _ ->
+      pure (CreatedCommitNotApplied SmtpKeyCommitConflict)
+    ModelBCasRefusedCorrupt detail ->
+      pure
+        ( CreatedCommitNotApplied
+            (SmtpKeyCommitRefusedCorrupt detail)
+        )
+    ModelBCasUnobservable detail ->
+      pure
+        ( CreatedCommitNotApplied
+            (SmtpKeyCommitUnobservable detail)
+        )
 
 committedProjectionCasRequest
   :: ModelBObjectCoordinate 'ClusterRetained
@@ -562,6 +831,11 @@ interpretCreatedCommitResult commitResult maybeCleanupFailure =
   case (commitResult, maybeCleanupFailure) of
     (CreatedCreateFailed detail, _) ->
       Left (SmtpKeyRepairCreateFailed detail)
+    (CreatedOperationCompleted _, _) ->
+      Left
+        ( SmtpKeyRepairCommitFailed
+            (SmtpKeyCommitUnobservable "operation completed without projection attempt")
+        )
     (CreatedCommitSucceeded outcome, Nothing) -> Right outcome
     (CreatedCommitSucceeded _, Just cleanupFailure) ->
       Left

@@ -194,7 +194,18 @@ Four further check families join the canonical quality gate under the Foundation
   a `Left`, never a constructible value. This is an orthogonal structural over-commit proof of
   invariants (a) and (b) — distinct from the measured-profile check above, it certifies nothing
   about demand (CPU sufficiency-(c) remains the non-erasable `uncertified-until-first-profile`
-  measured seam).
+  measured seam). Three later gates extend the same `runConformanceTier` (status in the
+  [Development Plan](../../DEVELOPMENT_PLAN/README.md)): (a) the over-commit gate compiles the
+  **in-force decoded** `resource_plan` carried on `ValidatedSettings`, not merely the hardcoded
+  `defaultResourcePlan`, so an over-committed *authored* config also fails `dev check`; (b) a
+  conformance grep gate forbids a raw `resource_plan` (capacity-config) read outside
+  `validateConfig`, so every write-side renderer consumes the `AllocatedResourcePlan` proof rather
+  than the raw plan; and (c) a chart-PVC-size lint fails any repo-owned PVC template whose `size:`
+  is a hardcoded literal instead of a values-injected size. These structural cross-checks track the
+  derived-quota and durable-PVC single-source lemmas of
+  [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+  and the three-ring boundary of
+  [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings).
 
 All four families run inside `prodbox dev check` on the seconds-fast lint surface and follow
 the same registry discipline as the generated-section and forbidden-path registries: the

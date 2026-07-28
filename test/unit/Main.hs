@@ -22,6 +22,7 @@ import BootstrapBrokerRequestJournal (bootstrapBrokerRequestJournalSuite)
 import BootstrapBrokerRuntime (bootstrapBrokerRuntimeSuite)
 import BootstrapBrokerSafety (bootstrapBrokerSafetySuite)
 import BootstrapBrokerServerSafety (bootstrapBrokerServerSafetySuite)
+import BootstrapBrokerShutdownModel (bootstrapBrokerShutdownModelSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CertScopeSuite (certScopeSuite)
@@ -31,6 +32,11 @@ import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
 import ControlPlaneDeadline (controlPlaneDeadlineSuite)
+import ControlPlaneMigrationEndpoint (controlPlaneMigrationEndpointSuite)
+import ControlPlaneRoute (controlPlaneRouteSuite)
+import ControlPlaneServer (controlPlaneServerSuite)
+import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
+import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -66,6 +72,16 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
+import DecommissionCommit (decommissionCommitSuite)
+import DecommissionFrame (decommissionFrameSuite)
+import DecommissionGraph (decommissionGraphSuite)
+import DecommissionJournal (decommissionJournalSuite)
+import DecommissionManifest (decommissionManifestSuite)
+import DecommissionNodeEffect (decommissionNodeEffectSuite)
+import DecommissionPermit (decommissionPermitSuite)
+import DecommissionReceipt (decommissionReceiptSuite)
+import DecommissionRunner (decommissionRunnerSuite)
+import DecommissionVerifier (decommissionVerifierSuite)
 import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
 import EscapeRegistry (escapeRegistrySuite)
@@ -92,6 +108,7 @@ import LifecycleAuthorityAdminAction (lifecycleAuthorityAdminActionSuite)
 import LifecycleAuthorityBackupRepair (lifecycleAuthorityBackupRepairSuite)
 import LifecycleAuthorityConfig (lifecycleAuthorityConfigSuite)
 import LifecycleAuthorityGenesis (lifecycleAuthorityGenesisSuite)
+import LifecycleAuthorityMigration (lifecycleAuthorityMigrationSuite)
 import LifecycleAuthorityOperation (lifecycleAuthorityOperationSuite)
 import LifecycleAuthorityOutboxSim (lifecycleAuthorityOutboxSimSuite)
 import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
@@ -269,7 +286,6 @@ import Prodbox.CLI.Rke2
   , gatewayDaemonWorkloadRefs
   , harborRegistryStorageBackend
   , homeSubstratePlatformComponents
-  , hostCapacityCoversPlan
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , isRetryableHarborPublicationFailure
@@ -309,7 +325,9 @@ import Prodbox.CLI.Vault
   , retryDaemonTransient
   , vaultLifecycleTransportDecision
   )
+import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.ObservedHost qualified as ObservedHost
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
@@ -1329,6 +1347,7 @@ unitSuite = do
   bootstrapBrokerRuntimeSuite
   bootstrapBrokerSafetySuite
   bootstrapBrokerServerSafetySuite
+  bootstrapBrokerShutdownModelSuite
   brokerChartStaticsSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
@@ -1355,6 +1374,22 @@ unitSuite = do
   lifecycleAuthorityBackupRepairSuite
   lifecycleAuthorityConfigSuite
   lifecycleAuthorityGenesisSuite
+  lifecycleAuthorityMigrationSuite
+  controlPlaneRouteSuite
+  controlPlaneMigrationEndpointSuite
+  controlPlaneServerSuite
+  controlPlaneTlsRetentionEndpointSuite
+  decommissionCommitSuite
+  decommissionFrameSuite
+  decommissionGraphSuite
+  decommissionJournalSuite
+  decommissionManifestSuite
+  decommissionNodeEffectSuite
+  decommissionPermitSuite
+  decommissionReceiptSuite
+  decommissionRunnerSuite
+  decommissionVerifierSuite
+  controlPlaneVaultSessionSuite
   lifecycleAuthorityOperationSuite
   lifecycleAuthorityOutboxSimSuite
   lifecycleAuthorityStateSuite
@@ -5055,16 +5090,27 @@ unitSuite = do
             "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
           smallText =
             "milli_cpu=7000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+          defaultAllocatedPlan =
+            either
+              (error . Allocation.renderCompileError)
+              id
+              (Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
       case parseHostCapacityObservation observedText of
         Left err -> expectationFailure err
         Right observed -> do
-          renderResourceVectorRuntime observed
+          renderResourceVectorRuntime (ObservedHost.observedHostVector observed)
             `shouldBe` "cpu=8000m,memory=15872Mi,ephemeral-storage=100000Mi,durable-storage=180000Mi"
-          hostCapacityCoversPlan observed Capacity.defaultResourcePlan `shouldBe` True
+          Allocation.compileResourcePlanAgainstObserved
+            observed
+            defaultAllocatedPlan
+            `shouldSatisfy` isRight
       case parseHostCapacityObservation smallText of
         Left err -> expectationFailure err
         Right observed ->
-          hostCapacityCoversPlan observed Capacity.defaultResourcePlan `shouldBe` False
+          Allocation.compileResourcePlanAgainstObserved
+            observed
+            defaultAllocatedPlan
+            `shouldSatisfy` isLeft
 
     it "skips plan application on --dry-run while persisting the rendered plan" $
       withSystemTempDirectory "prodbox-plan-options" $ \tmpDir -> do
@@ -7920,11 +7966,15 @@ unitSuite = do
               { chartStorageSpecStatefulSetName = "vscode"
               , chartStorageSpecPersistentVolumeClaimName =
                   retainedStatefulSetPersistentVolumeClaimName "vscode" 0
-              , chartStorageSpecStorageSize = "20Gi"
+              , chartStorageSpecWorkloadProfileId = "pulsar"
               , chartStorageSpecOrdinal = 0
               , chartStorageSpecClaimSuffix = "data"
               }
-          binding = storageBinding "/tmp/prodbox/.data" "vscode" "vscode-release" spec
+          binding =
+            either
+              error
+              id
+              (storageBinding Capacity.defaultResourcePlan "/tmp/prodbox/.data" "vscode" "vscode-release" spec)
       chartStorageBindingPersistentVolumeName binding
         `shouldBe` retainedStatefulSetPersistentVolumeName "vscode" "vscode" 0
       chartStorageBindingPersistentVolumeName binding
@@ -8015,7 +8065,7 @@ unitSuite = do
                 Just (Object guardrailsPayload) -> do
                   KeyMap.lookup (Key.fromString "enabled") guardrailsPayload
                     `shouldBe` Just (Bool True)
-                  expectQuotaHard guardrailsPayload "limits.memory" "5216Mi"
+                  expectQuotaHard guardrailsPayload "limits.memory" "5472Mi"
                   expectQuotaHard guardrailsPayload "requests.storage" "112640Mi"
                   expectLimitRangeDefault guardrailsPayload "cpu" "600m"
                   expectLimitRangeDefaultRequest guardrailsPayload "memory" "1024Mi"
@@ -8065,6 +8115,11 @@ unitSuite = do
                           { Capacity.resource_plan = badPlan
                           }
                     }
+              , validatedAllocatedPlan =
+                  either
+                    (error . Allocation.renderCompileError)
+                    id
+                    (Allocation.compileResourcePlanUncertified badPlan)
               }
       result <-
         buildChartDeploymentPlan
@@ -8074,7 +8129,7 @@ unitSuite = do
           testChartSecrets
           Map.empty
       result
-        `shouldBe` Left "capacity.resource_plan is missing workload profile `vscode`"
+        `shouldBe` Left "resource plan is missing workload profile `vscode`"
 
     it "renders Bootstrap Broker values from the compiled statics and injected image" $ do
       -- Sprint 3.26 (Increment C): the physically separate broker's deployed
@@ -8366,11 +8421,15 @@ unitSuite = do
               { chartStorageSpecStatefulSetName = "vscode"
               , chartStorageSpecPersistentVolumeClaimName =
                   retainedStatefulSetPersistentVolumeClaimName "vscode" 0
-              , chartStorageSpecStorageSize = "50Gi"
+              , chartStorageSpecWorkloadProfileId = "vscode"
               , chartStorageSpecOrdinal = 0
               , chartStorageSpecClaimSuffix = "data"
               }
-          binding = storageBinding "/tmp/prodbox/.data" "vscode" "vscode" spec
+          binding =
+            either
+              error
+              id
+              (storageBinding Capacity.defaultResourcePlan "/tmp/prodbox/.data" "vscode" "vscode" spec)
           ebsBinding =
             StaticEbsVolumeBinding
               { staticEbsVolumeBindingPersistentVolumeName =
@@ -12382,6 +12441,7 @@ unitSuite = do
         originalPath <- lookupEnv "PATH"
         originalSshStateDir <- lookupEnv "PRODBOX_TEST_SSH_STATE_DIR"
         originalOutputsDir <- lookupEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR"
+        originalSshExecutable <- lookupEnv "PRODBOX_TEST_SSH_EXECUTABLE"
         let restoreEnv key previous =
               case previous of
                 Just value -> setEnv key value
@@ -12394,12 +12454,14 @@ unitSuite = do
         setEnv "PATH" configuredPath
         setEnv "PRODBOX_TEST_SSH_STATE_DIR" sshStateDir
         setEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR" mockOutputsDir
+        setEnv "PRODBOX_TEST_SSH_EXECUTABLE" fakeSshPath
         validationResult <-
           verifyAwsTestSshReachability tmpDir
             `finally` do
               restoreEnv "PATH" originalPath
               restoreEnv "PRODBOX_TEST_SSH_STATE_DIR" originalSshStateDir
               restoreEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR" originalOutputsDir
+              restoreEnv "PRODBOX_TEST_SSH_EXECUTABLE" originalSshExecutable
 
         validationResult `shouldBe` ExitSuccess
         readFile (sshStateDir </> "count") `shouldReturn` "3"
@@ -12974,8 +13036,8 @@ unitSuite = do
     -- image regardless of the requested image source — never the Harbor mirror,
     -- which would deadlock a non-surging StatefulSet. Only storage varies.
     it "Home substrate: manual StorageClass + 20Gi, always the public image (never Harbor)" $ do
-      let bootstrapArgs = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
-          steadyArgs = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor
+      let bootstrapArgs = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic "20Gi"
+          steadyArgs = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor "20Gi"
       consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` True
       consecutivePair bootstrapArgs "storage.size=20Gi" `shouldBe` True
       consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
@@ -12989,8 +13051,8 @@ unitSuite = do
       steadyArgs `shouldBe` bootstrapArgs
       any ("image.repository=127.0.0.1:30080" `isPrefixOf`) steadyArgs `shouldBe` False
     it "AWS substrate: manual retained EBS class + 20Gi, always the public image (never Harbor)" $ do
-      let bootstrapArgs = renderMinioChartArgs SubstrateAws MinioBootstrapPublic
-          steadyArgs = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor
+      let bootstrapArgs = renderMinioChartArgs SubstrateAws MinioBootstrapPublic "20Gi"
+          steadyArgs = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor "20Gi"
       consecutivePair bootstrapArgs "storage.className=manual" `shouldBe` True
       consecutivePair bootstrapArgs "storage.size=20Gi" `shouldBe` True
       consecutivePair bootstrapArgs "storage.className=gp2" `shouldBe` False
@@ -14865,11 +14927,14 @@ unitSuite = do
             if Capacity.profile_id profile == "gateway"
               then
                 let envelope = Capacity.resources profile
-                    oldLimit = Capacity.limit envelope
                  in profile
-                      { Capacity.resources =
-                          envelope
-                            { Capacity.limit = oldLimit {Capacity.memory_mib = 500}
+                      { Capacity.workload_demand =
+                          (Capacity.workload_demand profile)
+                            { Capacity.memory_demand =
+                                (Capacity.memory_demand (Capacity.workload_demand profile))
+                                  { Capacity.bounded_memory_burst_mib =
+                                      500 - Capacity.memory_mib (Capacity.request envelope)
+                                  }
                             }
                       }
               else profile
@@ -15146,7 +15211,7 @@ unitSuite = do
         Capacity.defaultCapacitySection {Capacity.workload_budget = tooMuchStorage}
         `shouldBe` Left "capacity.workload_budget must fit within capacity.node_budget"
 
-    it "validates explicit resource envelopes and host/namespace capacity lemmas" $ do
+    it "validates explicit resource envelopes and host/workload capacity lemmas" $ do
       let request = Capacity.ResourceVector 250 256 512 1
           limit = Capacity.ResourceVector 500 512 1024 1
           tooSmallLimit = Capacity.ResourceVector 100 512 1024 1
@@ -15154,71 +15219,43 @@ unitSuite = do
             Capacity.defaultResourcePlan
               { Capacity.rke2_reserved = Capacity.ResourceVector 8000 2048 10240 1024
               }
-          overQuotaPlan =
+          overCommittedPlan =
             Capacity.defaultResourcePlan
-              { Capacity.namespace_quotas =
-                  [ Capacity.NamespaceQuota
-                      "keycloak"
-                      (Capacity.ResourceVector 7000 13000 90000 160000)
-                  ]
-              }
-          overConcurrentQuotaPlan =
-            Capacity.defaultResourcePlan
-              { Capacity.namespace_quotas =
+              { Capacity.workload_profiles =
                   map
-                    ( \namespaceQuota ->
-                        if Capacity.namespace_name namespaceQuota == "api"
-                          then Capacity.NamespaceQuota "api" (Capacity.ResourceVector 500 3000 2000 1000)
-                          else namespaceQuota
+                    ( \profile ->
+                        if Capacity.profile_id profile == "api"
+                          then
+                            profile
+                              { Capacity.workload_demand =
+                                  (Capacity.workload_demand profile)
+                                    { Capacity.memory_demand =
+                                        (Capacity.memory_demand (Capacity.workload_demand profile))
+                                          { Capacity.steady_memory_terms_mib = [20000]
+                                          , Capacity.bounded_memory_burst_mib = 0
+                                          }
+                                    }
+                              }
+                          else profile
                     )
-                    (Capacity.namespace_quotas Capacity.defaultResourcePlan)
+                    (Capacity.workload_profiles Capacity.defaultResourcePlan)
               }
-          -- Shrink the `api` quota CPU (100m) below its workload draw (2×250m =
-          -- 500m). `api` is neither `keycloak` nor `vscode`, so the co-located
-          -- 'concurrentNamespaceQuotas' fold leaves it untouched and the earlier
-          -- gates still pass; only the per-namespace draw check trips.
-          shrinkApiQuotaCpu namespaceQuota =
-            if Capacity.namespace_name namespaceQuota == "api"
-              then
-                namespaceQuota
-                  { Capacity.quota =
-                      (Capacity.quota namespaceQuota) {Capacity.milli_cpu = 100}
-                  }
-              else namespaceQuota
-          workloadOverQuotaPlan =
-            Capacity.defaultResourcePlan
-              { Capacity.namespace_quotas =
-                  map shrinkApiQuotaCpu (Capacity.namespace_quotas Capacity.defaultResourcePlan)
-              }
-      Capacity.mkMilliCpu 0 `shouldBe` Left "cpu must be positive"
-      Capacity.mkMebiBytes 0 `shouldBe` Left "MiB value must be positive"
       Capacity.mkResourceEnvelope request limit `shouldBe` Right (Capacity.ResourceEnvelope request limit)
       Capacity.mkResourceEnvelope request tooSmallLimit
         `shouldBe` Left "resource request must fit within resource limit"
-      Capacity.validateResourcePlan Capacity.defaultResourcePlan `shouldBe` Right ()
-      Capacity.validateResourcePlan overReservedPlan
-        `shouldBe` Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity"
-      Capacity.validateResourcePlan overQuotaPlan
-        `shouldBe` Left
-          "capacity.resource_plan.namespace_quotas[keycloak].quota must fit within cluster allocatable capacity"
-      Capacity.validateResourcePlan overConcurrentQuotaPlan
-        `shouldBe` Left
-          "capacity.resource_plan.concurrent_namespace_quotas must fit within cluster allocatable capacity"
-      Capacity.validateResourcePlan workloadOverQuotaPlan
-        `shouldBe` Left
-          "capacity.resource_plan.workload_profiles for namespace api must fit within that namespace quota"
+      Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan
+        `shouldSatisfy` isRight
+      Allocation.compileResourcePlanUncertified overReservedPlan `shouldSatisfy` isLeft
+      Allocation.compileResourcePlanUncertified overCommittedPlan `shouldSatisfy` isLeft
 
     it "reserves a fitting capacity slot for the Bootstrap Broker (Sprint 3.26)" $ do
       -- Sprint 3.26 (Increment C): the over-provisioned vscode ceiling was
-      -- trimmed 100m to fund a dedicated bootstrap-broker namespace quota and a
-      -- Guaranteed-QoS workload profile, so control-plane demand is never hidden
-      -- behind a combined gateway envelope and the single-node plan still fits.
+      -- The dedicated Guaranteed-QoS workload profile makes control-plane demand
+      -- explicit and the single-node plan still fits.
       let plan = Capacity.defaultResourcePlan
-      any ((== "bootstrap-broker") . Capacity.namespace_name) (Capacity.namespace_quotas plan)
-        `shouldBe` True
       any ((== Text.pack "bootstrap-broker") . Capacity.profile_id) (Capacity.workload_profiles plan)
         `shouldBe` True
-      Capacity.validateResourcePlan plan `shouldBe` Right ()
+      Allocation.compileResourcePlanUncertified plan `shouldSatisfy` isRight
 
     it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
       -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
@@ -15773,15 +15810,6 @@ resourcePlanDhallFragment =
     [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
-    , "  ]"
     , ", workload_profiles ="
     , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
@@ -15842,23 +15870,32 @@ resourceProfileDhall profile namespace count req lim =
     ++ show namespace
     ++ ", replicas = "
     ++ show count
-    ++ ", resources = { request = "
-    ++ resourceVectorDhall req
-    ++ ", limit = "
-    ++ resourceVectorDhall lim
-    ++ " } }"
-
-resourceVectorDhall :: (Int, Int, Int, Int) -> String
-resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
-  "{ milli_cpu = "
-    ++ show cpuMilli
-    ++ ", memory_mib = "
-    ++ show memoryMib
-    ++ ", ephemeral_storage_mib = "
-    ++ show ephemeralMib
-    ++ ", durable_storage_mib = "
-    ++ show durableMib
+    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
+    ++ ", surge = 0"
+    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
+    ++ ", workload_demand = "
+    ++ workloadDemandDhall profile req lim
     ++ " }"
+
+workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
+workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
+  "{ cpu_demand = { requests_per_second = "
+    ++ show reqCpu
+    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
+    ++ show (limCpu - reqCpu)
+    ++ ", calibration_profile_id = "
+    ++ show profile
+    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
+    ++ show reqMemory
+    ++ " ], bounded_memory_burst_mib = "
+    ++ show (limMemory - reqMemory)
+    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
+    ++ show reqEphemeral
+    ++ " ], bounded_ephemeral_burst_mib = "
+    ++ show (limEphemeral - reqEphemeral)
+    ++ " }, demanded_durable_storage_mib = "
+    ++ show limDurable
+    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =
@@ -15998,11 +16035,11 @@ resourceGuardrailQuotaFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "61440Mi"
-              , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "112640Mi"
-              , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
-              , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "2000m" "3072Mi" "6000Mi" "20480Mi"
+              [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "61440Mi"
+              , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "112640Mi"
+              , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0Mi"
+              , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0Mi"
+              , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20480Mi"
               ]
           )
     ]
@@ -16013,29 +16050,30 @@ resourceGuardrailCanonicalQuotaFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailQuota "keycloak" "2025m" "4448Mi" "12000Mi" "60Gi"
-              , resourceGuardrailQuota "vscode" "1300m" "5216Mi" "10944Mi" "110Gi"
-              , resourceGuardrailQuota "api" "500m" "768Mi" "2000Mi" "1000Mi"
-              , resourceGuardrailQuota "websocket" "500m" "768Mi" "3000Mi" "1000Mi"
-              , resourceGuardrailQuota "gateway" "2000m" "3072Mi" "6000Mi" "20Gi"
+              [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
+              , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
+              , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0Mi"
+              , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0Mi"
+              , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
               ]
           )
     ]
 
-resourceGuardrailQuota :: String -> String -> String -> String -> String -> Value
-resourceGuardrailQuota namespace cpu memory ephemeral durable =
+resourceGuardrailQuota
+  :: String -> String -> String -> String -> String -> String -> String -> String -> Value
+resourceGuardrailQuota namespace requestCpu requestMemory requestEphemeral limitCpu limitMemory limitEphemeral durable =
   object
     [ "metadata" .= object ["namespace" .= namespace, "name" .= (namespace ++ "-resource-quota")]
     , "spec"
         .= object
           [ "hard"
               .= object
-                [ "requests.cpu" .= cpu
-                , "limits.cpu" .= cpu
-                , "requests.memory" .= memory
-                , "limits.memory" .= memory
-                , "requests.ephemeral-storage" .= ephemeral
-                , "limits.ephemeral-storage" .= ephemeral
+                [ "requests.cpu" .= requestCpu
+                , "limits.cpu" .= limitCpu
+                , "requests.memory" .= requestMemory
+                , "limits.memory" .= limitMemory
+                , "requests.ephemeral-storage" .= requestEphemeral
+                , "limits.ephemeral-storage" .= limitEphemeral
                 , "requests.storage" .= durable
                 ]
           ]
@@ -16051,7 +16089,7 @@ resourceGuardrailLimitRangeFixture =
               , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
               , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "750m" "256Mi" "512Mi" "750m" "512Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "750m" "1024Mi" "1024Mi" "750m" "2048Mi" "4096Mi"
               ]
           )
     ]
@@ -16066,7 +16104,7 @@ resourceGuardrailCanonicalLimitRangeFixture =
               , resourceGuardrailLimitRange "vscode" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
               , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "750m" "256Mi" "512Mi" "750m" "512Mi" "512Mi"
+              , resourceGuardrailLimitRange "gateway" "750m" "1024Mi" "1Gi" "750m" "2Gi" "4Gi"
               ]
           )
     ]
@@ -16209,6 +16247,11 @@ testValidatedSettings manualRoot =
           , storage = StorageSection {manual_pv_host_root = ".data"}
           }
     , resolvedManualPvHostRoot = manualRoot
+    , validatedAllocatedPlan =
+        either
+          (error . Allocation.renderCompileError)
+          id
+          (Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
     }
 
 sampleAwsSetupInput :: AwsSetupInput

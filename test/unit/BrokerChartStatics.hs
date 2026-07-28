@@ -138,13 +138,15 @@ brokerChartStaticsSuite =
         controlPlaneChartLints
 
     it "rejects a control-plane chart hard-coding raw ServiceAccount / probe literals (Sprint 3.26)" $ do
-      let lint = head controlPlaneChartLints
-          rawServiceAccount = "metadata:\n  name: " ++ cplServiceAccount lint ++ "\n"
-          rawWorkload =
-            "spec:\n  serviceAccountName: "
-              ++ cplServiceAccount lint
-              ++ "\n          livenessProbe:\n            httpGet:\n              path: "
-              ++ cplLiveness lint
-              ++ "\n"
-      controlPlaneChartStaticViolations lint rawServiceAccount rawWorkload (cplRenderYaml lint)
-        `shouldSatisfy` (\violations -> length violations >= 2)
+      case controlPlaneChartLints of
+        [] -> expectationFailure "control-plane chart lint registry must not be empty"
+        lint : _ -> do
+          let rawServiceAccount = "metadata:\n  name: " ++ cplServiceAccount lint ++ "\n"
+              rawWorkload =
+                "spec:\n  serviceAccountName: "
+                  ++ cplServiceAccount lint
+                  ++ "\n          livenessProbe:\n            httpGet:\n              path: "
+                  ++ cplLiveness lint
+                  ++ "\n"
+          controlPlaneChartStaticViolations lint rawServiceAccount rawWorkload (cplRenderYaml lint)
+            `shouldSatisfy` (\violations -> length violations >= 2)

@@ -208,6 +208,28 @@ stage -> fsync -> publish -> commit -> fsync
 The oracle proves one local transition owner, no stale-fence publication, deterministic staged
 recovery, and no second actor interleaving with an incomplete transition.
 
+Daemon shutdown simulations additionally control child cancellation delivery, worker-finalizer
+progress, replay-waiter wakeup, and join deadlines. A deterministic hook must be able to hold a
+finalizer after forced drain; while held, the oracle requires `ForceDraining` or
+`ShutdownIncomplete` and forbids `Stopped`. Releasing it must resolve every waiter, join every
+child, prove queue/active/idempotency emptiness, and only then produce the terminal witness.
+
+Test fixture cleanup is part of the oracle. It must join the complete structured-concurrency tree
+or fail the test run with typed residue; a second cleanup timeout may not be discarded. Run the
+race under the deterministic scheduler and under repeated full-suite contention. Isolated repeated
+passes are useful evidence but cannot close a source-reachable illegal transition.
+
+Sprint `5.23` lands this for the Bootstrap Broker as `Prodbox.Bootstrap.Broker.ShutdownModel`: a
+pure, finite, monotone abstraction of the forced-drain shutdown whose `reachableStates` is an
+*exhaustive* closure over every drain / finalize-worker / resolve-waiter / prove-shutdown
+interleaving — so the counterexample and its absence are proofs, not sampled observations. Its
+`FrozenPreFix` variant reaches `Stopped` with a live replay waiter; its `ProofCarrying` variant (the
+Sprint-2.36 `Map.null entries` term of `proveShutdownComplete`) provably cannot, while a
+fully-drained `Stopped` stays reachable; and `shutdownResidue` / `residueClean` are the run-final
+residue oracle over queued connections, unfinalized workers, and live replay-waiter cells. Wiring
+that oracle into the live broker daemon-lifecycle fixture teardown and exercising the real
+STM/`Async` runtime under full-suite contention is the complementary live axis.
+
 ## 4. Capability and Readiness Tests
 
 ### 4.1 Same-reference invariant

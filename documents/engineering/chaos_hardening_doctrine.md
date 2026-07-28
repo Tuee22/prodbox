@@ -2,7 +2,11 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, CLAUDE.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md,
+DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, documents/engineering/README.md, CLAUDE.md,
+documents/engineering/distributed_gateway_architecture.md,
+documents/engineering/lifecycle_control_plane_architecture.md,
+documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: A treatise and working doctrine for hardening decisions made under concurrency — *Extract*
@@ -507,6 +511,20 @@ exceptions, several loops racing over shared state — run the **real in-process
 **adversarial deterministic scheduler with simulated time**, so a rare interleaving becomes
 *deterministically replayable* instead of a once-a-month flake.
 
+Shutdown models explicitly schedule cancellation delivery, replay-waiter wakeup, finalizer progress,
+and join-deadline expiry. Hold a child finalizer past the deadline and assert that `Stopped` is
+unreachable; release it and require the exact empty-residue witness before terminal publication.
+
+Sprint `5.23` lands a lightweight instance of this for the Bootstrap Broker as
+`Prodbox.Bootstrap.Broker.ShutdownModel`: a pure, finite, monotone abstraction of the forced-drain
+shutdown whose exhaustive reachable-state closure turns the once-per-full-suite race into a proof —
+the pre-fix postcondition (`queued == 0 && active == 0`) reaches `Stopped` with a live replay waiter,
+while the proof-carrying postcondition (Sprint 2.36's added `Map.null entries` term) provably cannot,
+and its residue oracle flags any queued connection, unfinalized worker, or live waiter as typed
+residue. This abstract exhaustive check is complementary to — not a replacement for — running the
+real `Server.hs` STM/`Async` runtime under `IOSimPOR` over full-suite contention, which remains the
+live axis.
+
 **The Haskell way to do it: io-sim and io-classes.** In Haskell the technique has a precise home.
 [`io-classes`](https://hackage.haskell.org/package/io-classes) is a set of typeclasses — `MonadSTM`,
 `MonadAsync`, `MonadTimer`, `MonadFork`, `MonadThrow`/`MonadCatch` — that mirror `base`, `stm`, and
@@ -688,7 +706,11 @@ and R9 is purely cross-boundary and lives there.)
   race, cancel-on-exit) — never unstructured fire-and-forget tasks or ad-hoc sleeps. Structured scopes
   make cancellation and async-exception safety analyzable; unstructured tasks leak and hide races. (The
   term was popularized by Nathaniel J. Smith's 2018 essay, building on a much older idea descending from
-  structured programming.)
+  structured programming.) A terminal runtime state is evidence that the scope closed, not merely that
+  its cancellation deadline elapsed. Forced shutdown resolves shared waiters, cancels children, joins
+  them, and proves owned residue empty before `Stopped`; an elapsed join deadline is explicit
+  `ShutdownIncomplete`. Discarding cancellation/join results recreates unstructured ownership behind a
+  structured API and is forbidden.
 - **R7 — Impossibility-bounded invariants are stated conditionally, with the failure mode chosen
   explicitly.** Some safety invariants *cannot* hold unconditionally in an asynchronous system that
   admits partitions. **FLP** (Fischer, Lynch & Paterson, JACM 1985) showed that no deterministic protocol

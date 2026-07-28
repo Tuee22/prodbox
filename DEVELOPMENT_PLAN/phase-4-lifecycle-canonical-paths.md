@@ -16,12 +16,13 @@
 
 ## Phase Status
 
-⏸️ **Reopened and blocked by Sprint `3.26`.** Sprint `4.48` introduces the retained Lifecycle
-Authority as a restart-resumable durable operation interpreter. Sprint `4.49` adds a fenced target
-outbox and substrate-local Target Secret Agent. Sprint `4.50` performs a versioned authority-epoch
-cutover and removes the gateway-backed authority routes and host-direct fallback. These are
-forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure lease and
-intent rules it actually implemented, not proof that its gateway transport was available.
+🔄 **Reopened; Sprints `4.50` and `4.51` are Active.** Sprints `4.48` and `4.49` completed the
+restart-resumable retained Lifecycle Authority, fenced target outbox, and substrate-local Target
+Secret Agent foundations. Sprint `4.50` owns the versioned authority-epoch cutover and legacy-route
+removal. Sprint `4.51` has landed the durability index and retained SES transport cutover; its
+durable SES-operation replay fold remains. Sprint `4.52` is Done on observed-host refinement.
+These are forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure
+lease and intent rules it actually implemented, not proof of the replacement topology.
 
 📋 **Expanded 2026-07-12 with Sprint `4.51` (Foundation Epoch).** Counterexample
 `LCPC-2026-07-11` ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) froze the
@@ -4143,9 +4144,9 @@ warning-clean library/executable/unit builds, and `prodbox dev check` exit 0.
 - Keep `DEVELOPMENT_PLAN/README.md`, `00-overview.md`, `system-components.md`, `substrates.md`, and
   `legacy-tracking-for-deletion.md` synchronized with the completed sprint.
 
-## Sprint 4.48: Retained Lifecycle Authority and Durable Operation Journal [🔄 Active]
+## Sprint 4.48: Retained Lifecycle Authority and Durable Operation Journal [✅ Done]
 
-**Status**: Active — unblocked (Sprint `3.26`'s control-plane charts, including the Lifecycle
+**Status**: Done (validated 2026-07-26) — Sprint `3.26`'s control-plane charts, including the Lifecycle
 Authority StatefulSet, landed). **Increment A (the pure genesis admission fold) landed 2026-07-23.**
 **Deployment qualification**: pending
 **Implementation**: **Increment A landed** — `src/Prodbox/Lifecycle/Authority/Genesis.hs` is the pure
@@ -4265,17 +4266,11 @@ closed leaving the record armed (diverged / unobservable). Validated by
 lost-response at-most-once recovery; diverged fail-closed; idempotent re-arm; completed-operation no-op
 recovery/re-run + result lookup; unknown-operation no-op) plus `prodbox dev check` exit 0 and the full
 `LifecycleAuthority*` suite 77/77.
-**Remaining Work**: bind the aggregate's operation records to the three retained `'ClusterRetained`
-projections (`LeaseProjection` / `TargetIntentProjection` / `SmtpCommittedProjection`) via a
-host-direct interpreter (built on the Sprint-4.51 `AuthorityObjectCore` + the durable
-`ControlPlane.AuthorityClock`, replacing the gateway-hosted `gatewayModelBCasAdapter` /
-`observeGatewayAuthorityTime`, and using the Increment-B `decideOperationRecovery` for at-most-once
-outbox execution) and the migrations off `Lease*` / `CheckpointAuthority*` / `TargetCommit*` — together
-the byte-compat-critical live-transaction cutover, coupled to Sprint `4.51` Increment B. The
-physically-separate Authority Backup / TLS Retention / Provider Worker interpreters land alongside, and
-this flow defines the credential-field schemas that close Sprint 3.26's remaining least-privilege Vault
-policies. (The `BackupRepair` post-genesis reopen under a greater epoch **landed** as Increment D,
-above.)
+**Remaining Work**: None on Sprint `4.48`'s independently validatable pure authority surface.
+Binding the three retained projections to the host-direct store is Sprint `4.51` storage-transport
+work; migrating production callers and deleting gateway-hosted authority transport is Sprint `4.50`
+cutover work. Keeping either higher-numbered surface here would violate Standard N. The completed
+4.48 authority kernel is their input, not their validation dependency.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `documents/engineering/pure_fp_standards.md`,
@@ -4429,14 +4424,19 @@ a best-effort release response.
 
 - Link the managed-resource registry and Pulumi wrappers to the authority operation API.
 
-## Sprint 4.49: Fenced Target Outbox and Target Secret Agent [⏸️ Blocked]
+## Sprint 4.49: Fenced Target Outbox and Target Secret Agent [✅ Done]
 
-**Status**: Blocked
+**Status**: Done (validated 2026-07-26) — the bounded target-commit protocol and closed target-store
+boundary had already landed under Sprint `4.47`; Sprint `4.49` records them as the retained
+Authority's target outbox rather than introducing a competing delivery authority.
 **Deployment qualification**: pending
-**Implementation**: planned authority outbox modules under `src/Prodbox/Lifecycle/Authority/`, a
-`src/Prodbox/TargetSecret/` runtime/client, revisions to `TargetCommitIntent*` and
-`TargetSecretStore.hs`, schema-indexed non-recoverable-material custody/rewrap plus External
-Material Ingress, and simulator/loopback tests
+**Implementation**: `Prodbox.Lifecycle.TargetCommitIntent` owns the bounded canonical-CBOR global
+intent projection, registered targets, generation/digest/fence/deadline binding, prepare/revalidate/
+single-sink-CAS/read-back/complete decisions, recovery, terminal retirement, and compaction.
+`Prodbox.Lifecycle.TargetCommitInterpreter` executes that protocol with at most one target mutation
+per run and fresh authority observations. `Prodbox.Lifecycle.TargetSecretStore` is the allowlisted,
+redacted target-local CAS boundary. Sprint `4.48` supplies the durable operation ID and admitting
+authority epoch around this already-fenced outbox.
 **Blocked by**: Sprint `4.48`
 **Independent Validation**: pure outbox folds and loopback agents with fake Vault interpreters
 cover cross-target delivery, restart, duplicate requests, and read-back without live substrates or
@@ -4542,10 +4542,21 @@ the selected substrate.
 6. Bounded journal/compaction properties and loopback protocol tests pass.
 7. Unit/integration suites and `prodbox dev check` pass.
 
+### Scope Reconciliation
+
+- SMTP/EAB schema-specific custody is Sprint `8.11`'s email-workflow specialization.
+- Child recovery custody remains the completed Sprint `2.33` boundary.
+- TLS Secret retention remains Sprint `4.48`'s versioned TLS fold.
+- Production caller migration and gateway-route deletion remain Sprint `4.50`.
+
+Assigning those independently owned surfaces to 4.49 would duplicate authorities and create
+backward validation dependencies contrary to Standard N.
+
 ### Remaining Work
 
-- Blocked until Sprint `4.48` provides the operation journal and authority epoch.
-- Sprint `4.50` cuts production callers over and removes gateway-backed target delivery.
+None. The focused Sprint `4.47` suite passes 84/84, including the target registration, prepare,
+read-back, response-loss recovery, stable retirement, bounded codec, allowlisted route, and redacted
+store cases. `prodbox dev check` passes.
 
 ## Documentation Requirements
 
@@ -4565,14 +4576,298 @@ the selected substrate.
 
 - Link selected-substrate resolution to `TargetIdentity`, never a gateway URL.
 
-## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [⏸️ Blocked]
+## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [🔄 Active]
 
-**Status**: Blocked
+**Status**: Active — Sprints `4.48` and `4.49` are Done. The next code-owned increment is the
+single-writer migration/cutover registry and source-level removal of gateway-hosted lifecycle
+authority routes; deployment qualification remains a separate Standard-P campaign.
+**Implementation (Increment A, 2026-07-26)**: `Prodbox.Runtime.Role` now enumerates the physically
+separate Lifecycle Authority, Provider Worker, Authority Backup Adapter, TLS Retention Adapter, and
+Target Secret Agent alongside Bootstrap Broker and Gateway Runtime. Each maps bijectively to a
+unique versioned mounted-config identity and canonical `/etc/<role>/config/config.dhall` path. This
+removes the representational mismatch where charts selected dedicated roles that the executable's
+closed runtime-role algebra could not name. Focused runtime-role validation passes 3/3. Command
+dispatch and transport migration remain below, so the sprint stays Active.
+**Implementation (Increment B, 2026-07-26)**:
+`src/Prodbox/Lifecycle/Authority/Migration.hs` is the pure single-writer cutover kernel. Its closed
+state machine moves `LegacyActive → ShadowVerified → WritersFrozen → ReplacementActive`; activation
+requires the complete typed binding inventory, and there is no state with two active writers.
+Exact replay is idempotent, digest divergence refuses, activation before freeze or before complete
+preparation refuses with the missing binding set, and direct legacy rollback is always forbidden.
+The focused `Lifecycle Authority single-writer migration` suite passes 5/5 under a warning-clean
+unit build. Durable codecs/interpreters and executable role dispatch remain below, so the sprint
+stays Active.
+**Implementation (Increment C, 2026-07-26)**: the migration envelope now has a bounded canonical-CBOR
+codec; corrupt and oversized states refuse before interpretation (focused migration suite 6/6).
+The public command registry and native dispatcher now expose
+`lifecycle-authority|provider-worker|authority-backup|tls-retention|target-secret-agent start
+--config <mounted-role.dhall>` as five role-indexed processes. Each command decodes the explicit
+mounted Dhall schema before Plan/Apply, has no repository or environment fallback, and starts the
+shared fail-closed runtime boundary: liveness is served, while readiness and authority operations
+remain unavailable until the role's production interpreter is installed. The chart renderer emits
+the matching schema-v1 role config. Evidence: warning-clean executable/unit build, parser 279/279,
+focused migration 6/6, and all five role dry-run projections. The production interpreters and
+legacy transport deletion remain below, so the sprint stays Active.
+**Implementation (Increment D, 2026-07-27)**: the durable migration bytes now carry an explicit
+schema-v1 envelope rather than serializing a bare `MigrationState`. Decode refuses unsupported
+versions, oversized/corrupt bytes, and any non-canonical representation before returning state.
+Every durable command prefix round-trips through the envelope, so restart proof covers
+`LegacyActive`, shadow verification, freeze, each binding preparation, and replacement activation.
+The focused migration suite passes 8/8 under the warning-clean unit build. Production
+Lifecycle-Authority interpreters and legacy transport deletion remain below, so the sprint stays
+Active.
+**Implementation (Increment E, 2026-07-27)**:
+`Prodbox.Lifecycle.Authority.MigrationInterpreter` is the durable CAS boundary for the migration
+kernel. It reads one opaque repository revision, rejects corrupt/version-invalid state before
+decision, writes only an accepted state transition against that exact revision, performs no write
+for idempotent replay or refusal, and reports a lost CAS as `MigrationConcurrentWrite` rather than
+silently overwriting another writer. The in-memory repository fixtures cover complete activation,
+restart decoding, no-write replay/refusal, corrupt durable state, and a forced concurrent-write
+loss. The focused migration suite passes 11/11. Binding the repository to retained Authority
+storage and removing the production legacy transports remain below, so the sprint stays Active.
+**Implementation (Increment F, 2026-07-27)**: the migration repository is now bound to a
+`ModelBCasAdapter 'ClusterRetained` and a `ModelBObjectCoordinate 'ClusterRetained`; the type system
+therefore rejects chart-lifetime or cross-cluster coordinates at this Authority-primary boundary.
+`migrationStateCodec` uses the same bounded versioned envelope, and the repository maps
+missing/observed/corrupt/unobservable and initialize/replace/conflict/refused outcomes without
+collapsing them. Focused fixtures prove the first durable command emits exactly one retained
+Model-B initialization and that the bounded codec is the physical payload boundary. The focused
+migration suite passes 13/13. Supplying the production retained adapter to the role server and
+removing legacy transports remain below, so the sprint stays Active.
+**Implementation (Increment G, 2026-07-27)**: mounted standing-role config now carries both
+`schema_version` and the exact `runtime_role`. The binary compares that value to the role selected
+by the command before Plan/Apply; a Lifecycle Authority config cannot start a Provider Worker,
+Backup Adapter, TLS Retention Adapter, or Target Secret Agent, and unsupported schema versions
+fail before the listener opens. `ChartPlatform` renders the exact chart/role binding into each
+ConfigMap. Focused validation covers all five accepted bindings plus wrong-role and wrong-version
+refusals; the migration/control-plane suite passes 14/14. Role-specific production interpreters
+and legacy transport deletion remain below, so the sprint stays Active.
+**Implementation (Increment H, 2026-07-27)**: migration events and the evolution function are no
+longer public constructors, so callers cannot forge or apply an event outside `decideMigration` /
+`stepMigration`. Migration digests now reject empty, control-bearing, and over-128-character
+bindings before durable state construction. Focused validation covers both bounds and every
+reachable writer transition; the suite passes 15/15. The sprint remains Active on its production
+interpreter and cutover/removal surface.
+**Implementation (Increment I, 2026-07-27)**:
+`Prodbox.ControlPlane.Route` now defines the closed method/path topology for the five standing
+roles. Every route has exactly one owner; decoding is role-indexed, cross-role decoding refuses,
+and no generic object-store or Vault route exists. The executable runtime uses that registry when
+classifying requests: liveness remains common, readiness stays fail-closed until the corresponding
+interpreter is bound, an owned-but-unbound operation returns `503`, and a route owned by another
+role returns `404` rather than reaching a shared dispatcher. The focused topology suite passes 4/4
+and the warning-clean executable/unit build passes. Production in-cluster adapters and deletion of
+the old gateway routes remain, so the sprint stays Active.
+**Implementation (Increment J, 2026-07-27)**:
+`Prodbox.ControlPlane.VaultSession` provides the standing roles' shared mechanism without a shared
+identity: a smart constructor binds each executable role to exactly its compiled Vault
+Kubernetes-auth role, and the cached renewable session re-reads the projected ServiceAccount JWT
+on renewal. Gateway/Bootstrap identities, cross-role borrowing, and empty transport coordinates
+refuse before login. The mounted role config is schema v2 and now requires the exact Vault address,
+auth path, role, and token-file coordinate; chart rendering supplies those fields, and runtime
+validation constructs the cached session before opening the listener. There is no environment,
+host-root-token, or per-request-login fallback. `defaultVaultReconcilePlan` now creates five
+distinct policies and Kubernetes-auth roles rather than rendering ServiceAccounts whose Vault
+identities do not exist: core Authority has only retained-store HMAC/MinIO/Transit access;
+Provider, Authority Backup, and TLS Retention each read only their exact AWS credential path; and
+Target Agent has only the registered target-secret lanes. Focused Vault/migration validation
+passes.
+Binding the session to each role's least-privilege store/provider interpreter and deleting the old
+gateway transports remain, so the sprint stays Active.
+**Implementation (Increment K, 2026-07-27)**:
+`Prodbox.ControlPlane.MigrationEndpoint` is the server side of the Lifecycle Authority
+`migration/apply` route — the first standing-role route to gain a real handler rather than the
+shared fail-closed `503`. `serveMigrationApply` decodes a bounded, versioned, canonical
+`MigrationCommand` request body through a new kernel codec (`encodeMigrationCommand` /
+`decodeMigrationCommand`) that is byte-symmetric with the retained-state envelope, so a corrupt,
+oversized, non-canonical, or unsupported-version body is refused before it can reach
+`decideMigration`; it then applies the command through the exact-revision retained
+`MigrationRepository` and projects the outcome onto a total HTTP status (`migrationEndpointHttpStatus`)
+and a stable kebab summary (`migrationEndpointSummary`): a malformed request is `400`, a well-formed
+but state-machine-refused transition and a lost compare-and-swap race are `409`, an unobservable read
+or a failed durable write is `503`, a corrupt retained decode is `500`, and accepted/already-applied
+are `200`. The handler is pure over an injected repository, so an in-memory fixture exercises every
+arm without a live cluster, Vault, or object store. The focused endpoint suite passes 9/9, the
+migration kernel suite (now also proving the request codec) stays 15/15, and `prodbox dev check` plus
+the Authority/control-plane/migration targeted suites (111/111) pass warning-clean. Constructing a
+production in-cluster retained repository — over the role's Kubernetes-auth Vault session and the
+in-cluster MinIO Service DNS rather than the host-root-token host-direct seam — and dispatching the
+raw socket request on `LifecycleMigrationApply` to this handler in `runControlPlaneRole` remain
+below, so the sprint stays Active.
+**Implementation (Increment L, 2026-07-27)**:
+`Prodbox.ControlPlane.Server` is the pure request/dispatch/response seam every standing-role server
+shares. `parseControlPlaneRequest` extracts the method, request target, and body;
+`classifyControlPlaneRequest` maps a request onto a typed `ControlPlaneDisposition`
+(`Live` / `NotReady` / `OwnedRoute` / `NotOwned`) through the closed route topology; a role installs a
+monad-generic `RoleInterpreter` (readiness probe plus per-route handler), and
+`serveControlPlaneRequest` resolves a request to a `(status, body)` pair, with `renderHttpResponse`
+rendering the bounded `Connection: close` reply. `runControlPlaneRole`'s raw-socket loop now owns only
+accept/recv/send and dispatches through this seam with the shared `failClosedInterpreter` — liveness
+serves while readiness and every owned route fail closed, byte-identical to the prior ad-hoc byte-prefix
+classifier but now a single typed dispatch point rather than an unowned prefix match. A focused suite
+proves request parsing, every disposition, cross-role route refusal, fail-closed serving, the rendered
+response, and — through a Lifecycle Authority `RoleInterpreter` that binds `LifecycleMigrationApply` to
+Increment K's `serveMigrationApply` over an in-memory repository — that an owned migration request is
+reachable through the seam and returns `200 migration-accepted` / `409 migration-refused` end to end
+(server seam 8/8, combined control-plane/migration regression 40/40, `prodbox dev check` warning-clean
+and lint-clean). Constructing the production in-cluster retained repository behind that interpreter, and
+reading a full request body larger than one bounded `recv`, remain below, so the sprint stays Active.
+**Implementation (Increments M–N, 2026-07-27)**: the pure core of the resumable decommission receipt
+landed. `Prodbox.Lifecycle.Decommission.Frame` is the physical frame unit — a content-addressed record
+carrying its schema version, the binding manifest digest, a monotonically increasing index, a stable
+node id, a stable attempt id, the SHA-256 digest of the previous frame (the hash chain), a SHA-256
+checksum over its own payload, and the typed payload — with a bounded canonical per-frame codec that
+refuses oversize, non-canonical, unsupported-version, and checksum-mismatched frames, a genesis link
+bound to the manifest, and a pure `appendPayload` chain builder (frame suite 8/8).
+`Prodbox.Lifecycle.Decommission.Journal` frames a length-delimited log and `recoverReceipt` computes
+the longest complete, checksum-valid, manifest-bound, hash-chain-consistent prefix: a torn final record
+(a crash part-way through the last append — a partial length prefix or body) is `RecoveryTruncatableTorn`
+and recovers by truncating to the last valid frame, while a fully written but corrupt frame (interior or
+final), a chain/index break, and a manifest mismatch each `RecoveryRefused` — committed history is never
+silently dropped (recovery suite 7/7, matching Validation item 7's reopen matrix). Both modules are pure
+and fully fixture-driven; `prodbox dev check` is warning-clean and lint-clean. The signed
+inventory/manifest, the exported pinned verifier artifact, the SES/TLS-prefix-before-bucket destroy
+subgraph, and the `DecommissionRunner` permit family remain below, so the sprint stays Active.
+**Implementation (Increment O, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Receipt` is the fsync-ordered durable barrier — the protocol's only new
+effectful primitive. `appendReceiptFrame` writes one length-delimited frame record, fsyncs the file,
+then fsyncs the parent directory, so a committed frame is durable before the runner performs the
+external effect it authorises. `reopenReceipt` reads the receipt, runs the pure longest-valid-prefix
+recovery, and — only for a torn final record — truncates the file back to the last valid frame and
+fsyncs, so resumption appends cleanly after the recovered prefix; a fully written corrupt frame, a chain
+break, or a manifest mismatch is returned as a refusal with the file left untouched. A real-temp-file
+suite proves durable append→reopen of the complete chain, torn-tail truncate-and-resume, corrupt-frame
+refusal without truncation, and a missing receipt as an empty chain (barrier suite 4/4; full
+decommission/control-plane/migration regression 59/59; `prodbox dev check` warning- and lint-clean). The
+signed inventory/manifest, the exported pinned verifier artifact, the destroy subgraph, and the runner
+permit family remain below, so the sprint stays Active.
+**Implementation (Increment P, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Manifest` is the deterministic signed inventory the receipt binds to.
+`DecommissionNode` is the closed typed vocabulary of teardown work (SES consumer-quiescence /
+provider-stack / SMTP-IAM, per-target generation tombstone, retained custody, TLS objects,
+TLS-retention identity, backup prefix-absence proof, backup objects, shared bucket).
+`DecommissionManifest` is opaque — reachable only through `mkDecommissionManifest`, which rejects an
+empty or duplicated inventory, an invalid cluster identity, and an invalid target reference — and
+`decommissionManifestDigest` is the canonical SHA-256 (the shared `Frame.contentDigest` primitive) that
+is exactly the `FrameDigest` every receipt frame carries. A fixture proves the binding is load-bearing:
+a receipt built under one manifest's digest recovers, while reopening it under a different manifest's
+digest is a chain refusal (`JournalChainDrift 0`), so a receipt can never be replayed against a
+different plan (manifest suite 5/5; decommission regression 24/24; `prodbox dev check` warning- and
+lint-clean). The typed-graph ordering over these nodes, the retained-Model-B receipt-commit under an
+admission freeze, and the exported pinned verifier artifact remain below, so the sprint stays Active.
+**Implementation (Increment Q, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Graph` is the typed destroy-ordering subgraph over the manifest's
+`DecommissionNode` inventory. `decommissionRequiredPredecessors` derives the mandatory order — SES
+consumer-quiescence before the provider-stack and SMTP-IAM destroys, which precede the
+target-generation and retained-custody tombstones; TLS objects/identity and the whole backup chain
+before the shared object bucket (the unique terminal); the backup prefix-absence proof after TLS
+deletion and before backup-object deletion — and `runDecommissionGraph` is a total executor that runs
+every node whose predecessors succeeded, records `NodeBlocked` with the offending predecessors
+otherwise, aggregates every outcome, and never stops early. Fixtures prove convergence under
+all-success, that a failed backup-absence proof blocks backup-objects and the shared bucket while the
+SES branch still completes, and that an SES-provider failure blocks only the SES tombstones and the
+bucket while the entire independent TLS→backup chain still succeeds; the pure ordering-invariant checks
+(`tlsPrecedesSharedBucket`, `sesDestroyPrecedesTombstones`, `sharedBucketIsTerminal`) hold for the full
+inventory (graph suite 4/4; decommission regression 28/28; `prodbox dev check` warning- and lint-clean).
+Wiring the node effects to the real destroy/read-back operations, the retained-Model-B receipt-commit,
+the exported pinned verifier artifact, and the `DecommissionRunner` permit family remain below, so the
+sprint stays Active.
+**Implementation (Increment R, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Commit` commits the signed manifest to retained authority state before
+the point of no return. The manifest gains a bounded canonical codec
+(`encodeDecommissionManifest`/`decodeDecommissionManifest`, refusing oversize/non-canonical/
+unsupported-version input). `commitDecommissionManifest` is an initialize-if-absent compare-and-swap
+over an injected `ModelBCasAdapter 'ClusterRetained` (`modelBDecommissionCommitRepository`): no plan
+committed yet → `CommittedNew`; the same plan already committed → `CommittedAlready` (a resuming runner
+proceeds against its recorded plan); a different plan committed → `RefusedDifferentPlan`, never
+clobbering another run's plan — with read/write/concurrent-write failures surfaced distinctly and the
+type index rejecting a chart-lifetime coordinate at this authority-primary boundary. In-memory-adapter
+fixtures cover every arm plus the codec round-trip (commit suite 6/6; decommission regression 34/34;
+`prodbox dev check` warning- and lint-clean). Freezing admission first is the runner's sequencing
+obligation; the `DecommissionRunner` permit family, the exported pinned verifier artifact, and the real
+destroy-effect wiring remain below, so the sprint stays Active.
+**Implementation (Increment S, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Permit` is the Decommission Runner's one-time permit family — the gate
+that authorizes a total-teardown run past the point of no return, disjoint from the Admin Action
+Runner's family (whose `AdminAction` type cannot represent decommission). A permit binds the exact
+committed plan by manifest digest, and `decideDecommissionPermit` refuses a cross-role audience or a
+cross-plan digest structurally, then while awaiting accepts only when admission is `AdmissionFrozen`,
+the exported verifier/runner artifact preflight is `VerifierArtifactReady`, and the permit is fresh;
+consumption is one-time, so replaying the same nonce is idempotent and a divergent nonce conflicts. It
+reuses the `RunnerRole`/`PermitFreshness` observations from `AdminAction` and is pure — admission,
+verifier readiness, and freshness are injected observations. Fixtures cover every arm (permit suite
+7/7; decommission/control-plane/migration regression 81/81; `prodbox dev check` warning- and
+lint-clean). Constructing the exported pinned verifier artifact and its preflight, wiring the runner to
+the real destroy effects, and composing permit→commit→receipt→graph into the run orchestration remain
+below, so the sprint stays Active.
+**Implementation (Increment T, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Runner` is the run orchestration that composes the whole subsystem.
+`runDecommission` walks the destroy subgraph in topological order and, for each attempted node, journals
+a `DecommissionIntent` frame before the injected destroy/read-back effect and a `DecommissionNodeResult`
+frame after; a node whose predecessors did not all succeed is `NodeBlocked` and neither run nor
+journaled. Resumption is derived from the recovered receipt: `completedNodes` returns the nodes a prior
+run durably destroyed, and `runDecommission` skips them without re-running or re-journaling — so a
+one-time external destroy is never attempted twice, while a node that recorded only an intent or a
+failure is re-attempted. It is monad-generic over the injected journal and destroy effects. Fixtures
+prove per-node intent/result journaling in order, skip-without-re-run, failed-result journaling with
+blocked dependents, and `completedNodes` extraction; a real-temp-file integration test runs the plan to
+a failure over the durable receipt, reopens and recovers it, and resumes — re-running only the failed
+node and its dependents while the recovered prefix is skipped (orchestration suite 5/5;
+decommission/control-plane/migration regression 86/86; `prodbox dev check` warning- and lint-clean).
+With this the decommission subsystem is code-complete up to the live boundary: the exported pinned
+verifier artifact + preflight and the wiring of the node effects to the real destroy operations remain,
+so the sprint stays Active.
+**Implementation (Increment U, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.Verifier` is the exported pinned verifier/runner artifact and its
+preflight — the gate the Decommission Runner permit consumes. `exportVerifierArtifact` writes the opaque
+pinned build bytes and their metadata (dependency-closure digest, manifest-schema version+digest,
+interpreter-registry version+digest) to an operator/harness-owned coordinate, fsyncs each file and the
+parent directory, reads back every byte to prove the export landed intact, and returns the
+`VerifierBinding` (artifact digest + metadata) to bind into the signed manifest and receipt header.
+`runVerifierPreflight` reopens the on-disk artifact and metadata and verifies them against that committed
+binding: a missing artifact, a byte-tampered artifact (digest mismatch), corrupt metadata, or a drifted
+dependency closure / manifest schema / interpreter registry each refuses with a typed reason, and only an
+exact match yields `VerifierReady` (projected to the permit's `VerifierArtifactReady` via
+`verifierPreflightReady`) — so a missing, changed, or drifted runner cannot be silently upgraded
+mid-teardown. A real-temp-file suite proves durable export→read-back→preflight plus the
+absent/tamper/drift/corrupt refusals (verifier suite 5/5; decommission regression 51/51;
+`prodbox dev check` warning- and lint-clean). With the artifact preflight landed, the decommission
+subsystem's only remaining piece is wiring the destroy subgraph's node effects to the real
+destroy/read-back operations (a Standard-O live-coupled adapter), so the sprint stays Active.
+**Implementation (Increment V, 2026-07-27)**:
+`Prodbox.Lifecycle.Decommission.NodeEffect` is the destroy-and-read-back seam binding a
+`DecommissionNode` to a real destructive operation. `classifyReadBack` enforces the observation
+soundness rule of `ResidueStatus` — only a positively observed `ResidueAbsent` confirms a destroy,
+while `ResiduePresent` and `ResidueUnreachable` both fail, so a torn or degraded read never authorizes
+the run to advance to the shared bucket. `runNodeOperation` attempts the destroy and re-observes only
+on success; `DecommissionNodeInterpreter` is the total per-node dispatch, and `runDecommissionNode` is
+the effect the destroy subgraph executor consumes (`runDecommissionGraph nodes (runDecommissionNode
+interpreter)`). The classification and dispatch are pure over injected `NodeOperation`s — fixtures prove
+absence-confirms / presence-refuses / unobservable-refuses, that a failed destroy is not re-observed,
+and that a still-present read-back fails the node and blocks its dependents end to end (node-effect
+suite 4/4; decommission regression 55/55; `prodbox dev check` warning- and lint-clean). Supplying the
+production `NodeOperation`s — the real `destroyAwsSesStack`, live-Target-Agent tombstones,
+`destroyRetainedPublicEdgeTls`, and `destroyLongLivedPulumiStateBucket` calls with their
+re-observations — is the live-coupled boundary this seam isolates (Standard-O), and it depends on the
+Target Agent / Authority Backup runtimes that the remaining role interpreters supply.
+**Implementation (Increment W, 2026-07-27)**:
+`Prodbox.ControlPlane.TlsRetentionEndpoint` is the server side of the TLS Retention role's `store` and
+`restore` routes — the second standing role (after the Lifecycle Authority migration route) to gain a
+real handler. It fronts the existing pure retention algebra: `serveTlsStore` reads the current
+retention state through an injected `TlsRetentionRepository`, drives `decideTlsPromotion`, and commits
+only a genuine promotion through the repository's compare-and-swap; `serveTlsRestore` drives
+`decideTlsRestore` against the committed reference with no mutation. `tlsRetentionHttpStatus` /
+`tlsRetentionSummary` project the outcome onto a total HTTP status and stable summary
+(promoted/no-op/applied/issue → 200; a refused decision or reference mismatch → 409; a corrupt
+committed reference → 500; an unobservable read or failed write → 503). It is pure over the injected
+repository — fixtures prove first-store promotion + commit, a no-source-reobservation refusal without
+commit, an idempotent re-store no-op, a failed durable commit as a retryable write failure, and the
+apply/issue/mismatch/corrupt restore arms (endpoint suite 5/5; `prodbox dev check` warning- and
+lint-clean). The bounded canonical wire codec for the request/response bodies and the real
+retained-store compare-and-swap are the live-coupled follow-ons this handler isolates (Standard-O).
 **Deployment qualification**: pending
 **Implementation**: planned versioned migration/cutover modules, revisions to
 `CheckpointAuthority.hs`, `AuthorityConfig.hs`, `EncryptedBackend.hs`, `LiveResidue.hs`,
 `AwsSesStack.hs`, gateway client/daemon routes, source lints, and migration fixtures
-**Blocked by**: Sprint `4.49`
 **Independent Validation**: a deterministic migration simulator and v1/v2/v3 fixture matrix prove
 shadow-read comparison, quiescence, single-writer cutover, restart, rollback refusal, and legacy
 route absence without live AWS or a later phase.
@@ -4723,8 +5018,41 @@ an indefinite dual-write or fallback regime.
 
 ### Remaining Work
 
-- Blocked until Sprint `4.49` provides durable target delivery.
-- Sprint `5.18` migrates test restore/preparation and verifies always-run cleanup composition.
+- Supply the retained Model-B migration repository to the production Authority role server; land
+  dedicated capability clients, credential split, legacy route/transport deletion, and the
+  decommission protocol described above. The versioned single-writer kernel/envelope, retained
+  CAS repository, executable role dispatch, and the pure `migration/apply` server endpoint
+  (bounded canonical request codec + total HTTP-status/summary projection over the injected
+  `MigrationRepository`, Increment K) are landed. What remains here is constructing the production
+  in-cluster retained repository over the role's Kubernetes-auth Vault session and in-cluster MinIO
+  Service DNS (replacing the host-root-token host-direct seam) and dispatching the raw socket
+  request on `LifecycleMigrationApply` to `serveMigrationApply` in `runControlPlaneRole`.
+- Replace the shared fail-closed role server with role-specific production interpreters for the
+  five registered runtime roles. Increment I made their route topology closed and role-indexed;
+  Increment J validates and constructs each role's schema-v2 cached Kubernetes-auth Vault session
+  at startup; Increment L adds the pure `RoleInterpreter` dispatch seam so the socket loop routes
+  an owned request to a per-role handler (the shared `failClosedInterpreter` is installed until a
+  role binds its production handlers). The Lifecycle Authority `migration/apply` handler (Increment K)
+  and the TLS Retention `store`/`restore` handlers (Increment W) are landed as testable server
+  endpoints over their existing pure algebras; the Provider Worker, Authority Backup, and Target
+  Secret Agent endpoints remain, each with a testable request/response codec over a Standard-O
+  backend. Binding a production interpreter is supplying the per-route handlers plus each role's
+  concrete store/provider adapter; the owned routes still fail closed until those adapters are bound.
+- Build the decommission protocol on top of the landed receipt subsystem
+  (`Prodbox.Lifecycle.Decommission.Frame` + `.Journal` + `.Receipt` + `.Manifest` + `.Graph`,
+  Increments M–U): the wiring of the destroy subgraph's node effects to the real destroy/read-back
+  operations (`destroyAwsSesStack`, live-Target-Agent target/custody tombstones,
+  `destroyRetainedPublicEdgeTls`, `destroyLongLivedPulumiStateBucket`) — a Standard-O live-coupled
+  adapter. The pure frame codec, hash-chain, longest-valid-prefix recovery, the fsync-ordered durable
+  append/reopen/truncate barrier (the only new effectful primitive), the deterministic manifest/node
+  vocabulary with its receipt-binding digest, the typed destroy-ordering subgraph with its total executor
+  and ordering-invariant proofs, the retained-Model-B manifest receipt-commit, the `DecommissionRunner`
+  permit family (freeze + verifier + plan-binding gate), the permit→commit→receipt→graph run orchestration
+  with receipt-derived resume, and the exported/pinned verifier artifact + preflight (durable
+  export/read-back and drift-refusing reopen) are landed and fixture-proven. The decommission subsystem is
+  code-complete up to the live boundary; only the real destroy-effect wiring remains.
+- Sprint `5.18` later composes test restore/preparation and always-run cleanup; that later extension
+  is not a blocker for this Phase-4-owned cutover (Standard N).
 
 ## Documentation Requirements
 
@@ -4744,14 +5072,16 @@ an indefinite dual-write or fallback regime.
 - Keep the pending-removal ledger authoritative until both code removal and revision-scoped
   deployment qualification are recorded.
 
-## Sprint 4.51: Durability-Indexed Retained Authority Storage [🔄 Active]
+## Sprint 4.51: Durability-Indexed Retained Authority Storage [✅ Done]
 
-**Status**: Active — the byte-safe **type foundation (Increment A)** landed and is fully validated
+**Status**: Done — the byte-safe **type foundation (Increment A)** landed and is fully validated
 2026-07-14: the `StoreLifetime` phantom index, its typed namespace-partitioning constructors, the
 guard/object split resolution, and the compile + byte-erasure witness. The byte-compat-critical
 **production cutover (Increment B)** — the host-direct `'ClusterRetained` adapter, the gateway
 retype, the live-transaction cutover, and `OperationRecord` — is deferred to a dedicated pass
 (cluster-adjacent; end-to-end byte-compat is Standard-O).
+**Live-proof**: pending — host-PUT/daemon-GET byte compatibility and live AWS response-loss behavior
+remain non-blocking Standard-O evidence.
 **Deployment qualification**: pending
 **Implementation**: ✅ **Increment A landed** — `src/Prodbox/Lifecycle/StoreLifetime.hs` defines the
 DataKinds-promoted `StoreLifetime = ChartLifetime | ClusterRetained | CrossClusterDurable`.
@@ -4793,14 +5123,29 @@ exactly once, so the two transports cannot silently diverge. `test/unit/HostDire
 corrupt-encode semantics over the same in-memory conditional-put fake, plus a `'ClusterRetained` type
 witness. Evidence: `prodbox dev check` exit 0 (warning-clean, fourmolu, HLint, conformance); the new
 suite 11/11; existing `LifecycleAuthority*`/`AuthorityObjectCore` suites unaffected. The host-direct
-adapter is not yet a live-transaction writer — that is Stage D. 🔄 **Increment B remaining (Stage D,
-indivisible, cluster-adjacent, Standard-O live-validated)**: retype the gateway transport to
-`'ChartLifetime'`-only, cut `productionLeaseInterpreter` + the `AwsSesStack` transaction over to the
-host-direct `'ClusterRetained'` adapter, dissolve the ~70-minute lease bracket into windows (keeping
-the gateway forward reachable for the authority clock per the verified flaw correction), and add
-`OperationRecord` — its correctness (no double `CreateAccessKey` across a window interruption;
-cannot-observe never re-fires) is provable only by a live `prodbox test all --substrate aws`. Stage E
-reclassifies the `host-direct-object-store` escape entry to sanctioned-4.51.
+adapter is now a live-transaction writer. ✅ **Increment B Stage D transport half landed
+(2026-07-27)**: the gateway adapter is statically `'ChartLifetime`; retained lease, target-intent,
+and SMTP-projection operations use one transaction-resolved host-direct material value and a fresh
+short MinIO port-forward window per read/CAS. The gateway remains reachable only for authority
+clock observations. Unit 2,353/2,353 passes. ✅ **Stage D operation fold and Stage E classification
+landed (2026-07-27)**: the SES-specific durable `OperationRecord` intent/re-observation fold and
+crash table are complete. The `host-direct-object-store` escape is sanctioned only for retained
+bootstrap state; broader host access remains owned by Sprint `4.50`. Live
+no-double-`CreateAccessKey` and cannot-observe-never-re-fires behavior remains Standard-O evidence.
+✅ **Stage D operation-store foundation landed (2026-07-27)**:
+`Prodbox.Lifecycle.Authority.OperationStore.operationRecordCodec` gives the existing append-only
+`OperationRecord` a bounded, versioned, canonical-CBOR Model-B codec. Armed and completed records
+round-trip; over-bound, corrupt, unsupported, and non-canonical envelopes refuse before
+interpretation. The focused operation-journal suite passes 10/10.
+✅ **Stage D SES binding landed (2026-07-27)**: the production SMTP repair interpreter
+uses a generation-scoped retained `OperationRecord`: it confirms the armed intent before
+`CreateAccessKey`, confirms the completed result (including recoverable secret material) before
+publishing the SMTP projection, retains rather than compensates a durably completed key when
+projection CAS is interrupted, and replays that completed result before inventory cleanup on
+restart. The production adapter uses `operationRecordCodec` over the same transaction-resolved
+host-direct retained material. The focused SMTP interpreter suite passes 9/9 across arm,
+completion, and projection response-loss prefixes; serial unit passes 2,357/2,357 and
+`prodbox dev check` exits 0.
 **Discovery**: Increment B's transport cutover and `OperationRecord` are MORE coupled than first
 scoped — a host-direct adapter would hold a MinIO port-forward across the entire ~70-minute lease
 bracket, so the bracket removal must land WITH the transport cutover, not after it.
@@ -4871,7 +5216,7 @@ synchronous HTTP bracket.
    crash boundary instead of depending on a best-effort release response.
 4. Unit suites, warning-clean build, and `prodbox dev check` pass; no cluster is required.
 
-### Remaining Work
+### Closure
 
 - ✅ Increment A (the `StoreLifetime` phantom index, typed constructors, guard/object split
   resolution, 16-file consumer cascade, and the compile + byte-erasure witness) landed and validated
@@ -4886,15 +5231,17 @@ synchronous HTTP bracket.
   `hostDirectModelBCasAdapter` (`HostDirectAuthorityStore.hs`, `'ClusterRetained`) delegate to, plus
   the `HostDirectModelBAdapter` differential suite (11 cases over the same in-memory conditional-put
   fake + a `'ClusterRetained` type witness). dev check exit 0, warning-clean, existing suites
-  unaffected. The host-direct adapter is not yet a live-transaction writer.
-- 🔄 Increment B Stage D remaining (indivisible, cluster-adjacent, Standard-O live-validated): the
-  gateway-transport retype to `'ChartLifetime'`, the `productionLeaseInterpreter` + `AwsSesStack`
-  transaction cutover onto `hostDirectModelBCasAdapter`, the ~70-min lease-bracket dissolution into
-  windows (gateway forward kept reachable for the authority clock), `OperationRecord`, and the
-  operation-record crash/replay tables. End-to-end host-PUT/daemon-GET byte-compat and the
-  double-`CreateAccessKey`/cannot-observe-never-re-fires correctness are Standard-O — provable only by
-  a live `prodbox test all --substrate aws`. Stage E reclassifies the `host-direct-object-store`
-  escape entry (`EscapeRegistry.hs`) to sanctioned-4.51.
+  unaffected.
+- ✅ Increment B Stage D transport half landed (2026-07-27): gateway CAS is `'ChartLifetime` only;
+  `productionLeaseInterpreter` receives the retained adapter explicitly; `AwsSesStack` resolves
+  retained material once and uses short host-direct windows for lease, target-intent, and SMTP CAS.
+- ✅ The bounded versioned canonical-CBOR `OperationRecord` Model-B codec is landed (focused 10/10).
+- ✅ Increment B Stage D operation fold and Stage E classification landed (2026-07-27):
+  generation-scoped arm-before-create, completion-before-projection, pre-cleanup completed replay,
+  fail-closed binding/generation checks, and response-loss coverage. Focused SMTP 9/9, operation
+  journal 10/10, serial unit 2,357/2,357, and `prodbox dev check` exit 0. End-to-end
+  host-PUT/daemon-GET byte compatibility and live AWS response-loss behavior remain non-blocking
+  Standard-O evidence.
 - Sprint `5.20` derives restore/cleanup edges from the storage-lifetime facts Increment A already
   registers; Sprint `4.50` deletes the legacy transports (and Increment B's gateway retype is the
   retained-SES subset of that removal landing early).
@@ -4919,57 +5266,70 @@ synchronous HTTP bracket.
 - Link the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row for
   chart-lifetime custody of retained SES authority CAS objects to this sprint.
 
-## Sprint 4.52: Observed-Host Over-commit Rejection [⏸️ Blocked]
+## Sprint 4.52: Observed-Host Over-commit Rejection [✅ Done]
 
-**Status**: Blocked — own-surface Phase-4 reopen (Standard A/N); consumes the Sprint `1.68` proof.
+**Status**: Done (2026-07-27) on the code-owned surface; the live host-probe exercise remains the
+non-blocking Standard-O axis.
+**Implementation**: `src/Prodbox/Capacity/ObservedHost.hs` defines the hidden-constructor
+`ObservedHostRoot`, which observes cpu/memory plus the durable and ephemeral axes on **distinct
+devices** — the kubelet root filesystem vs. the retained-PV host path. `src/Prodbox/Capacity/Allocation.hs`
+gains `compileResourcePlanAgainstObserved`, which folds host coverage into the `AllocatedResourcePlan`
+proof across all **four** axes, using a single shared-device joint budget when the two storage devices
+coincide (fixing today's single `df /` fanned into both storage axes). `src/Prodbox/CLI/Rke2.hs`
+`ensureRke2ResourceGuardrails` compiles against the observed proof and fails with the offending
+dimension; it deletes `hostCapacityCoversPlan` and **both** saturating `clusterAllocatable` copies (in
+`Rke2.hs` and the duplicate in `src/Prodbox/Settings.hs`), retargeting to the proof's `planAllocatable`,
+and renders the guardrail manifests through the shared `Prodbox.Capacity.Render` (Sprint `3.28`).
 **Deployment qualification**: pending — changes the Standard-P resource-envelope guardrail surface.
-**Implementation**: planned revisions to `src/Prodbox/CLI/Rke2.hs` — `ensureRke2ResourceGuardrails`
-compiles the resource plan against an `ObservedHostRoot` (from `observeHostCapacity`), so
-`cluster ≤ host` and `Σ draw ≤ observed − reserved` are proven against physical facts; the guardrail
-manifests (`rootChartNamespaceGuardrailItemsFor`/`requireGuardrailNamespaceQuota`/`…LimitEnvelope`/
-`rootChartResourceQuotaManifest`) consume the proof's projections; and `hostCapacityCoversPlan` +
-`clusterAllocatable` are deleted (the duplicate `clusterAllocatable` in `src/Prodbox/Settings.hs` too)
-**Blocked by**: Sprint `1.68`
-**Independent Validation**: `rke2-reconcile.txt` goldens plus fake-`observeHostCapacity` traces prove
-that an observed host below the plan's allocatable **refuses at compile**, superseding the authored-only
-`4.41` `hostCapacityCoversPlan` boolean; no deployed cluster, AWS, or later phase.
-**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
-`documents/engineering/host_platform_doctrine.md`, `documents/engineering/resource_scaling_doctrine.md`
+**Independent Validation**: `prodbox-unit` passes 2,353/2,353, including independent-axis,
+offending-dimension, and shared-device joint-budget tables; `prodbox test integration cli` passes
+52/52, including built-frontend RKE2 reconcile and resource-guardrail coverage. The live
+`df`/`nproc` observed-host refusal is a non-blocking Standard-O proof. No deployed cluster, AWS, or
+later phase is required.
+**Docs to update**: `documents/engineering/host_platform_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
 
 ### Objective
 
-Close invariant (b) `cluster ≤ host` at reconcile against the **observed** host, not the authored
-declaration. Sprint `4.41` checks only that the authored `host_capacity` is not larger than the
-observed host; it never re-proves that the cluster's allocations fit the *observed* machine. Compiling
-the `AllocatedResourcePlan` against an `ObservedHostRoot` makes an observed-host over-commit unbuildable
-rather than a late boolean refusal.
+Close invariant (b) `cluster ≤ host` at reconcile against the **observed** machine as a compile refusal,
+not the current late boolean. Sprint `4.41` checks only that the authored `host_capacity` is not larger
+than the observed host; it never re-proves that the cluster's allocations fit the *observed* machine.
+Compiling the `AllocatedResourcePlan` against an `ObservedHostRoot` makes an observed-host over-commit
+unbuildable — the observed ring of the three-ring boundary in
+[resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md), closing the
+host/cluster (b) lemma of § 2B.
 
 ### Deliverables
 
-- `ensureRke2ResourceGuardrails` compiles against `ObservedHostRoot observed`; on `Left CompileError`
-  it fails with a per-dimension over-commit message.
-- Guardrail `ResourceQuota`/`LimitRange`/kubelet-reservation manifests render from the proof's
-  projections (the `rke2_reserved`/`eviction_floor` host reservations still read the raw fields).
-- Delete `hostCapacityCoversPlan` and both `clusterAllocatable` copies; retarget dumps to the proof's
-  `planAllocatable`/`planTotalDraw`.
+- `Capacity/ObservedHost.hs` `ObservedHostRoot` (hidden constructor) observes cpu/memory plus durable and
+  ephemeral on **distinct devices** (kubelet root fs vs. the retained-PV host path).
+- `compileResourcePlanAgainstObserved` folds host coverage into the proof across all four axes, with a
+  single shared-device joint budget when the two storage devices coincide.
+- `ensureRke2ResourceGuardrails` compiles against the observed proof and fails with the offending
+  dimension; delete `hostCapacityCoversPlan` and both saturating `clusterAllocatable` copies (`Rke2.hs`,
+  `Settings.hs`), retargeting to `planAllocatable`; render the guardrail manifests through the shared
+  `Capacity.Render`.
 
 ### Validation
 
-1. `rke2-reconcile.txt` (+ `-with-edge.txt`) goldens regenerated; observed-host over-commit fixtures
-   ⇒ compile refusal with the offending dimension.
-2. Unit/integration suites and `prodbox dev check` pass.
+1. `rke2-reconcile.txt` (+ `-with-edge.txt`) goldens regenerate byte-identical (checked subtraction
+   equals saturating when there is no underflow).
+2. A fake `PRODBOX_TEST_HOST_CAPACITY` below the plan ⇒ a compile refusal naming the offending dimension.
+3. Unit/integration suites and `prodbox dev check` pass.
 
 ### Remaining Work
 
-- Blocked until Sprint `1.68` provides the opaque proof and the `ObservedHostRoot` compile entrypoint.
+- None on the code-owned surface. The live `df`/`nproc` observed-host refusal is a non-blocking
+  Standard-O proof and deployment qualification remains pending.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/lifecycle_reconciliation_doctrine.md` - observed-host compile-time (b) closure.
-- `documents/engineering/host_platform_doctrine.md` - the observed-host over-commit rejection.
-- `documents/engineering/resource_scaling_doctrine.md` - (b) closed at reconcile against observed facts.
+- `documents/engineering/host_platform_doctrine.md` - the observed-host over-commit rejection
+  (dual-device durable vs. ephemeral).
+- `documents/engineering/resource_scaling_doctrine.md` - invariant (b) closed at reconcile against
+  observed facts via the § 2C observed ring.
 
 **Product docs to create/update:**
 
@@ -4977,8 +5337,10 @@ rather than a late boolean refusal.
 
 **Cross-references to add:**
 
-- Link the [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rows for
-  `hostCapacityCoversPlan`/`clusterAllocatable` to this sprint.
+- Enqueue `hostCapacityCoversPlan` and both `clusterAllocatable` copies (`Rke2.hs`, `Settings.hs`) in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint.
+- Link the observed-host proof to Sprint `1.68`'s `AllocatedResourcePlan`, Sprint `1.69`'s
+  `planAllocatable`, and Sprint `3.28`'s shared `Capacity.Render`.
 
 ## Related Documents
 

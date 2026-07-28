@@ -20,7 +20,7 @@ storage:
   # rooted under `.data/vault/...` per the storage-lifecycle doctrine. Preserved
   # across cluster teardown exactly like MinIO's PV.
   className: manual
-  size: 1Gi
+  size: ""
 
 seal:
   # Root clusters use Vault's default Shamir seal. Child clusters set mode to

@@ -245,6 +245,7 @@ commandPathOfRequest request =
           "bootstrap-broker"
             : case brokerCommand of
               BootstrapBrokerStart _ -> ["start"]
+        NativeControlPlane role _ -> [RuntimeRole.runtimeRoleName role, "start"]
         NativeCharts chartsCommand ->
           "charts"
             : case chartsCommand of

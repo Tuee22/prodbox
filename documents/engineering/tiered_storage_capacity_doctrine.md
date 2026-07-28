@@ -16,6 +16,15 @@ bucket) and the rule that clusters are cattle while storage is land. This doctri
 the orthogonal axis: **how much** may be stored, expressed as a closed, self-validating
 capacity DSL where over-quota is unrepresentable.
 
+A second orthogonal axis is owned by the sibling over-commit doctrine,
+[resource_scaling_doctrine.md](./resource_scaling_doctrine.md): the 3-axis `Budget` /
+`storageFitsWithin` here (the `CapacityBudget` realized in `dhall/capacity/Schema.dhall` and
+`src/Prodbox/Capacity/Storage.hs`) governs durable-**byte** totals *per store* — does the sum of
+declared store sizes fit the storage budget — while the 4-axis over-commit `ResourceVector`'s
+`durable_storage_mib` there governs a single **workload's** PVC admission size and its derived
+namespace `requests.storage` quota. Distinct axes, both live: the durable-byte ceiling of this
+doctrine is never interchanged with the per-workload PVC nesting proof.
+
 The capacity DSL is the prodbox specialization — a proven single-node instance — of the
 umbrella storage-capacity question amoebius records as open in
 `amoebius/notes.txt:3` ("no way to represent keeping more storage than you have room for;

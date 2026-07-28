@@ -17,6 +17,7 @@ module Prodbox.Lib.Storage
   , testCaseDataRoot
   , testDataRootRelative
   , testManualPvHostRootEnv
+  , workloadStorageSize
   )
 where
 
@@ -26,6 +27,13 @@ import Data.Aeson
   , (.=)
   )
 import Data.Text qualified as Text
+import Prodbox.Capacity.Config
+  ( ResourceEnvelope (..)
+  , ResourcePlan (..)
+  , ResourceVector (..)
+  , WorkloadResourceProfile (..)
+  , resources
+  )
 import Prodbox.Naming
   ( boundedResourceName
   )
@@ -49,7 +57,7 @@ testCaseDataRoot caseId = testDataRootRelative </> caseId
 data ChartStorageSpec = ChartStorageSpec
   { chartStorageSpecStatefulSetName :: String
   , chartStorageSpecPersistentVolumeClaimName :: String
-  , chartStorageSpecStorageSize :: String
+  , chartStorageSpecWorkloadProfileId :: Text.Text
   , chartStorageSpecOrdinal :: Int
   , chartStorageSpecClaimSuffix :: String
   }
@@ -74,29 +82,52 @@ data StaticEbsVolumeBinding = StaticEbsVolumeBinding
   }
   deriving (Eq, Show)
 
-storageBinding :: FilePath -> String -> String -> ChartStorageSpec -> ChartStorageBinding
-storageBinding manualPvRoot namespace releaseName spec =
-  ChartStorageBinding
-    { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec
-    , chartStorageBindingReleaseName = releaseName
-    , chartStorageBindingPersistentVolumeName =
-        retainedStatefulSetPersistentVolumeName
-          namespace
-          (chartStorageSpecStatefulSetName spec)
-          (chartStorageSpecOrdinal spec)
-    , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
-    , chartStorageBindingStorageSize = chartStorageSpecStorageSize spec
-    , -- Sprint 4.31: the unified `.data/<namespace>/<StatefulSet>/<ordinal>`
-      -- host-path scheme. No per-host machine-id prefix and no `<release>` /
-      -- `<claim>` segment — the PVC↔PV identity is carried by `claimRef`.
-      chartStorageBindingHostPath =
-        manualPvRoot
-          </> namespace
-          </> chartStorageSpecStatefulSetName spec
-          </> show (chartStorageSpecOrdinal spec)
-    , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
-    , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
-    }
+storageBinding
+  :: ResourcePlan
+  -> FilePath
+  -> String
+  -> String
+  -> ChartStorageSpec
+  -> Either String ChartStorageBinding
+storageBinding plan manualPvRoot namespace releaseName spec = do
+  storageSize <- workloadStorageSize plan (chartStorageSpecWorkloadProfileId spec)
+  pure
+    ChartStorageBinding
+      { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec
+      , chartStorageBindingReleaseName = releaseName
+      , chartStorageBindingPersistentVolumeName =
+          retainedStatefulSetPersistentVolumeName
+            namespace
+            (chartStorageSpecStatefulSetName spec)
+            (chartStorageSpecOrdinal spec)
+      , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
+      , chartStorageBindingStorageSize = storageSize
+      , -- Sprint 4.31: the unified `.data/<namespace>/<StatefulSet>/<ordinal>`
+        -- host-path scheme. No per-host machine-id prefix and no `<release>` /
+        -- `<claim>` segment — the PVC↔PV identity is carried by `claimRef`.
+        chartStorageBindingHostPath =
+          manualPvRoot
+            </> namespace
+            </> chartStorageSpecStatefulSetName spec
+            </> show (chartStorageSpecOrdinal spec)
+      , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
+      , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
+      }
+
+workloadStorageSize :: ResourcePlan -> Text.Text -> Either String String
+workloadStorageSize plan profileId =
+  case filter ((== profileId) . profile_id) (workload_profiles plan) of
+    [profile] ->
+      let sizeMib = durable_storage_mib (limit (resources profile))
+       in if sizeMib > 0
+            then Right (renderMib sizeMib)
+            else Left ("workload profile `" ++ Text.unpack profileId ++ "` has no durable PVC allocation")
+    [] -> Left ("resource plan is missing workload profile `" ++ Text.unpack profileId ++ "`")
+    _ -> Left ("resource plan contains duplicate workload profile `" ++ Text.unpack profileId ++ "`")
+ where
+  renderMib sizeMib
+    | sizeMib `mod` 1024 == 0 = show (sizeMib `div` 1024) ++ "Gi"
+    | otherwise = show sizeMib ++ "Mi"
 
 retainedStatefulSetPersistentVolumeName :: String -> String -> Int -> String
 retainedStatefulSetPersistentVolumeName namespace statefulSetName ordinal =

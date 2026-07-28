@@ -128,9 +128,10 @@ registeredLegacyEscapeSites =
       , escapeSiteCategory = HostDirectObjectStore
       , escapeSiteFile = "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
       , escapeSiteDescription =
-          "hostDirectGet/Put/DeletePulumiObject let the host CLI read and write "
-            ++ "the Model-B object store directly instead of through the "
-            ++ "Lifecycle Authority."
+          "Sprint 4.51 sanctions this seam only for bootstrap access to "
+            ++ "durability-indexed retained Model-B state before the Lifecycle "
+            ++ "Authority Pod exists; Sprint 4.50 removes every broader host "
+            ++ "CLI object-store escape after dedicated-service admission."
       , escapeSiteRemovalOwner = "4.50"
       }
   , LegacyEscapeSite

@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws bootstrap-broker charts cluster commands config dev dns edge gateway help host nuke test users vault workload"
+    words="aws bootstrap-broker lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands config dev dns edge gateway help host nuke test users vault workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -34,6 +34,21 @@ _prodbox()
         words="reconcile destroy migrate-backend"
         ;;
       "bootstrap-broker")
+        words="start"
+        ;;
+      "lifecycle-authority")
+        words="start"
+        ;;
+      "provider-worker")
+        words="start"
+        ;;
+      "authority-backup")
+        words="start"
+        ;;
+      "tls-retention")
+        words="start"
+        ;;
+      "target-secret-agent")
         words="start"
         ;;
       "charts")

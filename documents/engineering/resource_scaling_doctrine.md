@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: the scaling prose in [envoy_gateway_edge_doctrine.md § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine) (Envoy / application / Keycloak / Redis "may scale horizontally" statements) — that section now points here for the typed capacity, policy, and placement model; it retains only per-component availability notes.
-**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md), [documents/engineering/cluster_federation_doctrine.md](./cluster_federation_doctrine.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/dependency_management.md](./dependency_management.md), [documents/engineering/distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [documents/engineering/haskell_code_guide.md](./haskell_code_guide.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), [documents/engineering/unit_testing_policy.md](./unit_testing_policy.md)
+**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md), [documents/engineering/cluster_federation_doctrine.md](./cluster_federation_doctrine.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/code_quality.md](./code_quality.md), [documents/engineering/config_doctrine.md](./config_doctrine.md), [documents/engineering/dependency_management.md](./dependency_management.md), [documents/engineering/distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [documents/engineering/haskell_code_guide.md](./haskell_code_guide.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md), [documents/engineering/storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), [documents/engineering/unit_testing_policy.md](./unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox sizes, caps, scales, and places workloads
@@ -115,26 +115,52 @@ value that means "use whatever the host has." Every consumer declares both a **r
 `Request <= Limit` is a constructor invariant, not a convention. A missing limit, a zero limit, or a
 container without an authored envelope is not representable in the validated type. This guarantees
 that Kubernetes receives a finite admission/containment boundary; it does not guarantee that the
-program will remain below that boundary without a runtime design and observation contract. The old
-aggregate
-`CapacityBudget {cpu,memory,storage}` remains only as the compatibility core that the strengthened
-schema projects from; the resource-governor surface uses closed, unit-specific newtypes so cpu,
-memory, ephemeral storage, and durable storage cannot be accidentally added together.
+program will remain below that boundary without a runtime design and observation contract. The 4-axis
+`ResourceVector` (below) is the admission/containment surface; the separate 3-axis aggregate
+`Budget {cpu,memory,storage}` (`CapacityBudget`) is a **distinct, live** concern owned by
+[tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) — the durable-byte totals
+in `src/Prodbox/Capacity/Storage.hs` and the placement math in `src/Prodbox/Scaling/Autoscaler.hs` — and
+the two are never interchanged. The over-commit guarantee comes from the 4-axis nesting *proof*, not
+from per-axis newtypes (the unwired `MilliCpu`/`MebiBytes` are retired).
+
+### Derived workload contract
+
+A `ResourceEnvelope` is an output, never an independent configuration input. The pure derivation
+owned by `Prodbox.Capacity.Derivation` combines the compiled `RuntimeMemoryPlan`, a
+`ServiceCapacityPlan` plus a calibrated service-cost basis, bounded ephemeral scratch, the
+durable-storage plan used by the real PVC, replicas, Kubernetes scheduling-unit composition,
+concurrency, surge, and `WorkloadQoS`.
+
+The result is an opaque `DerivedResourceEnvelope` carrying both the projected envelope and its input
+identity. `ValidatedSettings` can contain only that proof; raw Dhall cannot provide
+`resources.request` or `resources.limit`.
+
+Pure derivation does not pretend that CPU service cost can be inferred from source code. A healthy,
+provenance-bound measurement supplies the empirical coefficient; exact `Natural`/ratio arithmetic
+then derives CPU from admitted demand, service cost, workers, and headroom. Measurement is an input
+certification boundary, not a second envelope-authoring surface. Memory and storage remain structural
+projections. Implementation status belongs to
+[Sprint 1.71](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md#sprint-171-derived-workload-resource-contracts-active).
 
 ```haskell
 -- Raw decode surface in src/Prodbox/Capacity/Config.hs (stays FromDhall/ToDhall).
-newtype MilliCpu = MilliCpu Natural
-newtype MebiBytes = MebiBytes Natural
-
 data ResourceVector = ResourceVector
   { milli_cpu :: Natural, memory_mib :: Natural
   , ephemeral_storage_mib :: Natural, durable_storage_mib :: Natural }
 
 data ResourceEnvelope = ResourceEnvelope { request :: ResourceVector, limit :: ResourceVector }
 
--- No authored namespace_quotas: the namespace ResourceQuota is DERIVED from the workloads'
--- draws. Each WorkloadResourceProfile carries `concurrency` (Steady | ExclusiveWindow),
--- which models co-location/burst structurally instead of a hand-synced fold.
+-- Raw config carries derivation inputs, not an envelope.
+data WorkloadDemandSpec = WorkloadDemandSpec
+  { runtimeMemoryProfileId :: Text
+  , serviceDemand :: ServiceDemandSpec
+  , ephemeralScratch :: BoundedScratchSpec
+  , durableStorage :: DurableStorageSpec
+  , qos :: WorkloadQoS
+  }
+
+-- No authored namespace_quotas: namespace admission is derived from workload
+-- contracts and Kubernetes scheduling-unit composition.
 data ResourcePlan = ResourcePlan
   { host_capacity :: ResourceVector
   , rke2_reserved :: ResourceVector
@@ -153,15 +179,18 @@ Dhall mirrors the raw records with smart-constructor style plus `assert`-carried
 `dhall/capacity/Schema.dhall`. Haskell then decodes the raw `ResourcePlan`. Sprint `1.68` landed
 `compileResourcePlan` as the sole builder of the opaque `AllocatedResourcePlan` and a `dev check`
 conformance gate (`runConformanceTier`) that fails the build unless the committed `defaultResourcePlan`
-compiles to a proof. The config boundary
-(`Settings.validateLocalConfig` → `validateCapacitySection` → `validateResourcePlan`) rejects an
-over-committed **authored** plan at decode through the same non-saturating `resourceVectorSubtractChecked`;
-the slim `validateRawResourcePlanShape` is the decode-time shape slice that `compileResourcePlan` reuses.
-Threading the proof into the write-side renderers — so they consume only the proof and namespace
-`ResourceQuota`s become derived from workload draws — is Sprints `3.27`/`4.52`. The budget draw uses a
-**non-saturating** `resourceVectorSubtractChecked`: an over-reservation or an over-committed workload set
-underflows and returns `Left`, so it can never silently clamp to zero — an over-committed plan is simply
-not a constructible value. This realizes what the enforcement rings below describe.
+compiles to a proof. Sprint `1.69` makes the proof the **decode gate**: `SomeAllocatedPlan` becomes a
+required field of `ValidatedSettings`, built in `validateConfig` over the **decoded in-force** plan, so
+an over-committed *authored* config — not merely the compiled-in default — has no `ValidatedSettings`
+and therefore no renderer input. The runtime-`Either` `validateResourcePlan` inequality body is retired
+in favor of the proof; the slim `validateRawResourcePlanShape` survives as the decode-time shape slice
+`compileResourcePlan` reuses. The write-side renderers then consume only the proof — the shared render
+module (Sprint `3.28`), namespace `ResourceQuota`s derived from workload draws (Sprint `3.27`), and the
+observed-host recompile at reconcile (Sprint `4.52`). The budget draw uses a **non-saturating**
+`resourceVectorSubtractChecked`: an over-reservation or an over-committed workload set underflows and
+returns `Left`, so it can never silently clamp to zero — an over-committed plan is simply not a
+constructible value. This realizes what the enforcement rings below describe; sprint status lives in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 ## 2B. Host, RKE2, Cluster, Namespace, and Pod Lemmas
 
@@ -171,9 +200,9 @@ after subtracting the reservations that protect the host and Kubernetes control 
 | Rule | Statement | The illegal state it forbids |
 |------|-----------|------------------------------|
 | **a** | `rke2.reserved + eviction.floor <= host.physical` | An RKE2 cluster reserving more cpu/ram/storage than the host has. |
-| **b** | `cluster.allocatable = host.physical - rke2.reserved - eviction.floor` via a **non-saturating** checked subtraction; re-proved at reconcile against the **observed** host | Pods scheduled against the host's survival margin, or an authored host figure that exceeds the physical machine. |
-| **c** | `sum(workload.draws) <= cluster.allocatable`, where each namespace `ResourceQuota` is the **derived** sum of its workloads' draws (not authored) | Namespace quotas that promise more than the cluster can admit, or a quota that disagrees with its workloads. |
-| **d** | Trivial by construction: a namespace's quota **is** `sum(workload.draws)` for that namespace (`Steady` members sum; an `ExclusiveWindow` group draws its peak) | Pods that need more than their namespace has — the quota can no longer be authored below the draw. |
+| **b** | `cluster.allocatable = host.physical - rke2.reserved - eviction.floor` via a **non-saturating** checked subtraction; re-proved at reconcile against the **observed** host — cpu/memory plus durable and ephemeral storage observed on distinct devices (a single joint budget when they share one filesystem) | Pods scheduled against the host's survival margin, or an authored host figure that exceeds the physical machine or its disks. |
+| **c** | `sum(derived scheduler requests) <= cluster.allocatable`; every request is projected from runtime-memory, service-demand/calibration, scratch, durable-storage, topology, and QoS inputs. Limits remain finite per-container containment maxima but are not falsely treated as scheduler reservations. | A fit proof that blesses arbitrary requests disconnected from workload bounds, or that conflates Kubernetes containment limits with reserved host capacity. |
+| **d** | Namespace request and limit quota axes are separate derived projections of Kubernetes scheduling units: regular containers sum, init containers peak, replicas/surge scale, and exclusive windows contribute their peak | Pods or hook Jobs that need more than their namespace admits, double-counted init containers, or hand-authored quota drift. |
 | **e** | `forall container. request <= limit && limit > 0`; a `GuaranteedEnvelope` witness additionally requires `request == limit` on every axis | Undefined or uncapped declared container envelopes, including Kubernetes `BestEffort` pods, and a workload silently authored `Burstable` where Guaranteed QoS is mandated. |
 
 The subtraction on this budget path is `resourceVectorSubtractChecked` — non-saturating, so an
@@ -191,7 +220,10 @@ The rendered Kubernetes shape follows directly from these values:
   namespace's workload draws rather than authored (Sprint `3.27`)
 - one non-empty `resources.requests` and `resources.limits` stanza for every container and init
   container in every repo-owned chart
-- explicit PVC sizes and retained PV capacities drawn from the durable-storage budget
+- explicit PVC sizes **injected from the workload's `durable_storage_mib`** — the *one* durable source
+  that simultaneously sizes the PVC, the namespace `requests.storage` quota, and the fit proof, so a
+  chart-local PVC-size literal can no longer drift from the quota (Sprint `3.29`). Durable storage is
+  non-burstable (`request == limit`) and may be `0` for a stateless workload (no PVC).
 
 No chart template may synthesize these values locally. Chart values consume a `ResourceProfileId`
 that resolves through the Haskell/Dhall resource registry. A chart whose profile is absent fails to
@@ -200,29 +232,22 @@ render, and `prodbox dev lint chart` rejects any repo-owned workload container w
 
 ## 2C. Enforcement Rings
 
-The same resource facts are enforced in three rings:
+The same resource facts are enforced in three rings. They check the **same inequalities** through the
+**same algebra** (DRY), but they do not offer the same *strength* of guarantee — and this doctrine is
+deliberate about which ring actually makes over-commitment unrepresentable:
 
-1. **Static Dhall ring**: generated `dhall/capacity/Schema.dhall` exports the constructors, sums,
-   `fitsWithin` lemmas, and self-checking `assert`s. Illegal resource declarations fail at
-   `dhall type`.
-2. **Pure Haskell ring**: `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (constructor
-   hidden) only when host reservations, workload draws, and durable claims all fit under a
-   non-saturating budget — a sibling of the opaque `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan`
-   (§2D). The write-side renderers accept the proof, not raw settings, so cluster config can only be
-   emitted from a witnessed plan, and a `dev check` gate fails the build if `defaultResourcePlan`
-   over-commits.
-3. **Runtime cgroup/Kubernetes ring**: `prodbox cluster reconcile` re-compiles the plan against an
-   `ObservedHostRoot` (from `observeHostCapacity`), so invariant (b) `cluster <= host` is closed against
-   the **observed** machine — an observed host that cannot cover the plan's allocatable refuses at
-   compile, not through a late boolean. It then writes RKE2/kubelet guardrails, reconciles the derived
-   namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is
-   `BestEffort`; prodbox does not "best effort" its way into bring-up.
+| Ring | Mechanism | Truly unrepresentable? |
+|------|-----------|------------------------|
+| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously); the config *generator* applies an `assertPlanValid` shim to the emitted plan. | **No.** Dhall has no refinement/dependent types, so an over-committed plan cannot be made *ill-typed*; `assert` only fails a *specific evaluated file*, and `prodbox.dhall` is binary-generated (no human Dhall authoring surface). Value: a cross-check that a regressed generator cannot emit an over-committed file. |
+| **2 — Pure Haskell decode gate (the guarantee)** | `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (hidden constructor) only when host reservations, workload draws, and durable claims all fit under a non-saturating budget — a sibling of `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan` (§2D). The proof is a **required field of `ValidatedSettings`**, built in `validateConfig` over the **decoded in-force** plan; the write-side renderers accept the proof, not raw settings. | **Yes.** No proof ⇒ no `ValidatedSettings` ⇒ no renderer input, so an over-committed *decoded* config has no representation any command can consume. This — not Dhall — is where "unrepresentable" is delivered. A `dev check` gate additionally fails the build if `defaultResourcePlan` over-commits. |
+| **3 — Runtime cgroup/Kubernetes (observed host)** | `prodbox cluster reconcile` re-compiles the plan against an `ObservedHostRoot` (`compileResourcePlanAgainstObserved`), closing invariant (b) `cluster <= host` against the **observed** machine across all four axes — durable vs ephemeral observed on distinct devices, with a single shared-device joint budget when they coincide — then writes RKE2/kubelet guardrails, reconciles the derived namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is `BestEffort`. | **No — inherently runtime.** The host is discovered by IO; the strongest achievable is folding the observation into the same opaque proof so no guardrail writes without the observed proof (superseding the late `hostCapacityCoversPlan` boolean). |
 
-This three-ring model is intentionally redundant. Dhall makes illegal authored states impossible,
-Haskell makes illegal generated states impossible, and Kubernetes/systemd contain runtime runaway
-behavior within the offending pod or service instead of allowing it to consume the host. A cgroup
-OOM kill is therefore evidence that containment worked and the workload's runtime contract failed;
-it is never evidence that the authored limit proved sufficient.
+This three-ring model is intentionally redundant, but honest about its ceiling: the **Haskell decode
+gate** makes an over-committed *decoded* plan unrepresentable, Dhall is a generator cross-check (not a
+refinement-type guarantee), and Kubernetes/systemd *contain* runtime runaway within the offending pod
+or service instead of letting it consume the host. A cgroup OOM kill is therefore evidence that
+containment worked and the workload's runtime contract failed; it is never evidence that the authored
+limit proved sufficient.
 
 A cgroup can correctly contain repeated OOMs while a replacement process later appears healthy.
 Likewise, a process can remain within its memory ceiling while a CPU cap prevents it from meeting
@@ -418,8 +443,8 @@ emitter transitions.
 
 ## 2F. Measured Resource Profiles
 
-Authored Guaranteed-QoS envelopes are certified against **measured demand**, not trusted on
-authorship. The committed measurement artifact is a `MeasuredResourceProfile`, one per profile id,
+Empirical CPU/runtime coefficients used by the pure workload derivation are certified against
+**measured demand**, not trusted on authorship. The committed calibration artifact is one per profile id,
 living at `dhall/capacity/measured/<profile>.dhall`. Every field is a `Natural` (ratios are
 parts-per-million), so certification stays inside the same all-Natural comparison algebra as §2:
 
@@ -430,9 +455,10 @@ parts-per-million), so certification stays inside the same all-Natural compariso
 - backend latency: `object_store_op_p99_millis`
 
 **Certification rules.** A pure reader/validator wired into `prodbox dev check` fails the canonical
-quality gate when, for a workload whose profile id has a committed profile:
+quality gate when a calibration is stale, unhealthy, provenance-mismatched, or would derive an
+insufficient envelope:
 
-- the authored CPU value is below measured `cpu_p99_milli` × 4/3 headroom;
+- the derived CPU value is below measured `cpu_p99_milli` × 4/3 headroom;
 - `throttled_periods_ppm` exceeds 20000 while any CPU cap is authored; or
 - the measured memory high-water × 4/3 exceeds the authored memory limit.
 
@@ -440,9 +466,9 @@ quality gate when, for a workload whose profile id has a committed profile:
 `recorded_at` is older than 30 days, fails certification. The remedy the failure names is
 re-recording the profile from a fresh qualifying run — never hand-editing the committed artifact.
 
-**One-sided comparisons.** Every comparison is one-sided against authored generosity: a measured
-improvement (lower p99, less throttle, a lower high-water mark) never fails the check. Shrinking
-an envelope toward better measurements is an authored decision, not an automatic obligation.
+**One-sided comparisons.** A measured improvement never fails certification. It updates a calibrated
+input; the pure derivation, rather than a person editing an envelope, determines whether the output
+changes.
 
 **Recorder gate.** A profile artifact is written only by the recorder, and only from a healthy
 run: the run-wide absorbing failure fold of §2D–§2E clean, a steady window of at least thirty
@@ -617,16 +643,21 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
   decompositions and remain healthy under external observation; every execution lane has a bounded
   queue, one absolute deadline, and measured headroom; illegal elasticity is unrepresentable by the substrate-indexed
   `ScalingPolicy`; and every scaling or capacity-observation gate is `Unreachable -> refuse`.
-- **Linked dependents** (the modules Sprints 1.51 / 1.55 / 1.68 / 3.22 / 3.27 / 4.34 / 4.36 / 4.41 /
-  4.52 / 7.27 implement this in):
+- **Linked dependents** (the modules Sprints 1.51 / 1.55 / 1.68 / 1.69 / 1.70 / 3.22 / 3.27 / 3.28 /
+  3.29 / 4.34 / 4.36 / 4.41 / 4.52 / 7.27 implement this in):
   `dhall/capacity/Schema.dhall` and `src/Prodbox/Capacity/Config.hs` (the shared `Budget` /
-  `fitsWithin` / `storageFitsWithin` algebra, the raw `ResourcePlan` decode surface, and the
+  `fitsWithin` algebra, the raw `ResourcePlan` decode surface, and the
   non-saturating `resourceVectorSubtractChecked`),
   `src/Prodbox/Capacity/Allocation.hs` (the opaque `AllocatedResourcePlan` proof, `compileResourcePlan`,
-  the hidden-constructor `HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload`, and the
-  `GuaranteedEnvelope` witness),
-  `src/Prodbox/Settings.hs` (`DeploymentSection` scaling fields plus the binary-sibling `capacity`
-  block), `src/Prodbox/Substrate.hs`
+  the hidden-constructor `HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload`, the
+  `GuaranteedEnvelope`/`WorkloadQoS` witness, and the observed-host `compileResourcePlanAgainstObserved`),
+  `src/Prodbox/Capacity/Render.hs` (the single ResourceQuota, LimitRange, quantity, and runtime-vector
+  projection owner),
+  `src/Prodbox/Capacity/Render.hs` (the one shared `ResourceQuota`/`LimitRange`/runtime-vector renderer),
+  `src/Prodbox/Capacity/Placement.hs` (the substrate `renderedNamespace` resolver, `planNamespaceQuota`,
+  and `WorkloadConcurrency`), `src/Prodbox/Capacity/ObservedHost.hs` (the dual-device observed-host root),
+  `src/Prodbox/Settings.hs` (`DeploymentSection` scaling fields, the binary-sibling `capacity`
+  block, and the `validatedAllocatedPlan` decode-gate proof carried on `ValidatedSettings`), `src/Prodbox/Substrate.hs`
   (`ScalingPolicy`, `ScalingPolicyBySubstrate`, and substrate validation),
   `src/Prodbox/Capacity/Storage.hs` (storage-capacity drawdown, ML storage totals, and
   region-quota preflight refusal fold),

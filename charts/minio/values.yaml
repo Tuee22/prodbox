@@ -22,7 +22,7 @@ storage:
   # per the storage-lifecycle doctrine. On the AWS substrate this is overridden
   # to the EKS `gp2` dynamic class via --set.
   className: manual
-  size: 20Gi
+  size: ""
 
 resources:
   requests:

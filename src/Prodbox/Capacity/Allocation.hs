@@ -75,30 +75,36 @@ module Prodbox.Capacity.Allocation
   , SomeAllocatedPlan (..)
   , allocatedPlanClusterBudget
   , allocatedPlanWorkloads
+  , allocatedPlanSource
+  , someAllocatedPlanSource
+  , planAllocatable
+  , planTotalDraw
+  , planWorkloadDraws
   , CompileError (..)
   , renderCompileError
   , compileResourcePlan
+  , compileResourcePlanUncertified
+  , compileResourcePlanAgainstObserved
   )
 where
 
-import Control.Monad (foldM, foldM_, forM_, unless)
+import Control.Monad (foldM, forM_)
 import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.Config
-  ( NamespaceQuota (..)
-  , ResourceEnvelope (..)
+  ( ResourceEnvelope (..)
   , ResourcePlan (..)
   , ResourceVector (..)
+  , WorkloadQoS (..)
   , WorkloadResourceProfile (..)
   , plusResourceVector
-  , resourceVectorFitsWithin
   , resourceVectorScale
   , resourceVectorSubtractChecked
+  , resources
   , validateRawResourcePlanShape
   )
-import Prodbox.Capacity.Config qualified as Config
 import Prodbox.Capacity.MeasuredProfile
   ( MeasuredProfileDefect
   , MeasuredResourceProfile
@@ -106,6 +112,12 @@ import Prodbox.Capacity.MeasuredProfile
   , renderMeasuredProfileDefect
   )
 import Prodbox.Capacity.MeasuredProfile qualified as Measured
+import Prodbox.Capacity.ObservedHost
+  ( ObservedHostRoot
+  , observedHostVector
+  , observedStorageDevicesCoincide
+  )
+import Prodbox.Capacity.Placement qualified as Placement
 
 -- | The overall certification of a compiled plan, used as a type-level phantom on
 -- 'AllocatedResourcePlan'. There is no defaultable @Uncertified@ value at the
@@ -291,7 +303,8 @@ certifyWorkload currentDigest now plan profiles workload =
 -- over-committed, indexed by its overall certification. Hidden constructor:
 -- built only by 'compileResourcePlan'.
 data AllocatedResourcePlan (c :: Certification) = AllocatedResourcePlan
-  { allocatedClusterBudget :: ClusterBudget
+  { allocatedSourcePlan :: ResourcePlan
+  , allocatedClusterBudget :: ClusterBudget
   , allocatedWorkloads :: [CertifiedWorkload]
   }
   deriving (Eq, Show)
@@ -304,6 +317,14 @@ allocatedPlanClusterBudget = allocatedClusterBudget
 allocatedPlanWorkloads :: AllocatedResourcePlan c -> [CertifiedWorkload]
 allocatedPlanWorkloads = allocatedWorkloads
 
+-- | The decoded source record admitted by this proof. Downstream renderers use
+-- this projection rather than reaching back into the raw capacity config.
+allocatedPlanSource :: AllocatedResourcePlan c -> ResourcePlan
+allocatedPlanSource = allocatedSourcePlan
+
+someAllocatedPlanSource :: SomeAllocatedPlan -> ResourcePlan
+someAllocatedPlanSource (SomeAllocatedPlan _ plan) = allocatedSourcePlan plan
+
 -- | An 'AllocatedResourcePlan' whose certification index has been existentially
 -- packed with its runtime singleton. The tag is 'Certified' iff every workload is.
 data SomeAllocatedPlan where
@@ -312,12 +333,31 @@ data SomeAllocatedPlan where
 instance Eq SomeAllocatedPlan where
   SomeAllocatedPlan tagLeft planLeft == SomeAllocatedPlan tagRight planRight =
     someCertification tagLeft == someCertification tagRight
+      && allocatedSourcePlan planLeft == allocatedSourcePlan planRight
       && allocatedWorkloads planLeft == allocatedWorkloads planRight
       && allocatedClusterBudget planLeft == allocatedClusterBudget planRight
 
 instance Show SomeAllocatedPlan where
   show (SomeAllocatedPlan tag plan) =
     "SomeAllocatedPlan " ++ show (someCertification tag) ++ " " ++ show plan
+
+-- | Cluster allocatable capacity proven by the admitted plan.
+planAllocatable :: SomeAllocatedPlan -> ResourceVector
+planAllocatable (SomeAllocatedPlan _ plan) =
+  clusterBudgetAllocatable (allocatedClusterBudget plan)
+
+-- | Total concurrent namespace draw admitted by the proof.
+planTotalDraw :: SomeAllocatedPlan -> ResourceVector
+planTotalDraw (SomeAllocatedPlan _ plan) =
+  clusterBudgetDrawn (allocatedClusterBudget plan)
+
+-- | Per-workload draws, in authored workload order.
+planWorkloadDraws :: SomeAllocatedPlan -> [(Text, ResourceVector)]
+planWorkloadDraws (SomeAllocatedPlan _ plan) =
+  [ (workloadAllocationProfileId allocation, workloadAllocationDraw allocation)
+  | certified <- allocatedWorkloads plan
+  , let allocation = certifiedWorkloadAllocation certified
+  ]
 
 -- | Every way a plan can fail to compile into a proof.
 data CompileError
@@ -328,17 +368,17 @@ data CompileError
     HostCapacityNotPositive ResourceVector
   | -- | @rke2_reserved + eviction_floor@ exceeds host capacity (host, reservation).
     ClusterOverReserved ResourceVector ResourceVector
-  | -- | A namespace quota exceeds cluster allocatable (namespace).
-    NamespaceQuotaExceedsAllocatable Text
-  | -- | The concurrent namespace quotas over-draw the allocatable
+  | -- | The concurrent workload draw over-draws the allocatable
     -- (remaining, offending draw).
     ClusterOverCommitted ResourceVector ResourceVector
-  | -- | A namespace's workload draw exceeds its quota (namespace).
-    WorkloadDrawExceedsQuota Text
   | -- | A committed measured profile fails certification (profile id, defects).
     WorkloadCertificationFailed Text [MeasuredProfileDefect]
   | -- | An envelope required to be Guaranteed-QoS is Burstable (request, limit).
     EnvelopeNotGuaranteed ResourceVector ResourceVector
+  | -- | A standing control-plane workload was not tagged Guaranteed.
+    ControlPlaneQoSNotGuaranteed Text
+  | ObservedHostDimensionInsufficient Text Natural Natural
+  | ObservedHostSharedStorageInsufficient Natural Natural
   deriving (Eq, Show)
 
 -- | Render a compile error for the @dev check@ over-commit gate and diagnostics.
@@ -353,19 +393,11 @@ renderCompileError err = case err of
       ++ renderVector reservation
       ++ " exceeds host_capacity "
       ++ renderVector host
-  NamespaceQuotaExceedsAllocatable namespace ->
-    "namespace quota `"
-      ++ Text.unpack namespace
-      ++ "` exceeds cluster allocatable capacity"
   ClusterOverCommitted remaining draw ->
-    "concurrent namespace quotas over-commit the cluster: draw "
+    "concurrent workloads over-commit the cluster: draw "
       ++ renderVector draw
       ++ " exceeds remaining allocatable "
       ++ renderVector remaining
-  WorkloadDrawExceedsQuota namespace ->
-    "workload draw for namespace `"
-      ++ Text.unpack namespace
-      ++ "` exceeds that namespace quota"
   WorkloadCertificationFailed profileId defects ->
     "workload `"
       ++ Text.unpack profileId
@@ -376,6 +408,21 @@ renderCompileError err = case err of
       ++ renderVector requested
       ++ " limit "
       ++ renderVector limited
+  ControlPlaneQoSNotGuaranteed profileId ->
+    "control-plane workload `" ++ Text.unpack profileId ++ "` must be tagged Guaranteed"
+  ObservedHostDimensionInsufficient dimension observed required ->
+    "observed host "
+      ++ Text.unpack dimension
+      ++ " capacity "
+      ++ show observed
+      ++ " is below required "
+      ++ show required
+  ObservedHostSharedStorageInsufficient observed required ->
+    "observed host shared storage capacity "
+      ++ show observed
+      ++ "Mi is below the joint ephemeral+durable requirement "
+      ++ show required
+      ++ "Mi"
  where
   renderVector vector =
     "{cpu="
@@ -397,10 +444,8 @@ renderCompileError err = case err of
 --
 -- 1. decode-time shape ('validateRawResourcePlanShape');
 -- 2. reserve allocatable ≤ host_capacity ('reserveCluster');
--- 3. each namespace quota ≤ allocatable;
--- 4. Σ concurrent-namespace quota ≤ allocatable (threaded 'allocate');
--- 5. each namespace's workload draw ≤ its quota;
--- 6. per-workload measured certification ('certifyWorkload').
+-- 3. Σ concurrent workload draw ≤ allocatable (threaded 'allocate');
+-- 4. per-workload measured certification ('certifyWorkload').
 compileResourcePlan
   :: [MeasuredResourceProfile]
   -- ^ committed measured profiles
@@ -417,29 +462,16 @@ compileResourcePlan profiles digestFor now plan = do
   host <- mkHostCapacity (host_capacity plan)
   let reservation = rke2_reserved plan `plusResourceVector` eviction_floor plan
   reserved <- reserveCluster host reservation
-  let allocatable = clusterBudgetAllocatable reserved
-  -- (3) each namespace quota ≤ allocatable
-  forM_ (namespace_quotas plan) $ \namespaceQuota ->
-    unless
-      (quota namespaceQuota `resourceVectorFitsWithin` allocatable)
-      (Left (NamespaceQuotaExceedsAllocatable (namespace_name namespaceQuota)))
-  -- (4) Σ concurrent-namespace quota ≤ allocatable, threaded so it holds by
+  -- (3) Σ concurrent workload draw ≤ allocatable, threaded so it holds by
   -- construction.
   threaded <-
     foldM
       allocate
       reserved
-      (map quota (Config.concurrentNamespaceQuotas plan))
-  -- (5) each namespace's workload draw ≤ its quota.
-  forM_ (namespace_quotas plan) $ \namespaceQuota -> do
-    let namespaceName = namespace_name namespaceQuota
-        draws =
-          [ workloadProfileDraw workload
-          | workload <- workload_profiles plan
-          , profile_namespace workload == namespaceName
-          ]
-    foldM_ (namespaceQuotaBudget (quota namespaceQuota) namespaceName) (quota namespaceQuota) draws
-  -- (6) per-workload certification + allocation.
+      (Placement.concurrentPlanDraws plan)
+  -- (4) prove the standing control-plane envelopes are Guaranteed-QoS.
+  forM_ (workload_profiles plan) validateGuaranteedQoS
+  -- (5) per-workload certification + allocation.
   certifiedWorkloads <-
     traverse
       ( \workload -> do
@@ -459,19 +491,76 @@ compileResourcePlan profiles digestFor now plan = do
       (workload_profiles plan)
   let compiled =
         AllocatedResourcePlan
-          { allocatedClusterBudget = threaded
+          { allocatedSourcePlan = plan
+          , allocatedClusterBudget = threaded
           , allocatedWorkloads = certifiedWorkloads
           }
   pure (packCertification certifiedWorkloads compiled)
 
--- | Draw a namespace's workload against a budget seeded from its quota, mapping an
--- over-draw to 'WorkloadDrawExceedsQuota' for that namespace.
-namespaceQuotaBudget
-  :: ResourceVector -> Text -> ResourceVector -> ResourceVector -> Either CompileError ResourceVector
-namespaceQuotaBudget _quota namespaceName remaining draw =
-  case resourceVectorSubtractChecked remaining draw of
-    Nothing -> Left (WorkloadDrawExceedsQuota namespaceName)
-    Just remaining' -> Right remaining'
+-- | Compile the decoded resource plan at the settings boundary without a clock
+-- or measured-profile dependency. Every workload is deliberately tagged
+-- 'UncertifiedUntilFirstProfile'; the host/quota/workload nesting proof is
+-- otherwise identical to 'compileResourcePlan'.
+compileResourcePlanUncertified :: ResourcePlan -> Either CompileError SomeAllocatedPlan
+compileResourcePlanUncertified = compileResourcePlan [] (const Text.empty) 0
+
+-- | Refine an already compiled allocation proof with observations from the
+-- machine that will execute it. CPU and memory are independent. Storage is
+-- independent only when the retained-PV path and kubelet root resolve to
+-- distinct devices; a shared device gets one joint physical budget.
+compileResourcePlanAgainstObserved
+  :: ObservedHostRoot
+  -> SomeAllocatedPlan
+  -> Either CompileError SomeAllocatedPlan
+compileResourcePlanAgainstObserved observed compiled = do
+  checkDimension "milli_cpu" milli_cpu
+  checkDimension "memory_mib" memory_mib
+  if observedStorageDevicesCoincide observed
+    then
+      let required =
+            ephemeral_storage_mib authored + durable_storage_mib authored
+          available =
+            min
+              (ephemeral_storage_mib actual)
+              (durable_storage_mib actual)
+       in if required <= available
+            then Right ()
+            else Left (ObservedHostSharedStorageInsufficient available required)
+    else do
+      checkDimension "ephemeral_storage_mib" ephemeral_storage_mib
+      checkDimension "durable_storage_mib" durable_storage_mib
+  pure compiled
+ where
+  actual = observedHostVector observed
+  authored = host_capacity (someAllocatedPlanSource compiled)
+  checkDimension dimension project
+    | project authored <= project actual = Right ()
+    | otherwise =
+        Left
+          ( ObservedHostDimensionInsufficient
+              dimension
+              (project actual)
+              (project authored)
+          )
+
+validateGuaranteedQoS :: WorkloadResourceProfile -> Either CompileError ()
+validateGuaranteedQoS workload
+  | profile_id workload `elem` guaranteedControlPlaneProfiles =
+      case workload_qos workload of
+        Burstable -> Left (ControlPlaneQoSNotGuaranteed (profile_id workload))
+        Guaranteed -> do
+          _ <- mkGuaranteedEnvelope (resources workload)
+          Right ()
+  | otherwise = Right ()
+ where
+  guaranteedControlPlaneProfiles =
+    [ "bootstrap-broker"
+    , "lifecycle-authority"
+    , "provider-worker"
+    , "authority-backup"
+    , "tls-retention"
+    , "target-secret-agent"
+    ]
 
 -- | Pack the compiled plan with the singleton for its overall certification tag.
 packCertification :: [CertifiedWorkload] -> AllocatedResourcePlan c -> SomeAllocatedPlan
@@ -489,14 +578,14 @@ packCertification certifiedWorkloads plan
 -- | Re-index the phantom. The fields are certification-independent, so this is a
 -- total structural retag.
 retagCertified :: AllocatedResourcePlan c -> AllocatedResourcePlan 'Certified
-retagCertified (AllocatedResourcePlan budget workloads) =
-  AllocatedResourcePlan budget workloads
+retagCertified (AllocatedResourcePlan source budget workloads) =
+  AllocatedResourcePlan source budget workloads
 
 retagUncertified :: AllocatedResourcePlan c -> AllocatedResourcePlan 'UncertifiedUntilFirstProfile
-retagUncertified (AllocatedResourcePlan budget workloads) =
-  AllocatedResourcePlan budget workloads
+retagUncertified (AllocatedResourcePlan source budget workloads) =
+  AllocatedResourcePlan source budget workloads
 
--- | @replicas × limit@: the admitted draw for one workload profile.
+-- | @replicas × request@: the scheduler-admitted draw for one workload profile.
 workloadProfileDraw :: WorkloadResourceProfile -> ResourceVector
 workloadProfileDraw workload =
-  resourceVectorScale (replicas workload) (limit (resources workload))
+  resourceVectorScale (replicas workload) (request (resources workload))

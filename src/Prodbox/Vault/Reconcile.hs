@@ -64,7 +64,14 @@ import Prodbox.Vault.Client
   , vaultWritePolicy
   )
 import Prodbox.Vault.RoleId
-  ( VaultRoleId (VaultRoleGatewayDaemon)
+  ( VaultRoleId
+      ( VaultRoleAuthorityBackup
+      , VaultRoleGatewayDaemon
+      , VaultRoleLifecycleAuthority
+      , VaultRoleProviderWorker
+      , VaultRoleTargetSecretAgent
+      , VaultRoleTlsRetention
+      )
   , vaultRoleIdText
   )
 
@@ -193,6 +200,11 @@ defaultVaultReconcilePlan =
         , VaultPolicySpec "prodbox-pulumi" pulumiPolicy
         , VaultPolicySpec "prodbox-federation-custody" federationPolicy
         , VaultPolicySpec "prodbox-operator-write" operatorWritePolicy
+        , VaultPolicySpec "prodbox-lifecycle-authority" lifecycleAuthorityPolicy
+        , VaultPolicySpec "prodbox-provider-worker" providerWorkerPolicy
+        , VaultPolicySpec "prodbox-authority-backup" authorityBackupPolicy
+        , VaultPolicySpec "prodbox-tls-retention" tlsRetentionPolicy
+        , VaultPolicySpec "prodbox-target-secret-agent" targetSecretAgentPolicy
         ]
           ++ map chartSecretPolicy chartVaultSecretConsumers
     , vaultReconcileKubernetesRoles =
@@ -231,10 +243,34 @@ defaultVaultReconcilePlan =
             ["gateway"]
             ["prodbox-operator-write"]
             "5m"
+        , standingRole
+            VaultRoleLifecycleAuthority
+            "prodbox-lifecycle-authority"
+        , standingRole
+            VaultRoleProviderWorker
+            "prodbox-provider-worker"
+        , standingRole
+            VaultRoleAuthorityBackup
+            "prodbox-authority-backup"
+        , standingRole
+            VaultRoleTlsRetention
+            "prodbox-tls-retention"
+        , standingRole
+            VaultRoleTargetSecretAgent
+            "prodbox-target-secret-agent"
         ]
           ++ map chartSecretRole chartVaultSecretConsumers
     , vaultReconcileSecretObjects = chartVaultManagedSecretObjects
     }
+
+standingRole :: VaultRoleId -> Text -> VaultKubernetesRoleSpec
+standingRole role policy =
+  VaultKubernetesRoleSpec
+    (vaultRoleIdText role)
+    [vaultRoleIdText role]
+    ["gateway"]
+    [policy]
+    "1h"
 
 chartSecretPolicy :: VaultSecretConsumer -> VaultPolicySpec
 chartSecretPolicy consumer =
@@ -704,6 +740,54 @@ gatewayPolicy =
     , ""
     , "path \"transit/decrypt/prodbox-pulumi-state\" {"
     , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+
+lifecycleAuthorityPolicy :: Text
+lifecycleAuthorityPolicy =
+  Text.unlines
+    [ "path \"secret/data/minio/lifecycle-authority\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"secret/data/object-store/hmac\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"transit/encrypt/prodbox-pulumi-state\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/decrypt/prodbox-pulumi-state\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+
+providerWorkerPolicy :: Text
+providerWorkerPolicy =
+  readOnlyKvPolicy "secret/data/aws/lifecycle-provider"
+
+authorityBackupPolicy :: Text
+authorityBackupPolicy =
+  readOnlyKvPolicy "secret/data/aws/authority-backup-store"
+
+tlsRetentionPolicy :: Text
+tlsRetentionPolicy =
+  readOnlyKvPolicy "secret/data/aws/tls-retention-store"
+
+targetSecretAgentPolicy :: Text
+targetSecretAgentPolicy =
+  Text.unlines
+    [ "path \"secret/data/keycloak/smtp\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"secret/data/acme/eab\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    ]
+
+readOnlyKvPolicy :: Text -> Text
+readOnlyKvPolicy path =
+  Text.unlines
+    [ "path \"" <> path <> "\" {"
+    , "  capabilities = [\"read\"]"
     , "}"
     ]
 

@@ -76,6 +76,7 @@ import Data.Foldable (asum)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -130,6 +131,8 @@ import Prodbox.CLI.Rke2
   , retainedStorageInventoryEntries
   )
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Placement qualified as Placement
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Cbor
   ( CborPayload (..)
   )
@@ -1594,9 +1597,7 @@ runResourceGuardrailsValidation repoRoot = do
   case settingsResult of
     Left err -> failWith ("load settings for resource guardrail validation: " ++ err)
     Right settings -> do
-      let plan =
-            Capacity.resource_plan
-              (Prodbox.Settings.capacity (Prodbox.Settings.validatedConfig settings))
+      let plan = Prodbox.Settings.validatedResourcePlan settings
       podsResult <- kubectlJson ["get", "pods", "-A", "-o", "json"]
       quotasResult <- kubectlJson ["get", "resourcequota", "-A", "-o", "json"]
       limitRangesResult <- kubectlJson ["get", "limitrange", "-A", "-o", "json"]
@@ -1645,7 +1646,7 @@ resourceGuardrailReport plan podPayload quotaPayload limitRangePayload = do
 
 resourceGuardrailPodSummary
   :: Capacity.ResourcePlan -> Value -> Either String ResourceGuardrailPodSummary
-resourceGuardrailPodSummary plan payload = do
+resourceGuardrailPodSummary _plan payload = do
   items <- jsonArrayAt ["items"] payload
   checked <- traverse (resourceGuardrailPodCheck expectedNamespaces) items
   let relevant = [summary | Just summary <- checked]
@@ -1666,8 +1667,7 @@ resourceGuardrailPodSummary plan payload = do
               }
         else Left (intercalate "; " failures)
  where
-  expectedNamespaces =
-    map (Text.unpack . Capacity.namespace_name) (Capacity.namespace_quotas plan)
+  expectedNamespaces = resourceGuardrailRootNamespaces
 
 resourceGuardrailPodCheck
   :: [String] -> Value -> Either String (Maybe ((Int, String), [String]))
@@ -1741,17 +1741,18 @@ resourceGuardrailQuotaNamespaces plan payload = do
 requireResourceQuotaForNamespace
   :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
 requireResourceQuotaForNamespace plan items namespace = do
-  namespaceQuota <- requireNamespaceQuotaForValidation plan namespace
+  admission <- Placement.planNamespaceAdmission SubstrateHomeLocal (Text.pack namespace) plan
   quotaObject <- requireK8sObjectInNamespace "ResourceQuota" namespace items
-  let vector = Capacity.quota namespaceQuota
+  let requested = Capacity.request admission
+      limited = Capacity.limit admission
       expected =
-        [ ("requests.cpu", cpuQuantity (Capacity.milli_cpu vector))
-        , ("limits.cpu", cpuQuantity (Capacity.milli_cpu vector))
-        , ("requests.memory", memoryQuantity (Capacity.memory_mib vector))
-        , ("limits.memory", memoryQuantity (Capacity.memory_mib vector))
-        , ("requests.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib vector))
-        , ("limits.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib vector))
-        , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib vector))
+        [ ("requests.cpu", cpuQuantity (Capacity.milli_cpu requested))
+        , ("limits.cpu", cpuQuantity (Capacity.milli_cpu limited))
+        , ("requests.memory", memoryQuantity (Capacity.memory_mib requested))
+        , ("limits.memory", memoryQuantity (Capacity.memory_mib limited))
+        , ("requests.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib requested))
+        , ("limits.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limited))
+        , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib requested))
         ]
   mapM_ (requireQuantityEquals ("ResourceQuota " ++ namespace) ["spec", "hard"] quotaObject) expected
   Right namespace
@@ -1763,7 +1764,7 @@ resourceGuardrailLimitRangeNamespaces plan payload = do
 
 requireLimitRangeForNamespace :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
 requireLimitRangeForNamespace plan items namespace = do
-  envelope <- namespaceLimitEnvelopeForValidation plan namespace
+  envelope <- Placement.planNamespaceLimits SubstrateHomeLocal (Text.pack namespace) plan
   limitRangeObject <- requireK8sObjectInNamespace "LimitRange" namespace items
   limits <- jsonArrayAt ["spec", "limits"] limitRangeObject
   containerLimit <- requireContainerLimitRange namespace limits
@@ -1872,20 +1873,6 @@ parseIntegerQuantity raw =
     [(value, "")] | value >= 0 -> Just value
     _ -> Nothing
 
-requireNamespaceQuotaForValidation
-  :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
-requireNamespaceQuotaForValidation plan namespace =
-  case filter ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
-    namespaceQuota : _ -> Right namespaceQuota
-    [] -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
-
-namespaceLimitEnvelopeForValidation
-  :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
-namespaceLimitEnvelopeForValidation plan namespace =
-  case filter ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
-    profile : _ -> Right (Capacity.resources profile)
-    [] -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
-
 jsonArrayAt :: [String] -> Value -> Either String [Value]
 jsonArrayAt path value = do
   fieldValue <- jsonValueAt path value
@@ -1902,11 +1889,11 @@ jsonArrayAtOptional path value =
     Right (Just (Array arrayValue)) -> Right (Vector.toList arrayValue)
     Right (Just _) -> Left ("JSON field `" ++ intercalate "." path ++ "` is not an array")
 
-cpuQuantity :: (Show a) => a -> String
-cpuQuantity value = show value ++ "m"
+cpuQuantity :: Natural -> String
+cpuQuantity = CapacityRender.cpuQuantity
 
-memoryQuantity :: (Show a) => a -> String
-memoryQuantity value = show value ++ "Mi"
+memoryQuantity :: Natural -> String
+memoryQuantity = CapacityRender.memoryQuantity
 
 data VolumeRebindSnapshot = VolumeRebindSnapshot
   { volumeRebindSnapshotPersistentVolume :: String
@@ -4923,9 +4910,11 @@ verifyAwsTestNodeSsh repoRoot privateKeyPath exitCode node =
 
 waitForAwsTestNodeSsh :: FilePath -> FilePath -> AwsTest.AwsTestNode -> Int -> IO ExitCode
 waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
+  environment <- getEnvironment
+  testSshExecutable <- lookupEnv "PRODBOX_TEST_SSH_EXECUTABLE"
   let spec =
         Subprocess
-          { subprocessPath = "ssh"
+          { subprocessPath = fromMaybe "ssh" testSshExecutable
           , subprocessArguments =
               [ "-i"
               , privateKeyPath
@@ -4940,7 +4929,7 @@ waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
               , "ubuntu@" ++ AwsTest.testNodePublicIp node
               , "hostname"
               ]
-          , subprocessEnvironment = Nothing
+          , subprocessEnvironment = Just environment
           , subprocessWorkingDirectory = Just repoRoot
           }
       nodeLabel = AwsTest.testNodeName node ++ " (" ++ AwsTest.testNodePublicIp node ++ ")"

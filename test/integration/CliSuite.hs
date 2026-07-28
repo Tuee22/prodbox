@@ -3583,14 +3583,14 @@ fakeRke2KubectlScript =
     , "      resourcequota)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2025m\",\"limits.cpu\":\"2025m\",\"requests.memory\":\"4448Mi\",\"limits.memory\":\"4448Mi\",\"requests.ephemeral-storage\":\"12000Mi\",\"limits.ephemeral-storage\":\"12000Mi\",\"requests.storage\":\"61440Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2425m\",\"limits.cpu\":\"2425m\",\"requests.memory\":\"5216Mi\",\"limits.memory\":\"5216Mi\",\"requests.ephemeral-storage\":\"10944Mi\",\"limits.ephemeral-storage\":\"10944Mi\",\"requests.storage\":\"112640Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"2000Mi\",\"limits.ephemeral-storage\":\"2000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"3000Mi\",\"limits.ephemeral-storage\":\"3000Mi\",\"requests.storage\":\"1000Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1250m\",\"limits.cpu\":\"1250m\",\"requests.memory\":\"3584Mi\",\"limits.memory\":\"3584Mi\",\"requests.ephemeral-storage\":\"6000Mi\",\"limits.ephemeral-storage\":\"6000Mi\",\"requests.storage\":\"20480Mi\"}}}]}"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1430m\",\"limits.cpu\":\"2025m\",\"requests.memory\":\"2992Mi\",\"limits.memory\":\"4448Mi\",\"requests.ephemeral-storage\":\"4960Mi\",\"limits.ephemeral-storage\":\"9920Mi\",\"requests.storage\":\"6151Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2030m\",\"limits.cpu\":\"2825m\",\"requests.memory\":\"4272Mi\",\"limits.memory\":\"6240Mi\",\"requests.ephemeral-storage\":\"6496Mi\",\"limits.ephemeral-storage\":\"12992Mi\",\"requests.storage\":\"8201Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"512Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"1024Mi\",\"limits.ephemeral-storage\":\"1024Mi\",\"requests.storage\":\"2Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"300m\",\"limits.cpu\":\"450m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"1536Mi\",\"limits.ephemeral-storage\":\"1536Mi\",\"requests.storage\":\"3Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1000m\",\"limits.cpu\":\"1250m\",\"requests.memory\":\"1792Mi\",\"limits.memory\":\"3584Mi\",\"requests.ephemeral-storage\":\"2560Mi\",\"limits.ephemeral-storage\":\"5632Mi\",\"requests.storage\":\"4Mi\"}}}]}"
     , "JSON"
     , "        fi"
     , "        ;;"
     , "      limitrange)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"384Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"150m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"512Mi\"}}]}}]}"
+    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"384Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"150m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}]}}]}"
     , "JSON"
     , "        fi"
     , "        ;;"
@@ -4705,15 +4705,6 @@ resourcePlanDhallFragment =
     [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
     , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
     , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", namespace_quotas ="
-    , "  [ { namespace_name = \"keycloak\", quota = { milli_cpu = 2025, memory_mib = 4448, ephemeral_storage_mib = 12000, durable_storage_mib = 61440 } }"
-    , "  , { namespace_name = \"vscode\", quota = { milli_cpu = 2425, memory_mib = 5216, ephemeral_storage_mib = 10944, durable_storage_mib = 112640 } }"
-    , "  , { namespace_name = \"api\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 2000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"websocket\", quota = { milli_cpu = 500, memory_mib = 768, ephemeral_storage_mib = 3000, durable_storage_mib = 1000 } }"
-    , "  , { namespace_name = \"gateway\", quota = { milli_cpu = 1250, memory_mib = 3584, ephemeral_storage_mib = 6000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"prodbox\", quota = { milli_cpu = 1000, memory_mib = 1792, ephemeral_storage_mib = 5000, durable_storage_mib = 20480 } }"
-    , "  , { namespace_name = \"vault\", quota = { milli_cpu = 300, memory_mib = 512, ephemeral_storage_mib = 2000, durable_storage_mib = 1024 } }"
-    , "  ]"
     , ", workload_profiles ="
     , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
     , "  , "
@@ -4774,23 +4765,32 @@ resourceProfileDhall profile namespace count req lim =
     ++ show namespace
     ++ ", replicas = "
     ++ show count
-    ++ ", resources = { request = "
-    ++ resourceVectorDhall req
-    ++ ", limit = "
-    ++ resourceVectorDhall lim
-    ++ " } }"
-
-resourceVectorDhall :: (Int, Int, Int, Int) -> String
-resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
-  "{ milli_cpu = "
-    ++ show cpuMilli
-    ++ ", memory_mib = "
-    ++ show memoryMib
-    ++ ", ephemeral_storage_mib = "
-    ++ show ephemeralMib
-    ++ ", durable_storage_mib = "
-    ++ show durableMib
+    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
+    ++ ", surge = 0"
+    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
+    ++ ", workload_demand = "
+    ++ workloadDemandDhall profile req lim
     ++ " }"
+
+workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
+workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
+  "{ cpu_demand = { requests_per_second = "
+    ++ show reqCpu
+    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
+    ++ show (limCpu - reqCpu)
+    ++ ", calibration_profile_id = "
+    ++ show profile
+    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
+    ++ show reqMemory
+    ++ " ], bounded_memory_burst_mib = "
+    ++ show (limMemory - reqMemory)
+    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
+    ++ show reqEphemeral
+    ++ " ], bounded_ephemeral_burst_mib = "
+    ++ show (limEphemeral - reqEphemeral)
+    ++ " }, demanded_durable_storage_mib = "
+    ++ show limDurable
+    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =

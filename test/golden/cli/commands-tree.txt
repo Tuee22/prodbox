@@ -27,6 +27,16 @@ prodbox
         migrate-backend
   bootstrap-broker
     start
+  lifecycle-authority
+    start
+  provider-worker
+    start
+  authority-backup
+    start
+  tls-retention
+    start
+  target-secret-agent
+    start
   charts
     list
     status

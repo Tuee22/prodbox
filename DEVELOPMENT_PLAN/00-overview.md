@@ -220,14 +220,31 @@ Build a clean-room Haskell `prodbox` repository with:
 > the `host ≥ cluster ≥ Σworkloads` nesting becomes an opaque proof-carrying `AllocatedResourcePlan`
 > (total `compileResourcePlan`, matching `ServiceCapacityPlan`/`RuntimeMemoryPlan`) with a
 > non-saturating `resourceVectorSubtractChecked`, a `GuaranteedEnvelope` witness, and a `dev check`
-> gate that fails the build if `defaultResourcePlan` over-commits. Consumer Sprint `3.27` (Phase `3`)
-> makes namespace `ResourceQuota`/`LimitRange` derived projections of the workloads' draws (retiring
-> authored `namespace_quotas`/`concurrentNamespaceQuotas`/the keycloak↔vscode fold); Sprint `4.52`
-> (Phase `4`) closes `cluster ≤ host` at reconcile against **observed** host facts (superseding the
-> authored-only `4.41` check). Memory-(c) is already structural via `RuntimeMemoryPlan`; CPU demand-(c)
-> stays the non-erasable `uncertified-until-first-profile` seam. Sprint `1.68` code landed (`src/Prodbox/Capacity/Allocation.hs`,
-> `prodbox dev check` exit 0, 18/18 `test/unit/Allocation.hs`); its consumers `3.27`/`4.52` are now
-> 📋 Planned. `Deployment qualification: pending` (Standard-P resource-envelope surface).
+> gate that fails the build if `defaultResourcePlan` over-commits. A subsequent full review found the
+> proof only gated the *hardcoded default* and that durable/ephemeral storage was a placeholder that
+> could drift from the real PVC size, and generalized both into a doctrine
+> ([resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md), *one
+> value, one proof, unrepresentable over-commit*) with an honest three-ring boundary: **Dhall** is a
+> defense-in-depth generator cross-check (no refinement types), the **Haskell decode gate** is where
+> over-commit is truly unrepresentable (the proof becomes a required field of `ValidatedSettings`, built
+> over the *decoded* in-force plan), and the **observed host** is re-proved at reconcile (durable vs
+> ephemeral on distinct devices). Phase `1` reclosed on **Sprints `1.69`** (the decode gate + draw/allocatable
+> projections) **/`1.70`** (`GuaranteedEnvelope` via `WorkloadQoS`); the Phase-3/4 consumers land in the
+> order **`3.28`** (one shared `Capacity.Render`) → **`3.29`** (durable PVC size single-sourced from
+> `durable_storage_mib`) → **`3.27`** (derived `ResourceQuota`/`LimitRange` via `planNamespaceQuota`/
+> `renderedNamespace`/`WorkloadConcurrency`, retiring authored `namespace_quotas`/`concurrentNamespaceQuotas`)
+> → **`4.52`** (observed-host dual-device recompile, retiring `hostCapacityCoversPlan` + both
+> `clusterAllocatable`). Reconciled: the 3-axis `CapacityBudget` **stays** (live in `Capacity.Storage`/
+> `Scaling.Autoscaler`); only unused `MilliCpu`/`MebiBytes` retire. Memory-(c) is already structural via
+> `RuntimeMemoryPlan`; CPU demand-(c) stays the non-erasable `uncertified-until-first-profile` seam.
+> Sprints `1.68`–`1.70` landed (`src/Prodbox/Capacity/Allocation.hs`, decoded settings proof,
+> `WorkloadQoS`, and focused allocation tests); `3.28`/`3.29`/`4.52` are ✅ Done,
+> Sprint `1.71` now closes the remaining derivation gap: workload envelopes are projections of
+> typed memory, service-capacity, scratch-storage, durable-storage, and topology inputs rather than
+> independent authored numbers. Sprint `3.27` consumes that proof for Kubernetes admission. The
+> 3-axis `CapacityBudget` **stays**
+> (live in `Capacity.Storage`/`Scaling.Autoscaler`); only unused `MilliCpu`/`MebiBytes` retire.
+> `Deployment qualification: pending` (Standard-P resource-envelope surface).
 
 > **Runtime-memory correction (2026-07-10).** The July 10 gateway OOM evidence does not invalidate
 > those authored-admission and containment lemmas; it invalidates the stronger inference that they
@@ -449,9 +466,9 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 |-------|-------|----------------|------------------------|
 | 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. Sprint `0.18` adds the configurable certificate-scope governance surface on that same documentation surface (an additional governance sprint, no further reclose). | Documentation lint/check and canonical quality gate; no runtime dependency. |
 | 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
-| 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.33`; Sprints `2.30`–`2.35` all Done. Sprint `2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker: a closed `RuntimeRole` split, a closed `BrokerRoute` registry limited to bounded Vault init/unseal/baseline/PKI + child custody (no generic KV/mesh/DNS/authority-CAS/target-secret route), the prepared-init PGP/password-AEAD custody protocol with a crash/resume matrix, pre-Vault handler removal from the Gateway, and a broker/gateway isolation lint. Standard P keeps production on `LegacyModelBEmitter`; live proof and deployment qualification remain pending. Sprint `3.26` owns physical StatefulSet/PV/EBS consumption. | `dev check` 0, unit 2193/2193 (incl. ten `BootstrapBroker*` suites), integration cli/env 52/52, daemon-lifecycle 28/28, and the broker/gateway isolation lint. |
-| 3 | Chart Platform and Public Workload Delivery | 🔄 `3.26` Active; Increment A landed (Bootstrap Broker distinct Vault role + typed chart statics + route-sourced probes). Remaining increments render the workload templates and other roles. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, and retained-volume plans. |
-| 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Foundation Epoch Sprint `4.51` Active (Increment A — the `StoreLifetime` phantom-index type foundation — landed + validated 2026-07-14; Increment B cutover deferred); `4.48`–`4.50` form the durable authority/outbox/cutover chain after `3.26`. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
+| 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
+| 3 | Chart Platform and Public Workload Delivery | ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
+| 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Sprint `4.50` Active; Foundation Epoch Sprint `4.51` and observed-host Sprint `4.52` are ✅ Done. `4.51` closes the durability-indexed host-direct retained adapter and generation-scoped SES operation crash/replay fold; live AWS response-loss remains Standard-O evidence. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
 | 5 | Canonical Test Suite | 🔄 Sprint `5.21` Active (recorder gate landed; live profile collection + first committed profile remain); Foundation Epoch Sprint `5.20` ✅ Done; `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
 | 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
 | 7 | AWS Substrate Foundations | ⏸️ Sprint `7.33` blocked by `6.4`; Foundation Epoch Sprint `7.34` ✅ Done (harness postflight residue narrowed to per-run). | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
@@ -464,7 +481,17 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-07-20 — Sprint `2.32` code-local target closed; redesign continues):**
+**Current head state (2026-07-27 — Phase `2` reclosed on proof-carrying broker shutdown; redesign continues):**
+
+- Sprint `2.36` closes the Bootstrap Broker forced-shutdown counterexample: replay waiters resolve
+  before persistent cancellation children join, and only an exact-empty witness publishes
+  `Stopped`.
+- Sprint `5.23` is ✅ Done on its code-owned surface: `Prodbox.Bootstrap.Broker.ShutdownModel` is a
+  pure, exhaustively-scheduled abstraction of the forced-drain shutdown that proves the pre-fix
+  `Stopped + live replay waiter` counterexample reachable and unreachable under Sprint 2.36's
+  proof-carrying postcondition, with a run-final residue oracle over queued connections, unfinalized
+  workers, and live replay-waiter cells. Wiring that oracle into the live canonical-suite fixture
+  teardown is the non-blocking Standard-O axis.
 
 The current revision is not deployment-qualified. The aggregate suite demonstrated that nominal
 readiness could pass or eventually return while the gateway's shared CPU/child lane could not meet
@@ -502,7 +529,7 @@ resource envelopes are certified against measured profiles, over-commitment of t
 host/cluster/workload nesting is made unrepresentable by an opaque compile-time proof (Sprint `1.68`),
 and drift fails the seconds-fast
 canonical quality gate rather than the multi-hour aggregate suite. Foundation Epoch Sprints
-`1.63`–`1.66`, `2.34`, `5.20`, and `7.34` are Done; Sprints `4.51` and `5.21` retain their own
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, and `7.34` are Done; Sprint `5.21` retains its own
 Active status. Sprints `1.61`/`1.62` are also Done after their shrink-rescoped work landed
 (readiness evidence moved to Sprint `2.34`; the cached Vault session to Sprint `1.64`; the native
 S3 client to Sprint `1.66`). Standard P gains the interim
@@ -785,7 +812,8 @@ model. Replacement and removal ownership live in the reopened phases and
 
 ## Current Execution State
 
-As of Sprint `2.33` on 2026-07-21, Phases `0`, `1`, and `2` are reclosed. Sprints `1.61`–`1.67`,
+As of the 2026-07-26 forced-shutdown counterexample, Phases `0` and `1` are reclosed and Phase `2`
+is reopened on Sprint `2.36`. Sprints `1.61`–`1.67`,
 the code-local Sprint `2.32` emitter target, and Sprint `2.33` (minimal Bootstrap Broker + gateway
 scope cut) are Done, so every Phase-2 sprint (`2.30`–`2.35`) is closed. Substrate-neutral Kubernetes
 reachability proves the selected cluster through `ToolKubectl` plus `kubectl cluster-info`, while

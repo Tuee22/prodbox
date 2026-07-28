@@ -21,6 +21,14 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-27 on Sprint `2.36` (own Bootstrap Broker runtime surface).** A full-unit
+contention run falsified the Sprint `2.33` forced-drain closure: the manager can discard a timed-out
+worker cancellation and publish `BrokerStopped` while a replay worker remains blocked on its
+completion cell. The later `BlockedIndefinitelyOnSTM` is consistent with that leaked ownership.
+Sprint `2.36` replaces the timeout-discarding terminal transition with proof-carrying terminal
+shutdown and keeps timeout as `ShutdownIncomplete`, never as evidence of `Stopped`. Historical
+Sprint `2.33` results remain Done on route/config/custody scope; its shutdown claim is superseded.
+
 ✅ **Expanded 2026-07-12 with the Foundation Epoch's phase-2 slice; that slice is complete.**
 Sprint `2.34` (Done 2026-07-12;
 registered by governance Sprint `0.17` in
@@ -50,7 +58,7 @@ the now-unblocked Sprint `5.22` in
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md), so deployment qualification
 remains pending without reopening this code-owned sprint.
 
-✅ **Reclosed 2026-07-21 on Sprint `2.33`; Phase `2` has no remaining open sprint.** Sprint
+✅ **Historical reclosure 2026-07-21 on Sprint `2.33`; superseded by Sprint `2.36`.** Sprint
 `2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker: a closed `RuntimeRole` split
 (`src/Prodbox/Runtime/Role.hs`) where the `bootstrap-broker` and `gateway-runtime` roles each decode
 only their own mounted Dhall; a closed `BrokerRoute` registry limited to bounded
@@ -3489,6 +3497,67 @@ dashboard certificate cannot recur on the managed side.
 - Link the serving-validation owner Sprint `5.22` in
   [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) and the deletion-ledger rows
   owned by this sprint in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 2.36: Proof-Carrying Bootstrap Broker Shutdown [✅ Done]
+
+**Status**: Done (validated 2026-07-27)
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Server.hs` and
+`test/unit/BootstrapBrokerServerSafety.hs`
+**Deployment qualification**: pending
+**Independent Validation**: a deterministic finalizer-stall simulation and focused loopback
+process suite prove that `Stopped` cannot be constructed before accept/worker joins, waiter
+resolution, and an empty queue/active/idempotency postcondition. No cluster, AWS, or later phase.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/haskell_code_guide.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Make the illegal state “externally stopped with internally live broker ownership” unrepresentable.
+Timeout is a shutdown observation, not a child-termination proof.
+
+### Deliverables
+
+- Centralize terminal publication behind a private opaque `ShutdownComplete` witness.
+- Forced drain atomically closes admission and resolves every running idempotency completion with a
+  typed terminal shutdown reply before cancelling the structured child tree.
+- Join the accept thread and every worker, then construct `Stopped` only from proof that queue,
+  active ownership, and running idempotency entries are empty.
+- A join deadline yields `ShutdownIncomplete` and retains `ForceDraining`; it never fills
+  `handleDone` or publishes `Stopped`.
+- Expose typed `BrokerShutdownIncomplete` observation for the Sprint `5.23` fixture-cleanup
+  consumer.
+
+### Validation
+
+1. A deterministic hook holds a worker finalizer after force drain; `Stopped` remains impossible
+   until the hook is released.
+2. Owner and all coalesced replay waiters receive terminal results before worker cancellation.
+3. Deadline-expiry tables produce `ShutdownIncomplete` with owned children still represented.
+4. Releasing the hook joins every child and proves the exact empty postcondition before terminal
+   publication.
+5. Focused stress, the full unit suite, daemon lifecycle tests, and `prodbox dev check` pass.
+
+### Remaining Work
+
+- None on the Sprint `2.36` runtime-owned surface. Sprint `5.23` owns canonical-suite fixture
+  teardown and run-final residue validation.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` - proof-carrying broker shutdown.
+- `documents/engineering/haskell_code_guide.md` - shared structured-concurrency terminal contract.
+- `documents/engineering/unit_testing_policy.md` - deterministic finalizer-stall and cleanup proof.
+
+**Product docs to create/update:**
+
+- `README.md` - current Bootstrap Broker shutdown limitation and target invariant.
+
+**Cross-references to add:**
+
+- Link Sprint `5.23` as the canonical-suite consumer and record both obsolete timeout-discarding
+  surfaces in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

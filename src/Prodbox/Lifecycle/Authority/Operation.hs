@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+
 -- | Sprint 4.48: the retained Lifecycle Authority's durable operation record and
 -- outbox recovery.
 --
@@ -35,13 +39,17 @@ module Prodbox.Lifecycle.Authority.Operation
   )
 where
 
+import Codec.Serialise (Serialise)
+import GHC.Generics (Generic)
+
 -- | The durable, append-only phase of one operation record.
 data OperationPhase intent result
   = -- | The committed outbox intent, durably journaled before any external effect.
     OperationArmed !intent
   | -- | The terminal result, recorded at most once after the effect is applied.
     OperationCompleted !result
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | One durable operation: its idempotency-keyed binding plus its append-only
 -- phase. @binding@ is the caller-owned operation identity (opaque here).
@@ -49,7 +57,8 @@ data OperationRecord binding intent result = OperationRecord
   { operationBinding :: !binding
   , operationPhase :: !(OperationPhase intent result)
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The armed intent of a record, or @Nothing@ once terminal.
 operationIntent :: OperationRecord binding intent result -> Maybe intent

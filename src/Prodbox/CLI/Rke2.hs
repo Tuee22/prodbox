@@ -62,7 +62,6 @@ module Prodbox.CLI.Rke2
   , renderRke2ResourceGuardrailConfig
   , renderRke2SystemdResourceDropIn
   , parseHostCapacityObservation
-  , hostCapacityCoversPlan
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
   , harborRegistryStorageBackend
@@ -143,7 +142,11 @@ import Prodbox.CLI.Vault
   ( gatewayEndpointFromEnv
   , runVaultBootstrapViaDaemon
   )
+import Prodbox.Capacity.Allocation qualified as CapacityAllocation
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.ObservedHost qualified as ObservedHost
+import Prodbox.Capacity.Placement qualified as Placement
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential (..)
   , ChildIndex (..)
@@ -225,6 +228,7 @@ import Prodbox.Lib.EksCustomImagePush
 import Prodbox.Lib.Storage
   ( retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
+  , workloadStorageSize
   )
 import Prodbox.Lifecycle.AnchoredReconcile
   ( AnchoredOrderSpec (..)
@@ -321,6 +325,7 @@ import Prodbox.Settings
   , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatedConfig
+  , validatedResourcePlan
   , zone_id
   )
 import Prodbox.Settings.SecretRef
@@ -875,14 +880,19 @@ runClusterStatus repoRoot = do
     ValidatedSettings
       { validatedConfig = defaultConfigFile
       , resolvedManualPvHostRoot = ".data"
+      , validatedAllocatedPlan =
+          either
+            (error . CapacityAllocation.renderCompileError)
+            id
+            (CapacityAllocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
       }
 
 resourceStatusLines :: FilePath -> ValidatedSettings -> IO [String]
 resourceStatusLines repoRoot settings = do
-  observedResult <- observeHostCapacity repoRoot
-  let plan = Capacity.resource_plan (capacity (validatedConfig settings))
+  observedResult <- observeHostCapacity repoRoot (resolvedManualPvHostRoot settings)
+  let plan = validatedResourcePlan settings
       authored = Capacity.host_capacity plan
-      allocatable = clusterAllocatable plan
+      allocatable = CapacityAllocation.planAllocatable (validatedAllocatedPlan settings)
       baseLines =
         [ "RESOURCE_HOST_AUTHORED=" ++ renderResourceVectorRuntime authored
         , "RESOURCE_RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved plan)
@@ -894,9 +904,14 @@ resourceStatusLines repoRoot settings = do
       Left err -> baseLines ++ ["RESOURCE_HOST_OBSERVED=unavailable:" ++ err]
       Right observed ->
         baseLines
-          ++ [ "RESOURCE_HOST_OBSERVED=" ++ renderResourceVectorRuntime observed
+          ++ [ "RESOURCE_HOST_OBSERVED="
+                 ++ renderResourceVectorRuntime (ObservedHost.observedHostVector observed)
              , "RESOURCE_HOST_CAPACITY="
-                 ++ if hostCapacityCoversPlan observed plan then "sufficient" else "insufficient"
+                 ++ case CapacityAllocation.compileResourcePlanAgainstObserved
+                   observed
+                   (validatedAllocatedPlan settings) of
+                   Right _ -> "sufficient"
+                   Left _ -> "insufficient"
              ]
 
 data FederationRegisterPayload = FederationRegisterPayload
@@ -1545,14 +1560,16 @@ renderNativeInstallPlanWithOrder order repoRoot settings machineId prodboxId lab
       , "HOST_CAPACITY=" ++ renderResourceVectorRuntime (Capacity.host_capacity resourcePlan)
       , "RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved resourcePlan)
       , "EVICTION_FLOOR=" ++ renderResourceVectorRuntime (Capacity.eviction_floor resourcePlan)
-      , "CLUSTER_ALLOCATABLE=" ++ renderResourceVectorRuntime (clusterAllocatable resourcePlan)
+      , "CLUSTER_ALLOCATABLE="
+          ++ renderResourceVectorRuntime
+            (CapacityAllocation.planAllocatable (validatedAllocatedPlan settings))
       ]
         -- Narration is projected from the single ordered step table (M1), so it
         -- can never drift from the executor, which reads the same table.
         ++ ["STEP=" ++ reconcileStepToken step | step <- nativeInstallStepsForRun order withEdge]
     )
  where
-  resourcePlan = Capacity.resource_plan (capacity (validatedConfig settings))
+  resourcePlan = validatedResourcePlan settings
 
 data NativeInstallPayload = NativeInstallPayload
   { nativeInstallPayloadMachineId :: String
@@ -1731,8 +1748,9 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     -- Sprint 7.25: MinIO comes up BEFORE Vault (it depends only on the cluster +
     -- its retained PV — static root cred, no Vault init container), so Vault init
     -- writes the unlock bundle to a live MinIO and unseal reads it FROM MinIO.
-    StepMinioRuntimeBootstrap -> ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
-    StepVaultRuntime -> ensureVaultRuntime repoRoot
+    StepMinioRuntimeBootstrap ->
+      ensureMinioRuntime repoRoot bootstrapSettings SubstrateHomeLocal MinioBootstrapPublic
+    StepVaultRuntime -> ensureVaultRuntime repoRoot bootstrapSettings
     StepHarborRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot
     StepHarborRegistryRuntime -> ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
     -- Sprint 4.43: the deep registry->MinIO S3 edge gate (M3) runs before the
@@ -3151,27 +3169,30 @@ applyRetainedStorageManifest repoRoot manifestItems =
 -- 'awsSubstratePlatformComponents'. The home and AWS platform reconcilers both
 -- install this same chart so the Vault StatefulSet/Service/PVC shape remains
 -- substrate-equivalent.
-ensureVaultRuntime :: FilePath -> IO ExitCode
-ensureVaultRuntime repoRoot = do
-  lifecycleResult <- resolveVaultLifecycle repoRoot
-  case lifecycleResult of
+ensureVaultRuntime :: FilePath -> ValidatedSettings -> IO ExitCode
+ensureVaultRuntime repoRoot settings =
+  case workloadStorageSize (validatedResourcePlan settings) "vault" of
     Left err -> failWith err
-    Right lifecycle ->
-      case lifecycle of
-        RootVaultLifecycle _ _ ->
-          applyVaultRuntime repoRoot lifecycle
-        ChildVaultLifecycle _ _ parent -> do
-          parentReadiness <- probeParentVaultReadiness parent
-          case renderParentReadinessBlock parent parentReadiness of
-            Just block -> failWith block
-            Nothing -> do
-              tokenResult <- childTransitSealTokenPresent repoRoot
-              case tokenResult of
-                Left err -> failWith err
-                Right () -> applyVaultRuntime repoRoot lifecycle
+    Right storageSize -> do
+      lifecycleResult <- resolveVaultLifecycle repoRoot
+      case lifecycleResult of
+        Left err -> failWith err
+        Right lifecycle ->
+          case lifecycle of
+            RootVaultLifecycle _ _ ->
+              applyVaultRuntime repoRoot storageSize lifecycle
+            ChildVaultLifecycle _ _ parent -> do
+              parentReadiness <- probeParentVaultReadiness parent
+              case renderParentReadinessBlock parent parentReadiness of
+                Just block -> failWith block
+                Nothing -> do
+                  tokenResult <- childTransitSealTokenPresent repoRoot
+                  case tokenResult of
+                    Left err -> failWith err
+                    Right () -> applyVaultRuntime repoRoot storageSize lifecycle
 
-applyVaultRuntime :: FilePath -> FederatedVaultLifecycle -> IO ExitCode
-applyVaultRuntime repoRoot lifecycle =
+applyVaultRuntime :: FilePath -> String -> FederatedVaultLifecycle -> IO ExitCode
+applyVaultRuntime repoRoot storageSize lifecycle =
   runSequentially
     [ runHelmCommandWithRetries
         repoRoot
@@ -3184,6 +3205,9 @@ applyVaultRuntime repoRoot lifecycle =
           , "--create-namespace"
           ]
             ++ vaultLifecycleHelmSealArgs lifecycle
+            ++ [ "--set"
+               , "storage.size=" ++ storageSize
+               ]
         )
     , runCommand
         Subprocess
@@ -3493,36 +3517,39 @@ mapLeftEither f value = case value of
 -- bootstrap image, then the Harbor-mirrored steady-state image), each a
 -- @helm upgrade --install@ that only flips the image values; the StatefulSet
 -- rolls the pod and adopts the prebound @data-minio-0@ PVC either way.
-ensureMinioRuntime :: FilePath -> Substrate -> MinioImageSource -> IO ExitCode
-ensureMinioRuntime repoRoot substrate imageSource =
-  runSequentially
-    [ runHelmCommandWithRetries
-        repoRoot
-        ( [ "upgrade"
-          , "--install"
-          , minioReleaseName
-          , repoRoot ++ "/charts/minio"
-          , "--namespace"
-          , minioNamespace
-          , "--create-namespace"
-          ]
-            ++ renderMinioChartArgs substrate imageSource
-        )
-    , runCommand
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments =
-              [ "rollout"
-              , "status"
-              , "statefulset/minio"
-              , "-n"
+ensureMinioRuntime :: FilePath -> ValidatedSettings -> Substrate -> MinioImageSource -> IO ExitCode
+ensureMinioRuntime repoRoot settings substrate imageSource =
+  case workloadStorageSize (validatedResourcePlan settings) "minio" of
+    Left err -> failWith err
+    Right storageSize ->
+      runSequentially
+        [ runHelmCommandWithRetries
+            repoRoot
+            ( [ "upgrade"
+              , "--install"
+              , minioReleaseName
+              , repoRoot ++ "/charts/minio"
+              , "--namespace"
               , minioNamespace
-              , "--timeout=300s"
+              , "--create-namespace"
               ]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    ]
+                ++ renderMinioChartArgs substrate imageSource storageSize
+            )
+        , runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  [ "rollout"
+                  , "status"
+                  , "statefulset/minio"
+                  , "-n"
+                  , minioNamespace
+                  , "--timeout=300s"
+                  ]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        ]
 
 -- | Pure render of @--set@ flag pairs for the prodbox-owned @charts/minio@
 -- install. MinIO always uses the PUBLIC (bootstrap-exception) image regardless of
@@ -3535,8 +3562,8 @@ ensureMinioRuntime repoRoot substrate imageSource =
 -- the substrate-specific storage class + size vary; everything else is fixed in the
 -- chart's @values.yaml@. The @[String]@ output is a flat alternating
 -- @["--set", "k=v", …]@ list ready to splice into a @helm upgrade --install@.
-renderMinioChartArgs :: Substrate -> MinioImageSource -> [String]
-renderMinioChartArgs substrate _imageSource =
+renderMinioChartArgs :: Substrate -> MinioImageSource -> String -> [String]
+renderMinioChartArgs substrate _imageSource storageSize =
   let (minioImage, _minioMcImage) = minioChartImages MinioBootstrapPublic
    in [ "--set"
       , "image.repository=" ++ renderImageRefWithoutTag minioImage
@@ -3550,20 +3577,20 @@ renderMinioChartArgs substrate _imageSource =
       , "--set"
       , "rootPassword=" ++ minioRootPassword
       ]
-        ++ minioSubstratePersistenceArgs substrate
+        ++ minioSubstratePersistenceArgs substrate storageSize
 
 -- | Substrate-specific MinIO storage args for the @data@ volumeClaimTemplate:
 -- both substrates use the retained @manual@ StorageClass. Home binds to the
 -- hostPath PV at @.data/prodbox/minio/0@; AWS binds to the pre-created EBS
 -- volume lifted in as a static CSI PV. Both are bounded at 20 GiB so the
 -- default full-workflow resource plan fits a small single-node host.
-minioSubstratePersistenceArgs :: Substrate -> [String]
-minioSubstratePersistenceArgs substrate =
+minioSubstratePersistenceArgs :: Substrate -> String -> [String]
+minioSubstratePersistenceArgs substrate storageSize =
   case substrate of
     SubstrateHomeLocal ->
-      ["--set", "storage.className=manual", "--set", "storage.size=20Gi"]
+      ["--set", "storage.className=manual", "--set", "storage.size=" ++ storageSize]
     SubstrateAws ->
-      ["--set", "storage.className=manual", "--set", "storage.size=20Gi"]
+      ["--set", "storage.className=manual", "--set", "storage.size=" ++ storageSize]
 
 minioChartImages :: MinioImageSource -> (ContainerImage.ImageRef, ContainerImage.ImageRef)
 minioChartImages imageSource =
@@ -6332,7 +6359,7 @@ ensureRootChartNamespaceGuardrails repoRoot settings = do
         Left err -> failWith err
         Right items -> kubectlApplyJsonManifest repoRoot "root-chart-namespace-guardrails" items
  where
-  plan = Capacity.resource_plan (capacity (validatedConfig settings))
+  plan = validatedResourcePlan settings
 
 rootChartNamespaceGuardrailItems :: Capacity.ResourcePlan -> Either String [Value]
 rootChartNamespaceGuardrailItems plan =
@@ -6348,34 +6375,20 @@ dormantRootChartNamespaces =
 
 rootChartNamespaceGuardrailItemsFor :: Capacity.ResourcePlan -> String -> Either String [Value]
 rootChartNamespaceGuardrailItemsFor plan namespace = do
-  namespaceQuota <- requireGuardrailNamespaceQuota plan namespace
-  limitEnvelope <- requireGuardrailLimitEnvelope plan namespace
+  namespaceAdmission <- Placement.planNamespaceAdmission SubstrateAws (Text.pack namespace) plan
+  limitEnvelope <- Placement.planNamespaceLimits SubstrateAws (Text.pack namespace) plan
   pure
-    [ rootChartResourceQuotaManifest namespace namespaceQuota
+    [ rootChartResourceQuotaManifest namespace namespaceAdmission
     , rootChartLimitRangeManifest namespace limitEnvelope
     ]
 
-requireGuardrailNamespaceQuota
-  :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
-requireGuardrailNamespaceQuota plan namespace =
-  case find ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
-    Just namespaceQuota -> Right namespaceQuota
-    Nothing -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
-
-requireGuardrailLimitEnvelope
-  :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
-requireGuardrailLimitEnvelope plan namespace =
-  case find ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
-    Just profile -> Right (Capacity.resources profile)
-    Nothing -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
-
-rootChartResourceQuotaManifest :: String -> Capacity.NamespaceQuota -> Value
-rootChartResourceQuotaManifest namespace namespaceQuota =
+rootChartResourceQuotaManifest :: String -> Capacity.ResourceEnvelope -> Value
+rootChartResourceQuotaManifest namespace namespaceAdmission =
   object
     [ "apiVersion" .= ("v1" :: String)
     , "kind" .= ("ResourceQuota" :: String)
     , "metadata" .= rootChartGuardrailMetadata namespace (namespace ++ "-resource-quota")
-    , "spec" .= resourceQuotaSpec (Capacity.quota namespaceQuota)
+    , "spec" .= CapacityRender.resourceQuotaEnvelopeSpec namespaceAdmission
     ]
 
 rootChartLimitRangeManifest :: String -> Capacity.ResourceEnvelope -> Value
@@ -6389,8 +6402,8 @@ rootChartLimitRangeManifest namespace envelope =
           [ "limits"
               .= [ object
                      [ "type" .= ("Container" :: String)
-                     , "default" .= runtimeResourceVectorValue (Capacity.limit envelope)
-                     , "defaultRequest" .= runtimeResourceVectorValue (Capacity.request envelope)
+                     , "default" .= CapacityRender.resourceVectorRuntimeValue (Capacity.limit envelope)
+                     , "defaultRequest" .= CapacityRender.resourceVectorRuntimeValue (Capacity.request envelope)
                      ]
                  ]
           ]
@@ -6413,29 +6426,6 @@ rootChartGuardrailMetadata namespace name =
           , "app.kubernetes.io/managed-by" .= ("Helm" :: String)
           , "prodbox.io/chart-root" .= namespace
           ]
-    ]
-
-resourceQuotaSpec :: Capacity.ResourceVector -> Value
-resourceQuotaSpec vector =
-  object
-    [ "hard"
-        .= object
-          [ "requests.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-          , "limits.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-          , "requests.memory" .= memoryQuantity (Capacity.memory_mib vector)
-          , "limits.memory" .= memoryQuantity (Capacity.memory_mib vector)
-          , "requests.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
-          , "limits.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
-          , "requests.storage" .= memoryQuantity (Capacity.durable_storage_mib vector)
-          ]
-    ]
-
-runtimeResourceVectorValue :: Capacity.ResourceVector -> Value
-runtimeResourceVectorValue vector =
-  object
-    [ "cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-    , "memory" .= memoryQuantity (Capacity.memory_mib vector)
-    , "ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
     ]
 
 awsCommandEnvironment
@@ -7104,38 +7094,26 @@ cpuQuotaPercent :: Natural -> Natural
 cpuQuotaPercent milliCpu = (milliCpu + 9) `div` 10
 
 cpuQuantity :: Natural -> String
-cpuQuantity value = show value ++ "m"
+cpuQuantity = CapacityRender.cpuQuantity
 
 memoryQuantity :: Natural -> String
-memoryQuantity value = show value ++ "Mi"
+memoryQuantity = CapacityRender.memoryQuantity
 
 renderResourceVectorRuntime :: Capacity.ResourceVector -> String
-renderResourceVectorRuntime vector =
-  intercalate
-    ","
-    [ "cpu=" ++ cpuQuantity (Capacity.milli_cpu vector)
-    , "memory=" ++ memoryQuantity (Capacity.memory_mib vector)
-    , "ephemeral-storage=" ++ memoryQuantity (Capacity.ephemeral_storage_mib vector)
-    , "durable-storage=" ++ memoryQuantity (Capacity.durable_storage_mib vector)
-    ]
+renderResourceVectorRuntime = CapacityRender.renderResourceVectorRuntime
 
-clusterAllocatable :: Capacity.ResourcePlan -> Capacity.ResourceVector
-clusterAllocatable plan =
-  Capacity.host_capacity plan
-    `Capacity.resourceVectorMinus` Capacity.rke2_reserved plan
-    `Capacity.resourceVectorMinus` Capacity.eviction_floor plan
-
-hostCapacityCoversPlan :: Capacity.ResourceVector -> Capacity.ResourcePlan -> Bool
-hostCapacityCoversPlan observed plan =
-  Capacity.host_capacity plan `Capacity.resourceVectorFitsWithin` observed
-
-parseHostCapacityObservation :: String -> Either String Capacity.ResourceVector
+parseHostCapacityObservation :: String -> Either String ObservedHost.ObservedHostRoot
 parseHostCapacityObservation raw =
-  Capacity.ResourceVector
-    <$> lookupNatural "milli_cpu"
-    <*> lookupNatural "memory_mib"
-    <*> lookupNatural "ephemeral_storage_mib"
-    <*> lookupNatural "durable_storage_mib"
+  do
+    vector <-
+      Capacity.ResourceVector
+        <$> lookupNatural "milli_cpu"
+        <*> lookupNatural "memory_mib"
+        <*> lookupNatural "ephemeral_storage_mib"
+        <*> lookupNatural "durable_storage_mib"
+    ephemeralDevice <- parseDevice "ephemeral_device" "test-kubelet-device"
+    durableDevice <- parseDevice "durable_device" "test-retained-device"
+    ObservedHost.mkObservedHostRoot vector ephemeralDevice durableDevice
  where
   fields = map splitField (splitOnChar ',' raw)
   lookupNatural key =
@@ -7146,6 +7124,10 @@ parseHostCapacityObservation raw =
     case break (== '=') field of
       (key, '=' : value) -> (trimWhitespace key, trimWhitespace value)
       _ -> (trimWhitespace field, "")
+  parseDevice key fallback =
+    case ObservedHost.mkStorageDeviceId (Text.pack (maybe fallback id (lookup key fields))) of
+      Nothing -> Left ("invalid storage device id for `" ++ key ++ "`")
+      Just device -> Right device
 
 parseNatural :: String -> String -> Either String Natural
 parseNatural key value =
@@ -7160,29 +7142,36 @@ splitOnChar delimiter input =
     (before, _ : remaining) -> before : splitOnChar delimiter remaining
     (before, []) -> [before]
 
-observeHostCapacity :: FilePath -> IO (Either String Capacity.ResourceVector)
-observeHostCapacity repoRoot = do
+observeHostCapacity :: FilePath -> FilePath -> IO (Either String ObservedHost.ObservedHostRoot)
+observeHostCapacity repoRoot retainedRoot = do
   override <- lookupEnv "PRODBOX_TEST_HOST_CAPACITY"
   case override of
     Just raw -> pure (parseHostCapacityObservation raw)
-    Nothing -> observeHostCapacityFromHost repoRoot
+    Nothing -> observeHostCapacityFromHost repoRoot retainedRoot
 
-observeHostCapacityFromHost :: FilePath -> IO (Either String Capacity.ResourceVector)
-observeHostCapacityFromHost repoRoot = do
+observeHostCapacityFromHost
+  :: FilePath
+  -> FilePath
+  -> IO (Either String ObservedHost.ObservedHostRoot)
+observeHostCapacityFromHost repoRoot retainedRoot = do
   cpuResult <- observedCpuMilli repoRoot
   memoryResult <- observedMemoryMib
-  storageResult <- observedFilesystemMib repoRoot "/"
+  ephemeralResult <- observedFilesystemMib repoRoot "/"
+  durableResult <- observedFilesystemMib repoRoot retainedRoot
   pure $ do
     cpu <- cpuResult
     memory <- memoryResult
-    storage <- storageResult
-    Right
+    (ephemeralDevice, ephemeralStorage) <- ephemeralResult
+    (durableDevice, durableStorage) <- durableResult
+    ObservedHost.mkObservedHostRoot
       Capacity.ResourceVector
         { Capacity.milli_cpu = cpu
         , Capacity.memory_mib = memory
-        , Capacity.ephemeral_storage_mib = storage
-        , Capacity.durable_storage_mib = storage
+        , Capacity.ephemeral_storage_mib = ephemeralStorage
+        , Capacity.durable_storage_mib = durableStorage
         }
+      ephemeralDevice
+      durableDevice
 
 observedCpuMilli :: FilePath -> IO (Either String Natural)
 observedCpuMilli repoRoot = do
@@ -7207,7 +7196,10 @@ observedMemoryMib = do
       ["MemTotal:", kibText, "kB"] -> (`div` 1024) <$> parseNatural "MemTotal" kibText
       _ -> Left ("failed to parse host memory line: " ++ line)
 
-observedFilesystemMib :: FilePath -> FilePath -> IO (Either String Natural)
+observedFilesystemMib
+  :: FilePath
+  -> FilePath
+  -> IO (Either String (ObservedHost.StorageDeviceId, Natural))
 observedFilesystemMib repoRoot path = do
   outputResult <- captureToolOutput repoRoot "df" ["-Pm", path]
   pure $ do
@@ -7218,44 +7210,53 @@ observedFilesystemMib repoRoot path = do
         case drop 1 (lines (processStdout output)) of
           line : _ ->
             case words line of
-              _filesystem : blocks : _ -> parseNatural "df-1M-blocks" blocks
+              filesystem : blocks : _ -> do
+                device <-
+                  maybe
+                    (Left ("invalid filesystem identity from df: " ++ filesystem))
+                    Right
+                    (ObservedHost.mkStorageDeviceId (Text.pack filesystem))
+                capacity <- parseNatural "df-1M-blocks" blocks
+                Right (device, capacity)
               _ -> Left ("failed to parse df output line: " ++ line)
           [] -> Left "failed to parse df output: missing data line"
 
 ensureRke2ResourceGuardrails :: FilePath -> ValidatedSettings -> IO ExitCode
 ensureRke2ResourceGuardrails repoRoot settings = do
-  observedResult <- observeHostCapacity repoRoot
+  observedResult <- observeHostCapacity repoRoot (resolvedManualPvHostRoot settings)
   case observedResult of
     Left err -> failWith ("failed to observe host capacity before RKE2 reconcile: " ++ err)
     Right observed -> do
-      let plan = Capacity.resource_plan (capacity (validatedConfig settings))
-          authored = Capacity.host_capacity plan
-      if not (hostCapacityCoversPlan observed plan)
-        then
+      let plan = validatedResourcePlan settings
+          observedVector = ObservedHost.observedHostVector observed
+      case CapacityAllocation.compileResourcePlanAgainstObserved
+        observed
+        (validatedAllocatedPlan settings) of
+        Left compileError ->
           failWith
-            ( "observed host capacity is below capacity.resource_plan.host_capacity: observed="
-                ++ renderResourceVectorRuntime observed
-                ++ " required="
-                ++ renderResourceVectorRuntime authored
+            ( CapacityAllocation.renderCompileError compileError
+                ++ ": observed="
+                ++ renderResourceVectorRuntime observedVector
             )
-        else do
+        Right compiled -> do
+          let admittedPlan = CapacityAllocation.someAllocatedPlanSource compiled
           writeOutputLine
             ( "RKE2 resource guardrails: host capacity ok (observed="
-                ++ renderResourceVectorRuntime observed
+                ++ renderResourceVectorRuntime observedVector
                 ++ ", required="
-                ++ renderResourceVectorRuntime authored
+                ++ renderResourceVectorRuntime (Capacity.host_capacity plan)
                 ++ ")"
             )
           runSequentially
             [ ensureRootFileContent
                 repoRoot
                 rke2ResourceGuardrailConfigPath
-                (renderRke2ResourceGuardrailConfig plan)
+                (renderRke2ResourceGuardrailConfig admittedPlan)
                 "RKE2 kubelet resource guardrails"
             , ensureRootFileContent
                 repoRoot
                 rke2SystemdResourceDropInPath
-                (renderRke2SystemdResourceDropIn plan)
+                (renderRke2SystemdResourceDropIn admittedPlan)
                 "RKE2 systemd resource guardrails"
             , runCommand
                 Subprocess

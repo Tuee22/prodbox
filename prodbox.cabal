@@ -41,6 +41,7 @@ library
         Prodbox.Bootstrap.Broker.Routes
         Prodbox.Bootstrap.Broker.Server
         Prodbox.Bootstrap.Broker.SecretWorker
+        Prodbox.Bootstrap.Broker.ShutdownModel
         Prodbox.Bootstrap.Broker.Settings
         Prodbox.Bootstrap.Broker.StoreBoundary
         Prodbox.Bootstrap.Broker.Types
@@ -48,9 +49,14 @@ library
         Prodbox.BuildSupport
         Prodbox.Capacity.Allocation
         Prodbox.Capacity.Config
+        Prodbox.Capacity.Derivation
+        Prodbox.Capacity.Render
         Prodbox.Capacity.MeasuredProfile
+        Prodbox.Capacity.ObservedHost
+        Prodbox.Capacity.Placement
         Prodbox.Capacity.RuntimeMemory
         Prodbox.Capacity.Storage
+        Prodbox.Capacity.Types
         Prodbox.Tls.CertScope
         Prodbox.CheckCode
         Prodbox.CLI.Charts
@@ -83,6 +89,9 @@ library
         Prodbox.ControlPlane.CapabilityKind
         Prodbox.ControlPlane.CapabilityRef
         Prodbox.ControlPlane.Coordinate
+        Prodbox.ControlPlane.Runtime
+        Prodbox.ControlPlane.Route
+        Prodbox.ControlPlane.VaultSession
         Prodbox.ControlPlane.Observation
         Prodbox.ControlPlane.Permit
         Prodbox.ControlPlane.Program
@@ -92,6 +101,9 @@ library
         Prodbox.ControlPlane.AuthorityClock
         Prodbox.ControlPlane.Capacity
         Prodbox.ControlPlane.Interpreter
+        Prodbox.ControlPlane.MigrationEndpoint
+        Prodbox.ControlPlane.Server
+        Prodbox.ControlPlane.TlsRetentionEndpoint
         Prodbox.Daemon.Events
         Prodbox.Crypto.Aead
         Prodbox.Crypto.Envelope
@@ -156,7 +168,20 @@ library
         Prodbox.Lifecycle.Authority.ChartStatics
         Prodbox.Lifecycle.Authority.Config
         Prodbox.Lifecycle.Authority.Genesis
+        Prodbox.Lifecycle.Authority.Migration
+        Prodbox.Lifecycle.Authority.MigrationInterpreter
+        Prodbox.Lifecycle.Decommission.Commit
+        Prodbox.Lifecycle.Decommission.Frame
+        Prodbox.Lifecycle.Decommission.Graph
+        Prodbox.Lifecycle.Decommission.Journal
+        Prodbox.Lifecycle.Decommission.Manifest
+        Prodbox.Lifecycle.Decommission.NodeEffect
+        Prodbox.Lifecycle.Decommission.Permit
+        Prodbox.Lifecycle.Decommission.Receipt
+        Prodbox.Lifecycle.Decommission.Runner
+        Prodbox.Lifecycle.Decommission.Verifier
         Prodbox.Lifecycle.Authority.Operation
+        Prodbox.Lifecycle.Authority.OperationStore
         Prodbox.Lifecycle.Authority.OutboxSim
         Prodbox.Lifecycle.Authority.State
         Prodbox.Lifecycle.Authority.Submission
@@ -348,6 +373,7 @@ test-suite prodbox-unit
         BootstrapBrokerRuntime
         BootstrapBrokerSafety
         BootstrapBrokerServerSafety
+        BootstrapBrokerShutdownModel
         BrokerChartStatics
         CapabilityReadinessBarrierSuite
         ControlPlaneAuthorityClock
@@ -371,6 +397,22 @@ test-suite prodbox-unit
         LifecycleAuthorityBackupRepair
         LifecycleAuthorityConfig
         LifecycleAuthorityGenesis
+        LifecycleAuthorityMigration
+        ControlPlaneRoute
+        ControlPlaneMigrationEndpoint
+        ControlPlaneServer
+        ControlPlaneTlsRetentionEndpoint
+        ControlPlaneVaultSession
+        DecommissionCommit
+        DecommissionFrame
+        DecommissionGraph
+        DecommissionJournal
+        DecommissionManifest
+        DecommissionNodeEffect
+        DecommissionPermit
+        DecommissionReceipt
+        DecommissionRunner
+        DecommissionVerifier
         LifecycleAuthorityOperation
         LifecycleAuthorityOutboxSim
         LifecycleAuthorityState

@@ -24,6 +24,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Lifecycle.Authority.Operation (OperationRecord)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -127,22 +128,21 @@ smtpKeyRepairInterpreterSuite =
         fakeEvents finalState `shouldContain` [FakeDelete orphanKey]
         fakeEvents finalState `shouldContain` [FakeGuardedReplace expectedLeaseGuard]
 
-    it "deletes the newly-created uncommitted key when guarded CAS conflicts" $ do
+    it "retains the durably completed key when projection CAS conflicts" $ do
       stateRef <- newFakeState ModelBMissing [] FakeCasConflict
       result <- runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest
       result
         `shouldBe` Left
           (SmtpKeyRepairCommitFailed SmtpKeyCommitConflict)
       finalState <- readIORef stateRef
-      fakeInventory finalState `shouldBe` []
+      fakeInventory finalState `shouldBe` [replacementKey]
       fakeCreateRequests finalState `shouldBe` 1
       fakeEvents finalState
         `shouldContain` [ FakeCreate replacementKey 1
                         , FakeGuardedInitialize expectedLeaseGuard
-                        , FakeDelete replacementKey
                         ]
 
-    it "propagates compensation failure after a commit conflict" $ do
+    it "does not compensate a durably completed key after a projection conflict" $ do
       stateRef <-
         newFakeStateWith
           ModelBMissing
@@ -151,18 +151,10 @@ smtpKeyRepairInterpreterSuite =
           (Map.singleton replacementKey "compensation denied")
           Nothing
       result <- runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest
-      case result of
-        Left
-          ( SmtpKeyRepairCommitFailedAndCleanupRefused
-              SmtpKeyCommitConflict
-              (SmtpKeyDeleteFailed keyId detail)
-              _
-            ) -> do
-            keyId `shouldBe` replacementKey
-            detail `shouldBe` "compensation denied"
-        other -> expectationFailure ("expected compensation refusal, got " ++ show other)
+      result `shouldBe` Left (SmtpKeyRepairCommitFailed SmtpKeyCommitConflict)
       finalState <- readIORef stateRef
       fakeInventory finalState `shouldBe` [replacementKey]
+      fakeDeleteRequests finalState `shouldBe` 0
 
     it "attempts every planned cleanup and propagates every failure before waiting or creating" $ do
       let failures =
@@ -191,7 +183,7 @@ smtpKeyRepairInterpreterSuite =
       fakeCreateRequests finalState `shouldBe` 0
       fakeWaitRequests finalState `shouldBe` 0
 
-    it "brackets a created key and deletes it when commit is interrupted" $ do
+    it "retains and replays a durably completed key when projection commit is interrupted" $ do
       stateRef <- newFakeState ModelBMissing [] FakeCasInterrupt
       interrupted <-
         try (runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest)
@@ -204,12 +196,62 @@ smtpKeyRepairInterpreterSuite =
         Left err -> displayException err `shouldContain` "smtp commit interrupted"
         Right result -> expectationFailure ("expected interruption, got " ++ show result)
       finalState <- readIORef stateRef
-      fakeInventory finalState `shouldBe` []
+      fakeInventory finalState `shouldBe` [replacementKey]
       fakeEvents finalState
         `shouldContain` [ FakeCreate replacementKey 1
                         , FakeGuardedInitialize expectedLeaseGuard
-                        , FakeDelete replacementKey
                         ]
+      modifyIORef' stateRef $ \state -> state {fakeCasMode = FakeCasApply}
+      resumed <- runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest
+      case resumed of
+        Right (SmtpKeyRepairCreated committed) ->
+          committedSmtpCredentialKeyId committed `shouldBe` replacementKey
+        other -> expectationFailure ("expected completed-operation replay, got " ++ show other)
+      resumedState <- readIORef stateRef
+      fakeCreateRequests resumedState `shouldBe` 1
+
+    it "resumes an armed operation after interruption without an early create" $ do
+      stateRef <- newFakeState ModelBMissing [] FakeCasApply
+      modifyIORef' stateRef $ \state ->
+        state {fakeInterruptOperationArm = True}
+      interrupted <-
+        try (runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest)
+          :: IO
+               ( Either
+                   SomeException
+                   (Either SmtpKeyRepairExecutionError SmtpKeyRepairOutcome)
+               )
+      interrupted `shouldSatisfy` either (const True) (const False)
+      armedState <- readIORef stateRef
+      fakeCreateRequests armedState `shouldBe` 0
+      modifyIORef' stateRef $ \state ->
+        state {fakeInterruptOperationArm = False}
+      resumed <- runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest
+      resumed `shouldSatisfy` either (const False) (const True)
+      resumedState <- readIORef stateRef
+      fakeCreateRequests resumedState `shouldBe` 1
+
+    it "replays operation completion interrupted after CAS without creating twice" $ do
+      stateRef <- newFakeState ModelBMissing [] FakeCasApply
+      modifyIORef' stateRef $ \state ->
+        state {fakeInterruptOperationComplete = True}
+      interrupted <-
+        try (runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest)
+          :: IO
+               ( Either
+                   SomeException
+                   (Either SmtpKeyRepairExecutionError SmtpKeyRepairOutcome)
+               )
+      interrupted `shouldSatisfy` either (const True) (const False)
+      completedState <- readIORef stateRef
+      fakeInventory completedState `shouldBe` [replacementKey]
+      fakeCreateRequests completedState `shouldBe` 1
+      modifyIORef' stateRef $ \state ->
+        state {fakeInterruptOperationComplete = False}
+      resumed <- runSmtpKeyRepairWith (fakeInterpreter stateRef) repairRequest
+      resumed `shouldSatisfy` either (const False) (const True)
+      resumedState <- readIORef stateRef
+      fakeCreateRequests resumedState `shouldBe` 1
 
     it "fails closed on unobservable projection or IAM inventory without mutation" $ do
       projectionState <-
@@ -268,6 +310,7 @@ data FakeEvent
 
 data FakeState = FakeState
   { fakeProjection :: !(ModelBObservation SmtpCommittedProjection)
+  , fakeOperation :: !(ModelBObservation (OperationRecord Text Text ByteString))
   , fakeInventory :: ![SmtpAccessKeyId]
   , fakeInventoryOverride :: !(Maybe SmtpKeyInventoryObservation)
   , fakeDeleteFailures :: !(Map SmtpAccessKeyId Text)
@@ -280,6 +323,8 @@ data FakeState = FakeState
   , fakeWaitRequests :: !Int
   , fakePermitRequests :: !Int
   , fakeCreateRequests :: !Int
+  , fakeInterruptOperationArm :: !Bool
+  , fakeInterruptOperationComplete :: !Bool
   }
 
 newFakeState
@@ -301,6 +346,7 @@ newFakeStateWith projection inventory casMode deleteFailures inventoryOverride =
   newIORef
     FakeState
       { fakeProjection = projection
+      , fakeOperation = ModelBMissing
       , fakeInventory = inventory
       , fakeInventoryOverride = inventoryOverride
       , fakeDeleteFailures = deleteFailures
@@ -313,12 +359,15 @@ newFakeStateWith projection inventory casMode deleteFailures inventoryOverride =
       , fakeWaitRequests = 0
       , fakePermitRequests = 0
       , fakeCreateRequests = 0
+      , fakeInterruptOperationArm = False
+      , fakeInterruptOperationComplete = False
       }
 
 fakeInterpreter :: IORef FakeState -> SmtpKeyRepairInterpreter IO
 fakeInterpreter stateRef =
   SmtpKeyRepairInterpreter
     { smtpKeyRepairModelB = fakeModelB stateRef
+    , smtpKeyRepairOperationModelB = fakeOperationModelB stateRef
     , smtpKeyRepairAuthorityNow = Right . fakeNow <$> readIORef stateRef
     , smtpKeyRepairWaitUntil = \deadline -> do
         modifyIORef' stateRef $ \state ->
@@ -416,11 +465,49 @@ fakeModelB stateRef =
             throwIO (userError "smtp commit interrupted")
     }
 
+fakeOperationModelB
+  :: IORef FakeState
+  -> ModelBCasAdapter
+       'ClusterRetained
+       IO
+       (OperationRecord Text Text ByteString)
+fakeOperationModelB stateRef =
+  ModelBCasAdapter
+    { modelBObserve = \coordinate -> do
+        coordinate `shouldBe` smtpOperationCoordinate
+        fakeOperation <$> readIORef stateRef
+    , modelBCompareAndSwap = \request -> do
+        state <- readIORef stateRef
+        let version = modelBVersion "smtp-operation-v1"
+            apply value = do
+              modifyIORef' stateRef $ \current ->
+                current {fakeOperation = ModelBObserved version value}
+              pure (ModelBCasApplied version value)
+        case request of
+          ModelBInitializeGuarded coordinate _ value -> do
+            coordinate `shouldBe` smtpOperationCoordinate
+            case fakeOperation state of
+              ModelBMissing -> do
+                applied <- apply value
+                if fakeInterruptOperationArm state
+                  then throwIO (userError "operation arm response interrupted")
+                  else pure applied
+              observed -> pure (ModelBCasConflict observed)
+          ModelBReplaceGuarded coordinate _ _ value -> do
+            coordinate `shouldBe` smtpOperationCoordinate
+            applied <- apply value
+            if fakeInterruptOperationComplete state
+              then throwIO (userError "operation completion response interrupted")
+              else pure applied
+          _ -> error "SMTP operation interpreter emitted unguarded CAS"
+    }
+
 repairRequest :: SmtpKeyRepairRequest
 repairRequest =
   SmtpKeyRepairRequest
     { smtpKeyRepairProjectionCoordinate = smtpProjectionCoordinate
     , smtpKeyRepairLeaseCoordinate = leaseCoordinate
+    , smtpKeyRepairOperationCoordinate = const (Right smtpOperationCoordinate)
     , smtpKeyRepairInventoryBound = expectRight (mkSmtpKeyInventoryBound 2)
     , smtpKeyRepairLeasePolicy = defaultSesLeasePolicy
     }
@@ -448,6 +535,14 @@ smtpProjectionCoordinate =
     ( mkClusterRetainedCoordinate
         authority
         "smtp-commit/123456789012/ca-central-1/aws-ses"
+    )
+
+smtpOperationCoordinate :: ModelBObjectCoordinate 'ClusterRetained
+smtpOperationCoordinate =
+  expectRight
+    ( mkClusterRetainedCoordinate
+        authority
+        "smtp-create-operation/123456789012/1"
     )
 
 fencedPermit :: FencedCommitPermit

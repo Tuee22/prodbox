@@ -19,6 +19,7 @@ import Prodbox.CLI.Command
   ( AwsCommand (..)
   , BootstrapBrokerCommand (..)
   , ConfigCommand (..)
+  , ControlPlaneLaunchOptions
   , EdgeCommand (..)
   , GatewayCommand (..)
   , NativeCommand (..)
@@ -45,6 +46,7 @@ import Prodbox.Config.SchemaDhall
   , writeSchemaFiles
   )
 import Prodbox.Config.Tier0 (writeOperatorParametersToTier0)
+import Prodbox.ControlPlane.Runtime (runControlPlaneRole)
 import Prodbox.Dns (runDnsCommand)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
@@ -83,12 +85,15 @@ runNativeCommand repoRoot command =
 data NativeRuntimeCommand
   = BootstrapBrokerRuntimeCommand !BootstrapBrokerCommand
   | GatewayRuntimeCommand !GatewayCommand
+  | ControlPlaneRuntimeCommand !RuntimeRole !ControlPlaneLaunchOptions
   deriving (Eq, Show)
 
 nativeRuntimeCommand :: NativeCommand -> Maybe NativeRuntimeCommand
 nativeRuntimeCommand command = case command of
   NativeBootstrapBroker brokerCommand ->
     Just (BootstrapBrokerRuntimeCommand brokerCommand)
+  NativeControlPlane role options ->
+    Just (ControlPlaneRuntimeCommand role options)
   NativeGateway gatewayCommand@GatewayDaemonCommand {} ->
     Just (GatewayRuntimeCommand gatewayCommand)
   _ -> Nothing
@@ -97,6 +102,7 @@ nativeRuntimeRole :: NativeRuntimeCommand -> RuntimeRole
 nativeRuntimeRole runtimeCommand = case runtimeCommand of
   BootstrapBrokerRuntimeCommand _ -> BootstrapBroker
   GatewayRuntimeCommand _ -> GatewayRuntime
+  ControlPlaneRuntimeCommand role _ -> role
 
 nativeRuntimeConfigIdentity :: NativeRuntimeCommand -> RuntimeConfigIdentity
 nativeRuntimeConfigIdentity = runtimeRoleConfigIdentity . nativeRuntimeRole
@@ -109,6 +115,8 @@ runNativeRuntimeCommand repoRoot runtimeCommand =
       runBootstrapBrokerCommand repoRoot brokerCommand
     GatewayRuntimeCommand gatewayCommand ->
       runGatewayCommand repoRoot gatewayCommand
+    ControlPlaneRuntimeCommand role options ->
+      runControlPlaneRole role options
 
 runNonRuntimeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNonRuntimeCommand repoRoot command =
@@ -122,6 +130,7 @@ runNonRuntimeCommand repoRoot command =
       -- aws-ses relaxation.
       runAwsCommand repoRoot noLiveLongLivedPulumiStacksPreflight awsCommand
     NativeBootstrapBroker _ -> runtimeProjectionInvariantViolation
+    NativeControlPlane _ _ -> runtimeProjectionInvariantViolation
     NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
@@ -175,6 +184,7 @@ commandPrerequisites command =
     NativeBootstrapBroker brokerCommand ->
       case brokerCommand of
         BootstrapBrokerStart _ -> []
+    NativeControlPlane _ _ -> []
     -- Chart reconcile/delete apply against the active cluster.
     NativeCharts _ -> [K8sClusterReachable]
     NativeCheckCode -> []

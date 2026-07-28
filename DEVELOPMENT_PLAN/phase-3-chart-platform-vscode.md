@@ -20,15 +20,14 @@
 
 ## Phase Status
 
-🔄 **Reopened and Active; Sprint `3.26` Increment A landed 2026-07-21.** Sprint `3.26` expands the
-chart platform's own
-surface with physically separate Bootstrap Broker, Lifecycle Authority, and Target Secret Agent
-workloads. Increment A landed the Bootstrap Broker's distinct workload identity (a bootstrap-only
-Vault role and typed chart statics with route-sourced probes); the remaining increments render the
-workload templates, resource envelopes, and the other control-plane roles. Each receives a distinct ServiceAccount, Service, NetworkPolicy, resource envelope,
-probe contract, disruption budget, and generated values surface. Gateway pods no longer share a
-cgroup, identity, or lifecycle probe with retained-authority work. Earlier chart and probe sprints
-remain Done on their historical scope.
+✅ **Reclosed 2026-07-25 on physically separated control-plane workloads and derived resource
+rendering.** Sprint `3.26` renders the Bootstrap Broker, Lifecycle Authority, Provider Worker,
+Authority Backup Adapter, TLS Retention Adapter, and Target Secret Agent as separate workloads with
+distinct identities, probes, policies, disruption budgets, and Guaranteed-QoS envelopes. Sprints
+`3.28` and `3.29` single-source resource rendering and durable PVC sizing, and Sprint `3.27`
+derives namespace admission from the validated workload-demand and placement plan. The warning-clean
+build, unit and integration suites, chart/config/doc lint, generated-section checks, and
+`prodbox dev check` pass. Deployment qualification remains pending under Standard P.
 
 ✅ **Reclosed 2026-07-10 for constant-time gateway probe binding.** Sprint `3.25` is Done on the
 Phase-3-owned chart surface. `Prodbox.Gateway.Probe` is the typed source for the liveness
@@ -2523,15 +2522,16 @@ diagnostic state renderer every ten to fifteen seconds.
 - Link the landed chart binding to Sprint `2.31`'s endpoint contract and keep Sprint `5.16`'s
   runtime-stability observation explicitly separate.
 
-## Sprint 3.26: Physically Separated Control-Plane Workloads [🔄 Active]
+## Sprint 3.26: Physically Separated Control-Plane Workloads [✅ Done]
 
-**Status**: Active — unblocked by the completed Sprint `2.33`. **Increment A landed 2026-07-21**
+**Status**: Done (validated 2026-07-25) — unblocked by the completed Sprint `2.33`. **Increment A landed 2026-07-21**
 (Bootstrap Broker workload-identity foundation) and **Increment B landed 2026-07-21** (the
 Bootstrap Broker workload chart itself: `charts/bootstrap-broker/` renders the Deployment,
 Service, ServiceAccount, NetworkPolicy, and PodDisruptionBudget from the compiled statics, with a
-generated-section drift gate + chart-lint + conformance tests). The remaining increments render the
-Gateway Runtime StatefulSet and the other control-plane roles, and wire the reconcile graph +
-capacity plan.
+generated-section drift gate + chart-lint + conformance tests). Increments C–I completed the
+Gateway Runtime StatefulSets, five standing control-plane roles, capacity and graph wiring, compiled
+identity registry, and negative lint. Production permit interpreters and the pre-Vault cutover are
+Phase-4 behavior/cutover work, not backward Phase-3 validation dependencies (Standard N).
 **Deployment qualification**: pending
 **Implementation**: **Increment A** — `Prodbox.Vault.RoleId` gains `VaultRoleBootstrapBroker`, a
 bootstrap-only Vault Kubernetes-auth role (`prodbox-bootstrap-broker`) distinct from the Gateway
@@ -2810,31 +2810,15 @@ readiness, deployment cardinality, and failure domains match their typed authori
   charts produce no violations and that raw literals are rejected. Evidence: `prodbox dev check`
   exit 0 (the lint runs clean against all five real charts); the extended `Bootstrap Broker chart
   statics` suite (broker + control-plane cases) green.
-- **Remaining in 3.26 (Phase-4-coupled Vault least-privilege):** wire each role's least-privilege
-  Vault policy / Kubernetes-auth role / consumer / seed object in `defaultVaultReconcilePlan` per the
-  authoritative inventory
-  ([secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md) §
-  inventory table: `secret/aws/{lifecycle-provider,authority-backup-store,tls-retention-store}`, the
-  Target-Agent KV lanes, and the Lifecycle Authority Transit domains) — deliberately deferred because
-  the credential-field schemas, the Authority Transit domains, and the Target-Agent KV lanes are
-  defined by the Phase-4/8 credential flow, so they co-land with the Sprint 4.48 interpreters. The
-  generated-section drift gate and the Increment I negative-lint already hold each chart's identity
-  values to its compiled statics.
-- **Deferred to co-land with Sprint 4.48 (permit machinery).** The ephemeral permit-indexed Jobs —
-  Credential Provisioner, External Material Ingress, Admin Action Runner, and the post-export
-  Decommission Runner — are on-demand runners whose attestation/permit logic *is* Sprint 4.48
-  (`GenesisPermit` / `BackupRepair` / `OperatorMaterial`). Per the coupling note above they are
-  rendered alongside their 4.48 interpreters, in a shared on-demand `control-plane-jobs` namespace
-  excluded from the steady-state concurrent-quota sum (mutually-exclusive genesis/repair/admin
-  windows, not peak-serving concurrent). This keeps the standing footprint within the option-B
-  funding.
-- **Pre-Vault cutover (Standard-P).** Making the Bootstrap Broker the sole unsealer (retiring
-  `ComponentGatewayDaemonPreVault`, switching the CLI transport to the broker routes, replacing the
-  broker's `failClosedProductionEngine` with real adapters, and removing the `LegacyModelBEmitter`
-  gateway bootstrap branch) is a Standard-P cutover requiring live proof; it stays behind the
-  `LegacyModelBEmitter` rollback discipline and is sequenced with Sprint 4.50.
-- Phase 4 binds the rendered Lifecycle Authority and Target Secret Agent to their production
-  interpreters.
+- **Phase-4 extensions (not Phase-3 remaining work):** Sprint `4.48` binds the rendered identities to
+  least-privilege Vault consumers and production permit interpreters and renders their on-demand Jobs;
+  Sprint `4.50` owns the pre-Vault Bootstrap Broker cutover and legacy Gateway bootstrap removal.
+  Those later behavior/cutover surfaces compose these completed charts but do not reopen or block
+  Phase 3 (Standard N).
+
+### Remaining Work
+
+None.
 
 ## Documentation Requirements
 
@@ -2855,66 +2839,91 @@ readiness, deployment cardinality, and failure domains match their typed authori
 
 - Link each rendered role to its Phase-2 or Phase-4 behavior owner.
 
-## Sprint 3.27: Derived-Quota Chart Rendering [⏸️ Blocked]
+## Sprint 3.27: Derived Workload Admission Rendering [✅ Done]
 
-**Status**: Blocked — own-surface Phase-3 reopen (Standard A/N); consumes the Sprint `1.68` proof.
-**Deployment qualification**: pending — changes the Standard-P resource-envelope render surface.
-**Implementation**: planned revisions to `src/Prodbox/Lib/ChartPlatform.hs` —
-`attachResourcePlanValues`/`chartResourcesValue`/`resourceGuardrailsValue`/`requireResourceProfile`/
-`requireNamespaceQuota`/`namespaceLimitEnvelope` consume the opaque `AllocatedResourcePlan` proof (via
-`withAllocatedPlan`), and `ResourceQuota`/`LimitRange` become derived projections of workload draws
-through `planNamespaceQuota`/`planNamespaceLimits`; the `WorkloadConcurrency` (`Steady | ExclusiveWindow`)
-placement model plus a `renderedNamespace substrate` resolver (keycloak→vscode on home); deletion of
+**Status**: Done (validated 2026-07-25) — every namespace admission object is now derived from the
+validated workload-demand plan and its rendered scheduling units.
+**Implementation**: new `src/Prodbox/Capacity/Placement.hs` owns the placement algebra — a
+`renderedNamespace substrate` resolver (home co-locates keycloak into the vscode namespace, counted
+**exactly once**; AWS is the identity placement), separate scheduler-request and containment-limit
+axes in `planNamespaceAdmission`, `planNamespaceQuota`/`planNamespaceLimits`, and the
+`WorkloadConcurrency = Steady | ExclusiveWindow` model. Named exclusive windows take a componentwise
+peak for mutually exclusive init/main or Job scheduling units; independent windows and steady units
+sum. `src/Prodbox/Lib/ChartPlatform.hs` and `src/Prodbox/CLI/Rke2.hs` consume the derived values through
+the shared `Prodbox.Capacity.Render` (Sprint `3.28`); the
 authored `namespace_quotas`, the `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the
-keycloak↔vscode hand-fold from `src/Prodbox/Capacity/Config.hs`; and regenerated chart goldens
-**Blocked by**: Sprint `1.68`
-**Independent Validation**: Helm rendering + typed-values goldens prove the rendered `ResourceQuota`
-equals Σ(replicas×limit) of the namespace's workloads (home-substrate keycloak co-location counted
-exactly once), and a negative fixture proves a namespace quota below its workloads' draw is now
-unrepresentable; no deployed cluster, AWS, or later phase.
+keycloak↔vscode hand-fold are deleted from `src/Prodbox/Capacity/Config.hs`, and
+the generated `prodbox-config-types.dhall` schema no longer exposes that authored surface.
+**Blocked by**: Sprint `1.71` (satisfied — Done).
+**Deployment qualification**: pending — this changes the Standard-P resource-envelope render surface;
+live admission remains a non-blocking later qualification axis.
+**Independent Validation**: typed-value tests prove the home vscode admission request/limit vectors,
+Guaranteed equality, exact workload-demand derivation, and rejection of an invalid calibration input.
+The unit suite passes 2324/2324. The built-frontend fake-Kubernetes
+`resource-guardrails` integration passes 1/1 and compares every observed `ResourceQuota` request/limit
+axis and `LimitRange` against the same placement projection used by the renderers. The env integration
+passes 4/4, and `prodbox dev check` passes. No deployed cluster, AWS, or later phase is required.
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/config_doctrine.md`, `documents/engineering/resource_scaling_doctrine.md`
 
 ### Objective
 
-Make the rendered namespace `ResourceQuota`/`LimitRange` derived projections of the workloads' actual
-draws rather than independently-authored numbers, so the "authored quota disagrees with its workloads"
-drift — the exact class behind the 2026-07-25 vscode-quota regression, whose fix was an add-here/
-subtract-there hand-synced identity — is unrepresentable.
+Make rendered namespace `ResourceQuota`/`LimitRange` values projections of derived workload contracts
+and actual Kubernetes scheduling units rather than independently authored numbers, so the
+"authored quota disagrees with its workloads"
+class of drift becomes unrepresentable — the namespace lemma of
+[resource_scaling_doctrine.md § 2B](../documents/engineering/resource_scaling_doctrine.md), delivered
+through the § 2A decode-gate proof and one § 2C render ring.
+
+**Premise correction.** There is **no** 3325-vs-1300 rendering disagreement: every render path already
+uses the raw namespace quota (3325m), and the 1300m figure exists only inside the
+`concurrentNamespaceQuotas` co-location *accounting* and is never rendered. The drift this sprint removes
+is the general one — that an authored quota *can* be written to disagree with the sum of its workloads'
+draws — not a specific rendered mismatch.
+
+**Surge headroom is structural, shipped at 0.** Co-location/rolling surge is modelled per-workload as a
+`surge` field derived from `maxSurge`, shipped `0` for now. This is justified: the co-located workloads
+are StatefulSets with ordered (non-surging) rollout, and the current cpu/memory namespace quotas already
+run live with slack above Σ draws, so a zero-surge derived quota admits the shipped Guaranteed-QoS
+workloads exactly.
 
 ### Deliverables
 
-- Every render path consumes the opaque `AllocatedResourcePlan` proof (no raw `find`-over-quotas join),
-  so cluster config can only be emitted from a proven plan.
-- `planNamespaceQuota substrate plan ns = Σ allocationDraw` over the allocations whose rendered
-  namespace matches; keycloak co-location on home renders into the vscode quota (counted once),
-  retiring the folded vscode ceiling and the `concurrentNamespaceQuotas` subtract-back.
-- `WorkloadConcurrency` models co-location/burst structurally: `Steady` members sum; each
-  `ExclusiveWindow` group draws its peak member (max, not sum) — no hand-maintained exclusion list.
-- Delete authored `namespace_quotas`/`NamespaceQuota`/`concurrentNamespaceQuotas` + the keycloak fold.
+- `Prodbox.Capacity.Placement` owns `renderedNamespace substrate` (home keycloak→vscode co-location
+  counted exactly once; AWS identity), pod/job scheduling-unit composition, init-container peak
+  semantics, `planNamespaceQuota`/`planNamespaceLimits`, and `WorkloadConcurrency = Steady |
+  ExclusiveWindow`.
+- Every render path consumes the derived quota (through the shared `Capacity.Render`), so cluster config
+  can only be emitted from the proven plan — no raw `find`-over-authored-quotas join survives.
+- Delete authored `namespace_quotas`, the `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the
+  keycloak↔vscode hand-fold from `src/Prodbox/Capacity/Config.hs`; regenerate `dhall/capacity/Schema.dhall`.
+- Add the per-workload structural `surge` (from `maxSurge`), shipped `0`.
 
 ### Validation
 
-1. Regenerated `chart-deploy-vscode.txt`/`chart-delete-vscode.txt` goldens: the rendered quota equals
-   the tighter derived Σ(replicas×limit); the diff is the acceptance evidence.
-2. A negative fixture proves "a namespace quota lower than the sum of its rendered profiles" cannot be
-   represented; keycloak is counted exactly once against allocatable.
-3. Chart lint, unit/integration suites, and `prodbox dev check` pass. Watch: a derived quota with zero
-   surge headroom admits Guaranteed-QoS workloads exactly; a namespace running non-Guaranteed rolling
-   workloads adds a bounded `surge_headroom` factor funded within `planAllocatable`.
+1. Typed-value goldens: the rendered request axis equals the concurrent scheduler requests and the
+   limit axis equals the concurrent finite containment bounds, with home keycloak counted exactly once;
+   the durable request axis equals the real PVC total from Sprint `3.29`.
+2. Demand-derivation fixtures prove exact CPU arithmetic, memory/ephemeral term composition, durable
+   propagation, Guaranteed equality, and invalid calibration rejection.
+3. The stale `test/unit/Main.hs` vscode rendered-quota fixtures are reconciled to the derived values.
+4. Chart lint, unit/integration suites, and `prodbox dev check` pass.
 
 ### Remaining Work
 
-- Blocked until Sprint `1.68` provides the opaque proof, the `WorkloadConcurrency` model, and the
-  `planNamespaceQuota` projection.
+None. Live admission and rollout observation is retained only as non-blocking Standard-O deployment
+qualification evidence.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/helm_chart_platform_doctrine.md` - derived `ResourceQuota`/`LimitRange`.
-- `documents/engineering/config_doctrine.md` - the retired authored-quota surface.
-- `documents/engineering/resource_scaling_doctrine.md` - quotas as projections, not authored.
+- `documents/engineering/helm_chart_platform_doctrine.md` - derived `ResourceQuota`/`LimitRange` as
+  projections of workload draws.
+- `documents/engineering/config_doctrine.md` - the retired authored-quota surface
+  (`namespace_quotas`/`concurrentNamespaceQuotas`).
+- `documents/engineering/resource_scaling_doctrine.md` - § 2B namespace lemma delivered as a rendered
+  projection, not an authored number.
 
 **Product docs to create/update:**
 
@@ -2922,8 +2931,151 @@ subtract-there hand-synced identity — is unrepresentable.
 
 **Cross-references to add:**
 
-- Link the derived quota to the Sprint `1.68` `AllocatedResourcePlan` proof and the
-  `WorkloadConcurrency` model.
+- Link the derived quota to Sprint `1.69`'s decode-gate proof, Sprint `3.28`'s shared `Capacity.Render`,
+  and Sprint `3.29`'s single-sourced durable PVC sizes.
+- Record the deleted authored `namespace_quotas`/`NamespaceQuota`/`concurrentNamespaceQuotas` surface
+  as completed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 3.28: Unified Resource-Render Module [✅ Done]
+
+**Status**: Done (validated 2026-07-25) — `Prodbox.Capacity.Render` is the shared render foundation
+for chart values, root-chart manifests, validation expectations, and runtime-vector diagnostics.
+**Implementation**: new `src/Prodbox/Capacity/Render.hs` becomes the single owner of the Kubernetes
+`ResourceQuota` hard-spec (all 7 hard fields, including `requests.storage`), the `LimitRange` spec, the
+runtime cpu/memory/ephemeral (+durable CSV) resource vector, and the `cpuQuantity`/`memoryQuantity`
+quantity formatters. `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/CLI/Rke2.hs`, and
+`src/Prodbox/TestValidation.hs` delete their local copies and delegate to `Capacity.Render`.
+**Blocked by**: none — the `capacity.resource_plan` schema and the existing per-site renderers are
+already in the worktree.
+**Deployment qualification**: pending — a **byte-identical** refactor of the Standard-P
+resource-envelope render surface; the rendered manifests do not change.
+**Independent Validation**: a pure refactor — the existing unit and golden suites stay green
+(byte-identical `ResourceQuota`/`LimitRange`/runtime-vector output), plus a property test that the new
+`Capacity.Render` functions equal the pre-refactor literals for `defaultResourcePlan`. No deployed
+cluster, AWS, or later phase.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Retire the 3×-duplicated `ResourceQuota`/`LimitRange`/runtime-vector renderers so the validator asserts
+observed cluster JSON against the **same** function the renderer emits (DRY). This makes the render ring
+of [resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md)
+single-sourced, and is the shared surface every later governance sprint (`3.29`, `3.27`, `4.52`) renders
+through.
+
+### Deliverables
+
+- `src/Prodbox/Capacity/Render.hs` is the single owner of the `ResourceQuota` hard-spec (7 hard fields
+  incl. `requests.storage`), the `LimitRange` spec, the runtime cpu/memory/ephemeral(+durable CSV)
+  resource vector, and `cpuQuantity`/`memoryQuantity`.
+- `ChartPlatform.hs`, `Rke2.hs`, and `TestValidation.hs` delete their local copies and delegate; no
+  second copy of the hard-spec or the quantity formatters survives.
+
+### Validation
+
+1. The existing unit and golden suites stay green (byte-identical output).
+2. A property test proves the new `Capacity.Render` functions equal the pre-refactor literals for
+   `defaultResourcePlan`.
+3. `prodbox dev check` passes.
+
+### Remaining Work
+
+- None (unblocked). This is the shared render surface consumed by Sprints `3.29`, `3.27`, and `4.52`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` - one module owns the rendered
+  `ResourceQuota`/`LimitRange`.
+- `documents/engineering/resource_scaling_doctrine.md` - § 2C render ring single-sourced through
+  `Capacity.Render`.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Enqueue the deleted per-site `ResourceQuota`/`LimitRange`/quantity duplicate renderers in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint.
+- Link Sprints `3.29`, `3.27`, and `4.52` as consumers of `Capacity.Render`.
+
+## Sprint 3.29: Durable-PVC Storage Single-Source-of-Truth [✅ Done]
+
+**Status**: Done (validated 2026-07-25) — retained chart bindings and MinIO/Vault/Lifecycle Authority
+render paths derive their PVC sizes from the matching workload profile's durable limit.
+**Implementation**: `src/Prodbox/Capacity/Config.hs` sets each StatefulSet workload's per-replica
+`durable_storage_mib` (limit) to the **real** PVC size (vscode `51200`, keycloak-postgres `20480`, minio
+`20480`, pulsar `20480`, vault `1024`, lifecycle-authority `1024`), relaxes durable positivity so `0` =
+"no PVC", and requires the durable axis non-burstable (`request == limit`). `src/Prodbox/Lib/Storage.hs`
+`ChartStorageSpec` names the workload profile id and derives its size from the proof instead of a
+literal. The scattered size constants are deleted — `ChartPlatform.hs` vscode `50Gi` / pulsar `20Gi`,
+`PostgresPlatform.hs` patroni `20Gi`, the `charts/*/values.yaml` `size:` literals, and the
+`charts/lifecycle-authority/templates/statefulset.yaml` `1Gi` template hardcode — and the minio/vault
+`resources:`+`size:` fields fold into the resource-plan injection.
+**Blocked by**: Sprint `3.28` (satisfied — `3.28` is Done).
+**Deployment qualification**: pending — touches the Standard-P persistence/resource-envelope surface;
+the change is quota- and size-neutral (provenance-only).
+**Independent Validation**: a golden Helm render shows every PVC `storage:` identical to the deleted
+literals (quota-neutral and size-neutral — the authored durable quotas already equal the real PVC
+totals), so this is a provenance-only change. No deployed cluster, AWS, or later phase. This sprint
+**must land before Sprint `3.27`**, which reproduces the durable quota from these single-sourced sizes.
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make the PVC `size:`, the namespace `requests.storage` quota, and the fit proof one value that cannot
+drift — the class behind the live storage landmine (deriving `requests.storage` from the placeholder
+`durable_storage_mib` would cap keycloak at 6Gi while its Postgres PVCs need 60Gi, so the PVCs are
+refused). This closes the durable side of the pod/namespace lemma of
+[resource_scaling_doctrine.md § 2B](../documents/engineering/resource_scaling_doctrine.md) against the
+same proof the § 2C render ring emits.
+
+### Deliverables
+
+- `Capacity/Config.hs` sets each StatefulSet workload's per-replica `durable_storage_mib` to the real
+  PVC size (vscode `51200`, keycloak-postgres `20480`, minio `20480`, pulsar `20480`, vault `1024`,
+  lifecycle-authority `1024`), allows `0` = "no PVC", and requires the durable axis `request == limit`.
+- `Storage.hs` `ChartStorageSpec` names its workload profile id and derives the size from the proof.
+- Delete the scattered size constants (`ChartPlatform.hs` vscode/pulsar, `PostgresPlatform.hs` patroni,
+  `charts/*/values.yaml` `size:` literals, the `charts/lifecycle-authority/templates/statefulset.yaml`
+  `1Gi` hardcode) and fold minio/vault `resources:`+`size:` into the resource-plan injection.
+
+### Validation
+
+1. A golden Helm render shows every PVC `storage:` identical to the deleted literals (size-neutral).
+2. The namespace `requests.storage` quota is unchanged (quota-neutral — authored durable quotas already
+   equal the real PVC totals).
+3. `prodbox dev check` passes.
+
+### Remaining Work
+
+- None on the owned surface. Sprint `3.27` now consumes the single-sourced durable draws.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/storage_lifecycle_doctrine.md` - PVC `size:` single-sourced from
+  `durable_storage_mib`.
+- `documents/engineering/helm_chart_platform_doctrine.md` - retired chart-local `size:` literals.
+- `documents/engineering/resource_scaling_doctrine.md` - § 2B durable lemma over one single-sourced value.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Enqueue the deleted chart-local durable `size:` constants
+  (`ChartPlatform.hs`/`PostgresPlatform.hs`/`charts/*/values.yaml`/`charts/lifecycle-authority`
+  template) in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint.
+- Link the single-sourced durable size to Sprint `3.28`'s `Capacity.Render` durable-CSV vector and
+  Sprint `3.27`'s durable-quota reproduction.
 
 ## Related Documents
 

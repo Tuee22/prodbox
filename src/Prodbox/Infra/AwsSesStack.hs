@@ -93,6 +93,9 @@ import Prodbox.Infra.LongLivedPulumiBackend
 import Prodbox.Infra.MinioBackend
   ( pulumiBackendLoginTimeoutSeconds
   )
+import Prodbox.Lifecycle.Authority.OperationStore
+  ( operationRecordCodec
+  )
 import Prodbox.Lifecycle.AuthorityConfig
   ( resolveLongLivedCheckpointAuthority
   )
@@ -106,6 +109,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , checkpointAuthorityClusterId
   , checkpointAuthorityGatewayEndpoint
   , mkChartLifetimeCoordinate
+  , mkClusterRetainedCoordinate
   , mkTargetClusterSecretSink
   , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
@@ -115,17 +119,23 @@ import Prodbox.Lifecycle.CheckpointAuthorityStore
   , gatewayModelBCasAdapter
   )
 import Prodbox.Lifecycle.DesiredPresence qualified as DesiredPresence
+import Prodbox.Lifecycle.HostDirectAuthorityStore
+  ( materialHostDirectModelBCasAdapter
+  )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , LeaseGrant
   , LeaseKey
   , LeasePolicy
+  , LeaseProjection
   , LeaseRecoveryPredecessor
   , LeaseUsePermit
   , LeaseWork (..)
   , ProviderObservation (..)
   , addAuthorityDuration
+  , decodeLeaseProjection
   , defaultSesLeasePolicy
+  , encodeLeaseProjection
   , leaseAcquireCoordinate
   , leaseKeyAccount
   , leasePolicyGrantTtl
@@ -169,10 +179,12 @@ import Prodbox.Lifecycle.SmtpKeyRepairInterpreter
   , smtpKeyRepairOutcomeCredential
   )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( RegisteredTargetSet
+  ( CredentialGeneration
+  , RegisteredTargetSet
   , TargetIntentCoordinate
   , TargetIntentProjection
   , TargetValueDigest
+  , credentialGenerationValue
   , decodeTargetIntentProjection
   , encodeTargetIntentProjection
   , mkRegisteredTargetSet
@@ -199,6 +211,10 @@ import Prodbox.Pulumi.EncryptedBackend
   , withDecryptedStackEnvironment
   , withFencedDecryptedStackEnvironment
   , withMigratedDecryptedStackEnvironment
+  )
+import Prodbox.Pulumi.HostDirectObjectStore
+  ( HostDirectPulumiMaterial
+  , resolveHostDirectPulumiMaterial
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Readiness
@@ -738,6 +754,13 @@ byteStringModelBCodec =
     , decodeModelBValue = Right
     }
 
+leaseProjectionModelBCodec :: LeasePolicy -> ModelBCodec LeaseProjection
+leaseProjectionModelBCodec policy =
+  ModelBCodec
+    { encodeModelBValue = Right . encodeLeaseProjection
+    , decodeModelBValue = first show . decodeLeaseProjection policy
+    }
+
 smtpCommittedModelBCodec :: ModelBCodec SmtpCommittedProjection
 smtpCommittedModelBCodec =
   ModelBCodec
@@ -1254,6 +1277,7 @@ pulumiStackOutputs projectDir environment = do
 
 data AwsSesLeaseTransaction = AwsSesLeaseTransaction
   { awsSesTransactionRepoRoot :: !FilePath
+  , awsSesTransactionRetainedMaterial :: !HostDirectPulumiMaterial
   , awsSesTransactionAuthority :: !LongLivedCheckpointAuthority
   , awsSesTransactionPolicy :: !LeasePolicy
   , awsSesTransactionLeaseCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
@@ -1332,65 +1356,74 @@ runAwsSesLeaseTransaction repoRoot authority operationalCredentials selection ac
       case mkTargetIntentCoordinate authority leaseKey of
         Left err -> pure (Left ("resolve target-intent coordinate: " ++ show err))
         Right targetCoordinate -> do
-          providerEnvironment <- pulumiSesProviderBaseEnv operationalCredentials
-          runtimeResult <-
-            pure $
-              mkProductionLeaseRuntime
+          materialResult <- resolveHostDirectPulumiMaterial repoRoot
+          case materialResult of
+            Left err -> pure (Left ("resolve retained authority material: " ++ err))
+            Right retainedMaterial -> do
+              providerEnvironment <- pulumiSesProviderBaseEnv operationalCredentials
+              let leaseAdapter =
+                    materialHostDirectModelBCasAdapter
+                      retainedMaterial
+                      authority
+                      (leaseProjectionModelBCodec policy)
+              case mkProductionLeaseRuntime
                 authority
+                leaseAdapter
                 policy
                 (fromIntegral leaseRuntimePollMicros)
                 ( observeAwsSesProviderQuiescence
                     projectDir
                     (awsCliCredsFromProviderEnv providerEnvironment)
                     stackConfig
-                )
-          case runtimeResult of
-            Left err -> pure (Left ("configure aws-ses lease runtime: " ++ show err))
-            Right runtime -> do
-              requestResult <- beginProductionLeaseAcquire authority policy leaseKey
-              case requestResult of
-                Left err -> pure (Left ("begin aws-ses lease acquisition: " ++ show err))
-                Right request -> do
-                  let interpreter = productionLeaseInterpreter runtime
-                      leaseCoordinate = leaseAcquireCoordinate request
-                  acquisitionResult <- acquireLeaseDetailedWith interpreter policy request
-                  case acquisitionResult of
-                    Left err -> pure (Left ("acquire aws-ses lease: " ++ show err))
-                    Right acquisition ->
-                      runAcquiredLease
-                        interpreter
-                        policy
-                        leaseCoordinate
-                        (leaseAcquisitionGrant acquisition)
-                        ( do
-                            recovery <-
-                              recoverAwsSesTargetIntents
-                                authority
-                                interpreter
-                                policy
-                                leaseCoordinate
-                                (leaseAcquisitionGrant acquisition)
-                                (leaseAcquisitionRecoveryPredecessor acquisition)
-                                selection
-                                targetCoordinate
-                            case recovery of
-                              Left err -> pure (Left err)
-                              Right () ->
-                                action
-                                  AwsSesLeaseTransaction
-                                    { awsSesTransactionRepoRoot = repoRoot
-                                    , awsSesTransactionAuthority = authority
-                                    , awsSesTransactionPolicy = policy
-                                    , awsSesTransactionLeaseCoordinate = leaseCoordinate
-                                    , awsSesTransactionLeaseKey = leaseKey
-                                    , awsSesTransactionTargetCoordinate = targetCoordinate
-                                    , awsSesTransactionInterpreter = interpreter
-                                    , awsSesTransactionStackConfig = stackConfig
-                                    , awsSesTransactionOperationalCredentials = operationalCredentials
-                                    , awsSesTransactionProjectDir = projectDir
-                                    }
-                                  (leaseAcquisitionGrant acquisition)
-                        )
+                ) of
+                Left err -> pure (Left ("configure aws-ses lease runtime: " ++ show err))
+                Right runtime -> do
+                  requestResult <- beginProductionLeaseAcquire authority policy leaseKey
+                  case requestResult of
+                    Left err -> pure (Left ("begin aws-ses lease acquisition: " ++ show err))
+                    Right request -> do
+                      let interpreter = productionLeaseInterpreter runtime
+                          leaseCoordinate = leaseAcquireCoordinate request
+                      acquisitionResult <- acquireLeaseDetailedWith interpreter policy request
+                      case acquisitionResult of
+                        Left err -> pure (Left ("acquire aws-ses lease: " ++ show err))
+                        Right acquisition ->
+                          runAcquiredLease
+                            interpreter
+                            policy
+                            leaseCoordinate
+                            (leaseAcquisitionGrant acquisition)
+                            ( do
+                                recovery <-
+                                  recoverAwsSesTargetIntents
+                                    retainedMaterial
+                                    authority
+                                    interpreter
+                                    policy
+                                    leaseCoordinate
+                                    (leaseAcquisitionGrant acquisition)
+                                    (leaseAcquisitionRecoveryPredecessor acquisition)
+                                    selection
+                                    targetCoordinate
+                                case recovery of
+                                  Left err -> pure (Left err)
+                                  Right () ->
+                                    action
+                                      AwsSesLeaseTransaction
+                                        { awsSesTransactionRepoRoot = repoRoot
+                                        , awsSesTransactionRetainedMaterial = retainedMaterial
+                                        , awsSesTransactionAuthority = authority
+                                        , awsSesTransactionPolicy = policy
+                                        , awsSesTransactionLeaseCoordinate = leaseCoordinate
+                                        , awsSesTransactionLeaseKey = leaseKey
+                                        , awsSesTransactionTargetCoordinate = targetCoordinate
+                                        , awsSesTransactionInterpreter = interpreter
+                                        , awsSesTransactionStackConfig = stackConfig
+                                        , awsSesTransactionOperationalCredentials = operationalCredentials
+                                        , awsSesTransactionProjectDir = projectDir
+                                        }
+                                      (leaseAcquisitionGrant acquisition)
+                            )
 
 runAcquiredLease
   :: LeaseInterpreter IO inventory
@@ -1445,7 +1478,8 @@ observeAwsSesProviderQuiescence projectDir environment stackConfig = do
       ProviderUnobservable (Text.pack (show failure))
 
 recoverAwsSesTargetIntents
-  :: LongLivedCheckpointAuthority
+  :: HostDirectPulumiMaterial
+  -> LongLivedCheckpointAuthority
   -> LeaseInterpreter IO inventory
   -> LeasePolicy
   -> ModelBObjectCoordinate 'ClusterRetained
@@ -1454,10 +1488,11 @@ recoverAwsSesTargetIntents
   -> AwsSesTargetSelection
   -> TargetIntentCoordinate
   -> IO (Either String ())
-recoverAwsSesTargetIntents _ _ _ _ _ Nothing _ _ = pure (Right ())
-recoverAwsSesTargetIntents authority leaseInterpreter policy leaseCoordinate currentGrant (Just predecessor) selection coordinate = do
+recoverAwsSesTargetIntents _ _ _ _ _ _ Nothing _ _ = pure (Right ())
+recoverAwsSesTargetIntents retainedMaterial authority leaseInterpreter policy leaseCoordinate currentGrant (Just predecessor) selection coordinate = do
   let base =
         targetCommitInterpreterFor
+          retainedMaterial
           authority
           leaseInterpreter
           leaseCoordinate
@@ -1494,16 +1529,18 @@ waitForAuthorityDuration authority duration = do
         (addAuthorityDuration now duration)
 
 targetCommitInterpreterFor
-  :: LongLivedCheckpointAuthority
+  :: HostDirectPulumiMaterial
+  -> LongLivedCheckpointAuthority
   -> LeaseInterpreter IO inventory
   -> ModelBObjectCoordinate 'ClusterRetained
   -> LeaseGrant
   -> AwsSesTargetSelection
   -> TargetCommitInterpreter IO (Map Text.Text Text.Text)
-targetCommitInterpreterFor authority leaseInterpreter leaseCoordinate grant selection =
+targetCommitInterpreterFor retainedMaterial authority leaseInterpreter leaseCoordinate grant selection =
   TargetCommitInterpreter
     { targetCommitGlobalAdapter =
-        gatewayModelBCasAdapter
+        materialHostDirectModelBCasAdapter
+          retainedMaterial
           authority
           (targetIntentModelBCodec (awsSesRegisteredTargets selection))
     , targetCommitSinkAdapter = gatewayTargetSecretAdapter
@@ -1568,7 +1605,8 @@ observeCommittedSmtpProjection transaction = do
         Right coordinate -> do
           observed <-
             modelBObserve
-              ( gatewayModelBCasAdapter
+              ( materialHostDirectModelBCasAdapter
+                  (awsSesTransactionRetainedMaterial transaction)
                   (awsSesTransactionAuthority transaction)
                   smtpCommittedModelBCodec
               )
@@ -1606,6 +1644,7 @@ materializeCommittedSmtp transaction selection grant permit committed =
       let digest = smtpTargetPayloadDigest fields
           targetInterpreter =
             targetCommitInterpreterFor
+              (awsSesTransactionRetainedMaterial transaction)
               (awsSesTransactionAuthority transaction)
               (awsSesTransactionInterpreter transaction)
               (awsSesTransactionLeaseCoordinate transaction)
@@ -2065,7 +2104,15 @@ repairAwsSesSmtpCredential transaction grant environment =
           smtpInterpreter =
             SmtpKeyRepairInterpreter
               { smtpKeyRepairModelB =
-                  gatewayModelBCasAdapter authority smtpCommittedModelBCodec
+                  materialHostDirectModelBCasAdapter
+                    (awsSesTransactionRetainedMaterial transaction)
+                    authority
+                    smtpCommittedModelBCodec
+              , smtpKeyRepairOperationModelB =
+                  materialHostDirectModelBCasAdapter
+                    (awsSesTransactionRetainedMaterial transaction)
+                    authority
+                    (operationRecordCodec 16384)
               , smtpKeyRepairAuthorityNow = observeGatewayAuthorityTime authority
               , smtpKeyRepairWaitUntil =
                   waitForGatewayAuthorityTime authority leaseRuntimePollMicros
@@ -2090,6 +2137,10 @@ repairAwsSesSmtpCredential transaction grant environment =
             SmtpKeyRepairRequest
               { smtpKeyRepairProjectionCoordinate = projectionCoordinate
               , smtpKeyRepairLeaseCoordinate = leaseCoordinate
+              , smtpKeyRepairOperationCoordinate =
+                  awsSesSmtpOperationCoordinate
+                    authority
+                    (awsSesTransactionLeaseKey transaction)
               , smtpKeyRepairInventoryBound = inventoryBound
               , smtpKeyRepairLeasePolicy = awsSesTransactionPolicy transaction
               }
@@ -2099,6 +2150,23 @@ repairAwsSesSmtpCredential transaction grant environment =
             (("repair fenced SES SMTP credential: " ++) . show)
             (smtpKeyRepairOutcomeCredential <$> result)
         )
+
+awsSesSmtpOperationCoordinate
+  :: LongLivedCheckpointAuthority
+  -> LeaseKey
+  -> CredentialGeneration
+  -> Either Text.Text (ModelBObjectCoordinate 'ClusterRetained)
+awsSesSmtpOperationCoordinate authority leaseKey generation =
+  first
+    (Text.pack . show)
+    ( mkClusterRetainedCoordinate
+        authority
+        ( "smtp-create-operation/"
+            <> leaseKeyAccount leaseKey
+            <> "/"
+            <> Text.pack (show (credentialGenerationValue generation))
+        )
+    )
 
 mintAwsSesWorkSession
   :: AwsSesLeaseTransaction

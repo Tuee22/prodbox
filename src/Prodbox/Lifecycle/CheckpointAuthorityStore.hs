@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 
 -- | Production gateway-backed Model-B compare-and-swap adapter for retained
@@ -32,6 +33,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter
   , ModelBCodec (..)
+  , StoreLifetime (ChartLifetime)
   , checkpointAuthorityGatewayEndpoint
   )
 import Prodbox.Lifecycle.ModelBCasTransport
@@ -39,14 +41,12 @@ import Prodbox.Lifecycle.ModelBCasTransport
   , modelBCasAdapterOverTransport
   )
 
--- | The gateway daemon object-store transport is polymorphic in the storage
--- lifetime it carries: it validates the coordinate's authority and logical name
--- only, so it serves any lifetime the caller demands. (Sprint 4.51 Stage D
--- retypes this to @'ChartLifetime@ once the retained coordinates move host-direct.)
+-- | The gateway daemon object-store transport is chart-lifetime only. Retained
+-- authority coordinates therefore cannot typecheck at this boundary.
 gatewayModelBCasAdapter
   :: LongLivedCheckpointAuthority
   -> ModelBCodec value
-  -> ModelBCasAdapter l IO value
+  -> ModelBCasAdapter 'ChartLifetime IO value
 gatewayModelBCasAdapter authority codec =
   modelBCasAdapterOverTransport authority (gatewayTransport authority) codec
 

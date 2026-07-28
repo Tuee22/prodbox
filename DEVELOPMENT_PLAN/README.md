@@ -31,6 +31,17 @@ govern this plan suite.
 
 ## Closure Status
 
+**Current head state (2026-07-27 — Phase `2` reclosed on proof-carrying Bootstrap Broker
+shutdown).** Sprint `2.36` resolves running replay completions before cancellation, keeps child
+cancellation in a persistent structured tree, reports join-deadline expiry as
+`BrokerShutdownIncomplete`, and publishes `BrokerStopped` only through an opaque exact-empty
+postcondition witness. The deterministic finalizer-stall regression is green. Sprint `5.23` then landed its code-owned
+surface — a pure, exhaustively-scheduled shutdown model (`Prodbox.Bootstrap.Broker.ShutdownModel`)
+and run-final residue oracle over that witness, proving the pre-fix `Stopped + live replay waiter`
+counterexample reachable and unreachable under the proof-carrying postcondition; the live
+full-suite-contention exercise is the non-blocking Standard-O axis. Deployment qualification
+remains pending.
+
 > **Declarative-plan note (Standard D).** This section is a condensed milestone ledger, not a
 > per-sprint changelog. The authoritative per-sprint closure detail lives in the phase documents
 > ([phase-0](phase-0-planning-documentation.md) … [phase-8](phase-8-email-invite-auth.md)) and the
@@ -38,8 +49,9 @@ govern this plan suite.
 > live status is the [Phase Overview](#phase-overview) and [Current Plan Status](#current-plan-status)
 > tables below. The dated blow-by-blow was consolidated here on review to keep the plan declarative.
 
-**Current head state (2026-07-21 — Phases `0`–`2` reclosed; the lifecycle-control-plane
-redesign continues into Phase `3`).** The
+**Historical head state (2026-07-21 — superseded on 2026-07-26 by Sprint `2.36`).** At that
+revision, Phases `0`–`2` were recorded reclosed and the lifecycle-control-plane redesign continued
+into Phase `3`. The
 current revision is not deployment-qualified. Two full-suite attempts supplied a production
 counterexample to the July 11 closure narrative:
 
@@ -57,9 +69,10 @@ The earlier sprints remain historical completed work on their stated, narrower c
 They do not prove the expanded architecture. Sprint `0.16` recloses Phase `0` on the governance
 and design correction. Phase `1` is reclosed on Sprint `1.67` after Sprints `1.61`–`1.66` landed
 and the generic Kubernetes prerequisite was decoupled from home-local RKE2 facts. Sprint `2.32` is
-Done on its code-owned single-writer emitter surface, and Phase `2` is reclosed on Sprint `2.33`,
+Done on its code-owned single-writer emitter surface, and Phase `2` was then reclosed on Sprint `2.33`,
 which extracts pre-Vault recovery into a minimal Bootstrap Broker and cuts the pre-Vault scope from
-the Gateway Runtime. Phases `3`–`8` remain open on their own surfaces; their Active, Planned, and
+the Gateway Runtime. The 2026-07-26 shutdown counterexample supersedes only that reclosure claim.
+Phases `3`–`8` remain open on their own surfaces; their Active, Planned, and
 forward-only Blocked states are recorded in the Phase Overview and their phase documents, and
 Sprint `3.26` is now unblocked by the completed Sprint `2.33`.
 
@@ -68,7 +81,7 @@ the `LCPC-2026-07-11` structural correction: cross-boundary contracts become com
 generated projections, retained custody becomes durability-indexed, restoration becomes a derived
 total graph, and authored capacity becomes measured-certified (and, on Sprint `1.68`, an opaque compile-time
 over-commitment proof). Foundation Epoch Sprints
-`1.63`–`1.66`, `2.34`, `5.20`, and `7.34` are Done; Sprints `4.51` and `5.21` retain their own
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, and `7.34` are Done; Sprint `5.21` retains its own
 Active status. Sprints `1.61` and `1.62` are also Done after their shrink-rescoped capability and
 temporal-capacity work landed (readiness evidence moved to Sprint `2.34`; the cached Vault session
 and native S3 client moved to Sprints `1.64` and `1.66`). No later-phase incompleteness reopens
@@ -156,6 +169,7 @@ Each row is one dated reopen/closure milestone; the owning phase doc carries the
 
 | Date | Milestone |
 |------|-----------|
+| 2026-07-25 | **Resource-governance doctrine adopted — Phases 1/3/4 reopened on their own resource surfaces (docs authored ahead of code).** A live-surfaced storage landmine (deriving a namespace `requests.storage` quota from the placeholder `durable_storage_mib` would cap keycloak at 6Gi while its Postgres PVCs need 60Gi → PVCs refused) generalized into a doctrine: *one value, one proof, unrepresentable over-commit across cpu/ram/storage*. Honest three-ring boundary ([resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md)) — Dhall is a defense-in-depth generator cross-check (no refinement types), the **Haskell decode gate** is where over-commit is truly unrepresentable (the `AllocatedResourcePlan` proof becomes a required field of `ValidatedSettings`), and the observed host is re-proved at reconcile (dual-device durable vs ephemeral). New sprints, dependency-ordered **`3.28`→`1.69`→`3.29`→`4.52`→`3.27`** (+`1.70`): `3.28` one shared `Capacity.Render`; `1.69` the decode gate + `planAllocatable`/`planTotalDraw` projections (retiring `validateResourcePlan`); `3.29` durable PVC size single-sourced from `durable_storage_mib` (quota/size-neutral — authored durable quotas already equal real PVC totals); `4.52` observed-host `compileResourcePlanAgainstObserved` (deleting `hostCapacityCoversPlan` + both `clusterAllocatable`); `3.27` derived quotas via `planNamespaceQuota`/`renderedNamespace`/`WorkloadConcurrency` (deleting authored `namespace_quotas`); `1.70` `GuaranteedEnvelope` via `WorkloadQoS`. Reconciled: the 3-axis `CapacityBudget` **stays** (live in `Capacity.Storage`/`Scaling.Autoscaler`); only unused `MilliCpu`/`MebiBytes` retire. DAG roots `3.28`/`1.69` are 📋 Planned; `1.70`/`3.29`/`3.27`/`4.52` are ⏸️ Blocked on their earlier-or-same-phase code prerequisites. `Deployment qualification: pending` (resource-envelope/persistence/topology surface). |
 | 2026-07-25 | **Sprint `1.68` LANDED — Phase 1 reclosed; over-commitment now unrepresentable in code.** The opaque proof-carrying `AllocatedResourcePlan (c :: Certification)` and its total `compileResourcePlan` landed in the new `src/Prodbox/Capacity/Allocation.hs` (DataKinds phantom + `SCertification` singleton + `SomeAllocatedPlan`; hidden-constructor `HostCapacity`/`ClusterBudget`/`WorkloadAllocation`/`CertifiedWorkload`), the non-saturating `resourceVectorSubtractChecked` + extracted `validateRawResourcePlanShape` in `Capacity/Config.hs`, the `GuaranteedEnvelope`/`mkGuaranteedEnvelope` (`request == limit`) witness, and the `runConformanceTier` over-commit gate (`resourcePlanOverCommitViolations`) in `CheckCode.hs`. Evidence: `prodbox dev check` exit 0 (warning-clean `-Werror` build, fourmolu, HLint, conformance incl. the new gate); 18/18 `test/unit/Allocation.hs`; the `validateResourcePlan` over-commit lemmas green (the `workloadOverQuotaPlan` fixture retargeted to the `api` namespace under the co-located `concurrentNamespaceQuotas` fold). `prodbox-config-types.dhall` unchanged (the proof is not Dhall-facing). Consumer Sprints `3.27`/`4.52` are now **📋 Planned** (unblocked). Two pre-existing `test/unit/Main.hs` rendered-quota assertions still encode pre-`2026-07-25` vscode values and are owned by Sprint `3.27`'s derived-from-draw refactor. Deployment qualification stays `pending` (Standard-P resource-envelope surface). |
 | 2026-07-25 | **Resource-model over-commitment made unrepresentable — Phase 1 reopened on Sprint `1.68` (own-surface, Standard A/N), with consumer Sprints `3.27`/`4.52`.** A live `test all --substrate home-local` gateway CPU-throttle counterexample — the gateway pinned at its 750m limit, ~93% cgroup throttle, periodic RTS heap-overflow — **passed every capacity validation yet still failed at runtime**, proving the runtime-`Either` capacity model still lets an illegal state be represented. The refactor moves the `host ≥ cluster ≥ Σworkloads` nesting into an opaque proof-carrying `AllocatedResourcePlan` (total `compileResourcePlan`, matching `ServiceCapacityPlan`/`RuntimeMemoryPlan`): a non-saturating `resourceVectorSubtractChecked` replaces the saturating budget subtraction; namespace `ResourceQuota`s become **derived** projections of workload draws (retiring authored `namespace_quotas`/`concurrentNamespaceQuotas`/the keycloak↔vscode hand-fold); (b) `cluster ≤ host` is closed at reconcile against **observed** host facts; a `GuaranteedEnvelope` witness catches mis-authored QoS; a `dev check` gate fails the build if `defaultResourcePlan` over-commits. Memory-(c) is already structural via `RuntimeMemoryPlan`; CPU-(c) stays a non-erasable `uncertified-until-first-profile` seam (Sprint `5.21`). Docs authored ahead of code — sprints `Planned`/`Blocked`, `Deployment qualification: pending`. |
 | 2026-07-25 | **Live-surfaced vscode-namespace capacity regression FIXED (home qualification, 3rd blocker past gateway+SES).** With the gateway + SES fixes, the home `test all` reached the workload-chart deploy, where the vscode pod was refused: `FailedCreate ... exceeded quota: vscode-resource-quota, used=1725m, limited=1300m`. Root cause: the supported runtime deploys Keycloak + its 3-instance keycloak-postgres **co-located in the vscode namespace** (confirmed: one keycloak, one `prodbox-vscode-pg` cluster-wide, empty `keycloak` namespace), and `concurrentNamespaceQuotas` already documents/excludes that co-located shape from the single-node budget — but the Sprint 1.65/3.26-C vscode-quota trims (2425→1400→1300m) sized the **rendered** ResourceQuota for vscode *alone*, leaving no headroom to admit the co-located Keycloak. Fix (`src/Prodbox/Capacity/Config.hs`): fold the standalone `keycloak` allowance into the vscode NamespaceQuota (1300→3325m CPU) so Pods admit, and subtract that same allowance back out of the vscode contribution in `concurrentNamespaceQuotas` — **budget-neutral** (the single-node concurrent sum is unchanged; Keycloak still counted exactly once). Evidence: `prodbox dev check` exit 0 (`validateResourcePlan` holds, config drift clean, guardrail goldens unbroken). **Live re-validation** (vscode Pod admits) is the pending Standard-O axis on the next `test all --substrate home-local`. |
@@ -281,11 +295,11 @@ Standard-P axis.
 | Phase | Name | Current status | New owner |
 |-------|------|----------------|-----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Reclosed on Sprint `0.17`** after adopting the Foundation Epoch and the Standard P interim escape-path guard (previously reclosed on Sprint `0.16` for the physical control-plane SSoT and deployment-qualification governance). Governance Sprint `0.18` adds the certificate-scope policy adoption as an additional governance sprint on the same documentation surface (no further reclose event). | Documentation topology, certificate-scope governance, and Standard P |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed on Sprint `1.68` (Done; own-surface, Standard A/N); previously reclosed on Sprint `1.67`.** Sprints `1.61`–`1.68` are all ✅ Done. Sprint `1.68` makes cluster/host resource over-commitment **unrepresentable**: an opaque proof-carrying `AllocatedResourcePlan` (built by the total `compileResourcePlan`, matching the `ServiceCapacityPlan`/`RuntimeMemoryPlan` idiom) with a non-saturating `resourceVectorSubtractChecked` replacing the saturating budget subtraction, a `GuaranteedEnvelope` witness (`request == limit`), and a `dev check` gate that fails the build if `defaultResourcePlan` over-commits — motivated by a live gateway CPU-throttle counterexample that passed every capacity validation yet still failed at runtime. Deployment qualification stays `pending` (Standard-P resource-envelope surface). | Operation-indexed capabilities, exact graph requirements, absolute deadlines, service-capacity algebra, resource-envelope over-commitment proof, native object-store and managed Vault-session boundaries, conformance tier and legacy escape registry, measured capacity certification, and substrate-neutral prerequisite topology |
-| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Reclosed on Sprint `2.33`.** Sprints `2.30`–`2.35` are all ✅ Done: the bounded single-writer emitter actor/journal with Lease/incarnation/recovery authority (`2.32`), the compiled service boundary + latched readiness (`2.34`), the configurable certificate-scope algebra + derived edge projections (`2.35`), and the minimal Bootstrap Broker + gateway scope cut (`2.33`) that gives `bootstrap-broker`/`gateway-runtime` their own roles and mounted configs, limits the broker route surface to bounded Vault init/unseal/baseline/PKI + child custody, and removes every pre-Vault handler from the Gateway. Standard P keeps production on the mutually exclusive `LegacyModelBEmitter`; live proof and deployment qualification remain pending, while Sprint `3.26` owns physical workload/PV/EBS rendering. | Single-writer emitter actor/journal, whole-transition ownership, Bootstrap Broker extraction, gateway scope reduction, compiled service boundary and latched readiness, configurable certificate-scope algebra and derived edge projections |
-| 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 **Reopened and Active; Sprint `3.26` Increments A–I landed.** A–F: the Bootstrap Broker workload (distinct bootstrap-only Vault role + compiled chart statics; `charts/bootstrap-broker/` Deployment/Service/SA/NetworkPolicy/PDB + generated-section drift gate + chart-lint), its capacity quota + `ChartPlatform` render, the chart-only `ComponentChartBootstrapBroker` reconcile-graph node + bijection, the `charts/gateway` per-node Deployment→**StatefulSet** conversion with retained emitter-journal volumes (home hostPath / AWS `ReadWriteOncePod` PVC) + Lease RBAC, and the `vaultIdentityRegistryViolations` compiled cross-check. G: control-plane capacity funded by the operator-approved home gateway 3→2 emitter reduction (frees 800m/544Mi). H: the five standing control-plane role charts — `charts/{lifecycle-authority,provider-worker,authority-backup,tls-retention,target-secret-agent}/` (chart-only graph nodes off `supportedChartNames`, no native install step; 7-role collision-free Vault inventory; drift-gated statics). I: the per-role negative-lint fixtures (`controlPlaneChartStaticViolations`). Remaining: each role's least-privilege Vault policy/consumer/seed object and the permit Jobs (co-land with the Sprint `4.48` credential flow), and the Standard-P pre-Vault cutover (with `4.50`). Sprint `3.27` (📋 Planned — unblocked by the completed `1.68`) makes the rendered `ResourceQuota`/`LimitRange` derived projections of the actual workload draws (deleting authored `namespace_quotas`). | Separate broker/authority/agent workloads, identities, policies, probes, retained journals, resource envelopes, and derived-from-draw namespace quotas |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 **Reopened; Sprint `4.48` Active** (Increments A–H landed + validated through 2026-07-24: the pure genesis admission fold `GenesisFrozen → EstablishAuthorityBackup → BackupEstablished`, the durable operation journal/outbox, the `AuthorityState` aggregate, the post-genesis backup-repair reopen fold, the idempotent operation-submission front-door, the disjoint admin-action permit acceptance fold, the versioned TLS-retention promotion/restore fold, and the in-force-config propose-CAS fold, plus a deterministic crash/restart outbox interpreter over fakes (Increment I) realizing the Independent-Validation crash matrix — the pure authority core, 77/77 `LifecycleAuthority*` tests; unblocked by Sprint `3.26`'s landed control-plane charts). Foundation Epoch Sprint `4.51` is also Active (Increment A landed 2026-07-14; Increment B cutover deferred). Sprints `4.49`–`4.50` follow `4.48`. Sprint `4.52` (📋 Planned — unblocked by the completed `1.68`) closes the cluster-≤-host invariant at reconcile by compiling the resource plan against **observed** host facts (superseding the authored-only `4.41` `hostCapacityCoversPlan` check). | Durable Lifecycle Authority, immutable checkpoints, operation journal/outbox, target delivery, authority-epoch cutover, removal of gateway/host-direct authority, durability-indexed retained authority storage, observed-host over-commit rejection |
-| 5 | Canonical Test Suite | 🔄 **Reopened; Sprint `5.21` active** (the recorder gate landed; live `--record-profile` collection + the first committed profile remain). Foundation Epoch Sprint `5.20` is ✅ Done. Sprints `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked by completed Sprint `2.35`. | Capability-bound preparation, always-run cleanup DAG, CPU/queue/deadline/fault oracle, derived restore graph and total executor, measured-profile recorder, certificate-scope serving validation |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed on Sprint `1.71`.** `Prodbox.Capacity.Derivation` is the sole workload-envelope builder; scheduler requests derive from service demand, memory/scratch/storage terms, QoS, and topology, while limits remain distinct containment projections. Raw workload envelopes no longer decode. Evidence: 2,324/2,324 unit, 24/24 focused derivation/allocation, 4/4 env, generated schema, and `dev check` exit 0. | Operation-indexed capabilities, exact graph requirements, absolute deadlines, service-capacity algebra, derived workload-resource contracts, resource-envelope over-commitment proof and decode gate, native object-store and managed Vault-session boundaries, conformance tier and legacy escape registry, measured calibration certification, and substrate-neutral prerequisite topology |
+| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Reclosed on Sprint `2.36` (2026-07-27).** Terminal shutdown is proof-carrying; timeout is explicitly incomplete and cannot publish `BrokerStopped`. | Single-writer emitter actor/journal, Bootstrap Broker extraction and proof-carrying shutdown, gateway scope reduction, compiled service boundary and latched readiness, configurable certificate-scope algebra |
+| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Done.** Sprint `3.26` closes the independently validated chart/identity/capacity/graph surface; Phase-4 interpreters and cutovers compose it without backward-blocking Phase 3. Sprint `3.27` derives separate scheduler-request and containment-limit admission axes; Sprints `3.28`/`3.29` remain Done. | Separate broker/authority/agent workloads, identities, policies, probes, retained journals, topology-derived resource contracts, one shared resource renderer, single-sourced PVC storage, and derived namespace admission |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 **Reopened; Sprint `4.50` Active.** Foundation Epoch Sprint `4.51` and Sprint `4.52` are ✅ Done. Sprint `4.51` validates generation-scoped durable SES operation replay (SMTP 9/9, operation journal 10/10, serial unit 2,357/2,357, `dev check` exit 0); live AWS response-loss remains Standard-O. Sprint `4.52` refines the decoded `AllocatedResourcePlan` against an opaque `ObservedHostRoot`; live host-probe exercise remains Standard-O. | Durable Lifecycle Authority, immutable checkpoints, operation journal/outbox, target delivery, authority-epoch cutover, removal of gateway/host-direct authority, durability-indexed retained authority storage, observed-host over-commit rejection (dual-device) |
+| 5 | Canonical Test Suite | 🔄 **Reopened; Sprint `5.23` is ✅ Done on its code-owned surface** (a pure, exhaustively-scheduled forced-drain/finalizer shutdown model + run-final structured-concurrency residue oracle; live full-suite contention is the Standard-O axis). Existing `5.21` calibration and `5.22` certificate-scope work remain open. | Capability-bound preparation, always-run cleanup DAG, CPU/queue/deadline/fault oracle, derived restore graph, calibration recorder, certificate-scope serving validation, shutdown-race/residue oracle |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ⏸️ **Reopened; Sprint `6.4` blocked by `5.19`.** | Home clean-room cutover, rollback, consecutive aggregate, and zero-residue prerequisite evidence |
 | 7 | AWS Substrate Foundations | ⏸️ **Reopened; Sprint `7.33` blocked by `6.4`.** Foundation Epoch Sprint `7.34` is ✅ Done (harness postflight residue narrowed to per-run). | AWS Broker/Target-Agent/Gateway parity, exact client transport to the single retained home authority, resource isolation, prerequisite fault evidence, and per-run postflight residue narrowing |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | ⏸️ **Reopened; Sprints `8.11`–`8.12` follow `7.33`.** | Durable SES provider revision, narrow mutation fence, credential generation/outbox, and invite fault campaign |
@@ -330,21 +344,34 @@ public raw hash of plaintext secrets; the evidence digest covers only those publ
 | AWS | pending complete `LCPC-2026-07-11` frozen identity | pending complete current-revision identity | Two consecutive `prodbox test all --substrate aws` | pending normalized old→new mapping plus rendered EKS production envelopes/rates | AWS `LCPC-2026-07-11` plus endpoint binding, gateway saturation, authority/target/EKS restart, cancellation/response loss, backup refusal/primary-loss exact restore, and cleanup-owner death/takeover pending | pending | pending per-run stack/EBS/DNS absence, durable cleanup takeover, retained-authority quiescence, and dependency-safe Operational IAM cleanup | pending | pending | **pending** (`8.12`; `7.33` prerequisite evidence) |
 
 Any change to process topology, capability wiring, deadline algebra, resource envelopes,
-persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row. Sprints
-`1.68`/`3.27`/`4.52` change the **resource-envelope** surface named in that clause; both rows are
-already `pending`, so nothing flips to un-proven, but each carries `Deployment qualification: pending`
+persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row. The
+resource-governance sprints `1.68`/`1.69`/`1.70`/`3.28`/`3.29`/`3.27`/`4.52` change the
+**resource-envelope / persistence / substrate-routing** surface named in that clause — the decode gate,
+single-sourced PVC storage, derived namespace quotas, and observed-host dual-device recompile; both rows
+are already `pending`, so nothing flips to un-proven, but each carries `Deployment qualification: pending`
 and the current revision must not be called deployment-ready on the strength of the new compile-time
-proofs alone.
+proofs alone. The live proof (an over-committed config refused at decode, an undersized host refused at
+reconcile, and derived quotas admitting every real PVC on a running cluster) is a Standard-O axis for the
+next `prodbox test all` on each substrate.
 
 ## Current Plan Status
 
-Phases `0` and `2` are reclosed (Phase `0` on Sprint `0.17`, with the later governance-only
-Sprint `0.18`; Phase `2` on Sprint `2.33`). Phase `1` was reclosed on Sprint `1.67` (Sprints
-`1.61`–`1.67` Done) and, after a Standard A/N own-surface reopen, is **reclosed again on Sprint
-`1.68` (✅ Done)**: cluster/host resource over-commitment is now unrepresentable via the opaque
-`AllocatedResourcePlan` proof, and its consumer Sprints `3.27`/`4.52` are now 📋 Planned (unblocked). Sprint `2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker and cuts the
-pre-Vault scope out of the Gateway Runtime, so every Phase-2 sprint (`2.30`–`2.35`) is Done. Phases
-`3`–`8` remain open on their expanded owned surfaces. Their exact Active, Planned, and forward-only
+Phases `0`–`2` are reclosed; Sprint `2.36` removes the forced-shutdown path where
+`BrokerStopped` could coexist with live internal ownership. Sprint `1.71` replaced independently authored workload
+envelopes with derived workload contracts. Earlier Sprints `1.61`–`1.70` remain Done: `1.69` makes
+the proof the config **decode gate** (a required
+field of `ValidatedSettings` built over the decoded in-force plan, so an over-committed *authored* config
+— not just the compiled-in default — is unrepresentable) and `1.70` (✅ Done) wires the
+`GuaranteedEnvelope`. Sprint `1.71` derives envelopes from workload proof inputs, and Sprint `3.27`
+now derives Kubernetes scheduling admission from those contracts. **`4.52`** consumes the completed
+allocation/placement proof against observed host facts. Sprints `3.28`/`3.29` remain Done. The
+doctrine's SSoT is
+[resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md); over-commit
+is unrepresentable at the Haskell decode gate, Dhall is a defense-in-depth cross-check, and the host is
+re-proved at reconcile. Sprint `2.33` extracts pre-Vault recovery into a minimal Bootstrap Broker and cuts the
+pre-Vault scope out of the Gateway Runtime, so every Phase-2 sprint (`2.30`–`2.35`) is Done. Phase
+`3` is reclosed on Sprint `3.27`; Phases `4`–`8` remain open on their expanded owned surfaces.
+Their exact Active, Planned, and forward-only
 Blocked states are summarized in the Phase Overview and defined in the phase files; no later phase
 reopens an earlier one. Production remains on the mutually exclusive `LegacyModelBEmitter` pending
 Standard P; Sprint `3.26` (now unblocked by the completed `2.33`) renders the broker and later
@@ -581,7 +608,7 @@ registers the structural owners:
   gate that fails the build if `defaultResourcePlan` over-commits. Memory-(c) is already structural via
   `RuntimeMemoryPlan`; CPU demand-(c) stays the non-erasable `uncertified-until-first-profile` seam
   above. Sprint `1.68` ✅ **Done** (the opaque proof + gate landed in `src/Prodbox/Capacity/Allocation.hs`,
-  `dev check` exit 0, 18/18 `test/unit/Allocation.hs`); its consumers `3.27`/`4.52` are 📋 **Planned**.
+  `dev check` exit 0, 18/18 `test/unit/Allocation.hs`); its consumers `3.27` and `4.52` are ✅ **Done**.
   Motivated by a live gateway CPU-throttle counterexample that passed every capacity validation yet
   still failed at runtime.
 - Sprints `1.64` and `1.66` remove the gateway hot-path CPU drivers (per-call TLS manager,
@@ -599,9 +626,9 @@ registers the structural owners:
 - Sprint `7.34` narrows the harness postflight residue bypass back to per-run, restoring the
   long-lived aws-ses/public-edge-tls protection of the lifecycle preconditions.
 
-Foundation Epoch Sprints `1.63`–`1.66`, `2.34`, `5.20`, and `7.34` are Done; Sprints `4.51` and
-`5.21` retain their own Active status; Sprint `1.68` is ✅ Done (own-surface Phase-1 reopen, now
-reclosed) and its Phase-3/4 consumers `3.27`/`4.52` are 📋 Planned. Sprints `1.61` and `1.62` are Done, and
+Foundation Epoch Sprints `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, and `7.34` are Done; Sprint
+`5.21` retains its own Active status; Sprint `1.68` is ✅ Done (own-surface Phase-1 reopen, now
+reclosed) and its Phase-3/4 consumers `3.27`/`4.52` are ✅ Done. Sprints `1.61` and `1.62` are Done, and
 Sprint `1.67` recloses their phase after removing the substrate-specific prerequisite edge. The
 [Deployment Qualification](#deployment-qualification) ledger is unchanged by this adoption: both
 substrate rows remain **pending**, and nothing in the epoch claims qualification.

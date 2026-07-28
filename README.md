@@ -91,29 +91,40 @@ validation environments.
   for postflight sweep visibility, and the test harness always provisions a fresh test VPC. See
   [documents/engineering/storage_lifecycle_doctrine.md](./documents/engineering/storage_lifecycle_doctrine.md).
 - Resource admission and containment are explicit: host capacity, RKE2 reservations, eviction floors,
-  per-container cpu/memory/ephemeral-storage request+limit envelopes, and durable PVC capacities are
-  part of the typed capacity plan, not template-local defaults. Over-commitment is unrepresentable,
-  not merely rejected before render: the host/cluster/workload nesting is an opaque proof-carrying
-  `AllocatedResourcePlan` (module `Prodbox.Capacity.Allocation`) built by the total smart constructor
-  `compileResourcePlan` — a sibling to the opaque proofs `ServiceCapacityPlan` and `RuntimeMemoryPlan`
-  — so a cluster that reserves more than the host has, a workload set that exceeds cluster allocatable
-  capacity, or a chart container without a limit is not a constructible value (a `Left`, never a
-  value). A non-saturating `resourceVectorSubtractChecked` (an underflow returns `Left`, never clamps
-  to zero) replaces the saturating budget subtraction, and a `GuaranteedEnvelope` witness makes
-  `request == limit` a constructor invariant for Guaranteed-QoS workloads; a `dev check` over-commit
-  compile gate fails the build if the default plan over-commits. Namespace `ResourceQuota` /
-  `LimitRange` are derived projections of the workloads' actual draws (replicas × limit), not authored
-  quotas — the hand-folded `namespace_quotas` type is retired for a typed `WorkloadConcurrency`
+  workload runtime-memory/service-demand/scratch/durable/topology inputs, and durable PVC capacities
+  are part of the typed capacity plan, not template-local defaults. Request/limit envelopes are
+  derived outputs, not independent configuration. Over-commitment is unrepresentable at
+  the **Haskell decode gate**, not merely rejected before render: the host/cluster/workload nesting is
+  an opaque proof-carrying `AllocatedResourcePlan` (module `Prodbox.Capacity.Allocation`) built by the
+  total smart constructor `compileResourcePlan` — a sibling to the opaque proofs `ServiceCapacityPlan`
+  and `RuntimeMemoryPlan`, with `Prodbox.Capacity.Derivation` as the sole workload-envelope builder.
+  The proof is a required field of the validated settings every command carries,
+  so a cluster that reserves more than the host has, a workload set that exceeds cluster allocatable
+  capacity, or a chart container without a limit has no representation any command can consume (a `Left`,
+  never a value); Dhall is a defense-in-depth generator cross-check (it has no refinement types, so this
+  ring is not the guarantee), and the host is re-proved at reconcile against observed facts. A
+  non-saturating `resourceVectorSubtractChecked` (an underflow returns `Left`, never clamps to zero)
+  replaces the saturating budget subtraction, and a `GuaranteedEnvelope` witness makes `request == limit`
+  a constructor invariant for Guaranteed-QoS workloads. Each workload's `durable_storage_mib` is the
+  *one* value that sizes its PVC, its namespace `requests.storage` quota, and the fit proof, so a
+  chart-local PVC size can never drift from the quota. Namespace `ResourceQuota` / `LimitRange` are
+  derived projections of the workloads' actual draws (replicas × limit), not authored quotas — the
+  hand-folded `namespace_quotas` type is retired for a typed `WorkloadConcurrency`
   (`Steady | ExclusiveWindow`) that models co-location and burst structurally. Invariant (b),
-  `cluster <= host`, is re-proved at `cluster reconcile` by compiling the plan against the observed
-  host facts; runtime reconciliation then installs the matching RKE2/kubelet guardrails together with
-  those derived `ResourceQuota` / `LimitRange` and the chart `resources` stanzas. Those declarations do not by themselves prove an arbitrary program's peak
+  `cluster <= host` (cpu/memory plus durable and ephemeral disk on distinct devices), is re-proved at
+  `cluster reconcile` by compiling the plan against the observed host; runtime reconciliation then
+  installs the matching RKE2/kubelet guardrails together with those derived `ResourceQuota` /
+  `LimitRange` and the chart `resources` stanzas. The full model, its honest three-ring boundary, and
+  its landed-vs-planned status live in
+  [resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md) and the
+  [Development Plan](./DEVELOPMENT_PLAN/README.md). Those declarations do not by themselves prove an arbitrary program's peak
   working set. Sprint `1.60` adds a validated nested runtime-memory plan (bounded heap state/scratch
   within an RTS heap cap, then heap cap plus native/subprocess/kernel reserves and margin within the
   profile-derived cgroup limit) and generates the gateway RTS argv. Sprint `5.16` now feeds that
   plan's thresholds into the run-scoped restart/OOM/high-water oracle used by `gateway-pods`.
-  Sprint `1.65` certifies authored envelopes against committed measured resource profiles (recorded
-  by Sprint `5.21`), so an uncertified zero-headroom CPU number fails the canonical quality gate;
+  Sprint `5.21` records healthy, provenance-bound empirical calibration inputs consumed by the pure
+  derivation; measurements never directly author or bless an envelope. Sprint `1.71` owns this
+  refactor and its removal of the raw-envelope config seam;
   see
   [Measured Resource Profiles](./documents/engineering/resource_scaling_doctrine.md#measured-resource-profiles). See
   [documents/engineering/resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md).
@@ -682,6 +693,14 @@ The command has no Gateway-config, binary-sibling, or environment fallback. An A
 only its validated loopback listener; until the Sprint `3.26` physical adapters are supplied it
 reports liveness but refuses readiness and every non-health request. This is not yet a replacement
 deployment or cutover claim.
+
+The forced-shutdown contract is closed on
+[Sprint 2.36](./DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-236-proof-carrying-bootstrap-broker-shutdown-done).
+`Stopped` must be constructible only after the accept thread and every worker join, all replay
+waiters receive a terminal result, and queue/active/idempotency residue is empty. A join deadline
+means `ShutdownIncomplete`; it is not permission to report `Stopped`. Runtime timeout-discarding is
+removed; canonical-suite fixture cleanup remains owned by Sprint `5.23` in the
+[legacy-removal ledger](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 
 ### Gateway Operations
 

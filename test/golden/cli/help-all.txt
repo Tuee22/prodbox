@@ -207,6 +207,66 @@ Examples:
 - prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall  # Start the dedicated Bootstrap Broker runtime.
 - prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall --dry-run  # Validate config and render the broker-start plan.
 
+## prodbox lifecycle-authority start
+prodbox lifecycle-authority start - Start lifecycle-authority
+
+Start the role from its mounted role-specific config.
+Options:
+- --config <PATH> - Mounted role-specific Dhall config path
+- --dry-run - Render the role-start plan
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox lifecycle-authority start --config /etc/lifecycle-authority/config/config.dhall  # Start lifecycle-authority.
+
+## prodbox provider-worker start
+prodbox provider-worker start - Start provider-worker
+
+Start the role from its mounted role-specific config.
+Options:
+- --config <PATH> - Mounted role-specific Dhall config path
+- --dry-run - Render the role-start plan
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox provider-worker start --config /etc/provider-worker/config/config.dhall  # Start provider-worker.
+
+## prodbox authority-backup start
+prodbox authority-backup start - Start authority-backup
+
+Start the role from its mounted role-specific config.
+Options:
+- --config <PATH> - Mounted role-specific Dhall config path
+- --dry-run - Render the role-start plan
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox authority-backup start --config /etc/authority-backup/config/config.dhall  # Start authority-backup.
+
+## prodbox tls-retention start
+prodbox tls-retention start - Start tls-retention
+
+Start the role from its mounted role-specific config.
+Options:
+- --config <PATH> - Mounted role-specific Dhall config path
+- --dry-run - Render the role-start plan
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox tls-retention start --config /etc/tls-retention/config/config.dhall  # Start tls-retention.
+
+## prodbox target-secret-agent start
+prodbox target-secret-agent start - Start target-secret-agent
+
+Start the role from its mounted role-specific config.
+Options:
+- --config <PATH> - Mounted role-specific Dhall config path
+- --dry-run - Render the role-start plan
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox target-secret-agent start --config /etc/target-secret-agent/config/config.dhall  # Start target-secret-agent.
+
 ## prodbox charts list
 prodbox charts list - List supported charts
 

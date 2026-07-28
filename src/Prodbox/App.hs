@@ -132,6 +132,7 @@ runCommandRequest request =
 
 canRunWithoutRepoRoot :: NativeCommand -> Bool
 canRunWithoutRepoRoot (NativeBootstrapBroker (BootstrapBrokerStart _)) = True
+canRunWithoutRepoRoot (NativeControlPlane _ _) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayDaemonCommand _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayStatusCommand _)) = True
 canRunWithoutRepoRoot (NativeWorkload (WorkloadStart _)) = True

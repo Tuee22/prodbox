@@ -56,6 +56,11 @@ usable by developers or externally invoked automation; it does not authorize a r
 |---------|------|---------|
 | `aws` | Group | AWS IAM and quota management |
 | `bootstrap-broker` | Group | Pre-Vault Bootstrap Broker operations |
+| `lifecycle-authority` | Group | Dedicated lifecycle-authority runtime |
+| `provider-worker` | Group | Dedicated provider-worker runtime |
+| `authority-backup` | Group | Dedicated authority-backup runtime |
+| `tls-retention` | Group | Dedicated tls-retention runtime |
+| `target-secret-agent` | Group | Dedicated target-secret-agent runtime |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `cluster` | Group | Local cluster lifecycle |
 | `commands` | Command | Render the command registry |
@@ -190,6 +195,36 @@ The per-group command matrix (generated; do not edit by hand):
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox bootstrap-broker start` | none | `--config`, `--dry-run`, `--plan-file` |
+
+### `prodbox lifecycle-authority`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox lifecycle-authority start` | none | `--config`, `--dry-run`, `--plan-file` |
+
+### `prodbox provider-worker`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox provider-worker start` | none | `--config`, `--dry-run`, `--plan-file` |
+
+### `prodbox authority-backup`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox authority-backup start` | none | `--config`, `--dry-run`, `--plan-file` |
+
+### `prodbox tls-retention`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox tls-retention start` | none | `--config`, `--dry-run`, `--plan-file` |
+
+### `prodbox target-secret-agent`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox target-secret-agent start` | none | `--config`, `--dry-run`, `--plan-file` |
 
 ### `prodbox charts`
 

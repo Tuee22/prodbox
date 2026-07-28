@@ -48,6 +48,7 @@ import Prodbox.CLI.Command
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
+  , ControlPlaneLaunchOptions (..)
   , CoverageFlags (..)
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
@@ -83,6 +84,12 @@ import Prodbox.CLI.Output
   , OutputOptions (..)
   )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
+import Prodbox.Runtime.Role
+  ( RuntimeRole (..)
+  , runtimeConfigMountPath
+  , runtimeRoleConfigIdentity
+  , runtimeRoleName
+  )
 import Prodbox.Substrate
   ( Substrate
   , defaultSubstrate
@@ -141,6 +148,11 @@ commandRegistry =
     , children =
         [ awsGroup
         , bootstrapBrokerGroup
+        , controlPlaneRoleGroup LifecycleAuthorityRuntime
+        , controlPlaneRoleGroup ProviderWorkerRuntime
+        , controlPlaneRoleGroup AuthorityBackupRuntime
+        , controlPlaneRoleGroup TlsRetentionRuntime
+        , controlPlaneRoleGroup TargetSecretAgentRuntime
         , chartsGroup
         , clusterGroup
         , commandsLeaf
@@ -250,6 +262,12 @@ parserForPath path =
         fmap
           (RunNative . NativeBootstrapBroker . BootstrapBrokerStart)
           brokerLaunchOptionsParser
+    [roleName, "start"]
+      | Just role <- controlPlaneRoleByName roleName ->
+          Just $
+            fmap
+              (RunNative . NativeControlPlane role)
+              controlPlaneLaunchOptionsParser
     ["charts", "list"] -> Just (pure (RunNative (NativeCharts ChartsList)))
     ["charts", "status"] ->
       Just (fmap (RunNative . NativeCharts . ChartsStatus) (strArgument (metavar "CHART")))
@@ -767,6 +785,16 @@ brokerLaunchOptionsParser =
       )
     <*> planOptionsParser
 
+controlPlaneLaunchOptionsParser :: Parser ControlPlaneLaunchOptions
+controlPlaneLaunchOptionsParser =
+  ControlPlaneLaunchOptions
+    <$> strOption
+      ( long "config"
+          <> metavar "PATH"
+          <> help "Mounted role-specific Dhall config path"
+      )
+    <*> planOptionsParser
+
 daemonStatusOptionsParser :: Parser DaemonStatusOptions
 daemonStatusOptionsParser =
   fmap
@@ -1278,6 +1306,42 @@ bootstrapBrokerGroup =
         , "/etc/bootstrap-broker/config/config.dhall"
         ]
         "Start the dedicated Bootstrap Broker runtime."
+    ]
+
+controlPlaneRoleGroup :: RuntimeRole -> CommandSpec
+controlPlaneRoleGroup role =
+  group
+    roleName
+    ("Dedicated " ++ roleName ++ " runtime")
+    ("Commands for the physically separated " ++ roleName ++ " process.")
+    [ leaf
+        "start"
+        ("Start " ++ roleName)
+        "Start the role from its mounted role-specific config."
+        [ requiredOption "config" Nothing "PATH" "Mounted role-specific Dhall config path"
+        , flagOption "dry-run" Nothing Nothing "Render the role-start plan"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [example [roleName, "start", "--config", configPath] ("Start " ++ roleName ++ ".")]
+    ]
+    []
+    [example [roleName, "start", "--config", configPath] ("Start " ++ roleName ++ ".")]
+ where
+  roleName = runtimeRoleName role
+  configPath = runtimeConfigMountPath (runtimeRoleConfigIdentity role)
+
+controlPlaneRoleByName :: String -> Maybe RuntimeRole
+controlPlaneRoleByName candidate =
+  case filter ((== candidate) . runtimeRoleName) controlPlaneRoles of
+    [role] -> Just role
+    _ -> Nothing
+ where
+  controlPlaneRoles =
+    [ LifecycleAuthorityRuntime
+    , ProviderWorkerRuntime
+    , AuthorityBackupRuntime
+    , TlsRetentionRuntime
+    , TargetSecretAgentRuntime
     ]
 
 gatewayGroup :: CommandSpec

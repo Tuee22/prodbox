@@ -6,21 +6,22 @@ module Prodbox.Capacity.Config
   ( CapacityBudget (..)
   , CapacitySection (..)
   , ChildProcessBudgetConfig (..)
-  , concurrentNamespaceQuotas
-  , MilliCpu (..)
-  , MebiBytes (..)
-  , NamespaceQuota (..)
   , ResourceEnvelope (..)
   , ResourcePlan (..)
   , ResourceVector (..)
   , RuntimeMemoryProfile (..)
   , WorkloadResourceProfile (..)
+  , WorkloadConcurrency (..)
+  , WorkloadQoS (..)
+  , WorkloadDemandSpec (..)
+  , CpuDemandSpec (..)
+  , MemoryDemandSpec (..)
+  , EphemeralDemandSpec (..)
+  , resources
   , defaultCapacitySection
   , defaultRuntimeMemoryProfiles
   , defaultResourcePlan
   , fitsWithin
-  , mkMebiBytes
-  , mkMilliCpu
   , mkResourceEnvelope
   , plusResourceVector
   , resourceVectorFitsWithin
@@ -30,10 +31,8 @@ module Prodbox.Capacity.Config
   , runtimeMemoryPlanForProfile
   , storageFitsWithin
   , plusBudget
-  , reserveAllocatable
   , validateCapacitySection
   , validateRawResourcePlanShape
-  , validateResourcePlan
   )
 where
 
@@ -53,23 +52,12 @@ import Dhall
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.Derivation
+  ( deriveResourceEnvelope
+  , derivedResourceEnvelope
+  )
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
-
-newtype MilliCpu = MilliCpu {unMilliCpu :: Natural}
-  deriving (Eq, Show)
-
-mkMilliCpu :: Natural -> Either String MilliCpu
-mkMilliCpu value
-  | value > 0 = Right (MilliCpu value)
-  | otherwise = Left "cpu must be positive"
-
-newtype MebiBytes = MebiBytes {unMebiBytes :: Natural}
-  deriving (Eq, Show)
-
-mkMebiBytes :: Natural -> Either String MebiBytes
-mkMebiBytes value
-  | value > 0 = Right (MebiBytes value)
-  | otherwise = Left "MiB value must be positive"
+import Prodbox.Capacity.Types
 
 data CapacityBudget = CapacityBudget
   { budgetCpu :: Natural
@@ -94,31 +82,19 @@ stripBudgetPrefix value =
     Just stripped -> lowerFirst stripped
     Nothing -> value
 
-data ResourceVector = ResourceVector
-  { milli_cpu :: Natural
-  , memory_mib :: Natural
-  , ephemeral_storage_mib :: Natural
-  , durable_storage_mib :: Natural
-  }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
-
-data ResourceEnvelope = ResourceEnvelope
-  { request :: ResourceVector
-  , limit :: ResourceVector
-  }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
-
-data NamespaceQuota = NamespaceQuota
-  { namespace_name :: Text
-  , quota :: ResourceVector
-  }
+data WorkloadConcurrency
+  = Steady
+  | ExclusiveWindow Text
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 data WorkloadResourceProfile = WorkloadResourceProfile
   { profile_id :: Text
   , profile_namespace :: Text
   , replicas :: Natural
-  , resources :: ResourceEnvelope
+  , workload_concurrency :: WorkloadConcurrency
+  , surge :: Natural
+  , workload_qos :: WorkloadQoS
+  , workload_demand :: WorkloadDemandSpec
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -126,7 +102,6 @@ data ResourcePlan = ResourcePlan
   { host_capacity :: ResourceVector
   , rke2_reserved :: ResourceVector
   , eviction_floor :: ResourceVector
-  , namespace_quotas :: [NamespaceQuota]
   , workload_profiles :: [WorkloadResourceProfile]
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
@@ -208,63 +183,6 @@ defaultResourcePlan =
     { host_capacity = ResourceVector 8000 15872 100000 180000
     , rke2_reserved = ResourceVector 1000 2048 10240 1024
     , eviction_floor = ResourceVector 500 1024 10240 1024
-    , namespace_quotas =
-        [ NamespaceQuota "keycloak" (ResourceVector 2025 4448 12000 61440)
-        , -- Sprint 1.65 trimmed the over-provisioned vscode CPU ceiling 2425m ->
-          -- 1400m (draw is 800m). Sprint 3.26 (operator-approved) trims a further
-          -- 100m (1400m -> 1300m) to fund the physically separate Bootstrap
-          -- Broker's own namespace quota; the draw stays 800m, so no vscode pod
-          -- is starved.
-          --
-          -- Home-substrate capacity correction (live-surfaced 2026-07-25): the
-          -- supported runtime deploys Keycloak + its keycloak-postgres CO-LOCATED
-          -- in the `vscode` namespace (see 'concurrentNamespaceQuotas'), so the
-          -- rendered vscode ResourceQuota MUST carry the keycloak allowance or the
-          -- vscode Pod is refused admission (`exceeded quota: vscode-resource-quota`)
-          -- once Keycloak + the 3-instance postgres already occupy the namespace.
-          -- The vscode ceiling therefore folds in the standalone `keycloak` quota
-          -- (1300 + 2025 = 3325m CPU, 5216 + 4448 = 9664 MiB, etc.). This is
-          -- budget-neutral: 'concurrentNamespaceQuotas' subtracts that same
-          -- co-located keycloak allowance back out of the vscode contribution, so
-          -- the single-node concurrent sum is unchanged and Keycloak is still
-          -- counted exactly once.
-          NamespaceQuota "vscode" (ResourceVector 3325 9664 22944 174080)
-        , NamespaceQuota "api" (ResourceVector 500 768 2000 1000)
-        , NamespaceQuota "websocket" (ResourceVector 500 768 3000 1000)
-        , -- Sprint 1.65: gateway CPU quota 1250m -> 2750m for the 750m x3 bump.
-          -- Sprint 3.26 (operator-approved) reduces the HOME gateway from three
-          -- emitter StatefulSet identities to two (see 'gatewayNodeIdsForSubstrate'):
-          -- the gateway namespace quota drops 2750m -> 2000m and 3584 -> 3072 MiB
-          -- (draw = 2x 750m gateway + 500m pulsar = 2000m; 2x 512 + 2048 = 3072
-          -- MiB), freeing 750m CPU / 512 MiB that funds the physically separated
-          -- control-plane workloads on the maxed single-node budget. The AWS
-          -- substrate keeps three gateway identities (its own render + EBS). New
-          -- concurrent CPU sum (excludes co-located keycloak) =
-          -- 1300+500+500+2000+1000+300+100 = 5700 <= 6500 allocatable (host 8000m
-          -- - rke2_reserved 1000m - eviction_floor 500m); the remaining 800m CPU /
-          -- 544 MiB headroom is consumed by the Sprint 3.26 control-plane quotas
-          -- below.
-          NamespaceQuota "gateway" (ResourceVector 2000 3072 6000 20480)
-        , NamespaceQuota "prodbox" (ResourceVector 1000 1792 5000 20480)
-        , NamespaceQuota "vault" (ResourceVector 300 512 2000 1024)
-        , -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker gets
-          -- its own namespace quota (funded by the vscode ceiling trim above), so
-          -- control-plane demand is never hidden behind a combined gateway
-          -- envelope (resource_scaling_doctrine.md § 2E).
-          NamespaceQuota "bootstrap-broker" (ResourceVector 100 128 512 1024)
-        , -- Sprint 3.26: the five standing control-plane role namespaces, funded
-          -- by the operator-approved home gateway 3 -> 2 reduction (Increment G,
-          -- which freed 750m CPU / 512 MiB). Guaranteed-QoS (request == limit).
-          -- New concurrent CPU sum (excludes co-located keycloak) =
-          -- 1300+500+500+2000+1000+300+100 + 150+100+60+60+60 = 6130 <= 6500;
-          -- memory sum = 12736 <= 12800 MiB allocatable. The Lifecycle Authority
-          -- namespace reserves 1Gi durable for its retained journal PVC.
-          NamespaceQuota "lifecycle-authority" (ResourceVector 150 128 1024 1024)
-        , NamespaceQuota "provider-worker" (ResourceVector 100 112 512 1)
-        , NamespaceQuota "authority-backup" (ResourceVector 60 80 512 1)
-        , NamespaceQuota "tls-retention" (ResourceVector 60 80 512 1)
-        , NamespaceQuota "target-secret-agent" (ResourceVector 60 80 512 1)
-        ]
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
         , workload
@@ -390,8 +308,80 @@ defaultResourcePlan =
       { profile_id = profile
       , profile_namespace = namespace
       , replicas = count
-      , resources = ResourceEnvelope {request = req, limit = lim}
+      , workload_concurrency = concurrencyFor profile
+      , surge = 0
+      , workload_qos =
+          if profile `elem` guaranteedControlPlaneProfiles
+            then Guaranteed
+            else Burstable
+      , workload_demand =
+          demandFromEnvelope
+            profile
+            (if profile `elem` guaranteedControlPlaneProfiles then Guaranteed else Burstable)
+            (withDurable (durableSizeFor profile) req)
+            (withDurable (durableSizeFor profile) lim)
       }
+  guaranteedControlPlaneProfiles =
+    [ "bootstrap-broker"
+    , "lifecycle-authority"
+    , "provider-worker"
+    , "authority-backup"
+    , "tls-retention"
+    , "target-secret-agent"
+    ]
+  concurrencyFor profile =
+    case profile of
+      -- Kubernetes schedules an init container and the regular containers in a
+      -- Pod by their peak, not their sum.
+      "keycloak" -> ExclusiveWindow "keycloak-pod"
+      "keycloak-vault-secrets" -> ExclusiveWindow "keycloak-pod"
+      -- These Helm-hook Jobs each have one Vault init container followed by one
+      -- materializer container.
+      "keycloak-postgres-vault-secrets" -> ExclusiveWindow "keycloak-postgres-materializer-job"
+      "keycloak-postgres-secret-materializer" -> ExclusiveWindow "keycloak-postgres-materializer-job"
+      "vscode-vault-secrets" -> ExclusiveWindow "vscode-materializer-job"
+      "vscode-secret-materializer" -> ExclusiveWindow "vscode-materializer-job"
+      _ -> Steady
+  durableSizeFor profile =
+    case profile of
+      "vscode" -> 51200
+      "keycloak-postgres" -> 20480
+      "minio" -> 20480
+      "pulsar" -> 20480
+      "vault" -> 1024
+      "lifecycle-authority" -> 1024
+      _ -> 0
+  withDurable durable vector = vector {durable_storage_mib = durable}
+  demandFromEnvelope profile qos req lim =
+    WorkloadDemandSpec
+      { cpu_demand =
+          CpuDemandSpec
+            { requests_per_second = milli_cpu req
+            , service_cpu_micros = 1000
+            , cpu_headroom_ppm = 0
+            , bounded_cpu_burst_milli = milli_cpu lim - milli_cpu req
+            , calibration_profile_id = profile
+            }
+      , memory_demand =
+          MemoryDemandSpec
+            { steady_memory_terms_mib = [memory_mib req]
+            , bounded_memory_burst_mib = memory_mib lim - memory_mib req
+            }
+      , ephemeral_demand =
+          EphemeralDemandSpec
+            { ephemeral_terms_mib = [ephemeral_storage_mib req]
+            , bounded_ephemeral_burst_mib =
+                ephemeral_storage_mib lim - ephemeral_storage_mib req
+            }
+      , demanded_durable_storage_mib = durable_storage_mib lim
+      , demand_qos = qos
+      }
+
+resources :: WorkloadResourceProfile -> ResourceEnvelope
+resources profile =
+  case deriveResourceEnvelope (workload_demand profile) of
+    Left err -> error ("invalid workload demand reached resource projection: " ++ show err)
+    Right derived -> derivedResourceEnvelope derived
 
 fitsWithin :: CapacityBudget -> CapacityBudget -> Bool
 fitsWithin inner outer =
@@ -483,7 +473,7 @@ validateCapacitySection section = do
     "capacity.node_budget must fit within capacity.region_quota"
     (node_budget section)
     (region_quota section)
-  validateResourcePlan (resource_plan section)
+  validateRawResourcePlanShape (resource_plan section)
   _ <- validateRuntimeMemoryProfiles section
   Right ()
 
@@ -493,7 +483,7 @@ validateCapacitySection section = do
 runtimeMemoryPlanForProfile
   :: CapacitySection -> Text -> Either String RuntimeMemory.RuntimeMemoryPlan
 runtimeMemoryPlanForProfile section requestedProfileId = do
-  validateResourcePlan (resource_plan section)
+  validateRawResourcePlanShape (resource_plan section)
   plans <- validateRuntimeMemoryProfiles section
   case find ((== requestedProfileId) . fst) plans of
     Just (_, plan) -> Right plan
@@ -620,103 +610,19 @@ positiveBytes label term value =
 
 -- | Sprint 1.68: the decode-time shape checks that survive the extraction of the
 -- nesting inequalities into 'Prodbox.Capacity.Allocation.compileResourcePlan'.
--- Every value is positive, both quota and workload lists are non-empty, each
--- namespace name is non-empty, and every workload references a declared namespace
--- with positive replicas and a request that fits its limit. It performs no host,
--- allocatable, or namespace-budget inequality — those are the proof's job.
+-- Every host value is positive, the workload list is non-empty, and every
+-- workload has a non-empty namespace, positive replicas, and a request that fits
+-- its limit. It performs no host or allocatable inequality — those are the
+-- proof's job.
 validateRawResourcePlanShape :: ResourcePlan -> Either String ()
 validateRawResourcePlanShape plan = do
   validatePositiveResourceVector "capacity.resource_plan.host_capacity" (host_capacity plan)
   validatePositiveResourceVector "capacity.resource_plan.rke2_reserved" (rke2_reserved plan)
   validatePositiveResourceVector "capacity.resource_plan.eviction_floor" (eviction_floor plan)
   unless
-    (not (null (namespace_quotas plan)))
-    (Left "capacity.resource_plan.namespace_quotas must not be empty")
-  forM_ (namespace_quotas plan) validateNamespaceQuota
-  unless
     (not (null (workload_profiles plan)))
     (Left "capacity.resource_plan.workload_profiles must not be empty")
-  forM_ (workload_profiles plan) (validateWorkloadProfile plan)
-
--- | Derive the cluster-allocatable vector by subtracting the RKE2 reservation and
--- eviction floor from host capacity, failing (rather than saturating) when the
--- reservation exceeds host capacity. The 'Left' message is preserved verbatim so
--- decode-time validation and the Sprint-1.68 proof agree on the same boundary.
-reserveAllocatable :: ResourcePlan -> Either String ResourceVector
-reserveAllocatable plan =
-  case resourceVectorSubtractChecked
-    (host_capacity plan)
-    (rke2_reserved plan `plusResourceVector` eviction_floor plan) of
-    Just allocatable -> Right allocatable
-    Nothing ->
-      Left "capacity.resource_plan.rke2_reserved + eviction_floor must fit within host_capacity"
-
-validateResourcePlan :: ResourcePlan -> Either String ()
-validateResourcePlan plan = do
-  validatePositiveResourceVector "capacity.resource_plan.host_capacity" (host_capacity plan)
-  validatePositiveResourceVector "capacity.resource_plan.rke2_reserved" (rke2_reserved plan)
-  validatePositiveResourceVector "capacity.resource_plan.eviction_floor" (eviction_floor plan)
-  allocatable <- reserveAllocatable plan
-  unless
-    (not (null (namespace_quotas plan)))
-    (Left "capacity.resource_plan.namespace_quotas must not be empty")
-  forM_ (namespace_quotas plan) validateNamespaceQuota
-  forM_ (namespace_quotas plan) $ \namespaceQuota ->
-    unless
-      (quota namespaceQuota `resourceVectorFitsWithin` allocatable)
-      ( Left
-          ( "capacity.resource_plan.namespace_quotas["
-              ++ Text.unpack (namespace_name namespaceQuota)
-              ++ "].quota must fit within cluster allocatable capacity"
-          )
-      )
-  unless
-    (sumVectors (map quota (concurrentNamespaceQuotas plan)) `resourceVectorFitsWithin` allocatable)
-    ( Left
-        "capacity.resource_plan.concurrent_namespace_quotas must fit within cluster allocatable capacity"
-    )
-  unless
-    (not (null (workload_profiles plan)))
-    (Left "capacity.resource_plan.workload_profiles must not be empty")
-  forM_ (workload_profiles plan) (validateWorkloadProfile plan)
-  forM_ (namespace_quotas plan) $ \namespaceQuota -> do
-    let namespaceName = namespace_name namespaceQuota
-        workloadDraw =
-          sumVectors
-            [ workloadProfileDraw profile
-            | profile <- workload_profiles plan
-            , profile_namespace profile == namespaceName
-            ]
-    unless
-      (workloadDraw `resourceVectorFitsWithin` quota namespaceQuota)
-      ( Left
-          ( "capacity.resource_plan.workload_profiles for namespace "
-              ++ Text.unpack namespaceName
-              ++ " must fit within that namespace quota"
-          )
-      )
-
-concurrentNamespaceQuotas :: ResourcePlan -> [NamespaceQuota]
-concurrentNamespaceQuotas plan =
-  -- `keycloak` is a standalone root-chart surface. The supported runtime deploys
-  -- Keycloak and its PostgreSQL dependency co-located UNDER `vscode`, whose
-  -- rendered ResourceQuota folds in the keycloak allowance so the Pods admit (see
-  -- the `vscode` NamespaceQuota above). To count that co-located workload shape
-  -- exactly once against the single-node host, the standalone `keycloak` quota is
-  -- excluded AND the same allowance is subtracted back out of the `vscode`
-  -- contribution, leaving the concurrent sum identical to sizing `vscode` for its
-  -- own workloads.
-  [ if namespace_name nq == "vscode"
-      then nq {quota = quota nq `resourceVectorMinus` keycloakColocatedAllowance}
-      else nq
-  | nq <- namespace_quotas plan
-  , namespace_name nq /= "keycloak"
-  ]
- where
-  keycloakColocatedAllowance =
-    case [quota nq | nq <- namespace_quotas plan, namespace_name nq == "keycloak"] of
-      (q : _) -> q
-      [] -> ResourceVector 0 0 0 0
+  forM_ (workload_profiles plan) validateWorkloadProfile
 
 unlessFits :: String -> CapacityBudget -> CapacityBudget -> Either String ()
 unlessFits message inner outer =
@@ -724,20 +630,8 @@ unlessFits message inner outer =
     then Right ()
     else Left message
 
-validateNamespaceQuota :: NamespaceQuota -> Either String ()
-validateNamespaceQuota namespaceQuota = do
-  unless
-    (not (Text.null (Text.strip (namespace_name namespaceQuota))))
-    (Left "capacity.resource_plan.namespace_quotas[].namespace_name must not be empty")
-  validatePositiveResourceVector
-    ( "capacity.resource_plan.namespace_quotas["
-        ++ Text.unpack (namespace_name namespaceQuota)
-        ++ "].quota"
-    )
-    (quota namespaceQuota)
-
-validateWorkloadProfile :: ResourcePlan -> WorkloadResourceProfile -> Either String ()
-validateWorkloadProfile plan profile = do
+validateWorkloadProfile :: WorkloadResourceProfile -> Either String ()
+validateWorkloadProfile profile = do
   unless
     (not (Text.null (Text.strip (profile_id profile))))
     (Left "capacity.resource_plan.workload_profiles[].profile_id must not be empty")
@@ -750,14 +644,6 @@ validateWorkloadProfile plan profile = do
         )
     )
   unless
-    (profile_namespace profile `elem` map namespace_name (namespace_quotas plan))
-    ( Left
-        ( "capacity.resource_plan.workload_profiles["
-            ++ Text.unpack (profile_id profile)
-            ++ "] references unknown namespace"
-        )
-    )
-  unless
     (replicas profile > 0)
     ( Left
         ( "capacity.resource_plan.workload_profiles["
@@ -765,9 +651,46 @@ validateWorkloadProfile plan profile = do
             ++ "].replicas must be positive"
         )
     )
+  unless
+    (surge profile == 0)
+    ( Left
+        ( "capacity.resource_plan.workload_profiles["
+            ++ Text.unpack (profile_id profile)
+            ++ "].surge must be zero until surge scheduling is implemented"
+        )
+    )
+  case workload_concurrency profile of
+    Steady -> Right ()
+    ExclusiveWindow window ->
+      unless
+        (not (Text.null (Text.strip window)))
+        ( Left
+            ( "capacity.resource_plan.workload_profiles["
+                ++ Text.unpack (profile_id profile)
+                ++ "].workload_concurrency.ExclusiveWindow must not be empty"
+            )
+        )
+  unless
+    (workload_qos profile == demand_qos (workload_demand profile))
+    ( Left
+        ( "capacity.resource_plan.workload_profiles["
+            ++ Text.unpack (profile_id profile)
+            ++ "].workload_qos must match workload_demand.demand_qos"
+        )
+    )
+  envelope <-
+    case deriveResourceEnvelope (workload_demand profile) of
+      Left err ->
+        Left
+          ( "capacity.resource_plan.workload_profiles["
+              ++ Text.unpack (profile_id profile)
+              ++ "].workload_demand is invalid: "
+              ++ show err
+          )
+      Right derived -> Right (derivedResourceEnvelope derived)
   validateResourceEnvelope
     ("capacity.resource_plan.workload_profiles[" ++ Text.unpack (profile_id profile) ++ "].resources")
-    (resources profile)
+    envelope
 
 validateResourceEnvelope :: String -> ResourceEnvelope -> Either String ()
 validateResourceEnvelope label envelope = do
@@ -776,32 +699,24 @@ validateResourceEnvelope label envelope = do
   unless
     (request envelope `resourceVectorFitsWithin` limit envelope)
     (Left (label ++ ".request must fit within " ++ label ++ ".limit"))
+  unless
+    (durable_storage_mib (request envelope) == durable_storage_mib (limit envelope))
+    (Left (label ++ ".durable_storage_mib request must equal limit"))
 
 validatePositiveRuntimeVector :: String -> ResourceVector -> Either String ()
 validatePositiveRuntimeVector label vector = do
   requirePositive (label ++ ".milli_cpu") (milli_cpu vector)
   requirePositive (label ++ ".memory_mib") (memory_mib vector)
   requirePositive (label ++ ".ephemeral_storage_mib") (ephemeral_storage_mib vector)
-  requirePositive (label ++ ".durable_storage_mib") (durable_storage_mib vector)
 
 validatePositiveResourceVector :: String -> ResourceVector -> Either String ()
 validatePositiveResourceVector label vector = do
   validatePositiveRuntimeVector label vector
+  requirePositive (label ++ ".durable_storage_mib") (durable_storage_mib vector)
 
 requirePositive :: String -> Natural -> Either String ()
 requirePositive label value =
   unless (value > 0) (Left (label ++ " must be positive"))
-
-workloadProfileDraw :: WorkloadResourceProfile -> ResourceVector
-workloadProfileDraw profile =
-  resourceVectorScale (replicas profile) (limit (resources profile))
-
-sumVectors :: [ResourceVector] -> ResourceVector
-sumVectors =
-  foldl' plusResourceVector zeroResourceVector
-
-zeroResourceVector :: ResourceVector
-zeroResourceVector = ResourceVector 0 0 0 0
 
 boundedMinus :: Natural -> Natural -> Natural
 boundedMinus left right =

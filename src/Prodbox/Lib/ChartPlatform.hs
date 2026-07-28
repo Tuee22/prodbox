@@ -96,6 +96,8 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Bootstrap.Broker.ChartStatics qualified as BrokerChartStatics
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Placement qualified as Placement
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Config.Basics (basicsClusterId)
 import Prodbox.Config.ComponentGraph
@@ -136,6 +138,7 @@ import Prodbox.Lib.Storage
   , defaultChartDataRootRelative
   , renderStorageReport
   , storageBinding
+  , workloadStorageSize
   )
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
@@ -162,7 +165,6 @@ import Prodbox.PostgresPlatform
   , patroniRunAsGroup
   , patroniRunAsUser
   , patroniStandbySecretName
-  , patroniStorageSize
   , patroniStorageSpecs
   , patroniSuperuserSecretName
   , patroniUsername
@@ -203,6 +205,7 @@ import Prodbox.Settings
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
   , validateAndLoadSettings
+  , validatedResourcePlan
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -456,7 +459,7 @@ resolveChart repoRoot chartName =
               [ ChartStorageSpec
                   { chartStorageSpecStatefulSetName = "vscode"
                   , chartStorageSpecPersistentVolumeClaimName = "data-vscode-0"
-                  , chartStorageSpecStorageSize = "50Gi"
+                  , chartStorageSpecWorkloadProfileId = "vscode"
                   , chartStorageSpecOrdinal = 0
                   , chartStorageSpecClaimSuffix = "data"
                   }
@@ -480,7 +483,7 @@ resolveChart repoRoot chartName =
               [ ChartStorageSpec
                   { chartStorageSpecStatefulSetName = "pulsar"
                   , chartStorageSpecPersistentVolumeClaimName = "data-pulsar-0"
-                  , chartStorageSpecStorageSize = "20Gi"
+                  , chartStorageSpecWorkloadProfileId = "pulsar"
                   , chartStorageSpecOrdinal = 0
                   , chartStorageSpecClaimSuffix = "data"
                   }
@@ -631,9 +634,14 @@ buildChartDeletePlanForSubstrate substrate repoRoot maybeSettings chartName = do
             (Text.pack fqdn)
         Right (Just fqdn, Just scopeSet)
       _ -> Right (Nothing, Nothing)
+  let resourcePlan = maybe Capacity.defaultResourcePlan validatedResourcePlan maybeSettings
   releases <-
     forM reversedOrder $ \releaseName -> do
       definition <- resolveChart repoRoot releaseName
+      storageBindings <-
+        mapM
+          (storageBinding resourcePlan manualPvRoot chartName releaseName)
+          (chartStorageSpecsForRelease chartName releaseName definition)
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = releaseName
@@ -641,10 +649,7 @@ buildChartDeletePlanForSubstrate substrate repoRoot maybeSettings chartName = do
           , chartReleasePlanNamespace = chartName
           , chartReleasePlanChartDir = chartDefinitionChartDir definition
           , chartReleasePlanValuesJson = "{}"
-          , chartReleasePlanStorageBindings =
-              map
-                (storageBinding manualPvRoot chartName releaseName)
-                (chartStorageSpecsForRelease chartName releaseName definition)
+          , chartReleasePlanStorageBindings = storageBindings
           }
   pure
     ChartDeploymentPlan
@@ -1930,10 +1935,15 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
       _ -> Right Nothing
   releases <-
     forM definitions $ \definition -> do
-      let storageBindings =
-            map
-              (storageBinding (resolvedManualPvHostRoot settings) chartName (chartDefinitionName definition))
-              (chartStorageSpecsForRelease chartName (chartDefinitionName definition) definition)
+      storageBindings <-
+        mapM
+          ( storageBinding
+              (validatedResourcePlan settings)
+              (resolvedManualPvHostRoot settings)
+              chartName
+              (chartDefinitionName definition)
+          )
+          (chartStorageSpecsForRelease chartName (chartDefinitionName definition) definition)
       valuesJson <-
         renderReleaseValuesJson
           substrate
@@ -2166,22 +2176,29 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
       "target-secret-agent" ->
         valuesForTargetSecretAgent namespace rootChart maybeRuntimeImage
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
-  values <- attachResourcePlanValues settings definition rootChart baseValues
+  values <- attachResourcePlanValues substrate settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
 
 attachResourcePlanValues
-  :: ValidatedSettings -> ChartDefinition -> String -> Value -> Either String Value
-attachResourcePlanValues settings definition rootChart values = do
-  let plan = Capacity.resource_plan (capacity (validatedConfig settings))
+  :: Substrate -> ValidatedSettings -> ChartDefinition -> String -> Value -> Either String Value
+attachResourcePlanValues substrate settings definition rootChart values = do
+  let plan = validatedResourcePlan settings
   resources <- chartResourcesValue plan (chartDefinitionName definition)
-  guardrails <- resourceGuardrailsValue plan rootChart (chartDefinitionName definition == rootChart)
-  mergeObjectValues
-    values
-    ( object
-        [ "resources" .= resources
-        , "resourceGuardrails" .= guardrails
-        ]
-    )
+  guardrails <-
+    resourceGuardrailsValue substrate plan rootChart (chartDefinitionName definition == rootChart)
+  withResources <-
+    mergeObjectValues
+      values
+      ( object
+          [ "resources" .= resources
+          , "resourceGuardrails" .= guardrails
+          ]
+      )
+  case chartDefinitionName definition of
+    "lifecycle-authority" -> do
+      size <- workloadStorageSize plan "lifecycle-authority"
+      mergeObjectValues withResources (object ["storage" .= object ["size" .= size]])
+    _ -> Right withResources
 
 chartResourcesValue :: Capacity.ResourcePlan -> String -> Either String Value
 chartResourcesValue plan chartName =
@@ -2225,15 +2242,18 @@ chartResourceProfiles chartName =
     "target-secret-agent" -> [("targetSecretAgent", "target-secret-agent")]
     other -> [(other, other)]
 
-resourceGuardrailsValue :: Capacity.ResourcePlan -> String -> Bool -> Either String Value
-resourceGuardrailsValue plan rootChart enabled = do
-  namespaceQuota <- requireNamespaceQuota plan rootChart
-  limitEnvelope <- namespaceLimitEnvelope plan rootChart
+resourceGuardrailsValue
+  :: Substrate -> Capacity.ResourcePlan -> String -> Bool -> Either String Value
+resourceGuardrailsValue substrate plan rootChart enabled = do
+  namespaceAdmission <-
+    Placement.planNamespaceAdmission substrate (Text.pack rootChart) plan
+  limitEnvelope <-
+    Placement.planNamespaceLimits substrate (Text.pack rootChart) plan
   pure
     ( object
         [ "enabled" .= enabled
-        , "quota" .= resourceQuotaValue namespaceQuota
-        , "limitRange" .= limitRangeValue limitEnvelope
+        , "quota" .= CapacityRender.resourceQuotaEnvelopeSpec namespaceAdmission
+        , "limitRange" .= CapacityRender.limitRangeValue limitEnvelope
         ]
     )
 
@@ -2244,61 +2264,12 @@ requireResourceProfile plan profileId =
     Just profile -> Right profile
     Nothing -> Left ("capacity.resource_plan is missing workload profile `" ++ profileId ++ "`")
 
-requireNamespaceQuota :: Capacity.ResourcePlan -> String -> Either String Capacity.NamespaceQuota
-requireNamespaceQuota plan namespace =
-  case find ((== Text.pack namespace) . Capacity.namespace_name) (Capacity.namespace_quotas plan) of
-    Just namespaceQuota -> Right namespaceQuota
-    Nothing -> Left ("capacity.resource_plan is missing namespace quota `" ++ namespace ++ "`")
-
-namespaceLimitEnvelope :: Capacity.ResourcePlan -> String -> Either String Capacity.ResourceEnvelope
-namespaceLimitEnvelope plan namespace =
-  case find ((== Text.pack namespace) . Capacity.profile_namespace) (Capacity.workload_profiles plan) of
-    Just profile -> Right (Capacity.resources profile)
-    Nothing -> Left ("capacity.resource_plan has no workload profile for namespace `" ++ namespace ++ "`")
-
 resourceEnvelopeValue :: Capacity.ResourceEnvelope -> Value
 resourceEnvelopeValue envelope =
   object
-    [ "requests" .= resourceVectorRuntimeValue (Capacity.request envelope)
-    , "limits" .= resourceVectorRuntimeValue (Capacity.limit envelope)
+    [ "requests" .= CapacityRender.resourceVectorRuntimeValue (Capacity.request envelope)
+    , "limits" .= CapacityRender.resourceVectorRuntimeValue (Capacity.limit envelope)
     ]
-
-resourceVectorRuntimeValue :: Capacity.ResourceVector -> Value
-resourceVectorRuntimeValue vector =
-  object
-    [ "cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-    , "memory" .= memoryQuantity (Capacity.memory_mib vector)
-    , "ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
-    ]
-
-resourceQuotaValue :: Capacity.NamespaceQuota -> Value
-resourceQuotaValue namespaceQuota =
-  let vector = Capacity.quota namespaceQuota
-   in object
-        [ "hard"
-            .= object
-              [ "requests.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-              , "limits.cpu" .= cpuQuantity (Capacity.milli_cpu vector)
-              , "requests.memory" .= memoryQuantity (Capacity.memory_mib vector)
-              , "limits.memory" .= memoryQuantity (Capacity.memory_mib vector)
-              , "requests.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
-              , "limits.ephemeral-storage" .= memoryQuantity (Capacity.ephemeral_storage_mib vector)
-              , "requests.storage" .= memoryQuantity (Capacity.durable_storage_mib vector)
-              ]
-        ]
-
-limitRangeValue :: Capacity.ResourceEnvelope -> Value
-limitRangeValue envelope =
-  object
-    [ "defaultRequest" .= resourceVectorRuntimeValue (Capacity.request envelope)
-    , "default" .= resourceVectorRuntimeValue (Capacity.limit envelope)
-    ]
-
-cpuQuantity :: (Show a) => a -> String
-cpuQuantity value = show value ++ "m"
-
-memoryQuantity :: (Show a) => a -> String
-memoryQuantity value = show value ++ "Mi"
 
 mergeObjectValues :: Value -> Value -> Either String Value
 mergeObjectValues base additions =
@@ -2447,6 +2418,10 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
   when
     (length storageBindings /= 3)
     (Left "keycloak-postgres requires exactly three storage bindings")
+  storageSize <-
+    case storageBindings of
+      binding : _ -> Right (chartStorageBindingStorageSize binding)
+      [] -> Left "keycloak-postgres requires storage bindings"
   -- Sprint 3.18: the three Patroni Secrets the Percona operator watches are
   -- materialized by a pre-install Vault-auth Job. The CRD does not expose a
   -- generated-Pod serviceAccountName field, so the least-privilege Vault read
@@ -2551,7 +2526,7 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
         , "storage"
             .= object
               [ "className" .= storageClassName
-              , "size" .= patroniStorageSize
+              , "size" .= storageSize
               ]
         , "security"
             .= object
@@ -2687,7 +2662,20 @@ valuesForControlPlaneRole chartName serviceAccountValue vaultRole livenessPath r
               ]
         , "probeTiming" .= controlPlaneProbeTimingValue
         , "listener" .= object ["port" .= (8600 :: Int)]
-        , "config" .= object ["roleDhall" .= ("" :: String)]
+        , "config"
+            .= object
+              [ "roleDhall"
+                  .= ( "{ schema_version = 2, runtime_role = \""
+                         ++ chartName
+                         ++ "\", vault_address = \"http://vault.vault.svc.cluster.local:8200\""
+                         ++ ", vault_auth_path = \"kubernetes\""
+                         ++ ", vault_role = \""
+                         ++ Text.unpack vaultRole
+                         ++ "\""
+                         ++ ", service_account_token_file = \"/var/run/secrets/kubernetes.io/serviceaccount/token\" }"
+                         :: String
+                     )
+              ]
         ]
     )
 

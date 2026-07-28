@@ -642,8 +642,11 @@ context, environment variables, or an “active gateway” singleton.
 
 `Prodbox.Lifecycle.CheckpointAuthority` implements those unrelated coordinate types and the flat
 `ModelBObservation` domain. `Prodbox.Lifecycle.CheckpointAuthorityStore.gatewayModelBCasAdapter`
-binds only the retained authority endpoint to the gateway's bounded opaque
-`/v1/object-store/authority/get` and `/v1/object-store/authority/cas` routes. Missing state uses
+is statically `ChartLifetime` and serves chart-lifetime checkpoint hydration only. Retained lease,
+target-intent, and SMTP-projection state uses
+`Prodbox.Lifecycle.HostDirectAuthorityStore.materialHostDirectModelBCasAdapter`: material resolves
+once per SES transaction and each read/CAS owns a short MinIO port-forward window, while the
+gateway remains available for authority-clock observations. Missing state uses
 put-if-absent; replacement carries the previously observed opaque object-store version; conflicts
 return a new observation. Payload bytes remain Vault-enveloped under HMAC-derived object names, and
 the opaque storage version is not reused as a lifecycle fence.

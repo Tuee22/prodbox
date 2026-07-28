@@ -59,6 +59,7 @@ module Prodbox.Settings
   , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
   , validateTestTopology
+  , validatedResourcePlan
   )
 where
 
@@ -89,16 +90,15 @@ import Dhall.Core qualified as Core
 import Dhall.Src (Src)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config
   ( CapacityBudget (..)
   , CapacitySection (..)
-  , NamespaceQuota (..)
   , ResourcePlan (..)
   , ResourceVector (..)
   , RuntimeMemoryProfile (..)
   , WorkloadResourceProfile (..)
   , defaultCapacitySection
-  , resourceVectorMinus
   , validateCapacitySection
   )
 import Prodbox.Cluster.Topology
@@ -376,8 +376,14 @@ data ConfigFile = ConfigFile
 data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile
   , resolvedManualPvHostRoot :: FilePath
+  , validatedAllocatedPlan :: Allocation.SomeAllocatedPlan
   }
   deriving (Eq, Show)
+
+validatedResourcePlan :: ValidatedSettings -> ResourcePlan
+validatedResourcePlan settings =
+  case validatedAllocatedPlan settings of
+    Allocation.SomeAllocatedPlan _ plan -> Allocation.allocatedPlanSource plan
 
 supportedPublicHostname :: Text
 supportedPublicHostname = "test.resolvefintech.com"
@@ -856,17 +862,15 @@ renderSettingsDisplay settings =
     , "capacity.workload_budget=" ++ renderCapacityBudget (workload_budget (capacity config))
     , "capacity.region_quota=" ++ renderCapacityBudget (region_quota (capacity config))
     , "capacity.resource_plan.host_capacity="
-        ++ renderResourceVector (host_capacity (resource_plan (capacity config)))
+        ++ renderResourceVector (host_capacity plan)
     , "capacity.resource_plan.rke2_reserved="
-        ++ renderResourceVector (rke2_reserved (resource_plan (capacity config)))
+        ++ renderResourceVector (rke2_reserved plan)
     , "capacity.resource_plan.eviction_floor="
-        ++ renderResourceVector (eviction_floor (resource_plan (capacity config)))
+        ++ renderResourceVector (eviction_floor plan)
     , "capacity.resource_plan.cluster_allocatable="
-        ++ renderResourceVector (clusterAllocatable (resource_plan (capacity config)))
-    , "capacity.resource_plan.namespace_quotas="
-        ++ renderNamespaceQuotas (namespace_quotas (resource_plan (capacity config)))
+        ++ renderResourceVector (Allocation.planAllocatable (validatedAllocatedPlan settings))
     , "capacity.resource_plan.workload_profiles="
-        ++ renderWorkloadProfiles (workload_profiles (resource_plan (capacity config)))
+        ++ renderWorkloadProfiles (workload_profiles plan)
     , "capacity.runtime_memory_profiles="
         ++ renderRuntimeMemoryProfiles (runtime_memory_profiles (capacity config))
     , "cluster_topology.type=" ++ renderClusterType (clusterType (cluster_topology config))
@@ -880,6 +884,7 @@ renderSettingsDisplay settings =
     ]
  where
   config = validatedConfig settings
+  plan = validatedResourcePlan settings
 
 -- | Decode a @ConfigFile@-shaped Dhall file directly at @configPath@. The file
 -- is a @prodbox-config.dhall@-shaped record (a @let Config = ./prodbox-config-types.dhall@
@@ -1019,10 +1024,15 @@ validateConfig repoRoot config = do
     -- tier ('validateAwsBootstrapConfig' / 'validateOperationalAwsCredentials')
     -- and are validated lazily only when a command actually reaches AWS.
     validateLocalConfig config
+    allocatedPlan <-
+      mapLeft
+        Allocation.renderCompileError
+        (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
     pure
       ValidatedSettings
         { validatedConfig = config
         , resolvedManualPvHostRoot = resolvedManualRoot
+        , validatedAllocatedPlan = allocatedPlan
         }
 
 -- | Purely-local config invariants: the supported public hostname, the
@@ -1391,24 +1401,6 @@ renderResourceVector vector =
     ++ show (ephemeral_storage_mib vector)
     ++ ";durable_storage_mib="
     ++ show (durable_storage_mib vector)
-
-clusterAllocatable :: ResourcePlan -> ResourceVector
-clusterAllocatable plan =
-  host_capacity plan
-    `resourceVectorMinus` rke2_reserved plan
-    `resourceVectorMinus` eviction_floor plan
-
-renderNamespaceQuotas :: [NamespaceQuota] -> String
-renderNamespaceQuotas quotas =
-  Text.unpack
-    ( Text.intercalate
-        ";"
-        [ namespace_name namespaceQuota
-            <> "="
-            <> Text.pack (renderResourceVector (quota namespaceQuota))
-        | namespaceQuota <- quotas
-        ]
-    )
 
 renderWorkloadProfiles :: [WorkloadResourceProfile] -> String
 renderWorkloadProfiles profiles =

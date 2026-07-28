@@ -15,7 +15,6 @@ module Prodbox.PostgresPlatform
   , patroniRunAsGroup
   , patroniRunAsUser
   , patroniStorageSpecs
-  , patroniStorageSize
   , patroniStandbySecretName
   , patroniSuperuserSecretName
   , patroniTeamId
@@ -50,9 +49,6 @@ patroniDatabaseName = "keycloak"
 
 patroniUsername :: String
 patroniUsername = "keycloak"
-
-patroniStorageSize :: String
-patroniStorageSize = "20Gi"
 
 patroniRunAsUser :: Int
 patroniRunAsUser = 1001
@@ -98,7 +94,7 @@ patroniStorageSpecs rootChart =
     ChartStorageSpec
       { chartStorageSpecStatefulSetName = clusterName
       , chartStorageSpecPersistentVolumeClaimName = patroniPersistentVolumeClaimName rootChart ordinal
-      , chartStorageSpecStorageSize = patroniStorageSize
+      , chartStorageSpecWorkloadProfileId = Text.pack "keycloak-postgres"
       , chartStorageSpecOrdinal = ordinal
       , chartStorageSpecClaimSuffix = "data"
       }

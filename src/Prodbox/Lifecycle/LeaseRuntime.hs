@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -52,11 +53,9 @@ import Prodbox.Gateway.ObjectStore (AuthorityClockResponse (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
+  , ModelBCasAdapter
+  , StoreLifetime (ClusterRetained)
   , checkpointAuthorityGatewayEndpoint
-  )
-import Prodbox.Lifecycle.CheckpointAuthorityStore
-  ( ModelBCodec (..)
-  , gatewayModelBCasAdapter
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
@@ -68,6 +67,7 @@ import Prodbox.Lifecycle.Lease
   , LeaseKey
   , LeaseOwnershipStatus (..)
   , LeasePolicy
+  , LeaseProjection
   , LeaseRecoveryPredecessor
   , LeaseRefusal (..)
   , LeaseUsePermit
@@ -82,9 +82,7 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeMicros
   , awsSessionExpiresAt
   , beginLeaseAcquire
-  , decodeLeaseProjection
   , deriveAwsSessionDeadline
-  , encodeLeaseProjection
   , fencingTokenValue
   , leasePolicyCancellationGrace
   , leasePolicyClockSkew
@@ -192,6 +190,7 @@ beginProductionLeaseAcquire authority policy key =
 
 data ProductionLeaseRuntime inventory = ProductionLeaseRuntime
   { internalRuntimeAuthority :: !LongLivedCheckpointAuthority
+  , internalRuntimeLeaseAdapter :: !(ModelBCasAdapter 'ClusterRetained IO LeaseProjection)
   , internalRuntimePolicy :: !LeasePolicy
   , internalRuntimePollMicros :: !Int
   , internalRuntimeProviderObservation :: !(IO (ProviderObservation inventory))
@@ -199,11 +198,12 @@ data ProductionLeaseRuntime inventory = ProductionLeaseRuntime
 
 mkProductionLeaseRuntime
   :: LongLivedCheckpointAuthority
+  -> ModelBCasAdapter 'ClusterRetained IO LeaseProjection
   -> LeasePolicy
   -> Natural
   -> IO (ProviderObservation inventory)
   -> Either LeaseRuntimeConfigError (ProductionLeaseRuntime inventory)
-mkProductionLeaseRuntime authority policy pollMicros providerObservation
+mkProductionLeaseRuntime authority leaseAdapter policy pollMicros providerObservation
   | pollMicros == 0 = Left LeaseRuntimePollIntervalMustBePositive
   | pollMicros > fromIntegral (maxBound :: Int) =
       Left (LeaseRuntimePollIntervalExceedsInt pollMicros)
@@ -211,6 +211,7 @@ mkProductionLeaseRuntime authority policy pollMicros providerObservation
       Right
         ProductionLeaseRuntime
           { internalRuntimeAuthority = authority
+          , internalRuntimeLeaseAdapter = leaseAdapter
           , internalRuntimePolicy = policy
           , internalRuntimePollMicros = fromIntegral pollMicros
           , internalRuntimeProviderObservation = providerObservation
@@ -223,13 +224,7 @@ productionLeaseInterpreter
 productionLeaseInterpreter runtime =
   LeaseInterpreter
     { leaseInterpreterModelB =
-        gatewayModelBCasAdapter
-          authority
-          ModelBCodec
-            { encodeModelBValue = Right . encodeLeaseProjection
-            , decodeModelBValue =
-                first show . decodeLeaseProjection policy
-            }
+        internalRuntimeLeaseAdapter runtime
     , leaseInterpreterAuthorityNow = observeGatewayAuthorityTime authority
     , leaseInterpreterWaitUntil =
         waitForGatewayAuthorityTime authority pollMicros

@@ -1134,7 +1134,7 @@ manifests:
 The reconciler observes host cpu, memory, and filesystem capacity first, then
 compiles the opaque proof-carrying `AllocatedResourcePlan`
 (`Prodbox.Capacity.Allocation`, built by the total `compileResourcePlan`) against
-those observed host facts (Sprint `4.52`, Planned). Closing invariant (b)
+those observed host facts (Sprint `4.52`, Done on its code-owned surface). Closing invariant (b)
 `cluster <= host` this way makes an observed host that cannot cover the plan's
 allocatable a `Left` — an over-committed plan is not a constructible value — so
 reconcile refuses at compile time, before mutating these files. This supersedes

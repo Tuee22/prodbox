@@ -384,10 +384,17 @@ Rules:
     `.test-data/<case>/`), and test commands are mechanically forbidden from touching the
     production `.data/`; see
     [test_topology_doctrine.md § 4](./test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation).
-14. The hardcoded chart storage sizes (e.g. the 20Gi MinIO PV hint) are a transitional default:
-    how much durable data each store may hold is superseded by the finite-budget capacity DSL in
-    [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), where a sizeless
-    durable claim or an over-quota topology is a Dhall typecheck failure.
+14. Chart storage sizes are not chart-local literals. Each StatefulSet workload's PVC `size:` is
+    single-sourced from that workload's `durable_storage_mib` in the capacity plan and **injected**
+    into the rendered chart (Sprint `3.29`), so the PVC size, the namespace `requests.storage`
+    quota, and the over-commit fit proof are one value that cannot drift; the former hardcoded hints
+    (e.g. the 20Gi MinIO PV hint) are retired. This doctrine still owns *where* those durable bytes
+    live. *How much* is owned by two sibling SSoTs: the finite durable-byte ceiling per store —
+    where a sizeless claim or an over-quota topology is a Dhall typecheck failure — by
+    [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), and the
+    per-workload PVC admission size plus its derived namespace quota by
+    [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas).
+    Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 15. On the AWS/EKS substrate there is no operator-host retained root; the durable block storage
     is the set of pre-created EBS volumes, which play the role `.data/` plays on home. They are
     `Retain`, AZ-pinned, and preserved across cluster/stack teardown. A production operator

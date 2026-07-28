@@ -520,7 +520,7 @@ runConformanceTier repoRoot =
             ( ( "Resource-plan over-commit gate failed. The committed defaultResourcePlan "
                   ++ "must compile into an AllocatedResourcePlan proof — host_capacity ≥ "
                   ++ "cluster allocatable ≥ Σ workload draw (see resource_scaling_doctrine.md "
-                  ++ "§ 2G, Sprint 1.68):"
+                  ++ "§§ 2B/2C, Sprints 1.68/1.69):"
               )
                 : map ("- " ++) resourcePlanOverCommitViolations
                 ++ ["Correct capacity/Config.hs defaultResourcePlan so the nesting proof holds."]
@@ -536,7 +536,7 @@ runConformanceTier repoRoot =
 -- seconds rather than at runtime.
 resourcePlanOverCommitViolations :: [String]
 resourcePlanOverCommitViolations =
-  case Allocation.compileResourcePlan [] (const Text.empty) 0 defaultResourcePlan of
+  case Allocation.compileResourcePlanUncertified defaultResourcePlan of
     Right _ -> []
     Left err -> [Allocation.renderCompileError err]
 

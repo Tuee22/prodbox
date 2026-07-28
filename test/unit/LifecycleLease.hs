@@ -39,6 +39,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   , checkpointAuthorityClusterId
+  , mkChartLifetimeCoordinate
   , mkClusterRetainedCoordinate
   , mkLongLivedCheckpointAuthority
   , mkModelBObjectVersion
@@ -795,7 +796,7 @@ lifecycleLeaseSuite =
     it "refuses a failed Model-B encoding before transport" $ do
       let coordinate =
             expectRight
-              (mkClusterRetainedCoordinate authority "target-commit/aws-ses")
+              (mkChartLifetimeCoordinate authority "pulumi-stack/aws-ses")
           adapter =
             gatewayModelBCasAdapter
               authority
@@ -925,6 +926,10 @@ lifecycleLeaseSuite =
     it "validates the production monitor poll interval" $ do
       mkProductionLeaseRuntime
         authority
+        ModelBCasAdapter
+          { modelBObserve = const (pure ModelBMissing)
+          , modelBCompareAndSwap = const (pure (ModelBCasUnobservable "unused"))
+          }
         defaultSesLeasePolicy
         0
         (pure (ProviderQuiescent ()))

@@ -67,6 +67,10 @@ listener:
 journal:
   storageClassName: prodbox-retained
 
+# Injected from the lifecycle-authority workload durable-storage allocation.
+storage:
+  size: ""
+
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `lifecycle-authority`
 # workload profile) by `Prodbox.Lib.ChartPlatform` into

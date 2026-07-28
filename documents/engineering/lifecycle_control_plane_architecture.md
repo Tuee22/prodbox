@@ -1480,13 +1480,17 @@ Every authority-namespace object coordinate and CAS adapter is durability-indexe
 constructors partition the object namespaces by lifetime class. A retained-or-stronger object
 addressed through a chart-lifetime transport is unrepresentable rather than merely forbidden.
 
-> **Implementation status (2026-07-14, Sprint `4.51`)**: Increment A landed the phantom
+> **Implementation status (2026-07-27, Sprint `4.51`)**: Increment A landed the phantom
 > `StoreLifetime` index on the Model-B coordinate / request / adapter types with a `nominal` role and
 > the full-name-tagging constructors, plus the compile + byte-erasure witness. A lease guard is
 > monomorphically `'ClusterRetained'` (not lifetime-indexed) — a lease is always retained — which
-> lets a `'ChartLifetime'` checkpoint be guarded by a retained lease. The clause above becomes true in
-> production once Increment B retypes the gateway transport to `'ChartLifetime'`-only and cuts the
-> retained consumers over to the host-direct `'ClusterRetained'` adapter.
+> lets a `'ChartLifetime'` checkpoint be guarded by a retained lease. Increment B now makes the
+> gateway adapter `'ChartLifetime'`-only and cuts retained SES lease/target/SMTP consumers to a
+> transaction-resolved host-direct `'ClusterRetained'` adapter with one short MinIO port-forward
+> window per read/CAS. The durable SES operation fold arms a generation-scoped retained record
+> before key creation, completes it before projection publication, and replays a completed result
+> before inventory cleanup. Arm, completion, and projection response-loss prefixes are covered by
+> the Sprint `4.51` crash table; live AWS response-loss behavior remains Standard-O evidence.
 
 Garbage collection persists its candidate set and both complete scan receipts in the aggregate.
 Its GC fence is mutually exclusive with `RecordPendingBlob` and promotion. After the declared grace,
@@ -1517,6 +1521,21 @@ new work. A sequence at or below the compacted floor without a tombstone returns
 `OperationIdExpired`; it can never become a fresh mutation. Terminal lookup can return the same
 bounded projection or immutable result blob, not merely a digest that cannot satisfy the original
 query.
+
+The standing-role HTTP topology is a closed compiled registry
+(`Prodbox.ControlPlane.Route`). Each operation route has exactly one owning runtime role and is
+decoded only after that role is selected from the executable command and mounted configuration.
+An owned route whose interpreter is not yet bound fails `503`; a route belonging to another role
+is absent and returns `404`. No standing-role route exposes a generic object-store or Vault
+operation. This prevents the temporary fail-closed runtime boundary from becoming another combined
+gateway while the concrete in-cluster interpreters are installed.
+
+Each standing process decodes a schema-v2 mounted Dhall configuration containing its exact Vault
+address, Kubernetes auth path, compiled role identity, and projected ServiceAccount token path.
+`Prodbox.ControlPlane.VaultSession` rejects a role borrowed from another process before I/O and
+constructs one cached renewable session before the listener opens. Renewal re-reads the projected
+JWT so Kubernetes token rotation is honored. There is no ambient environment lookup, host root
+token, shared Gateway identity, or per-request login fallback.
 
 The interpreter performs:
 
@@ -1958,6 +1977,26 @@ storage generation, action digest, and the bounded PKI extension where applicabl
 Admission and execution carry the same `CapabilityRef operation`, selected exhaustively from the
 four indexed Broker references; a route cannot relabel an observe program as mutation, baseline, or
 PKI authority.
+
+### 7.1 Shutdown completion is proof-carrying
+
+The Bootstrap Broker has one private aggregate lifecycle state. `Stopped` is not a timer outcome or
+an independently writable phase flag: it is the projection of a `ShutdownComplete` witness produced
+only after the accept thread and every worker have joined, the accepted queue and active-owner set
+are empty, and every running idempotency completion has been resolved. Queue occupancy, active
+ownership, waiter completion, and lifecycle phase therefore cannot describe contradictory states.
+
+Forced drain first closes admission and atomically resolves every running completion with a typed
+shutdown result, waking all coalesced replay waiters. It then closes queued sockets, cancels the
+structured worker tree, joins the accept thread and every worker, and proves the empty postcondition
+before publishing terminal completion. A join deadline that elapses produces
+`ShutdownIncomplete` and leaves the runtime in the nonterminal force-draining state; it must never
+publish `Stopped`, fill the public completion cell, or discard unfinished ownership.
+
+This rule applies to every long-running prodbox role: a lifecycle phase may summarize owned
+resources only when its constructor carries the evidence needed for that summary. Independent
+phase flags and counters are observations during execution, not authority to construct a terminal
+state.
 
 The detailed initialization, encrypted-share receipt, root unlock-bundle, pristine-reset, and child
 Transit-seal custody protocol has one SSoT:

@@ -363,13 +363,29 @@ brokerIsolationLintSuite =
 runtimeRoleSuite :: SuiteBuilder ()
 runtimeRoleSuite =
   describe "Sprint 2.33 closed runtime-role identities" $ do
-    it "enumerates exactly the Bootstrap Broker and Gateway runtime roles" $
-      Role.allRuntimeRoles `shouldBe` [Role.BootstrapBroker, Role.GatewayRuntime]
+    it "enumerates every physically separate runtime role" $
+      Role.allRuntimeRoles
+        `shouldBe` [ Role.BootstrapBroker
+                   , Role.GatewayRuntime
+                   , Role.LifecycleAuthorityRuntime
+                   , Role.ProviderWorkerRuntime
+                   , Role.AuthorityBackupRuntime
+                   , Role.TlsRetentionRuntime
+                   , Role.TargetSecretAgentRuntime
+                   ]
 
     it "maps roles and config identities through a total bijection" $
       do
         let identities = [minBound .. maxBound]
-        identities `shouldBe` [Role.BootstrapBrokerConfig, Role.GatewayRuntimeConfig]
+        identities
+          `shouldBe` [ Role.BootstrapBrokerConfig
+                     , Role.GatewayRuntimeConfig
+                     , Role.LifecycleAuthorityConfig
+                     , Role.ProviderWorkerConfig
+                     , Role.AuthorityBackupConfig
+                     , Role.TlsRetentionConfig
+                     , Role.TargetSecretAgentConfig
+                     ]
         forM_ Role.allRuntimeRoles $ \role ->
           Role.runtimeConfigIdentityRole (Role.runtimeRoleConfigIdentity role)
             `shouldBe` role
@@ -394,6 +410,46 @@ runtimeRoleSuite =
               , "gateway-runtime-config-v1"
               , "/etc/gateway/config"
               , "/etc/gateway/config/config.dhall"
+              )
+            ,
+              ( Role.LifecycleAuthorityRuntime
+              , Role.LifecycleAuthorityConfig
+              , "lifecycle-authority"
+              , "lifecycle-authority-config-v1"
+              , "/etc/lifecycle-authority/config"
+              , "/etc/lifecycle-authority/config/config.dhall"
+              )
+            ,
+              ( Role.ProviderWorkerRuntime
+              , Role.ProviderWorkerConfig
+              , "provider-worker"
+              , "provider-worker-config-v1"
+              , "/etc/provider-worker/config"
+              , "/etc/provider-worker/config/config.dhall"
+              )
+            ,
+              ( Role.AuthorityBackupRuntime
+              , Role.AuthorityBackupConfig
+              , "authority-backup"
+              , "authority-backup-config-v1"
+              , "/etc/authority-backup/config"
+              , "/etc/authority-backup/config/config.dhall"
+              )
+            ,
+              ( Role.TlsRetentionRuntime
+              , Role.TlsRetentionConfig
+              , "tls-retention"
+              , "tls-retention-config-v1"
+              , "/etc/tls-retention/config"
+              , "/etc/tls-retention/config/config.dhall"
+              )
+            ,
+              ( Role.TargetSecretAgentRuntime
+              , Role.TargetSecretAgentConfig
+              , "target-secret-agent"
+              , "target-secret-agent-config-v1"
+              , "/etc/target-secret-agent/config"
+              , "/etc/target-secret-agent/config/config.dhall"
               )
             ]
       forM_ cases $ \(role, identity, roleName, identityName, mountDirectory, mountPath) -> do

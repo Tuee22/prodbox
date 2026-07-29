@@ -3,6 +3,11 @@
 module ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite) where
 
 import Data.IORef
+import Prodbox.ControlPlane.Codec
+  ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid, ControlPlaneRequestTooLarge)
+  , decodeControlPlaneRequest
+  , encodeControlPlaneRequest
+  )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
 import Prodbox.Lifecycle.Authority.TlsRetention
 import TestSupport
@@ -50,6 +55,40 @@ controlPlaneTlsRetentionEndpointSuite =
       corrupt <- serveTlsRestore repository RestoreCommittedCorrupt
       tlsRetentionHttpStatus corrupt `shouldBe` 500
       tlsRetentionSummary corrupt `shouldBe` "tls-restore-refused:corrupt"
+    it "round-trips a store payload and a restore observation through the request codec" $ do
+      let store = TlsStorePayload KeyRotationNotApproved goodEvidence ref1
+      decodeControlPlaneRequest 4096 (encodeControlPlaneRequest store) `shouldBe` Right store
+      decodeControlPlaneRequest 4096 (encodeControlPlaneRequest (RestoreCommittedIntact ref1))
+        `shouldBe` Right (RestoreCommittedIntact ref1)
+    it "serveTlsStoreRequest decodes a well-formed store body and promotes" $ do
+      (repository, stateRef) <- freshRepository
+      let body = encodeControlPlaneRequest (TlsStorePayload KeyRotationNotApproved goodEvidence ref1)
+      result <- serveTlsStoreRequest 4096 repository body
+      result `shouldBe` TlsStoreDecided (TlsPromoted ref1)
+      tlsRetentionHttpStatus result `shouldBe` 200
+      tlsRetentionSummary result `shouldBe` "tls-promoted"
+      (currentRetainedRef <$> readIORef stateRef) `shouldReturn` Just ref1
+    it "serveTlsStoreRequest refuses a malformed body before reading state" $ do
+      (repository, stateRef) <- freshRepository
+      result <- serveTlsStoreRequest 4096 repository "not-a-cbor-envelope"
+      result `shouldBe` TlsRequestBadRequest ControlPlaneRequestInvalid
+      tlsRetentionHttpStatus result `shouldBe` 400
+      tlsRetentionSummary result `shouldBe` "tls-bad-request:invalid"
+      readIORef stateRef `shouldReturn` initialTlsRetentionState
+    it "serveTlsRestoreRequest decodes a well-formed restore body and applies it" $ do
+      stateRef <- newIORef (TlsRetentionCurrent ref1)
+      let repository = inMemoryRepository stateRef False
+          body = encodeControlPlaneRequest (RestoreCommittedIntact ref1)
+      result <- serveTlsRestoreRequest 4096 repository body
+      result `shouldBe` TlsRestoreDecided (TlsRestoreApply ref1)
+      tlsRetentionSummary result `shouldBe` "tls-restore-apply"
+    it "serveTlsRestoreRequest refuses an oversized body before reading state" $ do
+      (repository, _) <- freshRepository
+      let body = encodeControlPlaneRequest (RestoreCommittedIntact ref1)
+      result <- serveTlsRestoreRequest 2 repository body
+      result `shouldBe` TlsRequestBadRequest ControlPlaneRequestTooLarge
+      tlsRetentionHttpStatus result `shouldBe` 400
+      tlsRetentionSummary result `shouldBe` "tls-bad-request:too-large"
  where
   goodEvidence = PromotionEvidence True True
   src = SourceSecretRef "uid-1" "rv-1"

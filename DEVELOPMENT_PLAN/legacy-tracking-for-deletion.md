@@ -25,6 +25,21 @@
 
 ## Ledger Status
 
+**2026-07-28 — Sprints `1.72`/`1.73` (Ring-1 Dhall over-commit shim + host-fitting `config generate`)
+add NO Pending Removal rows.** The change is additive: `renderProjectConfigDhall` now bakes an
+over-commit `assert` into the generated `prodbox.dhall`, and `config generate` derives a host-fitting
+`host_capacity` from the observed host via the new Phase-1-owned `Prodbox.Capacity.HostProbe` reader —
+moved from `Prodbox.CLI.Rke2` as a **single-owner refactor** (the two prior reconcile call sites now
+import it), not a removed surface. Two supersessions are recorded here as notes rather than deletion
+rows: (1) the pre-shim behavior where `config generate` emitted a fixed, host-agnostic `host_capacity`
+that could exceed the real machine (the live incident: a 280 GiB default on a 238 GiB host) is closed
+by Sprint `1.73`, but the abstract default `defaultResourcePlan.host_capacity` is **retained** as the
+`--portable` / test fallback, so it is superseded-in-role, not deleted; (2) the standalone
+`dhall/capacity/Schema.dhall` capacity algebra is a **watch item** — Sprint `1.72` inlines its operators
+textually into the generated file and keeps `Schema.dhall` as the canonical source they are copied from,
+so it is retained by default and becomes a Pending-Removal candidate only if the team later decides to
+collapse to a single source. No row moves.
+
 **2026-07-26 — Bootstrap Broker forced-shutdown counterexample reopens Phase `2` and expands Phase
 `5`.** A full-unit contention run reached a source-permitted illegal state: the manager discarded a
 timed-out child cancellation, published `BrokerStopped`, and left a coalesced replay waiter live;

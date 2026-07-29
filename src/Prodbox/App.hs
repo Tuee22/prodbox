@@ -140,7 +140,7 @@ canRunWithoutRepoRoot (NativeWorkload (WorkloadStart _)) = True
 -- binary-sibling `prodbox.dhall` (`resolveTier0ConfigPath`, which ignores the
 -- repo root), so it must run in a non-repo context such as the in-container
 -- image build (`RUN prodbox config generate`).
-canRunWithoutRepoRoot (NativeConfig ConfigGenerate) = True
+canRunWithoutRepoRoot (NativeConfig (ConfigGenerate _)) = True
 canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()

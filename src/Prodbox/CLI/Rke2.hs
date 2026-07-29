@@ -61,7 +61,6 @@ module Prodbox.CLI.Rke2
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
   , renderRke2SystemdResourceDropIn
-  , parseHostCapacityObservation
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
   , harborRegistryStorageBackend
@@ -104,8 +103,7 @@ import Data.Char
   , toLower
   )
 import Data.List
-  ( find
-  , intercalate
+  ( intercalate
   , isInfixOf
   , isPrefixOf
   , nub
@@ -144,6 +142,7 @@ import Prodbox.CLI.Vault
   )
 import Prodbox.Capacity.Allocation qualified as CapacityAllocation
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.HostProbe (observeHostCapacity)
 import Prodbox.Capacity.ObservedHost qualified as ObservedHost
 import Prodbox.Capacity.Placement qualified as Placement
 import Prodbox.Capacity.Render qualified as CapacityRender
@@ -7101,125 +7100,6 @@ memoryQuantity = CapacityRender.memoryQuantity
 
 renderResourceVectorRuntime :: Capacity.ResourceVector -> String
 renderResourceVectorRuntime = CapacityRender.renderResourceVectorRuntime
-
-parseHostCapacityObservation :: String -> Either String ObservedHost.ObservedHostRoot
-parseHostCapacityObservation raw =
-  do
-    vector <-
-      Capacity.ResourceVector
-        <$> lookupNatural "milli_cpu"
-        <*> lookupNatural "memory_mib"
-        <*> lookupNatural "ephemeral_storage_mib"
-        <*> lookupNatural "durable_storage_mib"
-    ephemeralDevice <- parseDevice "ephemeral_device" "test-kubelet-device"
-    durableDevice <- parseDevice "durable_device" "test-retained-device"
-    ObservedHost.mkObservedHostRoot vector ephemeralDevice durableDevice
- where
-  fields = map splitField (splitOnChar ',' raw)
-  lookupNatural key =
-    case lookup key fields of
-      Just value -> parseNatural key value
-      Nothing -> Left ("missing host capacity field `" ++ key ++ "`")
-  splitField field =
-    case break (== '=') field of
-      (key, '=' : value) -> (trimWhitespace key, trimWhitespace value)
-      _ -> (trimWhitespace field, "")
-  parseDevice key fallback =
-    case ObservedHost.mkStorageDeviceId (Text.pack (maybe fallback id (lookup key fields))) of
-      Nothing -> Left ("invalid storage device id for `" ++ key ++ "`")
-      Just device -> Right device
-
-parseNatural :: String -> String -> Either String Natural
-parseNatural key value =
-  case reads value of
-    [(parsed, "")] -> Right parsed
-    _ -> Left ("invalid natural for `" ++ key ++ "`: " ++ value)
-
-splitOnChar :: Char -> String -> [String]
-splitOnChar _ "" = [""]
-splitOnChar delimiter input =
-  case break (== delimiter) input of
-    (before, _ : remaining) -> before : splitOnChar delimiter remaining
-    (before, []) -> [before]
-
-observeHostCapacity :: FilePath -> FilePath -> IO (Either String ObservedHost.ObservedHostRoot)
-observeHostCapacity repoRoot retainedRoot = do
-  override <- lookupEnv "PRODBOX_TEST_HOST_CAPACITY"
-  case override of
-    Just raw -> pure (parseHostCapacityObservation raw)
-    Nothing -> observeHostCapacityFromHost repoRoot retainedRoot
-
-observeHostCapacityFromHost
-  :: FilePath
-  -> FilePath
-  -> IO (Either String ObservedHost.ObservedHostRoot)
-observeHostCapacityFromHost repoRoot retainedRoot = do
-  cpuResult <- observedCpuMilli repoRoot
-  memoryResult <- observedMemoryMib
-  ephemeralResult <- observedFilesystemMib repoRoot "/"
-  durableResult <- observedFilesystemMib repoRoot retainedRoot
-  pure $ do
-    cpu <- cpuResult
-    memory <- memoryResult
-    (ephemeralDevice, ephemeralStorage) <- ephemeralResult
-    (durableDevice, durableStorage) <- durableResult
-    ObservedHost.mkObservedHostRoot
-      Capacity.ResourceVector
-        { Capacity.milli_cpu = cpu
-        , Capacity.memory_mib = memory
-        , Capacity.ephemeral_storage_mib = ephemeralStorage
-        , Capacity.durable_storage_mib = durableStorage
-        }
-      ephemeralDevice
-      durableDevice
-
-observedCpuMilli :: FilePath -> IO (Either String Natural)
-observedCpuMilli repoRoot = do
-  outputResult <- captureToolOutput repoRoot "nproc" []
-  pure $ do
-    output <- outputResult
-    case processExitCode output of
-      ExitFailure _ -> Left ("failed to observe host CPU count: " ++ outputDetail output)
-      ExitSuccess -> (* 1000) <$> parseNatural "nproc" (trimWhitespace (processStdout output))
-
-observedMemoryMib :: IO (Either String Natural)
-observedMemoryMib = do
-  meminfoResult <- try (readFile "/proc/meminfo") :: IO (Either IOException String)
-  pure $ do
-    meminfo <- either (Left . displayException) Right meminfoResult
-    line <-
-      maybe
-        (Left "failed to observe host memory: /proc/meminfo has no MemTotal line")
-        Right
-        (find ("MemTotal:" `isPrefixOf`) (lines meminfo))
-    case words line of
-      ["MemTotal:", kibText, "kB"] -> (`div` 1024) <$> parseNatural "MemTotal" kibText
-      _ -> Left ("failed to parse host memory line: " ++ line)
-
-observedFilesystemMib
-  :: FilePath
-  -> FilePath
-  -> IO (Either String (ObservedHost.StorageDeviceId, Natural))
-observedFilesystemMib repoRoot path = do
-  outputResult <- captureToolOutput repoRoot "df" ["-Pm", path]
-  pure $ do
-    output <- outputResult
-    case processExitCode output of
-      ExitFailure _ -> Left ("failed to observe filesystem capacity for " ++ path ++ ": " ++ outputDetail output)
-      ExitSuccess ->
-        case drop 1 (lines (processStdout output)) of
-          line : _ ->
-            case words line of
-              filesystem : blocks : _ -> do
-                device <-
-                  maybe
-                    (Left ("invalid filesystem identity from df: " ++ filesystem))
-                    Right
-                    (ObservedHost.mkStorageDeviceId (Text.pack filesystem))
-                capacity <- parseNatural "df-1M-blocks" blocks
-                Right (device, capacity)
-              _ -> Left ("failed to parse df output line: " ++ line)
-          [] -> Left "failed to parse df output: missing data line"
 
 ensureRke2ResourceGuardrails :: FilePath -> ValidatedSettings -> IO ExitCode
 ensureRke2ResourceGuardrails repoRoot settings = do

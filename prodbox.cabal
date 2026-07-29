@@ -50,6 +50,7 @@ library
         Prodbox.Capacity.Allocation
         Prodbox.Capacity.Config
         Prodbox.Capacity.Derivation
+        Prodbox.Capacity.HostProbe
         Prodbox.Capacity.Render
         Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.ObservedHost
@@ -99,11 +100,17 @@ library
         Prodbox.ControlPlane.CapabilityRequirement
         Prodbox.ControlPlane.Deadline
         Prodbox.ControlPlane.AuthorityClock
+        Prodbox.ControlPlane.AuthorityBackupEndpoint
         Prodbox.ControlPlane.Capacity
+        Prodbox.ControlPlane.Codec
         Prodbox.ControlPlane.Interpreter
         Prodbox.ControlPlane.MigrationEndpoint
+        Prodbox.ControlPlane.OperationEndpoint
+        Prodbox.ControlPlane.ProviderWorkEndpoint
         Prodbox.ControlPlane.Server
+        Prodbox.ControlPlane.TargetSecretEndpoint
         Prodbox.ControlPlane.TlsRetentionEndpoint
+        Prodbox.ControlPlane.RoleInterpreters
         Prodbox.Daemon.Events
         Prodbox.Crypto.Aead
         Prodbox.Crypto.Envelope
@@ -188,6 +195,7 @@ library
         Prodbox.Lifecycle.Authority.TlsRetention
         Prodbox.Lifecycle.AuthorityBackup.ChartStatics
         Prodbox.Lifecycle.ProviderWorker.ChartStatics
+        Prodbox.Lifecycle.ProviderWorker.ProviderWork
         Prodbox.Lifecycle.TargetSecretAgent.ChartStatics
         Prodbox.Lifecycle.TlsRetention.ChartStatics
         Prodbox.Lifecycle.AnchoredReconcile
@@ -399,8 +407,13 @@ test-suite prodbox-unit
         LifecycleAuthorityGenesis
         LifecycleAuthorityMigration
         ControlPlaneRoute
+        ControlPlaneAuthorityBackupEndpoint
         ControlPlaneMigrationEndpoint
+        ControlPlaneOperationEndpoint
+        ControlPlaneProviderWorkEndpoint
         ControlPlaneServer
+        ControlPlaneRoleInterpreters
+        ControlPlaneTargetSecretEndpoint
         ControlPlaneTlsRetentionEndpoint
         ControlPlaneVaultSession
         DecommissionCommit
@@ -415,6 +428,7 @@ test-suite prodbox-unit
         DecommissionVerifier
         LifecycleAuthorityOperation
         LifecycleAuthorityOutboxSim
+        LifecycleProviderWork
         LifecycleAuthorityState
         LifecycleAuthoritySubmission
         LifecycleAuthorityTlsRetention
@@ -436,6 +450,7 @@ test-suite prodbox-unit
         StoreLifetimeWitness
         TargetCommitSmtp
         TestSupport
+        Tier0PlanAssert
         VaultSession
 
     default-language: GHC2021

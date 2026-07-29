@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.50: the server side of the TLS Retention role's @store@ and @restore@
@@ -18,14 +21,25 @@
 module Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsRetentionRepository (..)
   , TlsRetentionEndpointResult (..)
+  , TlsStorePayload (..)
   , serveTlsStore
+  , serveTlsStoreRequest
   , serveTlsRestore
+  , serveTlsRestoreRequest
   , tlsRetentionHttpStatus
   , tlsRetentionSummary
   )
 where
 
+import Codec.Serialise (Serialise)
+import Data.ByteString.Lazy (ByteString)
 import Data.Text (Text)
+import GHC.Generics (Generic)
+import Prodbox.ControlPlane.Codec
+  ( ControlPlaneRequestCodecError
+  , controlPlaneRequestCodecToken
+  , decodeControlPlaneRequest
+  )
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
@@ -63,7 +77,24 @@ data TlsRetentionEndpointResult
   | -- | A promotion was decided but its durable commit failed (retry).
     TlsStoreWriteFailed !Text
   | TlsRestoreDecided !TlsRestoreDecision
+  | -- | The request body was not a bounded, canonical, supported-version TLS
+    -- store/restore request; no state was read or written.
+    TlsRequestBadRequest !ControlPlaneRequestCodecError
   deriving (Eq, Show)
+
+-- | Sprint 4.50: the wire payload for the TLS Retention @store@ route: the key
+-- rotation approval, the promotion evidence, and the candidate retained reference.
+-- The retention state itself is read from the repository, never carried in the
+-- request. Carries only certificate identity, digests, and source coordinates — no
+-- private key or ciphertext material crosses this boundary. The @restore@ route's
+-- payload is a bare 'RestoreObservation'.
+data TlsStorePayload = TlsStorePayload
+  { tlsStoreApproval :: !KeyRotationApproval
+  , tlsStoreEvidence :: !PromotionEvidence
+  , tlsStoreCandidate :: !RetainedTlsRef
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Serve a renewal store: decide the promotion against the current retention
 -- state and, only for a genuine promotion, commit the new reference.
@@ -85,6 +116,22 @@ serveTlsStore repository approval evidence candidate = do
         Right () -> TlsStoreDecided decision
     _ -> pure (TlsStoreDecided decision)
 
+-- | Serve a store request from a raw body: decode the bounded, canonical
+-- 'TlsStorePayload' and run 'serveTlsStore'. A malformed body is refused
+-- ('TlsRequestBadRequest') before any state is read. This is the through-seam entry
+-- a production 'RoleInterpreter' dispatches the @store@ route's socket body to.
+serveTlsStoreRequest
+  :: (Monad m)
+  => Int
+  -> TlsRetentionRepository m
+  -> ByteString
+  -> m TlsRetentionEndpointResult
+serveTlsStoreRequest maximumBytes repository body =
+  case decodeControlPlaneRequest maximumBytes body of
+    Left err -> pure (TlsRequestBadRequest err)
+    Right (TlsStorePayload approval evidence candidate) ->
+      serveTlsStore repository approval evidence candidate
+
 -- | Serve a restore: decide against the committed reference. No mutation.
 serveTlsRestore
   :: (Monad m)
@@ -95,12 +142,28 @@ serveTlsRestore repository observation = do
   state <- readRetentionState repository
   pure (TlsRestoreDecided (decideTlsRestore state observation))
 
+-- | Serve a restore request from a raw body: decode the bounded, canonical
+-- 'RestoreObservation' and run 'serveTlsRestore'. A malformed body is refused
+-- before any state is read. This is the through-seam entry a production
+-- 'RoleInterpreter' dispatches the @restore@ route's socket body to.
+serveTlsRestoreRequest
+  :: (Monad m)
+  => Int
+  -> TlsRetentionRepository m
+  -> ByteString
+  -> m TlsRetentionEndpointResult
+serveTlsRestoreRequest maximumBytes repository body =
+  case decodeControlPlaneRequest maximumBytes body of
+    Left err -> pure (TlsRequestBadRequest err)
+    Right observation -> serveTlsRestore repository observation
+
 -- | Total HTTP status projection. A promoted/no-op store and an applied/issue
 -- restore are @200@; a refused decision is @409@ (a mismatch to re-resolve); a
 -- corrupt committed reference is @500@; an unobservable read or a failed write is
 -- @503@.
 tlsRetentionHttpStatus :: TlsRetentionEndpointResult -> Int
 tlsRetentionHttpStatus result = case result of
+  TlsRequestBadRequest _ -> 400
   TlsStoreDecided decision -> case decision of
     TlsPromoted _ -> 200
     TlsPromotionNoop _ -> 200
@@ -117,6 +180,7 @@ tlsRetentionHttpStatus result = case result of
 -- | Stable single-line diagnostic summary.
 tlsRetentionSummary :: TlsRetentionEndpointResult -> Text
 tlsRetentionSummary result = case result of
+  TlsRequestBadRequest err -> "tls-bad-request:" <> controlPlaneRequestCodecToken err
   TlsStoreDecided decision -> case decision of
     TlsPromoted _ -> "tls-promoted"
     TlsPromotionNoop _ -> "tls-promotion-noop"

@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+
 -- | Sprint 4.48: the retained Lifecycle Authority's versioned TLS-retention fold.
 --
 -- The Authority retains, per substrate, one committed immutable reference to the
@@ -49,13 +53,16 @@ module Prodbox.Lifecycle.Authority.TlsRetention
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 
 -- | A monotone retention version identifying an immutable S3 object version. A
 -- promotion may only advance it.
 newtype RetentionVersion = RetentionVersion Natural
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The approval-relevant identity of a certificate: serial, subject-public-key
 -- digest (key identity), and validity end as a trusted-time instant.
@@ -64,14 +71,16 @@ data CertIdentity = CertIdentity
   , certSpkiDigest :: !Text
   , certNotAfter :: !Natural
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The source Kubernetes Secret's fencing coordinates.
 data SourceSecretRef = SourceSecretRef
   { sourceSecretUid :: !Text
   , sourceSecretResourceVersion :: !Text
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A committed, retained TLS reference: the immutable version, the certificate
 -- identity, the ciphertext\/wrapped-DEK digest, and the source Secret coordinates.
@@ -81,7 +90,8 @@ data RetainedTlsRef = RetainedTlsRef
   , retainedCiphertextDigest :: !Text
   , retainedSourceSecret :: !SourceSecretRef
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The per-substrate retention state: no committed reference yet, or one current
 -- committed reference.
@@ -105,13 +115,15 @@ data PromotionEvidence = PromotionEvidence
   { evidenceSourceReobserved :: !Bool
   , evidenceAdapterReadBack :: !Bool
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Whether the interpreter has approved a key (SPKI) rotation for this promotion.
 data KeyRotationApproval
   = KeyRotationApproved
   | KeyRotationNotApproved
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data TlsPromotionRefusal
   = -- | The source Secret was not re-observed exactly.
@@ -204,7 +216,8 @@ data RestoreObservation
     RestoreCommittedCorrupt
   | -- | The committed reference could not be observed.
     RestoreCommittedUnobservable
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data TlsRestoreRefusal
   = TlsRestoreCorrupt

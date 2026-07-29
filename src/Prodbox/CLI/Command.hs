@@ -19,6 +19,7 @@ module Prodbox.CLI.Command
   , ConfigCommand (..)
   , CoverageFlags (..)
   , HostCommand (..)
+  , HostFitMode (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
   , LintCommand (..)
@@ -209,8 +210,22 @@ data ConfigCommand
     -- is absent. The binary-generated, non-secret Tier-0 file the test harness
     -- (and operators bringing a cluster up headlessly) use instead of relying on
     -- any fail-fast-removed default fallback. Idempotent: leaves an existing
-    -- file unchanged.
-    ConfigGenerate
+    -- file unchanged. Sprint 1.73: the 'HostFitMode' selects whether the emitted
+    -- @host_capacity@ is fitted to the observed machine or the portable default.
+    ConfigGenerate HostFitMode
+  deriving (Eq, Show)
+
+-- | Sprint 1.73: whether @prodbox config generate@ derives a host-fitting
+-- @host_capacity@ from the observed machine (@df@ / @nproc@ / procfs meminfo),
+-- or emits the portable Haskell-default capacity. The default is
+-- 'FitObservedHost' so an operator generating on their deploy host gets a config
+-- that clears the reconcile-time observed-host check; @--portable@ selects
+-- 'PortableDefault' for host-agnostic generation (the image build, whose baked
+-- config is overwritten from the ConfigMap at runtime).
+-- See resource_scaling_doctrine.md §2B.
+data HostFitMode
+  = FitObservedHost
+  | PortableDefault
   deriving (Eq, Show)
 
 data PolicyTier

@@ -22,6 +22,7 @@ import Prodbox.CLI.Command
   , ControlPlaneLaunchOptions
   , EdgeCommand (..)
   , GatewayCommand (..)
+  , HostFitMode (..)
   , NativeCommand (..)
   , VaultCommand (..)
   )
@@ -34,6 +35,8 @@ import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runEdgeCommand, runRke2Command)
 import Prodbox.CLI.Users (runUsersCommand)
 import Prodbox.CLI.Vault (runVaultCommand)
+import Prodbox.Capacity.Config (ResourcePlan (host_capacity), ResourceVector, resource_plan)
+import Prodbox.Capacity.HostProbe (deriveHostFittingCapacity, observeHostCapacity)
 import Prodbox.CheckCode
   ( runCheckCode
   , runDocsCommand
@@ -61,17 +64,22 @@ import Prodbox.Runtime.Role
   , runtimeRoleConfigIdentity
   )
 import Prodbox.Settings
-  ( defaultConfigFile
+  ( ConfigFile
+  , capacity
+  , defaultConfigFile
+  , manual_pv_host_root
   , renderSettingsDisplay
+  , storage
   , validateAndLoadSettings
   )
 import Prodbox.TestRunner (runTests)
 import Prodbox.Tla (runTlaCheck)
 import Prodbox.Workload (runWorkloadCommand)
-import System.Directory (doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
+import System.FilePath ((</>))
 
 runNativeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNativeCommand repoRoot command =
@@ -263,13 +271,16 @@ runConfigCommand repoRoot configCommand =
             ]
         )
       pure ExitSuccess
-    ConfigGenerate -> do
+    ConfigGenerate mode -> do
       -- Sprint 7.25: non-interactively generate binary-sibling prodbox.dhall from
       -- the Haskell-default non-secret config when absent. Idempotent — an
       -- existing file is left untouched. This is the binary-owned, non-secret
       -- generation the test harness (and headless bring-up) use; it is NOT a
       -- runtime fallback (the consuming paths still fail fast when the file is
-      -- missing — `writeTier0FloorPreservingParameters`).
+      -- missing — `writeTier0FloorPreservingParameters`). Sprint 1.73: the default
+      -- 'FitObservedHost' mode fits `host_capacity` to the observed machine so the
+      -- generated config clears the reconcile-time observed-host check;
+      -- `--portable` keeps the host-agnostic Haskell default.
       materializeSchemaFilesIfStale repoRoot
       tier0Path <- resolveTier0ConfigPath repoRoot
       exists <- doesFileExist tier0Path
@@ -278,18 +289,59 @@ runConfigCommand repoRoot configCommand =
           writeOutput ("prodbox.dhall already present at " ++ tier0Path ++ "; leaving it unchanged.")
           pure ExitSuccess
         else do
-          result <- writeOperatorParametersToTier0 repoRoot defaultConfigFile
-          case result of
+          configResult <- resolveGenerateConfigFile repoRoot mode
+          case configResult of
             Left err -> failWith err
-            Right () -> do
-              writeOutput
-                ( "Generated a default non-secret Tier-0 prodbox.dhall from the Haskell source of "
-                    ++ "truth at "
-                    ++ tier0Path
-                    ++ ". It carries only non-secret parameters/context/witness — secrets stay "
-                    ++ "SecretRef.Vault. Edit it directly or re-author with `prodbox config setup`."
-                )
-              pure ExitSuccess
+            Right (configFile, fitNote) -> do
+              writeResult <- writeOperatorParametersToTier0 repoRoot configFile
+              case writeResult of
+                Left err -> failWith err
+                Right () -> do
+                  writeOutput
+                    ( "Generated a non-secret Tier-0 prodbox.dhall from the Haskell source of "
+                        ++ "truth at "
+                        ++ tier0Path
+                        ++ ". "
+                        ++ fitNote
+                        ++ " It carries only non-secret parameters/context/witness — secrets stay "
+                        ++ "SecretRef.Vault. Edit it directly or re-author with `prodbox config setup`."
+                    )
+                  pure ExitSuccess
+
+-- | Sprint 1.73: resolve the 'ConfigFile' @config generate@ will write, plus a
+-- one-line note for the success message. 'PortableDefault' is the untouched
+-- Haskell default; 'FitObservedHost' observes the machine and derives a
+-- host-fitting @host_capacity@ ('deriveHostFittingCapacity'), failing fast when
+-- the host is too small.
+resolveGenerateConfigFile :: FilePath -> HostFitMode -> IO (Either String (ConfigFile, String))
+resolveGenerateConfigFile _ PortableDefault =
+  pure
+    ( Right
+        ( defaultConfigFile
+        , "Using the portable Haskell-default host_capacity (--portable)."
+        )
+    )
+resolveGenerateConfigFile repoRoot FitObservedHost = do
+  let retainedRoot = repoRoot </> Text.unpack (manual_pv_host_root (storage defaultConfigFile))
+  createDirectoryIfMissing True retainedRoot
+  observed <- observeHostCapacity repoRoot retainedRoot
+  pure $ do
+    host <- observed
+    fitted <- deriveHostFittingCapacity host (resource_plan (capacity defaultConfigFile))
+    Right
+      ( withHostCapacity fitted defaultConfigFile
+      , "Fitted host_capacity to the observed host."
+      )
+
+-- | Replace the resource plan's authored @host_capacity@ with a derived vector.
+withHostCapacity :: ResourceVector -> ConfigFile -> ConfigFile
+withHostCapacity vector configFile =
+  configFile
+    { capacity =
+        (capacity configFile)
+          { resource_plan = (resource_plan (capacity configFile)) {host_capacity = vector}
+          }
+    }
 
 failWith :: String -> IO ExitCode
 failWith message = do

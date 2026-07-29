@@ -16,11 +16,13 @@
 
 ## Phase Status
 
-🔄 **Reopened; Sprints `4.50` and `4.51` are Active.** Sprints `4.48` and `4.49` completed the
+🔄 **Reopened; Sprint `4.50` is Active.** Sprints `4.48` and `4.49` completed the
 restart-resumable retained Lifecycle Authority, fenced target outbox, and substrate-local Target
 Secret Agent foundations. Sprint `4.50` owns the versioned authority-epoch cutover and legacy-route
-removal. Sprint `4.51` has landed the durability index and retained SES transport cutover; its
-durable SES-operation replay fold remains. Sprint `4.52` is Done on observed-host refinement.
+removal. Sprint `4.51` is ✅ Done — the durability index, the retained SES transport cutover, and
+the durable generation-scoped SES-operation replay fold all landed (2026-07-27); end-to-end
+host-PUT/daemon-GET byte compatibility and live AWS response-loss behavior remain non-blocking
+Standard-O evidence. Sprint `4.52` is Done on observed-host refinement.
 These are forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure
 lease and intent rules it actually implemented, not proof of the replacement topology.
 
@@ -4578,9 +4580,15 @@ store cases. `prodbox dev check` passes.
 
 ## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [🔄 Active]
 
-**Status**: Active — Sprints `4.48` and `4.49` are Done. The next code-owned increment is the
-single-writer migration/cutover registry and source-level removal of gateway-hosted lifecycle
-authority routes; deployment qualification remains a separate Standard-P campaign.
+**Status**: Active — Sprints `4.48` and `4.49` are Done. The pure control-plane interpreter layer is
+now landed for four of the five roles (Increments A–DD): the versioned migration kernel, the retained
+CAS repository, the role-indexed dispatch seam, the shared request codec, and the Lifecycle Authority
+/ TLS Retention / Authority Backup / Provider Worker interpreters composed over injected repositories
+and proven by in-memory fixtures. The remaining code-owned work is all Standard-O live-coupled
+(concrete in-cluster MinIO/Vault CAS adapters, real-socket dispatch in `runControlPlaneRole`, the
+Target Secret Agent `complete` arm's live agent binding, and the decommission destroy-effect wiring)
+or Standard-P (source-level deletion of the gateway-hosted legacy authority routes, which cannot
+precede cutover); deployment qualification remains a separate Standard-P campaign.
 **Implementation (Increment A, 2026-07-26)**: `Prodbox.Runtime.Role` now enumerates the physically
 separate Lifecycle Authority, Provider Worker, Authority Backup Adapter, TLS Retention Adapter, and
 Target Secret Agent alongside Bootstrap Broker and Gateway Runtime. Each maps bijectively to a
@@ -4864,6 +4872,177 @@ commit, an idempotent re-store no-op, a failed durable commit as a retryable wri
 apply/issue/mismatch/corrupt restore arms (endpoint suite 5/5; `prodbox dev check` warning- and
 lint-clean). The bounded canonical wire codec for the request/response bodies and the real
 retained-store compare-and-swap are the live-coupled follow-ons this handler isolates (Standard-O).
+**Implementation (Increment X, 2026-07-27)**:
+two more standing-role server endpoints landed, bringing four of the five roles' routes to real
+handlers. `Prodbox.ControlPlane.AuthorityBackupEndpoint` fronts the pure backup-repair algebra:
+`serveBackupCopy` reads the admission state through an injected repository, drives `decideBackupRepair`,
+folds the decision's events into the next state, and commits only a genuine advance; `serveBackupObserve`
+returns the state; the status/summary projection maps every arm (freeze/permit/progress/reopen/wait/
+not-needed → 200, refused → 409, write failure → 503). `Prodbox.ControlPlane.TargetSecretEndpoint` owns
+the total projection of the richest role's `decidePrepareTargetCommit`/`decideCompleteTargetCommit`
+decisions onto an HTTP status and stable summary, with a shared exhaustive refusal classifier
+(unobservable → 503, corrupt / missing-after-prepare → 500, every other refusal → 409) over the
+21-constructor refusal taxonomy; its full nine-input decision plus guarded retained CAS handler is the
+live-coupled Standard-O follow-on. Fixtures: AuthorityBackup 5/5, TargetSecret 5/5; combined
+control-plane endpoint regression 32/32; `prodbox dev check` warning- and lint-clean. The Provider
+Worker role has no pure interpreter yet (only chart statics), so its `provider-work` routes remain
+fail-closed through the L seam until the provider algebra is built; the four fronted roles' bounded
+request/response wire codecs and real store/sink CAS backends are the Standard-O follow-ons.
+**Implementation (Increment Y, 2026-07-28)**:
+the bounded, versioned, canonical request wire codec that Increment K fixed for the migration route is
+now shared and extended to the two fronted roles whose endpoints already had typed handlers. A new
+`Prodbox.ControlPlane.Codec` lifts the migration route's `Serialise`-envelope framing —
+maximum-size bound, supported-version check, and canonical round-trip check — into one generic
+`encodeControlPlaneRequest` / `decodeControlPlaneRequest` (`ControlPlaneRequestCodecError`: too-large /
+invalid / unsupported-version / non-canonical), so a role cannot reinvent or loosen the discipline
+(migration keeps its own byte-frozen copy). `Prodbox.ControlPlane.AuthorityBackupEndpoint` gains
+`serveBackupCopyRequest` (decode a bounded `BackupRepairCommand`, else `AuthorityBackupBadRequest` → 400
+before any state is read) and `Prodbox.ControlPlane.TlsRetentionEndpoint` gains `serveTlsStoreRequest` /
+`serveTlsRestoreRequest` (decode a `TlsStorePayload` / bare `RestoreObservation`, else
+`TlsRequestBadRequest` → 400) — the through-seam entries a production `RoleInterpreter` dispatches the
+raw socket body to. Their request payload types (`BackupRepairCommand` plus its `Genesis` field types;
+`KeyRotationApproval` / `PromotionEvidence` / `RetainedTlsRef` / `RestoreObservation`) gained `Serialise`
+derivations; all carry only digests, coordinates, and health/version enums — no key or ciphertext
+material crosses the boundary. That brings three of the five roles (migration + Authority Backup + TLS
+Retention) to through-seam request-codec parity. Fixtures: Authority Backup 9/9, TLS Retention 10/10,
+combined control-plane endpoint regression 24/24, and the Sprint-4.48 authority-algebra suites whose
+types gained `Serialise` remain 79/79; `prodbox dev check` warning- and lint-clean. The Target Secret
+Agent role's request codec was the confirmed multi-actor, security-critical design boundary: unlike
+migration / Authority Backup / TLS Retention, whose existing serve functions already fixed the
+caller-input shape, its endpoint had only the projection (no serve function). A 2026-07-28 algebra
+investigation showed the `FencedCommitPermit` is an authority-minted lease-authorization artifact
+(`Lease.decideFencedCommit`) — used to stamp the intent's owner nonce and fencing token and to build
+the guarded-CAS lease guard (`modelBLeaseGuardFromPermit`) — so a request must never reconstruct it,
+and the parametric agent `TargetSinkReadback` plus the guarded `ModelBCasRequest` output make the
+target-commit a lease → permit → prepare → agent-write → readback → guarded-CAS protocol. After the
+operator reviewed and approved that request protocol (Increment Z), the **prepare** half landed; the
+**complete** half stays the Standard-O agent binding because `TargetSinkReadback` / `TargetCommitIntent`
+are deliberately un-exported (un-forgeable by design), so a complete request cannot reconstruct a
+readback — it must transport the agent's trusted `confirmTargetSinkReadback` output. The Provider Worker
+role still has no pure interpreter, so its codec awaits that greenfield algebra.
+**Implementation (Increment Z, 2026-07-28)**:
+after an operator-reviewed request-protocol design note, the Target Secret Agent role's **prepare**
+handler landed on the approved shape: the fenced permit is authority-supplied (never on the wire), the
+retained projection/registered-set/coordinate come from an injected repository, and the request carries
+only raw commit primitives. `Prodbox.ControlPlane.TargetSecretEndpoint` gains `PrepareTargetCommitPayload`
+(sink coordinates / generation / digest / deadline-micros — primitives only, so no `Serialise` cascade
+across authority types), a `TargetSecretPrepareRepository` (registered set, intent coordinate, fenced
+permit, retained projection observation, authority clock), and `servePrepareTargetCommitRequest`, which
+decodes through the shared `ControlPlane.Codec`, re-validates each primitive through the same smart
+constructors the algebra requires (`mkTargetClusterSecretSink` / `mkCredentialGeneration` /
+`mkTargetValueDigest`; a bad field is `TargetPrepareFieldRejected` → 400, a malformed body
+`TargetPrepareCodecRejected` → 400), reads the authority-side inputs, and drives the **proven**
+`decidePrepareTargetCommit`, projecting through `targetPrepareEndpointStatus` / `…Summary`. The guarded
+retained-projection CAS *execution* and the production repository (deriving the permit from live lease
+state) stay Standard-O. Fixtures: Target Secret 11/11 (5 projection + 6 prepare, incl. codec/field
+rejection, a lease-minted-permit happy-path guarded CAS, and an unregistered-target refusal); combined
+control-plane endpoint regression 30/30; `prodbox dev check` warning- and lint-clean. The **complete**
+handler remains deferred on the deliberate opacity of `TargetSinkReadback` / `TargetCommitIntent`
+(agent-transport Standard-O), and Provider Worker still awaits its greenfield algebra — so four of the
+five roles (migration + Authority Backup + TLS Retention + Target Secret prepare) now reach through-seam
+request-codec parity.
+**Implementation (Increment AA, 2026-07-28)**:
+`Prodbox.ControlPlane.OperationEndpoint` fronts the Lifecycle Authority's **core operation-journal**
+routes `LifecycleOperationSubmit` (POST `/v1/operations/submit`) and `LifecycleOperationObserve` (GET
+`/v1/operations/observe`) — the two routes Increment I's closed topology declares for the Lifecycle
+Authority beyond `migration/apply` but that had no fronting handler and so failed closed through the
+Increment-L seam. It fronts the already-proven idempotent submission algebra
+(`Prodbox.Lifecycle.Authority.Submission`, Sprint 4.48) exactly as `AuthorityBackupEndpoint` fronts
+backup-repair: `serveOperationSubmit` reads the admitting `AuthorityEpoch` plus the current
+`SubmissionLedger` through an injected `OperationSubmissionRepository`, drives `stepSubmit`, and
+compare-and-swaps the evolved ledger **only on a genuine advance** — an idempotent duplicate and every
+refusal never mutate (matching `applySubmit`'s no-op arms), so no CAS is attempted for them.
+`serveOperationSubmitRequest` decodes a bounded, versioned, canonical `OperationSubmitPayload` (client
+/ sequence / digest transport primitives only, so no `Serialise` cascade across authority types) through
+the shared `ControlPlane.Codec` and rebuilds the algebra's `ClientId` / `ClientSequence` /
+`RequestDigest`; `serveOperationObserve` / `serveOperationObserveRequest` are read-only over
+`submissionStatus`. Total projections cover every arm: `operationSubmitHttpStatus` /
+`operationSubmitSummary` map `SubmitDecision` (accepted / idempotent-duplicate 200, reused-sequence /
+expired 409, at-capacity full 503 retryable, durable-write-failed 503, malformed-request 400) and
+`operationObserveHttpStatus` / `operationObserveSummary` map `SubmissionStatus` (in-flight / settled-
+completed / settled-cancelled / expired 200, never-seen 404). The handler is pure over the injected
+repository, so an in-memory fixture exercises every submit decision and observe status without a live
+cluster, Vault, or object store; a fail-writes repository proves a duplicate or refusal never reaches
+the commit path. Evidence: operation-endpoint suite 17/17, combined control-plane endpoint regression
+88/88, `prodbox dev check` warning- and lint-clean. The Lifecycle Authority role now serves **both**
+its `migration/apply` (K) and its core `operations/submit` + `operations/observe` routes as testable
+server endpoints over their existing pure algebras; the production retained compare-and-swap repository
+(over the role's Kubernetes-auth Vault session and in-cluster MinIO Service DNS) and the raw-socket
+dispatch of these routes in `runControlPlaneRole` remain the Standard-O live-coupled follow-ons — the
+same tail every already-landed endpoint isolates — and Provider Worker still awaits its greenfield
+algebra.
+**Implementation (Increment BB, 2026-07-29)**:
+`Prodbox.ControlPlane.RoleInterpreters` is the missing composition layer between the landed per-route
+endpoint handlers and the Increment-L dispatch seam. Increment L made `serveControlPlaneRequest` route
+an owned request to an installed `RoleInterpreter`, but production `runControlPlaneRole` still installs
+the shared `failClosedInterpreter` (every owned route `503`), and the only interpreter binding a real
+handler was a test-local, migration-only stub that `503`d the now-landed `operations/submit` /
+`operations/observe` routes. This increment adds pure library builders that compose a role's landed
+handlers into its `RoleInterpreter` over injected repositories plus an injected readiness probe:
+`lifecycleAuthorityInterpreter` binds all three Lifecycle Authority routes (`migration/apply` → K's
+`serveMigrationApply`, `operations/submit` → AA's `serveOperationSubmitRequest`, `operations/observe` →
+AA's `serveOperationObserveRequest`, with the observe codec-error mapped to `400`), and
+`tlsRetentionInterpreter` binds both TLS Retention routes (`store`/`restore` → W's request handlers).
+These are the only two roles whose every owned route already has both a landed request handler and a
+landed `(status, summary)` projection; Authority Backup's `observe` projection, the Target Secret Agent
+`complete` arm, and the greenfield Provider Worker algebra are not yet landed, so those roles keep the
+fail-closed interpreter rather than a partially-bound one (a broader all-roles builder would reintroduce
+per-route `503` stubs). The builders are pure/monad-generic over the injected repositories, so an
+in-memory fixture drives every route/arm end-to-end through `serveControlPlaneRequest` — including the
+GET-with-body observe path that had zero dispatch coverage — proving each route reaches its handler and
+the projection flows back. The obsolete migration-only stub in the server-seam suite is replaced by the
+library builder. Evidence: role-interpreters suite 11/11, server-seam suite 8/8 (now library-built),
+combined control-plane regression 28/28 and endpoint regression 88/88, `prodbox dev check` warning- and
+lint-clean. Supplying the concrete production repositories (over each role's Kubernetes-auth Vault
+session and in-cluster MinIO Service DNS) and installing the built interpreter in `runControlPlaneRole`
+over a real socket remain the Standard-O live-coupled follow-ons — the same tail every endpoint isolates.
+**Implementation (Increment CC, 2026-07-29)**:
+`authorityBackupInterpreter` brings the Authority Backup role to full interpreter parity with the
+Lifecycle Authority and TLS Retention roles, so three of the five control-plane roles now dispatch
+every owned route through `serveControlPlaneRequest`. The `copy` arm was already landed (Increment Y's
+`serveBackupCopyRequest` over the shared bounded/versioned/canonical `Prodbox.ControlPlane.Codec`); the
+one missing piece was the `observe` arm's `(status, summary)` projection. This increment adds
+`authorityBackupObserveStatus` (a read never fails at this layer, always `200`) and
+`authorityBackupObserveSummary` (exhaustive over `AuthorityAdmissionState`: `genesis-frozen`,
+`establishing`, `established`, `repair-frozen`), then binds `AuthorityBackupCopy` →
+`serveBackupCopyRequest` and `AuthorityBackupObserve` → `serveBackupObserve` in the new
+`authorityBackupInterpreter`. The builder is pure/monad-generic over the injected
+`AuthorityBackupRepository`, so an in-memory fixture drives both routes end-to-end through the seam: a
+`copy` that freezes admission, an `observe` reflecting that committed freeze, a malformed body mapped to
+`400`, a foreign route `404 route-not-owned`, and the injected readiness probe. Only the Target Secret
+Agent `complete` arm (deliberately opaque — a `complete` request cannot reconstruct a readback, a
+Standard-O agent binding) and the greenfield Provider Worker algebra now keep their two roles
+fail-closed rather than partially bound. Evidence: role-interpreters suite 17/17 (6 new Authority
+Backup cases), Authority Backup endpoint regression 15/15, `prodbox dev check` warning- and lint-clean.
+Supplying the concrete retained-store CAS repository and installing the built interpreter in
+`runControlPlaneRole` over a real socket remain the Standard-O live-coupled follow-ons.
+**Implementation (Increment DD, 2026-07-29)**:
+`providerWorkerInterpreter` brings the fenced Provider Worker to full interpreter parity, so four of
+the five control-plane roles now dispatch every owned route through `serveControlPlaneRequest`; only
+the Target Secret Agent `complete` arm (deliberately opaque — Standard-O agent binding) keeps its
+role fail-closed. The Provider Worker previously had only chart statics and no decision algebra; this
+increment lands the greenfield algebra `Prodbox.Lifecycle.ProviderWorker.ProviderWork`, its endpoint
+`Prodbox.ControlPlane.ProviderWorkEndpoint`, and the interpreter binding. The fence is both structural
+and dynamic. __Structural__: `ProviderIntent` is a closed sum whose eight constructors are exactly the
+normal provider intents the architecture authorizes — registered-stack reconcile/observe/read-back,
+bounded scratch checkpoint, and the fenced `aws-ses` non-credential inventory (sending identity, DKIM,
+receipt rules, capture bucket) — so a credential IAM identity/key, an admin/credential permit, an
+Authority state write, a backup/TLS identity, a target secret, a Gateway/DNS election, or any SMTP IAM
+principal/policy/key is unrepresentable, not merely rejected (the operator-selected richer intent
+vocabulary). __Dynamic__: `decideProviderWork` refuses an unregistered resource, a stale provider
+revision, or an expired session; admits at most one intent at a time (a different concurrent intent is
+refused as `outstanding-intent`); treats an identical resubmission as an idempotent already-in-flight
+(never a second admission, so a lost response is safe); and drives the single-narrow-session
+idle→in-flight→clean-close path plus the canceled/expired/ambiguous→recovery→grace→successor lifecycle.
+The `apply` route decodes a bounded/versioned/canonical `ProviderWorkApplyPayload` through the shared
+`Prodbox.ControlPlane.Codec` and re-validates its references through the same smart constructors the
+algebra requires; `observe` returns the current session phase. All three pieces are
+pure/monad-generic over the injected repository, proven by an in-memory fixture with no live cluster,
+Vault, or provider session: algebra 15/15, endpoint 10/10, interpreter 6/6 (full role-interpreters
+suite 23/23, Sprint 4.50 aggregate 176/176), `prodbox dev check` warning- and lint-clean. Binding an
+admitted decision to the real narrow-session provider execution (Pulumi/AWS effect + authoritative
+read-back) and the concrete retained-store compare-and-swap are the Standard-O live-coupled
+follow-ons.
 **Deployment qualification**: pending
 **Implementation**: planned versioned migration/cutover modules, revisions to
 `CheckpointAuthority.hs`, `AuthorityConfig.hs`, `EncryptedBackend.hs`, `LiveResidue.hs`,
@@ -5032,12 +5211,37 @@ an indefinite dual-write or fallback regime.
   Increment J validates and constructs each role's schema-v2 cached Kubernetes-auth Vault session
   at startup; Increment L adds the pure `RoleInterpreter` dispatch seam so the socket loop routes
   an owned request to a per-role handler (the shared `failClosedInterpreter` is installed until a
-  role binds its production handlers). The Lifecycle Authority `migration/apply` handler (Increment K)
-  and the TLS Retention `store`/`restore` handlers (Increment W) are landed as testable server
-  endpoints over their existing pure algebras; the Provider Worker, Authority Backup, and Target
-  Secret Agent endpoints remain, each with a testable request/response codec over a Standard-O
-  backend. Binding a production interpreter is supplying the per-route handlers plus each role's
-  concrete store/provider adapter; the owned routes still fail closed until those adapters are bound.
+  role binds its production handlers). The Lifecycle Authority `migration/apply` (Increment K), TLS
+  Retention `store`/`restore` (Increment W), Authority Backup `copy`/`observe`, Target Secret Agent
+  `commit` projection (Increment X), and the Lifecycle Authority's core `operations/submit` /
+  `operations/observe` (Increment AA) handlers are landed as testable server endpoints over their
+  existing pure algebras — four of the five roles, with the Lifecycle Authority role now fronting every
+  route its closed topology declares (`migration/apply` plus the operation-journal submit/observe). The
+  Provider Worker role has no pure interpreter yet (only
+  chart statics), so its routes stay fail-closed through the L seam until that algebra is built. Binding
+  a production interpreter is supplying the per-route handlers plus each role's bounded request/response
+  wire codec and concrete store/sink CAS adapter (Standard-O); the owned routes still fail closed until
+  those adapters are bound. Increment Y lands the shared `Prodbox.ControlPlane.Codec` and the bytes-level
+  `serveBackupCopyRequest` / `serveTlsStoreRequest` / `serveTlsRestoreRequest` through-seam entries, and
+  Increment Z adds `servePrepareTargetCommitRequest` on the operator-approved permit-authority-supplied
+  protocol, so Authority Backup, TLS Retention, and the Target Secret Agent **prepare** arm now decode a
+  bounded, versioned, canonical request body end-to-end (migration already did) — four of five roles at
+  request-codec parity. What remains here is each role's concrete store/sink CAS adapter (Standard-O), the
+  Target Secret Agent **complete** arm (blocked on the deliberate opacity of `TargetSinkReadback` /
+  `TargetCommitIntent` — it must transport the agent's trusted `confirmTargetSinkReadback` output, a
+  Standard-O agent binding), and the Provider Worker's greenfield decision algebra. Increment BB lands
+  the pure `Prodbox.ControlPlane.RoleInterpreters` composition layer — `lifecycleAuthorityInterpreter`
+  (all three LA routes) and `tlsRetentionInterpreter` (both TLS routes), the two roles whose every route
+  is fully projected — so those roles' handlers now dispatch end-to-end through
+  `serveControlPlaneRequest` over injected repositories (proven by an in-memory fixture), and production
+  `runControlPlaneRole` install is narrowed to supplying each role's concrete store/CAS repository and
+  swapping `failClosedInterpreter` for the built interpreter (Standard-O). Increments CC and DD land
+  `authorityBackupInterpreter` and `providerWorkerInterpreter` (Increment DD also builds the greenfield
+  `ProviderWork` algebra and its endpoint), bringing four of five roles to full interpreter parity. The
+  only remaining interpreter-layer work is the Target Secret Agent `commit`/`observe` composition — and
+  its `complete` arm is the deliberately-opaque Standard-O agent binding (a `complete` request cannot
+  reconstruct a readback), so that role cannot reach a complete pure interpreter in-session; it stays
+  fail-closed until the live agent binding lands.
 - Build the decommission protocol on top of the landed receipt subsystem
   (`Prodbox.Lifecycle.Decommission.Frame` + `.Journal` + `.Receipt` + `.Manifest` + `.Graph`,
   Increments M–U): the wiring of the destroy subgraph's node effects to the real destroy/read-back

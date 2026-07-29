@@ -241,11 +241,21 @@ stays the `FromDhall` decode surface. The over-commit algebra and the honest thr
 owned by
 [resource_scaling_doctrine.md § 2A](./resource_scaling_doctrine.md#2a-resource-requirements-are-mandatory-and-capped)
 and [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); the sprint sequencing (`1.69` decode
-gate, `1.70` `GuaranteedEnvelope` wiring, `1.71` derived workload contracts, `3.27` derived namespace admission, `3.28` unified
+gate, `1.70` `GuaranteedEnvelope` wiring, `1.71` derived workload contracts, `1.72` Ring-1 `assertPlanValid`
+Dhall over-commit shim, `1.73` host-fitting `config generate`, `3.27` derived namespace admission, `3.28` unified
 `Capacity.Render`, `3.29` durable-PVC single source, `4.52` observed-host proof) and its status live
 in the [Development Plan](../../DEVELOPMENT_PLAN/README.md). The older `node_budget` /
 `workload_budget` / `region_quota` fields remain as compatibility projections for callers not yet
 migrated to the resource plan.
+
+`prodbox config generate` **derives** `host_capacity` from the observed deploy host rather than emitting a
+fixed default: it covers the plan's demand and fits the real device, failing fast when the host is too
+small (`--portable` opts out for host-agnostic generation — the image build, whose baked config is
+overwritten from the ConfigMap at runtime). The emitted binary-sibling `prodbox.dhall` additionally
+carries the Ring-1 `assertPlanValid` over-commit assert, so an over-committed hand-edit fails to load
+through `decodeProjectConfigDhall`. Both the host-fitting derivation and the over-commit assert are owned
+by [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
+/ [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings) (Sprints `1.72`/`1.73`).
 
 **Historical implementation record.** Sprint `1.56` extended the Tier-0 `parameters` with a typed **component dependency/readiness graph**
 (`depends_on` edges plus a `ReadinessProbe` per component), owned by

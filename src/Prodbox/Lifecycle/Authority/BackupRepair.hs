@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+
 -- | Sprint 4.48: the retained Lifecycle Authority's post-genesis backup-repair
 -- reopen fold.
 --
@@ -45,6 +49,8 @@ module Prodbox.Lifecycle.Authority.BackupRepair
   )
 where
 
+import Codec.Serialise (Serialise)
+import GHC.Generics (Generic)
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityAdmissionState (..)
   , AuthorityEpoch
@@ -69,7 +75,8 @@ data BackupHealth
     BackupPositivelyAbsent
   | -- | The backup policy has provably drifted; a signed repair permit is due.
     BackupPolicyDrift
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data BackupRepairCommand
   = -- | Assess backup health. From 'BackupEstablished' any non-healthy reading
@@ -85,7 +92,8 @@ data BackupRepairCommand
     ObserveRepairGeneration !TargetAgentGenerationReceipt
   | -- | Feed back the Authority Backup Adapter's first new backup receipt.
     ObserveRepairNewBackupReceipt !BackupReceipt
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data BackupRepairRefusal
   = -- | A repair command before genesis has established the authority.

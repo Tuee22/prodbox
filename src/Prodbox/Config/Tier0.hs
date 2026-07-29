@@ -97,6 +97,9 @@ import Dhall.Core qualified as Core
 import Dhall.Src (Src)
 import GHC.Generics (Generic)
 import Prodbox.CLI.Output (writeOutputLine)
+import Prodbox.Capacity.Allocation (compileResourcePlanUncertified)
+import Prodbox.Capacity.Config (ResourceVector, resource_plan)
+import Prodbox.Capacity.Placement (concurrentPlanDraws)
 import Prodbox.Config.Basics
   ( ParentRef (..)
   , SealMode (..)
@@ -545,11 +548,140 @@ type DhallExpr = Expr Src Void
 -- emitted text round-trips through @'Dhall.inputFile' 'Dhall.auto'@ back to the
 -- record because the 'ToDhall' instances mirror the 'FromDhall' decoders
 -- field-for-field. (Sprint 1.39.)
+--
+-- Sprint 1.72: when the embedded resource plan compiles (the common case), the
+-- config is emitted with the Ring-1 over-commit shim
+-- ('planGuardedConfigBody') — an inlined @assert@ that recomputes the cluster
+-- allocatable from the file's OWN host numbers and fails to type-check (so the
+-- file no longer loads through 'decodeProjectConfigDhall') if the emitted plan
+-- over-commits (resource_scaling_doctrine.md §2C, Ring 1). If the plan cannot be
+-- compiled at all — an invalid plan the Haskell Ring-2 decode gate rejects
+-- regardless — the historical unguarded body is emitted so this renderer stays
+-- total and never forces the partial capacity projection.
 renderProjectConfigDhall :: ProdboxProjectConfig -> Text
 renderProjectConfigDhall config =
-  tier0Header <> Core.pretty (injectedValue (Dhall.inject @ProdboxProjectConfig) config) <> "\n"
+  case compileResourcePlanUncertified plan of
+    Right _ -> tier0Header <> planGuardedConfigBody config (concurrentPlanDraws plan)
+    Left _ -> tier0Header <> plainConfigBody config
+ where
+  plan = resource_plan (capacity (parameters config))
 
--- | Render an injected (encoded) Haskell value as a Dhall 'Expr'.
+-- | The historical body: the injected config record rendered directly. Used only
+-- as the totality fallback for a plan that cannot compile (which the Haskell
+-- Ring-2 decode gate rejects anyway).
+plainConfigBody :: ProdboxProjectConfig -> Text
+plainConfigBody config =
+  Core.pretty (injectedValue (Dhall.inject @ProdboxProjectConfig) config) <> "\n"
+
+-- | Sprint 1.72: the Ring-1 over-commit-guarded body. Emits the config bound as
+-- @cfg@, the precomputed concurrent workload draws (the same
+-- 'concurrentPlanDraws' the Haskell Ring-2 proof threads), and a small inlined
+-- copy of the capacity algebra that recomputes the reservation and cluster
+-- allocatable from @cfg@'s own host numbers and asserts the plan fits. Because
+-- @cfg@ references no lemma binding, every @let@ (including the @assert@)
+-- normalizes away and the file's normal form is exactly the config record — so
+-- extraction through @'Dhall.inputFile' 'Dhall.auto'@ is unchanged, while an
+-- over-committed emitted file fails the @assert@ at type-check time.
+planGuardedConfigBody :: ProdboxProjectConfig -> [ResourceVector] -> Text
+planGuardedConfigBody config draws =
+  Text.concat
+    [ planLemmaPreamble
+    , "let cfg = "
+    , Core.pretty (injectedValue (Dhall.inject @ProdboxProjectConfig) config)
+    , "\n\nlet concurrentDraws\n    : List RV\n    = "
+    , Core.pretty (injectedValue (Dhall.inject @[ResourceVector]) draws)
+    , "\n\n"
+    , planAssertBody
+    , "\nin  cfg\n"
+    ]
+
+-- | The inlined capacity algebra prepended to a plan-guarded @prodbox.dhall@.
+-- Copied textually from @dhall\/capacity\/Schema.dhall@ (the canonical source)
+-- because the binary-sibling config cannot import the Prelude or that schema. Only
+-- the operators the over-commit assert needs are inlined: @lessOrEq@ (the
+-- @Natural\/isZero@ fit witness — never a bare saturating subtract), @vectorPlus@,
+-- @vectorFitsWithin@, @zeroVector@, and @sumVectors@.
+planLemmaPreamble :: Text
+planLemmaPreamble =
+  Text.unlines
+    [ "let RV"
+    , "    : Type"
+    , "    = { milli_cpu : Natural"
+    , "      , memory_mib : Natural"
+    , "      , ephemeral_storage_mib : Natural"
+    , "      , durable_storage_mib : Natural"
+    , "      }"
+    , ""
+    , "let lessOrEq ="
+    , "      \\(a : Natural) -> \\(b : Natural) -> Natural/isZero (Natural/subtract b a)"
+    , ""
+    , "let vectorPlus ="
+    , "      \\(left : RV) ->"
+    , "      \\(right : RV) ->"
+    , "        { milli_cpu = left.milli_cpu + right.milli_cpu"
+    , "        , memory_mib = left.memory_mib + right.memory_mib"
+    , "        , ephemeral_storage_mib = left.ephemeral_storage_mib + right.ephemeral_storage_mib"
+    , "        , durable_storage_mib = left.durable_storage_mib + right.durable_storage_mib"
+    , "        }"
+    , ""
+    , "let vectorFitsWithin ="
+    , "      \\(inner : RV) ->"
+    , "      \\(outer : RV) ->"
+    , "            lessOrEq inner.milli_cpu outer.milli_cpu"
+    , "        &&  lessOrEq inner.memory_mib outer.memory_mib"
+    , "        &&  lessOrEq inner.ephemeral_storage_mib outer.ephemeral_storage_mib"
+    , "        &&  lessOrEq inner.durable_storage_mib outer.durable_storage_mib"
+    , ""
+    , "let zeroVector"
+    , "    : RV"
+    , "    = { milli_cpu = 0, memory_mib = 0, ephemeral_storage_mib = 0, durable_storage_mib = 0 }"
+    , ""
+    , "let sumVectors ="
+    , "      \\(entries : List RV) -> List/fold RV entries RV vectorPlus zeroVector"
+    , ""
+    ]
+
+-- | The Ring-1 over-commit assertion appended after @cfg@ and @concurrentDraws@.
+-- It recomputes the reservation and cluster allocatable from @cfg@'s own host
+-- numbers (so a hand-edited oversized @host_capacity@ or inflated reservation is
+-- caught) and asserts both @reservation ≤ host_capacity@ and
+-- @Σ draws ≤ allocatable@. The clamping @Natural\/subtract@ only constructs
+-- @allocatable@; the fit itself is @lessOrEq@ \/ @Natural\/isZero@, and the
+-- independent @reservation ≤ host@ conjunct rejects any over-reservation, so a
+-- clamp can never coexist with a passing assert.
+planAssertBody :: Text
+planAssertBody =
+  Text.unlines
+    [ "let reservation"
+    , "    : RV"
+    , "    = vectorPlus"
+    , "        cfg.parameters.capacity.resource_plan.rke2_reserved"
+    , "        cfg.parameters.capacity.resource_plan.eviction_floor"
+    , ""
+    , "let hostCapacity"
+    , "    : RV"
+    , "    = cfg.parameters.capacity.resource_plan.host_capacity"
+    , ""
+    , "let allocatable"
+    , "    : RV"
+    , "    = { milli_cpu = Natural/subtract reservation.milli_cpu hostCapacity.milli_cpu"
+    , "      , memory_mib = Natural/subtract reservation.memory_mib hostCapacity.memory_mib"
+    , "      , ephemeral_storage_mib ="
+    , "          Natural/subtract reservation.ephemeral_storage_mib hostCapacity.ephemeral_storage_mib"
+    , "      , durable_storage_mib ="
+    , "          Natural/subtract reservation.durable_storage_mib hostCapacity.durable_storage_mib"
+    , "      }"
+    , ""
+    , "let planFits"
+    , "    : Bool"
+    , "    =     vectorFitsWithin reservation hostCapacity"
+    , "      &&  vectorFitsWithin (sumVectors concurrentDraws) allocatable"
+    , ""
+    , "let _ = assert : planFits === True"
+    ]
+
+-- | Render an injected (encoded) Haskell value as a Dhall 'Expr' for pretty
+-- printing.
 injectedValue :: Dhall.Encoder a -> a -> DhallExpr
 injectedValue encoder value = Core.denote (Dhall.embed encoder value)
 

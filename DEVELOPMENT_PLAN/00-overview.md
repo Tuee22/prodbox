@@ -225,10 +225,12 @@ Build a clean-room Haskell `prodbox` repository with:
 > could drift from the real PVC size, and generalized both into a doctrine
 > ([resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md), *one
 > value, one proof, unrepresentable over-commit*) with an honest three-ring boundary: **Dhall** is a
-> defense-in-depth generator cross-check (no refinement types), the **Haskell decode gate** is where
-> over-commit is truly unrepresentable (the proof becomes a required field of `ValidatedSettings`, built
-> over the *decoded* in-force plan), and the **observed host** is re-proved at reconcile (durable vs
-> ephemeral on distinct devices). Phase `1` reclosed on **Sprints `1.69`** (the decode gate + draw/allocatable
+> defense-in-depth generator cross-check (no refinement types — now built as the `assertPlanValid`
+> lean-emit shim in Sprint `1.72`, so an over-committed `prodbox.dhall` fails to load), the **Haskell
+> decode gate** is where over-commit is truly unrepresentable (the proof becomes a required field of
+> `ValidatedSettings`, built over the *decoded* in-force plan), and the **observed host** is re-proved
+> at reconcile (durable vs ephemeral on distinct devices) and pre-fitted at generate (Sprint `1.73`
+> derives a host-fitting `host_capacity`, failing fast when the host is too small). Phase `1` reclosed on **Sprints `1.69`** (the decode gate + draw/allocatable
 > projections) **/`1.70`** (`GuaranteedEnvelope` via `WorkloadQoS`); the Phase-3/4 consumers land in the
 > order **`3.28`** (one shared `Capacity.Render`) → **`3.29`** (durable PVC size single-sourced from
 > `durable_storage_mib`) → **`3.27`** (derived `ResourceQuota`/`LimitRange` via `planNamespaceQuota`/
@@ -244,6 +246,10 @@ Build a clean-room Haskell `prodbox` repository with:
 > independent authored numbers. Sprint `3.27` consumes that proof for Kubernetes admission. The
 > 3-axis `CapacityBudget` **stays**
 > (live in `Capacity.Storage`/`Scaling.Autoscaler`); only unused `MilliCpu`/`MebiBytes` retire.
+> Sprints `1.72`/`1.73` ✅ Done then build the defense-in-depth Ring-1 layer — the generated
+> `prodbox.dhall` carries a baked-in over-commit `assert`, and `config generate` derives a host-fitting
+> `host_capacity` from the observed host via the Phase-1-owned `Capacity.HostProbe` reader (shared with
+> `4.52`'s Ring-3 reader), closing the live deploy blocked by a fixed 280 GiB default on a 238 GiB host.
 > `Deployment qualification: pending` (Standard-P resource-envelope surface).
 
 > **Runtime-memory correction (2026-07-10).** The July 10 gateway OOM evidence does not invalidate

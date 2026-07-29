@@ -58,6 +58,7 @@ import Prodbox.CLI.Command
   , FederationRegisterOptions (..)
   , GatewayCommand (..)
   , HostCommand (..)
+  , HostFitMode (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
   , LintCommand (..)
@@ -303,7 +304,8 @@ parserForPath path =
       Just (pure (RunNative (NativeConfig ConfigShow)))
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
     ["config", "schema"] -> Just (pure (RunNative (NativeConfig ConfigSchema)))
-    ["config", "generate"] -> Just (pure (RunNative (NativeConfig ConfigGenerate)))
+    ["config", "generate"] ->
+      Just (fmap (RunNative . NativeConfig . ConfigGenerate) hostFitModeParser)
     ["vault", "status"] -> Just (pure (RunNative (NativeVault VaultStatus)))
     ["vault", "init"] -> Just (pure (RunNative (NativeVault VaultInit)))
     ["vault", "unseal"] -> Just (pure (RunNative (NativeVault VaultUnseal)))
@@ -583,6 +585,19 @@ coverageFlagsParser =
               <> help "Require a minimum coverage percentage"
           )
       )
+
+-- | Sprint 1.73: @config generate@ fits the observed host by default; @--portable@
+-- opts out to the Haskell-default capacity for host-agnostic generation.
+hostFitModeParser :: Parser HostFitMode
+hostFitModeParser =
+  toMode
+    <$> switch
+      ( long "portable"
+          <> help
+            "Emit the portable Haskell-default host_capacity instead of fitting the observed host"
+      )
+ where
+  toMode isPortable = if isPortable then PortableDefault else FitObservedHost
 
 planOptionsParser :: Parser PlanOptions
 planOptionsParser =

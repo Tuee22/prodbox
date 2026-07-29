@@ -230,6 +230,22 @@ that resolves through the Haskell/Dhall resource registry. A chart whose profile
 render, and `prodbox dev lint chart` rejects any repo-owned workload container without a rendered
 `resources` block.
 
+### Host-fitting generation (Sprint `1.73`)
+
+`prodbox config generate` (default mode) observes the deploy host — `nproc`, `/proc/meminfo`, and
+`df -Pm` for the kubelet root and the retained-PV path, into an `ObservedHostRoot` — and derives a
+`host_capacity` that simultaneously **covers the plan's demand** (`rke2_reserved + eviction_floor +
+Σ concurrent draws`, so the Ring-2 proof admits it) and **fits the real device** (so the Ring-3
+observed-host check admits it). CPU and memory are declared at the observed capacity; a single shared
+storage device is split into an ephemeral slice (its demand plus bounded headroom) and a durable
+remainder, leaving ~5% device slack so a small shrink between generate and reconcile does not
+immediately fail Ring 3. Generation **fails fast** when the host cannot cover the plan, surfacing rules
+(a)/(b) at authoring time instead of at reconcile. `--portable` skips observation and emits the
+abstract Haskell-default `host_capacity` for host-agnostic generation (the image build, whose baked
+config is overwritten from the ConfigMap at runtime); the derivation lives in
+`Prodbox.Capacity.HostProbe`, shared with the reconcile-time Ring-3 reader. Ring 3 remains
+authoritative — the host can shrink between generate and deploy.
+
 ## 2C. Enforcement Rings
 
 The same resource facts are enforced in three rings. They check the **same inequalities** through the
@@ -238,7 +254,7 @@ deliberate about which ring actually makes over-commitment unrepresentable:
 
 | Ring | Mechanism | Truly unrepresentable? |
 |------|-----------|------------------------|
-| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously); the config *generator* applies an `assertPlanValid` shim to the emitted plan. | **No.** Dhall has no refinement/dependent types, so an over-committed plan cannot be made *ill-typed*; `assert` only fails a *specific evaluated file*, and `prodbox.dhall` is binary-generated (no human Dhall authoring surface). Value: a cross-check that a regressed generator cannot emit an over-committed file. |
+| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously). The config generator (`renderProjectConfigDhall`, Sprint `1.72`) **implements** the `assertPlanValid` shim by *lean-emit*: it emits the precomputed concurrent draws as data and inlines the `lessOrEq`/`vectorFitsWithin`/`vectorPlus` operators so the file recomputes `allocatable` from its **own** host/reservation numbers and carries `let _ = assert : planFits === True in cfg`. An over-committed emitted file — reservation exceeding host, or Σ draws exceeding allocatable — then fails Dhall type-check and no longer loads through `decodeProjectConfigDhall`; the lemmas and assert normalize away for `Dhall.auto` extraction, so a valid file round-trips unchanged (`test/unit/Tier0PlanAssert.hs`). | **No.** Dhall has no refinement/dependent types and cannot re-derive the draws (no `Natural` division, no `Text` equality) or observe the host, so it *trusts* the emitted draws and only fails a *specific evaluated file*; `prodbox.dhall` is binary-generated (no human Dhall authoring surface). Value (now realized): a baked-in cross-check that catches a host-shrinking hand-edit and a regressed generator's over-committed file, one ring ahead of the Ring-2 gate. |
 | **2 — Pure Haskell decode gate (the guarantee)** | `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (hidden constructor) only when host reservations, workload draws, and durable claims all fit under a non-saturating budget — a sibling of `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan` (§2D). The proof is a **required field of `ValidatedSettings`**, built in `validateConfig` over the **decoded in-force** plan; the write-side renderers accept the proof, not raw settings. | **Yes.** No proof ⇒ no `ValidatedSettings` ⇒ no renderer input, so an over-committed *decoded* config has no representation any command can consume. This — not Dhall — is where "unrepresentable" is delivered. A `dev check` gate additionally fails the build if `defaultResourcePlan` over-commits. |
 | **3 — Runtime cgroup/Kubernetes (observed host)** | `prodbox cluster reconcile` re-compiles the plan against an `ObservedHostRoot` (`compileResourcePlanAgainstObserved`), closing invariant (b) `cluster <= host` against the **observed** machine across all four axes — durable vs ephemeral observed on distinct devices, with a single shared-device joint budget when they coincide — then writes RKE2/kubelet guardrails, reconciles the derived namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is `BestEffort`. | **No — inherently runtime.** The host is discovered by IO; the strongest achievable is folding the observation into the same opaque proof so no guardrail writes without the observed proof (superseding the late `hostCapacityCoversPlan` boolean). |
 

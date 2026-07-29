@@ -102,7 +102,10 @@ validation environments.
   so a cluster that reserves more than the host has, a workload set that exceeds cluster allocatable
   capacity, or a chart container without a limit has no representation any command can consume (a `Left`,
   never a value); Dhall is a defense-in-depth generator cross-check (it has no refinement types, so this
-  ring is not the guarantee), and the host is re-proved at reconcile against observed facts. A
+  ring is not the guarantee — `prodbox config generate` bakes an over-commit `assert` into the generated
+  `prodbox.dhall`, so an over-committed file fails to load), the host is re-proved at reconcile against
+  observed facts, and `config generate` pre-fits `host_capacity` to the observed host, failing fast when
+  it is too small (`--portable` keeps host-agnostic generation for the image build). A
   non-saturating `resourceVectorSubtractChecked` (an underflow returns `Left`, never clamps to zero)
   replaces the saturating budget subtraction, and a `GuaranteedEnvelope` witness makes `request == limit`
   a constructor invariant for Guaranteed-QoS workloads. Each workload's `durable_storage_mib` is the

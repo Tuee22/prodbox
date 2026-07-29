@@ -28,13 +28,18 @@ import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CertScopeSuite (certScopeSuite)
 import Control.Exception (finally)
 import Control.Monad (forM_, unless, when)
+import ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
 import ControlPlaneDeadline (controlPlaneDeadlineSuite)
 import ControlPlaneMigrationEndpoint (controlPlaneMigrationEndpointSuite)
+import ControlPlaneOperationEndpoint (controlPlaneOperationEndpointSuite)
+import ControlPlaneProviderWorkEndpoint (controlPlaneProviderWorkEndpointSuite)
+import ControlPlaneRoleInterpreters (controlPlaneRoleInterpretersSuite)
 import ControlPlaneRoute (controlPlaneRouteSuite)
 import ControlPlaneServer (controlPlaneServerSuite)
+import ControlPlaneTargetSecretEndpoint (controlPlaneTargetSecretEndpointSuite)
 import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
 import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
 import Data.Aeson
@@ -115,6 +120,7 @@ import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
 import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
 import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
 import LifecycleLease (lifecycleLeaseSuite)
+import LifecycleProviderWork (lifecycleProviderWorkSuite)
 import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
@@ -213,6 +219,7 @@ import Prodbox.CLI.Command
   , FederationRegisterOptions (..)
   , GatewayCommand (..)
   , HostCommand (..)
+  , HostFitMode (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
   , NativeCommand (..)
@@ -295,7 +302,6 @@ import Prodbox.CLI.Rke2
   , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
-  , parseHostCapacityObservation
   , registryConfigYaml
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
@@ -327,6 +333,7 @@ import Prodbox.CLI.Vault
   )
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.HostProbe (parseHostCapacityObservation)
 import Prodbox.Capacity.ObservedHost qualified as ObservedHost
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Storage qualified as Storage
@@ -930,6 +937,7 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   , volumeRebindReport
   )
+import Prodbox.Tls.CertScope (impliedBy)
 import Prodbox.UsersAdmin qualified
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
@@ -1073,6 +1081,7 @@ import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TestSupport
+import Tier0PlanAssert (tier0PlanAssertSuite)
 import VaultSession (vaultSessionSuite)
 
 withBinarySiblingTier0 :: String -> IO a -> IO a
@@ -1376,8 +1385,13 @@ unitSuite = do
   lifecycleAuthorityGenesisSuite
   lifecycleAuthorityMigrationSuite
   controlPlaneRouteSuite
+  controlPlaneAuthorityBackupEndpointSuite
   controlPlaneMigrationEndpointSuite
+  controlPlaneOperationEndpointSuite
+  controlPlaneProviderWorkEndpointSuite
   controlPlaneServerSuite
+  controlPlaneRoleInterpretersSuite
+  controlPlaneTargetSecretEndpointSuite
   controlPlaneTlsRetentionEndpointSuite
   decommissionCommitSuite
   decommissionFrameSuite
@@ -1392,6 +1406,7 @@ unitSuite = do
   controlPlaneVaultSessionSuite
   lifecycleAuthorityOperationSuite
   lifecycleAuthorityOutboxSimSuite
+  lifecycleProviderWorkSuite
   lifecycleAuthorityStateSuite
   lifecycleAuthoritySubmissionSuite
   lifecycleAuthorityTlsRetentionSuite
@@ -1411,6 +1426,7 @@ unitSuite = do
   smtpKeyRepairInterpreterSuite
   storeLifetimeWitnessSuite
   targetCommitSmtpSuite
+  tier0PlanAssertSuite
   vaultSessionSuite
   describe "vault unlock bundle (Sprint 1.36)" $ do
     it "round-trips through encrypt/decrypt with the same password" $ do
@@ -4922,7 +4938,7 @@ unitSuite = do
       -- The in-container image build runs `RUN prodbox config generate` with no
       -- repository present; it must be exempt from the `findRepoRoot` gate
       -- because it writes the binary-sibling config (not a repo-relative path).
-      canRunWithoutRepoRoot (NativeConfig ConfigGenerate) `shouldBe` True
+      canRunWithoutRepoRoot (NativeConfig (ConfigGenerate FitObservedHost)) `shouldBe` True
       canRunWithoutRepoRoot (NativeConfig ConfigValidate) `shouldBe` False
     it
       "configFromSetupInput fills the operator fields from the input over the base config (Sprint 1.50)"
@@ -13342,6 +13358,100 @@ unitSuite = do
                 "test.resolvefintech.com"
       publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
         `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com%2C%2A.test.resolvefintech.com"
+
+    -- Sprint 5.22: the pure restore-vs-reissue half of the certificate-scope
+    -- serving validation, proven at the production retention coordinate
+    -- ('publicEdgeTlsRetentionKey') rather than only at the intermediate
+    -- 'renderCertScopeSet' serialization. The live TLS-handshake serving proof
+    -- (real ZeroSSL DNS-01 cert against harness-owned infrastructure) remains the
+    -- non-blocking Standard-O axis; a cert-manager Ready condition is not accepted
+    -- as proof. Restore addresses retained material by the exact canonical scope
+    -- set, so an unchanged set restores while any changed set reissues.
+    it "Sprint 5.22: the same scope set retains under an isolated per-substrate coordinate" $ do
+      -- One canonical scope set; the retention coordinate is substrate-scoped, so a
+      -- home-retained cert is never addressed by — and can never restore from — the
+      -- AWS coordinate for the identical SAN set (per-substrate retention isolation).
+      let scopeSet =
+            either error id $
+              certScopeSetForServedHost
+                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
+        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateAws scopeSet
+        `shouldBe` "public-edge-tls/aws/test.resolvefintech.com"
+      ( publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
+          == publicEdgeTlsRetentionKey SubstrateAws scopeSet
+        )
+        `shouldBe` False
+
+    it "Sprint 5.22: a covering wildcard scope reissues rather than restoring an exact-scope coordinate" $ do
+      -- 'impliedBy' is the coverage/admission order, NOT retention interchange: an
+      -- exact host covered by a retained wildcard cert still addresses a distinct
+      -- retention coordinate, so cert-manager issues once for the changed SAN set
+      -- instead of restoring the wildcard material.
+      let exactSet =
+            either error id $
+              certScopeSetForServedHost
+                ( DomainSection
+                    { demo_fqdn = "test.resolvefintech.com"
+                    , demo_ttl = 60
+                    , cert_scopes = ["vscode.resolvefintech.com"]
+                    }
+                )
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "vscode.resolvefintech.com"
+          wildcardSet =
+            either error id $
+              certScopeSetForServedHost
+                ( DomainSection
+                    { demo_fqdn = "test.resolvefintech.com"
+                    , demo_ttl = 60
+                    , cert_scopes = ["*.resolvefintech.com"]
+                    }
+                )
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "vscode.resolvefintech.com"
+      impliedBy exactSet wildcardSet `shouldBe` True
+      ( publicEdgeTlsRetentionKey SubstrateHomeLocal exactSet
+          == publicEdgeTlsRetentionKey SubstrateHomeLocal wildcardSet
+        )
+        `shouldBe` False
+      publicEdgeTlsRetentionKey SubstrateHomeLocal exactSet
+        `shouldBe` "public-edge-tls/home-local/vscode.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateHomeLocal wildcardSet
+        `shouldBe` "public-edge-tls/home-local/%2A.resolvefintech.com"
+
+    it "Sprint 5.22: an unchanged scope set restores under one coordinate regardless of authoring order" $ do
+      -- Reordering the authored cert_scopes yields the same canonical set and the
+      -- same retention coordinate, so an unchanged SAN set restores (no reissue).
+      let orderA =
+            either error id $
+              certScopeSetForServedHost
+                ( DomainSection
+                    { demo_fqdn = "test.resolvefintech.com"
+                    , demo_ttl = 60
+                    , cert_scopes = ["api.resolvefintech.com", "vscode.resolvefintech.com"]
+                    }
+                )
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "api.resolvefintech.com"
+          orderB =
+            either error id $
+              certScopeSetForServedHost
+                ( DomainSection
+                    { demo_fqdn = "test.resolvefintech.com"
+                    , demo_ttl = 60
+                    , cert_scopes = ["vscode.resolvefintech.com", "api.resolvefintech.com"]
+                    }
+                )
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+                "api.resolvefintech.com"
+      publicEdgeTlsRetentionKey SubstrateHomeLocal orderA
+        `shouldBe` publicEdgeTlsRetentionKey SubstrateHomeLocal orderB
+      publicEdgeTlsRetentionKey SubstrateHomeLocal orderA
+        `shouldBe` "public-edge-tls/home-local/api.resolvefintech.com%2Cvscode.resolvefintech.com"
 
   describe "public-edge typed preserve outcome" $ do
     it "classifyPublicEdgePreserve distinguishes retain / in-flight / nothing (no silent absent)" $ do

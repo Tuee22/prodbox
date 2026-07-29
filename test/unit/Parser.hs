@@ -27,6 +27,7 @@ import Prodbox.CLI.Command
   , EdgeCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
+  , HostFitMode (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
   , LintCommand (..)
@@ -261,7 +262,8 @@ commandPathOfRequest request =
               ConfigShow -> ["show"]
               ConfigValidate -> ["validate"]
               ConfigSchema -> ["schema"]
-              ConfigGenerate -> ["generate"]
+              ConfigGenerate FitObservedHost -> ["generate"]
+              ConfigGenerate PortableDefault -> ["generate", "--portable"]
         NativeDns dnsCommand ->
           "dns"
             : case dnsCommand of

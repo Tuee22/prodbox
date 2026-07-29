@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.48: the retained Lifecycle Authority's genesis admission fold.
@@ -53,7 +56,9 @@ module Prodbox.Lifecycle.Authority.Genesis
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 
 -- | A monotone authority epoch. Genesis opens normal admission under
@@ -88,12 +93,14 @@ data GenesisPlan = GenesisPlan
 -- | The home Target Agent's sealed initial generation receipt, read back before
 -- normal admission opens.
 newtype TargetAgentGenerationReceipt = TargetAgentGenerationReceipt Text
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The Authority Backup Adapter's receipt for the complete initial
 -- envelope/blob set, read back before normal admission opens.
 newtype BackupReceipt = BackupReceipt Text
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Progress within 'EstablishingBackup': the bound plan plus the two read-back
 -- receipts that gate normal admission. Both must be present to open admission.
@@ -117,7 +124,8 @@ data BackupRepairPermit = BackupRepairPermit
   , backupRepairPermitBackupStoreCoordinate :: !Text
   -- ^ the registered backup-store coordinate the adapter re-copies and reads back
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Progress within 'BackupRepairFrozen'. While the permit is absent the
 -- authority is frozen and merely waiting (a temporary or unobservable backup

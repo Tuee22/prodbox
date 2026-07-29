@@ -24,6 +24,19 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-28 on the resource-representability surface (Sprints `1.72`/`1.73`).** Phase 1
+reopened on its own capacity/config surface (Standard A/N — no backward dependency) to land the Ring-1
+`assertPlanValid` Dhall over-commit shim (`1.72`) and host-fitting `config generate` (`1.73`). The
+generated `prodbox.dhall` now carries a baked-in over-commit `assert` (an over-committed hand-edit
+fails to load through the `Dhall.auto` decode path), and `config generate` derives `host_capacity`
+from the observed host — covering demand, fitting the device, and failing fast when the host is too
+small — with `--portable` for host-agnostic generation (the image build). The host-probe reader was
+factored into the Phase-1-owned `src/Prodbox/Capacity/HostProbe.hs`, shared with the reconcile-time
+Ring-3 reader. Evidence: `test/unit/Tier0PlanAssert.hs` 3/3, parser round-trip + observation-parser
+tests, live `config generate`/`config validate` on this host, and `prodbox dev check` exit 0.
+Deployment qualification remains pending under Standard P (resource-envelope surface); Sprint `4.52`'s
+Ring-3 reader consumes the shared reader forward.
+
 ✅ **Reclosed 2026-07-20 on substrate-neutral Kubernetes reachability (Sprint `1.67`).** The
 generic `K8sClusterReachable` prerequisite now depends only on `ToolKubectl` and authoritatively
 executes `kubectl cluster-info` against the kubeconfig selected for the active substrate.
@@ -4983,23 +4996,120 @@ and QoS derives request/limit equality or explicit burst headroom.
 
 - None.
 
+## Sprint 1.72: Ring-1 Dhall Over-Commit Shim (`assertPlanValid`) [✅ Done]
+
+**Status**: Done (validated 2026-07-28) — the generated binary-sibling `prodbox.dhall` carries a
+baked-in over-commit `assert`, so an over-committed emitted or hand-edited file fails to load through
+the existing `Dhall.auto` decode path, one ring ahead of the Haskell gate.
+**Implementation**: `src/Prodbox/Config/Tier0.hs` (`renderProjectConfigDhall` lean-emit of the
+`concurrentPlanDraws` as data + inlined `lessOrEq`/`vectorFitsWithin`/`vectorPlus`/`sumVectors` lemmas
++ `let _ = assert : planFits === True in cfg`); new `test/unit/Tier0PlanAssert.hs`.
+**Deployment qualification**: pending — Standard-P resource-envelope surface; the emitted config shape changes.
+**Independent Validation**: pure/local — `test/unit/Tier0PlanAssert.hs` proves the guarded default
+round-trips through `Dhall.input auto`, a host-shrinking hand-edit fails at the Dhall `assert`
+(Ring 1), and the identical shrink is rejected by `compileResourcePlanUncertified` (Ring 2). No chart,
+cluster, AWS, or later-phase dependency.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md` (§ 2C Ring 1),
+`documents/engineering/config_doctrine.md`.
+
+### Objective
+
+Realize the `assertPlanValid` shim that
+[resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md#2c-enforcement-rings)
+names as Ring 1's defense-in-depth cross-check, without weakening the Ring-2 Haskell decode gate that
+remains the guarantee.
+
+### Deliverables
+
+- `renderProjectConfigDhall` emits the config as `let cfg = …`, the precomputed `concurrentPlanDraws`
+  as data, and an inlined copy of the capacity algebra (`lessOrEq` via `Natural/isZero` — never a
+  saturating value subtract — `vectorPlus`, `vectorFitsWithin`, `sumVectors`) that recomputes the
+  reservation and allocatable from `cfg`'s own numbers and asserts `reservation ≤ host && Σ draws ≤
+  allocatable`.
+- Because `cfg` references no lemma binding, every `let` (including the `assert`) normalizes away and
+  the file's normal form is exactly the config record, so `Dhall.auto` extraction is unchanged.
+- The renderer stays total: an already-invalid plan (which Ring 2 rejects anyway) falls back to the
+  unguarded body rather than forcing the partial draw projection.
+
+### Validation
+
+1. `test/unit/Tier0PlanAssert.hs` (3 tests): positive round-trip, Ring-1 `assert` rejection of a
+   host-shrinking hand-edit, and Ring-2 verdict agreement on the identical shrink.
+2. Live: `prodbox config validate` accepts the guarded default; a hand-edited over-committed
+   `prodbox.dhall` fails to load with `Assertion failed` before the Haskell gate.
+3. `prodbox dev check` exit 0 (warning-clean `-Werror` build, fourmolu, HLint, policy, drift).
+
+### Remaining Work
+
+- None (code-owned surface). Deployment qualification is pending under Standard P.
+
+## Sprint 1.73: Host-Fitting Config Generation [✅ Done]
+
+**Status**: Done (validated 2026-07-28) — `prodbox config generate` derives `host_capacity` from the
+observed deploy host so the generated config clears the reconcile-time observed-host check, and fails
+fast when the host is too small; `--portable` keeps host-agnostic generation.
+**Implementation**: new `src/Prodbox/Capacity/HostProbe.hs` (the host-probe reader factored out of
+`src/Prodbox/CLI/Rke2.hs`, plus `deriveHostFittingCapacity`); `src/Prodbox/Native.hs` (the `config
+generate` host-fit path), `src/Prodbox/CLI/Command.hs`/`Spec.hs` (`HostFitMode` + `--portable`),
+`docker/prodbox.Dockerfile` (`config generate --portable`).
+**Deployment qualification**: pending — Standard-P resource-envelope surface; live host-probe exercise is Standard-O.
+**Independent Validation**: pure/local — the observation reader honours `PRODBOX_TEST_HOST_CAPACITY`,
+so a synthetic too-small host makes `config generate` fail fast; the parser round-trip and the moved
+observation-parser unit test cover the `--portable` flag and the reader. No later-phase dependency:
+the shared `Capacity.HostProbe` primitive is Phase-1-owned and Sprint `4.52`'s Ring-3 reader consumes
+it forward (no backward blocking, Standard N).
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md` (§ 2B host-fitting),
+`documents/engineering/config_doctrine.md`, `README.md`.
+
+### Objective
+
+Prevent the portability mismatch that blocked a live deploy — a fixed default `host_capacity`
+exceeding the real machine — by deriving `host_capacity` from the observed host at generate time,
+covering demand and fitting the device, while leaving host-agnostic contexts on the abstract default.
+
+### Deliverables
+
+- `Prodbox.Capacity.HostProbe.observeHostCapacity` (moved from `CLI/Rke2.hs`, a single owner shared
+  with the Ring-3 reconcile reader) and `deriveHostFittingCapacity`: CPU/memory declared at observed
+  capacity; a shared storage device split into an ephemeral slice + durable remainder with ~5% device
+  slack; fail-fast when demand exceeds the device.
+- `config generate` fits by default; `--portable` (a `HostFitMode`) emits the abstract default, and the
+  image build passes it (its baked config is overwritten from the ConfigMap at runtime).
+
+### Validation
+
+1. On this host, `prodbox config generate` fits `host_capacity` to the observed device and `config
+   validate` passes; `--portable` reproduces the abstract default; a synthetic too-small
+   `PRODBOX_TEST_HOST_CAPACITY` fails fast with `exit 1` and no file written.
+2. Parser round-trip + observation-parser unit tests pass; `prodbox dev check` exit 0.
+
+### Remaining Work
+
+- None (code-owned surface). Deployment qualification is pending under Standard P; a full live
+  substrate run re-qualifying the resource envelope is the Standard-O follow-on.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/resource_scaling_doctrine.md` - authoritative derivation chain and the
-  structural-versus-empirical proof boundary.
-- `documents/engineering/config_doctrine.md` - derived workload contracts replace raw envelopes.
+  structural-versus-empirical proof boundary; § 2C Ring 1 records the built `assertPlanValid` lean-emit
+  shim (Sprint `1.72`) and § 2B the generate-time host-fitting derivation (Sprint `1.73`).
+- `documents/engineering/config_doctrine.md` - derived workload contracts replace raw envelopes;
+  `config generate` derives a host-fitting `host_capacity` and the emitted file carries the Ring-1
+  over-commit assert (Sprints `1.72`/`1.73`).
 - `documents/engineering/haskell_code_guide.md` - opaque derivation proof and structured defects.
 
 **Product docs to create/update:**
 
-- `README.md` - link the resource-governance overview to Sprint `1.71`.
+- `README.md` - link the resource-governance overview to Sprints `1.71`/`1.72`/`1.73` (host-fitting
+  generation; over-commit fails at Dhall load).
 
 **Cross-references to add:**
 
 - Link consumer Sprints `3.27`, `4.52`, and calibration-recorder Sprint `5.21` without making a
-  later phase a Phase-1 validation prerequisite.
+  later phase a Phase-1 validation prerequisite. Sprint `4.52`'s Ring-3 reader consumes the
+  Phase-1-owned `Prodbox.Capacity.HostProbe` reader (Sprint `1.73`) forward, not backward.
 
 ## Related Documents
 

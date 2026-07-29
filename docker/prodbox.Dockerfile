@@ -81,8 +81,12 @@ RUN cabal update \
 # uses (config_doctrine.md §0, §3). This serves ephemeral in-container CLI
 # commands; the long-running cluster daemon is configured by the
 # `gateway-config-<nodeId>` ConfigMap override (unchanged). It carries no secret
-# values — only `SecretRef.Vault` pointers.
-RUN /usr/local/bin/prodbox config generate
+# values — only `SecretRef.Vault` pointers. `--portable` keeps the baked
+# host_capacity host-agnostic (the build container is not the deploy host, and
+# the daemon overwrites this file from the ConfigMap at runtime); an operator
+# generating on a real deploy host omits it to fit the observed machine
+# (resource_scaling_doctrine.md §2B).
+RUN /usr/local/bin/prodbox config generate --portable
 
 # Bare `prodbox` under tini. Each chart supplies its own subcommand via the pod
 # `args:` — the gateway chart passes `gateway start …`, the api/websocket charts

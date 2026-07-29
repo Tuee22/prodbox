@@ -1842,10 +1842,21 @@ the envelope deterministically.
 
 ## Sprint 5.22: Certificate Scope Serving Validation [📋 Planned]
 
-**Status**: Planned — Sprint `2.35` is Done, so this validation is unblocked.
+**Status**: Planned — Sprint `2.35` is Done, so this validation is unblocked. The pure
+restore-vs-reissue retention-coordinate proof (the algebra half of deliverable 2) has landed as unit
+tests; the live TLS-handshake serving proof (deliverable 1/3) is the outstanding Standard-O half that
+keeps the sprint Planned.
 **Deployment qualification**: pending
-**Implementation**: planned named integration validation exercising real TLS handshakes
-against every explicit substrate-bound served hostname and inspecting the exact presented SAN set
+**Live-proof**: pending — the real TLS handshake against harness-owned home infrastructure with a
+real ZeroSSL DNS-01 certificate is the non-blocking Standard-O serving axis; a cert-manager Ready
+condition is not accepted as proof.
+**Implementation**: the pure restore-vs-reissue retention-coordinate proof has landed as unit tests
+(`test/unit/Main.hs`, three "Sprint 5.22" cases in the retention-key describe): the same SAN set is
+isolated per substrate under distinct `publicEdgeTlsRetentionKey` coordinates; an `impliedBy`-covered
+but distinct exact set reissues under its own coordinate rather than restoring the wildcard material;
+and an order-independent unchanged set restores under one coordinate. The named integration validation
+exercising real TLS handshakes against every explicit substrate-bound served hostname and inspecting
+the exact presented SAN set remains the outstanding Standard-O serving half
 **Independent Validation**: the validation runs on the home substrate with harness-owned
 infrastructure and a real ZeroSSL DNS-01 certificate; AWS-substrate coverage is tracked in
 substrates.md parity (Standards N/O). Ready-condition alone is not accepted as proof.
@@ -1889,6 +1900,12 @@ condition alone is not accepted as proof.
 
 ### Remaining Work
 
+- ✅ The pure restore-vs-reissue retention-coordinate proof landed (`test/unit/Main.hs`, three
+  "Sprint 5.22" cases): per-substrate coordinate isolation of the same SAN set,
+  `impliedBy`-covered-but-distinct sets reissuing under distinct production `publicEdgeTlsRetentionKey`
+  coordinates, and an order-independent unchanged set restoring under one coordinate. This proves the
+  algebra half of deliverable 2 at the production retention key; `impliedBy` is checked separately as
+  the coverage/admission relation.
 - Implement and run the now-unblocked named home-substrate validation against the Sprint `2.35`
   algebra, Tier-0 scope config, explicit served-host binding, exact retention key, and status rungs.
 - The live AWS-substrate serving proof is the non-blocking substrate-parity axis tracked in

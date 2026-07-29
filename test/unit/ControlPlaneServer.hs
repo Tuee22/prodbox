@@ -6,14 +6,17 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
 import Data.Maybe (fromJust)
-import Data.Text.Encoding qualified as TextEncoding
-import Prodbox.ControlPlane.MigrationEndpoint
-  ( migrationEndpointHttpStatus
-  , migrationEndpointSummary
-  , serveMigrationApply
+import Prodbox.ControlPlane.OperationEndpoint
+  ( OperationSubmissionRepository
+      ( OperationSubmissionRepository
+      , commitSubmissionLedger
+      , readSubmissionState
+      )
   )
+import Prodbox.ControlPlane.RoleInterpreters (lifecycleAuthorityInterpreter)
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecycleMigrationApply))
 import Prodbox.ControlPlane.Server
+import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationCommand (RequestLegacyRollback, VerifyShadow)
   , encodeMigrationCommand
@@ -23,6 +26,7 @@ import Prodbox.Lifecycle.Authority.MigrationInterpreter
   ( MigrationRepository (..)
   , StoredMigration (..)
   )
+import Prodbox.Lifecycle.Authority.Submission (emptySubmissionLedger)
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
@@ -60,8 +64,8 @@ controlPlaneServerSuite =
       serve "POST /v1/migration/apply HTTP/1.1\r\n\r\nbody"
         `shouldReturn` (503, "interpreter-unavailable\n")
       serve "GET /nope HTTP/1.1\r\n\r\n" `shouldReturn` (404, "route-not-owned\n")
-    it "dispatches an owned migration request through a bound interpreter" $ do
-      interpreter <- lifecycleAuthorityInterpreter
+    it "dispatches an owned migration request through the library-built interpreter" $ do
+      interpreter <- boundLifecycleAuthorityInterpreter
       let serve = serveControlPlaneRequest interpreter LifecycleAuthorityRuntime
       serve "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (200, "ready\n")
       accepted <- serve (migrationRequest (VerifyShadow digest))
@@ -82,30 +86,26 @@ migrationRequest command =
   "POST /v1/migration/apply HTTP/1.1\r\n\r\n"
     <> LazyByteString.toStrict (encodeMigrationCommand command)
 
-lifecycleAuthorityInterpreter :: IO (RoleInterpreter IO)
-lifecycleAuthorityInterpreter = do
-  repository <- freshMigrationRepository
-  pure
-    RoleInterpreter
-      { interpreterReadyz = pure True
-      , interpreterHandle = handleLifecycleAuthorityRoute repository
-      }
-
-handleLifecycleAuthorityRoute
-  :: MigrationRepository IO Word
-  -> ControlPlaneRoute
-  -> ByteString
-  -> IO (Maybe (Int, ByteString))
-handleLifecycleAuthorityRoute repository route body = case route of
-  LifecycleMigrationApply -> do
-    result <- serveMigrationApply 4096 repository (LazyByteString.fromStrict body)
-    pure
-      ( Just
-          ( migrationEndpointHttpStatus result
-          , TextEncoding.encodeUtf8 (migrationEndpointSummary result)
-          )
-      )
-  _ -> pure Nothing
+-- | Build a Lifecycle Authority interpreter through the library builder
+-- ('Prodbox.ControlPlane.RoleInterpreters.lifecycleAuthorityInterpreter') over
+-- in-memory migration and submission repositories. This replaces the former
+-- inline, migration-only stub that returned @503@ for the now-landed
+-- @operations/submit@ and @operations/observe@ routes; the exhaustive per-route
+-- coverage lives in 'ControlPlaneRoleInterpreters'.
+boundLifecycleAuthorityInterpreter :: IO (RoleInterpreter IO)
+boundLifecycleAuthorityInterpreter = do
+  migrationRepository <- freshMigrationRepository
+  submissionRef <- newIORef (emptySubmissionLedger 4)
+  let submissionRepository =
+        OperationSubmissionRepository
+          { readSubmissionState = do
+              ledger <- readIORef submissionRef
+              pure (authorityEpochGenesis, ledger)
+          , commitSubmissionLedger = \ledger -> do
+              writeIORef submissionRef ledger
+              pure (Right ())
+          }
+  pure (lifecycleAuthorityInterpreter 4096 (pure True) migrationRepository submissionRepository)
 
 freshMigrationRepository :: IO (MigrationRepository IO Word)
 freshMigrationRepository = do

@@ -280,6 +280,7 @@ import Prodbox.Gateway.Emitter.Kernel
   , mkEmitterStateForPeers
   , mkIncarnation
   , projectDurableEmitterState
+  , projectionMaximumRetainedAssertions
   , rebaseEmitterIncarnation
   , recoveryReplayAssertions
   , recoveryReplayCheckpoint
@@ -1888,6 +1889,7 @@ prepareMountedEmitterState env inputs session recovery = do
               sessionIncarnation
               (mountMailbox inputs)
               (mountUnackedThreshold inputs)
+              (projectionMaximumRetainedAssertions (mountProjectionBounds inputs))
               (mountPeers inputs)
           , anchor
           , mkIncarnation (journalSessionIncarnation session - 1)
@@ -1899,7 +1901,11 @@ prepareMountedEmitterState env inputs session recovery = do
             decodeDurableEmitterProjection (mountProjectionBounds inputs) payload
         restored <-
           either (Left . show) Right $
-            restoreDurableEmitterState (mountMailbox inputs) recoveryDeadline projection
+            restoreDurableEmitterState
+              (projectionMaximumRetainedAssertions (mountProjectionBounds inputs))
+              (mountMailbox inputs)
+              recoveryDeadline
+              projection
         rebased <-
           either (Left . show) Right $
             rebaseEmitterIncarnation sessionIncarnation restored
@@ -1922,7 +1928,11 @@ prepareMountedEmitterState env inputs session recovery = do
                 decodeDurableEmitterProjection (mountProjectionBounds inputs) payload
             restored <-
               either (Left . show) Right $
-                restoreDurableEmitterState (mountMailbox inputs) recoveryDeadline projection
+                restoreDurableEmitterState
+                  (projectionMaximumRetainedAssertions (mountProjectionBounds inputs))
+                  (mountMailbox inputs)
+                  recoveryDeadline
+                  projection
             migrated <-
               either (Left . show) Right $
                 migrateEmitterOrders

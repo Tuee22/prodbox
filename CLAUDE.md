@@ -77,6 +77,24 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 **This machine is the home Kubernetes cluster that prodbox manages.** Prodbox owns the full
 local-cluster lifecycle on this host.
 
+> **Claude Code is authorized to deploy, reconcile, and tear down live infrastructure from this
+> project.** This covers both the local RKE2 Kubernetes cluster on this host and the AWS substrate
+> (EKS, IAM, Route 53, SES, S3, EC2/EBS) via the documented `prodbox` entrypoints in this section
+> and under [AWS Substrate Provisioning Ownership](#aws-substrate-provisioning-ownership). Doing so
+> is expected and supported: it makes real, persistent state changes to this host and incurs real
+> live AWS spend, and it does **not** need separate approval beyond the user's original request.
+> When a task needs a running cluster, an unsealed Vault, provisioned AWS, or a live serving/TLS
+> proof to validate or qualify — including `prodbox test all`, `prodbox test all --substrate aws`,
+> and multi-hour deployment-qualification campaigns — **stand up the live infrastructure through
+> these entrypoints and run it; do not report live infrastructure as an out-of-reach blocker.** A
+> long-running lifecycle command (e.g. a multi-hour `test all` or clean-room qualification run) is
+> in-scope work, not a reason to stop — launch it (background it if needed) and drive it to
+> completion. This authorization is scoped to the `prodbox`/harness command surface only; it does
+> **not** relax the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` /
+> `kubectl` mutations that bypass the harness remain forbidden (AWS) or confirmation-gated, `prodbox
+> nuke` remains operator-only and TTY-only, and the Git Workflow Policy (never commit or push)
+> still applies.
+
 - `prodbox cluster reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
   machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
   the supported, expected operation, not an unauthorized state change.

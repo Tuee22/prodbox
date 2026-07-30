@@ -310,6 +310,16 @@ unobservable required evidence are absorbing. Warning evidence resets only the c
 window. A replacement Pod or later idle sample cannot erase the run-wide record. Only an explicitly
 compiled planned rollout may reset the success window.
 
+An unobservable observation is absorbing once folded, but a *transient* unobservable — a
+freshly-(re)started Pod whose working set metrics-server has not yet scraped — is distinguished from a
+persistent one before any sample is recorded. At the restore-time gateway reconcile the recorded
+sample is preceded by a bounded, read-only observability wait (folded into a throwaway state, never the
+run recorder): the wait polls until the runtime is observable or the budget is exhausted, so a
+not-yet-scraped fresh Pod is waited out rather than latched as fatal on the first observation, while a
+runtime that stays unobservable past the budget is still folded and fails closed and a genuine
+unhealthy/over-threshold runtime is observable immediately and fails closed with no delay (Sprint 5.24;
+`gatewayStabilityUnreachableIsTransient`).
+
 The historical restart/OOM/memory-only gateway fold is an incomplete compatibility projection. It
 does not qualify the redesigned services without CPU, queue, deadline, and latency evidence.
 

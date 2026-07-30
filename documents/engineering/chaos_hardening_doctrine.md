@@ -1133,7 +1133,11 @@ ownership evidence per Orders member, bounded replay/diagnostic windows, and a m
 receive-cursor vector keyed by emitter.
 Peers reconcile by idempotent bounded deltas or an authenticated per-emitter checkpoint floor plus
 one contiguous bounded retained suffix. Per-peer acknowledgements select which suffix records need
-republishing; only an installed signed checkpoint may compact the retained chain. Each Gateway Runtime
+republishing; only an installed signed checkpoint may compact the retained chain. That retained suffix
+is a hidden-constructor bounded type whose only growth operation fails closed at a hard ceiling, so an
+unbounded retained chain is non-constructible even under the fault where compaction stalls; and a failed
+checkpoint signature re-emits its exact compaction request so a permanently-unreachable peer or a stalled
+signer cannot wedge the suffix into unbounded growth (the retained-assertion memory-leak class). Each Gateway Runtime
 has one actor that exclusively owns its encrypted, identity-bound local journal and the complete
 `stage -> fsync -> publish -> commit -> fsync` transition. Other workers submit bounded intents; they
 cannot stage or commit continuity directly. The mount is admitted only while the process holds the

@@ -83,6 +83,7 @@ initialState threshold =
     incarnationZero
     (freshMailbox capacity3)
     threshold
+    64
     [peerA, peerB]
 
 runIntents :: EmitterState -> [EmitterIntent] -> (EmitterState, [[EmitterEffect]], [StepOutcome])
@@ -545,6 +546,7 @@ gatewayEmitterKernelSuite =
                 (mkIncarnation maxBound)
                 (freshMailbox capacity3)
                 8
+                64
         advanceIncarnation st0 `shouldBe` Left RejectIncarnationExhausted
       it "rebases a stale inner projection across repeated journal mount crashes" $ do
         let st0 =
@@ -553,6 +555,7 @@ gatewayEmitterKernelSuite =
                 (mkIncarnation 1)
                 (freshMailbox capacity3)
                 8
+                64
                 [peerA]
             begun =
               stepState
@@ -589,6 +592,7 @@ gatewayEmitterKernelSuite =
                 incarnationZero
                 (freshMailbox capacity3)
                 8
+                64
                 []
                 (Just maxBound)
             (st1, effects) = driveOwnershipToCommit st0 (BS.pack [31])
@@ -607,6 +611,7 @@ gatewayEmitterKernelSuite =
                 incarnationZero
                 (freshMailbox capacity3)
                 8
+                64
                 [peerA]
             inc = emitterIncarnation st0
             (begun, _, _) =
@@ -691,7 +696,7 @@ gatewayEmitterKernelSuite =
         emitterIncarnation migrated `shouldBe` target
         emitterPreviousOrdersDigest migrated `shouldBe` Just zeroDigest
         emitterPeers migrated `shouldBe` Set.singleton peerA
-        emitterUnacked migrated `shouldBe` []
+        (unackedSuffixList . emitterUnacked) migrated `shouldBe` []
         emitterRepairFloor migrated `shouldBe` emptyRepairFloor
         emitterLatestCommitted migrated `shouldBe` Nothing
         emitterInFlight migrated `shouldBe` Nothing
@@ -761,7 +766,7 @@ gatewayEmitterKernelSuite =
               either
                 (error . show)
                 id
-                (restoreDurableEmitterState (freshMailbox capacity3) (deadlineAfter 9000) decoded)
+                (restoreDurableEmitterState 64 (freshMailbox capacity3) (deadlineAfter 9000) decoded)
             remigrated =
               either
                 (error . show)
@@ -790,6 +795,7 @@ gatewayEmitterKernelSuite =
                 (error . show)
                 id
                 ( restoreDurableEmitterState
+                    64
                     (freshMailbox capacity3)
                     (deadlineAfter 10000)
                     replacementDecoded
@@ -812,7 +818,7 @@ gatewayEmitterKernelSuite =
         emitterPreviousOrdersDigest replacementRestored `shouldBe` Just ordersDigestB
         durableProjectionPreviousOrdersDigest replacementDecoded `shouldBe` Just ordersDigestB
         emitterPending replacementRestored `shouldBe` Just (PendingOrdersMigration ordersDigestB)
-        emitterUnacked replacementRestored `shouldBe` []
+        (unackedSuffixList . emitterUnacked) replacementRestored `shouldBe` []
         emitterLatestCommitted replacementRestored `shouldBe` Nothing
         emitterRepairFloor replacementRestored `shouldBe` emptyRepairFloor
         case stepEffects replacementRecovery of
@@ -859,6 +865,7 @@ gatewayEmitterKernelSuite =
                 (mkIncarnation maxBound)
                 (freshMailbox capacity3)
                 8
+                64
         migrateEmitterOrders
           zeroDigest
           (mkIncarnation maxBound)
@@ -874,6 +881,7 @@ gatewayEmitterKernelSuite =
                 (mkIncarnation 1)
                 (freshMailbox capacity3)
                 8
+                64
         migrateEmitterOrders
           zeroDigest
           (mkIncarnation 2)
@@ -915,12 +923,12 @@ gatewayEmitterKernelSuite =
             unacked = onlyUnacked committed
             point = pointFor (unackedAssertionRecord unacked)
             ackA = step committed (AckPeerThrough peerA point)
-            afterA = emitterUnacked (stepState ackA)
+            afterA = (unackedSuffixList . emitterUnacked) (stepState ackA)
             ackB = step (stepState ackA) (AckPeerThrough peerB point)
         length afterA `shouldBe` 1
         unackedAssertionWaitingPeers (onlyElement "unacked assertion" afterA)
           `shouldBe` Set.singleton peerB
-        map unackedAssertionWaitingPeers (emitterUnacked (stepState ackB))
+        map unackedAssertionWaitingPeers ((unackedSuffixList . emitterUnacked) (stepState ackB))
           `shouldBe` [Set.empty]
       it "retains an all-acknowledged predecessor through the next durable commit" $ do
         let (firstCommitted, _) = driveOwnershipToCommit (initialState 8) (BS.pack [53])
@@ -936,7 +944,7 @@ gatewayEmitterKernelSuite =
             bounds = projectionBounds 16384 4096 4 16
             encoded = either (error . show) id (encodeDurableEmitterProjection bounds projection)
             decoded = either (error . show) id (decodeDurableEmitterProjection bounds encoded)
-        map unackedAssertionWaitingPeers (emitterUnacked secondCommitted)
+        map unackedAssertionWaitingPeers ((unackedSuffixList . emitterUnacked) secondCommitted)
           `shouldBe` [Set.empty, Set.fromList [peerA, peerB]]
         durableProjectionUnackedCount decoded `shouldBe` 2
         durableProjectionCommittedAnchor decoded `shouldBe` emitterCommittedAnchor secondCommitted
@@ -985,7 +993,7 @@ gatewayEmitterKernelSuite =
                     (CheckpointInstalled (boundedPayload checkpointBytes))
                 )
         firstBytes `shouldBe` BS.pack [61]
-        length (emitterUnacked st3) `shouldBe` 3
+        length ((unackedSuffixList . emitterUnacked) st3) `shouldBe` 3
         emitterCheckpointPending (stepState failed) `shouldBe` Just candidate
         case stepEffects recovered of
           [ EffRestoreRetained incarnation deadline replay
@@ -997,12 +1005,42 @@ gatewayEmitterKernelSuite =
               checkpointDeadline `shouldBe` deadlineAfter 1000
               replayedCandidate `shouldBe` candidate
               map stagedRecordSignedBytes (recoveryReplayAssertions replay)
-                `shouldBe` map (stagedRecordSignedBytes . unackedAssertionRecord) (emitterUnacked st3)
+                `shouldBe` map (stagedRecordSignedBytes . unackedAssertionRecord) ((unackedSuffixList . emitterUnacked) st3)
           effects -> expectationFailure ("unexpected checkpoint recovery effects: " ++ show effects)
-        length (emitterUnacked (stepState installed)) `shouldBe` 2
+        length ((unackedSuffixList . emitterUnacked) (stepState installed)) `shouldBe` 2
         repairFloorSignedBytes (emitterRepairFloor (stepState installed))
           `shouldBe` Just checkpointBytes
         repairFloorSequence (emitterRepairFloor (stepState installed)) `shouldBe` Just 1
+      it "makes an over-ceiling unacked suffix non-constructible (appendUnacked fails closed)" $ do
+        let sample = onlyUnacked (commitWith 91 (initialState 8))
+            filled =
+              foldl
+                (\suffix _ -> either (const suffix) id (appendUnacked suffix sample))
+                (emptyUnackedSuffix 2)
+                [1 :: Int, 2]
+        unackedSuffixLength filled `shouldBe` 2
+        unackedSuffixMaximum filled `shouldBe` 2
+        appendUnacked filled sample `shouldBe` Left (UnackedSuffixFull 2)
+      it "re-emits the compaction on a failed checkpoint so the suffix cannot wedge" $ do
+        let st3 = commitWith 63 (commitWith 62 (commitWith 61 (initialState 2)))
+            candidate = onlyCheckpoint st3
+            failed =
+              step
+                st3
+                ( CheckpointResolved
+                    (emitterIncarnation st3)
+                    (deadlineAfter 1000)
+                    candidate
+                    CheckpointFailed
+                )
+        emitterCheckpointPending (stepState failed) `shouldBe` Just candidate
+        case stepEffects failed of
+          [EffCheckpointCompaction incarnation deadline retried] -> do
+            incarnation `shouldBe` emitterIncarnation st3
+            deadline `shouldBe` deadlineAfter 1000
+            retried `shouldBe` candidate
+          effects -> expectationFailure ("expected a re-emitted compaction, got " ++ show effects)
+        stepOutcome failed `shouldBe` OutcomeRejected RejectCheckpointFailed
       it "blocks further transitions while checkpoint signing is unresolved" $ do
         let st3 = commitWith 83 (commitWith 82 (commitWith 81 (initialState 2)))
             submitted = step st3 (SubmitRequest (ReqOwnership OwnershipYield))
@@ -1011,7 +1049,7 @@ gatewayEmitterKernelSuite =
                 (stepState submitted)
                 (Pump (monotonicInstantFromMicros 0) (deadlineAfter 1000))
         stepOutcome blocked `shouldBe` OutcomeRejected RejectCheckpointPending
-        length (emitterUnacked (stepState blocked)) `shouldBe` 3
+        length ((unackedSuffixList . emitterUnacked) (stepState blocked)) `shouldBe` 3
       it "freezes checkpoint-prefix waiting semantics until installation" $ do
         let pending = commitWith 143 (commitWith 142 (commitWith 141 (initialState 2)))
             candidate = onlyCheckpoint pending
@@ -1030,7 +1068,7 @@ gatewayEmitterKernelSuite =
         let pending = commitWith 153 (commitWith 152 (commitWith 151 (initialState 2)))
             candidate = onlyCheckpoint pending
             prefix = checkpointCandidateAssertions candidate
-            suffixBefore = drop (length prefix) (emitterUnacked pending)
+            suffixBefore = drop (length prefix) ((unackedSuffixList . emitterUnacked) pending)
             checkpointBytes = BS.replicate 8 99
             installed =
               stepState
@@ -1046,10 +1084,12 @@ gatewayEmitterKernelSuite =
             floorAnchor = repairFloorAnchor (emitterRepairFloor installed)
             firstSuffixPrevious =
               stagedRecordPreviousAnchor
-                (unackedAssertionRecord (firstElement "retained suffix" (emitterUnacked installed)))
-        emitterUnacked installed `shouldBe` suffixBefore
+                ( unackedAssertionRecord
+                    (firstElement "retained suffix" ((unackedSuffixList . emitterUnacked) installed))
+                )
+        (unackedSuffixList . emitterUnacked) installed `shouldBe` suffixBefore
         floorAnchor `shouldBe` Just firstSuffixPrevious
-        length (emitterUnacked installed) `shouldBe` 2
+        length ((unackedSuffixList . emitterUnacked) installed) `shouldBe` 2
         encodeDurableEmitterProjection
           (projectionBoundsSplit 16384 1 8 4 16)
           (projectDurableEmitterState installed)
@@ -1083,7 +1123,7 @@ gatewayEmitterKernelSuite =
               either
                 (error . show)
                 id
-                (restoreDurableEmitterState (freshMailbox capacity3) recoveryDeadline decoded)
+                (restoreDurableEmitterState 64 (freshMailbox capacity3) recoveryDeadline decoded)
             recovered =
               step
                 restored
@@ -1109,7 +1149,11 @@ gatewayEmitterKernelSuite =
                           (CheckpointInstalled (boundedPayload (BS.pack [101, 102])))
                       )
                   )
-              latestPoint = pointFor (unackedAssertionRecord (lastElement "unacked assertion" (emitterUnacked installed)))
+              latestPoint =
+                pointFor
+                  ( unackedAssertionRecord
+                      (lastElement "unacked assertion" ((unackedSuffixList . emitterUnacked) installed))
+                  )
               partiallyAcked = stepState (step installed (AckPeerThrough peerA latestPoint))
               stagedBytes = BS.pack [111, 112, 113]
               (begun, _, _) =
@@ -1129,7 +1173,7 @@ gatewayEmitterKernelSuite =
                 either
                   (error . show)
                   id
-                  (restoreDurableEmitterState (freshMailbox capacity3) recoveryDeadline decoded)
+                  (restoreDurableEmitterState 64 (freshMailbox capacity3) recoveryDeadline decoded)
               recovered =
                 step
                   restored
@@ -1154,14 +1198,15 @@ gatewayEmitterKernelSuite =
               either
                 (error . show)
                 id
-                (restoreDurableEmitterState (freshMailbox capacity3) (deadlineAfter 8000) decoded)
+                (restoreDurableEmitterState 64 (freshMailbox capacity3) (deadlineAfter 8000) decoded)
             candidate = onlyCheckpoint restored
             recoveryDeadline = deadlineAfter 8000
             recovered =
               step
                 restored
                 (Recover (monotonicInstantFromMicros 1) recoveryDeadline)
-        emitterUnacked restored `shouldBe` emitterUnacked pending
+        (unackedSuffixList . emitterUnacked) restored
+          `shouldBe` (unackedSuffixList . emitterUnacked) pending
         emitterCheckpointPending restored `shouldBe` emitterCheckpointPending pending
         case stepEffects recovered of
           [ EffRestoreRetained incarnation deadline replay
@@ -1191,7 +1236,9 @@ gatewayEmitterKernelSuite =
                 )
             latestPoint =
               pointFor
-                (unackedAssertionRecord (lastElement "retained suffix" (emitterUnacked installed)))
+                ( unackedAssertionRecord
+                    (lastElement "retained suffix" ((unackedSuffixList . emitterUnacked) installed))
+                )
             partiallyAcknowledged =
               stepState (step installed (AckPeerThrough peerA latestPoint))
             bounds = projectionBoundsSplit 16384 4096 8192 4 16
@@ -1203,7 +1250,7 @@ gatewayEmitterKernelSuite =
               either
                 (error . show)
                 id
-                (restoreDurableEmitterState (freshMailbox capacity3) recoveryDeadline decoded)
+                (restoreDurableEmitterState 64 (freshMailbox capacity3) recoveryDeadline decoded)
             recovered =
               step restored (Recover (monotonicInstantFromMicros 1) recoveryDeadline)
         case stepEffects recovered of
@@ -1214,7 +1261,9 @@ gatewayEmitterKernelSuite =
               `shouldBe` Just checkpointBytes
             recoveryReplayGenesisAnchor replay `shouldBe` emitterGenesisAnchor restored
             map stagedRecordSignedBytes (recoveryReplayAssertions replay)
-              `shouldBe` map (stagedRecordSignedBytes . unackedAssertionRecord) (emitterUnacked restored)
+              `shouldBe` map
+                (stagedRecordSignedBytes . unackedAssertionRecord)
+                ((unackedSuffixList . emitterUnacked) restored)
             map unackedAssertionWaitingPeers (recoveryReplayPendingPublications replay)
               `shouldBe` [Set.singleton peerB, Set.singleton peerB]
             recoveryReplayAssertionCount replay `shouldBe` 2
@@ -1292,7 +1341,7 @@ commitWith :: Word64 -> EmitterState -> EmitterState
 commitWith byte st = fst (driveOwnershipToCommit st (BS.pack [fromIntegral byte]))
 
 onlyUnacked :: EmitterState -> UnackedAssertion
-onlyUnacked st = case emitterUnacked st of
+onlyUnacked st = case (unackedSuffixList . emitterUnacked) st of
   [value] -> value
   values -> error ("expected one unacked assertion, got " ++ show (length values))
 

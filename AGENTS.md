@@ -22,6 +22,34 @@ prerequisites as typed effects in `prerequisite_doctrine.md`; daemon lifecycle i
 toolchain pinning in `dependency_management.md`. The repository is Haskell-only on the
 supported path.
 
+## Live Infrastructure Deployment Is Authorized
+
+**Agents are authorized to deploy, reconcile, and tear down live infrastructure from this
+project** — both the local RKE2 Kubernetes cluster on this host and the AWS substrate (EKS, IAM,
+Route 53, SES, S3, EC2/EBS) — through the documented `prodbox` entrypoints. This is expected and
+supported work; it makes real, persistent state changes to this host and incurs real live AWS
+spend, and it does **not** need separate approval beyond the user's original request.
+
+- Local cluster: `prodbox cluster reconcile` (installs RKE2 if absent and reconciles),
+  `prodbox charts reconcile ...`, `prodbox gateway ...`, `prodbox cluster delete --yes`
+  (`--cascade` also destroys per-run AWS stacks). Running these on this host is the supported,
+  expected operation, not an unauthorized state change.
+- AWS substrate + end-to-end: `prodbox test all`, `prodbox test all --substrate aws`,
+  `prodbox test integration <name> --substrate aws`, and `prodbox aws stack <cli-verb>
+  reconcile` / `destroy --yes` (see [AWS Substrate Provisioning Is Harness-Owned](#aws-substrate-provisioning-is-harness-owned)).
+- When a task needs a running cluster, an unsealed Vault, provisioned AWS, or a live serving/TLS
+  proof to validate or qualify, **stand up the live infrastructure through these entrypoints and
+  run it — do not report live infrastructure as an out-of-reach blocker.** A long-running
+  lifecycle command (a multi-hour `test all` or clean-room deployment-qualification run) is
+  in-scope work; launch it (background it if needed) and drive it to completion rather than
+  stopping short.
+
+This authorization is scoped to the `prodbox`/harness command surface only. It does **not** relax
+the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` / `kubectl` mutations
+that bypass the harness stay forbidden (AWS) or confirmation-gated (see below), `prodbox nuke`
+stays operator-only and TTY-only, and the [Commit Guidelines](#commit-guidelines) (agents never
+commit or push) still apply.
+
 ## Current Worktree Structure
 
 ```text

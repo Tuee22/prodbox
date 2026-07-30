@@ -2009,6 +2009,105 @@ counterexample and prevent a test fixture from returning while its structured ch
 
 - Link the Sprint `2.36` runtime owner and the timeout-discarding test-fixture ledger row.
 
+## Sprint 5.24: Restore-Time Gateway Observability Wait [✅ Done]
+
+**Status**: Done — an own-surface Phase-5 reopen (Standard A) of the Sprint `5.16` gateway
+runtime-stability gate. A live home `prodbox test all` surfaced a deterministic restore-cycle failure
+that was **not** the heap-leak: the post-reconcile stability sample failed closed on a
+freshly-(re)started but healthy gateway Pod whose working-set was not yet observable, because
+metrics-server had not performed its first scrape when the sample was taken. This blocked
+`RestoreNodeReconcileChart RestoreChartGateway` before Phase 2 on every run. The fix waits out the
+scrape gap without weakening the fail-closed contract.
+**Implementation**: ✅ `recordGatewayRuntimeStabilitySample` (`src/Prodbox/TestValidation.hs`) now runs
+`awaitGatewayRuntimeObservable` before recording a sample: `observeGatewayRuntimeScratch` performs a
+read-only observation folded into a throwaway `initialGatewayStabilityState` (never the run recorder,
+so nothing is latched), and the wait polls until the runtime is observable or a bounded ~60 s budget
+elapses. The new pure classifier `gatewayStabilityUnreachableIsTransient`
+(`src/Prodbox/Test/GatewayRuntimeStability.hs`, exported alongside `stabilityStatePolicy`)
+distinguishes a transient `GatewayPodObservationUnreachable` / `GatewayPayloadUnreachable` (waited
+out) from a static `GatewaySnapshotPolicyMismatch` (fatal). The absorbing classifier is unchanged, so
+a genuinely unhealthy / over-threshold / OOM / restart runtime is observable immediately and still
+fails closed with no delay, and a runtime that stays unobservable past the budget still falls through
+to the recorded sample and fails closed.
+**Live-proof**: ✅ proven for the fix's owned surface. A clean cold home `prodbox test all` (fresh
+cluster, fresh gateway Pod) drove the restore cycle to `RestoreNodeReconcileChart RestoreChartGateway ->
+**succeeded**` — the exact node that failed with `StabilityUnreachable (GatewayMemoryReadingUnobservable)`
+in the pre-fix runs — and its success **unblocked the entire downstream restore graph**
+(`RestoreNodeReconcileChart RestoreChartVscode/Api/Websocket` and `RestoreNodeWaitForPublicEdge` all
+`succeeded`, where the pre-fix runs left them `BLOCKED`). The whole run recorded **zero**
+`StabilityUnreachable` / `RuntimeUnhealthy` observations and the gateway Pods held `0 restarts`
+throughout. The one restore node that failed, `RestoreNodePrepareRetainedSes`, failed on an unrelated
+transient MinIO NodePort blip (`LeaseAuthorityUnobservable … could not connect to 127.0.0.1:39000` — the
+documented "transient MinIO-unreachable" class, recoverable via idempotent retry), **not** the gateway
+stability gate this sprint owns. A full green home run through Phase 2 additionally depends on that
+transient object-store class and the genuine heap-leak holding off (Standard-O / cutover); neither is
+this sprint's surface.
+**Deployment qualification**: pending — a test-harness restore-gate fix; it changes no production
+process-topology, capability-wiring, envelope, persistence, or lifecycle surface, so it neither
+advances nor invalidates Standard-P qualification, which remains pending on the cutover.
+**Independent Validation**: ✅ `test/unit/GatewayRuntimeStability.hs` ("treats a fresh-Pod
+observability gap as transient while a static policy mismatch stays fatal") proves the classifier over
+a folded fresh-Pod memory-unobservable report plus the payload/policy cases; the existing fail-closed
+tests ("fails closed when required metrics are unobservable", "fails closed for each unobservable
+Pod-status field") are unchanged and still pass, proving the pure fail-closed contract is preserved
+(Sprint 5.16 suite 18/18). Pre-cluster; `prodbox dev check` exit 0.
+**Docs to update**: `documents/engineering/unit_testing_policy.md` (§ 6.2)
+
+### Objective
+
+Prevent the restore-time gateway runtime-stability sample from failing closed on a transient
+metrics-server scrape gap for a freshly-(re)started but healthy gateway Pod, while preserving the
+fail-closed contract for a genuinely unobservable or unhealthy runtime.
+
+### Deliverables
+
+- A read-only, non-latching observability wait before each recorded stability sample, bounded so a
+  runtime that stays unobservable past the budget is still recorded and fails closed.
+- A pure transient-vs-fatal classifier over `GatewayStabilityUnreachableReason`, exercised by unit
+  fixtures alongside the preserved fail-closed cases.
+
+### Validation
+
+1. The classifier treats a fresh-Pod `GatewayMemoryReadingUnobservable` and a transient kubectl/API
+   read failure as transient, and a static policy mismatch as fatal.
+2. The existing fail-closed observations (unobservable metrics, each unobservable Pod-status field)
+   are unchanged and still fail closed.
+3. `prodbox dev check` and the Sprint `5.16` suite (18/18) pass.
+4. A live home run confirms the false `MemoryReadingUnobservable` restore failure is eliminated (the
+   working-set is observed) while a genuine restart still fails closed.
+
+### Remaining Work
+
+- ✅ The code-owned fix (observability wait + classifier + unit proof) landed and is `dev check`-green.
+- ✅ Proven live on a clean cold home `prodbox test all`: `RestoreNodeReconcileChart RestoreChartGateway
+  -> succeeded` with zero stability failures across the run, unblocking every downstream restore node.
+- 🧪 A full green home run **through Phase 2** additionally depends on the unrelated transient
+  MinIO-NodePort object-store class (`RestoreNodePrepareRetainedSes`, recoverable via idempotent retry)
+  and the genuine heap-leak holding off — neither is this sprint's owned surface (Standard-O / cutover).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- ✅ `documents/engineering/unit_testing_policy.md` - the transient-vs-fatal unreachable
+  classification and the restore-time observability-wait-before-fold boundary (§ 6.2 absorbing
+  evidence). Updated: a not-yet-scraped fresh Pod is waited out, not latched as fatal, while a
+  persistent unobservable still fails closed.
+- `documents/engineering/chaos_hardening_doctrine.md` - none required; it carries only the general
+  fail-closed rules (R4) and does not own the gateway runtime-stability gate, which this sprint's
+  behavior does not contradict.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link to Sprint `5.16` (the gateway runtime-stability oracle this reopens) and note the distinction
+  from the [gateway heap-leak](legacy-tracking-for-deletion.md): the restore-gate scrape race is a
+  harness-observability defect, whereas the RTS heap-overflow restart it now correctly surfaces is the
+  cutover-gated leak.
+
 ## Related Documents
 
 - [README.md](README.md)

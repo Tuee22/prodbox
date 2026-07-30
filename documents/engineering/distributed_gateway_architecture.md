@@ -773,7 +773,12 @@ Returns current daemon state:
 Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 `retained_assertion_count` is bounded by `retained_assertion_capacity`; it is not total assertions
-since process start. `semantic_member_count`, signed replay count, recent hashes, and the
+since process start. In the single-writer `JournalLeaseEmitter` kernel this bound is structural, not
+merely reported: the retained unacknowledged suffix is a hidden-constructor `BoundedUnackedSuffix`
+whose only growth operation fails closed at the ceiling (the durable `retained_assertion_capacity`
+bound moved to the live growth point), so an over-retention state is non-constructible, and a failed
+checkpoint signature re-emits its exact compaction rather than leaving the retained chain to grow
+behind a stalled signer. `semantic_member_count`, signed replay count, recent hashes, and the
 peer-by-emitter cursor vectors are bounded by validated Orders and gateway bounds. The journal
 projection reports the already-observed local committed anchor coordinates and digest, but never a
 signature, key, staged payload, or journal read performed during rendering. The state response

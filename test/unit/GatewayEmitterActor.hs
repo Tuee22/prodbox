@@ -88,6 +88,7 @@ gatewayEmitterActorSuite =
               (mkIncarnation 9)
               mailbox
               8
+              64
       withEmitterActor actorConfig exhausted interpreter $ \actor -> do
         result <- submitEmitterRequest actor (ReqOwnership OwnershipClaim)
         record <- expectCommitted result
@@ -183,6 +184,7 @@ gatewayEmitterActorSuite =
               (mkIncarnation 1)
               mailbox
               8
+              64
               [peerA]
       (safeProjection, publishedRecord) <-
         withEmitterActor actorConfig stateWithPeer interpreter $ \actor -> do
@@ -215,7 +217,7 @@ gatewayEmitterActorSuite =
             either
               (error . show)
               id
-              (restoreDurableEmitterState mailbox recoveryDeadline safeProjection)
+              (restoreDurableEmitterState 64 mailbox recoveryDeadline safeProjection)
           safeInFlight = maybe (error "missing safe in-flight transition") id (emitterInFlight restored)
       inFlightPhase safeInFlight `shouldBe` PhaseFsyncingStage
       inFlightPublished safeInFlight `shouldBe` False
@@ -299,6 +301,7 @@ gatewayEmitterActorSuite =
               (mkIncarnation 1)
               (emitterActorMailbox saturatedActorConfig)
               8
+              64
       withEmitterActor saturatedActorConfig saturatedState interpreter $ \actor -> do
         first <- async (submitEmitterRequest actor (ReqOwnership OwnershipClaim))
         takeMVar started
@@ -391,6 +394,7 @@ gatewayEmitterActorSuite =
               (mkIncarnation 1)
               mailbox
               8
+              64
               [peerA]
       withEmitterActor actorConfig stateWithPeer interpreter $ \actor -> do
         committed <-
@@ -411,10 +415,10 @@ gatewayEmitterActorSuite =
               either
                 (error . show)
                 id
-                (restoreDurableEmitterState mailbox (deadlineAfter 1000000) lastProjection)
+                (restoreDurableEmitterState 64 mailbox (deadlineAfter 1000000) lastProjection)
         Map.lookup peerA (emitterPeerAcknowledgements restored)
           `shouldBe` Just (Just point)
-        case emitterUnacked restored of
+        case (unackedSuffixList . emitterUnacked) restored of
           [retained] -> do
             unackedAssertionRecord retained `shouldBe` committed
             unackedAssertionWaitingPeers retained `shouldBe` Set.empty
@@ -442,6 +446,7 @@ gatewayEmitterActorSuite =
               (mkIncarnation 1)
               mailbox
               0
+              64
               [peerA]
           governingDeadline = deadlineAfter 1000000
       withEmitterActor actorConfig checkpointingState interpreter $ \actor -> do
@@ -489,7 +494,7 @@ mailbox :: Mailbox
 mailbox = emitterActorMailbox actorConfig
 
 initialState :: EmitterState
-initialState = mkEmitterState (anchorAt 1 0) (mkIncarnation 1) mailbox 8
+initialState = mkEmitterState (anchorAt 1 0) (mkIncarnation 1) mailbox 8 64
 
 peerA :: EmitterPeer
 peerA = maybe (error "peer-a") id (mkEmitterPeer "peer-a")

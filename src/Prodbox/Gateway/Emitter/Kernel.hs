@@ -61,6 +61,16 @@ module Prodbox.Gateway.Emitter.Kernel
   , ackPointIncarnation
   , ackPointAnchor
   , UnackedAssertion
+  , BoundedUnackedSuffix
+  , UnackedSuffixFull (..)
+  , emptyUnackedSuffix
+  , appendUnacked
+  , dropUnackedPrefix
+  , mapUnackedSuffix
+  , restoreUnackedSuffix
+  , unackedSuffixList
+  , unackedSuffixLength
+  , unackedSuffixMaximum
   , unackedAssertionRecord
   , unackedAssertionWaitingPeers
   , CheckpointCandidate
@@ -101,6 +111,7 @@ module Prodbox.Gateway.Emitter.Kernel
   , DurableProjectionBoundField (..)
   , DurableProjectionBounds
   , mkDurableProjectionBounds
+  , projectionMaximumRetainedAssertions
   , DurableEmitterProjection
   , projectDurableEmitterState
   , encodeDurableEmitterProjection
@@ -335,6 +346,83 @@ data UnackedAssertion = UnackedAssertion
 
 instance Serialise UnackedAssertion
 
+-- | A bounded contiguous suffix of unacknowledged committed assertions that
+-- carries its own hard ceiling, so that an over-retention state is
+-- non-constructible: the only growth operation, 'appendUnacked', fails closed at
+-- the ceiling. This moves the retained-assertion bound that
+-- 'validateDurableProjection' already enforces at the durable boundary to the live
+-- growth point, so a stalled checkpoint can never grow the suffix without limit.
+-- The ceiling is the emitter's @projectionMaximumRetainedAssertions@; the separate
+-- 'emitterUnackedThreshold' is only the compaction trigger (threshold ≤ ceiling).
+-- The constructor is hidden; the projections below are the entire vocabulary.
+data BoundedUnackedSuffix = BoundedUnackedSuffix
+  { internalUnackedMaximum :: !Natural
+  , internalUnackedItems :: ![UnackedAssertion]
+  }
+  deriving stock (Eq, Show)
+
+-- | The empty suffix at a given hard ceiling.
+emptyUnackedSuffix :: Natural -> BoundedUnackedSuffix
+emptyUnackedSuffix maximumRetained =
+  BoundedUnackedSuffix {internalUnackedMaximum = maximumRetained, internalUnackedItems = []}
+
+-- | The suffix's items, oldest first.
+unackedSuffixList :: BoundedUnackedSuffix -> [UnackedAssertion]
+unackedSuffixList = internalUnackedItems
+
+-- | The suffix's current length.
+unackedSuffixLength :: BoundedUnackedSuffix -> Int
+unackedSuffixLength = length . internalUnackedItems
+
+-- | The suffix's hard ceiling.
+unackedSuffixMaximum :: BoundedUnackedSuffix -> Natural
+unackedSuffixMaximum = internalUnackedMaximum
+
+-- | Why an append was refused: the suffix is already at its hard ceiling.
+newtype UnackedSuffixFull = UnackedSuffixFull Natural
+  deriving stock (Eq, Show)
+
+-- | Append one assertion, failing closed at the ceiling. This is the ONLY growth
+-- operation on the suffix, so a suffix longer than its ceiling cannot be
+-- constructed.
+appendUnacked
+  :: BoundedUnackedSuffix
+  -> UnackedAssertion
+  -> Either UnackedSuffixFull BoundedUnackedSuffix
+appendUnacked suffix assertion
+  | fromIntegral (length (internalUnackedItems suffix)) >= internalUnackedMaximum suffix =
+      Left (UnackedSuffixFull (internalUnackedMaximum suffix))
+  | otherwise =
+      Right suffix {internalUnackedItems = internalUnackedItems suffix ++ [assertion]}
+
+-- | Drop the oldest @n@ assertions (checkpoint compaction). Total; the ceiling
+-- still holds.
+dropUnackedPrefix :: Int -> BoundedUnackedSuffix -> BoundedUnackedSuffix
+dropUnackedPrefix n suffix =
+  suffix {internalUnackedItems = drop n (internalUnackedItems suffix)}
+
+-- | Map over each assertion (peer acknowledgement). Length-preserving, so the
+-- ceiling still holds.
+mapUnackedSuffix
+  :: (UnackedAssertion -> UnackedAssertion) -> BoundedUnackedSuffix -> BoundedUnackedSuffix
+mapUnackedSuffix f suffix =
+  suffix {internalUnackedItems = map f (internalUnackedItems suffix)}
+
+-- | Reconstruct a suffix from a durable projection's already-validated list under
+-- a ceiling, refusing a list that exceeds it (defence in depth: the durable
+-- projection was validated against the same bound, but the live growth-point type
+-- re-checks it so an over-ceiling suffix has no representation on either side).
+restoreUnackedSuffix
+  :: Natural -> [UnackedAssertion] -> Either UnackedSuffixFull BoundedUnackedSuffix
+restoreUnackedSuffix maximumRetained items
+  | fromIntegral (length items) > maximumRetained = Left (UnackedSuffixFull maximumRetained)
+  | otherwise =
+      Right
+        BoundedUnackedSuffix
+          { internalUnackedMaximum = maximumRetained
+          , internalUnackedItems = items
+          }
+
 data RepairFloor
   = EmptyRepairFloor
   | InstalledRepairFloor
@@ -388,7 +476,7 @@ data EmitterState = EmitterState
   , emitterMailbox :: !Mailbox
   , emitterPeers :: !(Set EmitterPeer)
   , emitterPeerAcknowledgements :: !(Map EmitterPeer (Maybe AckPoint))
-  , emitterUnacked :: ![UnackedAssertion]
+  , emitterUnacked :: !BoundedUnackedSuffix
   , emitterLatestCommitted :: !(Maybe StagedRecord)
   , emitterRepairFloor :: !RepairFloor
   , emitterCheckpointPending :: !(Maybe CheckpointCandidate)
@@ -400,19 +488,23 @@ data EmitterState = EmitterState
 
 -- | Compatibility constructor for an emitter with no remote peers and a fresh
 -- admission counter.
-mkEmitterState :: ContinuityAnchor -> Incarnation -> Mailbox -> Natural -> EmitterState
-mkEmitterState anchor incarnation mailbox threshold =
-  mkEmitterStateForPeers anchor incarnation mailbox threshold []
+mkEmitterState :: ContinuityAnchor -> Incarnation -> Mailbox -> Natural -> Natural -> EmitterState
+mkEmitterState anchor incarnation mailbox threshold maximumRetained =
+  mkEmitterStateForPeers anchor incarnation mailbox threshold maximumRetained []
 
 mkEmitterStateForPeers
   :: ContinuityAnchor
   -> Incarnation
   -> Mailbox
   -> Natural
+  -- ^ Compaction trigger (@emitterUnackedThreshold@).
+  -> Natural
+  -- ^ Hard retained-assertion ceiling (@projectionMaximumRetainedAssertions@); the
+  -- bounded unacked suffix fails closed here.
   -> [EmitterPeer]
   -> EmitterState
-mkEmitterStateForPeers anchor incarnation mailbox threshold peers =
-  mkEmitterStateRestored anchor incarnation mailbox threshold peers (Just 0)
+mkEmitterStateForPeers anchor incarnation mailbox threshold maximumRetained peers =
+  mkEmitterStateRestored anchor incarnation mailbox threshold maximumRetained peers (Just 0)
 
 -- | Restore the pure projection, including the next admission.  Passing
 -- 'Nothing' represents a journal whose admission counter is exhausted.
@@ -421,10 +513,13 @@ mkEmitterStateRestored
   -> Incarnation
   -> Mailbox
   -> Natural
+  -- ^ Compaction trigger (@emitterUnackedThreshold@).
+  -> Natural
+  -- ^ Hard retained-assertion ceiling (@projectionMaximumRetainedAssertions@).
   -> [EmitterPeer]
   -> Maybe Word64
   -> EmitterState
-mkEmitterStateRestored anchor incarnation mailbox threshold peers nextAdmission =
+mkEmitterStateRestored anchor incarnation mailbox threshold maximumRetained peers nextAdmission =
   let peerSet = Set.fromList peers
    in EmitterState
         { emitterGenesisAnchor = anchor
@@ -436,7 +531,7 @@ mkEmitterStateRestored anchor incarnation mailbox threshold peers nextAdmission 
         , emitterMailbox = mailbox
         , emitterPeers = peerSet
         , emitterPeerAcknowledgements = Map.fromSet (const Nothing) peerSet
-        , emitterUnacked = []
+        , emitterUnacked = emptyUnackedSuffix maximumRetained
         , emitterLatestCommitted = Nothing
         , emitterRepairFloor = emptyRepairFloor
         , emitterCheckpointPending = Nothing
@@ -516,7 +611,7 @@ migrateEmitterOrders previousOrdersDigest target mailbox threshold peers st
               , emitterMailbox = mailbox
               , emitterPeers = peerSet
               , emitterPeerAcknowledgements = Map.fromSet (const Nothing) peerSet
-              , emitterUnacked = []
+              , emitterUnacked = emptyUnackedSuffix (unackedSuffixMaximum (emitterUnacked st))
               , emitterLatestCommitted = Nothing
               , emitterRepairFloor = emptyRepairFloor
               , emitterCheckpointPending = Nothing
@@ -683,7 +778,7 @@ projectDurableEmitterState st =
     , durableProjectionPending = emitterPending st
     , durableProjectionPeers = emitterPeers st
     , durableProjectionPeerAcknowledgements = emitterPeerAcknowledgements st
-    , durableProjectionUnacked = emitterUnacked st
+    , durableProjectionUnacked = unackedSuffixList (emitterUnacked st)
     , durableProjectionLatestCommitted = emitterLatestCommitted st
     , durableProjectionRepairFloor = emitterRepairFloor st
     , durableProjectionCheckpointPending = emitterCheckpointPending st
@@ -770,11 +865,22 @@ validateProjectionEncodedBytes bounds encoded =
 -- and old admission until recovery aborts it and admits a separately-ticketed
 -- retry.
 restoreDurableEmitterState
-  :: Mailbox
+  :: Natural
+  -- ^ Hard retained-assertion ceiling (@projectionMaximumRetainedAssertions@).
+  -> Mailbox
   -> Deadline
   -> DurableEmitterProjection
   -> Either DurableProjectionError EmitterState
-restoreDurableEmitterState mailbox recoveryDeadline projection =
+restoreDurableEmitterState maximumRetained mailbox recoveryDeadline projection = do
+  unacked <-
+    case restoreUnackedSuffix maximumRetained (durableProjectionUnacked projection) of
+      Left (UnackedSuffixFull ceilingValue) ->
+        Left
+          ( DurableProjectionRetainedAssertionCountExceeded
+              (fromIntegral (length (durableProjectionUnacked projection)))
+              ceilingValue
+          )
+      Right suffix -> Right suffix
   Right
     EmitterState
       { emitterGenesisAnchor = durableProjectionGenesisAnchor projection
@@ -789,7 +895,7 @@ restoreDurableEmitterState mailbox recoveryDeadline projection =
       , emitterPeers = durableProjectionPeers projection
       , emitterPeerAcknowledgements =
           durableProjectionPeerAcknowledgements projection
-      , emitterUnacked = durableProjectionUnacked projection
+      , emitterUnacked = unacked
       , emitterLatestCommitted = durableProjectionLatestCommitted projection
       , emitterRepairFloor = durableProjectionRepairFloor projection
       , emitterCheckpointPending =
@@ -1409,6 +1515,11 @@ data RejectReason
   | RejectCheckpointFailed
   | RejectEmptySignedCheckpoint
   | RejectOrdersMigrationEpochExhausted
+  | -- | The bounded unacked suffix is at its hard ceiling (the retained-assertion
+    -- maximum). Emitted when a new commit would grow the suffix past the ceiling
+    -- because checkpoint compaction has stalled; the emitter fails closed and
+    -- recovers rather than growing without bound.
+    RejectUnackedSuffixFull !Natural
   deriving stock (Eq, Show)
 
 data StepOutcome
@@ -1696,20 +1807,25 @@ advancePhasePublished st inflight nextPhase effect =
 
 finalize :: EmitterState -> InFlight -> StagedRecord -> EmitterStep
 finalize st inflight record =
-  let waiting = emitterPeers st
-      unacked = emitterUnacked st ++ [UnackedAssertion record waiting]
-      pending' = promotePending (inFlightKind inflight) (emitterPending st)
-      committed =
-        normalizeAcknowledgements
-          st
-            { emitterCommittedAnchor = stagedRecordNextAnchor record
-            , emitterInFlight = Nothing
-            , emitterPending = pending'
-            , emitterUnacked = unacked
-            , emitterLatestCommitted = Just record
-            }
-      (bounded, checkpointEffects) = scheduleCheckpoint (inFlightDeadline inflight) committed
-   in EmitterStep bounded checkpointEffects OutcomeAccepted
+  case appendUnacked (emitterUnacked st) (UnackedAssertion record (emitterPeers st)) of
+    -- Fail closed at the hard retained-assertion ceiling: a stalled checkpoint can
+    -- never grow the suffix without bound. The commit is refused (the in-flight work
+    -- stays represented for recovery) rather than the heap climbing indefinitely.
+    Left (UnackedSuffixFull ceilingValue) ->
+      noEffect st (OutcomeRejected (RejectUnackedSuffixFull ceilingValue))
+    Right unacked ->
+      let pending' = promotePending (inFlightKind inflight) (emitterPending st)
+          committed =
+            normalizeAcknowledgements
+              st
+                { emitterCommittedAnchor = stagedRecordNextAnchor record
+                , emitterInFlight = Nothing
+                , emitterPending = pending'
+                , emitterUnacked = unacked
+                , emitterLatestCommitted = Just record
+                }
+          (bounded, checkpointEffects) = scheduleCheckpoint (inFlightDeadline inflight) committed
+       in EmitterStep bounded checkpointEffects OutcomeAccepted
 
 promotePending :: DurableKind -> Maybe Pending -> Maybe Pending
 promotePending KindEpochRotation (Just (PendingRotationThenAdvance request)) =
@@ -1720,11 +1836,11 @@ promotePending _ pending = pending
 scheduleCheckpoint :: Deadline -> EmitterState -> (EmitterState, [EmitterEffect])
 scheduleCheckpoint deadline st
   | emitterCheckpointPending st /= Nothing = (st, [])
-  | fromIntegral (length (emitterUnacked st)) <= emitterUnackedThreshold st = (st, [])
+  | fromIntegral (unackedSuffixLength (emitterUnacked st)) <= emitterUnackedThreshold st = (st, [])
   | otherwise =
       let keep = fromIntegral (emitterUnackedThreshold st)
-          prefixLength = length (emitterUnacked st) - keep
-          prefix = take prefixLength (emitterUnacked st)
+          prefixLength = unackedSuffixLength (emitterUnacked st) - keep
+          prefix = take prefixLength (unackedSuffixList (emitterUnacked st))
        in case reverse prefix of
             [] -> (st, [])
             latest : _ ->
@@ -1754,11 +1870,21 @@ stepCheckpointResolved st incarnation deadline candidate outcome
   | emitterCheckpointPending st /= Just candidate =
       noEffect st (OutcomeRejected RejectUnexpectedCompletion)
   | otherwise = case outcome of
-      CheckpointFailed -> noEffect st (OutcomeRejected RejectCheckpointFailed)
+      -- Liveness (root-cause) fix: a failed checkpoint re-emits the same compaction
+      -- request so the signer retries the exact pending candidate, rather than
+      -- leaving that candidate un-driven — the wedge that previously let the unacked
+      -- suffix climb without bound behind a stalled signer. The pending candidate is
+      -- deliberately kept (so the identical checkpoint is retried), and the retained
+      -- suffix stays bounded regardless through the fail-closed ceiling in 'finalize'.
+      CheckpointFailed ->
+        EmitterStep
+          st
+          [EffCheckpointCompaction (emitterIncarnation st) deadline candidate]
+          (OutcomeRejected RejectCheckpointFailed)
       CheckpointInstalled signedPayload ->
         let signedBytes = boundedSignedPayloadBytes signedPayload
          in let prefixLength = length (checkpointCandidateAssertions candidate)
-                retained = drop prefixLength (emitterUnacked st)
+                retained = dropUnackedPrefix prefixLength (emitterUnacked st)
                 floor' =
                   InstalledRepairFloor
                     (checkpointCandidateThrough candidate)
@@ -1835,7 +1961,7 @@ recoveryReplayFor :: EmitterState -> Maybe RecoveryReplay
 recoveryReplayFor st =
   let checkpoint = BoundedSignedPayload <$> repairFloorSignedBytes (emitterRepairFloor st)
       activeMigrationDigest = activeOrdersMigrationDigest st
-      retained = emitterUnacked st
+      retained = unackedSuffixList (emitterUnacked st)
       assertions = map unackedAssertionRecord retained
       pending = filter (not . Set.null . unackedAssertionWaitingPeers) retained
       byteCount =
@@ -1908,7 +2034,7 @@ stepAckPeer st peer point
           Left rejection -> noEffect st (OutcomeRejected rejection)
           Right AckDuplicate -> noEffect st OutcomeNoOp
           Right AckAdvance ->
-            let acknowledged = map (acknowledgeOne peer point) (emitterUnacked st)
+            let acknowledged = mapUnackedSuffix (acknowledgeOne peer point) (emitterUnacked st)
                 st' =
                   st
                     { emitterPeerAcknowledgements =
@@ -1943,7 +2069,7 @@ validateAcknowledgement st peer previous supplied
 
 knownAckPoint :: EmitterState -> EmitterPeer -> AckPoint -> Bool
 knownAckPoint st peer point =
-  any ((== point) . recordAckPoint . unackedAssertionRecord) (emitterUnacked st)
+  any ((== point) . recordAckPoint . unackedAssertionRecord) (unackedSuffixList (emitterUnacked st))
     || repairFloorPoint (emitterRepairFloor st) == Just point
     || fmap recordAckPoint (emitterLatestCommitted st) == Just point
     || Map.lookup peer (emitterPeerAcknowledgements st) == Just (Just point)
@@ -1973,7 +2099,7 @@ normalizeAcknowledgements st =
   knownPoints =
     Set.fromList
       ( maybe [] pure floorPoint
-          ++ map (recordAckPoint . unackedAssertionRecord) (emitterUnacked st)
+          ++ map (recordAckPoint . unackedAssertionRecord) (unackedSuffixList (emitterUnacked st))
           ++ maybe [] (pure . recordAckPoint) (emitterLatestCommitted st)
       )
   normalize Nothing = Nothing

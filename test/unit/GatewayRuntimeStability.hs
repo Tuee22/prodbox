@@ -220,6 +220,33 @@ gatewayRuntimeStabilitySuite =
         )
         cases
 
+    it "treats a fresh-Pod observability gap as transient while a static policy mismatch stays fatal" $ do
+      -- A freshly-(re)started Ready Pod with no metrics-server scrape yet folds to
+      -- StabilityUnreachable, but its reason is transient: the restore-time
+      -- observability wait retries rather than latching it as fatal.
+      let freshPodMemoryUnobservable =
+            gatewayRuntimeStabilityReport
+              ( foldGatewayRuntimeSnapshot
+                  GatewayRuntimeSnapshot
+                    { gatewaySnapshotMemoryThresholds = thresholds
+                    , gatewaySnapshotSamples =
+                        [readySample {gatewaySampleWorkingSetBytes = Nothing}]
+                    }
+                  (initialGatewayStabilityState policyTwoSamples)
+              )
+      freshPodMemoryUnobservable `shouldSatisfy` isTransientlyUnreachableReport
+      -- A transient kubectl/API read failure is also worth waiting out.
+      gatewayStabilityUnreachableIsTransient
+        (GatewayPayloadUnreachable (GatewayPayloadError GatewayPodsPayload "kubectl timed out"))
+        `shouldBe` True
+      -- A static policy mismatch never clears by waiting, so it stays fatal.
+      gatewayStabilityUnreachableIsTransient
+        ( GatewaySnapshotPolicyMismatch
+            (GatewayMemoryThresholds 80 100 120)
+            (GatewayMemoryThresholds 80 100 121)
+        )
+        `shouldBe` False
+
     it "absorbs OOM evidence from Kubernetes Events as well as container status" $ do
       let state =
             observeGatewayRuntimePayloads
@@ -546,6 +573,12 @@ isUnreachableReport :: GatewayRuntimeStabilityReport -> Bool
 isUnreachableReport report =
   case report of
     StabilityUnreachable _ -> True
+    _ -> False
+
+isTransientlyUnreachableReport :: GatewayRuntimeStabilityReport -> Bool
+isTransientlyUnreachableReport report =
+  case report of
+    StabilityUnreachable reason -> gatewayStabilityUnreachableIsTransient reason
     _ -> False
 
 observationUnreachableReason

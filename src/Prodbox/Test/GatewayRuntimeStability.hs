@@ -37,8 +37,10 @@ module Prodbox.Test.GatewayRuntimeStability
 
     -- * Run-wide and healthy-window folds
   , GatewayStabilityState
+  , stabilityStatePolicy
   , GatewayRuntimeStabilityReport (..)
   , GatewayStabilityUnreachableReason (..)
+  , gatewayStabilityUnreachableIsTransient
   , initialGatewayStabilityState
   , foldGatewayRuntimeSnapshot
   , observeGatewayRuntimePayloads
@@ -962,6 +964,26 @@ gatewayRuntimeStabilityReport state =
   policy = stabilityStatePolicy state
   stableSamples =
     healthyWindowStableSamples (stabilityStateHealthyWindow state)
+
+-- | Whether a 'StabilityUnreachable' reason is expected to clear on its own
+-- once a freshly-(re)started gateway Pod finishes scheduling and metrics-server
+-- performs its first scrape, as opposed to a persistent configuration error.
+--
+-- A Pod that reaches @Ready@ before its first metrics scrape reports a
+-- 'GatewayPodObservationUnreachable' (for example
+-- 'GatewayMemoryReadingUnobservable'), and a transient kubectl/API read failure
+-- surfaces as 'GatewayPayloadUnreachable'; both clear with time.  A
+-- 'GatewaySnapshotPolicyMismatch' is a static configuration error that never
+-- clears by waiting.  This does not weaken the fail-closed contract: it only
+-- lets the observability wait distinguish a not-yet-scraped fresh Pod from a
+-- persistent gap, and a runtime that stays unobservable past the wait budget is
+-- still recorded and fails closed.
+gatewayStabilityUnreachableIsTransient :: GatewayStabilityUnreachableReason -> Bool
+gatewayStabilityUnreachableIsTransient reason =
+  case reason of
+    GatewayPodObservationUnreachable _ _ -> True
+    GatewayPayloadUnreachable _ -> True
+    GatewaySnapshotPolicyMismatch _ _ -> False
 
 renderGatewayPodDiagnostic :: GatewayPodDiagnostic -> String
 renderGatewayPodDiagnostic diagnostic =

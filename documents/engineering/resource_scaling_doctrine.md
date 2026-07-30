@@ -455,7 +455,13 @@ current-Lease recovery completes; it cannot open a second lane or mint a later d
 transition. The old process-global
 `ChildSchedule` is not a target-path capacity proof: fixed REST/frame bounds and operation-specific
 deadlines contain independent capability lanes, while the actor's validated queue exclusively owns
-emitter transitions.
+emitter transitions. The emitter's resident memory is bounded the same way its admission is: the
+retained unacknowledged suffix is a hidden-constructor `BoundedUnackedSuffix` whose only growth
+operation fails closed at a hard ceiling (the durable `retained_assertion_capacity`), so an
+over-retention state is structurally unrepresentable rather than merely rejected — the same
+"one value, one proof, unrepresentable over-commit" discipline this doctrine applies to CPU/RAM/storage,
+extended to the emitter's retained-assertion chain. A stalled checkpoint signer re-drives its exact
+compaction rather than letting the chain grow, closing the retained-assertion memory-leak class.
 
 ## 2F. Measured Resource Profiles
 

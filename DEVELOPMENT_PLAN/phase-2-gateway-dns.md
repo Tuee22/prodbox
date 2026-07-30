@@ -3559,6 +3559,105 @@ Timeout is a shutdown observation, not a child-termination proof.
 - Link Sprint `5.23` as the canonical-suite consumer and record both obsolete timeout-discarding
   surfaces in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+## Sprint 2.37: Non-Constructible Unacked-Suffix Retention and Failed-Checkpoint Recompaction [✅ Done]
+
+**Status**: Done (2026-07-30) — Phase `2` own-surface reopen (Standard A) on the emitter-runtime
+unbounded-memory class, exactly the reopen basis this phase already names (the July unbounded-memory
+counterexample reopens the owned runtime surface). Additive and byte-compatible; no durable-format
+change and no runtime selector.
+**Blocked by**: none (own-surface reopen; the code-owned surface is validated without a later phase or
+live infra).
+**Live-proof**: pending — a healthy live ≥2.4h `JournalLeaseEmitter` run holding a bounded resident set
+under a stalled-signer/unreachable-peer fault is the non-blocking Standard-O axis (the currently deployed
+`LegacyModelBEmitter` OOM is baseline residue scheduled for deletion, not extension — see below).
+**Deployment qualification**: pending — this hardens the cutover-target emitter against the
+retained-assertion leak class but does not by itself qualify the composed revision; the live leak-free
+aggregate remains the Standard-P axis.
+**Independent Validation**: pure kernel decide/evolve fixtures over an in-memory interpreter, with no
+cluster, Vault, object store, or later phase: an over-ceiling suffix is non-constructible
+(`appendUnacked` fails closed at the ceiling) and a `CheckpointFailed` outcome re-emits the exact pending
+compaction so a stalled signer cannot wedge the suffix. `prodbox dev check` exit 0 (warning-clean
+`-Werror`, fourmolu, HLint, conformance); Sprint 2.32 kernel/actor suite 121/121; Sprint 2.31 bounded
+gateway core 65/65.
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/resource_scaling_doctrine.md`
+
+### Objective
+
+Make the Sprint `2.32` `emitterUnacked` retention bound *structural* rather than checkpoint-fold-
+dependent, and close the stalled-signer liveness wedge at its root, so the single-writer
+`JournalLeaseEmitter` (the cutover target) cannot exhibit the unbounded retained-assertion growth that
+was reproduced live on 2026-07-29 as an `LegacyModelBEmitter` OOM cycle (gateway-node-b restarting on
+its ~460 MiB cgroup limit). Sprint `2.32` correction (3) declared this bound at the durable projection
+boundary (`ProjectionMaximumRetainedAssertions` in `validateDurableProjection`) and claimed it enforced
+by a "size-triggered checkpoint fold"; the live counterexample proved that claim insufficient because
+the fold's compaction depends on the signer succeeding and there was no hard ceiling on the live suffix.
+
+### Deliverables
+
+- `Gateway/Emitter/Kernel.hs` introduces `BoundedUnackedSuffix`: a hidden-constructor contiguous suffix
+  carrying its own hard ceiling, whose *only* growth operation `appendUnacked` fails closed at the
+  ceiling (`Left (UnackedSuffixFull n)`), so an over-retention state has no representation. The ceiling
+  is the emitter's already-existing `projectionMaximumRetainedAssertions` durable bound; the separate
+  `emitterUnackedThreshold` remains only the compaction trigger (threshold ≤ ceiling). The remaining
+  vocabulary is total and length-safe: `emptyUnackedSuffix`, `dropUnackedPrefix` (compaction),
+  `mapUnackedSuffix` (peer acknowledgement, length-preserving), `restoreUnackedSuffix` (re-check a
+  durable list against the ceiling), plus the `unackedSuffixList` / `unackedSuffixLength` /
+  `unackedSuffixMaximum` projections.
+- `finalize` grows the suffix through `appendUnacked` and, at the ceiling, refuses the commit with the
+  new `RejectUnackedSuffixFull` reason — the in-flight work stays represented for recovery rather than
+  the heap climbing indefinitely.
+- Root-cause liveness fix in `stepCheckpointResolved`: a `CheckpointFailed` outcome now re-emits the
+  exact `EffCheckpointCompaction incarnation deadline candidate` so the signer retries the pending
+  candidate instead of leaving it un-driven — the path by which the suffix previously grew without bound
+  behind a stalled signer. The pending candidate is deliberately kept so the identical checkpoint is
+  retried, and the retained suffix stays bounded regardless through the fail-closed ceiling.
+- `restoreDurableEmitterState` reconstructs the suffix through `restoreUnackedSuffix`, re-checking the
+  already-validated durable list against the ceiling (defense in depth) and mapping an over-ceiling list
+  to the pre-existing `DurableProjectionRetainedAssertionCountExceeded`. The durable projection field
+  `durableProjectionUnacked :: [UnackedAssertion]` is unchanged, so retained journals round-trip
+  byte-for-byte with no migration.
+- `Gateway/Daemon.hs` threads the emitter's `projectionMaximumRetainedAssertions` bound into every
+  `mkEmitterState*`/`restoreDurableEmitterState` call site; the `gateway-partition` native validation
+  path (`TestValidation.hs`) is updated for the same signatures.
+
+### Validation
+
+1. `appendUnacked` fails closed at the ceiling and no larger suffix is constructible (kernel fixture).
+2. A `CheckpointFailed` outcome re-emits the exact pending compaction and keeps the candidate; the
+   suffix cannot wedge (kernel fixture).
+3. Byte-compatibility: the durable projection format is unchanged; existing restore/migration/
+   acknowledgement/checkpoint fixtures pass unmodified through the suffix projections.
+4. `prodbox dev check` and the emitter suites pass (see Independent Validation).
+
+### Remaining Work
+
+- None on the code-owned kernel surface. The live long-run leak-free proof is the non-blocking
+  Standard-O axis; deployment qualification of the composed revision remains the Standard-P axis owned
+  by Sprint `8.12`. The production entrypoint stays `LegacyModelBEmitter` until qualification permits
+  cutover (Standard P); this sprint does not delete the legacy continuity path.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/distributed_gateway_architecture.md` - non-constructible retained-assertion
+  suffix and failed-checkpoint recompaction as emitter runtime invariants.
+- `documents/engineering/chaos_hardening_doctrine.md` - stalled-signer / unreachable-peer fault and the
+  bounded-retention proven property.
+- `documents/engineering/resource_scaling_doctrine.md` - the emitter retained-assertion ceiling as a
+  structural (non-authored) memory bound.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link the bounded-retention invariant to Sprint `2.32`'s emitter kernel and to the Deployment
+  Qualification ledger's outstanding live leak-free axis in [README.md](README.md).
+
 ## Related Documents
 
 - [README.md](README.md)

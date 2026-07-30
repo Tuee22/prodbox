@@ -257,11 +257,13 @@ import Prodbox.Test.GatewayRuntimeStability
   , GatewayStabilityState
   , beginPlannedGatewayRollout
   , gatewayRuntimeStabilityReport
+  , gatewayStabilityUnreachableIsTransient
   , initialGatewayStabilityState
   , mkGatewayStabilityPolicy
   , observeGatewayRuntimeFailure
   , observeGatewayRuntimePayloads
   , renderGatewayRuntimeStabilityReport
+  , stabilityStatePolicy
   )
 import Prodbox.TestPlan
   ( NativeValidation (..)
@@ -579,6 +581,18 @@ gatewayRuntimeKubectlRequestTimeout = "5s"
 gatewayRuntimeKubectlDeadlineMicroseconds :: Int
 gatewayRuntimeKubectlDeadlineMicroseconds = 15000000
 
+-- | Bounded budget for waiting until the gateway runtime is observable before a
+-- stability sample is recorded.  A freshly-(re)started gateway Pod reaches
+-- @Ready@ before metrics-server's first scrape, so its working-set is briefly
+-- unobservable; at ~2s per probe this covers the default 15s metric resolution
+-- with headroom.  A runtime that stays unobservable past this budget still falls
+-- through to the recorded sample and fails closed.
+gatewayRuntimeObservabilityMaximumAttempts :: Int
+gatewayRuntimeObservabilityMaximumAttempts = 30
+
+gatewayRuntimeObservabilityDelayMicroseconds :: Int
+gatewayRuntimeObservabilityDelayMicroseconds = 2000000
+
 newGatewayRuntimeStabilityRecorder
   :: FilePath -> IO (Either String GatewayRuntimeStabilityRecorder)
 newGatewayRuntimeStabilityRecorder repoRoot = do
@@ -787,19 +801,97 @@ recordGatewayRuntimeStabilitySample
   -> GatewayRuntimeStabilityRecorder
   -> IO ExitCode
 recordGatewayRuntimeStabilitySample substrate repoRoot recorder = do
+  policy <- stabilityStatePolicy <$> readMVar (gatewayRuntimeStabilityStateVar recorder)
   scopedResult <-
     withSubstrateKubeconfigResult
       repoRoot
       substrate
-      ( observeGatewayRuntimeStability
-          (GatewayRuntimeKubectlContext repoRoot Nothing)
-          recorder
+      ( do
+          let context = GatewayRuntimeKubectlContext repoRoot Nothing
+          awaitGatewayRuntimeObservable context policy
+          observeGatewayRuntimeStability context recorder
       )
   case scopedResult of
     Left err -> do
       report <- recordGatewayRuntimeFailure recorder GatewayPodsPayload err
       failWith (renderGatewayRuntimeStabilityReport report)
     Right report -> gatewayRuntimeSampleExit report
+
+-- | Wait for the gateway runtime to become observable before a stability sample
+-- is recorded.  A freshly-(re)started gateway Pod that reaches @Ready@ before
+-- metrics-server's first scrape reports a transient 'StabilityUnreachable' (for
+-- example 'GatewayMemoryReadingUnobservable') that
+-- 'recordGatewayRuntimeStabilitySample' would otherwise latch as fatal on the
+-- first fold, failing the restore-time gateway reconcile even though the Pod is
+-- healthy.  This read-only probe folds into a throwaway state (never the run
+-- recorder) and polls until the runtime is observable or the bounded budget is
+-- exhausted; a runtime that stays unobservable past the budget still falls
+-- through to the recorded sample and fails closed, and an unhealthy or
+-- over-threshold runtime is observable immediately and proceeds without delay.
+awaitGatewayRuntimeObservable
+  :: GatewayRuntimeKubectlContext -> GatewayStabilityPolicy -> IO ()
+awaitGatewayRuntimeObservable context policy =
+  go gatewayRuntimeObservabilityMaximumAttempts
+ where
+  go attemptsRemaining
+    | attemptsRemaining <= 1 = pure ()
+    | otherwise = do
+        scratch <- observeGatewayRuntimeScratch context policy
+        if scratchStillWarmingUp scratch
+          then do
+            threadDelay gatewayRuntimeObservabilityDelayMicroseconds
+            go (attemptsRemaining - 1)
+          else pure ()
+  scratchStillWarmingUp scratch =
+    case scratch of
+      Nothing -> True
+      Just (StabilityUnreachable reason) -> gatewayStabilityUnreachableIsTransient reason
+      Just _ -> False
+
+-- | One non-latching stability observation folded into a throwaway state, used
+-- only to decide whether the gateway runtime is observable yet.  'Nothing' means
+-- a kubectl read failed, which is treated as still-warming-up so the caller
+-- waits and retries.
+observeGatewayRuntimeScratch
+  :: GatewayRuntimeKubectlContext
+  -> GatewayStabilityPolicy
+  -> IO (Maybe GatewayRuntimeStabilityReport)
+observeGatewayRuntimeScratch context policy = do
+  podsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      ["get", "pods", "--namespace", gatewayValidationNamespace, "-o", "json"]
+  eventsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      [ "get"
+      , "events"
+      , "--namespace"
+      , gatewayValidationNamespace
+      , "--field-selector"
+      , "involvedObject.kind=Pod"
+      , "-o"
+      , "json"
+      ]
+  metricsResult <-
+    gatewayRuntimeKubectlJson
+      context
+      ["get", "--raw", "/apis/metrics.k8s.io/v1beta1/namespaces/gateway/pods"]
+  observedAt <- Text.pack . show <$> getPOSIXTime
+  pure $
+    case (podsResult, eventsResult, metricsResult) of
+      (Right pods, Right events, Right metrics) ->
+        Just
+          ( gatewayRuntimeStabilityReport
+              ( observeGatewayRuntimePayloads
+                  observedAt
+                  pods
+                  events
+                  metrics
+                  (initialGatewayStabilityState policy)
+              )
+          )
+      _ -> Nothing
 
 runGatewayRuntimeStabilityGate
   :: Substrate
@@ -2521,6 +2613,7 @@ gatewayPartitionEmitterReport = runExceptT $ do
     partitionEither
       "restart durable emitter restore"
       ( EmitterKernel.restoreDurableEmitterState
+          (EmitterKernel.projectionMaximumRetainedAssertions (partitionProjectionBounds model))
           (partitionMailbox model)
           restartDeadline
           restoredProjection
@@ -2617,11 +2710,12 @@ partitionDriveOfflineRepair
       partitionEither
         "pre-ack emitter restore"
         ( EmitterKernel.restoreDurableEmitterState
+            (EmitterKernel.projectionMaximumRetainedAssertions (partitionProjectionBounds model))
             (partitionMailbox model)
             partitionDeadline
             beforeAckProjection
         )
-    let retained = EmitterKernel.emitterUnacked beforeAckState
+    let retained = EmitterKernel.unackedSuffixList (EmitterKernel.emitterUnacked beforeAckState)
         retainedBytes =
           map
             (EmitterKernel.stagedRecordSignedBytes . EmitterKernel.unackedAssertionRecord)
@@ -2751,6 +2845,7 @@ partitionDriveOfflineRepair
       partitionEither
         "post-ack emitter restore"
         ( EmitterKernel.restoreDurableEmitterState
+            (EmitterKernel.projectionMaximumRetainedAssertions (partitionProjectionBounds model))
             (partitionMailbox model)
             partitionDeadline
             afterAckProjection
@@ -2767,7 +2862,7 @@ partitionDriveOfflineRepair
           ( Set.notMember (partitionPeerB model)
               . EmitterKernel.unackedAssertionWaitingPeers
           )
-          (EmitterKernel.emitterUnacked afterAckState)
+          (EmitterKernel.unackedSuffixList (EmitterKernel.emitterUnacked afterAckState))
       )
       "durable acknowledgement did not remove the offline peer from retained waiters"
     pure
@@ -2863,6 +2958,7 @@ partitionEmitterModel = do
           incarnation
           mailbox
           2
+          (EmitterKernel.projectionMaximumRetainedAssertions projectionBounds)
           [peerB, peerC]
       lookupKey candidate
         | candidate == nodeA = Just key

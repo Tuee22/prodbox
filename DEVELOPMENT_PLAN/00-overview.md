@@ -261,6 +261,17 @@ Build a clean-room Haskell `prodbox` repository with:
 > `5.16` has landed the external restart/OOM/high-water stability oracle. The longer live stress
 > proof remains a non-blocking Standard-O axis, not code-owned work.
 
+> **Emitter retention-leak correction (2026-07-30).** The 2026-07-29 live home deploy reproduced a
+> gateway OOM cycle (an `LegacyModelBEmitter` daemon restarting on its ~460 MiB cgroup limit) whose
+> mechanism — an unbounded retained-assertion (unacked-suffix) chain — also existed in the Sprint `2.32`
+> cutover-target `JournalLeaseEmitter` kernel behind a stalled checkpoint signer. Phase `2` reopened on
+> its own runtime surface (Standard A) and reclosed on Sprint `2.37`: the `emitterUnacked` bound moves to
+> the live growth point as a hidden-constructor `BoundedUnackedSuffix` (only a fail-closed `appendUnacked`
+> grows it), so over-retention is non-constructible, and a `CheckpointFailed` outcome re-emits its exact
+> compaction so a stalled signer cannot wedge the suffix. The durable projection format is unchanged
+> (byte-compatible). This is code-owned and validated (`dev check` 0); a live long-run leak-free proof of
+> the target emitter remains a non-blocking Standard-O axis and `Deployment qualification` stays pending.
+
 > **Retained-SES correction (2026-07-10).** Phases `4`/`5`/`8` reopened on Sprints
 > `4.47`/`5.17`/`8.10`: `LongLived` governs cleanup but does not excuse a selected suite from
 > ensuring desired presence. Sprints `4.47`/`5.17` have reclosed Phases `4`/`5` with the safe
@@ -475,7 +486,7 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
 | 3 | Chart Platform and Public Workload Delivery | ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
 | 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Sprint `4.50` Active; Foundation Epoch Sprint `4.51` and observed-host Sprint `4.52` are ✅ Done. `4.51` closes the durability-indexed host-direct retained adapter and generation-scoped SES operation crash/replay fold; live AWS response-loss remains Standard-O evidence. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
-| 5 | Canonical Test Suite | 🔄 Sprint `5.21` Active (recorder gate landed; live profile collection + first committed profile remain); Foundation Epoch Sprint `5.20` ✅ Done; `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, and temporal CPU/queue/deadline oracle. |
+| 5 | Canonical Test Suite | 🔄 Sprint `5.24` ✅ Done (restore-time gateway observability wait — the stability sample waits out a fresh-Pod metrics-scrape gap instead of latching it fatal; live-proven on a clean cold `test all` where `RestoreChartGateway -> succeeded` and unblocked the whole downstream restore graph, zero stability failures); Sprint `5.21` Active (recorder gate landed; live profile collection + first committed profile remain); Foundation Epoch Sprint `5.20` ✅ Done; `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, temporal CPU/queue/deadline oracle, and the restore-time gateway observability wait. |
 | 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
 | 7 | AWS Substrate Foundations | ⏸️ Sprint `7.33` blocked by `6.4`; Foundation Epoch Sprint `7.34` ✅ Done (harness postflight residue narrowed to per-run). | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ⏸️ `8.11`–`8.12` follow `7.33`. | SES workflow decision tables, provider/target fault injection, and current-revision invite aggregates. |

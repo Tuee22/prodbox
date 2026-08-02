@@ -67,6 +67,9 @@ spec:
               # single-writer journal actor owns it; the single-replica
               # StatefulSet guarantees no second writer overlaps this path.
               mountPath: /var/lib/prodbox/lifecycle-authority-journal
+            - name: target-controller-token
+              mountPath: /var/run/secrets/prodbox-target-controller
+              readOnly: true
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness | quote }}
@@ -91,6 +94,13 @@ spec:
         - name: config
           configMap:
             name: lifecycle-authority-config
+        - name: target-controller-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: prodbox-control-plane
+                  expirationSeconds: 600
   volumeClaimTemplates:
     - metadata:
         name: authority-journal

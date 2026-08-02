@@ -5,6 +5,7 @@ module LifecycleAuthorityConfig
   )
 where
 
+import Data.Text qualified as Text
 import Prodbox.Lifecycle.Authority.Config
 import TestSupport
 
@@ -52,6 +53,22 @@ lifecycleAuthorityConfigSuite =
     it "observes nothing before seed and the current generation after" $ do
       observeInForceConfig initialConfigState `shouldBe` Nothing
       observeInForceConfig seeded `shouldBe` Just inForce1
+
+    it "validates only positive generations/schema and lowercase ASCII SHA-256 identities" $ do
+      validateConfigState ConfigUnseeded `shouldBe` Right ()
+      validateConfigState (ConfigInForce validInForce) `shouldBe` Right ()
+      validateConfigState
+        (ConfigInForce validInForce {inForceGeneration = ConfigGeneration 0})
+        `shouldBe` Left ConfigGenerationZero
+      validateConfigState
+        (ConfigInForce validInForce {inForceSchema = ConfigSchemaVersion 0})
+        `shouldBe` Left ConfigSchemaVersionZero
+      validateConfigState
+        (ConfigInForce validInForce {inForceDigest = ConfigDigest (Text.replicate 64 "A")})
+        `shouldBe` Left ConfigDigestInvalid
+      validateConfigState
+        (ConfigInForce validInForce {inForceReference = ConfigReference (Text.replicate 64 "١")})
+        `shouldBe` Left ConfigReferenceInvalid
  where
   seed = ConfigProposal Nothing (ConfigSchemaVersion 1) (ConfigDigest "d1") (ConfigReference "r1")
   update =
@@ -79,3 +96,9 @@ lifecycleAuthorityConfigSuite =
       (ConfigDigest "d2")
       (ConfigReference "r2")
   seeded = snd (stepConfigPropose SchemaSupported initialConfigState seed)
+  validInForce =
+    InForceConfig
+      (ConfigGeneration 1)
+      (ConfigSchemaVersion 1)
+      (ConfigDigest (Text.replicate 64 "a"))
+      (ConfigReference (Text.replicate 64 "b"))

@@ -1,17 +1,7 @@
--- | Sprint 4.51 Increment B (Stage A): the ONE shared authority-object CAS core
--- that both the in-cluster gateway daemon and the host-direct CLI delegate to.
---
--- The read / compare-and-swap / lease-guard logic is expressed against an
--- injected 'AuthorityCore' seam whose three object operations are, on both
--- transports, partial applications of the SAME exported
--- @getLogicalVersioned@ / @putLogicalIfAbsent@ / @putLogicalIfVersion@ with each
--- transport's object-store config + DEK cipher + HMAC key + cluster id. Because
--- every logical name is routed through the shared 'authorityLogicalObject' inside
--- this module, and both transports feed the same encrypted-object primitives, the
--- envelopes the daemon and the host CLI read and write are byte-identical BY
--- CONSTRUCTION — the two paths cannot silently diverge into disjoint object sets.
--- This is the byte-compat safety of the retained-authority host-direct cutover:
--- there is no second hand-maintained copy to drift.
+-- | The one transport-neutral authority-object CAS core used by the in-cluster
+-- Lifecycle Authority repository. Read, compare-and-swap, and lease-guard
+-- logic are expressed against an injected 'AuthorityCore', while every logical
+-- name is routed through the shared 'authorityLogicalObject'.
 module Prodbox.Lifecycle.AuthorityObjectCore
   ( AuthorityCore (..)
   , readAuthorityObjectCore
@@ -25,7 +15,7 @@ import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Numeric.Natural (Natural)
-import Prodbox.Gateway.ObjectStore
+import Prodbox.ControlPlane.AuthorityObject
   ( AuthorityObjectCasRequest (..)
   , AuthorityObjectCasResponse (..)
   , AuthorityObjectLeaseGuard (..)
@@ -56,10 +46,9 @@ import Prodbox.Minio.EncryptedObject
   )
 import Prodbox.Minio.ObjectStore (ObjectVersion (ObjectVersion), objectVersionEtag)
 
--- | The injected authority-object I/O seam. Both the in-cluster daemon and the
--- host-direct CLI build this by partially applying the SAME exported
--- encrypted-object primitives with their object-store config + DEK cipher + HMAC
--- key + cluster id, so the envelopes they read and write are byte-identical.
+-- | The injected authority-object I/O seam. The in-cluster repository builds
+-- it by binding the exact object-store config, DEK cipher, HMAC key, and
+-- cluster identity to the shared encrypted-object primitives.
 data AuthorityCore m = AuthorityCore
   { authGetVersioned
       :: !(LogicalObject -> m (Either EncryptedObjectError (Maybe VersionedLogicalObject)))

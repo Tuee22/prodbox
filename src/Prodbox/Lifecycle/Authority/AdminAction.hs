@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.48: the retained Lifecycle Authority's disjoint admin-action permit
@@ -41,7 +44,9 @@ module Prodbox.Lifecycle.Authority.AdminAction
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
+import GHC.Generics (Generic)
 
 -- | The disjoint family of exceptional admin actions. The Admin Action Runner
 -- performs exactly one per receipt-committed permit. This family excludes normal
@@ -54,7 +59,8 @@ data AdminAction
     MigrateLegacyBackend
   | -- | Quota reconcile-and-status.
     ReconcileQuota
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The permit-selected runner role a permit authorizes. An 'AdminActionPermit'
 -- authorizes only the 'AdminActionRunner'; the Provider Worker and Credential
@@ -64,7 +70,8 @@ data RunnerRole
   | CredentialProvisioner
   | ProviderWorker
   | DecommissionRunner
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A signed one-time admin-action permit: the runner role it is issued for, its
 -- single bound action, and a nonce. (Signing-generation, coordinate, and expiry
@@ -75,14 +82,16 @@ data AdminActionPermit = AdminActionPermit
   , adminPermitAction :: !AdminAction
   , adminPermitNonce :: !Text
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Whether the permit is still within its validity window, as observed by the
 -- interpreter.
 data PermitFreshness
   = PermitFresh
   | PermitExpired
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The Admin Action Runner's one-time acceptance state for its instantiated
 -- action: awaiting its permit, or already consumed (carrying the consumed nonce
@@ -90,7 +99,8 @@ data PermitFreshness
 data AdminRunnerState
   = AdminAwaitingPermit
   | AdminPermitConsumed !Text
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 initialAdminRunnerState :: AdminRunnerState
 initialAdminRunnerState = AdminAwaitingPermit
@@ -104,7 +114,8 @@ data AdminPermitRefusal
     AdminPermitExpired
   | -- | A different nonce after a permit has already been consumed.
     AdminPermitNonceConflict
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data AdminPermitDecision
   = -- | Accept and consume the permit; run the bound action. Carries the nonce.
@@ -112,7 +123,8 @@ data AdminPermitDecision
   | -- | The exact permit was already consumed (idempotent replay); run nothing.
     AdminPermitAlreadyConsumed !Text
   | AdminPermitRefused !AdminPermitRefusal
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Decide whether the Admin Action Runner instantiated for @expectedAction@
 -- accepts @permit@ under @freshness@ and its current @state@. Audience and action

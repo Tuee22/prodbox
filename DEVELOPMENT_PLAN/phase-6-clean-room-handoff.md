@@ -15,11 +15,10 @@
 
 ## Phase Status
 
-⏸️ **Reopened and blocked by Sprint `5.19`.** Sprint `6.4` expands the clean-room handoff's
-own surface to cover the authority-epoch migration, restart-resume behavior, rollback refusal after
-cutover, complete home restoration, and zero surviving legacy gateway authority routes. The June
-26 run remains historical proof of the then-current topology; it is not current-revision
-qualification for the new process boundary.
+✅ **Reclosed 2026-08-02 on Sprint `6.4`.** The clean-room handoff covers authority-epoch
+migration, restart-resume behavior, rollback refusal after cutover, complete home restoration, and
+zero surviving legacy gateway authority routes. The June 26 run remains historical proof of its
+then-current topology; current-revision live qualification remains pending under Standards O/P.
 
 ✅ **Live-proven 2026-06-26 (home substrate) — the destructive rerun contract holds under the green
 `test all`.** The green home `prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md)
@@ -34,7 +33,7 @@ contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rules E and N, Phase 6
 retains those results independently of later phases. They do not prevent the phase from being
 reopened when Sprint `6.4` explicitly expands Phase 6's own authority-migration and clean-room
-surface; its current blocked status is caused only by the earlier Sprint `5.19` dependency.
+surface. Sprint `5.19` subsequently closed and Sprint `6.4` completed the expanded surface.
 
 **Independent Validation** (Standard N): Phase 6 is validatable on its owned surface — the
 destructive clean-room rerun contract, the zero-Python repository handoff, and the single-host
@@ -314,19 +313,24 @@ None.
   [development_plan_standards.md](development_plan_standards.md) Standards N (Phase Independence)
   and O (Code-Local vs Live-Infra Proof), rather than restating the doctrine here.
 
-## Sprint 6.4: Clean-Room Authority Migration and Rollback Proof [⏸️ Blocked]
+## Sprint 6.4: Clean-Room Authority Migration and Rollback Proof [✅ Done]
 
-**Status**: Blocked
+**Status**: Done (validated 2026-08-02). The versioned exact-prefix migration/restore/cleanup
+composition, post-cutover rollback refusal, installed-binary dry-run, and production legacy-residue
+scan are complete.
 **Deployment qualification**: pending
-**Implementation**: planned clean-room migration fixtures, installed-binary lifecycle traces,
-repository absence guards, and handoff evidence under `test/` and `src/Prodbox/TestRunner.hs`
-**Blocked by**: Sprint `5.19`
+**Implementation**: `Prodbox.Test.CleanRoomHandoff` owns the 18-boundary versioned action trace,
+exact-prefix resume/refusal fold, rollback disposition, retired path/fragment registry, and stable
+plan renderer. `clean-room-handoff` is a named canonical validation that scans production sources
+and renders the same plan through the built executable; unit fixtures cover every interruption
+prefix and negative residue/rollback cases.
 **Live-proof**: pending after code-local preparation; the current-revision home clean-room run is a
 deployment-qualification axis rather than phase-status evidence
-**Independent Validation**: versioned migration fixtures, dry-run plans, source/route absence
-checks, and fake installed-binary traces validate the handoff contract without AWS or a later
-phase.
-**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+**Independent Validation**: focused Sprint-`6.4` 8/8, installed-binary
+`test integration clean-room-handoff` exit 0, full unit `3028/3028`, generated CLI registries/docs,
+and `prodbox dev check` exit 0 on 2026-08-02. The destructive home aggregates remain separate
+deployment-qualification evidence under Standards O/P.
+**Docs updated**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/integration_fixture_doctrine.md`,
 `documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
 and `README.md`
@@ -370,9 +374,14 @@ transport before handoff.
 6. `prodbox config generate`, `config validate`, local suites, docs checks, and `prodbox dev check`
    pass.
 
-### Remaining Work
+### Closure Evidence
 
-- Blocked until Sprint `5.19` supplies the temporal qualification and cleanup recorder.
+- Every durable prefix resumes at the exact next boundary; skipped, reordered, and duplicated
+  boundaries refuse.
+- Pre-cutover interruption permits only legacy observation retry; activation changes rollback to a
+  pre-mutation refusal and the plan proceeds forward through restore and cleanup.
+- The installed command scans `app/`, `src/`, and `charts/` for retired transport paths/fragments and
+  emits the governed dry-run plan.
 - The real home clean-room run remains deployment qualification; Sprint `7.33` owns AWS parity.
 
 ## Documentation Requirements

@@ -346,6 +346,7 @@ resource cannot be added to the registry without this inventory updating in lock
 | `aws-eks-subzone` | PerRun |
 | `aws-test` | PerRun |
 | `pulsar-topics-per-run` | PerRun |
+| `legacy-harbor-helm-release` | PerRun |
 | `aws-ses` | LongLived |
 | `aws-ebs-volumes` | LongLived |
 | `public-edge-tls` | LongLived |
@@ -498,9 +499,10 @@ Access-key creation is journaled before AWS mutation. If the one-time secret res
 before Target-Agent sealing, the uncommitted key ID is discovered, deleted, and observed stably
 absent before remint; a blind second create is never a recovery action.
 
-The pre-cutover implementation has one operational `prodbox` IAM user and
-`secret/gateway/gateway/aws` generation. Sprint `4.50` removes that resource after every consumer is
-re-observed on the split generations; this is an identity split, not merely a coordinate rename.
+The transitional harness still has one operational `prodbox` IAM user, but its material is
+delivered only to the Lifecycle-provider target; the removed shared Vault coordinate has no
+supported consumer. Sprint `4.50` keeps the identity-split row open until every consumer is
+re-observed on its distinct generation; this is not merely a coordinate rename.
 
 These rows describe the **target** `Operational`-class registry. LongLived Authority-backup,
 TLS-retention, home Gateway-DNS, home-DNS01, and SES-SMTP rows above are deliberately excluded. The
@@ -545,6 +547,12 @@ and one-time/on-demand for the resources below.
 
 ## Per-Validation Substrate Coverage Notes
 
+Sprint `8.12` uses one non-partial typed invite artifact for both rows below. It requires the exact
+home command `prodbox test all` and AWS command `prodbox test all --substrate aws`, all eight invite
+assertions, all 23 mandatory faults, Authority epoch, exact backup restoration, cleanup-owner
+takeover, retained SES/EAB/TLS generations, and authoritative residue absence. Code-local fixtures
+remain `QualificationPendingLiveEvidence`; the live rows below remain pending under Standard P.
+
 The substrate `Suite parity` rows above track aggregate canonical-suite coverage per
 substrate. Individual validations whose AWS-substrate coverage is on a separate axis from
 their home-substrate suite-content closure are called out here, per the orthogonality rule
@@ -552,12 +560,12 @@ above and [development_plan_standards.md → N / O](development_plan_standards.m
 
 | Validation | Home-substrate suite-content closure (owned surface) | AWS-substrate coverage (owned surface) |
 |------------|------------------------------------------------------|----------------------------------------|
-| Exact operation-indexed capability binding | **Pending Sprints `1.61`, `4.50`, `5.18`.** Home preparation must observe, admit, and execute through the same retained-authority or home-target `CapabilityRef`; wrong service, scope, operation, endpoint, epoch/generation, or freshness fails before mutation. | **Pending Sprint `7.33`.** AWS must bind the retained home authority separately from the AWS Target Secret Agent and reject EKS Gateway/target-agent substitution or fallback to home target coordinates. |
-| Gateway journal and temporal resource isolation | **Sprint `2.32` code-local foundation Done; physical/live proof pending Sprints `3.26` and `5.19`.** The bounded actor, encrypted journal, journal-first admission, current Lease/incarnation fence, exact recovery, and typed substrate persistence coordinates are locally validated. The remaining home axis renders the physical workload/storage boundary and proves its CPU/queue/deadline SLOs under background Lifecycle Authority load, saturation, and restart. | **Pending Sprints `3.26` and `7.33`.** The shared code-local actor/journal foundation is Done; the AWS proof consumes retained EBS journals and independently resourced EKS broker/agent/gateway workloads, and proves EKS replacement refreshes clients without losing emitter identity or consuming authority admission. |
-| Durable Lifecycle Authority crash/response-loss recovery | **Pending Sprints `4.48`, `4.50`, `5.19`.** Restart before/after every journal/CAS boundary, lost applied responses, cancellation, stale fences, and operation-ID replay converge under one authority epoch. | **Pending Sprint `7.33`.** The identical retained authority remains queryable while EKS gateway/target transports fail; no AWS target component becomes a second writer. |
-| Target Secret Agent outage and resume | **Pending Sprints `4.49`, `5.19`.** Home outbox delivery is at least once, generation/opaque-commitment checked, read back, and resumed after agent/Vault outage without gateway participation. | **Pending Sprint `7.33`.** AWS target delivery uses only the AWS agent's allowlisted Vault coordinate and resumes after Pod/EKS replacement; home target evidence cannot satisfy it. |
-| Always-run cleanup and residue re-observation | **Pending Sprints `5.18`, `6.4`.** Failure/cancellation at every mutation runs all dependency-ready cleanup, restores the canonical home control plane/charts, retains the primary failure, aggregates cleanup failures, and re-observes each resource class. | **Pending Sprint `7.33`.** The same DAG additionally proves per-run stacks/test EBS absent, retained authority quiescent, and operational IAM cleared only after credential-dependent cleanup. |
-| Durable `keycloak-invite` workflow | **Pending Sprints `8.11`, `8.12`.** Revision-bound SES semantics, narrow provider mutation fence, committed credential generation, home target outbox/read-back, invite capture/link/OIDC, and cleanup must pass the full fault campaign. | **Pending Sprints `7.33`, `8.11`, `8.12`.** The same workflow targets the AWS agent and AWS-owned DNS/TLS/ingress with exact cross-substrate authority/target binding and complete cleanup. |
+| Exact operation-indexed capability binding | **Code-local foundation Done.** Home preparation observes, admits, and executes through the same retained-authority or home-target `CapabilityRef`; wrong service, scope, operation, endpoint, epoch/generation, or freshness fails before mutation. | **Sprint `7.33` code-local Done; live proof pending.** AWS binds the retained home Authority separately from the AWS Target Secret Agent and rejects EKS Gateway/target-agent substitution or fallback to home target coordinates. |
+| Gateway journal and temporal resource isolation | **Code-local foundation Done; physical/live proof pending.** The bounded actor, encrypted journal, journal-first admission, current Lease/incarnation fence, exact recovery, and typed substrate persistence coordinates are locally validated. | **Sprint `7.33` code-local Done; live proof pending.** Independently resourced EKS broker/agent/gateway roles and the EKS-replacement disposition are modeled without granting Gateway authority admission. |
+| Durable Lifecycle Authority crash/response-loss recovery | **Code-local foundation Done; live proof pending.** Restart, response loss, cancellation, stale fences, and operation replay converge under one authority epoch. | **Sprint `7.33` code-local Done; live proof pending.** The retained-home Authority has a distinct transport and no AWS target component can become a second writer. |
+| Target Secret Agent outage and resume | **Code-local foundation Done; live proof pending.** Home outbox delivery is generation/opaque-commitment checked and resumes without Gateway participation. | **Sprint `7.33` code-local Done; live proof pending.** AWS target delivery uses the AWS Agent's distinct transport and fault dispositions cover Pod/EKS replacement. |
+| Always-run cleanup and residue re-observation | **Code-local Done; destructive live proof pending.** Failure/cancellation runs dependency-ready cleanup, retains the primary failure, aggregates cleanup failures, and re-observes resource classes. | **Sprint `7.33` code-local Done; live proof pending.** AWS cleanup dispositions cover per-run residue while retaining the Authority and long-lived resources. |
+| Durable `keycloak-invite` workflow | **Sprints `8.11`/`8.12` code-local Done; live proof pending.** Revision-bound SES semantics, narrow provider mutation fence, committed credential generation, home target outbox/read-back, and the eight-assertion/23-fault invite artifact are locally validated. | **Sprints `7.33`/`8.11`/`8.12` code-local Done; live proof pending.** The workflow has exact cross-substrate Authority/Target binding, registered AWS DNS intent, SES specialization, and the same non-partial qualification schema; the live aggregate/fault record remains pending. |
 | Historical gateway runtime stability (bounded-memory/restart/OOM/high-water proof) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.16` — Done for the prior topology: `gateway-pods` folds run-wide absorbing unhealthy evidence plus a separately restartable three-sample healthy window. It did not cover CPU throttling, queue wait, deadline misses, or separated authority services. | The historical typed validation targeted EKS. Its live soak remains evidence for that revision only and cannot satisfy Standard P for the target topology. |
 | Historical `keycloak-invite` retained-SES preparation and semantic readiness | Sprint `5.17` remains Done over Sprint `4.47` for the gateway-backed bracket, and Sprint `8.10` remains Done for exact semantic classification. These are preserved inputs to, not qualification of, the durable workflow. | Historical cross-substrate authority/target types and semantic checks remain evidence for their revision. Sprints `7.33`/`8.11`/`8.12` replace the transport, workflow, and qualification boundary. |
 | Sealed-Vault validation (the fail-closed sealed/unreachable/uninitialized-Vault proof) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.8` — Done on its code-owned surface once the validation exists and passes on the home substrate (`prodbox dev check`, `test unit`, `test integration cli/env`); phase-5 closure depends on this axis only | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) provisioning — the AWS-substrate run of the same validation is a parity-coverage row owned by phase 7. **`Live-proof: pending`** while it needs a deployed EKS cluster + an unsealed in-cluster Vault; non-blocking per Standard O, and never marks Sprint `5.8` or phase 5 ⏸️ Blocked |

@@ -98,7 +98,8 @@ data RetainedTlsRef = RetainedTlsRef
 data TlsRetentionState
   = TlsRetentionEmpty
   | TlsRetentionCurrent !RetainedTlsRef
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 initialTlsRetentionState :: TlsRetentionState
 initialTlsRetentionState = TlsRetentionEmpty

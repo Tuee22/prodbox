@@ -61,6 +61,9 @@ resourceLifecycleClasses =
     -- lifecycle class registered without pretending every topic is a
     -- Pulumi stack.
     ("pulsar-topics-per-run", PerRun)
+  , -- Superseded Harbor Helm release. It has no desired-present path; cluster
+    -- reconcile observes and proves its absence before applying registry:2.
+    ("legacy-harbor-helm-release", PerRun)
   , ("aws-ses", LongLived)
   , -- Sprint 4.39: pre-created EBS volumes that back EKS static
     -- @Retain@ PersistentVolumes. Production-retained volumes carry

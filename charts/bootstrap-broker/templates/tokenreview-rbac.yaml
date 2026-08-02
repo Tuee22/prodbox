@@ -1,0 +1,131 @@
+{{- /*
+The long-lived Broker authenticates every non-probe request with Kubernetes
+TokenReview. TokenReview is cluster-scoped, so this is the only cluster-wide
+permission held by the controller ServiceAccount. The namespaced Role permits
+the reviewed fixed-name Pod create/observe/UID-preconditioned-delete protocol
+and fixed Lease observation. Secret ingress is host-authenticated attach and
+is deliberately not granted to the controller.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-bootstrap-broker-tokenreview
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-bootstrap-broker-tokenreview
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-bootstrap-broker-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.global.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootstrap-broker-worker-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+rules:
+  # Kubernetes RBAC cannot apply resourceNames to create; the controller's
+  # closed native manifest builder is therefore the name/program restriction.
+  # This Role remains confined to the Broker namespace.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - create
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    resourceNames:
+      - bootstrap-secret-worker
+    verbs:
+      - get
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - bootstrap-broker-fence
+    verbs:
+      - get
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootstrap-broker-worker-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bootstrap-broker-worker-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.global.namespace }}
+---
+# The worker may read only its own fixed Pod projection to reconstruct and
+# validate the exact stdin-frame binding. It cannot create/delete Pods,
+# attach/exec, issue TokenReviews, or read Kubernetes Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootstrap-secret-worker-self-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    resourceNames:
+      - bootstrap-secret-worker
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootstrap-secret-worker-self-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bootstrap-secret-worker-self-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.workerName }}
+    namespace: {{ .Values.global.namespace }}

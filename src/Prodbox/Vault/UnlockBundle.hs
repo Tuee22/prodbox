@@ -4,9 +4,10 @@
 -- | Sprint 1.36: the host-side encrypted Vault unlock bundle.
 --
 -- The unlock bundle is the single host-side artifact that lets a
--- torn-down-and-recreated cluster recover its Vault: it holds Vault's
--- unseal/recovery keys plus the initial root token, encrypted under an
--- operator-supplied password. Per
+-- torn-down-and-recreated cluster recover its Vault: it holds only Vault's
+-- unseal/recovery keys, encrypted under an operator-supplied password. The
+-- initial root token is encrypted to the compiled burn recipient and is never
+-- retained or usable by prodbox. Per
 -- @documents\/engineering\/vault_doctrine.md@ §6 the bundle uses a real
 -- password-based KDF (Argon2id) feeding an authenticated cipher
 -- (ChaCha20-Poly1305) — never a bare hash. The operator password is the
@@ -44,6 +45,8 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteArray qualified as ByteArray
 import Data.ByteString (ByteString)
@@ -64,7 +67,6 @@ data UnlockBundle = UnlockBundle
   , unlockBundleCreatedAt :: Text
   , unlockBundleUnsealKeys :: [Text]
   , unlockBundleRecoveryKeys :: [Text]
-  , unlockBundleInitialRootToken :: Text
   , unlockBundleFormatVersion :: Int
   }
   deriving (Eq, Show)
@@ -77,20 +79,32 @@ instance ToJSON UnlockBundle where
       , "created_at" .= unlockBundleCreatedAt bundle
       , "unseal_keys" .= unlockBundleUnsealKeys bundle
       , "recovery_keys" .= unlockBundleRecoveryKeys bundle
-      , "initial_root_token" .= unlockBundleInitialRootToken bundle
       , "format_version" .= unlockBundleFormatVersion bundle
       ]
 
 instance FromJSON UnlockBundle where
   parseJSON =
-    withObject "UnlockBundle" $ \o ->
+    withObject "UnlockBundle" $ \o -> do
+      let expectedFields =
+            fmap
+              AesonKey.fromText
+              [ "cluster_id"
+              , "vault_address_hint"
+              , "created_at"
+              , "unseal_keys"
+              , "recovery_keys"
+              , "format_version"
+              ]
+          unexpected = filter (`notElem` expectedFields) (AesonKeyMap.keys o)
+      case unexpected of
+        [] -> pure ()
+        _ -> fail "unlock bundle contains a forbidden or unsupported field"
       UnlockBundle
         <$> o .: "cluster_id"
         <*> o .: "vault_address_hint"
         <*> o .: "created_at"
         <*> o .: "unseal_keys"
         <*> o .: "recovery_keys"
-        <*> o .: "initial_root_token"
         <*> o .: "format_version"
 
 -- | Failures that can occur encrypting or decrypting the bundle. None

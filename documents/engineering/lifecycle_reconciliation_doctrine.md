@@ -56,7 +56,7 @@ exactly one of these classes. Cleanup ownership is defined per class.
 | 5. Registered public Route 53 records | `LongLived` home public A record and run-scoped AWS-substrate public A record | Typed managed resource keyed by account/zone/name/type/ownership epoch with observe/ensure/delete/read-back | Exact coordinate; no content guess or tag substitute | Home A record: elected Gateway DNS capability, retained during ordinary postflight. AWS A record: Lifecycle Authority provider intent, destroyed/read-back with EKS. The former direct `aws route53` call sites are pending removal. |
 | 6. Operational IAM identities and access keys | Lifecycle-provider and run-scoped AWS cert-manager-DNS01 users/roles/keys; SMTP IAM identity/path/policy/access key | Typed identity/key resources plus authority operation, committed credential generation, retained-home custody receipt where required, Target-Agent version, and Vault tombstone | Exact account/ARN/key ID/role/generation; never a shared-key guess | Credential Provisioner owns create/rotate/remint and repair-time deletion. Delete only after every exact consumer is quiescent and absent, then read back IAM absence before target/custody tombstones. `DestroyAwsSes` alone gives Admin Action Runner terminal delete/read-back authority for the registered SMTP family. Applied-but-response-lost key creation uses finite-inventory delete/remint recovery. |
 | 7. TLS retention store | Retained public-edge certificate ciphertext objects, independently scoped IAM identity/key, and `secret/aws/tls-retention-store` generation | Registered `LongLived` resource plus exact `public-edge-tls/<substrate>/<canonical-scope-key>` object bytes/digest/version and Authority outbox receipt | Exact account/region/bucket/prefix/identity/key/generation/object-version evidence | Retained across ordinary postflight and `aws teardown`; TLS Retention Adapter alone accesses ciphertext. Explicit consumer decommission/nuke tombstones the generation while home Agent/Vault remain live and deletes all TLS prefix versions plus IAM identity, but never the shared bucket; the final Authority-backup node owns bucket deletion. |
-| 8. Authority backup store | Long-lived backup bucket/prefix, independently scoped IAM identity/key, `secret/aws/authority-backup-store` generation, transition receipts, and replicated immutable blobs | Registered `LongLived` resources plus `BackupEstablished` generation/read-back in the Authority aggregate | Exact account/region/bucket/prefix/identity/key/generation and backup receipt; never Lifecycle-provider identity or a tag guess | Retained across suite cleanup and `aws teardown`; rotation preserves a continuously readable generation; only `nuke` may delete it, after Authority freeze plus complete backup-object/IAM/Vault absence read-back |
+| 8. Authority backup store | Long-lived backup bucket/prefix, independently scoped IAM identity/key, `secret/aws/authority-backup-store` generation, transition receipts, and replicated immutable blobs | Registered `LongLived` resources plus the Authority aggregate's open epoch, exact Target generation receipt, and exact Adapter backup receipt | Exact account/region/bucket/prefix/identity/key/generation and backup receipt; never Lifecycle-provider identity or a tag guess | Retained across suite cleanup and `aws teardown`; rotation preserves a continuously readable generation; only `nuke` may delete it, after Authority freeze plus complete backup-object/IAM/Vault absence read-back |
 | 9. Retained home consumer identities | Home Gateway-DNS and home cert-manager-DNS01 IAM identities/keys plus exact Vault generations | Registered `LongLived` identity/key/generation resources bound to restored home Gateway/cert-manager consumers | Exact account/ARN/key ID/role/generation and consumer identity | Ordinary postflight restores/observes and retains them. Explicit consumer decommission/nuke removes owned record/Certificate/Challenge/TXT effects first, then tombstones generations through the still-live home Agent; no ordinary IAM harness teardown may strand them. |
 
 Typed family/record cleanup, K8s drain, authoritative absence read-back, and the scoped postflight
@@ -314,10 +314,22 @@ Runner, and `nuke` uses only its post-export Decommission Runner.
 **Legacy checkpoint migration.** First-touch migration is owned by
 `Prodbox.Pulumi.EncryptedBackend`, but its admin-authenticated interpreter runs only in the
 one-shot Admin Action Runner under a backup-receipted `MigrateLegacyBackend` permit. When the
-encrypted `LogicalPulumiStack <stack-id>` object is absent, that Job may log into the exact configured
-legacy backend, export the old checkpoint into bounded scratch, hydrate the normal encrypted path,
-and remove the legacy stack only after encrypted store/read-back and registered source deletion
-succeed. Stable operation ID/inventory resumes response loss; no host-direct login fallback exists.
+encrypted `LogicalPulumiStack <stack-id>` object is absent, that Job may log into only the permit's
+exact `legacy-pulumi/aws-ses` source and export its raw checkpoint into bounded scratch. The Runner
+does not open an Authority object store. It sends the permit and source bytes through the
+runner-only authenticated Authority execution route; Authority first CAS-persists the prepared
+migration, canonicalizes the checkpoint in RAM scratch, submits the registered `aws-ses` checkpoint
+operation, and confirms both primary and backup read-back before returning the destination
+reference. Only then may the Runner delete the legacy stack and submit exact source-absence
+evidence, which Authority CAS-commits as completion. Stable operation ID and permit-bound source
+digest resume response loss; no host-direct login or object-store fallback exists.
+
+**Quota request journal.** `RequestServiceQuotaIncrease` has no provider client token. Authority
+therefore CAS-persists the exact service/quota/region/desired-value attempt and absolute time window
+before the Runner may dispatch it. Recovery reads current quota plus the complete paginated request
+history. An exact tuple inside that attempt window completes the journal; otherwise two consecutive
+authoritative absence scans are required before the sole retry is armed. A second attempt is the
+maximum, and another stable absence refuses rather than widening or looping the request.
 
 The operator command `prodbox aws stack aws-ses migrate-backend` is kept as a TTY-only
 compatibility entrypoint while old `aws-ses` checkpoints may still exist. It now opens the same
@@ -1488,3 +1500,16 @@ section records only how the lifecycle commands integrate it. See
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
 - [the engineering doctrine docs](../../documents/engineering/README.md)
 - [../../CLAUDE.md](../../CLAUDE.md)
+## SES Aggregate Reconciliation
+
+SES reconciliation is a durable staged aggregate rather than one synchronous lease-held request.
+It commits the desired contract and provider revision, converges the non-credential Provider
+inventory, releases the narrow mutation fence, awaits the exact semantic revision, reconciles a
+Credential-Provisioner SMTP generation, and drains one durable delivery per selected target.
+Restart resumes the first incomplete committed stage. A newer generation refuses while any target
+still records an older or absent receipt.
+
+Legacy credential ownership moves only through `LegacyPulumiWriter`,
+`CredentialMigrationFrozen`, and `ProvisionerWriter`. Adoption requires exact checkpoint/IAM/key
+evidence, checkpoint release, retained-home custody, and read-back from every current target. There
+is never a state with two IAM writers; rollback is a forward migration to a greater epoch.

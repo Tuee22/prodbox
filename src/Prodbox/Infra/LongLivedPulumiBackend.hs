@@ -21,6 +21,7 @@ module Prodbox.Infra.LongLivedPulumiBackend
   , longLivedPulumiBackendUrlEither
   , ensureLongLivedPulumiStateBucket
   , destroyLongLivedPulumiStateBucket
+  , purgeRemainingVersions
   , renderDeletePayload
   , withLongLivedPulumiBackendEnv
 

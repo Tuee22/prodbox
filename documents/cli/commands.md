@@ -16,6 +16,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 <!-- prodbox:command-registry.markdown:start -->
 | Command | Summary |
 |---------|---------|
+| `prodbox admin-action run` | Run one signed Admin Action |
 | `prodbox aws policy` | Render IAM policy JSON |
 | `prodbox aws setup` | Create or refresh operational IAM user |
 | `prodbox aws teardown` | Delete operational IAM user |
@@ -35,6 +36,9 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox aws stack aws-ses destroy` | Destroy the aws-ses stack |
 | `prodbox aws stack aws-ses migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
 | `prodbox bootstrap-broker start` | Start the Bootstrap Broker |
+| `prodbox bootstrap-broker secret-worker` | Run one attested Bootstrap secret worker |
+| `prodbox credential-provisioner run` | Run one closed Credential Provisioner worker |
+| `prodbox credential-provisioner target-worker` | Run one Target materializer worker |
 | `prodbox lifecycle-authority start` | Start lifecycle-authority |
 | `prodbox provider-worker start` | Start provider-worker |
 | `prodbox authority-backup start` | Start authority-backup |
@@ -98,6 +102,9 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration gateway-daemon` | Run gateway-daemon integration tests |
 | `prodbox test integration gateway-pods` | Run gateway pod integration tests |
 | `prodbox test integration gateway-partition` | Run gateway partition integration tests |
+| `prodbox test integration control-plane-counterexample` | Run the frozen control-plane counterexample |
+| `prodbox test integration certificate-scope` | Verify live TLS serving and the exact presented SAN scope |
+| `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |
 | `prodbox test integration ha-rke2-aws` | Run HA RKE2 AWS integration tests |
 | `prodbox test integration lifecycle` | Run lifecycle integration tests |
 | `prodbox test integration pulumi` | Run Pulumi integration tests |

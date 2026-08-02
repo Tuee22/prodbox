@@ -56,21 +56,52 @@ spec:
               # broker's file-watch reload loop.
               mountPath: /etc/bootstrap-broker/config
               readOnly: true
+          # The compiled listener is loopback-only. Probe from inside the
+          # container so kubelet never targets the unroutable Pod IP.
+          # Store initialization may need to wait for the freshly reconciled
+          # MinIO endpoint. Keep liveness dormant until the broker has opened
+          # its listener; readiness still remains closed until dependencies
+          # and the complete capability registry are healthy.
+          startupProbe:
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "1"
+                - http://127.0.0.1:{{ .Values.listener.port }}{{ .Values.probes.liveness }}
+            initialDelaySeconds: {{ .Values.probeTiming.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probeTiming.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probeTiming.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probeTiming.startup.failureThreshold }}
+            successThreshold: {{ .Values.probeTiming.startup.successThreshold }}
           livenessProbe:
-            httpGet:
-              path: {{ .Values.probes.liveness | quote }}
-              port: broker
-              scheme: HTTP
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "1"
+                - http://127.0.0.1:{{ .Values.listener.port }}{{ .Values.probes.liveness }}
             initialDelaySeconds: {{ .Values.probeTiming.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probeTiming.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probeTiming.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probeTiming.liveness.failureThreshold }}
             successThreshold: {{ .Values.probeTiming.liveness.successThreshold }}
           readinessProbe:
-            httpGet:
-              path: {{ .Values.probes.readiness | quote }}
-              port: broker
-              scheme: HTTP
+            exec:
+              command:
+                - /usr/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "1"
+                - http://127.0.0.1:{{ .Values.listener.port }}{{ .Values.probes.readiness }}
             initialDelaySeconds: {{ .Values.probeTiming.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probeTiming.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probeTiming.readiness.timeoutSeconds }}

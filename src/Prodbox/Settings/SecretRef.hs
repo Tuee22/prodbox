@@ -237,7 +237,7 @@ resolveSecretRefFromVault mode address token =
       -- whose field is absent (below). Collapse both to
       -- 'SecretRefVaultFieldMissing' so an OPTIONAL consumer (e.g. the gateway
       -- daemon's aws_creds on the home substrate, before the harness
-      -- materializes secret/gateway/gateway/aws) can treat "secret absent"
+      -- materializes secret/aws/lifecycle-provider) can treat "secret absent"
       -- uniformly; a genuine transport / non-404 HTTP error stays a loud
       -- 'SecretRefVaultReadFailed'.
       Left (HttpStatus 404 _) -> Left SecretRefVaultFieldMissing

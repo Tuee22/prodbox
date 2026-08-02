@@ -4,8 +4,8 @@ adapter actually needs — DNS, the Vault API (least-privilege Kubernetes-auth
 login + reading ONLY `secret/aws/authority-backup-store`), and external HTTPS to
 AWS S3 (backing up authority envelope/blob state to its S3 prefix). The adapter
 has NO mesh, target-secret, generic-KV, Pulumi, or SES egress. Ingress is
-restricted to its own namespace; kubelet liveness/readiness probes are node-local
-and unaffected.
+restricted to its own namespace plus the exact Lifecycle Authority workload;
+kubelet liveness/readiness probes are node-local and unaffected.
 */ -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -27,6 +27,16 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+      ports:
+        - protocol: TCP
+          port: authority
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lifecycle-authority
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-lifecycle-authority
       ports:
         - protocol: TCP
           port: authority

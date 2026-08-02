@@ -147,7 +147,7 @@ decideBackupRepair :: AuthorityAdmissionState -> BackupRepairCommand -> BackupRe
 decideBackupRepair state command = case state of
   GenesisFrozen -> BackupRepairRefused BackupRepairBeforeGenesis
   EstablishingBackup _ -> BackupRepairRefused BackupRepairBeforeGenesis
-  BackupEstablished epoch -> case command of
+  BackupEstablished epoch _ _ -> case command of
     AssessBackupHealth BackupHealthy -> BackupRepairNotNeeded
     AssessBackupHealth _ -> BackupRepairFroze (BackupRepairAdmissionFrozen epoch)
     BeginBackupRepair _ -> BackupRepairRefused BackupRepairNotFrozen
@@ -206,7 +206,9 @@ backupRepairComplete progress =
 evolveBackupRepair :: AuthorityAdmissionState -> BackupRepairEvent -> AuthorityAdmissionState
 evolveBackupRepair state event = case event of
   BackupRepairAdmissionFrozen epoch -> case state of
-    BackupEstablished e | e == epoch -> BackupRepairFrozen epoch initialBackupRepairProgress
+    BackupEstablished e generation receipt
+      | e == epoch ->
+          BackupRepairFrozen epoch (initialBackupRepairProgress generation receipt)
     _ -> state
   BackupRepairPermitRecorded permit -> case state of
     BackupRepairFrozen epoch progress -> case backupRepairPermit progress of
@@ -222,7 +224,11 @@ evolveBackupRepair state event = case event of
       BackupRepairFrozen epoch progress {backupRepairNewReceipt = Just receipt}
     _ -> state
   BackupRepairAdmissionReopened reopened -> case state of
-    BackupRepairFrozen _ _ -> BackupEstablished reopened
+    BackupRepairFrozen _ progress ->
+      BackupEstablished
+        reopened
+        (maybe (backupRepairPreviousGeneration progress) id (backupRepairGeneration progress))
+        (maybe (backupRepairPreviousReceipt progress) id (backupRepairNewReceipt progress))
     _ -> state
 
 -- | The authoritative event(s) a decision commits, in order (empty for refusals,

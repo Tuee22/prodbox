@@ -28,20 +28,23 @@
 module Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
+  , queryPerRunResidueStatusesWithAuthentication
   , queryAwsSesResidueStatus
+  , queryAwsSesResidueStatusWithAuthentication
   , queryPublicEdgeTlsResidueStatus
   , destroyRetainedPublicEdgeTls
   , fetchPerRunStackOutputs
+  , fetchPerRunStackOutputsWithAuthentication
   , fetchAwsSesStackOutputs
+  , fetchAwsSesStackOutputsWithAuthentication
 
     -- * Sprint 7.22: per-run destroy-invocation gate + corrupt-checkpoint prune
   , PerRunDestroyDecision (..)
   , perRunDestroyDecisionFromStatus
   , pruneCorruptPerRunCheckpoint
+  , pruneCorruptPerRunCheckpointWithAuthentication
 
     -- * Pure helpers (exported for tests)
-  , isRetryableReadFailure
-  , mergeSharedObservation
   , residueReasonFromMinioError
   , residueReasonFromS3Error
   , residueStatusFromListing
@@ -71,6 +74,12 @@ import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthentication
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  )
 import Prodbox.Infra.LongLivedPulumiBackend
   ( listLongLivedObjectKeysUnderPrefix
   , loadAdminAwsCredentials
@@ -82,9 +91,9 @@ import Prodbox.Infra.StackOutputs
   ( StackListEntry
   , StackName (..)
   , StackOutputsError (..)
-  , fetchEncryptedOutputs
-  , listEncryptedStack
-  , observeEncryptedStackCheckpoint
+  , fetchEncryptedOutputsWithAuthentication
+  , listEncryptedStackWithAuthentication
+  , observeEncryptedStackCheckpointWithAuthentication
   , parseOutputsPayload
   , renderStackOutputsError
   , stackPresentInList
@@ -98,14 +107,8 @@ import Prodbox.Lifecycle.ResidueStatus
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability (..)
   , PulumiStackRef (..)
-  , classifyCheckpointBytes
   , pruneLogicalPulumiStack
   , renderEncryptedBackendError
-  )
-import Prodbox.Pulumi.HostDirectObjectStore
-  ( hostDirectGetPulumiObject
-  , resolveHostDirectPulumiMaterial
-  , withHostDirectPulumiPortForward
   )
 import Prodbox.Settings
   ( Credentials (..)
@@ -157,13 +160,9 @@ awsTestStackName = "aws-test"
 awsSesStackName = "aws-ses"
 
 -- | The three per-run AWS-substrate Pulumi stacks (per
--- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@).
--- The fields are populated by 'observePerRunWithSharedFallback': each stack is
--- observed through the in-cluster gateway daemon object-store API first, and if
--- the daemon is degraded ('daemonMinioCreds == Nothing' / a @503@, or a
--- mid-redeploy) the stacks whose daemon read failed are re-observed
--- host-directly under ONE shared MinIO port-forward. A stack that neither path
--- can read carries 'ResidueUnreachable' with the combined daemon+host detail.
+-- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@). Every live
+-- observation is made through the caller-bound Lifecycle Authority checkpoint
+-- client; there is no raw object-store or unauthenticated fallback transport.
 data PerRunResidueStatuses = PerRunResidueStatuses
   { perRunAwsEksTest :: !ResidueStatus
   , perRunAwsEksSubzone :: !ResidueStatus
@@ -177,18 +176,47 @@ data PerRunResidueStatuses = PerRunResidueStatuses
 -- Pulumi/S3 semantics.
 queryPerRunResidueStatuses :: FilePath -> IO PerRunResidueStatuses
 queryPerRunResidueStatuses repoRoot = do
+  bypass <- perRunResidueBypass
+  case bypass of
+    Just statuses -> pure statuses
+    Nothing -> do
+      authenticated <-
+        withHostLifecycleAuthorityAuthentication
+          LifecycleAuthorityOperator
+          repoRoot
+          (\authentication -> queryPerRunResidueStatusesWithAuthentication authentication repoRoot)
+      pure $ case authenticated of
+        Left err ->
+          perRunAuthenticationFailedTriple
+            (renderLifecycleAuthorityAuthenticationError err)
+        Right statuses -> statuses
+
+queryPerRunResidueStatusesWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO PerRunResidueStatuses
+queryPerRunResidueStatusesWithAuthentication authentication repoRoot = do
+  bypass <- perRunResidueBypass
+  case bypass of
+    Just statuses -> pure statuses
+    Nothing -> do
+      gate <- queryResidueVaultGate
+      if vaultGateAllows gate
+        then queryPerRunLive authentication repoRoot
+        else pure (perRunVaultGatedTriple gate)
+
+perRunResidueBypass :: IO (Maybe PerRunResidueStatuses)
+perRunResidueBypass = do
   absentBypass <- isTestResidueAbsentSet
   unreachableBypass <- isTestResidueUnreachableSet
-  if absentBypass
-    then pure perRunAbsentTriple
-    else
-      if unreachableBypass
-        then pure perRunUnreachableTriple
-        else do
-          gate <- queryResidueVaultGate
-          if vaultGateAllows gate
-            then queryPerRunLive repoRoot
-            else pure (perRunVaultGatedTriple gate)
+  pure
+    ( if absentBypass
+        then Just perRunAbsentTriple
+        else
+          if unreachableBypass
+            then Just perRunUnreachableTriple
+            else Nothing
+    )
 
 -- | All three per-run stacks reported unreachable. Used for the
 -- 'PRODBOX_TEST_RESIDUE_UNREACHABLE' bypass so the integration suite can
@@ -196,6 +224,11 @@ queryPerRunResidueStatuses repoRoot = do
 perRunUnreachableTriple :: PerRunResidueStatuses
 perRunUnreachableTriple =
   let unreachable = ResidueUnreachable (ResidueBackendMinioUnreachable testResidueUnreachableEnvVar)
+   in PerRunResidueStatuses unreachable unreachable unreachable
+
+perRunAuthenticationFailedTriple :: String -> PerRunResidueStatuses
+perRunAuthenticationFailedTriple detail =
+  let unreachable = ResidueUnreachable (ResidueBackendMinioUnreachable detail)
    in PerRunResidueStatuses unreachable unreachable unreachable
 
 -- | All three per-run stacks reported absent. Used for the
@@ -214,12 +247,19 @@ perRunVaultGatedTriple gate =
   let blocked = residueStatusBlockedByVaultGate gate
    in PerRunResidueStatuses blocked blocked blocked
 
-queryPerRunLive :: FilePath -> IO PerRunResidueStatuses
-queryPerRunLive repoRoot = do
+queryPerRunLive
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO PerRunResidueStatuses
+queryPerRunLive authentication repoRoot = do
   let eksName = StackName (Text.pack awsEksTestStackName)
       subzoneName = StackName (Text.pack awsEksSubzoneStackName)
       testName = StackName (Text.pack awsTestStackName)
-  observed <- observePerRunWithSharedFallback repoRoot [eksName, subzoneName, testName]
+  observed <-
+    observePerRunCheckpoints
+      authentication
+      repoRoot
+      [eksName, subzoneName, testName]
   let statusFor stackName@(StackName raw) =
         case lookup stackName observed of
           Just result -> residueStatusFromCheckpointObservabilityResult (Text.unpack raw) result
@@ -233,102 +273,24 @@ queryPerRunLive repoRoot = do
       , perRunAwsTest = statusFor testName
       }
 
--- | Observe the given per-run stacks daemon-first, with a SHARED host-direct
--- MinIO fallback: a degraded gateway daemon triggers ONE host material
--- resolution + ONE MinIO port-forward covering every stack whose daemon read
--- failed (rather than one per stack — the root-token load may prompt for the
--- unlock-bundle password, so it must run at most once per query). Each stack's
--- result is returned as the @Either StackOutputsError CheckpointObservability@
--- the classifier consumes.
---
--- Pass 1 observes each stack through the daemon-only encrypted-checkpoint path
--- ('observeEncryptedStackCheckpoint'). A stack whose daemon read positively
--- answered (@Right _@) — present, absent, empty, or corrupt — is kept as-is
--- (host-direct cannot improve on a definitive answer, and a corrupt object is
--- corrupt from either path). Only stacks whose daemon read genuinely FAILED (a
--- @Left@ that is not the authoritative bucket-absent message) are re-observed
--- host-directly under the shared port-forward. When the host material or the
--- port-forward is unavailable, every candidate stays @Left@ (fail-closed) with
--- the combined daemon+host detail — never silently absent.
-observePerRunWithSharedFallback
-  :: FilePath
+-- | Observe each registered per-run checkpoint through the same explicit
+-- caller authentication. A failed Authority observation remains fail-closed;
+-- the host never recovers by reading the underlying blob store directly.
+observePerRunCheckpoints
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> [StackName]
   -> IO [(StackName, Either StackOutputsError CheckpointObservability)]
-observePerRunWithSharedFallback repoRoot stackNames = do
-  daemonResults <-
-    mapM
-      (\stackName -> (,) stackName <$> observeEncryptedStackCheckpoint repoRoot (stackRefFor stackName))
-      stackNames
-  let candidates =
-        [ (stackName, stackOutputsErrorDetail err)
-        | (stackName, Left err) <- daemonResults
-        , isRetryableReadFailure err
-        ]
-  if null candidates
-    then pure daemonResults
-    else do
-      shared <- sharedHostDirectObserve repoRoot (map fst candidates)
-      pure (map (mergeSharedObservation candidates shared) daemonResults)
-
--- | A retry-worthy daemon observe failure: a genuine read failure (the daemon is
--- unreachable\/degraded), NOT the authoritative "state-backend bucket absent"
--- message (a definitive Absent, so nothing to re-observe).
-isRetryableReadFailure :: StackOutputsError -> Bool
-isRetryableReadFailure err =
-  not (isMissingStateBackendBucketMessage (stackOutputsErrorDetail err))
-
--- | Resolve host-direct material ONCE, open ONE port-forward, and host-direct
--- observe each candidate stack inside it. @Left@ = the material or port-forward
--- was unavailable (applies to every candidate); @Right@ = each candidate's
--- host-direct observation (@Left@ per stack on a host read failure).
-sharedHostDirectObserve
-  :: FilePath
-  -> [StackName]
-  -> IO (Either String [(StackName, Either String CheckpointObservability)])
-sharedHostDirectObserve repoRoot stackNames = do
-  materialResult <- resolveHostDirectPulumiMaterial repoRoot
-  case materialResult of
-    Left matErr -> pure (Left matErr)
-    Right material ->
-      withHostDirectPulumiPortForward material $ \handle ->
-        mapM
-          ( \stackName -> do
-              hostResult <- hostDirectGetPulumiObject handle (unStackName stackName)
-              pure (stackName, fmap classifyCheckpointBytes hostResult)
-          )
-          stackNames
-
--- | Fold a candidate stack's shared host-direct observation back over its
--- daemon result. Non-candidate stacks keep their daemon result unchanged; a
--- candidate becomes its host-direct observation on success, or a combined
--- daemon+host 'StackOutputsCommandFailed' (→ 'ResidueUnreachable') when the
--- host path was also unavailable.
-mergeSharedObservation
-  :: [(StackName, String)]
-  -> Either String [(StackName, Either String CheckpointObservability)]
-  -> (StackName, Either StackOutputsError CheckpointObservability)
-  -> (StackName, Either StackOutputsError CheckpointObservability)
-mergeSharedObservation candidates shared (stackName, daemonResult) =
-  case lookup stackName candidates of
-    Nothing -> (stackName, daemonResult)
-    Just daemonDetail ->
-      case shared of
-        Left sharedErr ->
-          (stackName, Left (StackOutputsCommandFailed (combinedResidueReadFallback daemonDetail sharedErr)))
-        Right hostResults ->
-          case lookup stackName hostResults of
-            Just (Right observability) -> (stackName, Right observability)
-            Just (Left hostErr) ->
-              (stackName, Left (StackOutputsCommandFailed (combinedResidueReadFallback daemonDetail hostErr)))
-            Nothing -> (stackName, daemonResult)
-
-combinedResidueReadFallback :: String -> String -> String
-combinedResidueReadFallback daemonDetail hostDetail =
-  "gateway daemon object-store read failed ("
-    ++ daemonDetail
-    ++ "); host-direct MinIO fallback also failed ("
-    ++ hostDetail
-    ++ ")"
+observePerRunCheckpoints authentication repoRoot =
+  mapM
+    ( \stackName ->
+        (,)
+          stackName
+          <$> observeEncryptedStackCheckpointWithAuthentication
+            authentication
+            repoRoot
+            (stackRefFor stackName)
+    )
 
 -- | Live encrypted-backend query for the long-lived @aws-ses@ stack.
 -- Long-lived callers still treat unreadable state as blocking because
@@ -339,15 +301,41 @@ queryAwsSesResidueStatus repoRoot = do
   if bypass
     then pure ResidueAbsent
     else do
+      authenticated <-
+        withHostLifecycleAuthorityAuthentication
+          LifecycleAuthorityOperator
+          repoRoot
+          (\authentication -> queryAwsSesResidueStatusWithAuthentication authentication repoRoot)
+      pure $ case authenticated of
+        Left err ->
+          ResidueUnreachable
+            ( ResidueBackendS3Unreachable
+                (renderLifecycleAuthorityAuthenticationError err)
+            )
+        Right status -> status
+
+queryAwsSesResidueStatusWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO ResidueStatus
+queryAwsSesResidueStatusWithAuthentication authentication repoRoot = do
+  bypass <- isTestResidueAbsentSet
+  if bypass
+    then pure ResidueAbsent
+    else do
       gate <- queryResidueVaultGate
       if vaultGateAllows gate
-        then querySesLive repoRoot
+        then querySesLive authentication repoRoot
         else pure (residueStatusBlockedByVaultGate gate)
 
-querySesLive :: FilePath -> IO ResidueStatus
-querySesLive repoRoot = do
+querySesLive
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO ResidueStatus
+querySesLive authentication repoRoot = do
   result <-
-    listEncryptedStack
+    listEncryptedStackWithAuthentication
+      authentication
       repoRoot
       (stackRefFor (StackName (Text.pack awsSesStackName)))
   pure (residueStatusFromS3Listing awsSesStackName result)
@@ -509,11 +497,29 @@ perRunDestroyDecisionFromStatus displayName pruneCommand status = case status of
 --     (fail-closed), unless the state-backend bucket itself is absent (then
 --     there is genuinely nothing to prune).
 pruneCorruptPerRunCheckpoint :: FilePath -> StackName -> IO (Either String String)
-pruneCorruptPerRunCheckpoint repoRoot stackName@(StackName rawName) = do
+pruneCorruptPerRunCheckpoint repoRoot stackName = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      ( \authentication ->
+          pruneCorruptPerRunCheckpointWithAuthentication
+            authentication
+            repoRoot
+            stackName
+      )
+  pure $ case authenticated of
+    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right result -> result
+
+pruneCorruptPerRunCheckpointWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> StackName
+  -> IO (Either String String)
+pruneCorruptPerRunCheckpointWithAuthentication authentication repoRoot stackName@(StackName rawName) = do
   let name = Text.unpack rawName
-  -- Observe with the same daemon-first / host-direct-fallback path as the
-  -- residue read, so an operator prune also works when the daemon is degraded.
-  observedResults <- observePerRunWithSharedFallback repoRoot [stackName]
+  observedResults <- observePerRunCheckpoints authentication repoRoot [stackName]
   let observed =
         maybe
           (Left (StackOutputsCommandFailed ("internal: missing observation for " ++ name)))
@@ -547,7 +553,11 @@ pruneCorruptPerRunCheckpoint repoRoot stackName@(StackName rawName) = do
         )
  where
   deleteAndReport name kind = do
-    deleteResult <- pruneLogicalPulumiStack repoRoot (stackRefFor stackName)
+    deleteResult <-
+      pruneLogicalPulumiStack
+        authentication
+        repoRoot
+        (stackRefFor stackName)
     pure $ case deleteResult of
       Left err ->
         Left
@@ -842,15 +852,38 @@ fetchPerRunStackOutputs repoRoot stackName = do
   override <- lookupEnv testPerRunOutputsDirEnvVar
   case override of
     Just dir -> readMockOutputsFile (dir </> Text.unpack (unStackName stackName) ++ ".json")
-    Nothing -> fetchPerRunStackOutputsLive repoRoot stackName
+    Nothing -> do
+      authenticated <-
+        withHostLifecycleAuthorityAuthentication
+          LifecycleAuthorityOperator
+          repoRoot
+          ( \authentication ->
+              fetchPerRunStackOutputsLive authentication repoRoot stackName
+          )
+      pure $ case authenticated of
+        Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+        Right result -> result
 
-fetchPerRunStackOutputsLive
-  :: FilePath
+fetchPerRunStackOutputsWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> StackName
   -> IO (Either String (Map Text.Text Text.Text))
-fetchPerRunStackOutputsLive repoRoot stackName = do
+fetchPerRunStackOutputsWithAuthentication authentication repoRoot stackName = do
+  override <- lookupEnv testPerRunOutputsDirEnvVar
+  case override of
+    Just dir -> readMockOutputsFile (dir </> Text.unpack (unStackName stackName) ++ ".json")
+    Nothing -> fetchPerRunStackOutputsLive authentication repoRoot stackName
+
+fetchPerRunStackOutputsLive
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> StackName
+  -> IO (Either String (Map Text.Text Text.Text))
+fetchPerRunStackOutputsLive authentication repoRoot stackName = do
   result <-
-    fetchEncryptedOutputs
+    fetchEncryptedOutputsWithAuthentication
+      authentication
       repoRoot
       (projectDirFor repoRoot stackName)
       (stackRefFor stackName)
@@ -887,8 +920,23 @@ readMockOutputsFile path = do
 -- @aws-ses@ stack outputs from the encrypted Pulumi object-store.
 fetchAwsSesStackOutputs :: FilePath -> IO (Either String (Map Text.Text Text.Text))
 fetchAwsSesStackOutputs repoRoot = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> fetchAwsSesStackOutputsWithAuthentication authentication repoRoot)
+  pure $ case authenticated of
+    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right result -> result
+
+fetchAwsSesStackOutputsWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO (Either String (Map Text.Text Text.Text))
+fetchAwsSesStackOutputsWithAuthentication authentication repoRoot = do
   result <-
-    fetchEncryptedOutputs
+    fetchEncryptedOutputsWithAuthentication
+      authentication
       repoRoot
       (repoRoot </> "pulumi" </> "aws-ses")
       (stackRefFor (StackName (Text.pack awsSesStackName)))

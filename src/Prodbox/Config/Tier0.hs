@@ -168,6 +168,7 @@ data Tier0ParentRef = Tier0ParentRef
   { parent_cluster_id :: Text
   , parent_vault_address :: Text
   , parent_transit_key :: Text
+  , parent_authority_endpoint :: Text
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -500,6 +501,7 @@ toBasicsParentRef ref =
     { parentRefClusterId = parent_cluster_id ref
     , parentRefVaultAddress = parent_vault_address ref
     , parentRefTransitKey = parent_transit_key ref
+    , parentRefAuthorityEndpoint = parent_authority_endpoint ref
     }
 
 -- | A Tier-0 record must carry no secret __values__ — every sensitive field is a

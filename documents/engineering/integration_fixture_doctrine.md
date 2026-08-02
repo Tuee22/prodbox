@@ -235,6 +235,14 @@ authority restoration; physical unavailability delays cleanup but does not erase
 credentials. Capacity is fixed; nonterminal runs are never evicted, and saturation refuses a new
 suite before mutation.
 
+The concrete retained namespace is a bounded, canonical Model-B index served only by the
+authenticated Lifecycle Authority cleanup-run route. Registration stores the complete immutable
+run plan, not merely its identifier, and the Authority Backup Adapter receipts those exact bytes
+before the per-run primary is published. Consequently, an interrupted registration that leaves an
+indexed but missing per-run primary is repaired from the receipt-backed plan during the next scan;
+it cannot become either an invisible orphan or an unrecoverable identifier-only entry. The index
+holds at most 256 non-reusable identifiers and refuses saturation before foreground mutation.
+
 The interpreter repeatedly runs every ready node. `RequiresSuccess` opens only after authoritative
 postcondition evidence. `RequiresAttempt` opens after its predecessor reaches any terminal attempt
 outcome and is used only where a last-resort backstop must run despite predecessor failure. Failure
@@ -299,6 +307,12 @@ The bounded report remains queryable by `CleanupRunId` after the TestRunner exit
 may compact only to an immutable report blob plus digest, while the non-reusable run tombstone
 remains for its configured idempotency window.
 
+Compaction is an authenticated command and is retention-gated. It canonical-encodes the terminal
+report, copies and re-observes the exact immutable report through the Authority Backup Adapter, and
+only then CAS-replaces the per-run primary and active namespace entry with digest-only tombstones.
+Scan repairs response loss between those two CAS operations, an ambiguous CAS is resolved by exact
+read-back, and a tombstoned identifier can never be registered again.
+
 Integration failure injection covers Credential/Admin Job attestation and stdin disconnect,
 same-permit response loss, permanent-backup key/bucket/policy loss versus temporary
 unobservability, verified one-shot Broker init/unseal worker attestation and prompt disconnect,
@@ -362,6 +376,16 @@ cleanup governed independently by `LifecycleClass`. Specifically:
   Fixtures do not silence missing-substrate-config errors, and a fake-tool harness does not
   satisfy a substrate prerequisite that requires real infrastructure.
 
+## 7. Clean-Room Migration Fixtures
+
+The Sprint 6.4 fixture is a versioned exact-prefix trace, not a mutable snapshot script. Each
+interruption fixture records only the completed action prefix; replay must derive the identical
+first missing action. Skips, reordering, duplicate boundaries, post-completion suffixes, and
+post-cutover legacy rollback are refusal cases. The installed-binary validation also runs the
+repository doctrine scan and checks that every retired gateway/host-direct transport source path is
+absent. Real cluster deletion and consecutive aggregates remain deployment-qualification evidence,
+not substitutes for these deterministic fixtures.
+
 ## Cross-References
 
 - [Unit Testing Policy](./unit_testing_policy.md)
@@ -370,3 +394,10 @@ cleanup governed independently by `LifecycleClass`. Specifically:
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
+## Current-Revision Invite Fixture
+
+`control-plane-counterexample` emits the frozen and replacement identities plus the complete
+invite schema dimensions. Its installed-binary output records 23 mandatory invite fault points,
+eight invite assertions, and `QualificationPendingLiveEvidence`. This fixture validates schema,
+command registration, and fail-closed status only; it is never accepted as a live aggregate or
+deployment-qualified artifact.

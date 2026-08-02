@@ -25,6 +25,7 @@ module Prodbox.Gateway.ChartStatics
   , gatewayChartStaticsPortsValue
   , gatewayChartStaticsNodePortValue
   , gatewayChartStaticsServiceAccountValue
+  , gatewayChartStaticsExternalCallersValue
   , renderGatewayChartStaticsYaml
   )
 where
@@ -32,6 +33,9 @@ where
 import Data.Aeson (Value, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( externalControlPlaneCallerServiceAccounts
+  )
 import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Vault.RoleId (VaultRoleId (VaultRoleGatewayDaemon), vaultRoleIdText)
 
@@ -42,6 +46,7 @@ data GatewayChartStatics = GatewayChartStatics
   , gatewayStaticNodePort :: Int
   , gatewayStaticServiceAccount :: Text
   , gatewayStaticVaultRole :: Text
+  , gatewayStaticExternalCallerServiceAccounts :: [Text]
   }
   deriving (Eq, Show)
 
@@ -57,6 +62,8 @@ gatewayChartStatics =
     , gatewayStaticNodePort = defaultGatewayNodePort
     , gatewayStaticServiceAccount = vaultRoleIdText VaultRoleGatewayDaemon
     , gatewayStaticVaultRole = vaultRoleIdText VaultRoleGatewayDaemon
+    , gatewayStaticExternalCallerServiceAccounts =
+        externalControlPlaneCallerServiceAccounts
     }
 
 -- | @ports@ block for the deployed values JSON.
@@ -81,6 +88,16 @@ gatewayChartStaticsServiceAccountValue =
     [ "name" .= gatewayStaticServiceAccount gatewayChartStatics
     ]
 
+-- | Host caller identities installed by the gateway chart.  They carry no
+-- workload permissions; each receives only a namespaced, self-only
+-- @serviceaccounts/token@ grant for the short-lived Vault login TokenRequest.
+gatewayChartStaticsExternalCallersValue :: Value
+gatewayChartStaticsExternalCallersValue =
+  object
+    [ "serviceAccounts"
+        .= gatewayStaticExternalCallerServiceAccounts gatewayChartStatics
+    ]
+
 -- | The @gateway-chart-statics.values@ generated section body. The same typed
 -- statics are emitted into the supported Haskell chart plan through the aeson
 -- projections above, so the committed @values.yaml@ defaults cannot drift from
@@ -88,11 +105,17 @@ gatewayChartStaticsServiceAccountValue =
 renderGatewayChartStaticsYaml :: String
 renderGatewayChartStaticsYaml =
   unlines
-    [ "ports:"
-    , "  rest: " ++ show (gatewayStaticRestPort gatewayChartStatics)
-    , "  events: " ++ show (gatewayStaticEventsPort gatewayChartStatics)
-    , "nodePort:"
-    , "  rest: " ++ show (gatewayStaticNodePort gatewayChartStatics)
-    , "serviceAccount:"
-    , "  name: " ++ Text.unpack (gatewayStaticServiceAccount gatewayChartStatics)
-    ]
+    ( [ "ports:"
+      , "  rest: " ++ show (gatewayStaticRestPort gatewayChartStatics)
+      , "  events: " ++ show (gatewayStaticEventsPort gatewayChartStatics)
+      , "nodePort:"
+      , "  rest: " ++ show (gatewayStaticNodePort gatewayChartStatics)
+      , "serviceAccount:"
+      , "  name: " ++ Text.unpack (gatewayStaticServiceAccount gatewayChartStatics)
+      , "externalCallers:"
+      , "  serviceAccounts:"
+      ]
+        ++ fmap
+          (\name -> "    - " ++ Text.unpack name)
+          (gatewayStaticExternalCallerServiceAccounts gatewayChartStatics)
+    )

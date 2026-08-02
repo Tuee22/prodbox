@@ -1,13 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 4.51 Increment B byte-compat pin. 'authorityLogicalObject' is the
--- single shared function the in-cluster gateway daemon AND the (future)
--- host-direct @'ClusterRetained'@ adapter both route retained-authority logical
--- names through, so a host-direct GET opens the exact envelope a daemon PUT
--- sealed. This taxonomy pins the exact stored-key namespace, AAD, and opaque-key
+-- | 'authorityLogicalObject' is the single function the in-cluster Lifecycle
+-- Authority repository uses for every retained-authority logical name. This
+-- taxonomy pins the exact stored-key namespace, AAD, and opaque-key
 -- derivation for every retained coordinate family, so any drift in the encoding
 -- (which would silently orphan every retained object, with no type error) fails
--- the build pre-cluster rather than surfacing only in a live host↔daemon run.
+-- the build before cluster reconciliation.
 module AuthorityLogicalObjectTaxonomy
   ( authorityLogicalObjectTaxonomySuite
   )

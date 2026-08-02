@@ -61,13 +61,13 @@ workload.
 | Component | Sole authority | Explicit non-authority |
 |-----------|----------------|------------------------|
 | Bootstrap Broker | Bounded Vault initialization/unlock/seal, allowlisted baseline mount/auth/policy/role reconciliation, exact genesis-signing Transit key/public trust, key rotation, and PKI administrative requests | Generic Vault KV, gateway mesh, lifecycle records, checkpoints, SES, target secrets |
-| Lifecycle Authority | Authority epoch/time, durable operations/fences, Model-B CAS, immutable checkpoint and in-force-config references, provider revisions, encrypted operator-material intents, and delivery outbox | AWS credentials/S3 calls, Gateway leadership, peer repair, public DNS election, direct target Vault mutation |
+| Lifecycle Authority | Authority epoch/time, durable operations/fences, Model-B CAS, immutable checkpoint and in-force-config references, provider revisions, encrypted operator-material intents, retained SMTP/EAB source catalogs, and per-registered-target cross-cluster delivery outboxes with observe-before-recovery | AWS credentials/S3 calls, Gateway leadership, peer repair, public DNS election, direct target Vault mutation, retained plaintext |
 | Credential Provisioner | One indexed-permit-bounded deterministic IAM/S3 identity create/observe/repair-delete/remint transaction, including SMTP IAM identity/policy/access-key install, rotation, and repair, plus direct plaintext handoff to the selected Target Secret Agent | Explicit terminal SMTP-family destroy, Authority decisions/state writes, Pulumi/provider work, arbitrary IAM/S3, config, Gateway/DNS, persisted credentials |
 | Admin Action Runner | One backup-receipted `AdminActionPermit` for explicit registered SES/S3 plus SMTP IAM destroy, legacy backend migration/retained-store compatibility, or quota request/status read-back | Credential creation/delivery, normal provider work, generic shell/AWS, Authority state writes, nuke/decommission |
-| Fenced Provider Worker | Closed normal provider intents, including registered stack-owned non-credential IAM roles, bounded scratch checkpoint execution, authoritative observation, and read-back under one narrow session | Credential IAM identity/access-key create/delete/remint, any prompt/credential permit, Authority state writes, backup/TLS identity, target secrets, Gateway/DNS election |
+| Fenced Provider Worker | Closed normal provider intents, including registered stack-owned non-credential IAM roles, bounded scratch checkpoint execution, native SES/DNS convergence, authoritative observation/read-back, and an account/region/cluster-bound encrypted short-lived EKS client-auth projection under one narrow session | Credential IAM identity/access-key create/delete/remint, raw provider-credential export, any prompt/credential permit, Authority state writes, backup/TLS identity, target secrets, Gateway/DNS election |
 | Authority Backup Adapter | Closed prepare/blob/commit-receipt/restore/GC protocol for the independently backed Authority namespace | Provider/AWS-resource mutation, generic S3, Authority decisions, config projection, target secrets, Gateway/DNS |
 | TLS Retention Adapter | Closed ciphertext-byte retain/read-back and restore-envelope-byte protocol for exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects | Plaintext certificate/key material, backup/provider credentials, generic S3, Authority decisions, target mutation, Gateway routing |
-| Target Secret Agent | Allowlisted payload sealing plus generation-checked Vault KV observe/CAS/read-back for one substrate; retained home Agent also owns closed SMTP/EAB custody and rewrap | Global lease, provider mutation, checkpoints, gateway mesh, arbitrary KV or generic secret export |
+| Target Secret Agent | Allowlisted payload sealing plus generation-checked Vault KV observe/CAS/read-back for one substrate; retained home Agent also owns physically bound, schema-closed SMTP/EAB custody rewrap to an ephemeral destination public key | Global lease, provider mutation, checkpoints, gateway mesh, arbitrary KV or generic secret export |
 
 Deployment cardinality is explicit: there is exactly one logical Lifecycle Authority in the
 retained home/control-plane substrate for an authority epoch, with one separately deployed Authority
@@ -92,6 +92,15 @@ and, on home only, the registered public DNS effect. The EKS Gateway has no DNS-
 Gateway is neither a bootstrap service nor a generic object-store, lifecycle, or secret-management
 proxy. Its architecture remains canonical in
 [Distributed Gateway Architecture](./distributed_gateway_architecture.md).
+
+On AWS the role topology is enforced before any substrate mutation by the total
+`AwsControlPlaneRole` registry. Bootstrap Broker, Gateway diagnostics, Target Secret Agent, and
+Provider Worker each use a distinct EKS Service transport; the sole Lifecycle Authority transport
+is explicitly located on retained home. Public-edge A-record observation/reconcile is a closed
+`ObservePublicARecord`/`ReconcilePublicARecord` Provider intent registered by exact zone and
+canonical FQDN. The EKS Gateway cannot represent either intent. AWS cert-manager receives only the
+run-scoped `secret/aws/cert-manager/aws/dns01` generation through its target-local one-shot
+materializer; the home DNS01 Vault path and all host plaintext renderers are absent from that arm.
 
 The physical dependency order is:
 
@@ -161,7 +170,7 @@ resumed, or closed.
 
 ### 1.1 Credential identities and writers
 
-The pre-cutover shared `secret/gateway/gateway/aws` object is forbidden in the target topology.
+The pre-cutover shared AWS Vault object is forbidden in the target topology.
 AWS power is split into separately minted identities and Vault coordinates:
 
 | Identity | Sole consumer | Scope |
@@ -1083,6 +1092,14 @@ decideGenesis
   -> Either AuthorityGenesisRefusal (NonEmpty AuthorityGenesisEvent)
 ```
 
+The concrete retained aggregate refines `BackupEstablished` to preserve three independent facts:
+the open `AuthorityEpoch`, the exact Target Agent generation receipt, and the exact immutable
+Adapter backup receipt. Opening admission must not collapse either receipt into the epoch. A
+temporary freeze carries both predecessor receipts unchanged; a successful repair advances the
+epoch and atomically replaces both receipts. Consequently the production reconciler can observe
+the precise retained Target generation and Adapter object that justify admission instead of
+guessing either identity from current external state.
+
 The bounded transaction is:
 
 1. validate deterministic bucket/prefix, IAM identity/path/policy, target Vault coordinate, and
@@ -1205,8 +1222,9 @@ positive exact-policy drift proof constructs `PositivePermanentBackupLoss`. Auth
 immediately freezes all normal external effects.
 
 The frozen Authority primary-CASes a deterministic repair intent and uses the same Transit trust to
-sign a one-time `RepairPermit` binding the current and proposed greater epoch, current primary
-generation, next `LongLived` credential generation, loss proof, nonce/intent digest, Provisioner
+sign a one-time `RepairPermit` binding the current and proposed greater epoch, the exact lost Target
+generation receipt, the predecessor Adapter backup receipt, next `LongLived` credential generation,
+loss proof, nonce/intent digest, Provisioner
 attestation, exact target path, deterministic AWS/Adapter coordinates, and expiry. A fresh
 ephemeral Provisioner Job obtains a fresh admin prompt through the verified exec/attach protocol,
 exactly recreates or rotates the store/identity/policy with finite-inventory
@@ -1222,6 +1240,12 @@ admission only after every promotion is read back. Crash, response loss, permit 
 partial AWS residue resume by the same repair intent and deterministic inventory; no ordinary
 provider/DNS/config/suite effect is legal until the greater-epoch open. Loss of primary storage
 while the only backup is permanently absent remains outside the recovery claim.
+
+After genesis opens, the operator/harness continuation client observes only the retained finite
+plan's next registered credential class, member index/digest, and original absolute deadline. It
+cannot read the journal envelope or select a coordinate. The coordinator completes exactly that
+member through an attested Job, commits its Target read-back receipt, and re-observes before moving
+to the next member; restart therefore resumes rather than reconstructing a new plan or deadline.
 
 ### 5.1 External authority uses `decide` and `evolve`
 
@@ -1629,11 +1653,16 @@ is verified by Pod UID/image digest/ServiceAccount/permit binding and receives b
 only through authenticated exec/attach stdin under the same no-argv/env/ConfigMap/Secret/disk/log,
 bounded-lifetime, session-revocation, best-effort owned-buffer-zeroization, and Pod-deletion
 read-back rules as the Credential Provisioner. It resumes by stable operation ID plus authoritative
-inventory/read-back, never by a new host-direct prompt mutation. Quota submission records the exact
-service/quota/region/desired-value request identity and provider request ID, and remains queryable
-until authoritative status read-back. Response loss resumes by the same client token/request
-identity; later one-shot Jobs may obtain a fresh prompt to observe that exact request but can never
-resubmit it or widen the quota coordinate. Core Authority sees typed receipts/status only. The normal
+inventory/read-back, never by a new host-direct prompt mutation. Migration source bytes cross only
+the runner-authenticated Authority execution route: Authority CAS-persists preparation, converts in
+bounded RAM scratch, publishes through the registered checkpoint repository, and confirms primary
+plus backup before source deletion is authorized. Quota submission records the exact
+service/quota/region/desired-value attempt and time window before dispatch, then records the provider
+request ID/status. `RequestServiceQuotaIncrease` has no client token, so ambiguous response recovery
+queries current quota and the complete paginated exact-quota history. Two consecutive authoritative
+absence scans arm the only retry; stable absence after attempt two refuses. Later one-shot Jobs may
+observe that same journal but cannot widen the coordinate or create a third attempt. Core Authority
+sees typed receipts/status only. The normal
 Provider Worker cannot accept an admin permit, and total `nuke` continues to use the distinct
 post-export Decommission Runner after Authority stops.
 
@@ -1643,6 +1672,10 @@ key-inventory observation. Credential Provisioner is the sole access-key create/
 repair-time deletion interpreter; the only other key-deletion authority is Admin Action Runner for
 the registered SMTP family under exact `DestroyAwsSes`. Provider Worker may only use an already
 sealed/read-back Lifecycle-provider generation.
+The Credential Provisioner creates that generation only after native IAM has converged and
+authoritatively read back the deterministic Lifecycle-provider role name and account-bound ARN,
+the exact trust document naming its distinct assuming user, and the role's closed provider policy.
+The assuming user policy can only assume that exact role; it carries no provider effects itself.
 If creation applies but its one-time secret response is lost before target sealing, that key is
 unrecoverable: recovery observes its key ID, deletes it under the same identity fence, waits for
 stable absence, and only then commits a new create attempt. A successful response is sealed by the
@@ -1650,6 +1683,11 @@ named Agent before the authority commits the credential generation and delivery 
 first derived to `SesSmtpSource` and sealed by retained-home custody. If the seal response alone is
 lost, the Agent's ciphertext receipt recovers it and the key is not reminted.
 No retry may blindly create a second key, and no uncommitted key may survive a closed operation.
+The operator and test harness submit ACME EAB fixture material through the same external-ingress
+coordinator. They may observe only the secret-free current operation projection, which determines
+install versus exact retained-deadline replay versus next-generation rotation; neither caller can
+select a retained coordinate, and no operation identity or receipt contains a hash of the raw EAB
+material.
 
 ### 5.4 Retained TLS envelope workflow
 
@@ -2116,10 +2154,8 @@ These are the code-local target boundaries, not a deployment or cutover claim. T
 facade remains fail closed for readiness and every non-health request until Sprint `3.26` supplies
 the physical Kubernetes TokenReview, Lease, workload/attestation, MinIO, Vault, and OpenPGP
 interpreters and renders the separate workload. Gateway target routing contains no bootstrap
-handler. The isolated `LegacyModelBEmitter` rollback continues to reach the registered
-`Prodbox.Bootstrap.Broker.LegacyAdapter` only under
-[Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure); current-revision
-deployment qualification and eventual legacy removal remain solely in the Development Plan.
+handler, and the former `Prodbox.Bootstrap.Broker.LegacyAdapter` is physically deleted. Standard-P
+qualification remains a deployment-evidence campaign and cannot re-enable that removed route.
 
 ## 8. Gateway Emitter Actor
 
@@ -2368,6 +2404,13 @@ appended and read back before the parent/controller is allowed to create them. T
 monotonic owner fence, node-level operation IDs, durable outcomes, and an independent recovery
 worker; TestRunner is a client, not the journal owner. Runner SIGKILL, disconnection, Pod loss, or
 authority restart therefore leaves a resumable run rather than erasing an in-memory `finally` plan.
+
+The compiled Lifecycle Authority route `/v1/authority/cleanup-run` is the sole service boundary for
+create, observe, scan, fenced claim, primary recording, node begin/complete, and retention-gated
+compaction. Its server-owned Model-B namespace coordinate and per-run coordinates are absent from
+the client API. Both the bounded namespace and every active revision require an exact immutable
+Authority Backup receipt before their primary CAS; scan repairs a missing per-run primary from the
+complete indexed plan before returning it to the recovery worker.
 
 The exact `RequiresSuccess`/`RequiresAttempt` edges, substrate-specific `DrainSkipped` treatment,
 canonical cleanup order, resume rules, and aggregate result are owned only by
@@ -2623,6 +2666,17 @@ target outage and resume, cancellation during every destructive stage, and resid
 both success and failure. The authoritative status and exact evidence live only in the Development
 Plan.
 
+### Clean-room cutover and rollback
+
+`prodbox test integration clean-room-handoff` projects one versioned action order from legacy
+retained-state observation through projection import, shadow verification, legacy-writer freeze,
+replacement-epoch activation, destructive restore, cleanup, residue proof, and qualification
+commit. Durable recovery accepts only an exact prefix and resumes the first missing action. Before
+activation, an interrupted run may retry legacy observation; after activation, legacy rollback is
+refused before mutation and recovery is forward-only to a greater authority epoch. Repository
+absence checks cover the removed gateway/host-direct authority and target-secret transports in the
+same installed-binary validation.
+
 ## Intent Ownership
 
 This document owns the physical lifecycle-control-plane split, complete initial
@@ -2677,3 +2731,27 @@ Those concerns remain in their linked SSoTs.
   [Storage Lifecycle](./storage_lifecycle_doctrine.md),
   [Test Topology](./test_topology_doctrine.md), and
   [Unit Testing Policy](./unit_testing_policy.md)
+## Revisioned SES Workflow
+
+The retained Lifecycle Authority owns one `SesWorkflowState` aggregate per desired-contract digest.
+Its provider revision, credential-writer epoch, SMTP generation, retained-custody receipt, and
+per-target delivery receipts are committed through exact-revision Model-B CAS. Commands reduce
+through total `decideSesWorkflow`/`evolveSesWorkflow` folds. Effects are observed before apply and
+authoritatively read back afterward, so an applied response loss cannot duplicate provider,
+credential, custody, or teardown work.
+
+The effect algebra has four disjoint interpreters: non-credential Provider work,
+operator-material Credential Provisioner work, schema-bound retained custody/target delivery, and
+explicit `DestroyAwsSes` administration. No interpreter accepts another role's constructor. The
+workflow releases its mutation stage before semantic propagation and completes only after the
+exact semantic revision, retained SMTP generation, every selected target receipt, and legacy
+secret-bearing checkpoint GC receipt are committed.
+## Invite Qualification Acceptance Matrix
+
+The final invite artifact is non-partial. It contains all eight assertions (send, capture, link,
+OIDC claims, Authority convergence, Target convergence, platform restore, and zero per-run
+residue), one result for every mandatory invite fault, a positive Authority epoch, exact-byte
+backup restoration, and cleanup-owner takeover. It also carries both exact canonical substrate
+commands and generation-bound SES-SMTP, ACME-EAB, and TLS restoration evidence. A code-local
+fixture always renders `QualificationPendingLiveEvidence`; only governed live artifacts can satisfy
+Standard P.

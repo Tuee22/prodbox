@@ -2388,18 +2388,19 @@ parent's unsealed Vault KV.
   Vault, child Vault address, and child kubeconfig; writes the child Transit key, scoped policy,
   metadata KV, bootstrap-credential KV, child index KV, and child bootstrap Secret; and leaves the
   token out of command output.
-- Sprint `2.26` extends the registration payload with parent-custodied endpoint inventory,
-  kubeconfig reference, account id, and Pulumi stack references. The gateway daemon exposes
-  `/v1/federation/children` for metadata-only inventory and
-  `/v1/federation/children/<child>/bootstrap` for the child bootstrap credential; both read through
-  Vault Kubernetes auth and fail closed when Vault is unavailable.
+- Sprint `2.26` historically extended the registration payload with parent-custodied endpoint
+  inventory, kubeconfig reference, account id, and Pulumi stack references and exposed two Gateway
+  federation reads. Sprint `4.50` superseded that transport: both routes, their client functions,
+  daemon handlers, and bounded-operation constructors are deleted; current delivery/read-back is
+  owned by the Lifecycle Authority and Target Secret Agent.
 - The end-to-end opaque Kubernetes namespace/log redaction proof is composed from the Sprint `4.33`
   Haskell-side gate/redaction work and the sealed-state red-team in Sprint `5.8`.
 
 ### Remaining Work
 
-- None. Sprint `2.26`'s gateway/CLI custody surface is closed; the Haskell redaction work and home
-  sealed-Vault proof subsequently landed under Sprints `4.33` and `5.8`.
+- None for Phase `2`. Sprint `2.26`'s historical gateway/CLI custody surface was later superseded
+  and removed by Sprint `4.50`; the Haskell redaction work and home sealed-Vault proof landed under
+  Sprints `4.33` and `5.8`.
 
 ### Current Validation State
 
@@ -2411,16 +2412,16 @@ parent's unsealed Vault KV.
   passes 3/3, including the daemon Vault-auth coordinate decode.
 - `cabal test --builddir=.build test:prodbox-unit --test-options='-p "parser"'` passes 258/258,
   including the updated generated command examples for `cluster federation register`.
-- `cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 2.26"'`
-  passes 1/1, proving the built gateway daemon serves the Vault-backed child listing and bootstrap
-  credential endpoints without leaking the child token in the list response.
+- Historical Sprint `2.26` validation proved the then-current read transport. The current Sprint
+  `4.50` negative integration fixture starts the built daemon and requires both removed paths to
+  return `404`.
 - `cabal test --builddir=.build test:prodbox-integration --test-options='-p "Sprint 4.32"'`
   passes 1/1 after the registration writer records metadata, bootstrap credential, and child-index
   KV objects against fake Vault and fake kubectl without printing the child token.
 - `./.build/prodbox test unit` passes 924/924 after accepting the updated generated CLI
   registry/help goldens for the new federation-register inventory flags.
-- `./.build/prodbox test integration cli` passes 38/38, including the new Sprint `2.26` gateway
-  federation endpoint proof and the existing Sprint `4.32` registration proof.
+- The historical aggregate passed 38/38; current aggregate evidence is recorded under Sprint
+  `4.50` after the superseding negative-route fixture validates.
 - `./.build/prodbox dev docs check`, `./.build/prodbox dev lint docs`, and `git diff --check`
   all exit 0 after the plan/docs closure update.
 - `./.build/prodbox dev check` exits 0 as the canonical local quality gate.

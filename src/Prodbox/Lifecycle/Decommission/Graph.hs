@@ -5,12 +5,14 @@
 --
 -- The teardown order is derived data, not hand-sequenced I/O. Predecessor edges
 -- encode the spec's mandatory ordering: the SES branch proves consumers quiescent
--- before destroying the provider stack and external SMTP IAM, which in turn precede
--- the Target Secret Agent and retained-custody tombstones; the TLS objects and
--- identity are deleted before the shared bucket; the backup prefix-absence proof
--- follows TLS deletion and precedes backup-object deletion; and the shared object
--- bucket is the unique terminal, destroyed only after every other node (its
--- opaque Pulumi/authority objects would otherwise be stranded).
+-- before destroying the provider stack and external SMTP IAM. Those destroys
+-- precede each live Target Agent tombstone, and every target tombstone precedes
+-- the distinct retained-custody tombstone. Only after that live-Agent work are
+-- TLS objects and their identity deleted, before the Authority backup objects
+-- and identity; the all-prefix
+-- absence proof follows those deletes; and the shared object bucket is the unique
+-- terminal, destroyed only after every other node (its opaque Pulumi/authority
+-- objects would otherwise be stranded).
 --
 -- 'runDecommissionGraph' is a total executor: it runs every node whose predecessors
 -- all succeeded, records 'NodeBlocked' with the offending predecessors otherwise,
@@ -31,6 +33,10 @@ module Prodbox.Lifecycle.Decommission.Graph
   , reportFailed
   , tlsPrecedesSharedBucket
   , sesDestroyPrecedesTombstones
+  , targetTombstonesPrecedeCustody
+  , custodyPrecedesTls
+  , tlsPrecedesBackup
+  , allPrefixesProvenBeforeSharedBucket
   , sharedBucketIsTerminal
   )
 where
@@ -85,12 +91,12 @@ decommissionRequiredPredecessors allNodes node =
     SesConsumerQuiescence -> []
     SesProviderStack -> [SesConsumerQuiescence]
     SesSmtpIam -> [SesConsumerQuiescence]
-    TargetGeneration _ -> [SesProviderStack, SesSmtpIam]
-    RetainedCustody -> [SesProviderStack, SesSmtpIam]
-    TlsRetainedObjects -> []
-    TlsRetentionIdentity -> []
-    BackupPrefixAbsenceProof -> [TlsRetainedObjects]
-    BackupObjects -> [BackupPrefixAbsenceProof]
+    TargetGeneration _ _ -> [SesProviderStack, SesSmtpIam]
+    RetainedCustody -> [SesProviderStack, SesSmtpIam] ++ targetGenerations allNodes
+    TlsRetainedObjects -> [RetainedCustody]
+    TlsRetentionIdentity -> [RetainedCustody]
+    BackupObjects -> [TlsRetainedObjects, TlsRetentionIdentity]
+    BackupPrefixAbsenceProof -> [BackupObjects]
     -- The shared bucket is the unique terminal: every other present node first.
     SharedObjectBucket -> filter (/= SharedObjectBucket) allNodes
 
@@ -167,6 +173,34 @@ sesDestroyPrecedesTombstones allNodes =
     , tombstone <- RetainedCustody : targetGenerations allNodes
     ]
 
+-- | Every live Target Agent tombstone precedes the retained-home custody
+-- tombstone. This keeps target-owned material live until its exact generation
+-- has been tombstoned and read back.
+targetTombstonesPrecedeCustody :: [DecommissionNode] -> Bool
+targetTombstonesPrecedeCustody allNodes =
+  all (\target -> precedes allNodes target RetainedCustody) (targetGenerations allNodes)
+
+-- | Retained-home custody must be tombstoned and read back while its Agent is
+-- still live before either post-control-plane TLS deletion can begin.
+custodyPrecedesTls :: [DecommissionNode] -> Bool
+custodyPrecedesTls allNodes =
+  precedes allNodes RetainedCustody TlsRetainedObjects
+    && precedes allNodes RetainedCustody TlsRetentionIdentity
+
+-- | Both disjoint TLS delete nodes precede the composite Authority backup
+-- object/generation/key/identity/policy deletion node.
+tlsPrecedesBackup :: [DecommissionNode] -> Bool
+tlsPrecedesBackup allNodes =
+  precedes allNodes TlsRetainedObjects BackupObjects
+    && precedes allNodes TlsRetentionIdentity BackupObjects
+
+-- | The all-registered-prefix absence proof follows the last prefix-owning
+-- deletion and precedes destruction of the shared bucket.
+allPrefixesProvenBeforeSharedBucket :: [DecommissionNode] -> Bool
+allPrefixesProvenBeforeSharedBucket allNodes =
+  precedes allNodes BackupObjects BackupPrefixAbsenceProof
+    && precedes allNodes BackupPrefixAbsenceProof SharedObjectBucket
+
 -- | The shared bucket, when present, is the last node in the derived order.
 sharedBucketIsTerminal :: [DecommissionNode] -> Bool
 sharedBucketIsTerminal allNodes
@@ -178,7 +212,7 @@ sharedBucketIsTerminal allNodes
 targetGenerations :: [DecommissionNode] -> [DecommissionNode]
 targetGenerations = filter isTargetGeneration
  where
-  isTargetGeneration (TargetGeneration _) = True
+  isTargetGeneration (TargetGeneration _ _) = True
   isTargetGeneration _ = False
 
 -- | Whether @earlier@ precedes @later@ in the derived topological order. Vacuously

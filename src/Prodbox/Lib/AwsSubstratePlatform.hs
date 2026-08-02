@@ -82,13 +82,13 @@ import Prodbox.CLI.Rke2
   ( KubernetesReadinessCheck (..)
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
-  , acmeRuntimeManifestWithCredentials
+  , ensureAcmeRuntimeForSubstrate
   , ensureAdminPublicEdgeRoutes
-  , ensureGatewayChartReady
   , ensureGatewayChartReadyPostVaultAt
   , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
+  , ensureInternalControlPlaneChartReady
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
   , ensureRegistryStorageBackendEdgeReady
@@ -100,12 +100,11 @@ import Prodbox.CLI.Rke2
   , observeGatewayBackendRoundTripOnceAt
   , observeKubernetesReadinessOnce
   , observeRegistryBackendRoundTripOnce
-  , observeVaultUnsealedOnceAt
-  , resolveAcmeEabKeyId
+  , observeVaultUnsealedOnce
   , retainedStorageInventoryEntries
   , vaultNamespace
   )
-import Prodbox.CLI.Vault (runVaultBootstrapViaDaemonAt)
+import Prodbox.CLI.Vault (runVaultBootstrapViaBroker)
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
@@ -131,9 +130,9 @@ import Prodbox.Infra.AwsEksTestStack
   , parseAwsEksTestStackFromOutputs
   )
 import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lib.AwsControlPlaneIsolation qualified as AwsIsolation
 import Prodbox.Lib.ChartPlatform
-  ( gatewayNodeIdsForSubstrate
-  , gatewayRestServiceName
+  ( gatewayRestServiceName
   , gatewayRestServicePort
   , operatorAvailableTarget
   )
@@ -175,15 +174,12 @@ import Prodbox.Lifecycle.ReadinessObservation
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
   )
-import Prodbox.PublicEdge (publicEdgeClusterIssuerName, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AwsCredentialsRef (..)
   , ConfigFile (..)
   , DeploymentSection (..)
   , ValidatedSettings (..)
-  , aws
-  , resolveAwsCredentialsRefFromHostVault
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -216,17 +212,27 @@ data AwsPlatformStepId
   | StepAwsRegistryReady
   | StepAwsCertManagerRuntime
   | StepAwsCertManagerReady
-  | StepAwsGatewayPreVault
-  | StepAwsGatewayPreVaultReady
+  | StepAwsBootstrapBroker
+  | StepAwsBootstrapBrokerReady
   | StepAwsVaultLifecycle
   | StepAwsVaultUnsealedReady
   | StepAwsEnvoyGatewayRuntime
   | StepAwsEnvoyGatewayReady
   | StepAwsPostgresOperatorRuntime
   | StepAwsPostgresOperatorReady
+  | StepAwsTargetSecretAgent
+  | StepAwsTargetSecretAgentReady
+  | StepAwsLifecycleAuthority
+  | StepAwsLifecycleAuthorityReady
   | StepAwsGatewayMinioBootstrap
   | StepAwsGatewayPostVault
   | StepAwsGatewayFullReady
+  | StepAwsAuthorityBackup
+  | StepAwsAuthorityBackupReady
+  | StepAwsProviderWorker
+  | StepAwsProviderWorkerReady
+  | StepAwsTlsRetention
+  | StepAwsTlsRetentionReady
   | StepAwsAcmeRuntime
   | StepAwsAdminPublicEdgeRoutes
   deriving (Eq, Show, Enum, Bounded)
@@ -255,17 +261,27 @@ awsStepToken step = case step of
   StepAwsRegistryReady -> "observeAwsRegistryReady"
   StepAwsCertManagerRuntime -> "ensureAwsSubstrateCertManagerRuntime"
   StepAwsCertManagerReady -> "observeAwsCertManagerReady"
-  StepAwsGatewayPreVault -> "ensureGatewayChartReady SubstrateAws"
-  StepAwsGatewayPreVaultReady -> "observeAwsGatewayPreVaultReady"
-  StepAwsVaultLifecycle -> "runVaultBootstrapViaDaemonAt"
+  StepAwsBootstrapBroker -> "ensureInternalControlPlaneChartReady SubstrateAws bootstrap-broker"
+  StepAwsBootstrapBrokerReady -> "observeAwsBootstrapBrokerReady"
+  StepAwsVaultLifecycle -> "runVaultBootstrapViaBroker"
   StepAwsVaultUnsealedReady -> "observeAwsVaultUnsealedReady"
   StepAwsEnvoyGatewayRuntime -> "ensureAwsSubstrateEnvoyGatewayRuntime"
   StepAwsEnvoyGatewayReady -> "observeAwsEnvoyGatewayReady"
   StepAwsPostgresOperatorRuntime -> "ensurePostgresOperatorRuntime"
   StepAwsPostgresOperatorReady -> "observeAwsPostgresOperatorReady"
+  StepAwsTargetSecretAgent -> "ensureInternalControlPlaneChartReady SubstrateAws target-secret-agent"
+  StepAwsTargetSecretAgentReady -> "observeAwsTargetSecretAgentReady"
+  StepAwsLifecycleAuthority -> "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority"
+  StepAwsLifecycleAuthorityReady -> "observeAwsLifecycleAuthorityReady"
   StepAwsGatewayMinioBootstrap -> "ensureGatewayMinioBootstrap"
   StepAwsGatewayPostVault -> "ensureGatewayChartReadyPostVaultAt SubstrateAws"
   StepAwsGatewayFullReady -> "observeAwsGatewayFullReady"
+  StepAwsAuthorityBackup -> "ensureInternalControlPlaneChartReady SubstrateAws authority-backup"
+  StepAwsAuthorityBackupReady -> "observeAwsAuthorityBackupReady"
+  StepAwsProviderWorker -> "ensureInternalControlPlaneChartReady SubstrateAws provider-worker"
+  StepAwsProviderWorkerReady -> "observeAwsProviderWorkerReady"
+  StepAwsTlsRetention -> "ensureInternalControlPlaneChartReady SubstrateAws tls-retention"
+  StepAwsTlsRetentionReady -> "observeAwsTlsRetentionReady"
   StepAwsAcmeRuntime -> "ensureAwsSubstrateAcmeRuntime"
   StepAwsAdminPublicEdgeRoutes -> "ensureAdminPublicEdgeRoutes SubstrateAws"
 
@@ -285,19 +301,29 @@ awsStepPhase step = case step of
   StepAwsImageMirror -> PhaseBootstrap
   StepAwsRuntimeImage -> PhaseBootstrap
   StepAwsRegistryReady -> PhaseBootstrap
-  StepAwsCertManagerRuntime -> PhaseBootstrap
-  StepAwsCertManagerReady -> PhaseBootstrap
-  StepAwsGatewayPreVault -> PhaseBootstrap
-  StepAwsGatewayPreVaultReady -> PhaseBootstrap
+  StepAwsCertManagerRuntime -> PhaseSteady
+  StepAwsCertManagerReady -> PhaseSteady
+  StepAwsBootstrapBroker -> PhaseBootstrap
+  StepAwsBootstrapBrokerReady -> PhaseBootstrap
   StepAwsVaultLifecycle -> PhaseTransition
   StepAwsVaultUnsealedReady -> PhaseTransition
   StepAwsEnvoyGatewayRuntime -> PhaseSteady
   StepAwsEnvoyGatewayReady -> PhaseSteady
   StepAwsPostgresOperatorRuntime -> PhaseSteady
   StepAwsPostgresOperatorReady -> PhaseSteady
+  StepAwsTargetSecretAgent -> PhaseSteady
+  StepAwsTargetSecretAgentReady -> PhaseSteady
+  StepAwsLifecycleAuthority -> PhaseSteady
+  StepAwsLifecycleAuthorityReady -> PhaseSteady
   StepAwsGatewayMinioBootstrap -> PhaseSteady
   StepAwsGatewayPostVault -> PhaseSteady
   StepAwsGatewayFullReady -> PhaseSteady
+  StepAwsAuthorityBackup -> PhaseSteady
+  StepAwsAuthorityBackupReady -> PhaseSteady
+  StepAwsProviderWorker -> PhaseSteady
+  StepAwsProviderWorkerReady -> PhaseSteady
+  StepAwsTlsRetention -> PhaseSteady
+  StepAwsTlsRetentionReady -> PhaseSteady
   StepAwsAcmeRuntime -> PhaseEdge
   StepAwsAdminPublicEdgeRoutes -> PhaseEdge
 
@@ -319,17 +345,27 @@ awsStepAnchor step = case step of
   StepAwsRegistryReady -> ComponentReadiness ComponentRegistry
   StepAwsCertManagerRuntime -> ComponentMutation ComponentCertManager
   StepAwsCertManagerReady -> ComponentReadiness ComponentCertManager
-  StepAwsGatewayPreVault -> ComponentMutation ComponentGatewayDaemonPreVault
-  StepAwsGatewayPreVaultReady -> ComponentReadiness ComponentGatewayDaemonPreVault
+  StepAwsBootstrapBroker -> ComponentMutation ComponentChartBootstrapBroker
+  StepAwsBootstrapBrokerReady -> ComponentReadiness ComponentChartBootstrapBroker
   StepAwsVaultLifecycle -> TransitionFor ComponentVaultUnsealed
   StepAwsVaultUnsealedReady -> ComponentReadiness ComponentVaultUnsealed
   StepAwsEnvoyGatewayRuntime -> ComponentMutation ComponentEnvoyGateway
   StepAwsEnvoyGatewayReady -> ComponentReadiness ComponentEnvoyGateway
   StepAwsPostgresOperatorRuntime -> ComponentMutation ComponentPerconaPostgresOperator
   StepAwsPostgresOperatorReady -> ComponentReadiness ComponentPerconaPostgresOperator
+  StepAwsTargetSecretAgent -> ComponentMutation ComponentChartTargetSecretAgent
+  StepAwsTargetSecretAgentReady -> ComponentReadiness ComponentChartTargetSecretAgent
+  StepAwsLifecycleAuthority -> ComponentMutation ComponentChartLifecycleAuthority
+  StepAwsLifecycleAuthorityReady -> ComponentReadiness ComponentChartLifecycleAuthority
   StepAwsGatewayMinioBootstrap -> ComponentMutation ComponentGatewayDaemonFull
   StepAwsGatewayPostVault -> ComponentMutation ComponentGatewayDaemonFull
   StepAwsGatewayFullReady -> ComponentReadiness ComponentGatewayDaemonFull
+  StepAwsAuthorityBackup -> ComponentMutation ComponentChartAuthorityBackup
+  StepAwsAuthorityBackupReady -> ComponentReadiness ComponentChartAuthorityBackup
+  StepAwsProviderWorker -> ComponentMutation ComponentChartProviderWorker
+  StepAwsProviderWorkerReady -> ComponentReadiness ComponentChartProviderWorker
+  StepAwsTlsRetention -> ComponentMutation ComponentChartTlsRetention
+  StepAwsTlsRetentionReady -> ComponentReadiness ComponentChartTlsRetention
   StepAwsAcmeRuntime -> EdgeOnly
   StepAwsAdminPublicEdgeRoutes -> EdgeOnly
 
@@ -362,8 +398,7 @@ awsStepsForComponent component = case component of
     [StepAwsCertManagerRuntime, StepAwsCertManagerReady]
   ComponentPerconaPostgresOperator ->
     [StepAwsPostgresOperatorRuntime, StepAwsPostgresOperatorReady]
-  ComponentGatewayDaemonPreVault ->
-    [StepAwsGatewayPreVault, StepAwsGatewayPreVaultReady]
+  ComponentGatewayDaemonPreVault -> []
   ComponentGatewayDaemonFull ->
     [ StepAwsGatewayMinioBootstrap
     , StepAwsGatewayPostVault
@@ -377,13 +412,18 @@ awsStepsForComponent component = case component of
   ComponentChartApi -> []
   ComponentChartWebsocket -> []
   ComponentChartGateway -> []
-  -- Sprint 3.26: chart-only control-plane nodes; no AWS substrate-platform step.
-  ComponentChartBootstrapBroker -> []
-  ComponentChartLifecycleAuthority -> []
-  ComponentChartProviderWorker -> []
-  ComponentChartAuthorityBackup -> []
-  ComponentChartTlsRetention -> []
-  ComponentChartTargetSecretAgent -> []
+  ComponentChartBootstrapBroker ->
+    [StepAwsBootstrapBroker, StepAwsBootstrapBrokerReady]
+  ComponentChartLifecycleAuthority ->
+    [StepAwsLifecycleAuthority, StepAwsLifecycleAuthorityReady]
+  ComponentChartProviderWorker ->
+    [StepAwsProviderWorker, StepAwsProviderWorkerReady]
+  ComponentChartAuthorityBackup ->
+    [StepAwsAuthorityBackup, StepAwsAuthorityBackupReady]
+  ComponentChartTlsRetention ->
+    [StepAwsTlsRetention, StepAwsTlsRetentionReady]
+  ComponentChartTargetSecretAgent ->
+    [StepAwsTargetSecretAgent, StepAwsTargetSecretAgentReady]
 
 awsEdgeSteps :: [AwsPlatformStepId]
 awsEdgeSteps = [StepAwsAcmeRuntime, StepAwsAdminPublicEdgeRoutes]
@@ -394,12 +434,17 @@ awsRequiredComponents =
   , ComponentMinio
   , ComponentVaultWorkload
   , ComponentRegistry
+  , ComponentChartBootstrapBroker
   , ComponentCertManager
-  , ComponentGatewayDaemonPreVault
   , ComponentVaultUnsealed
   , ComponentEnvoyGateway
   , ComponentPerconaPostgresOperator
+  , ComponentChartTargetSecretAgent
+  , ComponentChartLifecycleAuthority
   , ComponentGatewayDaemonFull
+  , ComponentChartAuthorityBackup
+  , ComponentChartProviderWorker
+  , ComponentChartTlsRetention
   ]
 
 awsAnchoredOrderSpec :: AnchoredOrderSpec AwsPlatformStepId
@@ -962,77 +1007,8 @@ waitForCertManagerDeployments = go deployments
 -- `aws_substrate.hosted_zone_id` (the per-substrate subzone provisioned
 -- by `pulumi aws-subzone-resources`).
 ensureAwsSubstrateAcmeRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
-  writeOutputLine "Applying AWS-substrate ACME ClusterIssuer + Route 53 DNS01 credentials"
-  hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
-  case hostedZoneResult of
-    Left err -> failWith err
-    Right hostedZoneId -> do
-      credentialsResult <-
-        resolveAwsCredentialsRefFromHostVault
-          repoRoot
-          "aws"
-          (aws (validatedConfig settings))
-      case credentialsResult of
-        Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
-        Right route53Credentials -> do
-          -- Sprint 7.15: resolve the non-secret EAB key ID host-side from
-          -- Vault (the HMAC key is materialized in-cluster). A sealed Vault
-          -- fails closed here.
-          eabKeyIdResult <- resolveAcmeEabKeyId repoRoot settings
-          case eabKeyIdResult of
-            Left err -> failWith ("resolve ACME EAB key ID from Vault: " ++ err)
-            Right resolvedEabKeyId -> do
-              let manifest =
-                    acmeRuntimeManifestWithCredentials
-                      SubstrateAws
-                      settings
-                      hostedZoneId
-                      route53Credentials
-                      resolvedEabKeyId
-                      prodboxId
-                      labelValue
-                  -- Wrap the manifest list in a `v1/List` so `kubectl apply -f`
-                  -- accepts the file (kubectl does not accept bare JSON arrays at
-                  -- the top level). Matches the home-substrate pattern in
-                  -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
-                  manifestList =
-                    object
-                      [ "apiVersion" .= ("v1" :: String)
-                      , "kind" .= ("List" :: String)
-                      , "items" .= manifest
-                      ]
-              withTempJsonFile
-                repoRoot
-                "aws-substrate-acme-runtime"
-                (encode manifestList)
-                ( \manifestPath -> do
-                    applyExit <-
-                      runStreaming
-                        Subprocess
-                          { subprocessPath = "kubectl"
-                          , subprocessArguments = ["apply", "-f", manifestPath]
-                          , subprocessEnvironment = Nothing
-                          , subprocessWorkingDirectory = Just repoRoot
-                          }
-                    case applyExit of
-                      ExitFailure _ -> pure applyExit
-                      ExitSuccess ->
-                        -- Wait for the ZeroSSL ClusterIssuer rendered by
-                        -- acmeRuntimeManifestWithCredentials to become Ready.
-                        runStreaming
-                          Subprocess
-                            { subprocessPath = "kubectl"
-                            , subprocessArguments =
-                                [ "wait"
-                                , "--for=condition=Ready"
-                                , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                                , "--timeout=300s"
-                                ]
-                            , subprocessEnvironment = Nothing
-                            , subprocessWorkingDirectory = Just repoRoot
-                            }
-                )
+ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue =
+  ensureAcmeRuntimeForSubstrate SubstrateAws repoRoot settings prodboxId labelValue
 
 -- | Install the shared Vault chart on the AWS substrate. This intentionally
 -- reuses the same @charts/vault@ Helm helper as the home substrate so both
@@ -1077,13 +1053,20 @@ runAwsSubstratePlatformPlanWith
   -> (AwsPlatformPayload -> IO ExitCode)
   -> IO ExitCode
 runAwsSubstratePlatformPlanWith settings applyPayload =
-  case buildAwsSubstratePlatformExecutionPlan settings of
-    Left detail ->
+  case AwsIsolation.validateAwsControlPlaneIsolation AwsIsolation.canonicalAwsRoleTransports of
+    Left defect ->
       failWith
-        ( "AWS-substrate platform graph refused before mutation: "
-            ++ detail
+        ( "AWS control-plane isolation refused before mutation: "
+            ++ show defect
         )
-    Right payload -> applyPayload payload
+    Right () ->
+      case buildAwsSubstratePlatformExecutionPlan settings of
+        Left detail ->
+          failWith
+            ( "AWS-substrate platform graph refused before mutation: "
+                ++ detail
+            )
+        Right payload -> applyPayload payload
 
 applyAwsSubstratePlatformPayload
   :: FilePath
@@ -1128,19 +1111,19 @@ runAwsSubstratePlatformOrder
   -> AwsPlatformPayload
   -> IO ExitCode
 runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot payload = do
-  let (beforeVault, fromVault) =
-        break (== StepAwsVaultLifecycle) (awsPlatformStepOrder payload)
+  let (beforeGatewayEndpoint, fromGatewayEndpoint) =
+        break (== StepAwsGatewayPostVault) (awsPlatformStepOrder payload)
       runSlice endpoint =
         runAnchoredStepOrder
           awsStepAnchor
           (runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint)
           (requireAwsComponentReadiness repoRoot (awsPlatformDag payload) endpoint)
-  bootstrapExit <- runSlice Nothing beforeVault
-  case bootstrapExit of
-    ExitFailure _ -> pure bootstrapExit
+  preGatewayExit <- runSlice Nothing beforeGatewayEndpoint
+  case preGatewayExit of
+    ExitFailure _ -> pure preGatewayExit
     ExitSuccess ->
-      case fromVault of
-        [] -> failWith "AWS-substrate platform graph has no Vault lifecycle transition step."
+      case fromGatewayEndpoint of
+        [] -> failWith "AWS-substrate platform graph has no post-Vault Gateway convergence step."
         _ -> do
           portForwardResult <-
             withGatewayServicePortForward
@@ -1151,7 +1134,7 @@ runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot pay
                 , gatewayPortForwardEnvironment = Nothing
                 , gatewayPortForwardWorkingDirectory = Just repoRoot
                 }
-              (\endpoint -> runSlice (Just endpoint) fromVault)
+              (\endpoint -> runSlice (Just endpoint) fromGatewayEndpoint)
           case portForwardResult of
             Left err -> failWith (renderGatewayPortForwardError err)
             Right exitCode -> pure exitCode
@@ -1185,10 +1168,15 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
     StepAwsRegistryReady -> pure ExitSuccess
     StepAwsCertManagerRuntime -> ensureAwsSubstrateCertManagerRuntime
     StepAwsCertManagerReady -> pure ExitSuccess
-    StepAwsGatewayPreVault -> ensureGatewayChartReady repoRoot settings SubstrateAws
-    StepAwsGatewayPreVaultReady -> pure ExitSuccess
+    StepAwsBootstrapBroker ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartBootstrapBroker
+    StepAwsBootstrapBrokerReady -> pure ExitSuccess
     StepAwsVaultLifecycle ->
-      withRequiredGatewayEndpoint step endpoint (runVaultBootstrapViaDaemonAt repoRoot)
+      runVaultBootstrapViaBroker repoRoot
     StepAwsVaultUnsealedReady -> pure ExitSuccess
     StepAwsEnvoyGatewayRuntime ->
       ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
@@ -1196,6 +1184,20 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
     StepAwsPostgresOperatorRuntime ->
       ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
     StepAwsPostgresOperatorReady -> pure ExitSuccess
+    StepAwsTargetSecretAgent ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartTargetSecretAgent
+    StepAwsTargetSecretAgentReady -> pure ExitSuccess
+    StepAwsLifecycleAuthority ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartLifecycleAuthority
+    StepAwsLifecycleAuthorityReady -> pure ExitSuccess
     StepAwsGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
     StepAwsGatewayPostVault ->
       withRequiredGatewayEndpoint step endpoint $ \gatewayEndpoint ->
@@ -1205,6 +1207,27 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
           SubstrateAws
           gatewayEndpoint
     StepAwsGatewayFullReady -> pure ExitSuccess
+    StepAwsAuthorityBackup ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartAuthorityBackup
+    StepAwsAuthorityBackupReady -> pure ExitSuccess
+    StepAwsProviderWorker ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartProviderWorker
+    StepAwsProviderWorkerReady -> pure ExitSuccess
+    StepAwsTlsRetention ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateAws
+        ComponentChartTlsRetention
+    StepAwsTlsRetentionReady -> pure ExitSuccess
     StepAwsAcmeRuntime ->
       ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
     StepAwsAdminPublicEdgeRoutes ->
@@ -1313,8 +1336,11 @@ awsComponentReadinessTarget repoRoot endpoint component =
             )
         )
     ComponentVaultUnsealed ->
-      VaultUnsealedTarget component
-        <$> requiredReadinessEndpoint component endpoint observeVaultUnsealedOnceAt
+      Right
+        ( VaultUnsealedTarget
+            component
+            (observeVaultUnsealedOnce repoRoot)
+        )
     ComponentRegistry ->
       Right
         ( BackendRoundTripTarget
@@ -1368,17 +1394,7 @@ awsComponentReadinessTarget repoRoot endpoint component =
             )
         )
     ComponentPerconaPostgresOperator -> operatorAvailableTarget component
-    ComponentGatewayDaemonPreVault ->
-      Right
-        ( RolloutCompleteTarget
-            component
-            ( observeKubernetesReadinessOnce
-                repoRoot
-                [ DeploymentAvailable gatewayNamespace ("gateway-" ++ nodeId)
-                | nodeId <- gatewayNodeIdsForSubstrate SubstrateAws
-                ]
-            )
-        )
+    ComponentGatewayDaemonPreVault -> unsupportedAwsReadiness component
     ComponentGatewayDaemonFull ->
       BackendRoundTripTarget component ComponentMinio
         <$> requiredReadinessEndpoint component endpoint observeGatewayBackendRoundTripOnceAt
@@ -1390,12 +1406,30 @@ awsComponentReadinessTarget repoRoot endpoint component =
     ComponentChartApi -> unsupportedAwsReadiness component
     ComponentChartWebsocket -> unsupportedAwsReadiness component
     ComponentChartGateway -> unsupportedAwsReadiness component
-    ComponentChartBootstrapBroker -> unsupportedAwsReadiness component
-    ComponentChartLifecycleAuthority -> unsupportedAwsReadiness component
-    ComponentChartProviderWorker -> unsupportedAwsReadiness component
-    ComponentChartAuthorityBackup -> unsupportedAwsReadiness component
-    ComponentChartTlsRetention -> unsupportedAwsReadiness component
-    ComponentChartTargetSecretAgent -> unsupportedAwsReadiness component
+    ComponentChartBootstrapBroker -> deploymentRolloutTarget component "bootstrap-broker"
+    ComponentChartLifecycleAuthority ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [StatefulSetReady "lifecycle-authority" "lifecycle-authority"]
+            )
+        )
+    ComponentChartProviderWorker -> deploymentRolloutTarget component "provider-worker"
+    ComponentChartAuthorityBackup -> deploymentRolloutTarget component "authority-backup"
+    ComponentChartTlsRetention -> deploymentRolloutTarget component "tls-retention"
+    ComponentChartTargetSecretAgent -> deploymentRolloutTarget component "target-secret-agent"
+ where
+  deploymentRolloutTarget targetComponent name =
+    Right
+      ( RolloutCompleteTarget
+          targetComponent
+          ( observeKubernetesReadinessOnce
+              repoRoot
+              [DeploymentAvailable name name]
+          )
+      )
 
 requiredReadinessEndpoint
   :: ComponentId

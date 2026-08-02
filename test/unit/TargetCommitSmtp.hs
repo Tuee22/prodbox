@@ -5,11 +5,8 @@ module TargetCommitSmtp
   )
 where
 
-import Data.Aeson (eitherDecode, encode)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as BL
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -22,11 +19,6 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.Gateway.Daemon
-  ( decodeTargetSecretCasRequest
-  , decodeTargetSecretReadRequest
-  )
-import Prodbox.Gateway.TargetSecret qualified as TargetSecret
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -74,10 +66,12 @@ targetCommitSmtpSuite = do
         `shouldBe` Left (TargetRegistrationOverBound 2 1)
       mkRegisteredTargetSet 2 [sinkA, sinkA]
         `shouldBe` Left (TargetRegistrationDuplicateIdentity "home")
-      mkRegisteredTargetSet
-        2
-        [sinkA, sink "home-alias" "https://gateway.home.example.test"]
-        `shouldBe` Left (TargetRegistrationDuplicateSinkCoordinate "home" "home-alias")
+      -- The Vault mount/path is local to each registered cluster, so the same
+      -- internal consumer lane is intentionally reusable across distinct
+      -- target identities.
+      case mkRegisteredTargetSet 2 [sinkA, sink "home-alias"] of
+        Left err -> expectationFailure ("distinct target identities were rejected: " ++ show err)
+        Right _ -> pure ()
       mkRegisteredTargetSet 65 []
         `shouldBe` Left (TargetRegistrationCapacityExceedsHardMaximum 65 64)
       decidePrepareTargetCommit
@@ -461,45 +455,6 @@ targetCommitSmtpSuite = do
       filter (`elem` ["global-cas", "sink-observe", "sink-cas", "wait-until", "wait-for"]) recorded
         `shouldBe` []
 
-    it "pins the allowlisted target route and redacted Vault record round-trip" $ do
-      let wireRecord =
-            TargetSecret.TargetSecretRecord
-              { TargetSecret.targetSecretRecordOwnerNonce = "owner-a"
-              , TargetSecret.targetSecretRecordFencingToken = 1
-              , TargetSecret.targetSecretRecordGeneration = 1
-              , TargetSecret.targetSecretRecordDigest = targetValueDigestText digestA
-              , TargetSecret.targetSecretRecordFields = secretFields
-              }
-          coordinate =
-            TargetSecret.TargetSecretCoordinate
-              { TargetSecret.targetSecretCoordinateIdentity = "home"
-              , TargetSecret.targetSecretCoordinateVaultMount = "secret"
-              , TargetSecret.targetSecretCoordinateKvPath = "keycloak/smtp"
-              }
-          readRequest = TargetSecret.TargetSecretReadRequest coordinate True
-          casRequest = TargetSecret.TargetSecretCasRequest coordinate 0 wireRecord True
-      ( TargetSecret.targetSecretRecordToVaultFields wireRecord
-          >>= TargetSecret.targetSecretRecordFromVaultFields
-        )
-        `shouldBe` Right wireRecord
-      show wireRecord `shouldNotContain` "smtp-secret"
-      eitherDecode (encode readRequest) `shouldBe` Right readRequest
-      eitherDecode (encode casRequest) `shouldBe` Right casRequest
-      decodeTargetSecretReadRequest (rawPost TargetSecret.targetSecretReadPath (encode readRequest))
-        `shouldBe` Right readRequest
-      decodeTargetSecretCasRequest (rawPost TargetSecret.targetSecretCasPath (encode casRequest))
-        `shouldBe` Right casRequest
-      TargetSecret.validateTargetSecretReadRequest
-        readRequest
-          { TargetSecret.targetSecretReadCoordinate =
-              coordinate {TargetSecret.targetSecretCoordinateKvPath = "other/path"}
-          }
-        `shouldBe` Left (TargetSecret.TargetSecretCoordinateNotAllowed "secret" "other/path")
-      TargetSecret.validateTargetSecretIdentity
-        "home"
-        coordinate {TargetSecret.targetSecretCoordinateIdentity = "aws"}
-        `shouldBe` Left (TargetSecret.TargetSecretIdentityMismatch "home" "aws")
-
   describe "Sprint 4.47 SMTP committed-key repair" $ do
     it "reuses the sole recoverable committed key without creation" $ do
       planSmtpKeyRepair
@@ -648,7 +603,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "home-control"
-        "https://gateway.example.test"
         "prodbox-state"
         "lifecycle"
         "transit/prodbox"
@@ -661,17 +615,17 @@ intentCoordinate :: TargetIntentCoordinate
 intentCoordinate = expectRight (mkTargetIntentCoordinate authority leaseKey)
 
 sinkA :: TargetClusterSecretSink
-sinkA = sink "home" "https://gateway.home.example.test"
+sinkA = sink "home"
 
 sinkB :: TargetClusterSecretSink
-sinkB = sink "aws" "https://gateway.aws.example.test"
+sinkB = sink "aws"
 
 unregisteredSink :: TargetClusterSecretSink
-unregisteredSink = sink "unregistered" "https://gateway.other.example.test"
+unregisteredSink = sink "unregistered"
 
-sink :: Text -> Text -> TargetClusterSecretSink
-sink identity endpoint =
-  expectRight (mkTargetClusterSecretSink identity endpoint "secret" "keycloak/smtp")
+sink :: Text -> TargetClusterSecretSink
+sink identity =
+  expectRight (mkTargetClusterSecretSink identity "secret" "keycloak/smtp")
 
 registered :: RegisteredTargetSet
 registered = expectRight (mkRegisteredTargetSet 2 [sinkA, sinkB])
@@ -1003,19 +957,6 @@ fakeTargetRecoveryInterpreter events global now globalVersion homeRecord =
     }
  where
   record event = modifyIORef' events (++ [event])
-
-rawPost :: String -> BL.ByteString -> ByteString
-rawPost path body =
-  BS.concat
-    [ BS8.pack
-        ( "POST "
-            ++ path
-            ++ " HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: "
-            ++ show (BL.length body)
-            ++ "\r\n\r\n"
-        )
-    , BL.toStrict body
-    ]
 
 expectRight :: (Show errorValue) => Either errorValue value -> value
 expectRight result = case result of

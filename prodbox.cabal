@@ -18,6 +18,7 @@ library
         Prodbox.Aws.Native.Sts
         Prodbox.Aws.Native.Iam
         Prodbox.Aws.Native.Route53
+        Prodbox.Aws.Native.S3
         Prodbox.Aws.Native.ServiceQuotas
         Prodbox.Aws.SigV4
         Prodbox.AwsEnvironment
@@ -31,9 +32,12 @@ library
         Prodbox.Bootstrap.Broker.EngineSecretWorker
         Prodbox.Bootstrap.Broker.Fake
         Prodbox.Bootstrap.Broker.Fence
-        Prodbox.Bootstrap.Broker.LegacyAdapter
+        Prodbox.Bootstrap.Broker.HostSecretWorker
+        Prodbox.Bootstrap.Broker.KubernetesAttestation
+        Prodbox.Bootstrap.Broker.KubernetesWorker
         Prodbox.Bootstrap.Broker.Model
         Prodbox.Bootstrap.Broker.PgpBoundary
+        Prodbox.Bootstrap.Broker.PortForward
         Prodbox.Bootstrap.Broker.Program
         Prodbox.Bootstrap.Broker.Protocol
         Prodbox.Bootstrap.Broker.Request
@@ -41,9 +45,18 @@ library
         Prodbox.Bootstrap.Broker.Routes
         Prodbox.Bootstrap.Broker.Server
         Prodbox.Bootstrap.Broker.SecretWorker
+        Prodbox.Bootstrap.Broker.SecretIngress
         Prodbox.Bootstrap.Broker.ShutdownModel
         Prodbox.Bootstrap.Broker.Settings
         Prodbox.Bootstrap.Broker.StoreBoundary
+        Prodbox.Bootstrap.Broker.ProductionCapabilities
+        Prodbox.Bootstrap.Broker.ProductionStore
+        Prodbox.Bootstrap.Broker.ProductionEngine
+        Prodbox.Bootstrap.Broker.ProductionCryptoParameters
+        Prodbox.Bootstrap.Broker.ProductionPgp
+        Prodbox.Bootstrap.Broker.ProductionSecretWorker
+        Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
+        Prodbox.Bootstrap.Broker.TokenReview
         Prodbox.Bootstrap.Broker.Types
         Prodbox.Bootstrap.Broker.VaultWire
         Prodbox.BuildSupport
@@ -74,6 +87,7 @@ library
         Prodbox.CLI.Users
         Prodbox.CLI.Vault
         Prodbox.Cluster.Federation
+        Prodbox.Cluster.FederationRegistration
         Prodbox.Cluster.Placement
         Prodbox.Cluster.Substrate
         Prodbox.Cluster.Topology
@@ -98,18 +112,138 @@ library
         Prodbox.ControlPlane.Program
         Prodbox.ControlPlane.SCapability
         Prodbox.ControlPlane.CapabilityRequirement
+        Prodbox.ControlPlane.CleanupRunEndpoint
+        Prodbox.ControlPlane.AuthenticatedRuntime
+        Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+        Prodbox.ControlPlane.AuthenticatedTransport
+        Prodbox.ControlPlane.AuthenticationRegistry
+        Prodbox.ControlPlane.BootstrapCustodyClient
+        Prodbox.ControlPlane.BootstrapCustodyEndpoint
+        Prodbox.ControlPlane.BootstrapHandoffClient
+        Prodbox.ControlPlane.BootstrapHandoffEndpoint
+        Prodbox.ControlPlane.AdminActionClient
+        Prodbox.ControlPlane.AdminActionEndpoint
+        Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
+        Prodbox.ControlPlane.AwsAdminProvisionerClient
+        Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
+        Prodbox.ControlPlane.AdminActionAuthorityExecutionClient
+        Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
+        Prodbox.ControlPlane.AdminActionTargetClient
+        Prodbox.ControlPlane.AdminActionTargetEndpoint
+        Prodbox.ControlPlane.CallerPrincipal
+        Prodbox.ControlPlane.Client
+        Prodbox.ControlPlane.CleanupRunClient
+        Prodbox.ControlPlane.ConfigBackupClient
+        Prodbox.ControlPlane.ConfigClient
+        Prodbox.ControlPlane.ConfigEndpoint
+        Prodbox.ControlPlane.ConfigPayload
+        Prodbox.ControlPlane.ConfigProductionStore
+        Prodbox.ControlPlane.DecommissionClient
+        Prodbox.ControlPlane.DecommissionProduction
+        Prodbox.ControlPlane.ExternalMaterialIngressClient
+        Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
+        Prodbox.ControlPlane.FederationBootstrapCoordinator
+        Prodbox.ControlPlane.FederationBootstrapCrypto
+        Prodbox.ControlPlane.FederationRegistrationClient
+        Prodbox.ControlPlane.FederationRegistrationEndpoint
+        Prodbox.ControlPlane.ExternalMaterialIngressWorkflow
+        Prodbox.ControlPlane.RequestAuthentication
+        Prodbox.ControlPlane.RequestReplay
+        Prodbox.ControlPlane.RetainedMaterialEnvelope
+        Prodbox.ControlPlane.RetainedMaterialDeliveryProduction
+        Prodbox.ControlPlane.RetainedMaterialDeliveryCoordinator
+        Prodbox.ControlPlane.RetainedMaterialDeliveryClient
+        Prodbox.ControlPlane.RetainedMaterialDeliveryEndpoint
+        Prodbox.ControlPlane.RetainedMaterialRepository
+        Prodbox.ControlPlane.RetainedMaterialWorker
+        Prodbox.ControlPlane.RetainedMaterialWorkerVault
+        Prodbox.ControlPlane.RetainedAuthentication
+        Prodbox.ControlPlane.TransitRequestAuthentication
         Prodbox.ControlPlane.Deadline
         Prodbox.ControlPlane.AuthorityClock
+        Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+        Prodbox.ControlPlane.AuthorityProviderEndpoint
+        Prodbox.ControlPlane.AuthorityControlClient
+        Prodbox.ControlPlane.AuthorityOperationClient
+        Prodbox.ControlPlane.AuthorityObservationClient
+        Prodbox.ControlPlane.AuthorityObservationEndpoint
+        Prodbox.ControlPlane.AuthorityBackupAdapter
+        Prodbox.ControlPlane.AuthorityBackupClient
+        Prodbox.ControlPlane.AuthorityBackupExportClient
+        Prodbox.ControlPlane.AuthorityBackupExportEndpoint
+        Prodbox.ControlPlane.AuthorityBackupReconcileProduction
         Prodbox.ControlPlane.AuthorityBackupEndpoint
         Prodbox.ControlPlane.Capacity
         Prodbox.ControlPlane.Codec
+        Prodbox.ControlPlane.ClosedSession
+        Prodbox.ControlPlane.ServiceSessionJournal
+        Prodbox.ControlPlane.ServiceSessionLifecycle
+        Prodbox.ControlPlane.ProjectedServiceAccountIdentity
+        Prodbox.ControlPlane.VaultAccessorAudit
+        Prodbox.ControlPlane.VaultServiceSessionJournal
+        Prodbox.ControlPlane.DedicatedAdapterStore
+        Prodbox.ControlPlane.EksClientAuthProjection
+        Prodbox.ControlPlane.EksClientAuthClient
         Prodbox.ControlPlane.Interpreter
+        Prodbox.ControlPlane.InClusterAuthorityStore
+        Prodbox.ControlPlane.LocalClient
+        Prodbox.ControlPlane.LifecycleAuthorityAuthentication
         Prodbox.ControlPlane.MigrationEndpoint
         Prodbox.ControlPlane.OperationEndpoint
         Prodbox.ControlPlane.ProviderWorkEndpoint
+        Prodbox.ControlPlane.ProviderNarrowSession
+        Prodbox.ControlPlane.ProviderProduction
+        Prodbox.ControlPlane.ProviderCaller
+        Prodbox.ControlPlane.ProviderWorkerAdapter
+        Prodbox.ControlPlane.ProviderWorkerExecution
+        Prodbox.ControlPlane.ProviderWorkerClient
+        Prodbox.ControlPlane.ProjectionImportEndpoint
+        Prodbox.ControlPlane.ProjectionImportRegistration
+        Prodbox.ControlPlane.PulumiCheckpointClient
+        Prodbox.ControlPlane.PulumiCheckpointEndpoint
+        Prodbox.ControlPlane.PulumiCheckpointProductionStore
+        Prodbox.ControlPlane.PulumiCheckpointRepository
+        Prodbox.ControlPlane.RetainedSesLeaseClient
+        Prodbox.ControlPlane.RetainedSesLeaseEndpoint
         Prodbox.ControlPlane.Server
-        Prodbox.ControlPlane.TargetSecretEndpoint
+        Prodbox.ControlPlane.TargetAuthorityTrust
+        Prodbox.ControlPlane.TargetAuthorityTrustClient
+        Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
+        Prodbox.ControlPlane.TargetIntentAuthority
+        Prodbox.ControlPlane.TargetIntentAuthorityClient
+        Prodbox.ControlPlane.TargetIntentAuthorityEndpoint
+        Prodbox.ControlPlane.TargetIntentAuthorityProduction
+        Prodbox.ControlPlane.TargetSecretAgentExecution
+        Prodbox.ControlPlane.TargetSecretWorker
+        Prodbox.ControlPlane.TargetSecretWorkerCoordinator
+        Prodbox.ControlPlane.TargetSecretWorkerKubernetes
+        Prodbox.ControlPlane.TargetSecretWorkerProtocol
+        Prodbox.ControlPlane.TargetSecretWorkerProduction
+        Prodbox.ControlPlane.TargetSecretWorkerRuntime
+        Prodbox.ControlPlane.TargetOneShotOperationEndpoint
+        Prodbox.ControlPlane.TargetWorkerExecutionPermit
+        Prodbox.ControlPlane.TargetMaterialEndpoint
+        Prodbox.ControlPlane.TargetMaterialFixture
+        Prodbox.ControlPlane.TargetMaterialClient
+        Prodbox.ControlPlane.TargetMaterialRecordCodec
+        Prodbox.ControlPlane.TargetMaterialRegistry
+        Prodbox.ControlPlane.TargetMaterializationProduction
+        Prodbox.ControlPlane.TargetMaterializationWorkflow
+        Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
+        Prodbox.ControlPlane.TargetRetainedMaterialRewrapClient
+        Prodbox.ControlPlane.TargetRetainedMaterialRewrapProduction
+        Prodbox.ControlPlane.TrustedTargetSink
+        Prodbox.ControlPlane.TlsDekExchange
+        Prodbox.ControlPlane.TlsRetentionAdapter
+        Prodbox.ControlPlane.TlsRetentionAuthority
+        Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
+        Prodbox.ControlPlane.TlsRetentionAuthorityClient
+        Prodbox.ControlPlane.TlsRetentionWorkflow
+        Prodbox.ControlPlane.TlsRetentionClient
         Prodbox.ControlPlane.TlsRetentionEndpoint
+        Prodbox.ControlPlane.TlsTargetAgentEndpoint
+        Prodbox.ControlPlane.TlsTargetAgentClient
+        Prodbox.ControlPlane.TlsTargetAgentProduction
         Prodbox.ControlPlane.RoleInterpreters
         Prodbox.Daemon.Events
         Prodbox.Crypto.Aead
@@ -137,7 +271,7 @@ library
         Prodbox.Gateway.Emitter.Mailbox
         Prodbox.Gateway.Emitter.Persistence
         Prodbox.Gateway.Logging
-        Prodbox.Gateway.ObjectStore
+        Prodbox.ControlPlane.AuthorityObject
         Prodbox.Gateway.Orders
         Prodbox.Gateway.Peer
         Prodbox.Gateway.PortForward
@@ -146,7 +280,6 @@ library
         Prodbox.Gateway.Routes
         Prodbox.Gateway.Settings
         Prodbox.Gateway.State
-        Prodbox.Gateway.TargetSecret
         Prodbox.Gateway.Types
         Prodbox.Host
         Prodbox.Host.Ensure
@@ -157,26 +290,48 @@ library
         Prodbox.Host.Wsl2
         Prodbox.Http.Client
         Prodbox.Infra.AwsSesLeaseRole
+        Prodbox.Infra.AwsSesDecommission
         Prodbox.Infra.AwsSesSmtpKey
-        Prodbox.Infra.AwsProviderCredentials
+        Prodbox.Infra.SesConsumerQuiescence
+        Prodbox.Infra.DedicatedAdapterIam
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.LongLivedPulumiBackend
+        Prodbox.Infra.LongLivedDecommission
         Prodbox.Infra.StackDescriptor
         Prodbox.Infra.StackOutputs
         Prodbox.Infra.SubstrateKubectl
         Prodbox.CLI.Nuke
         Prodbox.Legacy.EscapeRegistry
+        Prodbox.Lifecycle.AdminAction.Authority
+        Prodbox.Lifecycle.AdminAction.Coordinator
+        Prodbox.Lifecycle.AdminAction.Execution
+        Prodbox.Lifecycle.AdminAction.Kubernetes
+        Prodbox.Lifecycle.AdminAction.KubernetesJob
+        Prodbox.Lifecycle.AdminAction.Protocol
+        Prodbox.Lifecycle.AdminAction.Production
+        Prodbox.Lifecycle.AdminAction.QuotaJournal
+        Prodbox.Lifecycle.AdminAction.Runner
+        Prodbox.Lifecycle.AdminAction.WorkerProtocol
         Prodbox.Lifecycle.EbsVolume
         Prodbox.Lifecycle.Authority.AdminAction
+        Prodbox.Lifecycle.Authority.Admission
         Prodbox.Lifecycle.Authority.BackupRepair
+        Prodbox.Lifecycle.Authority.BootstrapReconcile
+        Prodbox.Lifecycle.Authority.ClientRegistry
         Prodbox.Lifecycle.Authority.ChartStatics
         Prodbox.Lifecycle.Authority.Config
+        Prodbox.Lifecycle.Authority.Cutover
         Prodbox.Lifecycle.Authority.Genesis
         Prodbox.Lifecycle.Authority.Migration
         Prodbox.Lifecycle.Authority.MigrationInterpreter
+        Prodbox.Lifecycle.Authority.ProjectionImport
+        Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
+        Prodbox.Lifecycle.Authority.RetainedMaterial
+        Prodbox.Lifecycle.Decommission.AuthorityExport
+        Prodbox.Lifecycle.Decommission.AuthorityStop
         Prodbox.Lifecycle.Decommission.Commit
         Prodbox.Lifecycle.Decommission.Frame
         Prodbox.Lifecycle.Decommission.Graph
@@ -185,7 +340,10 @@ library
         Prodbox.Lifecycle.Decommission.NodeEffect
         Prodbox.Lifecycle.Decommission.Permit
         Prodbox.Lifecycle.Decommission.Receipt
+        Prodbox.Lifecycle.Decommission.RetainedCustodyTombstone
         Prodbox.Lifecycle.Decommission.Runner
+        Prodbox.Lifecycle.Decommission.TargetInventory
+        Prodbox.Lifecycle.Decommission.TargetTombstone
         Prodbox.Lifecycle.Decommission.Verifier
         Prodbox.Lifecycle.Authority.Operation
         Prodbox.Lifecycle.Authority.OperationStore
@@ -196,6 +354,27 @@ library
         Prodbox.Lifecycle.AuthorityBackup.ChartStatics
         Prodbox.Lifecycle.ProviderWorker.ChartStatics
         Prodbox.Lifecycle.ProviderWorker.ProviderWork
+        Prodbox.Lifecycle.CredentialProvisioner.Execution
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminRetainedCustody
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorkerProtocol
+        Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
+        Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
+        Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorkerProtocol
+        Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
+        Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
+        Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
+        Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
+        Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+        Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
+        Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
         Prodbox.Lifecycle.TargetSecretAgent.ChartStatics
         Prodbox.Lifecycle.TlsRetention.ChartStatics
         Prodbox.Lifecycle.AnchoredReconcile
@@ -203,11 +382,11 @@ library
         Prodbox.Lifecycle.StoreLifetime
         Prodbox.Lifecycle.AuthorityObjectCore
         Prodbox.Lifecycle.CheckpointAuthority
-        Prodbox.Lifecycle.CheckpointAuthorityStore
         Prodbox.Lifecycle.ModelBCasTransport
-        Prodbox.Lifecycle.HostDirectAuthorityStore
+        Prodbox.Lifecycle.HelmRelease
         Prodbox.Lifecycle.AuthorityConfig
         Prodbox.Lifecycle.DesiredPresence
+        Prodbox.Lifecycle.DnsRecord
         Prodbox.Lifecycle.FederatedVault
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.Lease
@@ -215,6 +394,7 @@ library
         Prodbox.Lifecycle.LeaseRuntime
         Prodbox.Lifecycle.LiveResidue
         Prodbox.Lifecycle.Preconditions
+        Prodbox.Lifecycle.PulumiCheckpoint
         Prodbox.Lifecycle.ReadinessObservation
         Prodbox.Lifecycle.RestoreGraph
         Prodbox.Lifecycle.ResidueStatus
@@ -225,18 +405,23 @@ library
         Prodbox.Lifecycle.TagSweep
         Prodbox.Lifecycle.TargetCommitInterpreter
         Prodbox.Lifecycle.TargetCommitIntent
-        Prodbox.Lifecycle.TargetSecretStore
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm
         Prodbox.Keycloak.Email
         Prodbox.Ses.Capture
         Prodbox.Ses.Readiness
         Prodbox.Ses.SmtpPassword
+        Prodbox.Ses.Workflow.Model
+        Prodbox.Ses.Workflow.Interpreter
+        Prodbox.Ses.Workflow.Coordinator
+        Prodbox.Ses.Workflow.LegacyCheckpointGc
+        Prodbox.Ses.Workflow.Repository
         Prodbox.UsersAdmin
         Prodbox.Infra.MinioBackend
         Prodbox.K8s
         Prodbox.K8s.InCluster
         Prodbox.Lib.AwsSubstratePlatform
+        Prodbox.Lib.AwsControlPlaneIsolation
         Prodbox.Lib.ChartPlatform
         Prodbox.Lib.EksContainerdMirror
         Prodbox.Lib.EksCustomImagePush
@@ -262,7 +447,6 @@ library
         Prodbox.Pulsar.Topic
         Prodbox.Pulsar.TopicResidue
         Prodbox.Pulumi.EncryptedBackend
-        Prodbox.Pulumi.HostDirectObjectStore
         Prodbox.Repo
         Prodbox.Runtime.Role
         Prodbox.Retry
@@ -277,6 +461,19 @@ library
         Prodbox.Subprocess
         Prodbox.TestPlan
         Prodbox.Test.GatewayRuntimeStability
+        Prodbox.Test.CleanupRun
+        Prodbox.Test.CleanupRunRunner
+        Prodbox.Test.CounterexampleValidation
+        Prodbox.Test.CertificateScopeServing
+        Prodbox.Test.CleanRoomHandoff
+        Prodbox.Test.DurableCleanupComposition
+        Prodbox.Test.ManagedCleanupPlan
+        Prodbox.Test.TemporalQualification
+        Prodbox.Test.Qualification.FrozenCounterexample
+        Prodbox.Test.Qualification.Invite
+        Prodbox.Test.Qualification.Evidence
+        Prodbox.Test.Qualification.SourceIdentity
+        Prodbox.Test.Qualification.SourceManifest
         Prodbox.TestRestore
         Prodbox.TestRunner
         Prodbox.TestTopology
@@ -328,13 +525,16 @@ library
         filepath ^>=1.4.2.2,
         fsnotify ^>=0.4,
         crypton-connection ^>=0.4,
+        crypton-x509 ^>=1.7,
         crypton-x509-store ^>=1.6,
+        hourglass ^>=0.2,
         http-client ^>=0.7.17,
         http-client-tls ^>=0.3.6.4,
         http-types ^>=0.12.4,
         tls ^>=2.1,
         network ^>=3.1.4,
         optparse-applicative ^>=0.18.1.0,
+        pem ^>=0.2,
         scientific ^>=0.3.7,
         serialise ^>=0.2.6.1,
         stm ^>=2.5,
@@ -353,7 +553,7 @@ executable prodbox
     hs-source-dirs:   app/prodbox
     other-modules:    Paths_prodbox
     default-language: GHC2021
-    ghc-options:      -Wall -rtsopts
+    ghc-options:      -Wall -rtsopts -with-rtsopts=-T
     build-depends:
         base ^>=4.21.2.0,
         optparse-applicative ^>=0.18.1.0,
@@ -364,12 +564,18 @@ test-suite prodbox-unit
     main-is:          Main.hs
     hs-source-dirs:   test/unit test/support
     other-modules:
+        AdminActionQuotaJournal
+        AdminActionLifecycle
         Allocation
         AwsNativeClients
+        AwsControlPlaneIsolation
+        AwsSesDecommission
         AwsSesLifecycle
         AwsSesLeaseRole
         AwsSesReadiness
         AwsSesSmtpKey
+        SesWorkflow
+        InviteQualification
         AuthorityLogicalObjectTaxonomy
         BootstrapBrokerClient
         BootstrapBrokerCustody
@@ -377,6 +583,8 @@ test-suite prodbox-unit
         BootstrapBrokerEnginePhysical
         BootstrapBrokerEngineSecretWorker
         BootstrapBrokerFoundation
+        BootstrapBrokerProductionCapabilities
+        BootstrapBrokerProductionBoundary
         BootstrapBrokerRequestJournal
         BootstrapBrokerRuntime
         BootstrapBrokerSafety
@@ -385,11 +593,16 @@ test-suite prodbox-unit
         BrokerChartStatics
         CapabilityReadinessBarrierSuite
         ControlPlaneAuthorityClock
+        ControlPlaneAuthorityObservation
         ControlPlaneCapability
+        ControlPlaneClient
         ControlPlaneCapacity
+        ControlPlaneConfigEndpoint
+        ControlPlaneFederationBootstrap
         ControlPlaneDeadline
         CertScopeSuite
         DesiredPresentReconciliation
+        DnsRecord
         EscapeRegistry
         FencedCheckpoint
         GatewayAuthority
@@ -403,28 +616,51 @@ test-suite prodbox-unit
         GatewayEmitterPersistence
         LifecycleAuthorityAdminAction
         LifecycleAuthorityBackupRepair
+        LifecycleAuthorityBootstrapReconcile
+        LifecycleAuthorityClientRegistry
         LifecycleAuthorityConfig
+        LifecycleAuthorityCutover
         LifecycleAuthorityGenesis
         LifecycleAuthorityMigration
+        LifecycleAuthorityProjectionImport
+        LifecycleAuthorityPulumiCheckpointRegistry
+        LifecycleAuthorityRetainedMaterial
         ControlPlaneRoute
         ControlPlaneAuthorityBackupEndpoint
+        ControlPlaneAdminActionAuthorityExecutionEndpoint
         ControlPlaneMigrationEndpoint
         ControlPlaneOperationEndpoint
         ControlPlaneProviderWorkEndpoint
+        ControlPlaneProviderWorkerAdapter
+        ControlPlaneProviderWorkerExecution
+        ControlPlaneProjectionImportRegistration
+        ControlPlanePulumiCheckpoint
+        ControlPlanePulumiCheckpointRepository
+        ControlPlaneRetainedMaterialWorker
+        ControlPlaneRetainedSesLease
         ControlPlaneServer
         ControlPlaneRoleInterpreters
-        ControlPlaneTargetSecretEndpoint
+        ControlPlaneTargetSecretAgentExecution
+        ControlPlaneTargetSecretWorker
         ControlPlaneTlsRetentionEndpoint
         ControlPlaneVaultSession
+        CredentialProvisioner
+        CredentialProvisionerAwsAdminAuthority
+        ExternalMaterialIngressLifecycle
+        EksClientAuthProjection
         DecommissionCommit
+        DecommissionAuthorityExport
+        DecommissionControlPlaneClient
         DecommissionFrame
         DecommissionGraph
         DecommissionJournal
         DecommissionManifest
         DecommissionNodeEffect
         DecommissionPermit
+        DecommissionProductionBoundaries
         DecommissionReceipt
         DecommissionRunner
+        DecommissionTargetTombstone
         DecommissionVerifier
         LifecycleAuthorityOperation
         LifecycleAuthorityOutboxSim
@@ -432,18 +668,26 @@ test-suite prodbox-unit
         LifecycleAuthorityState
         LifecycleAuthoritySubmission
         LifecycleAuthorityTlsRetention
+        LongLivedDecommission
         GatewayProbe
         GatewayReadiness
         GatewayRoutes
         GatewayRuntimeStability
-        HostDirectAuthorityCas
-        HostDirectModelBAdapter
+        AuthorityObjectCoreCas
+        HelmRelease
         LifecycleLease
+        CertificateScopeServing
+        CleanRoomHandoff
         MeasuredProfile
         ObjectStoreNative
         Parser
+        QualificationFrozenCounterexample
+        QualificationEvidence
+        QualificationSourceIdentity
+        TemporalQualification
         RetainedSesPreparation
         RestoreGraphSuite
+        CleanupRun
         RetainedSesTargetRecovery
         SigV4
         SmtpKeyRepairInterpreter
@@ -452,6 +696,7 @@ test-suite prodbox-unit
         TestSupport
         Tier0PlanAssert
         VaultSession
+        VaultSessionSafety
 
     default-language: GHC2021
     ghc-options:      -Wall -threaded -rtsopts
@@ -462,12 +707,14 @@ test-suite prodbox-unit
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
         containers ^>=0.6.7,
+        crypton ^>=1.0.6,
         cryptohash-sha1 ^>=0.11,
         dhall ^>=1.42,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         memory ^>=0.18,
         network ^>=3.1.4.0,
+        http-types ^>=0.12.4,
         optparse-applicative ^>=0.18.1.0,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
@@ -491,24 +738,77 @@ test-suite prodbox-integration
     other-modules:
         CliSuite
         EnvSuite
+        FixtureServer
         TestSupport
 
     default-language: GHC2021
-    ghc-options:      -Wall
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N1
     build-depends:
         base ^>=4.21.2.0,
+        aeson ^>=2.2.3.0,
+        base64-bytestring ^>=1.2.1.0,
         bytestring ^>=0.11.5.3,
+        cryptonite ^>=0.30,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
+        memory ^>=0.18.0,
         network ^>=3.1.4,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
+        serialise ^>=0.2.6.1,
         prodbox,
         tasty ^>=1.5,
         tasty-golden ^>=2.3.5,
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
+        text ^>=2.0.2,
         temporary ^>=1.3
+
+test-suite prodbox-authority-admission-unit
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test/authority-admission
+    default-language: GHC2021
+    ghc-options:      -Wall
+    build-depends:
+        base ^>=4.21.2.0,
+        containers ^>=0.6.7,
+        prodbox,
+        tasty ^>=1.5,
+        tasty-hunit ^>=0.10.2,
+        text ^>=2.0.2
+
+test-suite prodbox-control-plane-authentication-unit
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test/control-plane-authentication
+    default-language: GHC2021
+    ghc-options:      -Wall
+    build-depends:
+        base ^>=4.21.2.0,
+        bytestring ^>=0.11.5.3,
+        prodbox,
+        serialise ^>=0.2.6.1,
+        tasty ^>=1.5,
+        tasty-hunit ^>=0.10.2,
+        tasty-quickcheck ^>=0.11,
+        text ^>=2.0.2
+
+test-suite prodbox-control-plane-authenticated-transport-unit
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test/control-plane-authenticated-transport
+    default-language: GHC2021
+    ghc-options:      -Wall
+    build-depends:
+        base ^>=4.21.2.0,
+        base64-bytestring ^>=1.2,
+        bytestring ^>=0.11.5.3,
+        prodbox,
+        serialise ^>=0.2.6.1,
+        tasty ^>=1.5,
+        tasty-hunit ^>=0.10.2,
+        text ^>=2.0.2
 
 test-suite prodbox-haskell-style
     type:             exitcode-stdio-1.0

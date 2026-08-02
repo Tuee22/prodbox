@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import Control.Concurrent.Async (wait, withAsync)
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.STM
   ( TMVar
   , TVar
@@ -22,7 +22,7 @@ import Control.Exception
   , bracket
   , try
   )
-import Control.Monad (forever)
+import Control.Monad (forM_, forever)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -54,14 +54,8 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
-import Prodbox.Bootstrap.Broker.LegacyAdapter (bootstrapVaultPath)
 import Prodbox.CLI.Spec
   ( findCommandSpec
-  )
-import Prodbox.ControlPlane.Deadline
-  ( Deadline
-  , DeadlineObservation (DeadlineOpen)
-  , deadlineObservation
   )
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Gateway
@@ -72,7 +66,6 @@ import Prodbox.Gateway.Daemon
   , EmitterRuntimeDependencies (..)
   , EmitterRuntimeEvent (..)
   , EmitterTopology (JournalLeaseEmitter)
-  , TargetOperation (TargetPulumiObjectGet)
   , runGatewayDaemonWithRuntimeDependencies
   )
 import Prodbox.Gateway.Emitter.Journal
@@ -90,8 +83,8 @@ import Prodbox.Gateway.Emitter.Lease
   , LeaseObservation (..)
   , LeaseRecord (..)
   )
-import Prodbox.Gateway.ObjectStore (pulumiObjectGetPath)
 import Prodbox.Gateway.Settings qualified as GatewaySettings
+import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( PollOutcome (..)
@@ -120,6 +113,25 @@ import System.IO (hGetContents)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Timeout (timeout)
 import TestSupport
+
+removedGatewayBootstrapPath :: String
+removedGatewayBootstrapPath = "/v1/bootstrap/vault/ensure"
+
+removedGatewayControlPlanePaths :: [String]
+removedGatewayControlPlanePaths =
+  [ removedGatewayBootstrapPath
+  , "/v1/federation/children"
+  , "/v1/federation/children/child-a/bootstrap"
+  , "/v1/object-store/pulumi/get"
+  , "/v1/object-store/pulumi/put"
+  , "/v1/object-store/pulumi/delete"
+  , "/v1/object-store/authority/get"
+  , "/v1/object-store/authority/cas"
+  , "/v1/object-store/authority/time"
+  , "/v1/target-secret/read"
+  , "/v1/target-secret/cas"
+  , "/v1/secret/acme/eab"
+  ]
 
 main :: IO ()
 main = mainWithSuite "prodbox-daemon-lifecycle" $ do
@@ -178,22 +190,22 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
           firstLine : _ -> assertStructuredLogLine firstLine
           [] -> expectationFailure "expected at least one daemon log line on stderr"
 
-    it "binds pre-Vault diagnostics without readiness or local publication" $
+    it "binds pre-Vault diagnostics while every removed control-plane path stays absent" $
       withGatewayDaemonWithConfig renderPreVaultConfig 5 $ \daemon -> do
         waitForHttpStatus (daemonRestPort daemon) "/healthz" 200
         readHttp (daemonRestPort daemon) "/healthz"
           `shouldReturn` HttpResponse 200 "ok\n"
         readHttp (daemonRestPort daemon) "/readyz"
           `shouldReturn` HttpResponse 503 "starting\n"
-        rollbackResponse <-
-          readHttpRequest
-            (daemonRestPort daemon)
-            (postJsonRequest bootstrapVaultPath "{}")
-        responseStatus rollbackResponse `shouldBe` 400
-        responseBody rollbackResponse `shouldContain` "invalid bootstrap JSON body"
+        forM_ removedGatewayControlPlanePaths $ \path -> do
+          removedResponse <-
+            readHttpRequest
+              (daemonRestPort daemon)
+              (postJsonRequest path "{}")
+          responseStatus removedResponse `shouldBe` 404
         federationResponse <- readHttp (daemonRestPort daemon) "/v1/federation/children"
-        responseStatus federationResponse `shouldBe` 503
-        responseBody federationResponse `shouldContain` "gateway service-account token"
+        responseStatus federationResponse `shouldBe` 404
+        responseBody federationResponse `shouldBe` "not found\n"
         stateResponse <- readHttp (daemonRestPort daemon) "/v1/state"
         case eitherDecode (BL8.pack (responseBody stateResponse)) of
           Right (Object obj) ->
@@ -284,7 +296,7 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
           Right _ -> expectationFailure "/v1/state was not a JSON object"
 
   describe "Sprint 2.32 actor-backed target daemon composition" $ do
-    it "keeps production on the mutually exclusive legacy topology pending Standard-P" $ do
+    it "keeps rollback DNS and native target-operation DNS mutually exclusive" $ do
       repoRoot <- getCurrentDirectory
       daemonSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
       daemonSource
@@ -294,62 +306,35 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
       daemonSource
         `shouldContain` "withTargetOperationAtDeadline env TargetRoute53Write deadline"
       daemonSource
+        `shouldContain` "writeNativeDnsRecord"
+      daemonSource
         `shouldContain` "Just _ -> throwIO exc"
       daemonSource
         `shouldContain` "try (TextIO.readFile path) :: IO (Either IOException Text.Text)"
 
-    it "keeps target continuity and native REST off an occupied legacy child slot" $
+    it "keeps target continuity independent while removed lifecycle REST paths stay absent" $
       withTargetGatewayFixture $ \fixture ->
         withRunningTargetGateway fixture $ do
           -- The injected fixture never seeds the legacy child permit. Reaching
           -- ready proves the Journal/Lease continuity actor does not wait on it.
           waitForHttpStatus (targetRestPort fixture) "/readyz" 200
-          response <-
-            readHttpRequest
-              (targetRestPort fixture)
-              (postJsonRequest bootstrapVaultPath "{}")
-          responseStatus response `shouldBe` 404
-          targetResponse <-
-            readHttpRequest
-              (targetRestPort fixture)
-              (postJsonRequest pulumiObjectGetPath "{}")
-          responseStatus targetResponse `shouldBe` 400
-          propagatedDeadline <-
-            waitForEmitterEvent fixture pulumiObjectOperationDeadline
-          observedAtHandler <- realMonotonicNow
-          deadlineObservation observedAtHandler propagatedDeadline
-            `shouldSatisfy` isOpenDeadline
+          forM_ removedGatewayControlPlanePaths $ \path -> do
+            response <-
+              readHttpRequest
+                (targetRestPort fixture)
+                (postJsonRequest path "{}")
+            responseStatus response `shouldBe` 404
 
           repoRoot <- getCurrentDirectory
           daemonSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
           daemonSource
-            `shouldContain` "LegacyModelBEmitter -> withGatewayChild env childName action"
+            `shouldContain` "withGatewayChild env \"gateway-continuity\""
           daemonSource
-            `shouldContain` "JournalLeaseEmitter -> action"
+            `shouldNotContain` "LegacyModelBEmitter -> withGatewayChild env childName action"
           daemonSource
-            `shouldContain` "writeNativeDnsRecord acceptedDeadline action"
-
-    it "refuses a saturated target operation immediately without queueing" $
-      withTargetGatewayFixture $ \fixture -> do
-        atomically (writeTVar (targetBlockNextOperation fixture) True)
-        withRunningTargetGateway fixture $ do
-          waitForHttpStatus (targetRestPort fixture) "/readyz" 200
-          let request = postJsonRequest pulumiObjectGetPath "{}"
-          withAsync (readHttpRequest (targetRestPort fixture) request) $ \firstRequest -> do
-            _ <-
-              waitForEmitterEvent fixture pulumiObjectOperationAdmitted
-            refused <-
-              timeout
-                1000000
-                (readHttpRequest (targetRestPort fixture) request)
-            case refused of
-              Nothing -> expectationFailure "saturated target operation queued instead of refusing"
-              Just response -> do
-                responseStatus response `shouldBe` 503
-                responseBody response `shouldContain` "immediate refusal"
-            atomically (putTMVar (targetOperationGate fixture) ())
-            completed <- wait firstRequest
-            responseStatus completed `shouldBe` 400
+            `shouldContain` "emitterDependencyObserveAuthorityEpoch"
+          daemonSource
+            `shouldContain` "writeNativeDnsRecord"
 
     it "adopts a target peer cursor only after its actor acknowledgement fsyncs" $
       withTargetGatewayFixture $ \fixture -> do
@@ -720,8 +705,6 @@ data TargetGatewayFixture = TargetGatewayFixture
   , targetPeerProxyEnabled :: TMVar ()
   , targetFailNextPeerAckFsync :: TVar Bool
   , targetPeerAckFsyncRecoveryGate :: TMVar ()
-  , targetBlockNextOperation :: TVar Bool
-  , targetOperationGate :: TMVar ()
   , targetBlockNextMountProjection :: TVar Bool
   , targetFailNextMigrationFinalFsync :: TVar Bool
   }
@@ -763,8 +746,6 @@ withTargetGatewayFixture action =
     failNextPeerAckFsync <- newTVarIO False
     blockPeerAckFsyncRecovery <- newTVarIO False
     peerAckFsyncRecoveryGate <- newEmptyTMVarIO
-    blockNextOperation <- newTVarIO False
-    operationGate <- newEmptyTMVarIO
     blockNextMountProjection <- newTVarIO False
     failNextMigrationFinalFsync <- newTVarIO False
     mountProjectionGate <- newEmptyTMVarIO
@@ -822,15 +803,6 @@ withTargetGatewayFixture action =
                   else pure False
               if shouldBlock
                 then atomically (takeTMVar publishGate)
-                else pure ()
-            EmitterTargetOperationAdmitted TargetPulumiObjectGet _ -> do
-              shouldBlock <- atomically $ do
-                current <- readTVar blockNextOperation
-                if current
-                  then writeTVar blockNextOperation False >> pure True
-                  else pure False
-              if shouldBlock
-                then atomically (takeTMVar operationGate)
                 else pure ()
             EmitterMountProjectionFsynced -> do
               shouldBlock <- atomically $ do
@@ -892,6 +864,7 @@ withTargetGatewayFixture action =
           EmitterRuntimeDependencies
             { emitterDependencyJournalRoot = journalRoot
             , emitterDependencyLoadLeaseRuntime = pure (Right leaseRuntime)
+            , emitterDependencyObserveAuthorityEpoch = pure (Right authorityEpochGenesis)
             , emitterDependencyObserveAdmission = \_config _node identity -> do
                 atomically (writeTVar observedIdentity (Just identity))
                 Right <$> readTVarIO admissionMarker
@@ -953,8 +926,6 @@ withTargetGatewayFixture action =
         , targetPeerProxyEnabled = peerProxyEnabled
         , targetFailNextPeerAckFsync = failNextPeerAckFsync
         , targetPeerAckFsyncRecoveryGate = peerAckFsyncRecoveryGate
-        , targetBlockNextOperation = blockNextOperation
-        , targetOperationGate = operationGate
         , targetBlockNextMountProjection = blockNextMountProjection
         , targetFailNextMigrationFinalFsync = failNextMigrationFinalFsync
         }
@@ -977,16 +948,6 @@ waitForRespondedEmitterBytes fixture =
 waitForMountUnavailable :: TargetGatewayFixture -> IO String
 waitForMountUnavailable fixture =
   waitForEmitterEvent fixture mountUnavailableDetail
-
-pulumiObjectOperationDeadline :: EmitterRuntimeEvent -> Maybe Deadline
-pulumiObjectOperationDeadline event = case event of
-  EmitterTargetOperationAdmitted TargetPulumiObjectGet deadline -> Just deadline
-  _ -> Nothing
-
-pulumiObjectOperationAdmitted :: EmitterRuntimeEvent -> Maybe ()
-pulumiObjectOperationAdmitted event = case event of
-  EmitterTargetOperationAdmitted TargetPulumiObjectGet _ -> Just ()
-  _ -> Nothing
 
 matchingEmitterEvent :: EmitterRuntimeEvent -> EmitterRuntimeEvent -> Maybe ()
 matchingEmitterEvent expected observed
@@ -1531,11 +1492,6 @@ postJsonRequest path body =
     ++ "\r\nConnection: close\r\n\r\n"
     ++ body
 
-isOpenDeadline :: DeadlineObservation -> Bool
-isOpenDeadline observation = case observation of
-  DeadlineOpen _ -> True
-  _ -> False
-
 -- | Render a current-schema gateway daemon config (Sprint 3.18 SecretRef
 -- shape, decoded by 'Prodbox.Gateway.Settings.loadDaemonConfig').
 --
@@ -1595,6 +1551,7 @@ renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLev
     , "        { minio_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
     , "        , minio_secret_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
     , "        }"
+    , "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="
@@ -1662,6 +1619,7 @@ renderPreVaultConfig certPath keyPath caPath ordersPath drainDeadlineSeconds may
     , "        { minio_access_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
     , "        , minio_secret_key : < Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
     , "        }"
+    , "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "  , minio_endpoint_url = Some \"http://minio.prodbox.svc.cluster.local:9000\""
     , "  }"
     , ", live ="

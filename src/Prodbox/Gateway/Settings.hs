@@ -25,6 +25,7 @@ module Prodbox.Gateway.Settings
   , DaemonConfigDhall (..)
   , DaemonBootDhall (..)
   , DaemonLiveDhall (..)
+  , LifecycleAuthorityDhall (..)
   , DnsWriteGateDhall (..)
   , EventKeyDhall (..)
   , AwsCredsDhall (..)
@@ -59,6 +60,12 @@ import Data.Text.IO qualified as TextIO
 import Dhall (FromDhall, auto, input, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthorityObservationEndpoint
+  ( mkLifecycleAuthorityObserveRequest
+  )
+import Prodbox.ControlPlane.Client
+  ( mkLifecycleAuthorityEndpoint
+  )
 import Prodbox.Gateway.Bounds
   ( GatewayBounds
   , gatewayMaxEncodedMemberBytes
@@ -74,6 +81,7 @@ import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
+  , GatewayLifecycleAuthority (..)
   , GatewayMinioCreds (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
@@ -126,6 +134,7 @@ data DaemonBootDhall = DaemonBootDhall
   , ca_file :: Text
   , orders_file :: Text
   , event_keys :: [EventKeyDhall]
+  , lifecycle_authority :: Maybe LifecycleAuthorityDhall
   , dns_write_gate :: Maybe DnsWriteGateDhall
   , aws_creds :: Maybe AwsCredsDhall
   , minio_creds :: Maybe MinioCredsDhall
@@ -136,6 +145,16 @@ data DaemonBootDhall = DaemonBootDhall
   -- ConfigMap while credentials stay Vault-backed SecretRef values.
   -- Canonical home value:
   -- @http://minio.prodbox.svc.cluster.local:9000@.
+  }
+  deriving (Eq, Show, Generic, FromDhall)
+
+-- | Exact retained Lifecycle Authority identity and endpoint expected by the
+-- Gateway Runtime. Both values are non-secret boot coordinates; production
+-- responses are accepted only when the role-indexed client observes this
+-- scope from the compiled Lifecycle Authority service identity.
+data LifecycleAuthorityDhall = LifecycleAuthorityDhall
+  { authority_scope :: Text
+  , endpoint :: Text
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -212,6 +231,7 @@ toDaemonConfigWith
         , ca_file = caFileText
         , orders_file = ordersFileText
         , event_keys = eventKeysList
+        , lifecycle_authority = maybeLifecycleAuthority
         , dns_write_gate = maybeDnsGate
         , aws_creds = maybeAwsCreds
         , minio_creds = maybeMinioCreds
@@ -234,6 +254,7 @@ toDaemonConfigWith
         awsCredsResult <- traverseMaybeEitherIO (toGatewayAwsCreds secretResolver) maybeAwsCreds
         minioCredsResult <- traverseMaybeEitherIO (toGatewayMinioCreds secretResolver) maybeMinioCreds
         pure $ do
+          lifecycleAuthority <- traverse toGatewayLifecycleAuthority maybeLifecycleAuthority
           resolvedEventKeys <- eventKeysResult
           resolvedAwsCreds <- awsCredsResult
           resolvedMinioCreds <- minioCredsResult
@@ -252,6 +273,7 @@ toDaemonConfigWith
               , daemonDrainDeadlineSeconds = fromIntegral <$> ddl
               , daemonConfigLogLevel = Text.unpack <$> ll
               , daemonVaultAuth = toGatewayVaultAuth <$> maybeVaultAuth
+              , daemonLifecycleAuthority = lifecycleAuthority
               , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
               , daemonAwsCreds = fromMaybe Nothing resolvedAwsCreds
               , daemonMinioCreds = resolvedMinioCreds
@@ -299,6 +321,7 @@ toDaemonConfigPreVault
         , key_file = keyFileText
         , ca_file = caFileText
         , orders_file = ordersFileText
+        , lifecycle_authority = maybeLifecycleAuthority
         , dns_write_gate = maybeDnsGate
         , minio_endpoint_url = maybeMinioEndpoint
         }
@@ -313,6 +336,7 @@ toDaemonConfigPreVault
         }
     } = do
     validateDaemonStaticFields
+    lifecycleAuthority <- traverse toGatewayLifecycleAuthority maybeLifecycleAuthority
     Right
       DaemonConfig
         { daemonNodeId = Text.unpack nodeIdText
@@ -328,6 +352,7 @@ toDaemonConfigPreVault
         , daemonDrainDeadlineSeconds = fromIntegral <$> ddl
         , daemonConfigLogLevel = Text.unpack <$> ll
         , daemonVaultAuth = toGatewayVaultAuth <$> maybeVaultAuth
+        , daemonLifecycleAuthority = lifecycleAuthority
         , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
         , daemonAwsCreds = Nothing
         , daemonMinioCreds = Nothing
@@ -386,7 +411,7 @@ toGatewayAwsCreds
       -- the same "no aws creds on this substrate" condition as the present-but-
       -- empty value handled below: during a bare `cluster reconcile` the
       -- operational `aws.*` block is unmaterialized (the harness writes
-      -- secret/gateway/gateway/aws only AFTER this pre-reconcile), so the path
+      -- secret/aws/gateway-dns only AFTER this pre-reconcile), so the path
       -- legitimately 404s. Run WITHOUT aws creds rather than failing the whole
       -- config decode and crash-looping the daemon into degraded pre-Vault
       -- mode. A sealed / unreachable Vault ('SecretRefVaultUnavailable') or
@@ -490,6 +515,25 @@ toDnsWriteGate g =
     , dnsWriteGateTtl = fromIntegral (ttl g)
     , dnsWriteGateAwsRegion = Text.unpack (aws_region g)
     }
+
+toGatewayLifecycleAuthority
+  :: LifecycleAuthorityDhall -> Either String GatewayLifecycleAuthority
+toGatewayLifecycleAuthority capability = do
+  _ <-
+    either
+      (Left . ("lifecycle_authority.authority_scope: " ++) . Text.unpack)
+      Right
+      (mkLifecycleAuthorityObserveRequest (authority_scope capability))
+  validatedEndpoint <-
+    either
+      (Left . ("lifecycle_authority.endpoint: " ++) . show)
+      Right
+      (mkLifecycleAuthorityEndpoint (endpoint capability))
+  Right
+    GatewayLifecycleAuthority
+      { gatewayLifecycleAuthorityScope = Text.unpack (authority_scope capability)
+      , gatewayLifecycleAuthorityEndpoint = validatedEndpoint
+      }
 
 toGatewayVaultAuth :: VaultKubernetesAuthDhall -> GatewayVaultAuth
 toGatewayVaultAuth auth =

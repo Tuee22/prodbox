@@ -1079,6 +1079,7 @@ effectFor operation = case operation of
   SecretWorkerUnseal -> BootstrapVaultSubmitUnsealShare
   SecretWorkerRotateUnlockBundle -> BootstrapVaultRotateUnlockBundle
   SecretWorkerRotateTransitKey -> BootstrapVaultRotateTransitKey
+  SecretWorkerCompleteGeneratedRoot -> BootstrapVaultSubmitGenerateRootShare
 
 outcomeFor :: SecretWorkerOperation -> SecretWorkerOutcome
 outcomeFor operation = case operation of
@@ -1089,6 +1090,7 @@ outcomeFor operation = case operation of
   SecretWorkerUnseal -> SecretWorkerUnsealed
   SecretWorkerRotateUnlockBundle -> SecretWorkerUnlockBundleRotated
   SecretWorkerRotateTransitKey -> SecretWorkerTransitKeyRotated
+  SecretWorkerCompleteGeneratedRoot -> SecretWorkerGeneratedRootCompleted
 
 digestOf :: Char -> ArtifactDigest
 digestOf character = mustRight (mkArtifactDigest (Text.replicate 64 (Text.singleton character)))

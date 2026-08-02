@@ -34,6 +34,7 @@ data PrerequisiteId
   | -- Tools
     ToolCurl
   | ToolDig
+  | ToolOpenSsl
   | ToolKubectl
   | ToolDocker
   | ToolCtr
@@ -87,6 +88,7 @@ prerequisiteIdText prerequisiteId =
     SettingsObject -> "settings_object"
     ToolCurl -> "tool_curl"
     ToolDig -> "tool_dig"
+    ToolOpenSsl -> "tool_openssl"
     ToolKubectl -> "tool_kubectl"
     ToolDocker -> "tool_docker"
     ToolCtr -> "tool_ctr"
@@ -152,6 +154,7 @@ prerequisiteIdEngagesIamHarness prerequisiteId =
     SettingsObject -> False
     ToolCurl -> False
     ToolDig -> False
+    ToolOpenSsl -> False
     ToolKubectl -> False
     ToolDocker -> False
     ToolCtr -> False

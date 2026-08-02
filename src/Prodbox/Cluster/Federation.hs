@@ -1,24 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Typed cluster-federation custody foundation plus the pure pieces consumed
--- by the Sprint 4.32 live writer: parent-owned child init material and metadata
--- live under Vault KV paths, child-facing namespaces/transit-key names are
--- opaque, and parent/root mutations fail closed unless the root token is
--- available.
+-- | Typed cluster-federation inventory and Transit bootstrap coordinates.
+-- Child recovery custody is deliberately absent: it is represented only by
+-- the Bootstrap Broker's encrypted-receipt protocol, never by a reusable
+-- initial root token or a generic parent KV payload.
 module Prodbox.Cluster.Federation
   ( ChildBootstrapCredential (..)
   , ChildIndex (..)
-  , ChildInitCustody (..)
   , ChildMetadata (..)
   , ChildRegistrationPlan (..)
-  , FederationWriteAuthority (..)
-  , FederationWriteDecision (..)
   , childBootstrapKvPath
   , childBootstrapKvLogicalPath
   , childBootstrapVaultFields
   , childIndexVaultFields
-  , childInitKvPath
-  , childInitKvLogicalPath
   , childMetadataKvPath
   , childMetadataKvLogicalPath
   , childMetadataVaultFields
@@ -28,18 +22,14 @@ module Prodbox.Cluster.Federation
   , childVaultNamespace
   , decodeChildBootstrapCredential
   , decodeChildIndex
-  , decodeChildInitCustody
   , decodeChildMetadata
   , decodePayloadJsonField
   , encodeChildBootstrapCredential
   , encodeChildIndex
-  , encodeChildInitCustody
   , encodeChildMetadata
-  , federationWriteDecision
   , federationChildrenIndexKvPath
   , federationChildrenIndexKvLogicalPath
   , renderChildRegistrationPlan
-  , renderFederationWriteBlock
   , upsertChildIndex
   )
 where
@@ -69,42 +59,6 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word8)
-
-data ChildInitCustody = ChildInitCustody
-  { childInitClusterId :: Text
-  , childInitRecoveryKeysBase64 :: [Text]
-  , childInitRootToken :: Text
-  , childInitTransitKey :: Text
-  }
-  deriving (Eq)
-
-instance Show ChildInitCustody where
-  show custody =
-    "ChildInitCustody {childInitClusterId = "
-      ++ show (childInitClusterId custody)
-      ++ ", childInitRecoveryKeysBase64 = <redacted>"
-      ++ ", childInitRootToken = <redacted>"
-      ++ ", childInitTransitKey = "
-      ++ show (childInitTransitKey custody)
-      ++ "}"
-
-instance ToJSON ChildInitCustody where
-  toJSON custody =
-    object
-      [ "cluster_id" .= childInitClusterId custody
-      , "recovery_keys_base64" .= childInitRecoveryKeysBase64 custody
-      , "initial_root_token" .= childInitRootToken custody
-      , "transit_key" .= childInitTransitKey custody
-      ]
-
-instance FromJSON ChildInitCustody where
-  parseJSON =
-    withObject "ChildInitCustody" $ \o ->
-      ChildInitCustody
-        <$> o .: "cluster_id"
-        <*> o .: "recovery_keys_base64"
-        <*> o .: "initial_root_token"
-        <*> o .: "transit_key"
 
 data ChildMetadata = ChildMetadata
   { childMetadataClusterId :: Text
@@ -208,7 +162,6 @@ instance FromJSON ChildIndex where
 data ChildRegistrationPlan = ChildRegistrationPlan
   { childRegistrationChildId :: Text
   , childRegistrationMetadataPath :: Text
-  , childRegistrationInitPath :: Text
   , childRegistrationTransitKey :: Text
   , childRegistrationVaultNamespace :: Text
   }
@@ -221,7 +174,6 @@ childRegistrationPlan hmacKey childId =
   ChildRegistrationPlan
     { childRegistrationChildId = childId
     , childRegistrationMetadataPath = childMetadataKvPath childId
-    , childRegistrationInitPath = childInitKvPath childId
     , childRegistrationTransitKey = childTransitKeyName hmacKey childId
     , childRegistrationVaultNamespace = childVaultNamespace hmacKey childId
     }
@@ -229,10 +181,6 @@ childRegistrationPlan hmacKey childId =
 childMetadataKvPath :: Text -> Text
 childMetadataKvPath childId =
   "secret/data/" <> childMetadataKvLogicalPath childId
-
-childInitKvPath :: Text -> Text
-childInitKvPath childId =
-  "secret/data/" <> childInitKvLogicalPath childId
 
 childBootstrapKvPath :: Text -> Text
 childBootstrapKvPath childId =
@@ -245,10 +193,6 @@ federationChildrenIndexKvPath =
 childMetadataKvLogicalPath :: Text -> Text
 childMetadataKvLogicalPath childId =
   "clusters/" <> vaultPathSlug childId <> "/metadata"
-
-childInitKvLogicalPath :: Text -> Text
-childInitKvLogicalPath childId =
-  "clusters/" <> vaultPathSlug childId <> "/init"
 
 childBootstrapKvLogicalPath :: Text -> Text
 childBootstrapKvLogicalPath childId =
@@ -265,12 +209,6 @@ childTransitKeyName hmacKey childId =
 childVaultNamespace :: ByteString -> Text -> Text
 childVaultNamespace hmacKey childId =
   "ns-" <> opaqueChildToken hmacKey "vault-namespace" childId
-
-encodeChildInitCustody :: ChildInitCustody -> ByteString
-encodeChildInitCustody = BL.toStrict . Aeson.encode
-
-decodeChildInitCustody :: ByteString -> Either String ChildInitCustody
-decodeChildInitCustody = eitherDecodeStrict'
 
 encodeChildMetadata :: ChildMetadata -> ByteString
 encodeChildMetadata = BL.toStrict . Aeson.encode
@@ -318,8 +256,11 @@ payloadJsonField :: ByteString -> Map Text Text
 payloadJsonField payload =
   Map.singleton "payload_json" (TextEncoding.decodeUtf8 payload)
 
-childTransitSealPolicyDocument :: Text -> Text -> Text
-childTransitSealPolicyDocument childId keyName =
+-- | A child auto-unseal credential is scoped only to its exact Transit key.
+-- Parent recovery custody is a separate Broker/Target-Agent generation-CAS
+-- capability; it is intentionally impossible to grant a custody KV path here.
+childTransitSealPolicyDocument :: Text -> Text
+childTransitSealPolicyDocument keyName =
   Text.unlines
     [ "path \"transit/encrypt/" <> keyName <> "\" {"
     , "  capabilities = [\"update\"]"
@@ -328,40 +269,7 @@ childTransitSealPolicyDocument childId keyName =
     , "path \"transit/decrypt/" <> keyName <> "\" {"
     , "  capabilities = [\"update\"]"
     , "}"
-    , ""
-    , "path \"" <> childInitKvPath childId <> "\" {"
-    , "  capabilities = [\"create\", \"read\", \"update\", \"patch\"]"
-    , "}"
     ]
-
-data FederationWriteAuthority = FederationWriteAuthority
-  { federationWriteIsRootCluster :: Bool
-  , federationWriteRootTokenPresent :: Bool
-  }
-  deriving (Eq, Show)
-
-data FederationWriteDecision
-  = FederationWriteAllow
-  | FederationWriteBlockNoRootToken
-  deriving (Eq, Show)
-
--- | Registering or updating child custody is a root-cluster mutation. It is
--- allowed only when the root Vault is unsealed and the root token is available.
-federationWriteDecision :: FederationWriteAuthority -> FederationWriteDecision
-federationWriteDecision authority
-  | federationWriteIsRootCluster authority && not (federationWriteRootTokenPresent authority) =
-      FederationWriteBlockNoRootToken
-  | otherwise = FederationWriteAllow
-
-renderFederationWriteBlock :: FederationWriteDecision -> Maybe String
-renderFederationWriteBlock decision = case decision of
-  FederationWriteAllow -> Nothing
-  FederationWriteBlockNoRootToken ->
-    Just
-      ( "Blocked: registering downstream cluster custody requires the root"
-          ++ " Vault token on the root cluster. No child metadata, init keys,"
-          ++ " Transit key, or namespace write was started. Run: prodbox vault unseal"
-      )
 
 renderChildRegistrationPlan :: ChildRegistrationPlan -> String
 renderChildRegistrationPlan plan =
@@ -369,7 +277,6 @@ renderChildRegistrationPlan plan =
     [ "CLUSTER_FEDERATION_REGISTER_PLAN"
     , "child_cluster_id=" ++ Text.unpack (childRegistrationChildId plan)
     , "metadata_kv_path=" ++ Text.unpack (childRegistrationMetadataPath plan)
-    , "init_kv_path=" ++ Text.unpack (childRegistrationInitPath plan)
     , "bootstrap_kv_path=" ++ Text.unpack (childBootstrapKvPath (childRegistrationChildId plan))
     , "children_index_kv_path=" ++ Text.unpack federationChildrenIndexKvPath
     , "transit_key=" ++ Text.unpack (childRegistrationTransitKey plan)

@@ -693,12 +693,12 @@ client secret through that SecretRef path; Keycloak and MinIO materialize their 
 fields through Vault-login init containers, and MinIO admin bootstrap Jobs read root credentials
 through the same init-container pattern. The VS Code Envoy `SecurityPolicy` client Secret is
 materialized from Vault by a chart Job, and gateway event/Route 53 credentials are resolved from
-Vault by the daemon. **Historical implementation record (legacy cutover surface):** gateway MinIO
-credentials are still resolved by the daemon and bootstrap Job, and Sprint `2.26` also uses the same non-secret
-gateway Vault Kubernetes-auth coordinates at runtime for the gateway federation read endpoints
-(`/v1/federation/children` and `/v1/federation/children/<child>/bootstrap`); the endpoints read
-parent-custodied child inventory from Vault KV, not from Dhall, Kubernetes Secrets, or
-gateway-local files. Patroni role Secrets are materialized from Vault by a chart hook. The
+Vault by the daemon. **Historical implementation record (removed cutover surface):** Sprint `2.26`
+used the same non-secret gateway Vault Kubernetes-auth coordinates for
+`/v1/federation/children` and `/v1/federation/children/<child>/bootstrap`; Sprint `4.50` deleted both
+routes and their client/daemon handlers. Current federation state is operation-bound to the
+Lifecycle Authority and Target Secret Agent, not readable through Gateway Runtime. Patroni role
+Secrets are materialized from Vault by a chart hook. The
 sealed-startup and legacy-derivation removal statements above are historical implementation
 records; current status lives only in the Development Plan. The
 operator-facing `gateway-config-<nodeId>` ConfigMap therefore contains no

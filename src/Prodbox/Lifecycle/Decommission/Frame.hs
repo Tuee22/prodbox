@@ -33,6 +33,8 @@ module Prodbox.Lifecycle.Decommission.Frame
   , currentFrameVersion
   , mkFrameNodeId
   , mkFrameAttemptId
+  , frameNodeIdForContent
+  , frameAttemptIdForNode
   , frameNodeIdText
   , frameAttemptIdText
   , genesisPreviousDigest
@@ -54,6 +56,7 @@ import Data.Char (isControl)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
+import Numeric (showHex)
 
 -- | A SHA-256 digest of a frame's canonical bytes: the hash-chain link a
 -- successor frame carries in 'framePreviousDigest'.
@@ -86,6 +89,7 @@ data FrameCodecError
   | FrameInvalid
   | FrameUnsupportedVersion
   | FrameNonCanonical
+  | FrameIdentifierInvalid
   | FrameChecksumMismatch
   deriving stock (Eq, Show)
 
@@ -122,6 +126,29 @@ mkFrameNodeId = fmap FrameNodeId . mkStableId
 
 mkFrameAttemptId :: Text -> Maybe FrameAttemptId
 mkFrameAttemptId = fmap FrameAttemptId . mkStableId
+
+-- | Derive a bounded stable node identifier from canonical node content.  The
+-- domain separator prevents the identifier from being confused with another
+-- SHA-256 use, while the fixed-width hexadecimal rendering remains valid under
+-- 'mkFrameNodeId' regardless of the coordinate length in the node payload.
+frameNodeIdForContent :: ByteString -> FrameNodeId
+frameNodeIdForContent content =
+  FrameNodeId
+    ("node-v1-" <> Text.pack (concatMap renderOctet (ByteString.unpack digest)))
+ where
+  digest = sha256 ("prodbox-decommission-node-v1:" <> content)
+  renderOctet byte = case showHex byte "" of
+    [digit] -> ['0', digit]
+    digits -> digits
+
+-- | Derive the one stable attempt identity used for an exact manifest node.
+-- 'frameNodeIdForContent' always yields a fixed-width printable identifier, so
+-- this constructor cannot violate the bounded identifier invariant.  Keeping
+-- the construction here avoids a partial smart-constructor unwrap in the
+-- production decommission composition.
+frameAttemptIdForNode :: FrameNodeId -> FrameAttemptId
+frameAttemptIdForNode nodeId =
+  FrameAttemptId ("attempt-v1-" <> frameNodeIdText nodeId)
 
 frameNodeIdText :: FrameNodeId -> Text
 frameNodeIdText (FrameNodeId value) = value
@@ -200,6 +227,11 @@ decodeFrame maximumBytes bytes
         Right frame
           | frameVersion frame /= currentFrameVersion -> Left FrameUnsupportedVersion
           | encodeFrame frame /= bytes -> Left FrameNonCanonical
+          | not (validNodeId (frameNodeId frame)) -> Left FrameIdentifierInvalid
+          | not (validAttemptId (frameAttemptId frame)) -> Left FrameIdentifierInvalid
           | framePayloadChecksum frame /= payloadChecksum (framePayload frame) ->
               Left FrameChecksumMismatch
           | otherwise -> Right frame
+ where
+  validNodeId (FrameNodeId value) = mkStableId value == Just value
+  validAttemptId (FrameAttemptId value) = mkStableId value == Just value

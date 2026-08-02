@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module TestSupport
   ( Expectation
   , SuiteBuilder
@@ -16,15 +18,39 @@ module TestSupport
   , shouldNotContain
   , shouldReturn
   , shouldSatisfy
+  , verifiedCallerSlotFixture
   , wrapTier0
   , wrapTier0WithDefaultComponentGraph
   )
 where
 
+import Data.ByteString.Char8 qualified as StrictByteString8
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
 import GHC.Stack (HasCallStack)
+import Numeric.Natural (Natural)
 import Prodbox.Config.SchemaDhall (renderDefaultComponentGraphDhall)
+import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
+import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
+import Prodbox.ControlPlane.RequestAuthentication
+  ( VerifiedCallerSlot
+  , decodeAndVerifyControlPlaneRequest
+  , encodeSignedControlPlaneRequest
+  , mkRequestNonce
+  , mkRequestSigner
+  , mkRequestVerificationContext
+  , mkSigningKeyGeneration
+  , signControlPlaneRequest
+  , trustedRequestKeyFromSigner
+  , verifiedRequestCallerSlot
+  )
+import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecyclePulumiCheckpoint))
+import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
+import Prodbox.Lifecycle.Lease
+  ( authorityDurationFromMicros
+  , authorityTimeFromMicros
+  )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Directory
   ( copyFile
   , getPermissions
@@ -82,7 +108,7 @@ wrapTier0WithComponents componentFragment configRecord =
     , "  , minio_bucket = \"prodbox-state\""
     , "  , topology ="
     , "    { seal_mode = < Tier0Shamir | Tier0Transit >.Tier0Shamir"
-    , "    , parent_ref = None { parent_cluster_id : Text, parent_vault_address : Text, parent_transit_key : Text }"
+    , "    , parent_ref = None { parent_cluster_id : Text, parent_vault_address : Text, parent_transit_key : Text, parent_authority_endpoint : Text }"
     , "    }"
     , "  , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
     , "  }"
@@ -178,6 +204,65 @@ propertyTest testName propertyValue =
 
 expectationFailure :: String -> Expectation
 expectationFailure = assertFailure
+
+-- | Construct an opaque caller slot only by exercising the real signed-request
+-- verifier.  Endpoint and repository fixtures use this instead of exposing a
+-- test-only constructor for the production authentication capability.
+verifiedCallerSlotFixture :: CallerPrincipal -> Natural -> VerifiedCallerSlot
+verifiedCallerSlotFixture caller rawGeneration =
+  verifiedRequestCallerSlot
+    ( mustFixture
+        ( decodeAndVerifyControlPlaneRequest
+            65536
+            verificationContext
+            (encodeSignedControlPlaneRequest signed)
+        )
+    )
+ where
+  body = StrictByteString8.empty
+  scope = mustFixture (mkAuthorityScope "test-authority")
+  deadline = authorityTimeFromMicros 2000
+  nonce = mustFixture (mkRequestNonce "verified-caller-slot-fixture")
+  now = authorityTimeFromMicros 1000
+  lifetime = mustFixture (authorityDurationFromMicros 5000)
+  generation = mustFixture (mkSigningKeyGeneration rawGeneration)
+  signer =
+    mustFixture
+      ( mkRequestSigner
+          caller
+          generation
+          "0123456789abcdef0123456789abcdef"
+      )
+  signed =
+    mustFixture
+      ( signControlPlaneRequest
+          signer
+          LifecyclePulumiCheckpoint
+          LifecycleAuthorityRuntime
+          scope
+          authorityEpochGenesis
+          deadline
+          nonce
+          body
+      )
+  verificationContext =
+    mustFixture
+      ( mkRequestVerificationContext
+          (trustedRequestKeyFromSigner signer)
+          LifecyclePulumiCheckpoint
+          LifecycleAuthorityRuntime
+          scope
+          authorityEpochGenesis
+          deadline
+          nonce
+          now
+          lifetime
+      )
+
+mustFixture :: (Show err) => Either err value -> value
+mustFixture result = case result of
+  Left err -> error (show err)
+  Right value -> value
 
 shouldBe :: (HasCallStack, Eq a, Show a) => a -> a -> Expectation
 shouldBe actual expected = assertEqual "" expected actual

@@ -5,10 +5,13 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws bootstrap-broker lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands config dev dns edge gateway help host nuke test users vault workload"
+    words="admin-action aws bootstrap-broker credential-provisioner lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands config dev dns edge gateway help host nuke test users vault workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
+      "admin-action")
+        words="run"
+        ;;
       "aws")
         words="policy setup teardown quotas ebs stack"
         ;;
@@ -34,7 +37,10 @@ _prodbox()
         words="reconcile destroy migrate-backend"
         ;;
       "bootstrap-broker")
-        words="start"
+        words="start secret-worker"
+        ;;
+      "credential-provisioner")
+        words="run target-worker"
         ;;
       "lifecycle-authority")
         words="start"
@@ -91,7 +97,7 @@ _prodbox()
         words="init run all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails daemon-bootstrap pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition control-plane-counterexample certificate-scope clean-room-handoff ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails daemon-bootstrap pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
         ;;
       "users")
         words="invite list revoke"

@@ -1,4 +1,6 @@
 prodbox
+  admin-action
+    run
   aws
     policy
     setup
@@ -27,6 +29,10 @@ prodbox
         migrate-backend
   bootstrap-broker
     start
+    secret-worker
+  credential-provisioner
+    run
+    target-worker
   lifecycle-authority
     start
   provider-worker
@@ -109,6 +115,9 @@ prodbox
       gateway-daemon
       gateway-pods
       gateway-partition
+      control-plane-counterexample
+      certificate-scope
+      clean-room-handoff
       ha-rke2-aws
       lifecycle
       pulumi

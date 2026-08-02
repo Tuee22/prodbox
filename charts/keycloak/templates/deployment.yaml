@@ -65,7 +65,6 @@ spec:
               umask 077
               {
                 write_export KEYCLOAK_ADMIN_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.admin }})"
-                write_export KC_DB_PASSWORD "$(vault kv get -field=password secret/{{ .Values.vault.paths.db }})"
                 write_export PRODBOX_VSCODE_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcVscode }})"
                 write_export PRODBOX_API_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcApi }})"
                 write_export PRODBOX_WEBSOCKET_CLIENT_SECRET "$(vault kv get -field=client_secret secret/{{ .Values.vault.paths.oidcWebsocket }})"
@@ -124,6 +123,11 @@ spec:
               value: {{ .Values.postgres.database | quote }}
             - name: KC_DB_USERNAME
               value: {{ .Values.postgres.username | quote }}
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.passwordSecretName | quote }}
+                  key: password
             - name: KEYCLOAK_ADMIN
               value: {{ .Values.keycloak.adminUser | quote }}
           volumeMounts:
@@ -133,6 +137,8 @@ spec:
             - name: vault-materialized
               mountPath: /vault-materialized
               readOnly: true
+            - name: admin-runtime
+              mountPath: /run/prodbox-admin
           startupProbe:
             httpGet:
               path: {{ printf "%s/health/ready" $healthPathPrefix | quote }}
@@ -156,6 +162,10 @@ spec:
           configMap:
             name: keycloak-realm-import
         - name: vault-materialized
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: admin-runtime
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi

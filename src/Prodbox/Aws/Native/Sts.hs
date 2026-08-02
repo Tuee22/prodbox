@@ -12,12 +12,15 @@ module Prodbox.Aws.Native.Sts
   ( StsClient (..)
   , AssumeRoleRequest (..)
   , AssumeRoleCredentials (..)
+  , CallerIdentity (..)
   , newStsClient
   , stsEndpoint
   , stsScope
   , encodeAssumeRoleForm
+  , encodeGetCallerIdentityForm
   , signAssumeRoleRequest
   , parseAssumeRoleResponse
+  , parseGetCallerIdentityResponse
   )
 where
 
@@ -70,12 +73,24 @@ data AssumeRoleCredentials = AssumeRoleCredentials
   }
   deriving (Eq, Show)
 
-newtype StsClient = StsClient
+data CallerIdentity = CallerIdentity
+  { callerIdentityAccount :: !Text
+  , callerIdentityArn :: !Text
+  , callerIdentityUserId :: !Text
+  }
+  deriving (Eq, Show)
+
+data StsClient = StsClient
   { assumeRole :: AssumeRoleRequest -> IO (Either AwsClientError SessionCredentialHandle)
+  , getCallerIdentity :: IO (Either AwsClientError CallerIdentity)
   }
 
 newStsClient :: BaseCredentialHandle -> NativeAwsSender -> StsClient
-newStsClient handle sender = StsClient {assumeRole = runAssumeRole handle sender}
+newStsClient handle sender =
+  StsClient
+    { assumeRole = runAssumeRole handle sender
+    , getCallerIdentity = runGetCallerIdentity handle sender
+    }
 
 stsEndpoint :: ByteString -> AwsEndpoint
 stsEndpoint region =
@@ -93,6 +108,12 @@ encodeAssumeRoleForm req =
   , ("RoleArn", encodeUtf8 (assumeRoleArn req))
   , ("RoleSessionName", encodeUtf8 (assumeRoleSessionName req))
   , ("DurationSeconds", BS8.pack (show (assumeRoleDurationSeconds req)))
+  ]
+
+encodeGetCallerIdentityForm :: [(ByteString, ByteString)]
+encodeGetCallerIdentityForm =
+  [ ("Action", "GetCallerIdentity")
+  , ("Version", "2011-06-15")
   ]
 
 signAssumeRoleRequest
@@ -127,6 +148,22 @@ parseAssumeRoleResponse body = do
       ("AssumeRole: missing <" ++ name ++ ">")
       (extractFirst (BS8.pack ("<" ++ name ++ ">")) (BS8.pack ("</" ++ name ++ ">")) hay)
 
+parseGetCallerIdentityResponse :: ByteString -> Either String CallerIdentity
+parseGetCallerIdentityResponse body = do
+  identity <-
+    note
+      "GetCallerIdentity: missing <GetCallerIdentityResult>"
+      (extractFirst "<GetCallerIdentityResult>" "</GetCallerIdentityResult>" body)
+  account <- decodeUtf8 <$> element "Account" identity
+  arn <- decodeUtf8 <$> element "Arn" identity
+  userId <- decodeUtf8 <$> element "UserId" identity
+  pure (CallerIdentity account arn userId)
+ where
+  element name hay =
+    note
+      ("GetCallerIdentity: missing <" ++ name ++ ">")
+      (extractFirst (BS8.pack ("<" ++ name ++ ">")) (BS8.pack ("</" ++ name ++ ">")) hay)
+
 runAssumeRole
   :: BaseCredentialHandle
   -> NativeAwsSender
@@ -151,6 +188,34 @@ runAssumeRole handle sender req = do
           (unSecret (arcToken arc))
           (credentialHandleRegion handle)
       )
+
+runGetCallerIdentity
+  :: BaseCredentialHandle
+  -> NativeAwsSender
+  -> IO (Either AwsClientError CallerIdentity)
+runGetCallerIdentity handle sender = do
+  raw <-
+    performAwsRequest
+      sender
+      ( \ts ->
+          buildSignedRequest
+            (toSigV4Credentials handle)
+            (credentialHandleSecurityToken handle)
+            (stsScope region)
+            (stsEndpoint region)
+            ts
+            "POST"
+            "/"
+            []
+            (renderFormBody encodeGetCallerIdentityForm)
+            formContentType
+      )
+      "sts:GetCallerIdentity"
+      Idempotent
+      XmlErrorFormat
+  pure (raw >>= first AwsResponseParseFailure . parseGetCallerIdentityResponse)
+ where
+  region = credentialHandleRegion handle
 
 credentialErrorToClient :: CredentialError -> AwsClientError
 credentialErrorToClient err =

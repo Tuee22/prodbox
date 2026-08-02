@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+
 -- | Sprint 4.48: the retained Lifecycle Authority's idempotent operation-
 -- submission front-door.
 --
@@ -26,6 +30,7 @@ module Prodbox.Lifecycle.Authority.Submission
     ClientId (..)
   , ClientSequence (..)
   , RequestDigest (..)
+  , requestDigestText
   , OperationId (..)
 
     -- * Ledger
@@ -54,24 +59,32 @@ module Prodbox.Lifecycle.Authority.Submission
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 
 -- | The durable client identity that owns a monotone submission sequence.
 newtype ClientId = ClientId Text
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A client's monotone per-submission sequence number.
 newtype ClientSequence = ClientSequence Natural
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A digest over the exact request payload; distinguishes an idempotent
 -- resubmission from a sequence reused for a different request.
 newtype RequestDigest = RequestDigest Text
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+requestDigestText :: RequestDigest -> Text
+requestDigestText (RequestDigest value) = value
 
 -- | The identity bound at submission: the admitting epoch plus the caller's
 -- @(client, sequence, digest)@. Epoch-scoped so a post-failover authority under a
@@ -82,20 +95,23 @@ data OperationId = OperationId
   , operationIdSequence :: !ClientSequence
   , operationIdDigest :: !RequestDigest
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Whether a settled submission completed or was cancelled.
 data TerminalOutcome
   = OperationCompletedOutcome
   | OperationCancelledOutcome
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A per-sequence submission record: in-flight (nonterminal) or settled
 -- (terminal tombstone). Each retains its request digest for idempotent match.
 data SubmissionRecord
   = SubmissionInFlight !RequestDigest
   | SubmissionSettled !RequestDigest !TerminalOutcome
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | One client's submissions: the compacted sequence floor (sequences at or below
 -- it are expired) plus the retained window of records above it.
@@ -103,7 +119,8 @@ data ClientSubmissions = ClientSubmissions
   { clientSequenceFloor :: !ClientSequence
   , clientRecords :: !(Map ClientSequence SubmissionRecord)
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The whole submission ledger: a live-population capacity plus per-client
 -- submissions.
@@ -111,7 +128,8 @@ data SubmissionLedger = SubmissionLedger
   { submissionCapacity :: !Natural
   , submissionClients :: !(Map ClientId ClientSubmissions)
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A fresh ledger with the given live-population capacity and no clients.
 emptySubmissionLedger :: Natural -> SubmissionLedger
@@ -298,7 +316,8 @@ data SubmissionStatus
     StatusExpired
   | -- | Never seen for this client above the floor.
     StatusUnknown
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Look up a submission's status without mutating the ledger.
 submissionStatus :: ClientId -> ClientSequence -> SubmissionLedger -> SubmissionStatus

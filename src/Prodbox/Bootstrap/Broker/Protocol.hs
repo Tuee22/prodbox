@@ -17,8 +17,10 @@ module Prodbox.Bootstrap.Broker.Protocol
   , BrokerControllerRequest
   , mkBrokerControllerRequest
   , mkBrokerPkiControllerRequest
+  , mkBrokerChildCustodyFinalizeRequest
   , brokerControllerRequestAction
   , brokerControllerRequestPkiIssue
+  , brokerControllerRequestFederationCompletion
   , brokerControllerRequestValue
   , encodeBrokerControllerRequest
   , decodeBrokerControllerRequest
@@ -28,6 +30,7 @@ module Prodbox.Bootstrap.Broker.Protocol
   )
 where
 
+import Codec.Serialise (deserialiseOrFail, serialise)
 import Data.Aeson
   ( FromJSON
   , Object
@@ -43,9 +46,11 @@ import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (sort)
 import Data.Text (Text)
+import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Program
   ( PkiIssueRequest
@@ -65,6 +70,10 @@ import Prodbox.Bootstrap.Broker.Types
   , mkVaultStorageGeneration
   , renderArtifactDigest
   , renderVaultStorageGeneration
+  )
+import Prodbox.Cluster.FederationRegistration
+  ( FederationRegistrationCompletion
+  , validateFederationRegistrationCompletion
   )
 
 -- | Common durable action binding carried by a controller request.  Both
@@ -87,6 +96,8 @@ data BrokerControllerRequest = BrokerControllerRequest
   { controllerRoute :: !BrokerRoute
   , brokerControllerRequestAction :: !BrokerActionRequest
   , brokerControllerRequestPkiIssue :: !(Maybe PkiIssueRequest)
+  , brokerControllerRequestFederationCompletion
+      :: !(Maybe FederationRegistrationCompletion)
   }
   deriving stock (Eq, Show)
 
@@ -94,6 +105,9 @@ data BrokerProtocolError
   = BrokerProtocolBodyForbidden
   | BrokerProtocolPkiFieldsRequired
   | BrokerProtocolPkiFieldsForbidden
+  | BrokerProtocolFederationCompletionRequired
+  | BrokerProtocolFederationCompletionForbidden
+  | BrokerProtocolInvalidFederationCompletion
   | BrokerProtocolMalformedJson
   | BrokerProtocolUnexpectedFields
   | BrokerProtocolWrongOperation
@@ -110,6 +124,12 @@ renderBrokerProtocolError protocolError = case protocolError of
     "the PKI test-certificate route requires bounded PKI fields"
   BrokerProtocolPkiFieldsForbidden ->
     "bounded PKI fields are permitted only on the PKI test-certificate route"
+  BrokerProtocolFederationCompletionRequired ->
+    "the child-custody finalize route requires an exact Authority completion"
+  BrokerProtocolFederationCompletionForbidden ->
+    "an Authority completion is permitted only on the child-custody finalize route"
+  BrokerProtocolInvalidFederationCompletion ->
+    "the child-custody Authority completion is invalid"
   BrokerProtocolMalformedJson ->
     "the Bootstrap Broker controller request is not a JSON object"
   BrokerProtocolUnexpectedFields ->
@@ -136,12 +156,15 @@ mkBrokerControllerRequest route action =
     BrokerBodyRequired
       | route == BrokerVaultPkiIssueTestCertificate ->
           Left BrokerProtocolPkiFieldsRequired
+      | route == BrokerChildCustodyFinalize ->
+          Left BrokerProtocolFederationCompletionRequired
       | otherwise ->
           Right
             BrokerControllerRequest
               { controllerRoute = route
               , brokerControllerRequestAction = action
               , brokerControllerRequestPkiIssue = Nothing
+              , brokerControllerRequestFederationCompletion = Nothing
               }
 
 mkBrokerPkiControllerRequest
@@ -151,11 +174,24 @@ mkBrokerPkiControllerRequest action pkiRequest =
     { controllerRoute = BrokerVaultPkiIssueTestCertificate
     , brokerControllerRequestAction = action
     , brokerControllerRequestPkiIssue = Just pkiRequest
+    , brokerControllerRequestFederationCompletion = Nothing
+    }
+
+mkBrokerChildCustodyFinalizeRequest
+  :: BrokerActionRequest
+  -> FederationRegistrationCompletion
+  -> BrokerControllerRequest
+mkBrokerChildCustodyFinalizeRequest action completion =
+  BrokerControllerRequest
+    { controllerRoute = BrokerChildCustodyFinalize
+    , brokerControllerRequestAction = action
+    , brokerControllerRequestPkiIssue = Nothing
+    , brokerControllerRequestFederationCompletion = Just completion
     }
 
 brokerControllerRequestValue :: BrokerControllerRequest -> Value
 brokerControllerRequestValue request =
-  object (commonFields ++ pkiFields)
+  object (commonFields ++ pkiFields ++ federationFields)
  where
   action = brokerControllerRequestAction request
   commonFields =
@@ -169,6 +205,15 @@ brokerControllerRequestValue request =
     Just pkiRequest ->
       [ "common_name" .= pkiIssueCommonName pkiRequest
       , "ttl_seconds" .= pkiIssueTtlSeconds pkiRequest
+      ]
+  federationFields = case brokerControllerRequestFederationCompletion request of
+    Nothing -> []
+    Just completion ->
+      [ "authority_completion_cbor_base64"
+          .= TextEncoding.decodeUtf8
+            ( Base64.encode
+                (LazyByteString.toStrict (serialise completion))
+            )
       ]
 
 encodeBrokerControllerRequest :: BrokerControllerRequest -> ByteString
@@ -215,9 +260,32 @@ decodeBrokerControllerRequest route bytes = do
           BrokerProtocolInvalidPkiIssue
           (mkPkiIssueRequest commonName ttlSeconds)
       Right (mkBrokerPkiControllerRequest action pkiRequest)
-    _ ->
+    BrokerChildCustodyFinalize -> do
+      encoded <-
+        maybe
+          (Left BrokerProtocolFederationCompletionRequired)
+          Right
+          (rawFederationCompletion raw)
+      decodedBytes <-
+        firstProtocolError
+          BrokerProtocolInvalidFederationCompletion
+          (Base64.decode (TextEncoding.encodeUtf8 encoded))
+      completion <-
+        firstProtocolError
+          BrokerProtocolInvalidFederationCompletion
+          (deserialiseOrFail (LazyByteString.fromStrict decodedBytes))
+      validated <-
+        firstProtocolError
+          BrokerProtocolInvalidFederationCompletion
+          (validateFederationRegistrationCompletion completion)
       case (rawCommonName raw, rawTtlSeconds raw) of
-        (Nothing, Nothing) -> mkBrokerControllerRequest route action
+        (Nothing, Nothing) ->
+          Right (mkBrokerChildCustodyFinalizeRequest action validated)
+        _ -> Left BrokerProtocolPkiFieldsForbidden
+    _ ->
+      case (rawCommonName raw, rawTtlSeconds raw, rawFederationCompletion raw) of
+        (Nothing, Nothing, Nothing) -> mkBrokerControllerRequest route action
+        (_, _, Just _) -> Left BrokerProtocolFederationCompletionForbidden
         _ -> Left BrokerProtocolPkiFieldsForbidden
 
 data RawRequest = RawRequest
@@ -226,6 +294,7 @@ data RawRequest = RawRequest
   , rawActionDigest :: !Text
   , rawCommonName :: !(Maybe Text)
   , rawTtlSeconds :: !(Maybe Natural)
+  , rawFederationCompletion :: !(Maybe Text)
   }
 
 parseRawRequest :: Object -> Parser RawRequest
@@ -236,6 +305,7 @@ parseRawRequest fields =
     <*> fields .: "action_digest"
     <*> optionalField "common_name" fields
     <*> optionalField "ttl_seconds" fields
+    <*> optionalField "authority_completion_cbor_base64" fields
 
 optionalField :: (FromJSON value) => AesonKey.Key -> Object -> Parser (Maybe value)
 optionalField key fields =
@@ -251,6 +321,8 @@ expectedRequestKeys route =
         ++ case route of
           BrokerVaultPkiIssueTestCertificate ->
             [AesonKey.fromText "common_name", AesonKey.fromText "ttl_seconds"]
+          BrokerChildCustodyFinalize ->
+            [AesonKey.fromText "authority_completion_cbor_base64"]
           _ -> []
     )
 
@@ -284,6 +356,7 @@ brokerRouteOperationName route = case route of
   BrokerVaultPkiStatus -> "vault_pki_status"
   BrokerVaultPkiIssueTestCertificate -> "vault_pki_issue_test_certificate"
   BrokerVaultResetAmbiguousInitialization -> "vault_reset_ambiguous_initialization"
-  BrokerChildCustodyCommit -> "child_custody_commit"
+  BrokerChildCustodyPrepare -> "child_custody_prepare"
+  BrokerChildCustodyFinalize -> "child_custody_finalize"
   BrokerChildRecoveryDeliver -> "child_recovery_deliver"
   BrokerChildRecoveryObserve -> "child_recovery_observe"

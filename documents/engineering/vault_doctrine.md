@@ -580,9 +580,11 @@ split by cluster role: Sprint `4.29`
 lands the root/local deploy, init-if-empty, unseal, and policy reconcile sequence; Sprint `4.32`
 adds the child-cluster Transit-seal branch, parent-readiness fail-closed cascade, parent-custodied
 child init write, and post-MinIO settings reload through the child root token stored in the parent
-KV. The target removes that stored-token reuse: initialization burns the initial token without ever
-decrypting it, parent custody retains encrypted recovery material only, config reads use Lifecycle
-Authority, and a separate inventoried short-lived root session exists only after durable custody.
+KV. Sprint `4.50` deleted `ChildInitCustody`, the `root_token`/init-path codec and write gate, and all
+later child-root-token reads. The supported shape now burns the initial token without ever
+decrypting it, retains encrypted recovery material only, reads config through Lifecycle Authority,
+and creates a separate inventoried short-lived root session only after durable custody. The old
+paragraph is historical provenance, not a supported fallback.
 
 Because the root unseal step now fetches the unlock bundle from MinIO (§6, §6.1), MinIO must be
 bootstrap-readable **before** Vault unseal — the bootstrap reorder of §6.1, using the static MinIO
@@ -936,7 +938,7 @@ cert-manager on each substrate reads only `secret/aws/cert-manager/<substrate>/d
 backup, TLS retention, home Gateway-DNS, and home DNS01 are `LongLived`; Lifecycle-provider and AWS
 DNS01 are `Operational` and are removed only after their dependants are absent. These paths have
 distinct IAM resources, Vault policies, generations, consumers, and cleanup nodes. The shared
-operational `aws.*` field and `secret/gateway/gateway/aws` path are pre-cutover legacy and have no
+operational `aws.*` aggregate and shared Vault coordinate are pre-cutover legacy and have no
 target consumer. There is no raw-config or cross-role fallback. Elevated/admin bytes enter a
 mode-indexed Credential Provisioner, an explicit Admin Action Runner, or the post-export
 Decommission Runner only through a separate linear `SecretRef.Prompt` ingress; they are never a
@@ -949,6 +951,13 @@ access; Provider Worker, Authority Backup, and TLS Retention each read only the 
 path named above; Target Secret Agent receives only its registered target-secret lanes. Each
 schema-v2 mounted configuration binds the exact role before its cached renewable session is
 constructed. A process cannot borrow the Gateway identity or another standing role.
+
+For EKS DNS01, `aws-cert-manager-run` binds only ServiceAccount
+`aws-dns01-target-materializer` in namespace `cert-manager` and grants only
+`secret/aws/cert-manager/aws/dns01`. The sibling home role binds
+`home-dns01-secret-materializer` to `secret/aws/cert-manager/home/dns01`. Both workers use a
+pod-scoped memory volume and fixed-name Secret RBAC; neither credential can be rendered into a host
+manifest or substituted across substrates.
 
 For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
 the exact-trust `prodbox-ses-lease-session` role. The fenced provider worker receives a session
@@ -1133,6 +1142,13 @@ share a Job/session. SMTP raw IAM-secret bytes remain only in Provisioner memory
 derive `SesSmtpSource`; only that derived source enters retained-home Transit custody. The normal
 Provider Worker accepts neither permit family.
 
+The Admin Action Kubernetes login must return its exact server-issued token accessor. The Runner
+revokes its own short session after mandatory action read-back, then authenticates once through the
+separate `prodbox-admin-action-session-auditor` role to look up only that accessor. A missing
+accessor plus successful auditor self-revocation is required before any Admin Action receipt may
+escape. The auditor cannot list accessors, revoke another token, sign a control-plane request, or
+read application data; the Runner role cannot perform accessor lookup.
+
 For target-local/remintable operator material, the selected Target Secret Agent seals the bounded
 payload and returns a receipt containing ciphertext plus an opaque Vault-keyed, domain-separated
 HMAC commitment reference. SMTP and ACME EAB instead first seal a closed retained-home custody
@@ -1143,8 +1159,8 @@ material classes cover Operational Lifecycle-provider, LongLived TLS-retention/h
 home DNS01, Operational AWS DNS01, ACME EAB, and SMTP; Authority-backup installation remains on its
 dedicated genesis/repair protocol. Install, rotate, and revoke are explicit, response loss is
 resolved by operation ID/version, and IAM/key deletion precedes the Vault tombstone. The
-pre-cutover `prodbox-operator-write` policy, two-entry Gateway route, shared
-`secret/data/gateway/gateway/aws`, and host-root fallback are removed.
+pre-cutover generic operator-write policy, two-entry Gateway route, shared AWS Vault coordinate,
+and host-root fallback are removed.
 
 Here a Vault tombstone is an Authority lifecycle state, not KV-v2 soft deletion. Revoke,
 supersession GC, `DestroyAwsSes`, and nuke enumerate the exact secret-bearing generation versions,
@@ -1227,8 +1243,9 @@ sensitive. The redaction extends to the §9 object-store and the whole-system su
 - **Redacted `Show`.** Opaque-id and token types carry a redacted `Show` so an opaque ID or a
   Vault token never reaches a log through an incidental `show` (Sprint `4.33`). Target federation
   custody shapes contain only encrypted recovery material plus non-secret generation/accessor
-  attestations, and redact those fields. Historical child/root-token-shaped records remain
-  migration residue; the target never creates or returns them.
+  attestations, and redact those fields. Historical child/root-token-shaped records are rejected
+  migration residue: their codec, writer, and readers are absent from the supported source, so the
+  runtime neither creates, accepts, nor returns them.
 
 Prefer redacted structured logs:
 
@@ -1437,7 +1454,7 @@ the Development Plan:
   no host or Gateway path receives a Vault root token or MinIO credential.
 - Provider, Authority-backup-store, TLS-retention-store, Gateway-DNS, and cert-manager-DNS01
   credentials are distinct IAM/Vault generations with consumer-lifetime lifecycle classes; the
-  shared `secret/gateway/gateway/aws` path and cross-role fallback are absent. Ordinary suite
+  shared AWS Vault coordinate and cross-role fallback are absent. Ordinary suite
   cleanup removes only Operational provider/AWS-DNS01 generations and retains the LongLived set.
 - No Authority record, receipt API, output, or log exposes an unkeyed secret hash.
   Duplicate detection uses only opaque, domain-separated Agent/Vault keyed-HMAC commitment
@@ -1494,3 +1511,16 @@ Sprint `5.8` closure.
   Secret-mounted Dhall path, the host-CLI direct-config-read model, and the folded-in
   `VAULT_REFACTOR.md` proposal
 </content>
+## SES SMTP Generation and Legacy Checkpoint GC
+
+The Credential Provisioner receives the one-time IAM secret, derives the region-bound SMTP
+username/password in bounded memory, and discards the raw secret after retained-home custody
+read-back. The retained Agent accepts only the closed `SesSmtpSource` schema; it cannot ingest a raw
+IAM secret or arbitrary Vault path. Target Agents receive attestation-bound rewraps and commit exact
+generation receipts for `secret/keycloak/smtp`.
+
+Legacy Pulumi checkpoint versions remain explicit primary/mandatory-backup coordinates only during
+the bounded rollback window. Fenced GC refuses a live reference, missing or unobservable copy, or
+partial deletion. It deletes the exact finite version set and commits a GC receipt only after every
+primary and backup version reads back absent. Rotation and explicit `DestroyAwsSes` physically
+destroy unreferenced KV-v2 data versions and metadata; soft deletion is not absence.

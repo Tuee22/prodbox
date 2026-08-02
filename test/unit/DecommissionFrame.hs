@@ -50,6 +50,11 @@ decommissionFrameSuite =
       mkFrameNodeId (Text.replicate 129 "a") `shouldBe` Nothing
       fmap frameNodeIdText (mkFrameNodeId "ses-provider") `shouldBe` Just "ses-provider"
       fmap frameAttemptIdText (mkFrameAttemptId "attempt-1") `shouldBe` Just "attempt-1"
+    it "derives bounded deterministic node IDs from canonical content" $ do
+      frameNodeIdForContent "typed-node-a" `shouldBe` frameNodeIdForContent "typed-node-a"
+      frameNodeIdForContent "typed-node-a" `shouldNotBe` frameNodeIdForContent "typed-node-b"
+      Text.length (frameNodeIdText (frameNodeIdForContent "arbitrarily-long-content"))
+        `shouldSatisfy` (<= 128)
  where
   manifest = FrameDigest "manifest-alpha"
   otherManifest = FrameDigest "manifest-beta"

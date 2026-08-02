@@ -1,50 +1,45 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 4.13: @prodbox nuke@ total teardown command.
+-- | Operator-only total decommission entrypoint.
 --
--- The only sanctioned path to destroy long-lived shared
--- infrastructure (@aws-ses@, the long-lived
--- @pulumi_state_backend@ bucket) transitively, alongside the
--- explicit per-stack @prodbox aws stack aws-ses destroy --yes@.
---
--- Operator-only by design:
---   * TTY-only: refuses non-interactive contexts with the canonical
---     command sequence to compose manually.
---   * Typed-confirmation literal: operator must type
---     @NUKE EVERYTHING@ (not @yes@). No @--yes@ shorthand.
---   * @--dry-run@ / @--plan-file@ render the exact sequence without
---     mutating.
---
--- The orchestration sequence (run in dependency order):
---   1. @aws-ses@ Pulumi destroy while Vault/MinIO are still reachable
---      for the encrypted checkpoint backend.
---   2. K8s drain + per-run Pulumi destroys + cluster uninstall
---      (delegates to the @rke2 delete --cascade@ arm).
---   3. @prodbox aws teardown@-equivalent operational IAM cleanup.
---   4. Postflight tag sweep (operator-visible audit; non-fatal here
---      because failures after this point cannot be unwound).
---   5. Long-lived @pulumi_state_backend@ bucket destroy (last because
---      AWS imposes a ~24-hour bucket-name reuse cooldown).
+-- The legacy process-local five-command teardown is intentionally not reachable
+-- from this module.  Apply requires one complete production composition: an
+-- Authority-authenticated manifest/export preparation, the total closed-node
+-- interpreter registry, an external receipt acknowledgement, pinned-process
+-- verification/replacement, and an explicit point-of-no-return transition.
 module Prodbox.CLI.Nuke
   ( abortOrContinue
   , confirmationLiteral
   , defaultNukeOptions
+  , ProductionDecommissionAvailability (..)
+  , ProductionNukeRemoteCapabilities (..)
+  , NukeDecommissionComposition (..)
+  , PreparedNukeDecommission (..)
+  , productionDecommissionAvailability
+  , productionNukeDecommissionComposition
+  , nukeRunnerDependencyMetadata
+  , nukeVerifierMetadata
   , renderNukePlan
   , runNukeCommand
+  , runNukeCommandWithComposition
   )
 where
 
+import Control.Exception (IOException, try)
+import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Char8 qualified as Char8
+import Data.List (nub)
+import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Aws
-  ( AwsTeardownInput (..)
-  , PulumiResiduePolicy (..)
-  , adminAwsEnvironment
-  , applyAwsTeardown
-  )
+import Data.Version (showVersion)
 import Prodbox.CLI.Command
   ( NukeOptions (..)
   , PlanOptions (..)
-  , PulumiCommand (..)
   , buildPlan
   , runPlanWithOptions
   )
@@ -58,46 +53,728 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
-import Prodbox.CLI.Pulumi (runPulumiCommand)
-import Prodbox.CLI.Rke2 (runNativeDeleteCascade)
+import Prodbox.ControlPlane.AuthenticatedTransport
+  ( AuthenticatedClientTransport
+  )
+import Prodbox.ControlPlane.DecommissionClient
+  ( enterAuthorityDecommissionPointOfNoReturnViaTransport
+  , requestAuthorityDecommissionManifestViaTransport
+  , retainedCustodyTombstoneCapability
+  , targetGenerationTombstoneCapabilityViaTransport
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthentication
+  , LifecycleAuthorityAuthenticationError
+  , lifecycleAuthorityManifestSignerDigest
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  , withLifecycleAuthorityAuthenticatedTransport
+  , withTargetSecretAgentAuthenticatedTransport
+  )
 import Prodbox.Error (fatalError)
-import Prodbox.Infra.LongLivedPulumiBackend
-  ( destroyLongLivedPulumiStateBucket
-  , loadAdminAwsCredentials
-  , longLivedBackendErrorMessage
+import Prodbox.Infra.AwsSesDecommission
+  ( AwsSesDecommissionPrimitive
+  , AwsSesDecommissionScope (AwsSesProviderOnly, AwsSesSmtpIamOnly)
+  , awsSesProviderStackCapability
+  , awsSesProviderStackDestroyPrimitive
+  , awsSesSmtpIamCapability
+  , awsSesSmtpIamDestroyPrimitive
   )
-import Prodbox.Lifecycle.ResourceRegistry
-  ( awsSesPulumiResource
-  , longLivedManagedResources
-  , perRunManagedResources
-  , resourceDestroyCommand
-  , resourceName
+import Prodbox.Infra.LongLivedDecommission
+  ( ProductionLongLivedDecommissionCapabilities
+  , loadProductionLongLivedDecommissionCapabilities
+  , productionBackupAllPrefixesAbsentCapability
+  , productionBackupObjectsIdentityCapability
+  , productionSharedObjectBucketCapability
+  , productionTlsRetainedObjectsCapability
+  , productionTlsRetentionIdentityCapability
   )
-import Prodbox.Lifecycle.TagSweep
-  ( TagSweepInput (..)
-  , discoverClusterTaggedAwsResources
-  , renderTagSweepRefusal
+import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
+import Prodbox.Infra.SesConsumerQuiescence
+  ( loadProductionSesConsumerQuiescenceCapability
+  )
+import Prodbox.Lifecycle.Decommission.Frame
+  ( FrameAttemptId
+  , contentDigest
+  , frameAttemptIdForNode
+  )
+import Prodbox.Lifecycle.Decommission.Graph
+  ( reportBlocked
+  , reportConverged
+  , reportFailed
+  )
+import Prodbox.Lifecycle.Decommission.Manifest
+  ( DecommissionNode (..)
+  , VerifiedDecommissionManifest
+  , currentManifestVersion
+  , decommissionNodeFrameId
+  , manifestClusterId
+  , manifestNodes
+  , verifiedManifestPlan
+  , verifiedVerifierBinding
+  )
+import Prodbox.Lifecycle.Decommission.NodeEffect
+  ( NodeOperation (..)
+  , ProductionDecommissionCapabilities (..)
+  , RetainedCustodyTombstoneCapability (..)
+  , SesConsumerQuiescenceCapability
+  , TargetGenerationTombstoneCapability (..)
+  , decommissionInterpreterFromRegistry
+  , decommissionRegistryFromProductionCapabilities
+  )
+import Prodbox.Lifecycle.Decommission.Receipt
+  ( AcknowledgedExternalReceipt
+  , PendingExternalReceipt
+  , acknowledgeExternalReceipt
+  , pendingExternalReceiptPath
+  , prepareExternalReceiptAcknowledgement
+  , receiptAcknowledgementLiteral
+  )
+import Prodbox.Lifecycle.Decommission.Runner (runBoundDecommission)
+import Prodbox.Lifecycle.Decommission.Verifier
+  ( DeletionRootPath
+  , ExternalArtifactPath
+  , ExternalReceiptPath
+  , HostValidatedExternalDurablePaths
+  , PinnedProcessTransition (PinnedProcessAlreadyCurrent, PinnedProcessReplacementInvoked)
+  , VerifierArtifact
+  , VerifierBinding
+  , VerifierMetadata
+  , VerifierPreflightResult (VerifierReady, VerifierRefused)
+  , decidePinnedArtifactExecution
+  , exportVerifierArtifact
+  , externalArtifactPath
+  , externalReceiptPath
+  , inspectRunningVerifierArtifact
+  , mkDeletionRootPath
+  , mkExternalArtifactPath
+  , mkExternalReceiptPath
+  , mkVerifierMetadata
+  , replaceWithPinnedVerifier
+  , runVerifierPreflight
+  , validateExternalDurablePathsOnHost
+  , verifierBindingOf
+  , verifierDependencyPath
+  , verifierMetadataPath
+  )
+import Prodbox.Lifecycle.ResidueStatus
+  ( ResidueStatus (ResidueUnreachable)
+  , ResidueUnreachableReason (ResidueQueryFailed)
+  )
+import Prodbox.Runtime.Role
+  ( RuntimeRole (TargetSecretAgentRuntime)
   )
 import Prodbox.Settings
-  ( Credentials
-  , PulumiStateBackendSection
+  ( ConfigFile (storage)
+  , Credentials
+  , StorageSection (manual_pv_host_root)
   , loadConfigFile
-  , pulumi_state_backend
   )
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
+import System.Environment (getArgs)
 import System.Exit (ExitCode (..))
-import System.IO
-  ( hFlush
-  , stdout
-  )
+import System.FilePath (isAbsolute, normalise, takeDirectory, (</>))
+import System.IO (hFlush, stdout)
+import System.Info (compilerName, compilerVersion)
 
 defaultNukeOptions :: NukeOptions
-defaultNukeOptions = NukeOptions {nukeDryRun = False, nukePlanFile = Nothing}
+defaultNukeOptions =
+  NukeOptions
+    { nukeDryRun = False
+    , nukePlanFile = Nothing
+    , nukeReceiptPath = Nothing
+    }
 
--- | The literal an operator must type at the confirmation prompt.
--- Capitalized intentionally so operators can't typo "yes" into a
--- nuke. Comparison is case-sensitive.
 confirmationLiteral :: String
 confirmationLiteral = "NUKE EVERYTHING"
+
+newtype ProductionDecommissionAvailability
+  = ProductionDecommissionReady NukeDecommissionComposition
+
+-- | Boundary supplied only once the Authority/export and every production node
+-- client exist.  Preparation may freeze admission, sign/commit the complete
+-- manifest, export/read-back the runner, and durably initialize the receipt; it
+-- must not permanently stop Authority or begin destructive work.  That explicit
+-- transition is a separate field invoked only after preflight and acknowledgement.
+newtype NukeDecommissionComposition = NukeDecommissionComposition
+  { prepareNukeDecommission
+      :: ExternalReceiptPath
+      -> FilePath
+      -> Credentials
+      -> IO (Either Text PreparedNukeDecommission)
+  }
+
+-- | The five role/provider boundaries still supplied by their exact production
+-- clients.  The constructor below owns the external verifier/receipt, exact
+-- SMTP-IAM teardown, and all five long-lived store capabilities itself; callers
+-- cannot replace those with a broad process-local teardown.
+data ProductionNukeRemoteCapabilities = ProductionNukeRemoteCapabilities
+  { productionRequestDecommissionManifest
+      :: VerifierBinding
+      -> IO (Either Text VerifiedDecommissionManifest)
+  , productionEnterNukePointOfNoReturn
+      :: VerifiedDecommissionManifest
+      -> AcknowledgedExternalReceipt
+      -> IO (Either Text ())
+  , productionSesConsumersQuiescence
+      :: !(SesConsumerQuiescenceCapability IO)
+  , productionTargetGenerationTombstones
+      :: VerifiedDecommissionManifest
+      -> TargetGenerationTombstoneCapability IO
+  , productionRetainedCustodyTombstones
+      :: VerifiedDecommissionManifest
+      -> RetainedCustodyTombstoneCapability IO
+  }
+
+-- | Everything required for an authenticated run. The production capability
+-- inventory has a distinct required wrapper for every external role/resource
+-- family; a partially wired or read/write-confused runner is not constructible.
+data PreparedNukeDecommission = PreparedNukeDecommission
+  { preparedVerifiedManifest :: !VerifiedDecommissionManifest
+  , preparedRunningVerifierIdentity :: !VerifierBinding
+  , preparedExternalReceipt :: !PendingExternalReceipt
+  , preparedAttemptIdFor :: !(DecommissionNode -> FrameAttemptId)
+  , preparedProductionCapabilities :: !(ProductionDecommissionCapabilities IO)
+  , preparedMaximumFrameBytes :: !Int
+  , preparedEnterPointOfNoReturn
+      :: AcknowledgedExternalReceipt
+      -> IO (Either Text ())
+  }
+
+-- | The default CLI uses the complete authenticated composition.  Authentication
+-- is acquired only during apply, after the external path and interactive gate
+-- have been validated; dry-run remains side-effect free.
+productionDecommissionAvailability :: ProductionDecommissionAvailability
+productionDecommissionAvailability =
+  ProductionDecommissionReady productionAuthenticatedNukeComposition
+
+productionAuthenticatedNukeComposition :: NukeDecommissionComposition
+productionAuthenticatedNukeComposition =
+  NukeDecommissionComposition $ \receiptPath repoRoot credentials -> do
+    quiescenceResult <- loadProductionSesConsumerQuiescenceCapability repoRoot
+    case quiescenceResult of
+      Left detail -> pure (Left detail)
+      Right quiescence -> do
+        authenticated <-
+          withHostLifecycleAuthorityAuthentication
+            LifecycleAuthorityOperator
+            repoRoot
+            ( \authentication ->
+                prepareNukeDecommission
+                  ( productionNukeDecommissionComposition
+                      (productionRemoteCapabilities authentication quiescence)
+                  )
+                  receiptPath
+                  repoRoot
+                  credentials
+            )
+        pure $ case authenticated of
+          Left err ->
+            Left
+              ( Text.pack
+                  (renderLifecycleAuthorityAuthenticationError err)
+              )
+          Right prepared -> prepared
+
+productionRemoteCapabilities
+  :: LifecycleAuthorityAuthentication
+  -> SesConsumerQuiescenceCapability IO
+  -> ProductionNukeRemoteCapabilities
+productionRemoteCapabilities authentication quiescence =
+  ProductionNukeRemoteCapabilities
+    { productionRequestDecommissionManifest = \verifier -> do
+        result <-
+          withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+            requestAuthorityDecommissionManifestViaTransport
+              transport
+              (lifecycleAuthorityManifestSignerDigest authentication)
+              verifier
+        pure (flattenAuthenticatedResult result)
+    , productionEnterNukePointOfNoReturn = \verified acknowledged -> do
+        result <-
+          withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+            enterAuthorityDecommissionPointOfNoReturnViaTransport
+              transport
+              verified
+              acknowledged
+        pure (flattenAuthenticatedResult result)
+    , productionSesConsumersQuiescence = quiescence
+    , productionTargetGenerationTombstones =
+        targetGenerationThroughAuthentication authentication
+    , productionRetainedCustodyTombstones =
+        retainedCustodyThroughAuthentication authentication
+    }
+
+flattenAuthenticatedResult
+  :: (Show err)
+  => Either
+       LifecycleAuthorityAuthenticationError
+       (Either err value)
+  -> Either Text value
+flattenAuthenticatedResult result = case result of
+  Left err ->
+    Left (Text.pack (renderLifecycleAuthorityAuthenticationError err))
+  Right attempted -> first (Text.pack . show) attempted
+
+targetGenerationThroughAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> VerifiedDecommissionManifest
+  -> TargetGenerationTombstoneCapability IO
+targetGenerationThroughAuthentication authentication verified =
+  TargetGenerationTombstoneCapability $ \reference generation ->
+    targetOperationThroughAuthentication authentication $ \transport ->
+      runTargetGenerationTombstoneCapability
+        (targetGenerationTombstoneCapabilityViaTransport transport verified)
+        reference
+        generation
+
+retainedCustodyThroughAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> VerifiedDecommissionManifest
+  -> RetainedCustodyTombstoneCapability IO
+retainedCustodyThroughAuthentication authentication verified =
+  RetainedCustodyTombstoneCapability
+    ( targetOperationThroughAuthentication authentication $ \transport ->
+        runRetainedCustodyTombstoneCapability
+          (retainedCustodyTombstoneCapability transport verified)
+    )
+
+targetOperationThroughAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> ( AuthenticatedClientTransport 'TargetSecretAgentRuntime
+       -> NodeOperation IO
+     )
+  -> NodeOperation IO
+targetOperationThroughAuthentication authentication operationFor =
+  NodeOperation
+    { nodeDestroy = \nodeId attemptId -> do
+        result <-
+          withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+            nodeDestroy (operationFor transport) nodeId attemptId
+        pure $ case result of
+          Left err ->
+            Left
+              ( Text.pack
+                  (renderLifecycleAuthorityAuthenticationError err)
+              )
+          Right destroyed -> destroyed
+    , nodeReadBack = \nodeId attemptId -> do
+        result <-
+          withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+            nodeReadBack (operationFor transport) nodeId attemptId
+        pure $ case result of
+          Left err ->
+            ResidueUnreachable
+              ( ResidueQueryFailed
+                  (renderLifecycleAuthorityAuthenticationError err)
+              )
+          Right observed -> observed
+    }
+
+-- | Assemble every landed local production boundary around the remaining
+-- authenticated remote clients.  The runner path is derived solely from the
+-- operator-supplied receipt coordinate, and both files plus their sidecars are
+-- host-proved outside the exact local deletion-root inventory before export.
+productionNukeDecommissionComposition
+  :: ProductionNukeRemoteCapabilities
+  -> NukeDecommissionComposition
+productionNukeDecommissionComposition remote =
+  NukeDecommissionComposition (prepareProductionNukeDecommission remote)
+
+prepareProductionNukeDecommission
+  :: ProductionNukeRemoteCapabilities
+  -> ExternalReceiptPath
+  -> FilePath
+  -> Credentials
+  -> IO (Either Text PreparedNukeDecommission)
+prepareProductionNukeDecommission remote receiptPath repoRoot credentials =
+  case nukeVerifierMetadata of
+    Left detail -> pure (Left detail)
+    Right metadata -> do
+      runningResult <- inspectRunningVerifierArtifact nukeRunnerDependencyMetadata metadata
+      case runningResult of
+        Left err ->
+          pure (Left ("cannot inspect the running decommission verifier: " <> Text.pack (show err)))
+        Right (runningPath, artifact) ->
+          prepareWithRunningArtifact
+            remote
+            receiptPath
+            repoRoot
+            credentials
+            runningPath
+            artifact
+
+prepareWithRunningArtifact
+  :: ProductionNukeRemoteCapabilities
+  -> ExternalReceiptPath
+  -> FilePath
+  -> Credentials
+  -> ExternalArtifactPath
+  -> VerifierArtifact
+  -> IO (Either Text PreparedNukeDecommission)
+prepareWithRunningArtifact remote receiptPath repoRoot credentials runningPath artifact = do
+  coordinateResult <- prepareProductionVerifierCoordinate receiptPath repoRoot artifact
+  case coordinateResult of
+    Left detail -> pure (Left detail)
+    Right (hostPaths, exportedBinding) -> do
+      longLivedResult <- loadProductionLongLivedDecommissionCapabilities repoRoot credentials
+      case longLivedResult of
+        Left detail -> pure (Left detail)
+        Right longLived -> do
+          smtpPrimitive <- awsSesSmtpIamDestroyPrimitive repoRoot credentials
+          let providerPrimitive =
+                awsSesProviderStackDestroyPrimitive repoRoot credentials
+          manifestResult <- productionRequestDecommissionManifest remote exportedBinding
+          case manifestResult of
+            Left detail -> pure (Left ("Authority decommission export refused: " <> detail))
+            Right verified ->
+              case validateProductionManifest exportedBinding verified of
+                Left detail -> pure (Left detail)
+                Right () -> do
+                  receiptResult <- prepareExternalReceiptAcknowledgement hostPaths verified
+                  pure $ case receiptResult of
+                    Left err ->
+                      Left
+                        ( "external decommission receipt initialization refused: "
+                            <> Text.pack (show err)
+                        )
+                    Right pending ->
+                      Right
+                        PreparedNukeDecommission
+                          { preparedVerifiedManifest = verified
+                          , preparedRunningVerifierIdentity = verifierBindingOf runningPath artifact
+                          , preparedExternalReceipt = pending
+                          , preparedAttemptIdFor =
+                              frameAttemptIdForNode . decommissionNodeFrameId
+                          , preparedProductionCapabilities =
+                              productionCapabilities
+                                remote
+                                verified
+                                smtpPrimitive
+                                longLived
+                                providerPrimitive
+                          , preparedMaximumFrameBytes = nukeMaximumFrameBytes
+                          , preparedEnterPointOfNoReturn =
+                              productionEnterNukePointOfNoReturn remote verified
+                          }
+
+prepareProductionVerifierCoordinate
+  :: ExternalReceiptPath
+  -> FilePath
+  -> VerifierArtifact
+  -> IO
+       ( Either
+           Text
+           (HostValidatedExternalDurablePaths, VerifierBinding)
+       )
+prepareProductionVerifierCoordinate receiptPath repoRoot artifact =
+  case deriveVerifierArtifactPath receiptPath of
+    Left detail -> pure (Left detail)
+    Right artifactPath -> do
+      deletionRootsResult <- loadNukeDeletionRoots repoRoot
+      case deletionRootsResult of
+        Left detail -> pure (Left detail)
+        Right deletionRoots -> do
+          lexicalHostResult <-
+            validateExternalDurablePathsOnHost deletionRoots artifactPath receiptPath
+          case lexicalHostResult of
+            Left err -> pure (Left (renderExternalPathFailure err))
+            Right _ -> do
+              directoryResult <- prepareExternalDirectories artifactPath receiptPath
+              case directoryResult of
+                Left detail -> pure (Left detail)
+                Right () -> do
+                  hostResult <-
+                    validateExternalDurablePathsOnHost deletionRoots artifactPath receiptPath
+                  case hostResult of
+                    Left err -> pure (Left (renderExternalPathFailure err))
+                    Right hostPaths -> do
+                      bindingResult <- ensureVerifierExport artifactPath artifact
+                      pure ((,) hostPaths <$> bindingResult)
+
+deriveVerifierArtifactPath :: ExternalReceiptPath -> Either Text ExternalArtifactPath
+deriveVerifierArtifactPath receiptPath =
+  first
+    (\err -> "invalid receipt-derived verifier artifact path: " <> Text.pack (show err))
+    (mkExternalArtifactPath (externalReceiptPath receiptPath ++ ".runner"))
+
+loadNukeDeletionRoots :: FilePath -> IO (Either Text [DeletionRootPath])
+loadNukeDeletionRoots repoRoot = do
+  canonicalRepoResult <- try (canonicalizePath repoRoot)
+  case canonicalRepoResult of
+    Left err ->
+      pure
+        ( Left
+            ( "cannot resolve the repository root for decommission path validation: "
+                <> Text.pack (show (err :: IOException))
+            )
+        )
+    Right canonicalRepo -> do
+      configResult <- loadConfigFile repoRoot
+      pure $ case configResult of
+        Left detail -> Left ("cannot load Config for decommission path validation: " <> Text.pack detail)
+        Right config ->
+          let configuredManualRoot = Text.unpack (manual_pv_host_root (storage config))
+              manualRoot =
+                normalise
+                  ( if isAbsolute configuredManualRoot
+                      then configuredManualRoot
+                      else canonicalRepo </> configuredManualRoot
+                  )
+              rawRoots =
+                [ manualRoot
+                , "/var/lib/rancher/rke2"
+                , "/var/lib/rancher"
+                , "/etc/rancher/rke2"
+                , "/usr/local/bin/rke2"
+                , "/usr/local/bin/rke2-killall.sh"
+                , "/usr/local/bin/rke2-uninstall.sh"
+                ]
+           in first
+                (\err -> "invalid compiled decommission deletion root: " <> Text.pack (show err))
+                (traverse mkDeletionRootPath (nub rawRoots))
+
+prepareExternalDirectories
+  :: ExternalArtifactPath
+  -> ExternalReceiptPath
+  -> IO (Either Text ())
+prepareExternalDirectories artifactPath receiptPath = do
+  let directories =
+        nub
+          [ takeDirectory (externalArtifactPath artifactPath)
+          , takeDirectory (externalReceiptPath receiptPath)
+          ]
+  result <- try (mapM_ (createDirectoryIfMissing True) directories)
+  pure $ case result of
+    Left err ->
+      Left
+        ( "cannot prepare the external decommission directory: "
+            <> Text.pack (show (err :: IOException))
+        )
+    Right () -> Right ()
+
+ensureVerifierExport
+  :: ExternalArtifactPath
+  -> VerifierArtifact
+  -> IO (Either Text VerifierBinding)
+ensureVerifierExport artifactPath artifact = do
+  let expected = verifierBindingOf artifactPath artifact
+      paths =
+        [ externalArtifactPath artifactPath
+        , verifierDependencyPath artifactPath
+        , verifierMetadataPath artifactPath
+        ]
+  present <- mapM doesFileExist paths
+  case present of
+    [False, False, False] -> do
+      exported <- exportVerifierArtifact artifactPath artifact
+      pure
+        ( first
+            (\err -> "cannot durably export the pinned verifier: " <> Text.pack (show err))
+            exported
+        )
+    [True, True, True] -> do
+      preflight <- runVerifierPreflight expected
+      pure $ case preflight of
+        VerifierReady _ -> Right expected
+        VerifierRefused refusal ->
+          Left
+            ( "existing pinned verifier does not match the running build: "
+                <> Text.pack (show refusal)
+            )
+    _ ->
+      pure
+        ( Left
+            "partial pinned-verifier export exists; artifact, .deps, and .meta must all be absent or all match exactly"
+        )
+
+validateProductionManifest
+  :: VerifierBinding
+  -> VerifiedDecommissionManifest
+  -> Either Text ()
+validateProductionManifest expectedBinding verified
+  | verifiedVerifierBinding verified /= expectedBinding =
+      Left "Authority signed a different verifier binding than the exported pinned runner"
+  | not (null missingSingletons) =
+      Left
+        ( "Authority signed an incomplete production decommission manifest; missing nodes: "
+            <> Text.pack (show missingSingletons)
+        )
+  | length targetReferences > 1 =
+      Left "Authority signed more than one production Target Agent generation"
+  | any (/= manifestClusterId plan) targetReferences =
+      Left "Authority signed a Target Agent reference outside the production cluster identity"
+  | not (all (not . ByteString.null . nukeNodeProgramTag) nodes) =
+      Left "Authority signed a node without a compiled decommission interpreter tag"
+  | otherwise = Right ()
+ where
+  plan = verifiedManifestPlan verified
+  nodes = manifestNodes plan
+  targetReferences = [reference | TargetGeneration reference _ <- nodes]
+  missingSingletons = filter (`notElem` nodes) requiredSingletonNodes
+
+requiredSingletonNodes :: [DecommissionNode]
+requiredSingletonNodes =
+  [ SesConsumerQuiescence
+  , SesProviderStack
+  , SesSmtpIam
+  , RetainedCustody
+  , TlsRetainedObjects
+  , TlsRetentionIdentity
+  , BackupObjects
+  , BackupPrefixAbsenceProof
+  , SharedObjectBucket
+  ]
+
+nukeNodeProgramTag :: DecommissionNode -> ByteString
+nukeNodeProgramTag node = case node of
+  SesConsumerQuiescence -> "ses-consumer-quiescence-v1"
+  SesProviderStack -> "ses-provider-stack-v1"
+  SesSmtpIam -> "ses-smtp-iam-v1"
+  TargetGeneration _ _ -> "target-generation-v1"
+  RetainedCustody -> "retained-custody-v1"
+  TlsRetainedObjects -> "tls-retained-objects-v1"
+  TlsRetentionIdentity -> "tls-retention-identity-v1"
+  BackupPrefixAbsenceProof -> "backup-prefix-absence-proof-v1"
+  BackupObjects -> "backup-objects-identity-v1"
+  SharedObjectBucket -> "shared-object-bucket-v1"
+
+productionCapabilities
+  :: ProductionNukeRemoteCapabilities
+  -> VerifiedDecommissionManifest
+  -> AwsSesDecommissionPrimitive 'AwsSesSmtpIamOnly IO
+  -> ProductionLongLivedDecommissionCapabilities IO
+  -> AwsSesDecommissionPrimitive 'AwsSesProviderOnly IO
+  -> ProductionDecommissionCapabilities IO
+productionCapabilities
+  remote
+  verified
+  smtpPrimitive
+  longLived
+  providerPrimitive =
+    ProductionDecommissionCapabilities
+      { productionSesConsumerQuiescence = productionSesConsumersQuiescence remote
+      , productionSesProviderStack = awsSesProviderStackCapability providerPrimitive
+      , productionSesSmtpIam = awsSesSmtpIamCapability smtpPrimitive
+      , productionTargetGenerationTombstone =
+          productionTargetGenerationTombstones remote verified
+      , productionRetainedCustodyTombstone =
+          productionRetainedCustodyTombstones remote verified
+      , productionTlsRetainedObjects =
+          productionTlsRetainedObjectsCapability longLived
+      , productionTlsRetentionIdentity =
+          productionTlsRetentionIdentityCapability longLived
+      , productionBackupObjectsIdentity =
+          productionBackupObjectsIdentityCapability longLived
+      , productionBackupAllPrefixesAbsent =
+          productionBackupAllPrefixesAbsentCapability longLived
+      , productionSharedObjectBucket =
+          productionSharedObjectBucketCapability longLived
+      }
+
+nukeMaximumFrameBytes :: Int
+nukeMaximumFrameBytes = 64 * 1024
+
+renderExternalPathFailure :: (Show err) => err -> Text
+renderExternalPathFailure err =
+  "external verifier/receipt path validation refused: " <> Text.pack (show err)
+
+-- | Selected linked-package identities compiled into the executable.  The
+-- bytes are exported next to the exact runner and their digest is signed into
+-- the manifest; no mutable repository file or ambient package database is
+-- consulted during preparation or resume.
+nukeRunnerDependencyMetadata :: ByteString
+nukeRunnerDependencyMetadata =
+  Char8.pack
+    ( unlines
+        [ "prodbox-decommission-runner-dependencies-v1"
+        , "compiler=" ++ compilerName ++ "-" ++ showVersion compilerVersion
+        , "prodbox=" ++ VERSION_prodbox
+        , "aeson=" ++ VERSION_aeson
+        , "aeson-pretty=" ++ VERSION_aeson_pretty
+        , "async=" ++ VERSION_async
+        , "base=" ++ VERSION_base
+        , "base64-bytestring=" ++ VERSION_base64_bytestring
+        , "bytestring=" ++ VERSION_bytestring
+        , "case-insensitive=" ++ VERSION_case_insensitive
+        , "cborg=" ++ VERSION_cborg
+        , "co-log=" ++ VERSION_co_log
+        , "co-log-core=" ++ VERSION_co_log_core
+        , "containers=" ++ VERSION_containers
+        , "crypton=" ++ VERSION_crypton
+        , "memory=" ++ VERSION_memory
+        , "cryptohash-sha1=" ++ VERSION_cryptohash_sha1
+        , "cryptohash-sha256=" ++ VERSION_cryptohash_sha256
+        , "dhall=" ++ VERSION_dhall
+        , "either=" ++ VERSION_either
+        , "exceptions=" ++ VERSION_exceptions
+        , "directory=" ++ VERSION_directory
+        , "filepath=" ++ VERSION_filepath
+        , "fsnotify=" ++ VERSION_fsnotify
+        , "crypton-connection=" ++ VERSION_crypton_connection
+        , "crypton-x509-store=" ++ VERSION_crypton_x509_store
+        , "http-client=" ++ VERSION_http_client
+        , "http-client-tls=" ++ VERSION_http_client_tls
+        , "http-types=" ++ VERSION_http_types
+        , "tls=" ++ VERSION_tls
+        , "network=" ++ VERSION_network
+        , "optparse-applicative=" ++ VERSION_optparse_applicative
+        , "scientific=" ++ VERSION_scientific
+        , "serialise=" ++ VERSION_serialise
+        , "stm=" ++ VERSION_stm
+        , "temporary=" ++ VERSION_temporary
+        , "text=" ++ VERSION_text
+        , "time=" ++ VERSION_time
+        , "transformers=" ++ VERSION_transformers
+        , "typed-process=" ++ VERSION_typed_process
+        , "unix=" ++ VERSION_unix
+        , "vector=" ++ VERSION_vector
+        , "websockets=" ++ VERSION_websockets
+        , "wuss=" ++ VERSION_wuss
+        ]
+    )
+
+nukeVerifierMetadata :: Either Text VerifierMetadata
+nukeVerifierMetadata =
+  first
+    (\err -> "invalid compiled nuke verifier metadata: " <> Text.pack (show err))
+    ( mkVerifierMetadata
+        (contentDigest nukeRunnerDependencyMetadata)
+        currentManifestVersion
+        (contentDigest nukeManifestSchemaIdentity)
+        nukeInterpreterRegistryVersion
+        (contentDigest nukeInterpreterRegistryIdentity)
+    )
+
+nukeInterpreterRegistryVersion :: Word
+nukeInterpreterRegistryVersion = 1
+
+nukeManifestSchemaIdentity :: ByteString
+nukeManifestSchemaIdentity =
+  Char8.unlines
+    [ "prodbox-decommission-manifest-schema-v1"
+    , "cluster-id:text"
+    , "nodes:ordered-unique"
+    , "target-generation:(target-ref:text,generation:positive-natural)"
+    , "verifier-binding:(absolute-path,artifact-digest,dependency/schema/registry-metadata)"
+    ]
+
+nukeInterpreterRegistryIdentity :: ByteString
+nukeInterpreterRegistryIdentity =
+  Char8.unlines
+    [ "prodbox-decommission-interpreter-registry-v1"
+    , "ses-consumer-quiescence-v1"
+    , "ses-provider-stack-v1"
+    , "ses-smtp-iam-v1"
+    , "target-generation-v1"
+    , "retained-custody-v1"
+    , "tls-retained-objects-v1"
+    , "tls-retention-identity-v1"
+    , "backup-prefix-absence-proof-v1"
+    , "backup-objects-identity-v1"
+    , "shared-object-bucket-v1"
+    ]
 
 nukeInteractiveGuard :: InteractiveGuard
 nukeInteractiveGuard =
@@ -105,268 +782,205 @@ nukeInteractiveGuard =
     { guardCommand = "prodbox nuke"
     , guardAutomationHint =
         unlines
-          [ "prodbox nuke has no automation alias because it destroys long-lived"
-          , "cross-substrate shared infrastructure. Automation contexts must"
-          , "compose the canonical commands individually:"
-          , ""
-          , "  prodbox aws stack aws-ses destroy --yes"
-          , "  prodbox aws teardown"
-          , "  prodbox cluster delete --cascade"
-          , ""
-          , "If the long-lived `pulumi_state_backend` bucket should also be"
-          , "destroyed, follow up with the explicit S3 bucket-destroy step."
+          [ "prodbox nuke has no command-by-command automation substitute."
+          , "Automation must supply the same signed external manifest, pinned"
+          , "runner artifact, acknowledged receipt, and complete node registry."
+          , "Broad aws/cluster teardown commands are not a decommission receipt."
           ]
     }
 
--- | Sprint 4.26: route @prodbox nuke@ through the shared Plan / Apply
--- entrypoint so @--dry-run@ renders the full teardown plan and exits 0
--- without mutating, and @--plan-file@ writes the rendered plan. The
--- @nukePlanFile@ field is now read (previously threaded into
--- 'NukeOptions' but unread). 'runPlanWithOptions' maps @NukeOptions@'s
--- @nukeDryRun@/@nukePlanFile@ onto 'PlanOptions' so the dry-run/plan-file
--- semantics match every other destructive command. The interactive
--- confirmation + orchestration live entirely inside the apply closure so
--- dry-run never prompts or mutates.
 runNukeCommand :: FilePath -> NukeOptions -> IO ExitCode
-runNukeCommand repoRoot options =
+runNukeCommand = runNukeCommandWithComposition productionDecommissionAvailability
+
+runNukeCommandWithComposition
+  :: ProductionDecommissionAvailability
+  -> FilePath
+  -> NukeOptions
+  -> IO ExitCode
+runNukeCommandWithComposition availability repoRoot options =
   runPlanWithOptions
     PlanOptions {dryRun = nukeDryRun options, planFile = nukePlanFile options}
-    (buildPlan (const (renderNukePlan repoRoot)) ())
-    (\() -> runNukeInteractive repoRoot)
+    (buildPlan (const (renderNukePlanWithReceipt repoRoot (nukeReceiptPath options))) ())
+    (\() -> runNukeInteractive availability repoRoot (nukeReceiptPath options))
 
-runNukeInteractive :: FilePath -> IO ExitCode
-runNukeInteractive repoRoot = do
-  requireInteractiveTty nukeInteractiveGuard
-  writeOutputLine "prodbox nuke — total teardown."
-  writeOutputLine ""
-  writeOutputLine "This will destroy:"
-  writeOutputLine "  - K8s LoadBalancer Services, ALB Ingresses, Delete-reclaim PVCs"
-  writeOutputLine "  - aws-eks-subzone, aws-eks, aws-test (per-run substrate stacks)"
-  writeOutputLine "  - aws-ses (long-lived cross-substrate sending identity)"
-  writeOutputLine "  - operational `prodbox` IAM user + access keys"
-  writeOutputLine "  - local RKE2 cluster (etcd, kubelet, containerd)"
-  writeOutputLine "  - prodbox-tagged AWS resources surfaced by the postflight tag sweep"
-  writeOutputLine "  - long-lived `pulumi_state_backend` S3 bucket"
-  writeOutputLine ""
-  writeOutputLine ("Type `" ++ confirmationLiteral ++ "` to proceed (case-sensitive).")
-  writeOutputLine "Anything else aborts."
-  writeOutputLine ""
-  writeOutput "> "
-  hFlush stdout
-  typed <- getLine
-  if normalize typed == confirmationLiteral
-    then runNukeOrchestration repoRoot
-    else do
-      writeDiagnosticLine "prodbox nuke: confirmation rejected; nothing destroyed."
-      pure (ExitFailure 1)
- where
-  -- Trim trailing whitespace only; literal is case-sensitive.
-  normalize value = reverse (dropWhile (== ' ') (reverse value))
+runNukeInteractive
+  :: ProductionDecommissionAvailability
+  -> FilePath
+  -> Maybe FilePath
+  -> IO ExitCode
+runNukeInteractive availability repoRoot suppliedReceipt =
+  case availability of
+    ProductionDecommissionReady composition ->
+      case requireExternalReceiptPath suppliedReceipt of
+        Left detail -> refuse detail
+        Right receiptPath -> do
+          requireInteractiveTty nukeInteractiveGuard
+          writeOutputLine "prodbox nuke — authenticated total decommission."
+          writeOutputLine ""
+          writeOutputLine "This executes the signed dependency-ordered decommission manifest, including:"
+          writeOutputLine "  - SES consumer quiescence, provider-stack and SMTP-IAM absence"
+          writeOutputLine "  - still-live Target-Agent generation and retained-custody tombstones"
+          writeOutputLine "  - TLS objects and TLS identity before Authority-backup objects"
+          writeOutputLine "  - all-prefix absence proof before the shared bucket is destroyed last"
+          writeOutputLine ("  - external receipt: " ++ externalReceiptPath receiptPath)
+          writeOutputLine ""
+          writeOutputLine ("Type `" ++ confirmationLiteral ++ "` to begin preparation (case-sensitive).")
+          writeOutputLine "Anything else aborts without creating the external receipt."
+          writeOutputLine ""
+          writeOutput "> "
+          hFlush stdout
+          typed <- getLine
+          if normalizeConfirmation typed == confirmationLiteral
+            then runNukeOrchestration composition receiptPath repoRoot
+            else do
+              writeDiagnosticLine "prodbox nuke: confirmation rejected; nothing destroyed."
+              pure (ExitFailure 1)
 
--- | The dependency-ordered teardown plan. Rendered verbatim by
--- @--dry-run@ so operators can review what would happen without
--- mutating any state.
---
--- Sprint 5.6: the per-run, @aws-ses@, and long-lived-S3 destroy lines are
--- DERIVED from the managed-resource registry / 'StackDescriptor' SSoT
--- (Sprints 4.26/4.27) — 'awsSesPulumiResource' for step 1,
--- 'perRunManagedResources' for step 2's cascade targets, and 'longLivedManagedResources'
--- for the long-lived S3-object destroys — so the rendered plan tracks the
--- registry rather than drifting from it. A registry-generated golden pins
--- this, and a parity check fails if a registered resource is added without
--- updating the golden.
-renderNukePlan :: FilePath -> String
-renderNukePlan _repoRoot =
-  unlines
-    ( [ "PRODBOX_NUKE_PLAN"
-      , "STEP=1 "
-          ++ resourceDestroyCommand awsSesPulumiResource
-          ++ " (long-lived shared infrastructure; requires live Vault/MinIO encrypted backend)"
-      , "STEP=2 K8s drain + per-run Pulumi destroys + cluster uninstall (rke2 delete --cascade arm)"
-      ]
-        ++ [ "STEP=2 per_run_destroy " ++ resourceName resource
-           | resource <- perRunManagedResources
-           ]
-        ++ [ "STEP=3 prodbox aws teardown (operational `prodbox` IAM user + access keys)"
-           , "STEP=4 postflight tag sweep (fail-closed: any prodbox-tagged AWS residue OR an unconfirmable sweep aborts nuke non-zero before step 5)"
-           ]
-        ++ [ "STEP=4 long_lived_destroy " ++ resourceName resource
-           | resource <- longLivedManagedResources
-           ]
-        ++ [ "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
-           , "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-secrets.dhall::aws_admin_for_test_simulation.*); never read from prodbox.dhall or Vault"
-           , "STATUS=plan-only"
-           , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
-           , "ALSO_NOTE=Each step is idempotent on retry; the operator may resume after a partial failure."
-           ]
-    )
-
--- | Orchestration body. Acquires the EPHEMERAL admin AWS credential before
--- destructive work begins. Because @prodbox nuke@ is TTY-only, the operator is
--- prompted for a temporary admin key (the harness simulates the prompt from
--- @test-secrets.dhall@'s @aws_admin_for_test_simulation@ block); it is never
--- read from @prodbox.dhall@ or Vault. That same credential is used by
--- long-lived stack operations. The aws-ses destroy runs before the
--- local-cluster cascade so the encrypted Pulumi backend can still read
--- Vault/MinIO. Failure at any step aborts; later steps are idempotent, so the
--- operator may re-run nuke after fixing the failing step.
-runNukeOrchestration :: FilePath -> IO ExitCode
-runNukeOrchestration repoRoot = do
+runNukeOrchestration
+  :: NukeDecommissionComposition
+  -> ExternalReceiptPath
+  -> FilePath
+  -> IO ExitCode
+runNukeOrchestration composition receiptPath repoRoot = do
   writeOutputLine ""
-  writeOutputLine
-    "prodbox nuke: acquiring the ephemeral admin AWS credential (interactive prompt; harness-simulated from test-secrets.dhall)."
-  writeOutputLine "That ephemeral admin credential is used for the SES destroy,"
-  writeOutputLine
-    "operational IAM teardown, postflight tag sweep, and long-lived state-bucket destroy."
-  writeOutputLine ""
+  writeOutputLine "prodbox nuke: acquiring one ephemeral admin AWS credential."
   adminResult <- loadAdminAwsCredentials repoRoot
-  configResult <- loadConfigFile repoRoot
-  case (adminResult, configResult) of
-    (Left err, _) -> do
+  case adminResult of
+    Left err -> do
       writeError (fatalError (Text.pack ("nuke aborted while loading admin credentials: " ++ err)))
       pure (ExitFailure 1)
-    (_, Left err) -> do
-      writeError (fatalError (Text.pack ("nuke aborted while loading config: " ++ err)))
-      pure (ExitFailure 1)
-    (Right adminCredentials, Right config) -> do
-      let backend = pulumi_state_backend config
-      runNukeSteps repoRoot adminCredentials backend
+    Right adminCredentials -> do
+      preparedResult <- prepareNukeDecommission composition receiptPath repoRoot adminCredentials
+      case preparedResult of
+        Left detail -> refuse ("decommission preparation refused: " <> detail)
+        Right prepared -> runPreparedNuke prepared
 
-runNukeSteps
-  :: FilePath
-  -> Credentials
-  -> PulumiStateBackendSection
-  -> IO ExitCode
-runNukeSteps repoRoot adminCredentials backend = do
-  step1 <- runStep "1/5 aws-ses destroy" (nukeStepAwsSesDestroy repoRoot)
-  abortOrContinue step1 $ do
-    step2 <- runStep "2/5 cluster cascade" (nukeStepCascade repoRoot)
-    abortOrContinue step2 $ do
-      step3 <- runStep "3/5 operational IAM teardown" (nukeStepAwsTeardown repoRoot adminCredentials)
-      abortOrContinue step3 $ do
-        step4 <-
-          runStep
-            "4/5 postflight tag sweep"
-            (nukeStepTagSweep repoRoot adminCredentials)
-        -- Sprint 4.26: the postflight tag sweep is FAIL-CLOSED per
-        -- lifecycle_reconciliation_doctrine.md § 6. A non-empty leak list
-        -- OR an unconfirmable sweep is a hard failure: it aborts nuke with
-        -- the surfaced residue and a non-zero exit BEFORE the step-5 bucket
-        -- destroy, never "proceed and report success." "Could not observe
-        -- the absence of residue" is treated as "residue may be present,"
-        -- never as "residue is absent" (the same soundness rule as § 3.1
-        -- invariant 2: Unreachable → refuse).
-        abortOrContinue step4 $ do
-          step5 <-
-            runStep
-              "5/5 long-lived state-bucket destroy"
-              (nukeStepStateBucket repoRoot adminCredentials backend)
-          case step5 of
-            ExitSuccess -> do
-              writeOutputLine ""
-              writeOutputLine "prodbox nuke: total teardown complete."
-              writeOutputLine "AWS imposes a ~24h cooldown on long-lived state-bucket name reuse;"
-              writeOutputLine "next reprovision must wait that window before re-creating the bucket."
-              pure ExitSuccess
-            failed -> pure failed
+requireExternalReceiptPath :: Maybe FilePath -> Either Text ExternalReceiptPath
+requireExternalReceiptPath supplied = case supplied of
+  Nothing ->
+    Left
+      "prodbox nuke apply requires --receipt <absolute-external-path>; --dry-run may omit it"
+  Just raw ->
+    first
+      (\err -> "invalid external decommission receipt path: " <> Text.pack (show err))
+      (mkExternalReceiptPath raw)
 
--- | Run one nuke step and emit a structured header before/after.
-runStep :: String -> IO ExitCode -> IO ExitCode
-runStep label action = do
+runPreparedNuke :: PreparedNukeDecommission -> IO ExitCode
+runPreparedNuke prepared = do
+  preflightResult <-
+    runVerifierPreflight (verifiedVerifierBinding (preparedVerifiedManifest prepared))
+  case preflightResult of
+    VerifierRefused refusal ->
+      refuse ("pinned runner preflight refused: " <> Text.pack (show refusal))
+    VerifierReady preflighted -> do
+      arguments <- getArgs
+      let executionDecision =
+            decidePinnedArtifactExecution
+              preflighted
+              (preparedRunningVerifierIdentity prepared)
+      replacementResult <-
+        try (replaceWithPinnedVerifier arguments executionDecision)
+          :: IO (Either IOException PinnedProcessTransition)
+      case replacementResult of
+        Left err -> refuse ("pinned runner process replacement failed: " <> Text.pack (show err))
+        Right (PinnedProcessReplacementInvoked _) ->
+          refuse "pinned runner process replacement unexpectedly returned"
+        Right PinnedProcessAlreadyCurrent -> acknowledgeAndRun prepared
+
+acknowledgeAndRun :: PreparedNukeDecommission -> IO ExitCode
+acknowledgeAndRun prepared = do
+  let pending = preparedExternalReceipt prepared
+      receiptPath = externalReceiptPath (pendingExternalReceiptPath pending)
+      acknowledgement = receiptAcknowledgementLiteral pending
   writeOutputLine ""
-  writeOutputLine ("prodbox nuke: step " ++ label ++ " starting.")
-  exitCode <- action
-  case exitCode of
-    ExitSuccess ->
-      writeOutputLine ("prodbox nuke: step " ++ label ++ " complete.")
-    ExitFailure code ->
-      writeDiagnosticLine
-        ("prodbox nuke: step " ++ label ++ " failed with exit code " ++ show code)
-  pure exitCode
+  writeOutputLine ("External receipt durably initialized and read back at: " ++ receiptPath)
+  writeOutputLine "Authority permanent stop and destructive effects remain forbidden."
+  writeOutputLine "Type the following exact receipt acknowledgement to cross the point of no return:"
+  writeOutputLine (Text.unpack acknowledgement)
+  writeOutput "> "
+  hFlush stdout
+  supplied <- Text.pack <$> getLine
+  case acknowledgeExternalReceipt supplied pending of
+    Left _ -> refuse "external receipt acknowledgement rejected; no destructive effect was run"
+    Right acknowledged -> do
+      entered <- preparedEnterPointOfNoReturn prepared acknowledged
+      case entered of
+        Left detail -> refuse ("point-of-no-return transition refused: " <> detail)
+        Right () -> executeAcknowledgedRun prepared acknowledged
+
+executeAcknowledgedRun
+  :: PreparedNukeDecommission
+  -> AcknowledgedExternalReceipt
+  -> IO ExitCode
+executeAcknowledgedRun prepared acknowledged = do
+  outcome <-
+    runBoundDecommission
+      (preparedMaximumFrameBytes prepared)
+      (preparedVerifiedManifest prepared)
+      (preparedRunningVerifierIdentity prepared)
+      acknowledged
+      (preparedAttemptIdFor prepared)
+      ( decommissionInterpreterFromRegistry
+          (decommissionRegistryFromProductionCapabilities (preparedProductionCapabilities prepared))
+      )
+  case outcome of
+    Left refusal -> refuse ("decommission runner refused: " <> Text.pack (show refusal))
+    Right report
+      | reportConverged report -> do
+          writeOutputLine "prodbox nuke: authenticated decommission converged."
+          pure ExitSuccess
+      | otherwise -> do
+          writeDiagnosticLine
+            ( "prodbox nuke: decommission incomplete; failed="
+                ++ show (reportFailed report)
+                ++ "; blocked="
+                ++ show (reportBlocked report)
+                ++ ". Re-run the pinned artifact against the same external receipt."
+            )
+          pure (ExitFailure 1)
+
+renderNukePlan :: FilePath -> String
+renderNukePlan repoRoot = renderNukePlanWithReceipt repoRoot Nothing
+
+renderNukePlanWithReceipt :: FilePath -> Maybe FilePath -> String
+renderNukePlanWithReceipt _repoRoot suppliedReceipt =
+  unlines
+    [ "PRODBOX_NUKE_PLAN"
+    , "PROTOCOL=signed-external-decommission-v1"
+    , "EXTERNAL_RECEIPT=" ++ renderedReceipt
+    , "PINNED_RUNNER=" ++ renderedRunner
+    , "GATE=freeze admission; commit and authenticate complete manifest"
+    , "GATE=export/fsync/read-back exact runner, dependency closure, schema and registry metadata outside every deletion root"
+    , "GATE=create/fsync/read-back external receipt and require its exact acknowledgement"
+    , "GATE=execute only the pinned artifact; a new/missing/drifted build refuses"
+    , "NODE=ses-consumer-quiescence"
+    , "NODE=ses-provider-stack"
+    , "NODE=ses-smtp-iam"
+    , "NODE=target-generation (one per signed manifest target)"
+    , "NODE=retained-custody"
+    , "NODE=tls-retained-objects"
+    , "NODE=tls-retention-identity"
+    , "NODE=backup-objects-and-identity"
+    , "NODE=backup-prefix-absence-proof"
+    , "NODE=shared-object-bucket (unique terminal)"
+    , "RECEIPT=durable intent before every effect; authoritative read-back; stable attempt on resume"
+    , "ADMIN_CREDENTIAL_SOURCE=one ephemeral admin AWS credential from the interactive prompt; never persisted"
+    , "STATUS=plan-only"
+    , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
+    , "APPLY_READINESS=fail closed unless the complete production node registry and Authority export composition are supplied"
+    ]
+ where
+  renderedReceipt = maybe "<required-for-apply>" id suppliedReceipt
+  renderedRunner = maybe "<derived-from-external-receipt>.runner" (++ ".runner") suppliedReceipt
 
 abortOrContinue :: ExitCode -> IO ExitCode -> IO ExitCode
 abortOrContinue ExitSuccess continuation = continuation
-abortOrContinue failure@(ExitFailure _) _ = do
-  writeDiagnosticLine
-    "prodbox nuke: aborting. Subsequent steps are skipped. Re-run after resolving the failure."
-  pure failure
+abortOrContinue failure@(ExitFailure _) _ = pure failure
 
--- | Step 1: delegate to the cascade arm of @rke2 delete --cascade@,
--- which already runs the K8s drain phase before the per-run Pulumi
--- destroys and cluster uninstall.
-nukeStepCascade :: FilePath -> IO ExitCode
-nukeStepCascade = runNativeDeleteCascade
+normalizeConfirmation :: String -> String
+normalizeConfirmation value = reverse (dropWhile (== ' ') (reverse value))
 
--- | Step 2: destroy the long-lived @aws-ses@ Pulumi stack.
-nukeStepAwsSesDestroy :: FilePath -> IO ExitCode
-nukeStepAwsSesDestroy repoRoot =
-  runPulumiCommand
-    repoRoot
-    (PulumiAwsSesDestroy True PlanOptions {dryRun = False, planFile = Nothing})
-
--- | Step 3: delete the dedicated operational @prodbox@ IAM user and
--- clear operational @aws.*@ from the Dhall config. After step 1 + 2
--- the destructive cascade and long-lived destroy have already run.
--- The local MinIO backend may be gone by this point, so total teardown
--- uses the explicit orphan-accepting policy and relies on the
--- surrounding cascade + tag-sweep backstops rather than the ordinary
--- operator teardown refusal.
-nukeStepAwsTeardown :: FilePath -> Credentials -> IO ExitCode
-nukeStepAwsTeardown repoRoot adminCredentials = do
-  result <-
-    applyAwsTeardown
-      repoRoot
-      AwsTeardownInput
-        { awsTeardownAdminCredentials = adminCredentials
-        , awsTeardownResiduePolicy = AcceptOrphanResidue
-        }
-  case result of
-    Left err -> do
-      writeError (fatalError (Text.pack ("operational IAM teardown failed: " ++ err)))
-      pure (ExitFailure 1)
-    Right _ -> pure ExitSuccess
-
--- | Step 4: scan AWS for any remaining prodbox-tagged resources.
--- Non-fatal: surfaces residue to the operator so they can resolve
--- before re-provisioning, but does not block the bucket destroy.
-nukeStepTagSweep :: FilePath -> Credentials -> IO ExitCode
-nukeStepTagSweep repoRoot adminCredentials = do
-  environment <- adminAwsEnvironment adminCredentials
-  result <-
-    discoverClusterTaggedAwsResources
-      TagSweepInput
-        { tagSweepEnvironment = environment
-        , tagSweepClusterName = Nothing
-        , tagSweepWorkingDirectory = Just repoRoot
-        }
-  case result of
-    Left err -> do
-      writeDiagnosticLine ("prodbox nuke: tag sweep query failed: " ++ err)
-      pure (ExitFailure 1)
-    Right [] -> do
-      writeOutputLine "prodbox nuke: tag sweep clean; no surviving prodbox-tagged resources."
-      pure ExitSuccess
-    Right resources -> do
-      writeDiagnosticLine (renderTagSweepRefusal resources)
-      pure (ExitFailure 1)
-
--- | Step 5: destroy the long-lived @pulumi_state_backend@ S3 bucket.
--- Empties all object versions and delete-markers, then deletes the
--- bucket. Idempotent — does nothing if the bucket is already gone.
-nukeStepStateBucket
-  :: FilePath -> Credentials -> PulumiStateBackendSection -> IO ExitCode
-nukeStepStateBucket repoRoot adminCredentials backend = do
-  environment <- adminAwsEnvironment adminCredentials
-  result <- destroyLongLivedPulumiStateBucket repoRoot environment backend
-  case result of
-    Left err -> do
-      writeError
-        ( fatalError
-            ( Text.pack
-                ( "long-lived state-bucket destroy failed: "
-                    ++ longLivedBackendErrorMessage err
-                )
-            )
-        )
-      pure (ExitFailure 1)
-    Right () -> pure ExitSuccess
+refuse :: Text -> IO ExitCode
+refuse detail = do
+  writeError (fatalError detail)
+  pure (ExitFailure 1)

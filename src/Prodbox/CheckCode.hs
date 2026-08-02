@@ -34,6 +34,7 @@ module Prodbox.CheckCode
   , prodboxMarkerKeysPresent
   , pulumiCreateSiteOwners
   , pulumiCreateSiteViolations
+  , qualificationIsolationViolations
   , relativeLinkResolves
   , renderGeneratedSection
   , renderTrackedGeneratedPath
@@ -53,8 +54,8 @@ module Prodbox.CheckCode
 where
 
 import Control.Monad (forM)
-import Data.Char (isAlpha, isAlphaNum, isDigit, toLower)
-import Data.List (find, findIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
+import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, toLower)
+import Data.List (find, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
@@ -588,7 +589,39 @@ runConformanceTierChecks repoRoot = do
               case staticsViolations of
                 [] ->
                   case vaultIdentityRegistryViolations of
-                    [] -> pure ExitSuccess
+                    [] -> do
+                      readinessViolations <- readinessObservationViolations repoRoot
+                      case readinessViolations of
+                        [] -> do
+                          qualificationViolations <- checkQualificationIsolation repoRoot
+                          case qualificationViolations of
+                            [] -> pure ExitSuccess
+                            _ ->
+                              failWith
+                                ( unlines
+                                    ( ( "Qualification-fixture isolation failed. Test-only source/evidence "
+                                          ++ "identities must not enter a production module or capability registry:"
+                                      )
+                                        : map ("- " ++) qualificationViolations
+                                        ++ [ "Move the import below src/Prodbox/Test; production interpreters cannot consume qualification fixtures."
+                                           ]
+                                    )
+                                )
+                        _ ->
+                          failWith
+                            ( unlines
+                                ( ( "Three-valued readiness conformance failed. Each readiness/"
+                                      ++ "observation type must keep a DISTINCT non-terminal constructor "
+                                      ++ "for the not-yet-ready state; collapsing it into a terminal or "
+                                      ++ "absent bucket is the forbidden bring-up-dual / fail-open defect "
+                                      ++ "(bootstrap_readiness_doctrine.md §0/§2.4, Sprints 4.53/5.25):"
+                                  )
+                                    : map ("- " ++) readinessViolations
+                                    ++ [ "Restore the non-terminal readiness constructor; never collapse "
+                                           ++ "a not-yet-ready observation into a fatal or absent one."
+                                       ]
+                                )
+                            )
                     vaultViolations ->
                       failWith
                         ( unlines
@@ -614,6 +647,88 @@ runConformanceTierChecks repoRoot = do
                         )
                     )
 
+-- | Sprints 4.53 / 5.25: the typed three-valued-readiness doctrine
+-- (bootstrap_readiness_doctrine.md §0/§2.4) requires every readiness/observation
+-- type to keep a DISTINCT non-terminal "not-yet-ready" constructor.  Collapsing
+-- that third value back into a terminal (bring-up dual) or absent (fail-open)
+-- bucket is the forbidden defect the two readiness-race fixes remove.  This build
+-- gate fails if any of the three doctrine constructors is deleted or renamed away
+-- — a regression that would re-collapse the distinction.
+readinessObservationViolations :: FilePath -> IO [String]
+readinessObservationViolations repoRoot =
+  concat <$> mapM checkConstructorPresent requiredNonTerminalReadinessConstructors
+ where
+  checkConstructorPresent (relativePath, constructor, rationale) = do
+    let absolutePath = repoRoot </> relativePath
+    exists <- doesFileExist absolutePath
+    if not exists
+      then
+        pure
+          [ relativePath
+              ++ " is missing (expected the three-valued readiness/observation type)"
+          ]
+      else do
+        contents <- readFile absolutePath
+        pure
+          [ relativePath
+              ++ ": missing the non-terminal readiness constructor `"
+              ++ constructor
+              ++ "` — "
+              ++ rationale
+          | not (constructor `isInfixOf` contents)
+          ]
+
+-- | The three non-terminal "not-yet-ready" constructors that make the readiness
+-- races unrepresentable, each in its owning module.
+requiredNonTerminalReadinessConstructors :: [(FilePath, String, String)]
+requiredNonTerminalReadinessConstructors =
+  [
+    ( "src/Prodbox/Test/GatewayRuntimeStability.hs"
+    , "GatewayObservationIncomplete"
+    , "a not-yet-scraped healthy gateway Pod must be non-absorbing, not latched fatal"
+    )
+  ,
+    ( "src/Prodbox/Lifecycle/CheckpointAuthority.hs"
+    , "ModelBEndpointUnready"
+    , "a transient object-store endpoint-unreachability is retryable, not a terminal authority-loss"
+    )
+  ,
+    ( "src/Prodbox/Lifecycle/Lease.hs"
+    , "LeaseAuthorityEndpointUnready"
+    , "a transient endpoint-unready lease refusal is retried within the readiness budget"
+    )
+  ]
+
+-- | Sprint 4.50 / Standard P: the frozen counterexample and qualification
+-- identities are evidence, never runtime authority.  No production module may
+-- import their namespace; this keeps a fixture from satisfying a real role or
+-- capability registry by construction.
+checkQualificationIsolation :: FilePath -> IO [String]
+checkQualificationIsolation repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  sources <-
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path || "app/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      ]
+      (\path -> do contents <- readFile (repoRoot </> path); pure (path, contents))
+  pure (qualificationIsolationViolations sources)
+
+qualificationIsolationViolations :: [(FilePath, String)] -> [String]
+qualificationIsolationViolations sources =
+  [ path
+      ++ " imports the test-only Prodbox.Test.Qualification namespace."
+  | (path, contents) <- sources
+  , not ("src/Prodbox/Test/" `isPrefixOf` path)
+  , path /= "src/Prodbox/CheckCode.hs"
+  , sourceLine <- lines contents
+  , let stripped = dropWhile isSpace sourceLine
+  , "import " `isPrefixOf` stripped
+  , "Prodbox.Test.Qualification" `isInfixOf` stripped
+  ]
+
 checkBootstrapBrokerIsolation :: FilePath -> IO [String]
 checkBootstrapBrokerIsolation repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
@@ -629,11 +744,16 @@ checkBootstrapBrokerIsolation repoRoot = do
         , path `notElem` bootstrapIsolationSourcePaths
         ]
   sources <-
-    forM (bootstrapIsolationSourcePaths ++ additionalIsolationPaths) $ \relativePath -> do
-      let absolutePath = repoRoot </> relativePath
-      exists <- doesFileExist absolutePath
-      contents <- if exists then readFile absolutePath else pure ""
-      pure (relativePath, contents)
+    forM
+      ( bootstrapIsolationSourcePaths
+          ++ bootstrapOptionalIsolationSourcePaths
+          ++ additionalIsolationPaths
+      )
+      $ \relativePath -> do
+        let absolutePath = repoRoot </> relativePath
+        exists <- doesFileExist absolutePath
+        contents <- if exists then readFile absolutePath else pure ""
+        pure (relativePath, contents)
   pure (bootstrapBrokerIsolationViolations sources)
 
 bootstrapIsolationSourcePaths :: [FilePath]
@@ -643,7 +763,16 @@ bootstrapIsolationSourcePaths =
   , "src/Prodbox/Gateway/Daemon.hs"
   , "src/Prodbox/Bootstrap/Broker/Client.hs"
   , "src/Prodbox/Bootstrap/Broker/Routes.hs"
-  , "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
+  ]
+
+bootstrapOptionalIsolationSourcePaths :: [FilePath]
+bootstrapOptionalIsolationSourcePaths =
+  [ "src/Prodbox/Gateway/ObjectStore.hs"
+  , "src/Prodbox/Gateway/TargetSecret.hs"
+  , "src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs"
+  , "src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs"
+  , "src/Prodbox/Lifecycle/TargetSecretStore.hs"
+  , "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
   ]
 
 -- | Pure Sprint-2.33 role-isolation check.  Comments are ignored for path
@@ -657,7 +786,7 @@ bootstrapBrokerIsolationViolations sources =
     ++ gatewayModuleViolations
     ++ brokerClientViolations
     ++ brokerEscapeViolations
-    ++ legacyAdapterViolations
+    ++ removedLegacyViolations
  where
   sourceAt path = lookup path sources
   missingViolations =
@@ -691,29 +820,24 @@ bootstrapBrokerIsolationViolations sources =
     case sourceAt "src/Prodbox/Bootstrap/Broker/Client.hs" of
       Nothing -> []
       Just contents ->
-        let rollbackMarker = "-- Standard-P rollback adapter"
-            targetSurface = sourceBefore rollbackMarker contents
-         in [ "Bootstrap Broker target client is missing its explicit Standard-P rollback boundary."
-            | not (rollbackMarker `isInfixOf` contents)
-            ]
-              ++ [ "Bootstrap Broker target client can represent forbidden secret field `"
-                     ++ token
-                     ++ "` before the rollback boundary."
-                 | token <- ["unlock_password", "new_unlock_password", "initial_root_token"]
-                 , token `isInfixOf` targetSurface
+        [ "Bootstrap Broker target client can represent forbidden secret field `"
+            ++ token
+            ++ "`."
+        | token <- ["unlock_password", "new_unlock_password", "initial_root_token"]
+        , token `isInfixOf` contents
+        ]
+          ++ [ "Bootstrap Broker target client is missing authenticated request binding `"
+                 ++ token
+                 ++ "`."
+             | token <-
+                 [ "x-prodbox-service-identity"
+                 , "x-prodbox-transport-credential"
+                 , "idempotency-key"
+                 , "x-prodbox-request-sha256"
+                 , "requestDigestForBytes"
                  ]
-              ++ [ "Bootstrap Broker target client is missing authenticated request binding `"
-                     ++ token
-                     ++ "`."
-                 | token <-
-                     [ "x-prodbox-service-identity"
-                     , "x-prodbox-transport-credential"
-                     , "idempotency-key"
-                     , "x-prodbox-request-sha256"
-                     , "requestDigestForBytes"
-                     ]
-                 , not (token `isInfixOf` targetSurface)
-                 ]
+             , not (token `isInfixOf` contents)
+             ]
   brokerEscapeViolations =
     case sourceAt "src/Prodbox/Bootstrap/Broker/Routes.hs" of
       Nothing -> []
@@ -724,65 +848,34 @@ bootstrapBrokerIsolationViolations sources =
         | literal <- extractStringLiterals contents
         , any (`isInfixOf` map toLower literal) brokerForbiddenFragments
         ]
-  legacyAdapterViolations =
-    case ( sourceAt "src/Prodbox/Gateway/Daemon.hs"
-         , sourceAt "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
-         ) of
-      (Just daemonContents, Just adapterContents) ->
-        let daemonIdentifiers = sourceIdentifiers daemonContents
-            daemonExportIdentifiers =
-              sourceIdentifiers (sourceBefore "where" daemonContents)
-            adapterIdentifiers = sourceIdentifiers adapterContents
-            adapterLiterals = extractStringLiterals adapterContents
-            dispatchRegion =
-              sourceBetween
-                "handleParsedRequest rawRequest"
-                "currentEmitterReadinessAuthority"
-                daemonContents
-         in [ "Gateway rollback bootstrap dispatch is not isolated behind LegacyAdapter."
-            | not
-                ( all
-                    (`elem` daemonIdentifiers)
-                    [ "legacyGatewayBootstrapRouteForPath"
-                    , "runLegacyGatewayBootstrapRequest"
-                    , "LegacyModelBEmitter"
-                    , "JournalLeaseEmitter"
-                    ]
-                )
-            ]
-              ++ [ "Gateway target dispatch does not topology-gate the rollback adapter."
-                 | not
-                     ( tokensOccurInOrder
-                         [ "LegacyModelBEmitter"
-                         , "legacyGatewayBootstrapRouteForPath"
-                         , "JournalLeaseEmitter"
-                         , "dispatchPatternRoute"
-                         ]
-                         dispatchRegion
-                     )
-                 ]
-              ++ [ "Gateway daemon exports a rollback bootstrap endpoint or request type."
-                 | any
-                     (`elem` daemonExportIdentifiers)
-                     [ "BootstrapVaultRequest"
-                     , "bootstrapVaultPath"
-                     , "decodeBootstrapVaultRequest"
+  removedLegacyViolations =
+    [ path ++ " retains a removed lifecycle transport module."
+    | (path, contents) <- sources
+    , ( ( not (null contents)
+            && path
+              `elem` [ "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
+                     , "src/Prodbox/Gateway/ObjectStore.hs"
+                     , "src/Prodbox/Gateway/TargetSecret.hs"
+                     , "src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs"
+                     , "src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs"
+                     , "src/Prodbox/Lifecycle/TargetSecretStore.hs"
+                     , "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
                      ]
-                 ]
-              ++ [ "Registered rollback adapter is missing executable bootstrap ownership."
-                 | not
-                     ( all
-                         (`elem` adapterIdentifiers)
-                         [ "LegacyGatewayBootstrapRoute"
-                         , "runLegacyGatewayBootstrapRequest"
-                         , "bootstrapObjectStoreConfigWithEndpoint"
-                         , "unlockBundleInitialRootToken"
-                         ]
-                     )
-                     || not
-                       (all (`elem` adapterLiterals) ["unlock_password", "new_unlock_password"])
-                 ]
-      _ -> []
+        )
+          || any
+            (`elem` sourceIdentifiers contents)
+            [ "LegacyGatewayBootstrapRoute"
+            , "legacyGatewayBootstrapRouteForPath"
+            , "runLegacyGatewayBootstrapRequest"
+            , "dispatchLegacyGatewayBootstrapRoute"
+            ]
+          || ( "src/Prodbox/Gateway/" `isPrefixOf` path
+                 && any
+                   ("/v1/bootstrap/vault" `isPrefixOf`)
+                   (extractStringLiterals contents)
+             )
+      )
+    ]
   brokerForbiddenFragments =
     [ "/v1/object-store"
     , "/v1/secret"
@@ -802,16 +895,21 @@ bootstrapBrokerIsolationViolations sources =
         | token <- forbiddenTokens
         , token `isInfixOf` contents
         ]
-  sourceBefore marker contents =
-    case findIndex (isPrefixOf marker) (tails contents) of
-      Nothing -> contents
-      Just markerOffset -> take markerOffset contents
-
   gatewayModuleSourceViolations (path, contents) =
     [ path ++ " retains forbidden pre-Vault literal `" ++ literal ++ "`."
     | literal <- extractStringLiterals contents
     , literal
         `elem` [ "/v1/bootstrap/vault/ensure"
+               , "/v1/federation/children"
+               , "/v1/object-store/pulumi/get"
+               , "/v1/object-store/pulumi/put"
+               , "/v1/object-store/pulumi/delete"
+               , "/v1/object-store/authority/get"
+               , "/v1/object-store/authority/cas"
+               , "/v1/object-store/authority/time"
+               , "/v1/target-secret/read"
+               , "/v1/target-secret/cas"
+               , "/v1/secret/"
                , "unlock_password"
                , "new_unlock_password"
                , "initial_root_token"
@@ -835,24 +933,32 @@ bootstrapBrokerIsolationViolations sources =
                     , "bootstrapObjectStoreConfigWithEndpoint"
                     , "minioRootPassword"
                     , "minioRootUser"
+                    , "RouteFederationChildren"
+                    , "federationChildPathPrefix"
+                    , "federationChildBootstrapSuffix"
+                    , "queryFederationChildren"
+                    , "queryChildBootstrap"
+                    , "TargetFederationChildrenRead"
+                    , "TargetFederationChildBootstrapRead"
+                    , "RoutePulumiObjectGet"
+                    , "RoutePulumiObjectPut"
+                    , "RoutePulumiObjectDelete"
+                    , "RouteAuthorityObjectGet"
+                    , "RouteAuthorityObjectCas"
+                    , "RouteAuthorityClock"
+                    , "RouteTargetSecretRead"
+                    , "RouteTargetSecretCas"
+                    , "getPulumiObject"
+                    , "putPulumiObject"
+                    , "deletePulumiObject"
+                    , "getAuthorityObject"
+                    , "compareAndSwapAuthorityObject"
+                    , "getAuthorityClock"
+                    , "getTargetSecret"
+                    , "compareAndSwapTargetSecret"
+                    , "writeOperatorSecret"
                     ]
          ]
-
-  sourceBetween startMarker endMarker contents =
-    case findIndex (isPrefixOf startMarker) (tails contents) of
-      Nothing -> ""
-      Just startOffset ->
-        let afterStart = drop startOffset contents
-         in case findIndex (isPrefixOf endMarker) (tails afterStart) of
-              Nothing -> afterStart
-              Just endOffset -> take endOffset afterStart
-
-  tokensOccurInOrder [] _ = True
-  tokensOccurInOrder (token : remaining) contents =
-    case findIndex (isPrefixOf token) (tails contents) of
-      Nothing -> False
-      Just offset ->
-        tokensOccurInOrder remaining (drop (offset + length token) contents)
 
 -- | Certify that the committed @charts/gateway/values.yaml@ static defaults
 -- equal the compiled 'ChartStatics.gatewayChartStatics' projection. Reads the
@@ -890,6 +996,9 @@ gatewayChartStaticsConformanceViolations valuesContents =
     , ("serviceAccount.name", "name: " ++ Text.unpack (ChartStatics.gatewayStaticServiceAccount statics))
     , ("vault.role", "role: " ++ Text.unpack (ChartStatics.gatewayStaticVaultRole statics))
     ]
+      ++ [ ("externalCallers.serviceAccounts", "- " ++ Text.unpack serviceAccount)
+         | serviceAccount <- ChartStatics.gatewayStaticExternalCallerServiceAccounts statics
+         ]
 
 -- | Sprint 3.26 (pure). Prove the committed @charts/bootstrap-broker/values.yaml@
 -- static defaults equal the compiled 'BrokerChartStatics.brokerChartStatics'
@@ -913,6 +1022,15 @@ bootstrapBrokerChartStaticsConformanceViolations valuesContents =
     [
       ( "serviceAccount.name"
       , "name: " ++ Text.unpack (BrokerChartStatics.brokerStaticServiceAccount statics)
+      )
+    ,
+      ( "client.serviceAccountName"
+      , "serviceAccountName: "
+          ++ Text.unpack (BrokerChartStatics.brokerStaticClientServiceAccount statics)
+      )
+    ,
+      ( "client.tokenAudience"
+      , "tokenAudience: " ++ Text.unpack (BrokerChartStatics.brokerStaticTokenAudience statics)
       )
     , ("vault.role", "role: " ++ Text.unpack (BrokerChartStatics.brokerStaticVaultRole statics))
     ,
@@ -2607,7 +2725,9 @@ pulumiCreateSiteViolations registeredNames commandContents =
 --     owner @src/Prodbox/Infra/LongLivedPulumiBackend.hs@, the
 --     in-cluster Pulumi MinIO backend bucket owner
 --     @src/Prodbox/Infra/MinioBackend.hs@, and the Sprint 4.30
---     object-store bucket owner @src/Prodbox/Minio/ObjectStore.hs@.
+--     object-store bucket owner @src/Prodbox/Minio/ObjectStore.hs@. The
+--     Provider Worker production interpreter is the narrow owner of the
+--     registered @ses:capture-bucket@ provider resource.
 --
 -- @create-hosted-zone@ is deliberately NOT in this list — see
 -- 'awsCreateProbeVerbs'. The verbs are matched as raw substrings because
@@ -2633,6 +2753,7 @@ awsCreateVerbs =
       [ "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
       , "src/Prodbox/Infra/MinioBackend.hs"
       , "src/Prodbox/Minio/ObjectStore.hs"
+      , "src/Prodbox/ControlPlane/ProviderProduction.hs"
       ]
     )
   ]
@@ -3255,7 +3376,7 @@ gatewayChartStaticViolations serviceAccountTemplate deploymentTemplate valuesCon
     , needle `isInfixOf` contents
     ]
   generatedStaticsViolations =
-    [ "charts/gateway/values.yaml must contain the generated GatewayChartStatics defaults (ports/nodePort/serviceAccount)."
+    [ "charts/gateway/values.yaml must contain the generated GatewayChartStatics defaults (ports/nodePort/serviceAccount/externalCallers)."
     | not (ChartStatics.renderGatewayChartStaticsYaml `isInfixOf` valuesContents)
     ]
 

@@ -39,9 +39,11 @@ where
 
 import Codec.Serialise (Serialise)
 import Data.Bifunctor (first)
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Codec
@@ -53,15 +55,26 @@ import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent
       ( BoundedScratchCheckpoint
+      , DestroyRegisteredStack
+      , IssueEksClientAuth
+      , ObserveOperationalIdentity
+      , ObserveProviderReadiness
+      , ObservePublicARecord
       , ObserveRegisteredStack
+      , ObserveSpotPrice
       , ReadBackRegisteredStack
+      , ReapTestEbsVolumes
+      , ReconcilePublicARecord
       , ReconcileRegisteredStack
       , ReconcileSesCaptureBucket
       , ReconcileSesDkim
+      , ReconcileSesDns
       , ReconcileSesReceiptRules
       , ReconcileSesSendingIdentity
       )
+  , ProviderReadinessProbe (ProviderReadinessRoute53Zone, ProviderReadinessStsIdentity)
   , ProviderRevision
+  , ProviderStackConfig
   , ProviderWorkCommand
     ( CloseProviderWork
     , RecoverProviderWork
@@ -80,6 +93,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
     ( ProviderWorkCoordinateMismatch
     , ProviderWorkDeadlineReached
     , ProviderWorkInRecovery
+    , ProviderWorkInvalidStackConfig
     , ProviderWorkNotInFlight
     , ProviderWorkNotInRecovery
     , ProviderWorkOutstandingIntent
@@ -93,13 +107,18 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
     , ProviderRecovering
     )
   , RegisteredProviderResources
+  , mkEksClientAuthRequest
   , mkProviderCheckpointRef
   , mkProviderRevision
+  , mkProviderSpotPriceQuery
   , mkProviderStackRef
+  , mkPublicARecordRef
   , mkSesBucketRef
+  , mkSesDnsRef
   , mkSesIdentityRef
   , mkSesRuleSetRef
   , providerIntentCoordinateFromText
+  , providerStackRefText
   , stepProviderWork
   )
 
@@ -142,6 +161,7 @@ data ProviderWorkCommandKind
 -- | The wire tag for which 'ProviderIntent' constructor a 'SubmitCommand' carries.
 data ProviderIntentKind
   = ReconcileStackIntent
+  | DestroyStackIntent
   | ObserveStackIntent
   | ReadBackStackIntent
   | ScratchCheckpointIntent
@@ -149,6 +169,15 @@ data ProviderIntentKind
   | SesDkimIntent
   | SesReceiptRulesIntent
   | SesCaptureBucketIntent
+  | ReapTestEbsVolumesIntent
+  | ObserveSpotPriceIntent
+  | ObserveOperationalIdentityIntent
+  | ObserveReadinessStsIntent
+  | ObserveReadinessRoute53Intent
+  | SesDnsIntent
+  | EksClientAuthIntent
+  | ObservePublicARecordIntent
+  | ReconcilePublicARecordIntent
   deriving stock (Eq, Show, Enum, Bounded, Generic)
   deriving anyclass (Serialise)
 
@@ -162,7 +191,10 @@ data ProviderWorkApplyPayload = ProviderWorkApplyPayload
   { applyCommandKind :: !ProviderWorkCommandKind
   , applyIntentKind :: !ProviderIntentKind
   , applyResourceRef :: !Text
+  , applySecondaryRef :: !Text
+  , applyTertiaryRef :: !Text
   , applyRequestedRevision :: !Natural
+  , applyStackConfig :: !(Maybe ProviderStackConfig)
   , applyCoordinate :: !Text
   }
   deriving stock (Eq, Show, Generic)
@@ -232,7 +264,13 @@ rebuildIntent payload = case applyIntentKind payload of
   ReconcileStackIntent -> do
     ref <- first (fieldReason "stack") (mkProviderStackRef rawRef)
     revision <- first (fieldReason "revision") (mkProviderRevision (applyRequestedRevision payload))
-    Right (ReconcileRegisteredStack ref revision)
+    config <- maybe (Left "stack-config:missing") Right (applyStackConfig payload)
+    Right (ReconcileRegisteredStack ref revision config)
+  DestroyStackIntent -> do
+    ref <- first (fieldReason "stack") (mkProviderStackRef rawRef)
+    revision <- first (fieldReason "revision") (mkProviderRevision (applyRequestedRevision payload))
+    config <- maybe (Left "stack-config:missing") Right (applyStackConfig payload)
+    Right (DestroyRegisteredStack ref revision config)
   ObserveStackIntent ->
     ObserveRegisteredStack <$> first (fieldReason "stack") (mkProviderStackRef rawRef)
   ReadBackStackIntent ->
@@ -244,9 +282,64 @@ rebuildIntent payload = case applyIntentKind payload of
   SesDkimIntent ->
     ReconcileSesDkim <$> first (fieldReason "ses-identity") (mkSesIdentityRef rawRef)
   SesReceiptRulesIntent ->
-    ReconcileSesReceiptRules <$> first (fieldReason "ses-rules") (mkSesRuleSetRef rawRef)
+    ReconcileSesReceiptRules
+      <$> first
+        (fieldReason "ses-rules")
+        (mkSesRuleSetRef rawRef (applySecondaryRef payload) (applyTertiaryRef payload))
   SesCaptureBucketIntent ->
     ReconcileSesCaptureBucket <$> first (fieldReason "ses-bucket") (mkSesBucketRef rawRef)
+  SesDnsIntent ->
+    ReconcileSesDns
+      <$> first
+        (fieldReason "ses-dns")
+        (mkSesDnsRef rawRef (applySecondaryRef payload) (applyTertiaryRef payload))
+  ReapTestEbsVolumesIntent ->
+    ReapTestEbsVolumes . providerStackRefText
+      <$> first (fieldReason "cluster") (mkProviderStackRef rawRef)
+  ObserveSpotPriceIntent ->
+    ObserveSpotPrice
+      <$> first
+        (fieldReason "spot-price")
+        (mkProviderSpotPriceQuery rawRef (applySecondaryRef payload))
+  ObserveOperationalIdentityIntent -> Right ObserveOperationalIdentity
+  ObserveReadinessStsIntent -> Right (ObserveProviderReadiness ProviderReadinessStsIdentity)
+  ObserveReadinessRoute53Intent ->
+    ObserveProviderReadiness . ProviderReadinessRoute53Zone . providerStackRefText
+      <$> first (fieldReason "route53-zone") (mkProviderStackRef rawRef)
+  EksClientAuthIntent -> do
+    publicKey <-
+      first
+        (const "eks-client-auth-public-key:invalid-base64")
+        (Base64.decode (TextEncoding.encodeUtf8 (applyCoordinate payload)))
+    IssueEksClientAuth
+      <$> first
+        (fieldReason "eks-client-auth")
+        ( mkEksClientAuthRequest
+            rawRef
+            (applySecondaryRef payload)
+            (applyTertiaryRef payload)
+            publicKey
+        )
+  ObservePublicARecordIntent ->
+    ObservePublicARecord
+      <$> first
+        (fieldReason "public-a-record")
+        ( mkPublicARecordRef
+            rawRef
+            (applySecondaryRef payload)
+            (applyRequestedRevision payload)
+            (Text.splitOn "," (applyTertiaryRef payload))
+        )
+  ReconcilePublicARecordIntent ->
+    ReconcilePublicARecord
+      <$> first
+        (fieldReason "public-a-record")
+        ( mkPublicARecordRef
+            rawRef
+            (applySecondaryRef payload)
+            (applyRequestedRevision payload)
+            (Text.splitOn "," (applyTertiaryRef payload))
+        )
  where
   rawRef = applyResourceRef payload
   fieldReason :: (Show e) => Text -> e -> Text
@@ -287,6 +380,7 @@ providerWorkApplySummary result = case result of
 refusalToken :: ProviderWorkRefusal -> Text
 refusalToken refusal = case refusal of
   ProviderWorkUnregisteredResource _ -> "unregistered-resource"
+  ProviderWorkInvalidStackConfig _ -> "invalid-stack-config"
   ProviderWorkRevisionStale _ _ -> "revision-stale"
   ProviderWorkDeadlineReached -> "deadline-reached"
   ProviderWorkOutstandingIntent _ -> "outstanding-intent"

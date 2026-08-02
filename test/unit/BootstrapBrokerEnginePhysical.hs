@@ -17,7 +17,14 @@ module BootstrapBrokerEnginePhysical
   )
 where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception
+  ( AsyncException (ThreadKilled)
+  , SomeException
+  , bracket
+  , fromException
+  , throwIO
+  , try
+  )
 import Control.Monad (forM_, void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -55,6 +62,7 @@ import Prodbox.Bootstrap.Broker.EngineAdapter
   , runEngineBrokerRequest
   )
 import Prodbox.Bootstrap.Broker.EngineSecretWorker
+import Prodbox.Bootstrap.Broker.Fake qualified as Fake
 import Prodbox.Bootstrap.Broker.Fence
 import Prodbox.Bootstrap.Broker.Model
 import Prodbox.Bootstrap.Broker.PgpBoundary qualified as Pgp
@@ -67,6 +75,10 @@ import Prodbox.Bootstrap.Broker.Server qualified as Server
 import Prodbox.Bootstrap.Broker.Settings qualified as Settings
 import Prodbox.Bootstrap.Broker.StoreBoundary
 import Prodbox.Bootstrap.Broker.Types
+import Prodbox.Cluster.FederationRegistration
+  ( federationRegistrationCompletedIntent
+  , federationRegistrationOperationDigest
+  )
 import Prodbox.ControlPlane.AuthorityClock
   ( AuthorityClockObservation (..)
   , clockUncertaintyFromMicros
@@ -238,6 +250,86 @@ enginePhysicalSuite =
         harnessBurnDecryptCount state `shouldBe` 0
         assertCleanHarness state
 
+    it "replays an audited reset after losing the response to the storage-generation CAS" $
+      withFixture $ \fixture -> do
+        harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+        engine <- requireEngine fixture harness
+        let settings = requireSettings 30_451
+        initialized <-
+          invokeAdapter fixture settings engine BrokerVaultInitialize
+        initialized `shouldSatisfy` isInitializationAmbiguous
+        modifyIORef' harness $ \state ->
+          state
+            { harnessCrashPoint = CrashAfterResetGenerationAdvance
+            , harnessCrashTriggered = False
+            }
+        first <-
+          invokeAdapter
+            fixture
+            settings
+            engine
+            BrokerVaultResetAmbiguousInitialization
+        first `shouldSatisfy` isStoreUnavailable
+        afterFirst <- readIORef harness
+        harnessRootBinding afterFirst
+          `shouldBe` pristineStorageBinding
+            (resetReplacementPristine (fixtureResetProof fixture))
+        physicalRootInitIsAmbiguous fixture afterFirst `shouldBe` True
+        harnessPreparedEnvelope afterFirst `shouldBe` Nothing
+        second <-
+          invokeAdapter
+            fixture
+            settings
+            engine
+            BrokerVaultResetAmbiguousInitialization
+        second
+          `shouldSatisfy` isRouteSuccess BrokerVaultResetAmbiguousInitialization
+        state <- readIORef harness
+        rootInitIsResetPristine fixture state `shouldBe` True
+        harnessPreparedEnvelope state `shouldBe` Nothing
+        assertCleanHarness state
+
+    it "replays an audited reset after losing the response to its terminal journal CAS" $
+      withFixture $ \fixture -> do
+        harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+        engine <- requireEngine fixture harness
+        let settings = requireSettings 30_452
+        initialized <-
+          invokeAdapter fixture settings engine BrokerVaultInitialize
+        initialized `shouldSatisfy` isInitializationAmbiguous
+        modifyIORef' harness $ \state ->
+          state
+            { harnessCrashPoint = CrashAfterRootJournalCas
+            , harnessCrashTriggered = False
+            }
+        before <- readIORef harness
+        first <-
+          invokeAdapter
+            fixture
+            settings
+            engine
+            BrokerVaultResetAmbiguousInitialization
+        first `shouldSatisfy` isStoreUnavailable
+        afterFirst <- readIORef harness
+        rootInitIsResetPristine fixture afterFirst `shouldBe` True
+        second <-
+          invokeAdapter
+            fixture
+            settings
+            engine
+            BrokerVaultResetAmbiguousInitialization
+        second
+          `shouldSatisfy` isRouteSuccess BrokerVaultResetAmbiguousInitialization
+        state <- readIORef harness
+        rootInitIsResetPristine fixture state `shouldBe` True
+        let resetEvents =
+              [ ()
+              | PhysicalMutated BootstrapVaultResetAmbiguousInitialization <-
+                  drop (length (harnessEvents before)) (harnessEvents state)
+              ]
+        length resetEvents `shouldBe` 1
+        assertCleanHarness state
+
     it "rejects a reset once root custody is established without reaching the physical reset boundary" $
       withFixture $ \fixture -> do
         harness <- newHarness fixture ReturnEncryptedInitResponse NoCrash
@@ -290,10 +382,7 @@ enginePhysicalSuite =
         state <- readIORef harness
         physicalRootInitIsAmbiguous fixture state `shouldBe` True
         harnessRootBinding state
-          `shouldBe` pristineStorageBinding
-            ( resetReplacementPristine
-                (fixtureMismatchedResetProof fixture)
-            )
+          `shouldBe` ambiguousInitBinding (fixtureAmbiguity fixture)
         let resetEvents = drop (length (harnessEvents before)) (harnessEvents state)
         resetEvents
           `shouldSatisfy` elem
@@ -369,15 +458,103 @@ enginePhysicalSuite =
         harnessLiveRootAccessors state `shouldBe` []
         assertCleanHarness state
 
-    it "commits child custody and crash-recovers one-time delivery through repair, revoke, and absence" $
+    it "journals one provisioner login attempt and cleans a response-lost accessor before its successor" $
       withFixture $ \fixture -> do
+        harness <-
+          newHarness
+            fixture
+            ReturnEncryptedInitResponse
+            CrashAfterProvisionerLoginResponseLoss
+        engine <- requireEngine fixture harness
+        let settings = requireSettings 30_457
+        unsealed <- invokeAdapter fixture settings engine BrokerVaultUnseal
+        unsealed `shouldSatisfy` isRouteSuccess BrokerVaultUnseal
+        first <-
+          invokeAdapter fixture settings engine BrokerVaultBaselineReconcile
+        first `shouldSatisfy` isPhysicalUnavailable
+        afterLoss <- readIORef harness
+        harnessLiveProvisionerAccessors afterLoss
+          `shouldBe` [provisionerLoginAccessor (fixtureProvisionerReceipt fixture)]
+        storedValue (harnessRootSession afterLoss)
+          `shouldSatisfy` maybe False provisionerLoginAttemptIsJournaled
+        second <-
+          invokeAdapter fixture settings engine BrokerVaultBaselineReconcile
+        second `shouldBeRouteSuccess` BrokerVaultBaselineReconcile
+        state <- readIORef harness
+        harnessLiveProvisionerAccessors state `shouldBe` []
+        storedValue (harnessRootSession state)
+          `shouldSatisfy` maybe False provisionerSessionIsDurablyClosed
+        let loginCount =
+              length
+                [ ()
+                | PhysicalMutated BootstrapVaultLoginProvisioner <- harnessEvents state
+                ]
+            cleanupCount =
+              length
+                [ ()
+                | PhysicalMutated BootstrapVaultInventoryProvisionerAccessors <- harnessEvents state
+                ]
+        loginCount `shouldBe` 2
+        cleanupCount `shouldSatisfy` (>= 3)
+        assertCleanHarness state
+
+    it "recovers and cleans a journaled provisioner accessor after exception or cancellation" $
+      withFixture $ \fixture ->
+        forM_
+          [ CrashAfterProvisionerLoginException
+          , CrashAfterProvisionerLoginCancellation
+          ]
+          $ \crashPoint -> do
+            harness <-
+              newHarness fixture ReturnEncryptedInitResponse crashPoint
+            engine <- requireEngine fixture harness
+            let settings = requireSettings 30_458
+            unsealed <- invokeAdapter fixture settings engine BrokerVaultUnseal
+            unsealed `shouldSatisfy` isRouteSuccess BrokerVaultUnseal
+            interrupted <-
+              try
+                (invokeAdapter fixture settings engine BrokerVaultBaselineReconcile)
+                :: IO
+                     ( Either
+                         SomeException
+                         (Either BrokerEngineError SomeBrokerResponse)
+                     )
+            case (crashPoint, interrupted) of
+              (CrashAfterProvisionerLoginCancellation, Left exception) ->
+                (fromException exception :: Maybe AsyncException)
+                  `shouldBe` Just ThreadKilled
+              (CrashAfterProvisionerLoginException, Left exception) ->
+                (fromException exception :: Maybe AsyncException)
+                  `shouldBe` Nothing
+              _ -> expectationFailure "expected provisioner physical interruption"
+            afterInterruption <- readIORef harness
+            harnessLiveProvisionerAccessors afterInterruption
+              `shouldBe` [provisionerLoginAccessor (fixtureProvisionerReceipt fixture)]
+            storedValue (harnessRootSession afterInterruption)
+              `shouldSatisfy` maybe False provisionerLoginAttemptIsJournaled
+            recovered <-
+              invokeAdapter fixture settings engine BrokerVaultBaselineReconcile
+            recovered `shouldBeRouteSuccess` BrokerVaultBaselineReconcile
+            state <- readIORef harness
+            harnessLiveProvisionerAccessors state `shouldBe` []
+            storedValue (harnessRootSession state)
+              `shouldSatisfy` maybe False provisionerSessionIsDurablyClosed
+            assertCleanHarness state
+
+    it
+      "prepares/finalizes child custody and crash-recovers one-time delivery through repair, revoke, and absence"
+      $ withFixture
+      $ \fixture -> do
         harness <-
           newHarness fixture ReturnEncryptedInitResponse CrashAfterChildScopeCas
         engine <- requireEngine fixture harness
         let settings = requireSettings 30_447
-        committed <-
-          invokeAdapter fixture settings engine BrokerChildCustodyCommit
-        committed `shouldSatisfy` isRouteSuccess BrokerChildCustodyCommit
+        prepared <-
+          invokeAdapter fixture settings engine BrokerChildCustodyPrepare
+        prepared `shouldBeRouteSuccess` BrokerChildCustodyPrepare
+        finalized <-
+          invokeAdapter fixture settings engine BrokerChildCustodyFinalize
+        finalized `shouldBeRouteSuccess` BrokerChildCustodyFinalize
         first <-
           invokeAdapter fixture settings engine BrokerChildRecoveryDeliver
         first `shouldSatisfy` isStoreUnavailable
@@ -387,8 +564,6 @@ enginePhysicalSuite =
         state <- readIORef harness
         childCustodyIsDurable fixture state `shouldBe` True
         harnessChildReceipt state `shouldBe` Nothing
-        storedValue (harnessParentAcknowledgement state)
-          `shouldBe` Just (fixtureParentAcknowledgement fixture)
         physicalChildRecoveryIsComplete fixture state `shouldBe` True
         harnessRecoveryDelivery state `shouldBe` Nothing
         harnessChildScopeCounter state `shouldBe` 2
@@ -525,6 +700,26 @@ isStoreUnavailable outcome = case outcome of
   Left (EngineStoreRefused BootstrapStoreUnavailable) -> True
   _ -> False
 
+isPhysicalUnavailable
+  :: Either BrokerEngineError SomeBrokerResponse -> Bool
+isPhysicalUnavailable outcome = case outcome of
+  Left (EnginePhysicalCallRefused (EngineBoundaryUnavailable _)) -> True
+  _ -> False
+
+provisionerLoginAttemptIsJournaled :: RootSessionState -> Bool
+provisionerLoginAttemptIsJournaled state =
+  case rootSessionStateProvisioner state of
+    Just provisioner -> case provisionerSessionPhase provisioner of
+      ProvisionerLoginPending _ -> True
+      _ -> False
+    Nothing -> False
+
+provisionerSessionIsDurablyClosed :: RootSessionState -> Bool
+provisionerSessionIsDurablyClosed state =
+  case rootSessionStateProvisioner state of
+    Just provisioner -> provisionerSessionIsReady provisioner
+    Nothing -> False
+
 isInitializationAmbiguous
   :: Either BrokerEngineError SomeBrokerResponse -> Bool
 isInitializationAmbiguous outcome = case outcome of
@@ -575,8 +770,8 @@ rootInitIsResetPristine :: Fixture -> HarnessState -> Bool
 rootInitIsResetPristine fixture state =
   case storedValue (harnessRootJournal state) of
     Just rootState -> case rootInitStatePhase rootState of
-      RootInitPristine proof ->
-        proof == resetReplacementPristine (fixtureResetProof fixture)
+      RootResetPristine proof ->
+        proof == fixtureResetProof fixture
       _ -> False
     Nothing -> False
 
@@ -697,6 +892,7 @@ assertCleanHarness :: HarnessState -> Expectation
 assertCleanHarness state = do
   harnessPermitViolations state `shouldBe` []
   harnessBurnDecryptCount state `shouldBe` 0
+  harnessLiveProvisionerAccessors state `shouldBe` []
 
 assertCapabilityEvents
   :: Fixture -> BrokerRoute -> Int -> HarnessState -> Expectation
@@ -1075,9 +1271,10 @@ routeDigest route =
         BrokerVaultPkiStatus -> '9'
         BrokerVaultPkiIssueTestCertificate -> 'a'
         BrokerVaultResetAmbiguousInitialization -> 'b'
-        BrokerChildCustodyCommit -> 'c'
-        BrokerChildRecoveryDeliver -> 'd'
-        BrokerChildRecoveryObserve -> 'e'
+        BrokerChildCustodyPrepare -> 'c'
+        BrokerChildCustodyFinalize -> 'd'
+        BrokerChildRecoveryDeliver -> 'e'
+        BrokerChildRecoveryObserve -> 'f'
     )
 
 capabilityRefs :: BrokerCapabilityRefs
@@ -1112,11 +1309,15 @@ data InitPhysicalMode
 data CrashPoint
   = NoCrash
   | CrashAfterRootJournalCas
+  | CrashAfterResetGenerationAdvance
   | CrashAfterInitEffectBeforeWorkerReceipt
   | CrashAfterInitWorkerReceiptCas
   | CrashAfterRecoveryDeliveryDelete
   | CrashAfterChildConsumeEffect
   | CrashAfterRootScopeCas
+  | CrashAfterProvisionerLoginResponseLoss
+  | CrashAfterProvisionerLoginException
+  | CrashAfterProvisionerLoginCancellation
   | CrashAfterChildScopeCas
   deriving (Eq, Show)
 
@@ -1156,8 +1357,6 @@ data HarnessState = HarnessState
   , harnessFinalBundle :: !(Maybe (Versioned FinalUnlockBundle))
   , harnessRootSession :: !(Maybe (Versioned RootSessionState))
   , harnessChildReceipt :: !(Maybe (Versioned ChildEncryptedReceipt))
-  , harnessParentAcknowledgement
-      :: !(Maybe (Versioned ParentCustodyAcknowledgement))
   , harnessChildCustody :: !(Maybe (Versioned ChildCustodyState))
   , harnessRecoveryDelivery :: !(Maybe (Versioned ChildRecoveryDelivery))
   , harnessChildRecovery :: !(Maybe (Versioned ChildRecoveryState))
@@ -1176,6 +1375,7 @@ data HarnessState = HarnessState
   , harnessStoreMutationCount :: !Natural
   , harnessBurnDecryptCount :: !Natural
   , harnessLiveRootAccessors :: ![RootPolicyAccessor]
+  , harnessLiveProvisionerAccessors :: ![ProvisionerAccessor]
   , harnessRootScopeCounter :: !Natural
   , harnessChildScopeCounter :: !Natural
   , harnessIssuedRootTokens :: ![ByteString]
@@ -1207,7 +1407,6 @@ newHarness fixture initMode crashPoint =
       , harnessFinalBundle = Nothing
       , harnessRootSession = Nothing
       , harnessChildReceipt = Nothing
-      , harnessParentAcknowledgement = Nothing
       , harnessChildCustody = Nothing
       , harnessRecoveryDelivery = Nothing
       , harnessChildRecovery = Nothing
@@ -1225,6 +1424,7 @@ newHarness fixture initMode crashPoint =
       , harnessStoreMutationCount = 0
       , harnessBurnDecryptCount = 0
       , harnessLiveRootAccessors = [fixtureStaleAccessor fixture]
+      , harnessLiveProvisionerAccessors = []
       , harnessRootScopeCounter = 0
       , harnessChildScopeCounter = 0
       , harnessIssuedRootTokens = []
@@ -1243,6 +1443,10 @@ recordEvent :: Harness -> PhysicalEvent -> IO ()
 recordEvent harness event =
   modifyIORef' harness $ \state ->
     state {harnessEvents = harnessEvents state ++ [event]}
+
+markCrashTriggered :: Harness -> IO ()
+markCrashTriggered harness =
+  modifyIORef' harness $ \state -> state {harnessCrashTriggered = True}
 
 recordPermitViolation :: Harness -> Text -> IO ()
 recordPermitViolation harness detail =
@@ -1358,6 +1562,8 @@ consumeCrash harness mutation = do
   let mutationMatches = case harnessCrashPoint state of
         CrashAfterRootJournalCas ->
           mutation == BootstrapStoreCasRootInitJournal
+        CrashAfterResetGenerationAdvance ->
+          mutation == BootstrapStoreAdvanceVaultStorageGeneration
         CrashAfterInitEffectBeforeWorkerReceipt -> False
         CrashAfterInitWorkerReceiptCas ->
           mutation == BootstrapStoreCasSecretWorkerCheckpoint
@@ -1368,6 +1574,9 @@ consumeCrash harness mutation = do
         CrashAfterRootScopeCas ->
           mutation == BootstrapStoreCasRootSessionJournal
             && PgpExecuted "root-action-observe" `elem` harnessEvents state
+        CrashAfterProvisionerLoginResponseLoss -> False
+        CrashAfterProvisionerLoginException -> False
+        CrashAfterProvisionerLoginCancellation -> False
         CrashAfterChildScopeCas ->
           mutation == BootstrapStoreCasChildRecoveryJournal
             && PgpExecuted "child-action-observe" `elem` harnessEvents state
@@ -1438,6 +1647,32 @@ physicalStoreBoundary fixture harness =
         recordEvent harness (StoreRead "vault-storage-generation")
         state <- readIORef harness
         pure (Right (harnessRootBinding state))
+    , advanceVaultStorageGeneration =
+        \permit expected replacement -> do
+          authorized <-
+            authorizeStoreMutation
+              harness
+              BootstrapStoreAdvanceVaultStorageGeneration
+              permit
+          if not authorized
+            then pure (Left BootstrapStoreBindingMismatch)
+            else do
+              state <- readIORef harness
+              if harnessRootBinding state == expected
+                then do
+                  modifyIORef' harness $ \current ->
+                    current {harnessRootBinding = replacement}
+                  shouldCrash <-
+                    consumeCrash
+                      harness
+                      BootstrapStoreAdvanceVaultStorageGeneration
+                  if shouldCrash
+                    then pure (Left BootstrapStoreUnavailable)
+                    else pure (Right replacement)
+                else
+                  if harnessRootBinding state == replacement
+                    then pure (Right replacement)
+                    else pure (Left BootstrapStoreBindingMismatch)
     , readRootInitJournal =
         \_ -> readSlot "root-init-journal" harnessRootJournal harness
     , createRootInitJournal =
@@ -1512,6 +1747,16 @@ physicalStoreBoundary fixture harness =
                 harnessFinalBundle
                 setFinalBundle
                 value
+    , casFinalUnlockBundle =
+        \permit version value ->
+          casSlot
+            harness
+            BootstrapStoreCasFinalUnlockBundle
+            permit
+            version
+            harnessFinalBundle
+            setFinalBundle
+            value
     , readRootSessionJournal =
         \_ -> readSlot "root-session-journal" harnessRootSession harness
     , createRootSessionJournal =
@@ -1544,17 +1789,6 @@ physicalStoreBoundary fixture harness =
             harnessChildReceipt
             setChildReceipt
             value
-    , parentCustodyGenerationCas =
-        \permit receipt ->
-          let acknowledgement =
-                mkParentCustodyAcknowledgement receipt (digestOf '5')
-           in createSlot
-                harness
-                BootstrapStoreCommitParentCustody
-                permit
-                harnessParentAcknowledgement
-                setParentAcknowledgement
-                acknowledgement
     , deleteChildEncryptedReceipt =
         \permit _ version ->
           deleteSlot
@@ -1703,13 +1937,6 @@ setChildReceipt
   :: Maybe (Versioned ChildEncryptedReceipt) -> HarnessState -> HarnessState
 setChildReceipt value state = state {harnessChildReceipt = value}
 
-setParentAcknowledgement
-  :: Maybe (Versioned ParentCustodyAcknowledgement)
-  -> HarnessState
-  -> HarnessState
-setParentAcknowledgement value state =
-  state {harnessParentAcknowledgement = value}
-
 setChildCustody
   :: Maybe (Versioned ChildCustodyState) -> HarnessState -> HarnessState
 setChildCustody value state = state {harnessChildCustody = value}
@@ -1857,13 +2084,18 @@ workerDriverBoundary
 workerDriverBoundary harness =
   EngineSecretWorkerBoundary
     { observeSecretWorkerMonotonicNow = pure (Right fixtureNow)
-    , allocateSecretWorkerRequest = \operation fence -> do
+    , allocateSecretWorkerIntent = \operation fence -> do
         let request = workerRequestFor operation fence
+        recordEvent harness (WorkerAllocated operation)
+        pure (Right (secretWorkerRequestIntent request))
+    , createSecretWorkerWorkload = \intent -> do
+        let request =
+              bindSecretWorkerIntent
+                (mustRight (mkWorkerPodUid "physical-pod-created"))
+                intent
         modifyIORef' harness $ \state ->
           state {harnessLastWorkerRequest = Just request}
-        recordEvent harness (WorkerAllocated operation)
         pure (Right request)
-    , createSecretWorkerWorkload = \_request -> pure (Right ())
     , observeSecretWorkerAttestation = \request -> do
         recordEvent
           harness
@@ -1987,6 +2219,7 @@ workerOperationLabel operation = case operation of
   SecretWorkerUnseal -> "unseal"
   SecretWorkerRotateUnlockBundle -> "rotate-unlock"
   SecretWorkerRotateTransitKey -> "rotate-transit"
+  SecretWorkerCompleteGeneratedRoot -> "complete-generated-root"
 
 workerAttestationFor
   :: SecretFreeWorkerRequest -> RawSecretWorkerAttestation
@@ -2032,6 +2265,7 @@ workerOutcome operation = case operation of
   SecretWorkerUnseal -> SecretWorkerUnsealed
   SecretWorkerRotateUnlockBundle -> SecretWorkerUnlockBundleRotated
   SecretWorkerRotateTransitKey -> SecretWorkerTransitKeyRotated
+  SecretWorkerCompleteGeneratedRoot -> SecretWorkerGeneratedRootCompleted
 
 recipientsEnvelope :: Pgp.PreparedInitRecipients -> PreparedInitEnvelope
 recipientsEnvelope =
@@ -2566,7 +2800,10 @@ runPhysicalCall fixture harness call = case call of
     observe
       "vault-status"
       BootstrapStatus
-        { bootstrapStatusInitialized = True
+        { bootstrapStatusStorageGeneration =
+            rootInitStorageGeneration
+              (recoveryCustodyBinding (fixtureRecovery fixture))
+        , bootstrapStatusInitialized = True
         , bootstrapStatusSealed = False
         , bootstrapStatusRecoveryCustodyDurable = True
         , bootstrapStatusInitializationAmbiguous = False
@@ -2686,12 +2923,6 @@ runPhysicalCall fixture harness call = case call of
           state <- readIORef harness
           let confirmedProof =
                 fromMaybe proof (harnessResetProofOverride state)
-          modifyIORef' harness $ \current ->
-            current
-              { harnessRootBinding =
-                  pristineStorageBinding
-                    (resetReplacementPristine confirmedProof)
-              }
           pure (Right confirmedProof)
         else refused "ambiguous reset evidence mismatch"
   PhysicalCancelIncompleteGenerateRoot _ permit _ ->
@@ -2736,19 +2967,52 @@ runPhysicalCall fixture harness call = case call of
           (recoveryCustodyBinding (fixtureRecovery fixture))
         then pure (Right fixtureGeneratedRootCiphertext)
         else refused "generated-root ciphertext binding mismatch"
+  PhysicalCleanupProvisionerSessions _ permit generation ->
+    mutate permit BootstrapVaultInventoryProvisionerAccessors $ do
+      state <- readIORef harness
+      case mkProvisionerAccessorInventory
+        generation
+        (harnessLiveProvisionerAccessors state) of
+        Left refusal -> refused (Text.pack (show refusal))
+        Right inventory -> do
+          modifyIORef' harness $ \current ->
+            current {harnessLiveProvisionerAccessors = []}
+          pure
+            ( Right
+                (mkProvisionerAccessorAbsenceAttestation inventory (digestOf 'a'))
+            )
   PhysicalLoginProvisioner _ permit generation ->
     mutate permit BootstrapVaultLoginProvisioner $ do
       if generation
         == rootInitStorageGeneration
           (recoveryCustodyBinding (fixtureRecovery fixture))
-        then pure (Right (fixtureProvisionerReceipt fixture))
+        then do
+          modifyIORef' harness $ \state ->
+            state
+              { harnessLiveProvisionerAccessors =
+                  [provisionerLoginAccessor (fixtureProvisionerReceipt fixture)]
+              }
+          state <- readIORef harness
+          if not (harnessCrashTriggered state)
+            then case harnessCrashPoint state of
+              CrashAfterProvisionerLoginResponseLoss -> do
+                markCrashTriggered harness
+                unavailable "provisioner login response lost"
+              CrashAfterProvisionerLoginException -> do
+                markCrashTriggered harness
+                throwIO (userError "provisioner login fixture exception")
+              CrashAfterProvisionerLoginCancellation -> do
+                markCrashTriggered harness
+                throwIO ThreadKilled
+              _ -> pure (Right (fixtureProvisionerReceipt fixture))
+            else pure (Right (fixtureProvisionerReceipt fixture))
         else refused "provisioner login generation mismatch"
   PhysicalApplyProvisionerBaseline _ permit receipt ->
     mutate permit BootstrapVaultApplyBaseline $ do
       if receipt == fixtureProvisionerReceipt fixture
         then pure (Right ())
         else refused "provisioner apply receipt mismatch"
-  PhysicalReadBackProvisionerBaseline _ permit receipt ->
+  PhysicalReadBackProvisionerBaseline _ permit receipt _ ->
     mutate permit BootstrapVaultReadBackBaseline $ do
       state <- readIORef harness
       if receipt /= fixtureProvisionerReceipt fixture
@@ -2756,6 +3020,35 @@ runPhysicalCall fixture harness call = case call of
         else case harnessLastBaselineReceipt state of
           Just baseline -> pure (Right baseline)
           Nothing -> refused "provisioner read-back preceded root baseline"
+  PhysicalRevokeProvisionerSession _ permit receipt ->
+    mutate permit BootstrapVaultRevokeProvisionerAccessor $ do
+      if receipt /= fixtureProvisionerReceipt fixture
+        then refused "provisioner revocation receipt mismatch"
+        else do
+          modifyIORef' harness $ \state ->
+            state
+              { harnessLiveProvisionerAccessors =
+                  filter
+                    (/= provisionerLoginAccessor receipt)
+                    (harnessLiveProvisionerAccessors state)
+              }
+          pure (Right ())
+  PhysicalProveProvisionerSessionAbsent _ permit receipt ->
+    mutate permit BootstrapVaultInventoryProvisionerAccessors $ do
+      state <- readIORef harness
+      if receipt /= fixtureProvisionerReceipt fixture
+        || provisionerLoginAccessor receipt
+          `elem` harnessLiveProvisionerAccessors state
+        then refused "provisioner accessor remains present"
+        else case mkProvisionerAccessorInventory
+          (provisionerLoginStorageGeneration receipt)
+          [provisionerLoginAccessor receipt] of
+          Left refusal -> refused (Text.pack (show refusal))
+          Right inventory ->
+            pure
+              ( Right
+                  (mkProvisionerAccessorAbsenceAttestation inventory (digestOf 'b'))
+              )
   PhysicalObservePostUnsealConsumer _ binding consumer ->
     if binding == recoveryCustodyBinding (fixtureRecovery fixture)
       && consumer == PostUnsealLifecycleAuthority
@@ -2768,11 +3061,6 @@ runPhysicalCall fixture harness call = case call of
       permit
       BootstrapVaultIssueTestCertificate
       (pure (Right (mutationReceipt permit)))
-  PhysicalCommitParentCustody _ permit receipt ->
-    mutate permit BootstrapVaultCommitChildCustody $ do
-      if receipt == fixtureChildReceipt fixture
-        then pure (Right (fixtureParentAcknowledgement fixture))
-        else refused "child receipt mismatch"
   PhysicalObserveChildRecoveryConsumption _ permit delivery ->
     observeWithPermit permit BootstrapVaultConsumeChildRecovery $ do
       observeChildRecoveryConsumption fixture harness delivery
@@ -3155,6 +3443,21 @@ controllerBody fixture route
             action
             (mustRight (mkPkiIssueRequest "physical.test.invalid" 60))
         )
+  | route == BrokerChildCustodyFinalize =
+      let completion =
+            mustRight
+              ( Fake.fakeFederationRegistrationCompletionForReceiptWithAcknowledgement
+                  (fixtureChildReceipt fixture)
+                  (fixtureParentAcknowledgement fixture)
+              )
+          finalizeAction =
+            mkBrokerActionRequest
+              (brokerActionStorageGeneration action)
+              ( federationRegistrationOperationDigest
+                  (federationRegistrationCompletedIntent completion)
+              )
+       in encodeBrokerControllerRequest
+            (mkBrokerChildCustodyFinalizeRequest finalizeAction completion)
   | otherwise =
       encodeBrokerControllerRequest
         (mustRight (mkBrokerControllerRequest route action))
@@ -3175,10 +3478,11 @@ settingsForPort port =
 settingsConfig :: PortNumber -> Settings.BootstrapBrokerConfigDhall
 settingsConfig port =
   Settings.BootstrapBrokerConfigDhall
-    { Settings.schemaVersion = 1
+    { Settings.schemaVersion = 2
     , Settings.cluster_id = "physical-engine-cluster"
     , Settings.vault_address = "http://127.0.0.1:8200"
     , Settings.service_identity = "physical-engine-test"
+    , Settings.parent_registration = Nothing
     , Settings.listener =
         Settings.BrokerListenerDhall
           { Settings.listen_host = "127.0.0.1"
@@ -3205,7 +3509,7 @@ settingsConfig port =
     , Settings.limits =
         Settings.BrokerLimitsDhall
           { Settings.queue_capacity = 16
-          , Settings.max_request_body_bytes = 4096
+          , Settings.max_request_body_bytes = 65_536
           , Settings.request_deadline_milliseconds = 5000
           , Settings.drain_deadline_milliseconds = 1000
           }

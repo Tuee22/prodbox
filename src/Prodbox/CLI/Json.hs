@@ -7,8 +7,9 @@ module Prodbox.CLI.Json
 where
 
 import Data.Aeson (Value (Array), encode, object, (.=))
-import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Prodbox.CLI.Spec
   ( CommandSpec (..)
@@ -17,7 +18,13 @@ import Prodbox.CLI.Spec
   )
 
 renderCommandJson :: CommandSpec -> String
-renderCommandJson = (++ "\n") . BL8.unpack . encode . encodeSpec
+renderCommandJson =
+  (++ "\n")
+    . Text.unpack
+    . TextEncoding.decodeUtf8
+    . LazyByteString.toStrict
+    . encode
+    . encodeSpec
 
 encodeSpec :: CommandSpec -> Value
 encodeSpec spec =

@@ -26,9 +26,8 @@ module Prodbox.Lifecycle.LeaseRuntime
   , mintLeaseScopedAwsSessionWith
   , mintedAwsSession
   , mkProductionLeaseRuntime
-  , observeGatewayAuthorityTime
   , productionLeaseInterpreter
-  , waitForGatewayAuthorityTime
+  , waitForAuthorityTime
   )
 where
 
@@ -48,14 +47,11 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Numeric.Natural (Natural)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
-import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Gateway.ObjectStore (AuthorityClockResponse (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
   , ModelBCasAdapter
   , StoreLifetime (ClusterRetained)
-  , checkpointAuthorityGatewayEndpoint
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
@@ -176,20 +172,21 @@ beginProductionLeaseAcquireWith generateNonce observeNow policy authority key = 
           (beginLeaseAcquire policy authority key nonce now)
 
 beginProductionLeaseAcquire
-  :: LongLivedCheckpointAuthority
+  :: IO (Either Text AuthorityTime)
+  -> LongLivedCheckpointAuthority
   -> LeasePolicy
   -> LeaseKey
   -> IO (Either LeaseAcquireBootstrapError LeaseAcquireRequest)
-beginProductionLeaseAcquire authority policy key =
+beginProductionLeaseAcquire observeNow authority policy key =
   beginProductionLeaseAcquireWith
     generateSecureOwnerNonce
-    (observeGatewayAuthorityTime authority)
+    observeNow
     policy
     authority
     key
 
 data ProductionLeaseRuntime inventory = ProductionLeaseRuntime
-  { internalRuntimeAuthority :: !LongLivedCheckpointAuthority
+  { internalRuntimeObserveAuthorityNow :: !(IO (Either Text AuthorityTime))
   , internalRuntimeLeaseAdapter :: !(ModelBCasAdapter 'ClusterRetained IO LeaseProjection)
   , internalRuntimePolicy :: !LeasePolicy
   , internalRuntimePollMicros :: !Int
@@ -197,20 +194,20 @@ data ProductionLeaseRuntime inventory = ProductionLeaseRuntime
   }
 
 mkProductionLeaseRuntime
-  :: LongLivedCheckpointAuthority
+  :: IO (Either Text AuthorityTime)
   -> ModelBCasAdapter 'ClusterRetained IO LeaseProjection
   -> LeasePolicy
   -> Natural
   -> IO (ProviderObservation inventory)
   -> Either LeaseRuntimeConfigError (ProductionLeaseRuntime inventory)
-mkProductionLeaseRuntime authority leaseAdapter policy pollMicros providerObservation
+mkProductionLeaseRuntime observeNow leaseAdapter policy pollMicros providerObservation
   | pollMicros == 0 = Left LeaseRuntimePollIntervalMustBePositive
   | pollMicros > fromIntegral (maxBound :: Int) =
       Left (LeaseRuntimePollIntervalExceedsInt pollMicros)
   | otherwise =
       Right
         ProductionLeaseRuntime
-          { internalRuntimeAuthority = authority
+          { internalRuntimeObserveAuthorityNow = observeNow
           , internalRuntimeLeaseAdapter = leaseAdapter
           , internalRuntimePolicy = policy
           , internalRuntimePollMicros = fromIntegral pollMicros
@@ -225,42 +222,31 @@ productionLeaseInterpreter runtime =
   LeaseInterpreter
     { leaseInterpreterModelB =
         internalRuntimeLeaseAdapter runtime
-    , leaseInterpreterAuthorityNow = observeGatewayAuthorityTime authority
+    , leaseInterpreterAuthorityNow = observeNow
     , leaseInterpreterWaitUntil =
-        waitForGatewayAuthorityTime authority pollMicros
+        waitForAuthorityTime observeNow pollMicros
     , leaseInterpreterRecoverQuiescence =
         sampleStableProviderQuiescence runtime
     , leaseInterpreterRunBounded =
         runProductionBounded
-          authority
+          observeNow
           policy
           pollMicros
     }
  where
-  authority = internalRuntimeAuthority runtime
+  observeNow = internalRuntimeObserveAuthorityNow runtime
   policy = internalRuntimePolicy runtime
   pollMicros = internalRuntimePollMicros runtime
 
-observeGatewayAuthorityTime
-  :: LongLivedCheckpointAuthority -> IO (Either Text AuthorityTime)
-observeGatewayAuthorityTime authority = do
-  result <-
-    GatewayClient.getAuthorityClock
-      (Text.unpack (checkpointAuthorityGatewayEndpoint authority))
-  pure $ case result of
-    Left err -> Left (Text.pack (GatewayClient.renderGatewayError err))
-    Right response ->
-      Right (authorityTimeFromMicros (authorityClockMicros response))
-
-waitForGatewayAuthorityTime
-  :: LongLivedCheckpointAuthority
+waitForAuthorityTime
+  :: IO (Either Text AuthorityTime)
   -> Int
   -> AuthorityTime
   -> IO (Either Text ())
-waitForGatewayAuthorityTime authority pollMicros target = go
+waitForAuthorityTime observeNow pollMicros target = go
  where
   go = do
-    observed <- observeGatewayAuthorityTime authority
+    observed <- observeNow
     case observed of
       Left err -> pure (Left err)
       Right now
@@ -280,10 +266,10 @@ sampleStableProviderQuiescence
            (StableQuiescenceWitness inventory)
        )
 sampleStableProviderQuiescence runtime policy predecessor = do
-  let authority = internalRuntimeAuthority runtime
+  let observeNow = internalRuntimeObserveAuthorityNow runtime
       pollMicros = internalRuntimePollMicros runtime
       firstNotBefore = leaseRecoveryNotBefore predecessor
-  waited <- waitForGatewayAuthorityTime authority pollMicros firstNotBefore
+  waited <- waitForAuthorityTime observeNow pollMicros firstNotBefore
   case waited of
     Left err -> pure (Left (QuiescenceProviderUnobservable ("authority clock: " <> err)))
     Right () -> collect [] (leasePolicyStableObservationCount policy)
@@ -297,7 +283,7 @@ sampleStableProviderQuiescence runtime policy predecessor = do
               (reverse samples)
           )
     | otherwise = do
-        observedAtResult <- observeGatewayAuthorityTime (internalRuntimeAuthority runtime)
+        observedAtResult <- internalRuntimeObserveAuthorityNow runtime
         case observedAtResult of
           Left err ->
             pure (Left (QuiescenceProviderUnobservable ("authority clock: " <> err)))
@@ -316,8 +302,8 @@ sampleStableProviderQuiescence runtime policy predecessor = do
                       0
                 | otherwise -> do
                     waited <-
-                      waitForGatewayAuthorityTime
-                        (internalRuntimeAuthority runtime)
+                      waitForAuthorityTime
+                        (internalRuntimeObserveAuthorityNow runtime)
                         (internalRuntimePollMicros runtime)
                         ( addAuthorityDuration
                             observedAt
@@ -337,14 +323,14 @@ sampleStableProviderQuiescence runtime policy predecessor = do
                           (remaining - 1)
 
 runProductionBounded
-  :: LongLivedCheckpointAuthority
+  :: IO (Either Text AuthorityTime)
   -> LeasePolicy
   -> Int
   -> AuthorityTime
   -> IO LeaseOwnershipStatus
   -> IO result
   -> IO (Either LeaseBoundedFailure result)
-runProductionBounded authority policy pollMicros deadline ownershipProbe action = do
+runProductionBounded observeNow policy pollMicros deadline ownershipProbe action = do
   winner <- race action monitor
   case winner of
     Left result -> pure (Right result)
@@ -352,7 +338,7 @@ runProductionBounded authority policy pollMicros deadline ownershipProbe action 
       -- 'race' returns only after its action thread has received cancellation.
       -- Re-observe the authority clock to audit that cancellation completed
       -- inside the policy's declared grace.
-      cancelledAt <- observeGatewayAuthorityTime authority
+      cancelledAt <- observeNow
       pure $ case cancelledAt of
         Left detail ->
           Left (LeaseBoundedRunnerFailed ("post-cancellation authority clock: " <> detail))
@@ -368,9 +354,31 @@ runProductionBounded authority policy pollMicros deadline ownershipProbe action 
   monitor = do
     ownership <- ownershipProbe
     case ownership of
+      -- A transient endpoint-unreachability (not-yet-ready object-store
+      -- port-forward / NodePort) is retried within the existing lease
+      -- deadline: the gate stays CLOSED (no work committed) while we re-probe,
+      -- and only budget exhaustion is terminal.  Throughout this window the
+      -- grant is provably un-stealable (a live contended lease never yields a
+      -- steal, and any fenced commit re-validates the guard at the authority
+      -- core), so an endpoint-unready reading here is provably a transport
+      -- artifact, not a genuine loss — a genuine loss requires a successful
+      -- observation yielding owner/fence/expiry mismatch, which stays terminal
+      -- below.  EVERY other refusal is terminal (the catch-all arm) — do not
+      -- broaden this to a general 'LeaseLost' retry.
+      LeaseLost (LeaseAuthorityEndpointUnready detail) -> do
+        observedAt <- observeNow
+        case observedAt of
+          Left clockDetail ->
+            pure (LeaseBoundedOwnershipLost (LeaseAuthorityUnobservable clockDetail))
+          Right now
+            | now >= deadline ->
+                pure (LeaseBoundedOwnershipLost (LeaseAuthorityEndpointUnready detail))
+            | otherwise -> do
+                threadDelay pollMicros
+                monitor
       LeaseLost refusal -> pure (LeaseBoundedOwnershipLost refusal)
       LeaseStillOwned -> do
-        observedAt <- observeGatewayAuthorityTime authority
+        observedAt <- observeNow
         case observedAt of
           Left detail ->
             pure
@@ -425,16 +433,16 @@ leaseScopedAwsExpiresAt :: LeaseScopedAwsSession -> AuthorityTime
 leaseScopedAwsExpiresAt = internalLeaseScopedAwsExpiresAt
 
 mintLeaseScopedAwsSession
-  :: LongLivedCheckpointAuthority
+  :: IO (Either Text AuthorityTime)
   -> Text
   -> LeasePolicy
   -> Credentials
   -> LeaseUsePermit
   -> AuthorityDuration
   -> IO (Either LeaseSessionError LeaseScopedAwsSession)
-mintLeaseScopedAwsSession authority roleArn =
+mintLeaseScopedAwsSession observeNow roleArn =
   mintLeaseScopedAwsSessionWith
-    (observeGatewayAuthorityTime authority)
+    observeNow
     runAwsAssumeRole
     roleArn
 

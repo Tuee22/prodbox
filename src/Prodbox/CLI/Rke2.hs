@@ -3,11 +3,12 @@
 module Prodbox.CLI.Rke2
   ( acmeRuntimeManifest
   , acmeRuntimeManifestWith
-  , acmeRuntimeManifestWithCredentials
+  , ensureAcmeRuntimeForSubstrate
   , acmeClusterIssuerSpec
-  , resolveAcmeEabKeyId
+  , awaitAcmeMaterialization
   , ensureRuntimeImageForSubstrate
   , ensureGatewayMinioBootstrap
+  , ensureInternalControlPlaneChartReady
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
   , ensureGatewayChartReadyPostVaultAt
@@ -18,6 +19,8 @@ module Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
   , ensureRootVaultLifecycle
+  , externalMaterialRequestForObservation
+  , reconcileAcmeEabFixture
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
   , cascadeOrderNarration
@@ -35,16 +38,15 @@ module Prodbox.CLI.Rke2
   , renderNativeInstallPlan
   , nativeInstallStepOrderRespectsGraph
   , stepsForComponent
-  , isRetryableRoute53CredentialFailure
   , isRetryableHelmFailure
   , isRetryableHarborPublicationFailure
   , RedirectPolicy (..)
   , RegistryStorageBackend (..)
   , RegistryStorageEdgeReadiness (..)
   , classifyRegistryStorageEdgeProbe
-  , GatewayObjectStoreProbe (..)
+  , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
-  , classifyGatewayObjectStoreProbe
+  , classifyGatewayFullModeProbe
   , gatewayDaemonWorkloadRefs
   , gatewayNamespace
   , minioNamespace
@@ -56,7 +58,8 @@ module Prodbox.CLI.Rke2
   , observeGatewayReadyzOnceAt
   , observeKubernetesReadinessOnce
   , observeRegistryBackendRoundTripOnce
-  , observeVaultUnsealedOnceAt
+  , observeVaultUnsealedOnce
+  , classifyBrokerVaultUnsealedStatus
   , renderInotifySysctlDropIn
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
@@ -69,6 +72,7 @@ module Prodbox.CLI.Rke2
   , operationalAwsCredentialGateFromResult
   , runEdgeCommand
   , runNativeDeleteCascade
+  , runCascadeDrainResult
   , runRke2Command
   , homeSubstratePlatformComponents
   )
@@ -90,6 +94,7 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
+import Data.Bifunctor qualified as Bifunctor
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Char8 qualified as BS8
@@ -112,13 +117,13 @@ import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word8)
 import Numeric.Natural (Natural)
 import Prodbox.Aws (adminAwsEnvironment)
-import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
-  )
-import Prodbox.Bootstrap.Broker.Client qualified as BrokerClient
+import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
+import Prodbox.Aws.Native.Sts qualified as NativeSts
+import Prodbox.Aws.Native.Wire (httpSend)
 import Prodbox.CLI.Command
   ( EdgeCommand (..)
   , FederationRegisterOptions (..)
@@ -137,8 +142,10 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Vault
-  ( gatewayEndpointFromEnv
-  , runVaultBootstrapViaDaemon
+  ( BrokerVaultSealStatus (..)
+  , gatewayEndpointFromEnv
+  , observeBrokerVaultSealStatus
+  , runVaultBootstrapViaBroker
   )
 import Prodbox.Capacity.Allocation qualified as CapacityAllocation
 import Prodbox.Capacity.Config qualified as Capacity
@@ -149,13 +156,11 @@ import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential (..)
   , ChildIndex (..)
-  , ChildInitCustody (..)
   , ChildMetadata (..)
   , ChildRegistrationPlan (..)
   , childBootstrapKvLogicalPath
   , childBootstrapVaultFields
   , childIndexVaultFields
-  , childInitKvLogicalPath
   , childMetadataKvLogicalPath
   , childMetadataVaultFields
   , childRegistrationPlan
@@ -163,7 +168,6 @@ import Prodbox.Cluster.Federation
   , childRegistrationVaultNamespace
   , childTransitSealPolicyDocument
   , decodeChildIndex
-  , decodeChildInitCustody
   , decodePayloadJsonField
   , federationChildrenIndexKvLogicalPath
   , renderChildRegistrationPlan
@@ -171,27 +175,75 @@ import Prodbox.Cluster.Federation
   )
 import Prodbox.Config.Basics
   ( ParentRef (..)
-  , UnencryptedBasics (..)
+  , UnencryptedBasics (basicsClusterId)
   )
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
   , ComponentNode (..)
+  , chartNameForComponent
   , componentCapabilityRequirement
   , componentIdText
   , componentReconcileOrder
   , lookupComponentNode
   )
 import Prodbox.Config.Tier0
-  ( Tier0ParentRef (..)
-  , ensureBasicsFloor
-  , ensureChildBasicsFloor
+  ( ensureBasicsFloor
   )
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.AuthorityBackupClient
+  ( authorityAggregateBackupClientWithTransport
+  )
+import Prodbox.ControlPlane.AuthorityBackupExportClient
+  ( authorityBackupExportClient
+  )
+import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
+  ( GenesisAwsAdminIntentParameters (..)
+  , productionAuthorityBackupReconcileBoundary
+  , reconcileRemainingFirstReconcileCredentials
+  )
+import Prodbox.ControlPlane.AuthorityControlClient
+  ( authorityControlClientWithTransport
+  )
+import Prodbox.ControlPlane.AwsAdminProvisionerClient
+  ( awsAdminProvisionerClient
+  )
 import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
 import Prodbox.ControlPlane.Coordinate (coordGeneration)
-import Prodbox.Dns (fetchPublicIp)
-import Prodbox.Dns qualified as Dns
+import Prodbox.ControlPlane.ExternalMaterialIngressClient
+  ( externalMaterialIngressClient
+  , observeCurrentExternalMaterialIngress
+  )
+import Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
+  ( ExternalMaterialIngressAction (ExternalMaterialInstall, ExternalMaterialRotate)
+  , ExternalMaterialIngressChallenge (..)
+  , ExternalMaterialIngressObservation (..)
+  )
+import Prodbox.ControlPlane.ExternalMaterialIngressWorkflow
+  ( ExternalMaterialIngressWorkflowRequest (..)
+  , kubernetesExternalMaterialJobBoundary
+  , runExternalMaterialIngressWorkflowWithDelivery
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , renderLifecycleAuthorityAuthenticationError
+  , withAuthorityBackupAuthenticatedTransport
+  , withHostLifecycleAuthorityAuthentication
+  , withLifecycleAuthorityAuthenticatedTransport
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchHostProviderIntentFresh
+  , renderProviderCallerError
+  )
+import Prodbox.ControlPlane.RetainedMaterialDeliveryClient
+  ( retainedMaterialDeliveryClient
+  )
+import Prodbox.ControlPlane.TargetMaterialFixture
+  ( seedAcmeEabFromTestSecrets
+  )
+import Prodbox.ControlPlane.TargetSecretAgentExecution
+  ( mkTargetAgentRolloutIdentity
+  )
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
@@ -210,13 +262,17 @@ import Prodbox.Http.Client
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
-  ( buildChartDeploymentPlanForSubstrate
+  ( ChartDeploymentPlan (..)
+  , ChartReleasePlan (..)
+  , ResolvedCustomImage (..)
+  , buildChartDeploymentPlanForSubstrate
   , deployChartPlan
   , gatewayNodeIdsForSubstrate
   , keycloakRealmName
   , keycloakVscodeClientId
   , operatorAvailableTarget
   , resolveChartSecrets
+  , resolveRuntimeChartImageForSubstrate
   )
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
@@ -237,9 +293,37 @@ import Prodbox.Lifecycle.AnchoredReconcile
   , compileAnchoredOrder
   , runAnchoredStepOrder
   )
+import Prodbox.Lifecycle.Authority.BootstrapReconcile
+  ( AuthorityBackupReconcileOutcome (..)
+  , reconcileAuthorityBackupAdmission
+  )
 import Prodbox.Lifecycle.CapabilityReadinessBarrier
   ( newReadinessObservationClient
   , observeReadinessThroughCapability
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
+  ( AwsAdminKubernetesBoundary
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
+  ( mkAwsAdminJobResources
+  , productionAwsAdminKubernetesBoundary
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
+  ( CredentialIamParameters
+  , mkAuthorityBackupIamParameters
+  , mkGatewayDnsIamParameters
+  , mkHomeDns01IamParameters
+  , mkLifecycleProviderIamParameters
+  , mkTlsRetentionIamParameters
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
+  ( ExternalMaterialIngressPhase (ExternalMaterialIngressReceiptCommitted)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
+  ( CredentialProvisionerJobConnection (..)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( AwsCredentialClass (..)
   )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
@@ -251,12 +335,17 @@ import Prodbox.Lifecycle.FederatedVault
   , vaultLifecycleHelmSealArgs
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
+import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
   )
 import Prodbox.Lifecycle.Preconditions
   ( StructuredError (..)
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObserveProviderReadiness)
+  , ProviderReadinessProbe (ProviderReadinessStsIdentity)
   )
 import Prodbox.Lifecycle.ReadinessObservation
   ( ComponentReadinessTarget (..)
@@ -278,6 +367,7 @@ import Prodbox.PublicEdge
   , authPathPrefix
   , minioPathPrefix
   , publicEdgeClusterIssuerName
+  , publicEdgeTlsRetentionKey
   , substrateHostedZoneId
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
@@ -295,41 +385,34 @@ import Prodbox.Settings
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
-  , DomainSection (..)
   , MetallbBgpPeer (..)
+  , PulumiStateBackendSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
   , acme
   , aws
-  , bootstrap_public_ip_override
+  , certScopeSetForServedHost
   , defaultConfigFile
-  , demo_ttl
-  , domain
   , eab_hmac_key
   , eab_key_id
   , email
   , loadConfigFile
   , loadUnencryptedBasics
   , manual_pv_host_root
-  , pulumi_enable_dns_bootstrap
+  , pulumi_state_backend
+  , reconcileInForceConfigFromFile
   , region
   , renderSeedInForceOutcome
-  , resolveAwsCredentialsRefFromHostVault
-  , route53
-  , seedInForceConfigFromFileWithToken
   , server
   , storage
   , validateAndLoadBootstrapSettings
   , validateAndLoadSettings
-  , validateAndLoadSettingsWithVaultToken
   , validateOperationalAwsCredentials
   , validatedConfig
   , validatedResourcePlan
-  , zone_id
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
-  , VaultSecretRef (..)
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -339,14 +422,10 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Client
-  ( BootstrapAction (..)
-  , SealStatus (..)
-  , VaultAddress (..)
+  ( VaultAddress (..)
   , VaultToken (..)
-  , bootstrapAction
   , vaultCreateToken
   , vaultCreateTransitKey
-  , vaultInit
   , vaultKvReadV2
   , vaultKvWriteV2
   , vaultReadTransitKey
@@ -355,23 +434,6 @@ import Prodbox.Vault.Client
   )
 import Prodbox.Vault.Host
   ( hostVaultAddress
-  , loadReadyVaultRootToken
-  , readHostVaultKvField
-  , seedAcmeEabFromTestSecrets
-  )
-import Prodbox.Vault.Reconcile
-  ( defaultVaultReconcilePlan
-  , renderVaultReconcileError
-  , renderVaultReconcileStep
-  , runVaultReconcile
-  )
-import Prodbox.Vault.Seal
-  ( ChildSealCustody (..)
-  , VaultSealMode (..)
-  , childInitCustodyVaultFields
-  , childSealCustodyFromInitResponse
-  , defaultTransitSealConfig
-  , initRequestForSealMode
   )
 import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory
@@ -553,6 +615,15 @@ minioAdminSecurityPolicyName = "minio-oidc"
 minioAdminClientSecretName :: String
 minioAdminClientSecretName = "minio-oidc-client"
 
+-- | The short-lived, namespace-scoped consumer that projects the exact
+-- @vscode/oidc/vscode#client_secret@ reference into the Envoy Gateway
+-- SecurityPolicy Secret.  The host never observes the Secret payload.
+minioAdminOidcMaterializerName :: String
+minioAdminOidcMaterializerName = "minio-admin-oidc-materializer"
+
+minioAdminOidcVaultRole :: String
+minioAdminOidcVaultRole = "minio-admin-oidc"
+
 minioConsoleServiceName :: String
 minioConsoleServiceName = "minio-console"
 
@@ -599,6 +670,12 @@ gatewayBootstrapNamespaces =
 -- @s3:GetObject@/@s3:PutObject@/@s3:ListBucket@ on @prodbox-state/*@.
 gatewayMinioPolicyName :: String
 gatewayMinioPolicyName = "prodbox-gateway-policy"
+
+-- | Dedicated least-privilege MinIO principal used only by the retained
+-- Lifecycle Authority process.  It shares the ciphertext bucket with the
+-- compatibility Gateway principal but not credentials or Vault identity.
+lifecycleAuthorityMinioPolicyName :: String
+lifecycleAuthorityMinioPolicyName = "prodbox-lifecycle-authority-policy"
 
 minioClusterEndpoint :: String
 minioClusterEndpoint =
@@ -690,6 +767,25 @@ zerosslAccountKeySecretName = "zerossl-account-key"
 route53CredentialsSecretName :: String
 route53CredentialsSecretName = "route53-credentials"
 
+-- | One-shot home-only consumer that projects the exact registered
+-- cert-manager DNS01 generation into the fixed Kubernetes Secret consumed by
+-- the Route 53 solver.  Its memory volume is destroyed with the Job and the
+-- host observes only Kubernetes object metadata.
+homeDns01MaterializerName :: String
+homeDns01MaterializerName = "home-dns01-secret-materializer"
+
+awsDns01MaterializerName :: String
+awsDns01MaterializerName = "aws-dns01-target-materializer"
+
+homeDns01VaultRole :: String
+homeDns01VaultRole = "aws-cert-manager-home"
+
+homeDns01VaultPath :: String
+homeDns01VaultPath = "aws/cert-manager/home/dns01"
+
+awsDns01VaultPath :: String
+awsDns01VaultPath = "aws/cert-manager/aws/dns01"
+
 acmeEabSecretName :: String
 acmeEabSecretName = "acme-eab-credentials"
 
@@ -701,8 +797,8 @@ acmeEabSecretKey = "secret"
 -- @hmac_key@) by a Vault-login Job in the @cert-manager@ namespace,
 -- reusing the Sprint 3.18 chart-side materialization pattern (init
 -- container logs into Vault via Kubernetes auth, main container creates
--- the k8s Secret). The HMAC key never transits the operator host; only
--- the non-secret EAB key ID is read host-side for the issuer @keyID@.
+-- the k8s Secret and patches the issuer). Neither EAB field transits the
+-- operator host.
 acmeEabMaterializerName :: String
 acmeEabMaterializerName = "acme-eab-secret-materializer"
 
@@ -720,6 +816,9 @@ acmeEabVaultPath = "acme/eab"
 
 acmeEabVaultHmacField :: String
 acmeEabVaultHmacField = "hmac_key"
+
+acmeEabVaultKeyIdField :: String
+acmeEabVaultKeyIdField = "key_id"
 
 data MinioImageSource
   = MinioBootstrapPublic
@@ -984,7 +1083,7 @@ applyClusterFederationRegister repoRoot payload =
                   parentAddress
                   parentToken
                   policyName
-                  (childTransitSealPolicyDocument childId transitKey)
+                  (childTransitSealPolicyDocument transitKey)
               case policyResult of
                 Left err -> failWith ("write child transit-seal Vault policy: " ++ renderHttpError err)
                 Right () -> do
@@ -1039,7 +1138,6 @@ applyClusterFederationRegister repoRoot payload =
                                             [ "Cluster federation registration complete:"
                                             , "  child_cluster_id=" ++ Text.unpack childId
                                             , "  metadata_kv_path=secret/" ++ Text.unpack (childMetadataKvLogicalPath childId)
-                                            , "  init_kv_path=secret/" ++ Text.unpack (childInitKvLogicalPath childId)
                                             , "  bootstrap_kv_path=secret/" ++ Text.unpack (childBootstrapKvLogicalPath childId)
                                             , "  children_index_kv_path=secret/" ++ Text.unpack federationChildrenIndexKvLogicalPath
                                             , "  transit_key=" ++ Text.unpack transitKey
@@ -1105,21 +1203,14 @@ updateParentChildIndex parentAddress parentToken childId = do
 
 loadParentFederationAuthority
   :: FilePath -> IO (Either String (Text.Text, VaultAddress, VaultToken))
-loadParentFederationAuthority repoRoot = do
-  basicsResult <- loadUnencryptedBasics repoRoot
-  case basicsResult of
-    Left err -> pure (Left ("cluster federation register requires unencrypted basics for the parent: " ++ err))
-    Right basics ->
-      case vaultLifecycleFromBasics basics of
-        Left err -> pure (Left err)
-        Right (RootVaultLifecycle parentClusterId parentVaultAddress) -> do
-          let parentAddress = VaultAddress parentVaultAddress
-          tokenResult <- loadReadyVaultRootToken repoRoot parentAddress
-          pure $ case tokenResult of
-            Left err -> Left err
-            Right token -> Right (parentClusterId, parentAddress, token)
-        Right ChildVaultLifecycle {} ->
-          pure (Left "cluster federation register currently requires a root-cluster parent authority")
+loadParentFederationAuthority _repoRoot =
+  pure
+    ( Left
+        ( "cluster federation registration requires the Bootstrap Broker's "
+            ++ "receipt-bound child-custody workflow; the reusable parent root-token "
+            ++ "and direct Vault write transport has been removed"
+        )
+    )
 
 loadFederationHmacKeyForRegister :: FilePath -> IO (Either String Text.Text)
 loadFederationHmacKeyForRegister repoRoot = do
@@ -1277,9 +1368,16 @@ data ReconcileStepId
   | StepEnsureRuntimeImage
   | StepRke2RegistriesConfig
   | StepCertManagerRuntime
-  | StepGatewayChartReadyPreVault
+  | StepBootstrapBrokerChartReady
   | StepFederatedVaultLifecycle
+  | StepTargetSecretAgentChartReady
+  | StepLifecycleAuthorityChartReady
+  | StepAuthorityBackupChartReady
+  | StepEstablishAuthorityBackup
+  | StepReconcileInForceConfig
   | StepLoadInForceSettings
+  | StepProviderWorkerChartReady
+  | StepTlsRetentionChartReady
   | StepMetalLbRuntime
   | StepEnvoyGatewayRuntime
   | StepPostgresOperatorRuntime
@@ -1318,9 +1416,16 @@ reconcileStepToken step = case step of
   StepEnsureRuntimeImage -> "ensure_gateway_images"
   StepRke2RegistriesConfig -> "ensure_rke2_registries_config"
   StepCertManagerRuntime -> "ensure_cert_manager_runtime"
-  StepGatewayChartReadyPreVault -> "ensure_gateway_chart_ready_pre_vault"
+  StepBootstrapBrokerChartReady -> "ensure_bootstrap_broker_chart_ready"
   StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
-  StepLoadInForceSettings -> "load_in_force_settings_after_vault_and_minio"
+  StepTargetSecretAgentChartReady -> "ensure_target_secret_agent_chart_ready"
+  StepLifecycleAuthorityChartReady -> "ensure_lifecycle_authority_chart_ready"
+  StepAuthorityBackupChartReady -> "ensure_authority_backup_chart_ready"
+  StepEstablishAuthorityBackup -> "establish_authority_backup_admission"
+  StepReconcileInForceConfig -> "reconcile_authority_in_force_config"
+  StepLoadInForceSettings -> "load_authority_in_force_settings"
+  StepProviderWorkerChartReady -> "ensure_provider_worker_chart_ready"
+  StepTlsRetentionChartReady -> "ensure_tls_retention_chart_ready"
   StepMetalLbRuntime -> "ensure_metallb_runtime"
   StepEnvoyGatewayRuntime -> "ensure_envoy_gateway_runtime"
   StepPostgresOperatorRuntime -> "ensure_postgres_operator_runtime"
@@ -1356,10 +1461,17 @@ reconcileStepPhase step = case step of
   StepMirrorClusterImagesOnce -> PhaseBootstrap
   StepEnsureRuntimeImage -> PhaseBootstrap
   StepRke2RegistriesConfig -> PhaseBootstrap
-  StepCertManagerRuntime -> PhaseBootstrap
-  StepGatewayChartReadyPreVault -> PhaseBootstrap
+  StepCertManagerRuntime -> PhaseSteady
+  StepBootstrapBrokerChartReady -> PhaseBootstrap
   StepFederatedVaultLifecycle -> PhaseTransition
+  StepTargetSecretAgentChartReady -> PhaseTransition
+  StepLifecycleAuthorityChartReady -> PhaseTransition
+  StepAuthorityBackupChartReady -> PhaseTransition
+  StepEstablishAuthorityBackup -> PhaseTransition
+  StepReconcileInForceConfig -> PhaseTransition
   StepLoadInForceSettings -> PhaseTransition
+  StepProviderWorkerChartReady -> PhaseSteady
+  StepTlsRetentionChartReady -> PhaseSteady
   StepMetalLbRuntime -> PhaseSteady
   StepEnvoyGatewayRuntime -> PhaseSteady
   StepPostgresOperatorRuntime -> PhaseSteady
@@ -1399,9 +1511,20 @@ reconcileStepAnchor step = case step of
   StepEnsureRuntimeImage -> HostPostAfter ComponentRegistry
   StepRke2RegistriesConfig -> ComponentReadiness ComponentRegistry
   StepCertManagerRuntime -> ComponentReadiness ComponentCertManager
-  StepGatewayChartReadyPreVault -> ComponentReadiness ComponentGatewayDaemonPreVault
-  StepFederatedVaultLifecycle -> TransitionFor ComponentVaultUnsealed
-  StepLoadInForceSettings -> ComponentReadiness ComponentVaultUnsealed
+  StepBootstrapBrokerChartReady -> ComponentReadiness ComponentChartBootstrapBroker
+  -- The home lifecycle interpreter both performs the custody transition and
+  -- proves the resulting unsealed state.  Unlike AWS (which has a separate
+  -- `StepAwsVaultUnsealedReady`), this is therefore the component's terminal
+  -- production-readiness barrier.
+  StepFederatedVaultLifecycle -> ComponentReadiness ComponentVaultUnsealed
+  StepTargetSecretAgentChartReady -> ComponentReadiness ComponentChartTargetSecretAgent
+  StepLifecycleAuthorityChartReady -> ComponentReadiness ComponentChartLifecycleAuthority
+  StepAuthorityBackupChartReady -> ComponentMutation ComponentChartAuthorityBackup
+  StepEstablishAuthorityBackup -> TransitionFor ComponentChartAuthorityBackup
+  StepReconcileInForceConfig -> TransitionFor ComponentChartAuthorityBackup
+  StepLoadInForceSettings -> ComponentReadiness ComponentChartAuthorityBackup
+  StepProviderWorkerChartReady -> ComponentReadiness ComponentChartProviderWorker
+  StepTlsRetentionChartReady -> ComponentReadiness ComponentChartTlsRetention
   StepMetalLbRuntime -> ComponentReadiness ComponentMetalLB
   StepEnvoyGatewayRuntime -> ComponentReadiness ComponentEnvoyGateway
   StepPostgresOperatorRuntime -> ComponentReadiness ComponentPerconaPostgresOperator
@@ -1438,7 +1561,7 @@ stepsForComponent component = case component of
     , StepMinioRuntimeBootstrap
     ]
   ComponentVaultWorkload -> [StepVaultRuntime]
-  ComponentVaultUnsealed -> [StepFederatedVaultLifecycle, StepLoadInForceSettings]
+  ComponentVaultUnsealed -> [StepFederatedVaultLifecycle]
   ComponentRegistry ->
     [ StepHarborRegistryStorageBackend
     , StepHarborRegistryRuntime
@@ -1451,7 +1574,7 @@ stepsForComponent component = case component of
   ComponentEnvoyGateway -> [StepEnvoyGatewayRuntime]
   ComponentCertManager -> [StepCertManagerRuntime]
   ComponentPerconaPostgresOperator -> [StepPostgresOperatorRuntime]
-  ComponentGatewayDaemonPreVault -> [StepGatewayChartReadyPreVault]
+  ComponentGatewayDaemonPreVault -> []
   ComponentGatewayDaemonFull ->
     [ StepGatewayMinioBootstrap
     , StepGatewayChartReady
@@ -1467,15 +1590,20 @@ stepsForComponent component = case component of
   ComponentChartApi -> []
   ComponentChartWebsocket -> []
   ComponentChartGateway -> []
-  -- Sprint 3.26: chart-only control-plane nodes; the physically separate broker
-  -- and the five standing control-plane roles are deployed by the chart
-  -- platform, not the native home-platform install (no native step).
-  ComponentChartBootstrapBroker -> []
-  ComponentChartLifecycleAuthority -> []
-  ComponentChartProviderWorker -> []
-  ComponentChartAuthorityBackup -> []
-  ComponentChartTlsRetention -> []
-  ComponentChartTargetSecretAgent -> []
+  -- Sprint 4.50: internal charts remain off the public `charts` surface, but
+  -- native reconcile deploys each release and ends its component group at the
+  -- chart's own rollout/readiness barrier.
+  ComponentChartBootstrapBroker -> [StepBootstrapBrokerChartReady]
+  ComponentChartLifecycleAuthority -> [StepLifecycleAuthorityChartReady]
+  ComponentChartProviderWorker -> [StepProviderWorkerChartReady]
+  ComponentChartAuthorityBackup ->
+    [ StepAuthorityBackupChartReady
+    , StepEstablishAuthorityBackup
+    , StepReconcileInForceConfig
+    , StepLoadInForceSettings
+    ]
+  ComponentChartTlsRetention -> [StepTlsRetentionChartReady]
+  ComponentChartTargetSecretAgent -> [StepTargetSecretAgentChartReady]
 
 edgeReconcileSteps :: [ReconcileStepId]
 edgeReconcileSteps =
@@ -1665,44 +1793,58 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
           case vaultReadyExit of
             ExitFailure _ -> pure vaultReadyExit
             ExitSuccess -> do
-              -- Sprint 7.25: MinIO (MinioBootstrapPublic) is already up from Phase 1
-              -- above and the static root cred never changes, so no post-Vault MinIO
-              -- bootstrap or restart-on-root-change step is needed here.
-              settingsResult <- loadPostMinioLifecycleSettings repoRoot bootstrapSettings
-              case settingsResult of
-                Left err -> failWith err
-                Right settings -> do
-                  -- StepLoadInForceSettings is the final VaultUnsealed-group
-                  -- step, so repeat the authoritative one-shot observation at
-                  -- the compiled component boundary after loading succeeds.
-                  inForceVaultReady <-
-                    requireNativeComponentReadiness
-                      repoRoot
-                      settings
-                      dag
-                      ComponentVaultUnsealed
-                  case inForceVaultReady of
-                    ExitFailure _ -> pure inForceVaultReady
-                    ExitSuccess -> do
-                      lanDefaultsResult <- resolveClusterPlatformLanDefaults
-                      case lanDefaultsResult of
-                        Left err -> failWith err
-                        Right lanDefaults -> do
-                          steadyExit <-
-                            runAnchoredReconcileSteps
-                              repoRoot
-                              settings
-                              dag
-                              (steadyStepAction settings lanDefaults)
-                              [step | step <- order, reconcileStepPhase step == PhaseSteady]
-                          case steadyExit of
-                            ExitFailure _ -> pure steadyExit
-                            ExitSuccess
-                              -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
-                              -- part of reconcile that needs operational AWS credentials.
-                              | withEdge ->
-                                  applyPublicEdgeReconcile repoRoot settings prodboxId labelValue
-                              | otherwise -> pure ExitSuccess
+              -- MinIO, Vault, and Broker are ready.  The remaining transition
+              -- deliberately still uses Tier-0 settings: home Agent -> frozen
+              -- Authority -> Backup Adapter -> backup admission -> config CAS.
+              transitionExit <-
+                runAnchoredReconcileSteps
+                  repoRoot
+                  bootstrapSettings
+                  dag
+                  transitionStepAction
+                  [ step
+                  | step <- order
+                  , reconcileStepPhase step == PhaseTransition
+                  , step /= StepFederatedVaultLifecycle
+                  , step /= StepLoadInForceSettings
+                  ]
+              case transitionExit of
+                ExitFailure _ -> pure transitionExit
+                ExitSuccess -> do
+                  settingsResult <- loadPostMinioLifecycleSettings repoRoot
+                  case settingsResult of
+                    Left err -> failWith err
+                    Right settings -> do
+                      -- Loading the observed projection is the final readiness
+                      -- barrier of the Authority-backup component group.
+                      inForceAuthorityReady <-
+                        requireNativeComponentReadiness
+                          repoRoot
+                          settings
+                          dag
+                          ComponentChartAuthorityBackup
+                      case inForceAuthorityReady of
+                        ExitFailure _ -> pure inForceAuthorityReady
+                        ExitSuccess -> do
+                          lanDefaultsResult <- resolveClusterPlatformLanDefaults
+                          case lanDefaultsResult of
+                            Left err -> failWith err
+                            Right lanDefaults -> do
+                              steadyExit <-
+                                runAnchoredReconcileSteps
+                                  repoRoot
+                                  settings
+                                  dag
+                                  (steadyStepAction settings lanDefaults)
+                                  [step | step <- order, reconcileStepPhase step == PhaseSteady]
+                              case steadyExit of
+                                ExitFailure _ -> pure steadyExit
+                                ExitSuccess
+                                  -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+                                  -- part of reconcile that needs operational AWS credentials.
+                                  | withEdge ->
+                                      applyPublicEdgeReconcile repoRoot settings prodboxId labelValue
+                                  | otherwise -> pure ExitSuccess
  where
   machineId = nativeInstallPayloadMachineId payload
   prodboxId = nativeInstallPayloadProdboxId payload
@@ -1759,10 +1901,22 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepMirrorClusterImagesOnce -> mirrorClusterImagesOnce repoRoot
     StepEnsureRuntimeImage -> ensureRuntimeImage repoRoot prodboxId
     StepRke2RegistriesConfig -> ensureRke2RegistriesConfig repoRoot
-    StepCertManagerRuntime -> ensureCertManagerRuntime repoRoot prodboxId labelValue
-    StepGatewayChartReadyPreVault -> ensureGatewayChartReady repoRoot bootstrapSettings SubstrateHomeLocal
+    StepCertManagerRuntime -> wrongPhaseStep PhaseBootstrap step
+    StepBootstrapBrokerChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        bootstrapSettings
+        SubstrateHomeLocal
+        ComponentChartBootstrapBroker
     StepFederatedVaultLifecycle -> wrongPhaseStep PhaseBootstrap step
     StepLoadInForceSettings -> wrongPhaseStep PhaseBootstrap step
+    StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepAuthorityBackupChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepEstablishAuthorityBackup -> wrongPhaseStep PhaseBootstrap step
+    StepReconcileInForceConfig -> wrongPhaseStep PhaseBootstrap step
+    StepProviderWorkerChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepTlsRetentionChartReady -> wrongPhaseStep PhaseBootstrap step
     StepMetalLbRuntime -> wrongPhaseStep PhaseBootstrap step
     StepEnvoyGatewayRuntime -> wrongPhaseStep PhaseBootstrap step
     StepPostgresOperatorRuntime -> wrongPhaseStep PhaseBootstrap step
@@ -1775,9 +1929,91 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseBootstrap step
     StepReconcileDnsBootstrapRecord -> wrongPhaseStep PhaseBootstrap step
 
+  transitionStepAction :: ReconcileStepId -> IO ExitCode
+  transitionStepAction step = case step of
+    StepTargetSecretAgentChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        bootstrapSettings
+        SubstrateHomeLocal
+        ComponentChartTargetSecretAgent
+    StepLifecycleAuthorityChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        bootstrapSettings
+        SubstrateHomeLocal
+        ComponentChartLifecycleAuthority
+    StepAuthorityBackupChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        bootstrapSettings
+        SubstrateHomeLocal
+        ComponentChartAuthorityBackup
+    StepEstablishAuthorityBackup ->
+      requireEstablishedAuthorityBackupAdmission repoRoot
+    StepReconcileInForceConfig -> do
+      reconciled <-
+        reconcileInForceConfigFromFile LifecycleAuthorityOperator repoRoot
+      case reconciled of
+        Left detail -> failWith detail
+        Right outcome -> do
+          writeOutputLine (renderSeedInForceOutcome outcome)
+          pure ExitSuccess
+    StepFederatedVaultLifecycle -> wrongPhaseStep PhaseTransition step
+    StepLoadInForceSettings -> wrongPhaseStep PhaseTransition step
+    StepRke2ResourceGuardrails -> wrongPhaseStep PhaseTransition step
+    StepHostInotifyLimits -> wrongPhaseStep PhaseTransition step
+    StepRke2ServerInstalled -> wrongPhaseStep PhaseTransition step
+    StepRke2IngressController -> wrongPhaseStep PhaseTransition step
+    StepEnableRke2Service -> wrongPhaseStep PhaseTransition step
+    StepRestartRke2Service -> wrongPhaseStep PhaseTransition step
+    StepSyncUserKubeconfig -> wrongPhaseStep PhaseTransition step
+    StepVerifyClusterInfo -> wrongPhaseStep PhaseTransition step
+    StepWaitForClusterNodesReady -> wrongPhaseStep PhaseTransition step
+    StepDeleteNonManualStorageClasses -> wrongPhaseStep PhaseTransition step
+    StepEnsureProdboxIdentityConfigMap -> wrongPhaseStep PhaseTransition step
+    StepEnsureHostControlDataDirectory -> wrongPhaseStep PhaseTransition step
+    StepEnsureRetainedLocalStorage -> wrongPhaseStep PhaseTransition step
+    StepMinioRuntimeBootstrap -> wrongPhaseStep PhaseTransition step
+    StepVaultRuntime -> wrongPhaseStep PhaseTransition step
+    StepHarborRegistryStorageBackend -> wrongPhaseStep PhaseTransition step
+    StepHarborRegistryRuntime -> wrongPhaseStep PhaseTransition step
+    StepVerifyRegistryMinioEdge -> wrongPhaseStep PhaseTransition step
+    StepMirrorClusterImagesOnce -> wrongPhaseStep PhaseTransition step
+    StepEnsureRuntimeImage -> wrongPhaseStep PhaseTransition step
+    StepRke2RegistriesConfig -> wrongPhaseStep PhaseTransition step
+    StepBootstrapBrokerChartReady -> wrongPhaseStep PhaseTransition step
+    StepCertManagerRuntime -> wrongPhaseStep PhaseTransition step
+    StepProviderWorkerChartReady -> wrongPhaseStep PhaseTransition step
+    StepTlsRetentionChartReady -> wrongPhaseStep PhaseTransition step
+    StepMetalLbRuntime -> wrongPhaseStep PhaseTransition step
+    StepEnvoyGatewayRuntime -> wrongPhaseStep PhaseTransition step
+    StepPostgresOperatorRuntime -> wrongPhaseStep PhaseTransition step
+    StepGatewayMinioBootstrap -> wrongPhaseStep PhaseTransition step
+    StepGatewayChartReady -> wrongPhaseStep PhaseTransition step
+    StepRootChartNamespaceGuardrails -> wrongPhaseStep PhaseTransition step
+    StepAdminPublicEdgeRoutes -> wrongPhaseStep PhaseTransition step
+    StepReconcileManagedAnnotations -> wrongPhaseStep PhaseTransition step
+    StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseTransition step
+    StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseTransition step
+    StepReconcileDnsBootstrapRecord -> wrongPhaseStep PhaseTransition step
+
   -- The @PhaseSteady@ executor is likewise total.
   steadyStepAction :: ValidatedSettings -> (String, String) -> ReconcileStepId -> IO ExitCode
   steadyStepAction settings (metallbPool, edgeLbIp) step = case step of
+    StepProviderWorkerChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateHomeLocal
+        ComponentChartProviderWorker
+    StepTlsRetentionChartReady ->
+      ensureInternalControlPlaneChartReady
+        repoRoot
+        settings
+        SubstrateHomeLocal
+        ComponentChartTlsRetention
+    StepCertManagerRuntime -> ensureCertManagerRuntime repoRoot prodboxId labelValue
     StepMetalLbRuntime -> ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
     StepEnvoyGatewayRuntime ->
       ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
@@ -1809,10 +2045,14 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepMirrorClusterImagesOnce -> wrongPhaseStep PhaseSteady step
     StepEnsureRuntimeImage -> wrongPhaseStep PhaseSteady step
     StepRke2RegistriesConfig -> wrongPhaseStep PhaseSteady step
-    StepCertManagerRuntime -> wrongPhaseStep PhaseSteady step
-    StepGatewayChartReadyPreVault -> wrongPhaseStep PhaseSteady step
+    StepBootstrapBrokerChartReady -> wrongPhaseStep PhaseSteady step
     StepFederatedVaultLifecycle -> wrongPhaseStep PhaseSteady step
     StepLoadInForceSettings -> wrongPhaseStep PhaseSteady step
+    StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseSteady step
+    StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseSteady step
+    StepAuthorityBackupChartReady -> wrongPhaseStep PhaseSteady step
+    StepEstablishAuthorityBackup -> wrongPhaseStep PhaseSteady step
+    StepReconcileInForceConfig -> wrongPhaseStep PhaseSteady step
     StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseSteady step
     StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseSteady step
     StepReconcileDnsBootstrapRecord -> wrongPhaseStep PhaseSteady step
@@ -1917,7 +2157,7 @@ nativeComponentReadinessTarget repoRoot settings component =
             (observeKubernetesReadinessOnce repoRoot [StatefulSetReady vaultNamespace "vault"])
         )
     ComponentVaultUnsealed ->
-      Right (VaultUnsealedTarget component observeVaultUnsealedOnce)
+      Right (VaultUnsealedTarget component (observeVaultUnsealedOnce repoRoot))
     ComponentRegistry ->
       Right
         ( BackendRoundTripTarget
@@ -1973,24 +2213,7 @@ nativeComponentReadinessTarget repoRoot settings component =
             )
         )
     ComponentPerconaPostgresOperator -> operatorAvailableTarget component
-    ComponentGatewayDaemonPreVault ->
-      -- Sprint 3.26-E rendered the gateway emitters as per-node StatefulSets, so
-      -- the pre-Vault readiness gate observes @StatefulSetReady gateway-<node>@
-      -- (was @DeploymentAvailable@, which no longer matches the workload kind).
-      -- With the kubelet readiness probe on @/healthz@ (see
-      -- 'Prodbox.Gateway.Probe.gatewayReadinessProbe'), the degraded pre-Vault Pod
-      -- becomes Ready once its process is reachable, so this gate resolves before
-      -- Vault is unsealed — the lifecycle can then drive unseal over the NodePort.
-      Right
-        ( RolloutCompleteTarget
-            component
-            ( observeKubernetesReadinessOnce
-                repoRoot
-                [ StatefulSetReady gatewayNamespace ("gateway-" ++ nodeId)
-                | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal
-                ]
-            )
-        )
+    ComponentGatewayDaemonPreVault -> unsupportedNativeReadiness component
     ComponentGatewayDaemonFull ->
       Right (BackendRoundTripTarget component ComponentMinio observeGatewayBackendRoundTripOnce)
     ComponentChartPulsar -> unsupportedNativeReadiness component
@@ -2001,12 +2224,35 @@ nativeComponentReadinessTarget repoRoot settings component =
     ComponentChartApi -> unsupportedNativeReadiness component
     ComponentChartWebsocket -> unsupportedNativeReadiness component
     ComponentChartGateway -> unsupportedNativeReadiness component
-    ComponentChartBootstrapBroker -> unsupportedNativeReadiness component
-    ComponentChartLifecycleAuthority -> unsupportedNativeReadiness component
-    ComponentChartProviderWorker -> unsupportedNativeReadiness component
-    ComponentChartAuthorityBackup -> unsupportedNativeReadiness component
-    ComponentChartTlsRetention -> unsupportedNativeReadiness component
-    ComponentChartTargetSecretAgent -> unsupportedNativeReadiness component
+    ComponentChartBootstrapBroker ->
+      deploymentRolloutTarget component "bootstrap-broker" "bootstrap-broker"
+    ComponentChartLifecycleAuthority ->
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [StatefulSetReady "lifecycle-authority" "lifecycle-authority"]
+            )
+        )
+    ComponentChartProviderWorker ->
+      deploymentRolloutTarget component "provider-worker" "provider-worker"
+    ComponentChartAuthorityBackup ->
+      deploymentRolloutTarget component "authority-backup" "authority-backup"
+    ComponentChartTlsRetention ->
+      deploymentRolloutTarget component "tls-retention" "tls-retention"
+    ComponentChartTargetSecretAgent ->
+      deploymentRolloutTarget component "target-secret-agent" "target-secret-agent"
+ where
+  deploymentRolloutTarget targetComponent namespace deployment =
+    Right
+      ( RolloutCompleteTarget
+          targetComponent
+          ( observeKubernetesReadinessOnce
+              repoRoot
+              [DeploymentAvailable namespace deployment]
+          )
+      )
 
 unsupportedNativeReadiness :: ComponentId -> Either Text.Text value
 unsupportedNativeReadiness component =
@@ -2146,23 +2392,23 @@ splitOnColon value =
     (prefix, []) -> [prefix]
     (prefix, _ : remaining) -> prefix : splitOnColon remaining
 
-observeVaultUnsealedOnce :: IO (Either Text.Text ReadinessProbeResult)
-observeVaultUnsealedOnce = do
-  endpoint <- gatewayEndpointFromEnv
-  observeVaultUnsealedOnceAt endpoint
+observeVaultUnsealedOnce :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+observeVaultUnsealedOnce repoRoot =
+  classifyBrokerVaultUnsealedStatus <$> observeBrokerVaultSealStatus repoRoot
 
-observeVaultUnsealedOnceAt :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
-observeVaultUnsealedOnceAt endpoint = do
-  result <- BrokerClient.queryVaultStatusLegacy endpoint
-  pure $
-    case result of
-      Left err -> Left (Text.pack (BrokerClient.renderBrokerError err))
-      Right status
-        | sealStatusInitialized status && not (sealStatusSealed status) ->
-            Right ReadinessProbeReady
-        | not (sealStatusInitialized status) ->
-            Right (ReadinessProbePending "Vault is not initialized")
-        | otherwise -> Right (ReadinessProbePending "Vault is sealed")
+classifyBrokerVaultUnsealedStatus
+  :: Either String BrokerVaultSealStatus
+  -> Either Text.Text ReadinessProbeResult
+classifyBrokerVaultUnsealedStatus observed = case observed of
+  Left detail -> Left (Text.pack detail)
+  Right status
+    | brokerVaultStatusInitializationAmbiguous status ->
+        Left "Bootstrap Broker reports ambiguous Vault initialization"
+    | not (brokerVaultStatusInitialized status) ->
+        Right (ReadinessProbePending "Bootstrap Broker reports Vault uninitialized")
+    | brokerVaultStatusSealed status ->
+        Right (ReadinessProbePending "Bootstrap Broker reports Vault sealed")
+    | otherwise -> Right ReadinessProbeReady
 
 observeRegistryBackendRoundTripOnce
   :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
@@ -2182,13 +2428,13 @@ observeGatewayBackendRoundTripOnce = do
 observeGatewayBackendRoundTripOnceAt
   :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
 observeGatewayBackendRoundTripOnceAt endpoint = do
-  result <- probeGatewayObjectStoreOnceAt endpoint
+  result <- probeGatewayFullModeOnceAt endpoint
   pure $
     case result of
-      GatewayObjectStoreHealthy -> Right ReadinessProbeReady
-      GatewayObjectStoreDegraded503 detail ->
-        Right (ReadinessProbePending (Text.pack ("gateway object store is degraded: " ++ detail)))
-      GatewayObjectStoreTransient detail -> Left (Text.pack detail)
+      GatewayFullModeHealthy -> Right ReadinessProbeReady
+      GatewayFullModeNotReady detail ->
+        Right (ReadinessProbePending (Text.pack ("gateway continuity is not ready: " ++ detail)))
+      GatewayFullModeTransient detail -> Left (Text.pack detail)
 
 -- | Sprint 2.34: observe the daemon's kubelet @/readyz@ once, as the lifecycle
 -- gate's precheck. A 200 is ready; a 503 (@draining@/@starting@) is
@@ -2209,74 +2455,214 @@ observeGatewayReadyzOnceAt endpoint = do
           )
       GatewayClient.GatewayReadyzUnreachable detail -> Left (Text.pack detail)
 
-loadPostMinioLifecycleSettings
-  :: FilePath -> ValidatedSettings -> IO (Either String ValidatedSettings)
-loadPostMinioLifecycleSettings repoRoot bootstrapSettings = do
+-- | Drive genesis or backup repair through the retained Authority fold, the
+-- attested AWS-admin Credential Provisioner Job, and the physically separate
+-- Authority Backup Adapter before config/provider/DNS effects may run.
+requireEstablishedAuthorityBackupAdmission :: FilePath -> IO ExitCode
+requireEstablishedAuthorityBackupAdmission repoRoot = do
   basicsResult <- loadUnencryptedBasics repoRoot
-  case basicsResult of
-    Left err
-      | "Missing unencrypted basics file:" `isPrefixOf` err ->
-          pure (Right bootstrapSettings)
-      | otherwise -> pure (Left err)
-    Right basics ->
-      case vaultLifecycleFromBasics basics of
-        Left err -> pure (Left err)
-        Right (RootVaultLifecycle _ _) -> do
-          tokenResult <- loadReadyVaultRootToken repoRoot (VaultAddress (basicsVaultAddress basics))
-          case tokenResult of
-            Left err -> pure (Left err)
-            Right rootToken -> do
-              seedInForceConfigStep repoRoot rootToken basics
-              validateAndLoadSettings repoRoot
-        Right (ChildVaultLifecycle childId _ parent) -> do
-          tokenResult <- readChildRootTokenFromParentCustody repoRoot childId parent
-          case tokenResult of
-            Left err -> pure (Left err)
-            Right childRootToken -> do
-              seedInForceConfigStep repoRoot childRootToken basics
-              validateAndLoadSettingsWithVaultToken repoRoot childRootToken
+  settingsResult <- loadPostMinioLifecycleSettings repoRoot
+  imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
+  now <- round . (* 1000000) <$> getPOSIXTime
+  case (basicsResult, settingsResult, imageResult) of
+    (Left detail, _, _) -> failWith detail
+    (_, Left detail, _) -> failWith detail
+    (_, _, Left detail) -> failWith detail
+    (Right basics, Right settings, Right (Just image)) ->
+      case authorityBackupRuntimeInputs repoRoot basics settings image now of
+        Left detail -> failWith detail
+        Right (coordinate, intentParameters, kubernetes) -> do
+          reconciled <-
+            withHostLifecycleAuthorityAuthentication
+              LifecycleAuthorityOperator
+              repoRoot
+              ( \authentication ->
+                  withLifecycleAuthorityAuthenticatedTransport authentication $ \authorityTransport ->
+                    withAuthorityBackupAuthenticatedTransport authentication $ \backupTransport -> do
+                      let provisionerClient = awsAdminProvisionerClient authorityTransport
+                          loadCredentials =
+                            either (Left . Text.pack) Right
+                              <$> loadAdminAwsCredentials repoRoot
+                          boundary =
+                            productionAuthorityBackupReconcileBoundary
+                              (basicsClusterId basics)
+                              coordinate
+                              authorityTransport
+                              (authorityControlClientWithTransport authorityTransport)
+                              (authorityBackupExportClient authorityTransport)
+                              (authorityAggregateBackupClientWithTransport backupTransport)
+                              provisionerClient
+                              kubernetes
+                              loadCredentials
+                              intentParameters
+                      admission <- reconcileAuthorityBackupAdmission boundary
+                      case admission of
+                        Left err ->
+                          pure (Left ("Authority backup admission reconciliation failed: " ++ show err))
+                        Right ready@(AuthorityBackupAdmissionReady _) -> do
+                          continuation <-
+                            reconcileRemainingFirstReconcileCredentials
+                              provisionerClient
+                              kubernetes
+                              loadCredentials
+                              intentParameters
+                              (firstReconcileIamParameters basics settings)
+                          pure $ case continuation of
+                            Left detail ->
+                              Left ("First-reconcile credential continuation failed: " ++ Text.unpack detail)
+                            Right () -> Right ready
+                        Right frozen -> pure (Right frozen)
+              )
+          case reconciled of
+            Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+            Right (Left err) -> failWith (renderLifecycleAuthorityAuthenticationError err)
+            Right (Right (Left err)) -> failWith (renderLifecycleAuthorityAuthenticationError err)
+            Right (Right (Right (Left detail))) -> failWith detail
+            Right (Right (Right (Right (AuthorityBackupAdmissionReady _)))) -> pure ExitSuccess
+            Right (Right (Right (Right (AuthorityBackupAdmissionFrozen _ health)))) ->
+              failWith
+                ( "Authority backup admission remains safely frozen after "
+                    ++ show health
+                    ++ "; no config or normal lifecycle work was started."
+                )
+    (_, _, Right Nothing) ->
+      failWith "The pinned runtime image is unavailable for the Credential Provisioner Job."
 
--- | Sprint 1.42 PART A: the @load_in_force_settings_after_vault_and_minio@
--- seed step. After MinIO is up and Vault is unsealed and @secret/minio/root@ +
--- @secret/object-store/hmac@ are reconciled (the same prerequisites the read
--- path 'loadRuntimeInForceConfigWithToken' needs), establish the in-force MinIO
--- SSoT from the filesystem operator config if it is absent. It is the establish
--- step; the subsequent settings read is the consumer.
---
--- SAFETY: a seed failure (transient MinIO/Vault) MUST NOT brick the reconcile.
--- The existing 'inForceConfigObjectAbsent' filesystem fallback in
--- 'loadConfigForSettingsWith' still covers the read this run, and the seed is
--- retried on the next reconcile, so a failed seed is logged and swallowed
--- rather than propagated.
-seedInForceConfigStep :: FilePath -> VaultToken -> UnencryptedBasics -> IO ()
-seedInForceConfigStep repoRoot token basics = do
-  seedResult <- seedInForceConfigFromFileWithToken repoRoot token basics
-  case seedResult of
-    Left err ->
-      writeOutputLine
-        ( "WARN: in-force config SSoT seed step failed (continuing; the filesystem"
-            ++ " seed/propose fallback still covers this run, and the seed is retried"
-            ++ " on the next reconcile): "
-            ++ err
+authorityBackupRuntimeInputs
+  :: FilePath
+  -> UnencryptedBasics
+  -> ValidatedSettings
+  -> ResolvedCustomImage
+  -> Natural
+  -> Either
+       String
+       ( Text.Text
+       , GenesisAwsAdminIntentParameters
+       , AwsAdminKubernetesBoundary IO
+       )
+authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
+  rollout <-
+    maybe
+      (Left "The runtime image has no immutable Docker image digest.")
+      Right
+      (resolvedCustomImageRolloutToken image)
+  selectedAgent <-
+    either
+      (Left . Text.unpack)
+      Right
+      (mkTargetAgentRolloutIdentity (basicsClusterId basics) (Text.pack rollout))
+  resources <-
+    either (Left . show) Right (mkAwsAdminJobResources "250m" "256Mi")
+  let backend = pulumi_state_backend (validatedConfig settings)
+      coordinate = "authority-backup-store/" <> basicsClusterId basics
+  iamParameters <-
+    either
+      (Left . show)
+      Right
+      ( mkAuthorityBackupIamParameters
+          (psbRegion backend)
+          (psbBucketName backend)
+          [coordinate]
+      )
+  let connection =
+        CredentialProvisionerJobConnection
+          { credentialProvisionerJobEnvironment = Nothing
+          , credentialProvisionerJobWorkingDirectory = repoRoot
+          }
+      deadline = authorityTimeFromMicros (heartbeat + 30 * 60 * 1000000)
+      parameters =
+        GenesisAwsAdminIntentParameters
+          { genesisIntentIamParameters = iamParameters
+          , genesisIntentImageDigest = Text.pack rollout
+          , genesisIntentAuthorityScope = basicsClusterId basics
+          , genesisIntentAuthorityEndpoint =
+              "http://lifecycle-authority.lifecycle-authority.svc:8600"
+          , genesisIntentSelectedAgent = selectedAgent
+          , genesisIntentDeadline = deadline
+          }
+      kubernetes =
+        productionAwsAdminKubernetesBoundary
+          connection
+          (Text.pack (resolvedCustomImageRepository image))
+          resources
+          heartbeat
+  Right (coordinate, parameters, kubernetes)
+
+firstReconcileIamParameters
+  :: UnencryptedBasics
+  -> ValidatedSettings
+  -> Credentials
+  -> AwsCredentialClass
+  -> IO (Either Text.Text CredentialIamParameters)
+firstReconcileIamParameters _basics settings credentials credentialClass =
+  case credentialClass of
+    LifecycleProviderCredential -> do
+      accountResult <- adminCredentialAccountId credentials
+      pure $ do
+        accountId <- accountResult
+        firstText
+          ( mkLifecycleProviderIamParameters
+              backendRegion
+              accountId
+              "prodbox-lifecycle-provider"
+          )
+    AuthorityBackupStoreCredential ->
+      pure (Left "authority-backup install is valid only as first-reconcile member zero")
+    TlsRetentionStoreCredential ->
+      pure $ do
+        scopeSet <-
+          firstText
+            ( certScopeSetForServedHost
+                (domain config)
+                (aws_substrate config)
+                (Text.pack (substratePublicFqdn settings SubstrateHomeLocal))
+            )
+        firstText
+          ( mkTlsRetentionIamParameters
+              backendRegion
+              (psbBucketName backend)
+              [Text.pack (publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet)]
+          )
+    GatewayDnsCredential ->
+      pure
+        ( firstText
+            (mkGatewayDnsIamParameters backendRegion homeZoneId)
         )
-    Right outcome -> writeOutputLine (renderSeedInForceOutcome outcome)
+    HomeCertManagerDns01Credential ->
+      pure
+        ( firstText
+            (mkHomeDns01IamParameters backendRegion homeZoneId)
+        )
+    AwsRunCertManagerDns01Credential ->
+      pure (Left "AWS-run DNS01 identity is not a home first-reconcile member")
+    SesSmtpRetainedCustodyCredential ->
+      pure (Left "SES SMTP custody is not a home first-reconcile member")
+ where
+  config = validatedConfig settings
+  backend = pulumi_state_backend config
+  backendRegion = psbRegion backend
+  homeZoneId = zone_id (route53 config)
+  firstText :: (Show err) => Either err value -> Either Text.Text value
+  firstText = either (Left . Text.pack . show) Right
 
-readChildRootTokenFromParentCustody
-  :: FilePath -> Text.Text -> ParentRef -> IO (Either String VaultToken)
-readChildRootTokenFromParentCustody repoRoot childId parent = do
-  parentTokenResult <- readChildTransitSealToken repoRoot
-  case parentTokenResult of
-    Left err -> pure (Left ("child in-force settings reload cannot read transit-seal token: " ++ err))
-    Right parentToken -> do
-      custodyResult <- readChildInitCustodyFromParent childId parent parentToken
-      pure $ case custodyResult of
-        Left err -> Left err
-        Right custody -> Right (VaultToken (childInitRootToken custody))
+adminCredentialAccountId :: Credentials -> IO (Either Text.Text Text.Text)
+adminCredentialAccountId credentials =
+  case baseCredentialHandleFromSettings credentials of
+    Left err -> pure (Left (Text.pack (show err)))
+    Right handle -> do
+      observed <- NativeSts.getCallerIdentity (NativeSts.newStsClient handle httpSend)
+      pure $ case observed of
+        Left err -> Left (Text.pack (show err))
+        Right identity -> Right (NativeSts.callerIdentityAccount identity)
+
+loadPostMinioLifecycleSettings :: FilePath -> IO (Either String ValidatedSettings)
+loadPostMinioLifecycleSettings = validateAndLoadSettings
 
 -- | The AWS-gated public-edge reconcile, factored out of the local cluster
 -- plan (Phase 2). Fails fast naming @prodbox aws setup@ when operational
--- @aws.*@ is empty, then applies the ZeroSSL DNS-01 ClusterIssuer and the
--- Route 53 bootstrap record.
+-- @aws.*@ is empty, then applies the ZeroSSL DNS-01 ClusterIssuer. Gateway
+-- DNS is owned exclusively by the Lifecycle Authority-backed exact-record
+-- reconciler; this cluster bootstrap path must not write Route 53 records.
 applyPublicEdgeReconcile :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 applyPublicEdgeReconcile repoRoot settings prodboxId labelValue =
   case validateOperationalAwsCredentials (validatedConfig settings) of
@@ -2287,11 +2673,7 @@ applyPublicEdgeReconcile repoRoot settings prodboxId labelValue =
             ++ " DNS + ZeroSSL TLS. Run `prodbox aws setup`, then re-run with"
             ++ " `--with-edge`."
         )
-    Right () ->
-      runSequentially
-        [ ensureAcmeRuntime repoRoot settings prodboxId labelValue
-        , reconcileDnsBootstrapRecord repoRoot settings
-        ]
+    Right () -> ensureAcmeRuntime repoRoot settings prodboxId labelValue
 
 -- | Sprint 4.26: the Plan for @prodbox cluster delete@ (default and
 -- @--cascade@). The payload is the 'Rke2DeleteFlags' so the apply closure
@@ -2449,9 +2831,8 @@ runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
   writeOutputLine cascadeOrderNarration
   -- Step 1: confirm-MinIO — live source-of-truth query of the per-run stacks'
-  -- encrypted checkpoints through the in-cluster gateway daemon object-store
-  -- API, with a host-direct MinIO fallback (one shared port-forward across the
-  -- stacks whose daemon read failed) when the daemon is degraded.
+  -- encrypted checkpoints through the sole in-cluster Lifecycle Authority
+  -- repository. No alternate Gateway or host object-store transport exists.
   perRun <- queryPerRunResidueStatuses repoRoot
   let eksStatus = perRunAwsEksTest perRun
       subzoneStatus = perRunAwsEksSubzone perRun
@@ -2539,7 +2920,7 @@ inferCascadeSubstrate eksStatus subzoneStatus testStatus =
 
 -- | Sprint 4.17.a/4.17.b helper: the K8s drain phase extracted from the
 -- prior single-block cascade so step 2 of the canonical order is
--- callable in isolation, with substrate-aware kubeconfig + AWS env
+-- callable in isolation, with substrate-aware kubeconfig
 -- handling.
 --
 -- For @SubstrateHomeLocal@: keeps the Sprint 4.15 skip-is-success
@@ -2547,11 +2928,8 @@ inferCascadeSubstrate eksStatus subzoneStatus testStatus =
 -- phase emits @DrainSkipped@ and the cascade continues (no in-cluster
 -- controllers means nothing to drain).
 --
--- For @SubstrateAws@: sets @KUBECONFIG@ to the substrate's kubeconfig
--- (@.prodbox-state\/aws-eks-test\/kubeconfig@) plus
--- @AWS_ACCESS_KEY_ID@ \/ @AWS_SECRET_ACCESS_KEY@ \/ @AWS_DEFAULT_REGION@
--- \/ @AWS_REGION@ \/ @AWS_SESSION_TOKEN@ from
--- @settings.aws@ so @aws eks get-token@ can authenticate. Treats
+-- For @SubstrateAws@: sets @KUBECONFIG@ to the scoped Provider-issued
+-- endpoint/CA configuration whose bearer is served through a FIFO. Treats
 -- @DrainSkipped@ as a hard failure because the EKS cluster is the
 -- source of the AWS resources the per-run destroys will try to delete
 -- — skipping the drain guarantees the next phase fails with
@@ -2564,48 +2942,50 @@ runCascadeDrainPhase repoRoot substrate = do
         ++ substrateId substrate
         ++ "): deleting LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs..."
     )
-  let drainAndDecide drainEnvVars = do
+  drainResult <- runCascadeDrainResult repoRoot substrate
+  case K8sDrain.cascadeDecisionFromDrainResult drainResult of
+    K8sDrain.CascadeContinue Nothing -> do
+      writeOutputLine
+        "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
+      pure ExitSuccess
+    K8sDrain.CascadeContinue (Just reason) -> case substrate of
+      SubstrateHomeLocal -> do
+        writeOutputLine
+          ( "K8s drain skipped: "
+              ++ reason
+              ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
+          )
+        pure ExitSuccess
+      SubstrateAws -> do
+        writeOutputLine
+          ( "K8s drain phase failed on the AWS substrate: "
+              ++ reason
+              ++ " Cascade aborts because the EKS cluster's in-cluster controllers (AWS LBC, EBS CSI) could not be drained; per-run Pulumi destroys would fail with DependencyViolation on subnet deletion."
+          )
+        pure (ExitFailure 1)
+    K8sDrain.CascadeAbort reason -> do
+      case drainResult of
+        K8sDrain.DrainTimedOut survivors ->
+          writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
+        _ -> writeOutputLine reason
+      pure (ExitFailure 1)
+
+-- | Preserve the typed drain result for the durable cleanup DAG. The CLI
+-- projection above remains the sole place that lowers substrate policy to an
+-- exit code.
+runCascadeDrainResult :: FilePath -> Substrate -> IO K8sDrain.DrainResult
+runCascadeDrainResult repoRoot substrate = do
+  let drainWith drainEnvVars = do
         let drainEnv =
               K8sDrain.K8sDrainEnv
                 { K8sDrain.drainEnvironment = drainEnvVars
                 , K8sDrain.drainWorkingDirectory = Just repoRoot
                 }
-        drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
-        case K8sDrain.cascadeDecisionFromDrainResult drainResult of
-          K8sDrain.CascadeContinue Nothing -> do
-            writeOutputLine
-              "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
-            pure ExitSuccess
-          K8sDrain.CascadeContinue (Just reason) -> case substrate of
-            SubstrateHomeLocal -> do
-              writeOutputLine
-                ( "K8s drain skipped: "
-                    ++ reason
-                    ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
-                )
-              pure ExitSuccess
-            SubstrateAws -> do
-              -- Sprint 4.17.b: skipped drain on AWS substrate is a hard failure.
-              -- The EKS cluster is the source of the AWS resources the per-run
-              -- destroys would need to delete; skipping the drain guarantees
-              -- the next phase will fail with DependencyViolation on subnet
-              -- deletion. See lifecycle_reconciliation_doctrine.md §5b.
-              writeOutputLine
-                ( "K8s drain phase failed on the AWS substrate: "
-                    ++ reason
-                    ++ " Cascade aborts because the EKS cluster's in-cluster controllers (AWS LBC, EBS CSI) could not be drained; per-run Pulumi destroys would fail with DependencyViolation on subnet deletion."
-                )
-              pure (ExitFailure 1)
-          K8sDrain.CascadeAbort reason -> do
-            case drainResult of
-              K8sDrain.DrainTimedOut survivors ->
-                writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
-              _ -> writeOutputLine reason
-            pure (ExitFailure 1)
+        K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
   case substrate of
     SubstrateHomeLocal -> do
       drainEnvVars <- buildDrainEnvironment repoRoot SubstrateHomeLocal Nothing
-      drainAndDecide drainEnvVars
+      drainWith drainEnvVars
     SubstrateAws -> do
       -- Sprint 4.18 fifth chunk: re-derive the EKS kubeconfig via
       -- 'withEksKubeconfig' so the drain's kubectl subprocesses don't
@@ -2619,20 +2999,18 @@ runCascadeDrainPhase repoRoot substrate = do
         try
           ( withEksKubeconfig repoRoot $ \kubeconfigPath -> do
               drainEnvVars <- buildDrainEnvironment repoRoot SubstrateAws (Just kubeconfigPath)
-              drainAndDecide drainEnvVars
+              drainWith drainEnvVars
           )
-          :: IO (Either SomeException ExitCode)
+          :: IO (Either SomeException K8sDrain.DrainResult)
       case bracketResult of
-        Left exc -> do
-          writeOutputLine
-            ( "K8s drain phase failed on the AWS substrate: kubeconfig "
-                ++ "materialization failed ("
-                ++ show exc
-                ++ "). Cascade aborts because the per-run Pulumi destroys "
-                ++ "would fail with DependencyViolation on subnet deletion."
+        Left exc ->
+          pure
+            ( K8sDrain.DrainFailed
+                ( "AWS kubeconfig materialization failed: "
+                    ++ show exc
+                )
             )
-          pure (ExitFailure 1)
-        Right ec -> pure ec
+        Right result -> pure result
 
 -- | Sprint 4.17.b helper, re-shaped for Sprint 4.18 fifth chunk: build
 -- the env-var list passed to 'K8sDrain.K8sDrainEnv' per substrate. For
@@ -2643,7 +3021,7 @@ runCascadeDrainPhase repoRoot substrate = do
 -- @settings.aws@.
 buildDrainEnvironment
   :: FilePath -> Substrate -> Maybe FilePath -> IO [(String, String)]
-buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
+buildDrainEnvironment _repoRoot substrate maybeAwsKubeconfig = do
   parentEnv <- getEnvironment
   case (substrate, maybeAwsKubeconfig) of
     (SubstrateHomeLocal, _) -> do
@@ -2653,23 +3031,8 @@ buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
           then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
           else parentEnv
     (SubstrateAws, Nothing) -> pure parentEnv
-    (SubstrateAws, Just kubeconfigPath) -> do
-      settingsResult <- validateAndLoadSettings repoRoot
-      case settingsResult of
-        Left _ -> pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
-        Right settings -> do
-          credentialsResult <-
-            resolveAwsCredentialsRefFromHostVault
-              repoRoot
-              "aws"
-              (aws (validatedConfig settings))
-          pure $
-            case credentialsResult of
-              Left _ -> ("KUBECONFIG", kubeconfigPath) : parentEnv
-              Right credentials ->
-                overlayAwsCredentials
-                  (("KUBECONFIG", kubeconfigPath) : parentEnv)
-                  credentials
+    (SubstrateAws, Just kubeconfigPath) ->
+      pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
 
 runCascadeTestEbsReaper :: FilePath -> IO ()
 runCascadeTestEbsReaper repoRoot = do
@@ -3275,14 +3638,10 @@ ensureRootVaultLifecycleDetailed repoRoot = do
       pure (VaultLifecycleResult ExitSuccess)
     Just other ->
       lifecycleFailure <$> failWith ("invalid PRODBOX_TEST_ROOT_VAULT_LIFECYCLE=" ++ other)
-    Nothing -> do
-      waitExit <- waitForGatewayDaemonReadiness
-      case waitExit of
-        ExitFailure _ -> pure (lifecycleFailure waitExit)
-        ExitSuccess -> continue
+    Nothing -> continue
  where
   continue = do
-    bootstrapExit <- runVaultBootstrapViaDaemon repoRoot
+    bootstrapExit <- runVaultBootstrapViaBroker repoRoot
     case bootstrapExit of
       ExitFailure _ -> pure (lifecycleFailure bootstrapExit)
       ExitSuccess -> do
@@ -3295,26 +3654,6 @@ ensureRootVaultLifecycleDetailed repoRoot = do
           Left err -> lifecycleFailure <$> failWith err
           Right () -> pure (VaultLifecycleResult ExitSuccess)
 
-waitForGatewayDaemonReadiness :: IO ExitCode
-waitForGatewayDaemonReadiness = do
-  endpoint <- gatewayEndpointFromEnv
-  go endpoint vaultApiReadinessAttempts "Gateway daemon not yet checked"
- where
-  go :: PeerEndpoint -> Int -> String -> IO ExitCode
-  go endpoint attemptsRemaining lastDetail
-    | attemptsRemaining <= 0 =
-        failWith
-          ( "Gateway daemon did not become reachable before Vault lifecycle reconciliation: "
-              ++ lastDetail
-          )
-    | otherwise = do
-        statusResult <- GatewayClient.queryState endpoint
-        case statusResult of
-          Right _ -> pure ExitSuccess
-          Left err -> do
-            threadDelay vaultApiReadinessDelayMicroseconds
-            go endpoint (attemptsRemaining - 1) (GatewayClient.renderGatewayError err)
-
 ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
 ensureFederatedVaultLifecycleDetailed repoRoot = do
   lifecycleResult <- resolveVaultLifecycle repoRoot
@@ -3325,139 +3664,16 @@ ensureFederatedVaultLifecycleDetailed repoRoot = do
       ensureChildVaultLifecycleDetailed repoRoot childId parent
 
 ensureChildVaultLifecycleDetailed :: FilePath -> Text.Text -> ParentRef -> IO VaultLifecycleResult
-ensureChildVaultLifecycleDetailed repoRoot childId parent = do
-  tokenResult <- readChildTransitSealToken repoRoot
-  case tokenResult of
-    Left err ->
-      lifecycleFailure <$> failWith ("child Vault lifecycle cannot read transit-seal token: " ++ err)
-    Right parentToken -> do
-      statusResult <- vaultSealStatus hostVaultAddress
-      case statusResult of
-        Left err -> lifecycleFailure <$> failWith ("child Vault status failed: " ++ renderHttpError err)
-        Right status ->
-          case bootstrapAction status of
-            BootstrapInitialize ->
-              initializeChildVaultAndWriteCustody repoRoot childId parent parentToken
-            BootstrapUnseal ->
-              lifecycleFailure
-                <$> failWith
-                  ( "Blocked: child Vault is initialized but sealed after the parent readiness check. "
-                      ++ "Transit auto-unseal did not complete; no local unseal fallback exists."
-                  )
-            BootstrapReady ->
-              reconcileChildVaultFromParentCustody repoRoot childId parent parentToken
-
-initializeChildVaultAndWriteCustody
-  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
-initializeChildVaultAndWriteCustody repoRoot childId parent parentToken = do
-  let parentAddress = VaultAddress (parentRefVaultAddress parent)
-      transitKey = normalizeTransitKeyName (parentRefTransitKey parent)
-      sealConfig = defaultTransitSealConfig parentAddress transitKey
-  initResult <-
-    vaultInit
-      hostVaultAddress
-      (initRequestForSealMode (VaultSealChildTransit sealConfig))
-  case initResult of
-    Left err -> lifecycleFailure <$> failWith ("child Vault init failed: " ++ renderHttpError err)
-    Right initResponse -> do
-      let custody =
-            childSealCustodyFromInitResponse
-              (parentRefClusterId parent)
-              childId
-              (unVaultAddress hostVaultAddress)
-              ("child-local")
-              transitKey
-              initResponse
-          initFields = childInitCustodyVaultFields (childSealCustodyInit custody)
-      writeResult <-
-        vaultKvWriteV2
-          parentAddress
-          parentToken
-          "secret"
-          (childInitKvLogicalPath childId)
-          initFields
-      case writeResult of
-        Left err ->
-          lifecycleFailure
-            <$> failWith ("write child init custody to parent Vault KV: " ++ renderHttpError err)
-        Right () ->
-          reconcileChildVaultWithToken
-            repoRoot
-            childId
-            parent
-            (VaultToken (childInitRootToken (childSealCustodyInit custody)))
-
-reconcileChildVaultFromParentCustody
-  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
-reconcileChildVaultFromParentCustody repoRoot childId parent parentToken = do
-  custodyResult <- readChildInitCustodyFromParent childId parent parentToken
-  case custodyResult of
-    Left err -> lifecycleFailure <$> failWith err
-    Right custody ->
-      reconcileChildVaultWithToken repoRoot childId parent (VaultToken (childInitRootToken custody))
-
-readChildInitCustodyFromParent
-  :: Text.Text -> ParentRef -> VaultToken -> IO (Either String ChildInitCustody)
-readChildInitCustodyFromParent childId parent parentToken = do
-  readResult <-
-    vaultKvReadV2
-      (VaultAddress (parentRefVaultAddress parent))
-      parentToken
-      "secret"
-      (childInitKvLogicalPath childId)
-  pure $ case readResult of
-    Left err -> Left ("read child init custody from parent Vault KV: " ++ renderHttpError err)
-    Right fields ->
-      case Map.lookup "payload_json" fields of
-        Nothing -> Left "child init custody in parent Vault KV is missing field `payload_json`"
-        Just payload ->
-          case decodeChildInitCustody (TextEncoding.encodeUtf8 payload) of
-            Left err -> Left ("decode child init custody from parent Vault KV: " ++ err)
-            Right custody -> Right custody
-
-reconcileChildVaultWithToken
-  :: FilePath -> Text.Text -> ParentRef -> VaultToken -> IO VaultLifecycleResult
-reconcileChildVaultWithToken repoRoot childId parent childRootToken = do
-  -- Sprint 1.39 (self-heal): guarantee this child's Transit-mode basics floor
-  -- exists before reconcile, mirroring the root self-heal. The floor carries
-  -- the parent reference this child auto-unseals against, reconstructed from the
-  -- in-scope identity when missing (e.g. a rebuild against a durable child PV).
-  floorResult <-
-    ensureChildBasicsFloor
-      repoRoot
-      childId
-      (unVaultAddress hostVaultAddress)
-      (parentRefToTier0 parent)
-  case floorResult of
-    Left err -> lifecycleFailure <$> failWith err
-    Right () -> reconcileChildVaultBody childId childRootToken
-
-parentRefToTier0 :: ParentRef -> Tier0ParentRef
-parentRefToTier0 ref =
-  Tier0ParentRef
-    { parent_cluster_id = parentRefClusterId ref
-    , parent_vault_address = parentRefVaultAddress ref
-    , parent_transit_key = parentRefTransitKey ref
-    }
-
-reconcileChildVaultBody :: Text.Text -> VaultToken -> IO VaultLifecycleResult
-reconcileChildVaultBody _childId childRootToken = do
-  reconcileResult <- runVaultReconcile hostVaultAddress childRootToken defaultVaultReconcilePlan
-  case reconcileResult of
-    Left err -> do
-      writeOutput ("Child Vault reconcile failed: " ++ renderVaultReconcileError err)
-      pure (VaultLifecycleResult (ExitFailure 1))
-    Right steps -> do
-      writeOutput
-        ( unlines
-            ( "Child Vault reconcile complete:"
-                : map (("  " ++) . renderVaultReconcileStep) steps
-            )
-        )
-      pure
-        VaultLifecycleResult
-          { vaultLifecycleExitCode = ExitSuccess
-          }
+ensureChildVaultLifecycleDetailed _repoRoot childId _parent =
+  lifecycleFailure
+    <$> failWith
+      ( "child Vault lifecycle requires the Bootstrap Broker's typed "
+          ++ "ChildCustodyBinding -> ChildEncryptedReceipt -> "
+          ++ "ParentCustodyAcknowledgement protocol; the removed direct "
+          ++ "Vault-init/root-token custody path cannot be used (child="
+          ++ Text.unpack childId
+          ++ ")"
+      )
 
 lifecycleFailure :: ExitCode -> VaultLifecycleResult
 lifecycleFailure exitCode =
@@ -3498,12 +3714,6 @@ readChildTransitSealToken repoRoot = do
     Right token
       | null (trimWhitespace token) -> Left "Secret field token is empty"
       | otherwise -> Right (VaultToken (Text.pack (trimWhitespace token)))
-
-normalizeTransitKeyName :: Text.Text -> Text.Text
-normalizeTransitKeyName raw =
-  fromMaybe stripped (Text.stripPrefix "transit/" stripped)
- where
-  stripped = Text.dropWhileEnd (== '/') (Text.dropWhile (== '/') raw)
 
 mapLeftEither :: (left -> left') -> Either left right -> Either left' right
 mapLeftEither f value = case value of
@@ -3863,10 +4073,11 @@ isMinioSecretKeyArgumentSafe value =
  where
   isAsciiAlphaNumeric c = isAsciiUpper c || isAsciiLower c || isDigit c
 
--- | Sprint 3.18: Job manifest that bootstraps the gateway daemon's MinIO
--- surface (@prodbox-state@ bucket + @prodbox-gateway@ user + IAM policy + policy
--- attachment) in one pass, with every secret-bearing input read from Vault
--- inside the cluster.
+-- | Bootstrap the retained ciphertext bucket and its two deliberately disjoint
+-- MinIO principals in one idempotent pass.  The Gateway principal remains only
+-- for the pre-cutover compatibility path; the Lifecycle Authority principal is
+-- the production in-cluster owner and reads its credential from its own Vault
+-- object.
 gatewayMinioBootstrapManifestItems :: [Value]
 gatewayMinioBootstrapManifestItems =
   [ object
@@ -3901,6 +4112,8 @@ gatewayMinioBootstrapManifestItems =
                                               , "MINIO_ROOT_PASSWORD=\"$(cat \"$MINIO_ROOT_PASSWORD_FILE\")\""
                                               , "GW_USER=\"$(cat \"$GW_USER_FILE\")\""
                                               , "GW_PASS=\"$(cat \"$GW_PASS_FILE\")\""
+                                              , "LA_USER=\"$(cat \"$LA_USER_FILE\")\""
+                                              , "LA_PASS=\"$(cat \"$LA_PASS_FILE\")\""
                                               , "mc alias set local "
                                                   ++ minioClusterEndpoint
                                                   ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
@@ -3921,11 +4134,28 @@ gatewayMinioBootstrapManifestItems =
                                               , "mc admin policy attach local "
                                                   ++ gatewayMinioPolicyName
                                                   ++ " --user \"$GW_USER\""
+                                              , "mc admin user add local \"$LA_USER\" \"$LA_PASS\""
+                                              , "cat > /tmp/lifecycle-authority-policy.json <<'POLICY_EOF'"
+                                              , lifecycleAuthorityMinioPolicyJson
+                                              , "POLICY_EOF"
+                                              , "mc admin policy detach local "
+                                                  ++ lifecycleAuthorityMinioPolicyName
+                                                  ++ " --user \"$LA_USER\" || true"
+                                              , "mc admin policy rm local "
+                                                  ++ lifecycleAuthorityMinioPolicyName
+                                                  ++ " || true"
+                                              , "mc admin policy create local "
+                                                  ++ lifecycleAuthorityMinioPolicyName
+                                                  ++ " /tmp/lifecycle-authority-policy.json"
+                                              , "mc admin policy attach local "
+                                                  ++ lifecycleAuthorityMinioPolicyName
+                                                  ++ " --user \"$LA_USER\""
                                               ]
                                           ]
                                    , "env"
                                        .= ( minioRootFileEnv
                                               ++ gatewayMinioFileEnv
+                                              ++ lifecycleAuthorityMinioFileEnv
                                           )
                                    , "volumeMounts" .= [minioRootVaultMaterializedVolumeMount]
                                    ]
@@ -3959,6 +4189,12 @@ gatewayMinioPolicyJson =
     , "  ]"
     , "}"
     ]
+
+-- | The Authority owns the same opaque retained-object namespace during
+-- cutover, including deletion during its typed lifecycle programs.  It has no
+-- permission to any other bucket.
+lifecycleAuthorityMinioPolicyJson :: String
+lifecycleAuthorityMinioPolicyJson = gatewayMinioPolicyJson
 
 harborStoragePolicyJson :: String
 harborStoragePolicyJson =
@@ -4029,6 +4265,12 @@ gatewayMinioVaultInitContainer =
                , "vault kv get -field=minio_secret_key secret/gateway/gateway/minio > "
                    ++ minioRootVaultMaterializedPath
                    ++ "/gatewayMinioSecretKey"
+               , "vault kv get -field=minio_access_key secret/minio/lifecycle-authority > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/lifecycleAuthorityMinioAccessKey"
+               , "vault kv get -field=minio_secret_key secret/minio/lifecycle-authority > "
+                   ++ minioRootVaultMaterializedPath
+                   ++ "/lifecycleAuthorityMinioSecretKey"
                ]
            ]
     , "volumeMounts" .= [minioRootVaultMaterializedInitVolumeMount]
@@ -4055,6 +4297,18 @@ gatewayMinioFileEnv =
   , object
       [ "name" .= ("GW_PASS_FILE" :: String)
       , "value" .= (minioRootVaultMaterializedPath ++ "/gatewayMinioSecretKey")
+      ]
+  ]
+
+lifecycleAuthorityMinioFileEnv :: [Value]
+lifecycleAuthorityMinioFileEnv =
+  [ object
+      [ "name" .= ("LA_USER_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/lifecycleAuthorityMinioAccessKey")
+      ]
+  , object
+      [ "name" .= ("LA_PASS_FILE" :: String)
+      , "value" .= (minioRootVaultMaterializedPath ++ "/lifecycleAuthorityMinioSecretKey")
       ]
   ]
 
@@ -4205,43 +4459,41 @@ ensureHarborRegistryRuntime repoRoot _substrate = do
   -- single-binary registry:2 Deployment on a rebuilt-in-place cluster. The
   -- registry:2 Deployment/Service/ConfigMap and the storage Secret are applied
   -- separately (kubectl), so uninstalling the release does not touch them.
-  _ <- uninstallLegacyHarborRelease repoRoot
-  installExit <-
-    withTemporaryJsonManifest
-      "prodbox-registry-runtime"
-      registryRuntimeManifestItems
-      ( \manifestPath ->
-          runCommand
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments = ["apply", "-f", manifestPath]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-      )
-  case installExit of
-    ExitFailure _ -> pure installExit
-    ExitSuccess ->
-      -- Wait for the Deployment to become Available (the pod's first,
-      -- unauthenticated registry:2 pull can be slow), then confirm the NodePort
-      -- serves GET /v2/ and holds stable before the mirror loop pushes.
-      runSequentially
-        [ waitForDeployment repoRoot harborNamespace registryDeploymentName
-        , waitForHarborRegistryEndpoint repoRoot
-        , waitForHarborStableEndpoints repoRoot
-        ]
+  cleanupExit <- reconcileLegacyHarborReleaseAbsent repoRoot
+  case cleanupExit of
+    ExitFailure _ -> pure cleanupExit
+    ExitSuccess -> do
+      installExit <-
+        withTemporaryJsonManifest
+          "prodbox-registry-runtime"
+          registryRuntimeManifestItems
+          ( \manifestPath ->
+              runCommand
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments = ["apply", "-f", manifestPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+          )
+      case installExit of
+        ExitFailure _ -> pure installExit
+        ExitSuccess ->
+          -- Wait for the Deployment to become Available (the pod's first,
+          -- unauthenticated registry:2 pull can be slow), then confirm the NodePort
+          -- serves GET /v2/ and holds stable before the mirror loop pushes.
+          runSequentially
+            [ waitForDeployment repoRoot harborNamespace registryDeploymentName
+            , waitForHarborRegistryEndpoint repoRoot
+            , waitForHarborStableEndpoints repoRoot
+            ]
 
--- | Best-effort removal of a legacy Harbor helm release. Always succeeds: on a
--- fresh cluster there is nothing to uninstall, and a stale release is cleaned
--- up so its resources do not collide with the registry:2 manifest.
-uninstallLegacyHarborRelease :: FilePath -> IO ExitCode
-uninstallLegacyHarborRelease repoRoot = do
-  _ <-
-    captureToolOutput
-      repoRoot
-      "helm"
-      ["uninstall", "harbor", "--namespace", harborNamespace, "--ignore-not-found"]
-  pure ExitSuccess
+-- | The superseded Harbor release is a registered desired-absence resource.
+-- A registry:2 apply is illegal until Helm authoritatively reports that exact
+-- release absent; cluster/API failures are not treated as absence.
+reconcileLegacyHarborReleaseAbsent :: FilePath -> IO ExitCode
+reconcileLegacyHarborReleaseAbsent repoRoot =
+  ResourceRegistry.resourceDestroy ResourceRegistry.legacyHarborHelmResource repoRoot
 
 -- | The registry:2 runtime manifest: a ConfigMap holding the @registry:2@
 -- @config.yml@ (S3 storage driver pointed at the MinIO-backed
@@ -4680,6 +4932,61 @@ homeSubstratePlatformComponents =
   , ContainerImage.ComponentVault
   ]
 
+-- | Reconcile one internal control-plane chart in its own namespace. The
+-- component graph still carries role-to-role edges so the native plan derives
+-- the production order, while this projection deliberately selects only the
+-- root release from ChartPlatform's dependency-expanded plan: standing roles
+-- have distinct namespaces, ServiceAccounts, NetworkPolicies, and Vault roles
+-- and must never be co-installed into a consumer's namespace.
+ensureInternalControlPlaneChartReady
+  :: FilePath -> ValidatedSettings -> Substrate -> ComponentId -> IO ExitCode
+ensureInternalControlPlaneChartReady repoRoot settings substrate component =
+  case internalControlPlaneChartName component of
+    Left err -> failWith err
+    Right chartName -> do
+      planResult <-
+        buildChartDeploymentPlanForSubstrate
+          substrate
+          repoRoot
+          settings
+          chartName
+          Map.empty
+          Map.empty
+      case planResult >>= isolateRootRelease chartName of
+        Left err -> failWith err
+        Right plan -> do
+          deployResult <- deployChartPlan plan
+          case deployResult of
+            Left err -> failWith err
+            Right report -> writeOutputLine report >> pure ExitSuccess
+
+internalControlPlaneChartName :: ComponentId -> Either String String
+internalControlPlaneChartName component =
+  case component of
+    ComponentChartBootstrapBroker -> chartName
+    ComponentChartLifecycleAuthority -> chartName
+    ComponentChartProviderWorker -> chartName
+    ComponentChartAuthorityBackup -> chartName
+    ComponentChartTlsRetention -> chartName
+    ComponentChartTargetSecretAgent -> chartName
+    _ -> Left ("Component `" ++ componentIdText component ++ "` is not an internal control-plane chart.")
+ where
+  chartName =
+    maybe
+      (Left ("Internal control-plane component `" ++ componentIdText component ++ "` has no chart name."))
+      Right
+      (chartNameForComponent component)
+
+isolateRootRelease :: String -> ChartDeploymentPlan -> Either String ChartDeploymentPlan
+isolateRootRelease chartName plan =
+  case [ release
+       | release <- chartDeploymentPlanReleases plan
+       , chartReleasePlanReleaseName release == chartName
+       ] of
+    [rootRelease] -> Right plan {chartDeploymentPlanReleases = [rootRelease]}
+    [] -> Left ("Internal chart plan for `" ++ chartName ++ "` has no root release.")
+    _ -> Left ("Internal chart plan for `" ++ chartName ++ "` has duplicate root releases.")
+
 -- | Deploy the gateway chart as a reconcile-time platform component and
 -- install the loopback-only NodePort iptables restriction on home (mirrors
 -- the @charts reconcile gateway@ post-hook).
@@ -4693,9 +5000,8 @@ ensureGatewayChartReady repoRoot settings substrate =
 
 -- | Post-Vault gateway convergence: deploy the gateway chart, then ensure the
 -- daemon is actually running in FULL mode (see 'ensureGatewayDaemonFullModeAt').
--- Used ONLY for the post-Vault 'StepGatewayChartReady'; the pre-Vault
--- 'StepGatewayChartReadyPreVault' keeps calling 'ensureGatewayChartReady'
--- unchanged (the daemon is expected to boot degraded there, by design).
+-- The physical bootstrap cut runs through the Bootstrap Broker, so reconcile
+-- does not install a degraded pre-Vault Gateway release.
 ensureGatewayChartReadyPostVault :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 ensureGatewayChartReadyPostVault repoRoot settings substrate = do
   endpoint <- gatewayEndpointFromEnv
@@ -4709,32 +5015,27 @@ ensureGatewayChartReadyPostVaultAt repoRoot settings substrate endpoint = do
     ExitFailure _ -> pure deployExit
     ExitSuccess -> ensureGatewayDaemonFullModeAt repoRoot endpoint
 
--- | The gateway daemon resolves its Vault-backed MinIO credentials exactly once,
--- at pod boot. The reconcile boots the daemon pre-Vault
--- ('StepGatewayChartReadyPreVault'), so it starts degraded
--- (@daemonMinioCreds = Nothing@ → object-store 503). The post-Vault chart
--- re-render is byte-identical (secrets are Vault refs) so it never restarts the
--- pods; this step does, deterministically, then VERIFIES the daemon left 503.
---
--- Idempotent: probe first, restart ONLY when degraded, so a healthy reconcile is
--- a no-op. The readiness probe @\/v1\/state@ returns 200 even while degraded, so
--- @kubectl rollout status@ alone is insufficient — the object-store probe is the
--- real gate. If the daemon will not leave 503 after the restart budget, fail
--- loud rather than leaving it silently degraded.
+-- | The Gateway readiness projection is the deep proof for its retained
+-- continuity store: it cannot report ready before the continuity worker has
+-- completed a validated object-store recovery round trip. A release left behind
+-- by an older reconcile may still be running in its pre-Vault state, so an
+-- initial definite not-ready result triggers one deterministic rollout restart;
+-- the post-restart proof then polls the same compiled readiness route. No generic
+-- Pulumi/object-store RPC is used as a health probe.
 ensureGatewayDaemonFullModeAt :: FilePath -> PeerEndpoint -> IO ExitCode
 ensureGatewayDaemonFullModeAt repoRoot endpoint = do
-  initialProbe <- pollGatewayObjectStoreAt endpoint False gatewayFullModeInitialProbeAttempts
+  initialProbe <- pollGatewayFullModeAt endpoint False gatewayFullModeInitialProbeAttempts
   case initialProbe of
-    GatewayObjectStoreHealthy -> do
+    GatewayFullModeHealthy -> do
       writeOutputLine "GATEWAY_DAEMON_MODE=full (no restart needed)"
       pure ExitSuccess
-    GatewayObjectStoreTransient detail ->
+    GatewayFullModeTransient detail ->
       failWith
-        ("gateway daemon object-store was not reachable to verify full mode: " ++ detail)
-    GatewayObjectStoreDegraded503 body -> do
+        ("gateway daemon readiness was unreachable while verifying full mode: " ++ detail)
+    GatewayFullModeNotReady body -> do
       writeOutputLine
         ( "GATEWAY_DAEMON_MODE=degraded-pre-vault; restarting gateway daemons to resolve "
-            ++ "MinIO credentials from Vault ("
+            ++ "their retained continuity authority ("
             ++ trimProbeBody body
             ++ ")"
         )
@@ -4746,19 +5047,19 @@ ensureGatewayDaemonFullModeAt repoRoot endpoint = do
       case restartExit of
         ExitFailure _ -> pure restartExit
         ExitSuccess -> do
-          verifyProbe <- pollGatewayObjectStoreAt endpoint True gatewayFullModeVerifyAttempts
+          verifyProbe <- pollGatewayFullModeAt endpoint True gatewayFullModeVerifyAttempts
           case verifyProbe of
-            GatewayObjectStoreHealthy -> do
+            GatewayFullModeHealthy -> do
               writeOutputLine "GATEWAY_DAEMON_MODE=full (restarted into full mode)"
               pure ExitSuccess
-            GatewayObjectStoreDegraded503 verifyBody ->
+            GatewayFullModeNotReady verifyBody ->
               failWith
-                ( "gateway daemon remained in degraded pre-Vault object-store mode after restart: "
+                ( "gateway daemon remained not-ready after its continuity restart: "
                     ++ trimProbeBody verifyBody
                 )
-            GatewayObjectStoreTransient detail ->
+            GatewayFullModeTransient detail ->
               failWith
-                ("gateway daemon object-store was not reachable after restart: " ++ detail)
+                ("gateway daemon readiness was unreachable after restart: " ++ detail)
 
 -- | The gateway daemon workloads to restart, derived from the canonical
 -- 'gatewayNodeIds' SSoT (one @gateway-\<nodeId>@ StatefulSet per node). Sprint
@@ -4769,66 +5070,46 @@ gatewayDaemonWorkloadRefs :: [String]
 gatewayDaemonWorkloadRefs =
   ["statefulset/gateway-" ++ nodeId | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal]
 
--- | A synthetic, never-provisioned per-run stack name used only to PROBE the
--- daemon object-store health (a read-only @getPulumiObject@; an absent object is
--- a healthy @Right Nothing@). It is never written.
-gatewayObjectStoreProbeStack :: Text.Text
-gatewayObjectStoreProbeStack = Text.pack "prodbox-reconcile-objectstore-probe"
-
 gatewayFullModeInitialProbeAttempts :: Int
 gatewayFullModeInitialProbeAttempts = 10
 
 gatewayFullModeVerifyAttempts :: Int
 gatewayFullModeVerifyAttempts = vaultApiReadinessAttempts
 
--- | Classification of the gateway daemon's object-store health. See
+-- | Classification of the Gateway's deep readiness proof. See
 -- 'ensureGatewayDaemonFullModeAt'.
-data GatewayObjectStoreProbe
-  = -- | Object-store reachable and credentialed (present OR absent object).
-    GatewayObjectStoreHealthy
-  | -- | Degraded pre-Vault mode: @daemonMinioCreds = Nothing@ → HTTP 503 (body).
-    GatewayObjectStoreDegraded503 String
-  | -- | Transient: daemon still starting, connection refused, etc.
-    GatewayObjectStoreTransient String
+data GatewayFullModeProbe
+  = GatewayFullModeHealthy
+  | GatewayFullModeNotReady String
+  | GatewayFullModeTransient String
   deriving (Eq, Show)
 
--- | Pure classifier of a 'GatewayClient.getPulumiObject' result. A @Right _@
--- (present or absent object) means the object-store is reachable and
--- credentialed; a @503@ means the daemon booted with @daemonMinioCreds = Nothing@;
--- any other error is transient. Exposed for unit tests.
-classifyGatewayObjectStoreProbe
-  :: Either GatewayClient.GatewayError (Maybe BS.ByteString) -> GatewayObjectStoreProbe
-classifyGatewayObjectStoreProbe result = case result of
-  Right _ -> GatewayObjectStoreHealthy
-  Left (GatewayClient.GatewayTransport (HttpStatus 503 body)) -> GatewayObjectStoreDegraded503 body
-  Left err -> GatewayObjectStoreTransient (GatewayClient.renderGatewayError err)
+classifyGatewayFullModeProbe :: GatewayClient.GatewayReadyzProbe -> GatewayFullModeProbe
+classifyGatewayFullModeProbe probe = case probe of
+  GatewayClient.GatewayReadyzReady -> GatewayFullModeHealthy
+  GatewayClient.GatewayReadyzNotReady code body ->
+    GatewayFullModeNotReady ("HTTP " ++ show code ++ ": " ++ body)
+  GatewayClient.GatewayReadyzUnreachable detail -> GatewayFullModeTransient detail
 
-probeGatewayObjectStoreOnceAt :: PeerEndpoint -> IO GatewayObjectStoreProbe
-probeGatewayObjectStoreOnceAt endpoint = do
-  result <-
-    GatewayClient.getPulumiObject
-      endpoint
-      gatewayObjectStoreProbeStack
-  pure (classifyGatewayObjectStoreProbe result)
+probeGatewayFullModeOnceAt :: PeerEndpoint -> IO GatewayFullModeProbe
+probeGatewayFullModeOnceAt endpoint =
+  classifyGatewayFullModeProbe <$> GatewayClient.queryReadyz endpoint
 
--- | Poll the object-store probe up to @attempts@ (sleeping
--- 'vaultApiReadinessDelayMicroseconds' between), returning on the first
--- 'GatewayObjectStoreHealthy'. @retryOn503@ controls a settled 503: the verify
--- path retries it (the just-restarted daemon may still be resolving creds / the
--- Vault role may still be propagating); the initial path returns it immediately
--- (a degraded pre-Vault daemon that must be restarted). Transient failures are
--- always retried. Returns the last observation when the budget is exhausted.
-pollGatewayObjectStoreAt :: PeerEndpoint -> Bool -> Int -> IO GatewayObjectStoreProbe
-pollGatewayObjectStoreAt endpoint retryOn503 attempts =
-  go attempts (GatewayObjectStoreTransient "gateway daemon not yet probed")
+-- | Poll the deep readiness projection up to @attempts@. The initial path
+-- returns a definite not-ready observation so the old pre-Vault Pod can be
+-- restarted; the verification path retries it while the new continuity worker
+-- establishes its round-trip latch. Transport failures are always retried.
+pollGatewayFullModeAt :: PeerEndpoint -> Bool -> Int -> IO GatewayFullModeProbe
+pollGatewayFullModeAt endpoint retryNotReady attempts =
+  go attempts (GatewayFullModeTransient "gateway daemon not yet probed")
  where
   go remaining lastProbe
     | remaining <= 0 = pure lastProbe
     | otherwise = do
-        probe <- probeGatewayObjectStoreOnceAt endpoint
+        probe <- probeGatewayFullModeOnceAt endpoint
         case probe of
-          GatewayObjectStoreHealthy -> pure GatewayObjectStoreHealthy
-          GatewayObjectStoreDegraded503 _ | not retryOn503 -> pure probe
+          GatewayFullModeHealthy -> pure GatewayFullModeHealthy
+          GatewayFullModeNotReady _ | not retryNotReady -> pure probe
           _ -> do
             threadDelay vaultApiReadinessDelayMicroseconds
             go (remaining - 1) probe
@@ -4842,8 +5123,15 @@ resolveOperationalAwsCredentialGate repoRoot settings =
   case validateOperationalAwsCredentials config of
     Left err -> pure (operationalAwsCredentialGateFromResult (Left err))
     Right () -> do
-      credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-      pure (operationalAwsCredentialGateFromResult credentialsResult)
+      readiness <-
+        dispatchHostProviderIntentFresh
+          LifecycleAuthorityOperator
+          repoRoot
+          "rke2-operational-aws-readiness"
+          (ObserveProviderReadiness ProviderReadinessStsIdentity)
+      pure $ case readiness of
+        Left err -> OperationalAwsCredentialsInvalid (renderProviderCallerError err)
+        Right _ -> OperationalAwsCredentialsReady
  where
   config = validatedConfig settings
 
@@ -4943,91 +5231,323 @@ gatewayBootstrapNamespaceManifest namespace =
 ensureAdminPublicEdgeRoutes
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
 ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
-  credentialGate <- resolveOperationalAwsCredentialGate repoRoot settings
-  case credentialGate of
-    -- Admin public-edge routes need the vscode OIDC secret from Vault and are
-    -- only meaningful once the Route 53-writing gateway is credentialed.
-    OperationalAwsCredentialsAbsent _ -> pure ExitSuccess
-    OperationalAwsCredentialsInvalid err ->
-      failWith ("load operational AWS credentials from Vault: " ++ err)
-    OperationalAwsCredentialsReady ->
-      ensureAdminPublicEdgeRoutesCredentialed repoRoot settings substrate prodboxId labelValue
-
-ensureAdminPublicEdgeRoutesCredentialed
-  :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutesCredentialed repoRoot settings substrate prodboxId labelValue = do
-  clientSecretResult <- readKeycloakVscodeClientSecret repoRoot
-  case clientSecretResult of
-    Left err -> failWith err
-    Right clientSecret ->
+  staleCleanup <-
+    deleteMaterializerAndObservePodAbsence
+      repoRoot
+      minioNamespace
+      minioAdminOidcMaterializerName
+  case staleCleanup of
+    ExitFailure _ -> pure staleCleanup
+    ExitSuccess ->
       withTemporaryJsonManifest
         "prodbox-admin-public-edge"
-        (adminPublicEdgeManifestItems settings substrate prodboxId labelValue clientSecret)
+        (adminPublicEdgeManifestItems settings substrate prodboxId labelValue)
         ( \manifestPath -> do
             outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
             case outputResult of
               Left err -> failWith err
               Right output ->
                 case processExitCode output of
-                  ExitSuccess -> pure ExitSuccess
                   ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+                  ExitSuccess -> awaitAdminOidcMaterialization repoRoot
         )
 
--- | Host-side acquisition of the @vscode@ OIDC client secret, which the
--- harbor and minio admin @SecurityPolicy@ resources reuse.
-readKeycloakVscodeClientSecret :: FilePath -> IO (Either String String)
-readKeycloakVscodeClientSecret repoRoot = do
-  result <- readHostVaultKvField repoRoot "secret" "vscode/oidc/vscode" "client_secret"
-  pure (Text.unpack <$> result)
+-- | Wait for the exact in-cluster projection and read back only the target
+-- Secret's non-secret Kubernetes metadata.  Neither command requests @data@,
+-- so the operator host cannot obtain the OIDC client secret.
+awaitAdminOidcMaterialization :: FilePath -> IO ExitCode
+awaitAdminOidcMaterialization repoRoot = do
+  waited <-
+    captureKubectl
+      repoRoot
+      [ "wait"
+      , "--namespace"
+      , minioNamespace
+      , "--for=condition=complete"
+      , "--timeout=300s"
+      , "job/" ++ minioAdminOidcMaterializerName
+      ]
+  outcome <- case waited of
+    Left err -> failWith err
+    Right waitOutput ->
+      case processExitCode waitOutput of
+        ExitFailure _ ->
+          failWith "MinIO admin OIDC materializer did not complete."
+        ExitSuccess -> do
+          observed <-
+            captureKubectl
+              repoRoot
+              [ "get"
+              , "secret/" ++ minioAdminClientSecretName
+              , "--namespace"
+              , minioNamespace
+              , "--output=jsonpath={.metadata.resourceVersion}"
+              ]
+          case observed of
+            Left err -> failWith err
+            Right output
+              | processExitCode output /= ExitSuccess ->
+                  failWith "MinIO admin OIDC Secret metadata read-back failed."
+              | null (trimWhitespace (processStdout output)) ->
+                  failWith "MinIO admin OIDC Secret metadata read-back returned no resourceVersion."
+              | otherwise -> pure ExitSuccess
+  cleanup <-
+    deleteMaterializerAndObservePodAbsence
+      repoRoot
+      minioNamespace
+      minioAdminOidcMaterializerName
+  pure (preferFirstFailure outcome cleanup)
+
+deleteMaterializerAndObservePodAbsence
+  :: FilePath -> String -> String -> IO ExitCode
+deleteMaterializerAndObservePodAbsence repoRoot namespace jobName = do
+  deleted <-
+    captureKubectl
+      repoRoot
+      [ "delete"
+      , "job/" ++ jobName
+      , "--namespace"
+      , namespace
+      , "--cascade=foreground"
+      , "--wait=true"
+      , "--ignore-not-found=true"
+      ]
+  case deleted of
+    Left err -> failWith err
+    Right deleteOutput
+      | processExitCode deleteOutput /= ExitSuccess ->
+          failWith ("materializer Job cleanup failed: " ++ outputDetail deleteOutput)
+      | otherwise -> do
+          observed <-
+            captureKubectl
+              repoRoot
+              [ "get"
+              , "pods"
+              , "--namespace"
+              , namespace
+              , "--selector=job-name=" ++ jobName
+              , "--output=name"
+              ]
+          case observed of
+            Left err -> failWith err
+            Right output
+              | processExitCode output /= ExitSuccess ->
+                  failWith ("materializer Pod absence read-back failed: " ++ outputDetail output)
+              | not (null (trimWhitespace (processStdout output))) ->
+                  failWith "materializer Job was deleted but a materializer Pod remains"
+              | otherwise -> pure ExitSuccess
+
+preferFirstFailure :: ExitCode -> ExitCode -> ExitCode
+preferFirstFailure first second = case first of
+  ExitFailure _ -> first
+  ExitSuccess -> second
 
 adminPublicEdgeManifestItems
-  :: ValidatedSettings -> Substrate -> String -> String -> String -> [Value]
-adminPublicEdgeManifestItems settings substrate prodboxId labelValue clientSecret =
+  :: ValidatedSettings -> Substrate -> String -> String -> [Value]
+adminPublicEdgeManifestItems settings substrate prodboxId labelValue =
   -- The single-binary registry:2 has no web UI, so there is no admin edge route
   -- for it (the former OIDC-gated /harbor surface is gone). Only the MinIO
-  -- console admin route remains.
-  [ adminOidcClientSecretManifest
-      minioNamespace
-      minioAdminClientSecretName
-      prodboxId
-      labelValue
-      clientSecret
-  , adminHttpRouteManifest
-      minioNamespace
-      minioAdminRouteName
-      minioPathPrefix
-      minioConsoleServiceName
-      minioConsoleServicePort
-      prodboxId
-      labelValue
-      (substratePublicFqdn settings substrate)
-  , adminSecurityPolicyManifest
-      minioNamespace
-      minioAdminSecurityPolicyName
-      minioAdminRouteName
-      minioAdminClientSecretName
-      (substratePublicRouteUrl settings substrate PublicRouteMinio)
-      prodboxId
-      labelValue
-      substrate
-      settings
-  ]
+  -- console admin route remains.  Its Secret is projected inside the target
+  -- namespace by the exact Vault-authenticated materializer resources.
+  adminOidcClientSecretMaterializerManifests prodboxId labelValue
+    ++ [ adminHttpRouteManifest
+           minioNamespace
+           minioAdminRouteName
+           minioPathPrefix
+           minioConsoleServiceName
+           minioConsoleServicePort
+           prodboxId
+           labelValue
+           (substratePublicFqdn settings substrate)
+       , adminSecurityPolicyManifest
+           minioNamespace
+           minioAdminSecurityPolicyName
+           minioAdminRouteName
+           minioAdminClientSecretName
+           (substratePublicRouteUrl settings substrate PublicRouteMinio)
+           prodboxId
+           labelValue
+           substrate
+           settings
+       ]
 
-adminOidcClientSecretManifest :: String -> String -> String -> String -> String -> Value
-adminOidcClientSecretManifest namespace secretName prodboxId labelValue clientSecret =
-  object
-    [ "apiVersion" .= ("v1" :: String)
-    , "kind" .= ("Secret" :: String)
-    , "metadata"
-        .= object
-          [ "name" .= secretName
-          , "namespace" .= namespace
-          , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-          , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
-          ]
-    , "type" .= ("Opaque" :: String)
-    , "stringData" .= object ["client-secret" .= clientSecret]
-    ]
+-- | Exact consumer-side projection for the MinIO Envoy SecurityPolicy.  The
+-- init container reads only the registered VS Code OIDC client field through
+-- the namespace-bound Vault role; the sibling container may create or patch
+-- only the one named Kubernetes Secret.
+adminOidcClientSecretMaterializerManifests :: String -> String -> [Value]
+adminOidcClientSecretMaterializerManifests prodboxId labelValue =
+  [ serviceAccount
+  , role
+  , roleBinding
+  , job
+  ]
+ where
+  metadata =
+    object
+      [ "name" .= minioAdminOidcMaterializerName
+      , "namespace" .= minioNamespace
+      , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+      , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+      ]
+  serviceAccount =
+    object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("ServiceAccount" :: String)
+      , "metadata" .= metadata
+      ]
+  role =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("Role" :: String)
+      , "metadata" .= metadata
+      , "rules"
+          .= [ object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "verbs" .= (["create"] :: [String])
+                 ]
+             , object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "resourceNames" .= ([minioAdminClientSecretName] :: [String])
+                 , "verbs" .= (["get", "update", "patch"] :: [String])
+                 ]
+             ]
+      ]
+  roleBinding =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("RoleBinding" :: String)
+      , "metadata" .= metadata
+      , "subjects"
+          .= [ object
+                 [ "kind" .= ("ServiceAccount" :: String)
+                 , "name" .= minioAdminOidcMaterializerName
+                 , "namespace" .= minioNamespace
+                 ]
+             ]
+      , "roleRef"
+          .= object
+            [ "apiGroup" .= ("rbac.authorization.k8s.io" :: String)
+            , "kind" .= ("Role" :: String)
+            , "name" .= minioAdminOidcMaterializerName
+            ]
+      ]
+  initScript =
+    unlines
+      [ "set -eu"
+      , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
+      , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
+      , "umask 077"
+      , "vault kv get -field=client_secret secret/vscode/oidc/vscode > /vault-materialized/client-secret"
+      , "test -s /vault-materialized/client-secret"
+      , "chmod 0644 /vault-materialized/client-secret"
+      ]
+  materializeScript =
+    unlines
+      [ "set -eu"
+      , "api_server=\"https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}\""
+      , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
+      , "client_secret_b64=\"$(base64 < /vault-materialized/client-secret | tr -d '\\n')\""
+      , "test -n \"${client_secret_b64}\""
+      , "cat > /vault-materialized/create.json <<EOF"
+      , "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"${SECRET_NAME}\",\"labels\":{\"app.kubernetes.io/managed-by\":\"prodbox\"}},\"type\":\"Opaque\",\"data\":{\"client-secret\":\"${client_secret_b64}\"}}"
+      , "EOF"
+      , "cat > /vault-materialized/patch.json <<EOF"
+      , "{\"type\":\"Opaque\",\"data\":{\"client-secret\":\"${client_secret_b64}\"}}"
+      , "EOF"
+      , "create_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/json\" -o /vault-materialized/create-response.json -w '%{http_code}' --data-binary @/vault-materialized/create.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets\" || true)\""
+      , "case \"${create_code}\" in"
+      , "  201) exit 0 ;;"
+      , "  409)"
+      , "    patch_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /vault-materialized/patch-response.json -w '%{http_code}' --request PATCH --data-binary @/vault-materialized/patch.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets/${SECRET_NAME}\" || true)\""
+      , "    case \"${patch_code}\" in 200|201) exit 0 ;; *) echo 'OIDC Secret patch was refused' >&2; exit 1 ;; esac ;;"
+      , "  *) echo 'OIDC Secret create was refused' >&2; exit 1 ;;"
+      , "esac"
+      ]
+  job =
+    object
+      [ "apiVersion" .= ("batch/v1" :: String)
+      , "kind" .= ("Job" :: String)
+      , "metadata" .= metadata
+      , "spec"
+          .= object
+            [ "backoffLimit" .= (0 :: Int)
+            , "ttlSecondsAfterFinished" .= (60 :: Int)
+            , "template"
+                .= object
+                  [ "metadata"
+                      .= object
+                        [ "labels"
+                            .= object
+                              [ Key.fromString prodboxLabelKey .= labelValue
+                              , "app.kubernetes.io/name" .= minioAdminOidcMaterializerName
+                              ]
+                        ]
+                  , "spec"
+                      .= object
+                        [ "serviceAccountName" .= minioAdminOidcMaterializerName
+                        , "restartPolicy" .= ("Never" :: String)
+                        , "initContainers"
+                            .= [ object
+                                   [ "name" .= ("vault-secrets" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.publicVaultImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ envVar "VAULT_ADDR" "http://vault.vault.svc.cluster.local:8200"
+                                          , envVar "VAULT_AUTH_PATH" "kubernetes"
+                                          , envVar "VAULT_ROLE" minioAdminOidcVaultRole
+                                          , envVar "VAULT_SA_TOKEN_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          ]
+                                   , "command" .= (["/bin/sh", "-ec", initScript] :: [String])
+                                   , "volumeMounts" .= [materializedVolumeMount False]
+                                   ]
+                               ]
+                        , "containers"
+                            .= [ object
+                                   [ "name" .= ("materialize-client-secret" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.harborCurlImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ object
+                                              [ "name" .= ("POD_NAMESPACE" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "fieldRef"
+                                                        .= object ["fieldPath" .= ("metadata.namespace" :: String)]
+                                                    ]
+                                              ]
+                                          , envVar "SECRET_NAME" minioAdminClientSecretName
+                                          , envVar "SERVICEACCOUNT_TOKEN_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          , envVar "SERVICEACCOUNT_CA_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                                          ]
+                                   , "command" .= (["/bin/sh", "-ec", materializeScript] :: [String])
+                                   , "volumeMounts" .= [materializedVolumeMount False]
+                                   ]
+                               ]
+                        , "volumes"
+                            .= [ object
+                                   [ "name" .= ("vault-materialized" :: String)
+                                   , "emptyDir"
+                                       .= object
+                                         [ "medium" .= ("Memory" :: String)
+                                         , "sizeLimit" .= ("1Mi" :: String)
+                                         ]
+                                   ]
+                               ]
+                        ]
+                  ]
+            ]
+      ]
+  envVar :: String -> String -> Value
+  envVar name value = object ["name" .= name, "value" .= value]
+  materializedVolumeMount readOnly =
+    object
+      [ "name" .= ("vault-materialized" :: String)
+      , "mountPath" .= ("/vault-materialized" :: String)
+      , "readOnly" .= readOnly
+      ]
 
 adminHttpRouteManifest
   :: String -> String -> String -> String -> Int -> String -> String -> String -> Value
@@ -5556,98 +6076,285 @@ certManagerHelmValues _prodboxId labelValue =
     ]
 
 ensureAcmeRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
-  currentEnvironment <- getEnvironment
-  credentialsResult <-
-    resolveAwsCredentialsRefFromHostVault
-      repoRoot
-      "aws"
-      (aws (validatedConfig settings))
-  case credentialsResult of
-    Left err -> failWith ("load operational AWS credentials from Vault: " ++ err)
-    Right route53Credentials -> do
-      -- Sprint 7.15: resolve the non-secret EAB key ID host-side from Vault
-      -- (the HMAC key is never read here — it is materialized in-cluster).
-      eabKeyIdResult <- resolveAcmeEabKeyId repoRoot settings
-      case eabKeyIdResult of
-        Left err -> failWith ("resolve ACME EAB key ID from Vault: " ++ err)
-        Right resolvedEabKeyId -> do
-          -- Sprint 7.18: seed @secret/acme/eab@ in Vault from the optional
-          -- @acme_eab@ block of @test-secrets.dhall@ BEFORE applying the manifest
-          -- below, which includes the in-cluster EAB materializer Job. Without
-          -- this, the materializer reads an empty @secret/acme/eab#hmac_key@ and
-          -- writes an empty @acme-eab-credentials@ Secret, so the ZeroSSL
-          -- ClusterIssuer fails with "cannot sign JWS with an empty MAC key".
-          -- A no-op when @test-secrets.dhall@ is absent or its @acme_eab@ is
-          -- empty (real operators seed the EAB via interactive @config setup@).
-          seedAcmeEabFromTestSecrets repoRoot
-          withTemporaryJsonManifest
-            "prodbox-acme-runtime"
-            ( acmeRuntimeManifestWithCredentials
-                SubstrateHomeLocal
-                settings
-                (substrateHostedZoneId settings SubstrateHomeLocal)
-                route53Credentials
-                resolvedEabKeyId
-                prodboxId
-                labelValue
-            )
-            ( \manifestPath -> do
-                applyExit <-
-                  runCommand
-                    Subprocess
-                      { subprocessPath = "kubectl"
-                      , subprocessArguments = ["apply", "-f", manifestPath]
-                      , subprocessEnvironment = Nothing
-                      , subprocessWorkingDirectory = Just repoRoot
-                      }
-                case applyExit of
-                  ExitFailure _ -> pure applyExit
-                  ExitSuccess -> do
-                    issuerWaitEnv <- awsCommandEnvironment repoRoot currentEnvironment settings
-                    -- Wait for the ZeroSSL ClusterIssuer rendered from the
-                    -- manifest to become Ready before reporting the ACME
-                    -- runtime up.
-                    runCommand
-                      Subprocess
-                        { subprocessPath = "kubectl"
-                        , subprocessArguments =
-                            [ "wait"
-                            , "--for=condition=Ready"
-                            , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                            , "--timeout=300s"
-                            ]
-                        , subprocessEnvironment = Just issuerWaitEnv
-                        , subprocessWorkingDirectory = Just repoRoot
-                        }
-            )
+ensureAcmeRuntime = ensureAcmeRuntimeForSubstrate SubstrateHomeLocal
 
--- | Sprint 7.15: resolve the non-secret ACME EAB key ID host-side from
--- Vault. Returns @Right Nothing@ when EAB is not configured (no
--- @eab_key_id@ reference); @Right (Just keyId)@ when the configured
--- @SecretRef.Vault@ resolves; and @Left@ on a non-Vault reference or a
--- Vault read failure (a sealed Vault therefore fails closed). The HMAC key
--- is intentionally never read here.
-resolveAcmeEabKeyId :: FilePath -> ValidatedSettings -> IO (Either String (Maybe Text.Text))
-resolveAcmeEabKeyId repoRoot settings =
-  case eab_key_id (acme (validatedConfig settings)) of
-    Nothing -> pure (Right Nothing)
-    Just (SecretRefVault vaultRef) -> do
-      result <-
-        readHostVaultKvField
-          repoRoot
-          (vaultSecretMount vaultRef)
-          (vaultSecretPath vaultRef)
-          (vaultSecretField vaultRef)
-      pure (fmap Just result)
-    Just _ ->
-      pure
-        ( Left
-            "acme.eab_key_id must be a SecretRef.Vault reference"
+-- | Reconcile ACME against the currently selected kubeconfig. The AWS arm
+-- consumes only its target-local run-scoped Vault generation; it never seeds
+-- or resolves credential bytes on the host.
+ensureAcmeRuntimeForSubstrate
+  :: Substrate -> FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue = do
+  staleDnsCleanup <-
+    deleteMaterializerAndObservePodAbsence
+      repoRoot
+      certManagerNamespace
+      dnsMaterializerName
+  staleEabCleanup <-
+    deleteMaterializerAndObservePodAbsence
+      repoRoot
+      certManagerNamespace
+      acmeEabMaterializerName
+  case preferFirstFailure staleDnsCleanup staleEabCleanup of
+    ExitFailure code -> pure (ExitFailure code)
+    ExitSuccess -> do
+      -- Test fixture material enters the same committed Authority ingress as
+      -- interactive material.  This call never writes Vault or the Target
+      -- Agent directly and never returns either EAB field to this process.
+      case substrate of
+        SubstrateHomeLocal -> reconcileAcmeEabFixture LifecycleAuthorityOperator repoRoot
+        SubstrateAws -> pure ()
+      withTemporaryJsonManifest
+        "prodbox-acme-runtime"
+        ( acmeRuntimeManifestWith
+            substrate
+            settings
+            (substrateHostedZoneId settings substrate)
+            prodboxId
+            labelValue
         )
+        ( \manifestPath -> do
+            applyExit <-
+              runCommand
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments = ["apply", "-f", manifestPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            case applyExit of
+              ExitFailure _ -> pure applyExit
+              ExitSuccess -> do
+                dnsMaterialized <- awaitDns01Materialization repoRoot dnsMaterializerName
+                case dnsMaterialized of
+                  ExitFailure _ -> pure dnsMaterialized
+                  ExitSuccess -> do
+                    eabMaterialized <- awaitAcmeMaterialization repoRoot settings
+                    case eabMaterialized of
+                      ExitFailure _ -> pure eabMaterialized
+                      ExitSuccess ->
+                        runCommand
+                          Subprocess
+                            { subprocessPath = "kubectl"
+                            , subprocessArguments =
+                                [ "wait"
+                                , "--for=condition=Ready"
+                                , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                                , "--timeout=300s"
+                                ]
+                            , subprocessEnvironment = Nothing
+                            , subprocessWorkingDirectory = Just repoRoot
+                            }
+        )
+ where
+  dnsMaterializerName = case substrate of
+    SubstrateHomeLocal -> homeDns01MaterializerName
+    SubstrateAws -> awsDns01MaterializerName
+
+reconcileAcmeEabFixture :: ExternalLifecycleAuthorityCaller -> FilePath -> IO ()
+reconcileAcmeEabFixture caller repoRoot =
+  seedAcmeEabFromTestSecrets (submitAcmeEabFixture caller repoRoot) repoRoot
+
+submitAcmeEabFixture
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> BS.ByteString
+  -> IO (Either String ())
+submitAcmeEabFixture caller repoRoot ingressFrame = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
+  heartbeat <- round . (* 1000000) <$> getPOSIXTime
+  case (basicsResult, imageResult) of
+    (Left detail, _) -> pure (Left detail)
+    (_, Left detail) -> pure (Left detail)
+    (_, Right Nothing) -> pure (Left "The runtime image is unavailable for ACME EAB ingress.")
+    (Right basics, Right (Just image)) ->
+      case resolvedCustomImageRolloutToken image of
+        Nothing -> pure (Left "The runtime image has no immutable digest for ACME EAB ingress.")
+        Just digest -> do
+          let operationId = "acme-eab-fixture-" <> basicsClusterId basics
+              repository = Text.pack (resolvedCustomImageRepository image)
+              currentImageDigest = Text.pack digest
+              jobs =
+                kubernetesExternalMaterialJobBoundary
+                  CredentialProvisionerJobConnection
+                    { credentialProvisionerJobEnvironment = Nothing
+                    , credentialProvisionerJobWorkingDirectory = repoRoot
+                    }
+          submitted <-
+            withHostLifecycleAuthorityAuthentication
+              caller
+              repoRoot
+              ( \authentication ->
+                  withLifecycleAuthorityAuthenticatedTransport authentication $ \transport -> do
+                    let client = externalMaterialIngressClient transport
+                    observed <- observeCurrentExternalMaterialIngress client
+                    case externalMaterialRequestForObservation
+                      operationId
+                      repository
+                      currentImageDigest
+                      heartbeat
+                      observed of
+                      Left detail -> pure (Left detail)
+                      Right request ->
+                        Bifunctor.first show
+                          <$> runExternalMaterialIngressWorkflowWithDelivery
+                            client
+                            (retainedMaterialDeliveryClient transport)
+                            (basicsClusterId basics)
+                            jobs
+                            request
+                            ingressFrame
+              )
+          pure $ case submitted of
+            Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+            Right (Left err) -> Left (renderLifecycleAuthorityAuthenticationError err)
+            Right (Right (Left err)) -> Left err
+            Right (Right (Right _)) -> Right ()
+
+externalMaterialRequestForObservation
+  :: Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Natural
+  -> Either externalError (Maybe ExternalMaterialIngressObservation)
+  -> Either String ExternalMaterialIngressWorkflowRequest
+externalMaterialRequestForObservation operationId repository imageDigest heartbeat observed =
+  case observed of
+    Left _ -> Left "Lifecycle Authority current external-material observation is unavailable."
+    Right Nothing -> Right (freshRequest ExternalMaterialInstall 1 imageDigest heartbeat)
+    Right (Just current)
+      | externalMaterialObservedOperationId current == operationId ->
+          let challenge = externalMaterialObservedChallenge current
+              deadline = externalMaterialChallengeDeadlineMicros challenge
+              retainedHeartbeat = deadline - min deadline externalMaterialLeaseMicros
+              action =
+                if externalMaterialChallengeGeneration challenge == 1
+                  then ExternalMaterialInstall
+                  else ExternalMaterialRotate
+           in Right
+                ( freshRequest
+                    action
+                    (externalMaterialChallengeGeneration challenge)
+                    (externalMaterialChallengeImageDigest challenge)
+                    retainedHeartbeat
+                )
+                  { externalMaterialWorkflowDeadline = authorityTimeFromMicros deadline
+                  }
+      | externalMaterialObservedPhase current == ExternalMaterialIngressReceiptCommitted ->
+          Right
+            ( freshRequest
+                ExternalMaterialRotate
+                (externalMaterialChallengeGeneration (externalMaterialObservedChallenge current) + 1)
+                imageDigest
+                heartbeat
+            )
+      | otherwise ->
+          Left "A different external-material ingress operation is still in progress."
+ where
+  freshRequest action generation selectedImage selectedHeartbeat =
+    ExternalMaterialIngressWorkflowRequest
+      { externalMaterialWorkflowAction = action
+      , externalMaterialWorkflowOperationId = operationId
+      , externalMaterialWorkflowGeneration = generation
+      , externalMaterialWorkflowImageRepository = repository
+      , externalMaterialWorkflowImageDigest = selectedImage
+      , externalMaterialWorkflowDeadline =
+          authorityTimeFromMicros (selectedHeartbeat + externalMaterialLeaseMicros)
+      , externalMaterialWorkflowHeartbeatMicros = selectedHeartbeat
+      }
+
+externalMaterialLeaseMicros :: Natural
+externalMaterialLeaseMicros = 30 * 60 * 1000000
+
+awaitDns01Materialization :: FilePath -> String -> IO ExitCode
+awaitDns01Materialization repoRoot materializerName = do
+  waited <-
+    captureKubectl
+      repoRoot
+      [ "wait"
+      , "--namespace"
+      , certManagerNamespace
+      , "--for=condition=complete"
+      , "--timeout=300s"
+      , "job/" ++ materializerName
+      ]
+  outcome <- case waited of
+    Left err -> failWith err
+    Right output
+      | processExitCode output /= ExitSuccess ->
+          failWith "Home DNS01 credential materializer did not complete."
+      | otherwise ->
+          observeMaterializedSecretMetadata
+            repoRoot
+            certManagerNamespace
+            route53CredentialsSecretName
+            "home DNS01 credential"
+  cleanup <-
+    deleteMaterializerAndObservePodAbsence
+      repoRoot
+      certManagerNamespace
+      materializerName
+  pure (preferFirstFailure outcome cleanup)
+
+awaitAcmeMaterialization :: FilePath -> ValidatedSettings -> IO ExitCode
+awaitAcmeMaterialization repoRoot settings =
+  case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
+    (Nothing, Nothing) -> pure ExitSuccess
+    (Just (SecretRefVault _), Just (SecretRefVault _)) -> do
+      waited <-
+        captureKubectl
+          repoRoot
+          [ "wait"
+          , "--namespace"
+          , certManagerNamespace
+          , "--for=condition=complete"
+          , "--timeout=300s"
+          , "job/" ++ acmeEabMaterializerName
+          ]
+      outcome <- case waited of
+        Left err -> failWith err
+        Right output
+          | processExitCode output /= ExitSuccess ->
+              failWith "ACME EAB materializer did not complete."
+          | otherwise ->
+              observeMaterializedSecretMetadata
+                repoRoot
+                certManagerNamespace
+                acmeEabSecretName
+                "ACME EAB"
+      cleanup <-
+        deleteMaterializerAndObservePodAbsence
+          repoRoot
+          certManagerNamespace
+          acmeEabMaterializerName
+      pure (preferFirstFailure outcome cleanup)
+    _ -> failWith "ACME EAB requires both exact SecretRef.Vault references or neither."
+ where
+  acmeConfig = acme (validatedConfig settings)
+
+observeMaterializedSecretMetadata
+  :: FilePath -> String -> String -> String -> IO ExitCode
+observeMaterializedSecretMetadata repoRoot namespace secretName label = do
+  observed <-
+    captureKubectl
+      repoRoot
+      [ "get"
+      , "secret/" ++ secretName
+      , "--namespace"
+      , namespace
+      , "--output=jsonpath={.metadata.uid}:{.metadata.resourceVersion}"
+      ]
+  case observed of
+    Left err -> failWith err
+    Right output
+      | processExitCode output /= ExitSuccess ->
+          failWith (label ++ " Secret metadata read-back failed: " ++ outputDetail output)
+      | notElem ':' (trimWhitespace (processStdout output)) ->
+          failWith (label ++ " Secret metadata read-back was incomplete.")
+      | otherwise -> pure ExitSuccess
 
 acmeRuntimeManifest
-  :: Substrate -> ValidatedSettings -> Maybe Text.Text -> String -> String -> [Value]
+  :: Substrate -> ValidatedSettings -> String -> String -> [Value]
 acmeRuntimeManifest substrate settings =
   acmeRuntimeManifestWith substrate settings (substrateHostedZoneId settings substrate)
 
@@ -5658,53 +6365,24 @@ acmeRuntimeManifest substrate settings =
 -- 'Prodbox.PublicEdge.resolveSubstrateHostedZoneId' for the doctrine-
 -- compliant resolution algorithm.
 --
--- Sprint 7.15: the ACME EAB key ID is no longer plaintext in config; the
--- IO caller resolves it host-side from Vault @secret/acme/eab#key_id@ and
--- threads it through as @Maybe Text@. The EAB HMAC key is never read
--- host-side — it is materialized in-cluster by the EAB materializer Job.
+-- EAB material is not an argument: the exact in-cluster materializer reads
+-- both fields and patches the one registered ClusterIssuer.
 acmeRuntimeManifestWith
-  :: Substrate -> ValidatedSettings -> Text.Text -> Maybe Text.Text -> String -> String -> [Value]
-acmeRuntimeManifestWith substrate settings hostedZoneId =
-  acmeRuntimeManifestWithCredentials
-    substrate
-    settings
-    hostedZoneId
-    (emptyRoute53Credentials settings)
-
-acmeRuntimeManifestWithCredentials
-  :: Substrate
-  -> ValidatedSettings
-  -> Text.Text
-  -> Credentials
-  -> Maybe Text.Text
-  -> String
-  -> String
-  -> [Value]
-acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Credentials resolvedEabKeyId prodboxId labelValue =
-  route53Secret
-    : eabMaterializerResources
-    ++ [clusterIssuer]
+  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
+acmeRuntimeManifestWith substrate settings hostedZoneId prodboxId labelValue =
+  credentialResources
+    ++ acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue
  where
-  config = validatedConfig settings
-  acmeConfig = acme config
-  route53Secret =
-    object
-      [ "apiVersion" .= ("v1" :: String)
-      , "kind" .= ("Secret" :: String)
-      , "metadata"
-          .= object
-            [ "name" .= route53CredentialsSecretName
-            , "namespace" .= certManagerNamespace
-            , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-            , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
-            ]
-      , "type" .= ("Opaque" :: String)
-      , "stringData"
-          .= object
-            [ "access-key-id" .= Text.unpack (access_key_id route53Credentials)
-            , "secret-access-key" .= Text.unpack (secret_access_key route53Credentials)
-            ]
-      ]
+  credentialResources = case substrate of
+    SubstrateHomeLocal -> homeDns01MaterializerManifests prodboxId labelValue
+    SubstrateAws -> awsDns01TargetMaterializerManifests prodboxId labelValue
+
+acmeCommonRuntimeResources
+  :: ValidatedSettings -> Text.Text -> String -> String -> [Value]
+acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue =
+  clusterIssuer : eabMaterializerResources
+ where
+  acmeConfig = acme (validatedConfig settings)
   -- Sprint 7.15: when EAB is configured, render the Vault-login materializer
   -- (ServiceAccount + Role + RoleBinding + Job) that creates the
   -- 'acmeEabSecretName' Secret from Vault @secret/acme/eab#hmac_key@ rather
@@ -5718,7 +6396,7 @@ acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Crede
   clusterIssuer =
     clusterIssuerResource
       publicEdgeClusterIssuerName
-      (acmeClusterIssuerSpec settings resolvedEabKeyId hostedZoneId)
+      (acmeClusterIssuerSpec settings hostedZoneId)
   clusterIssuerResource issuerName issuerSpec =
     object
       [ "apiVersion" .= ("cert-manager.io/v1" :: String)
@@ -5730,6 +6408,214 @@ acmeRuntimeManifestWithCredentials _substrate settings hostedZoneId route53Crede
             , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
             ]
       , "spec" .= object ["acme" .= issuerSpec]
+      ]
+
+-- | Project the exact LongLived home DNS01 generation into cert-manager's
+-- fixed solver Secret.  Vault payload bytes remain in a pod-scoped memory
+-- volume; the sibling writer is authorized to create Secrets in the target
+-- namespace and to read/update/patch only the fixed Secret after creation.
+homeDns01MaterializerManifests :: String -> String -> [Value]
+homeDns01MaterializerManifests prodboxId labelValue =
+  dns01TargetMaterializerManifests
+    homeDns01MaterializerName
+    homeDns01VaultRole
+    homeDns01VaultPath
+    prodboxId
+    labelValue
+
+-- | AWS uses a distinct run-scoped Vault object and ServiceAccount.  This is
+-- the target-local one-shot projection: credential bytes move only from the
+-- EKS Vault session through a memory volume into the fixed cert-manager
+-- Secret, never through the host or the Gateway.
+awsDns01TargetMaterializerManifests :: String -> String -> [Value]
+awsDns01TargetMaterializerManifests prodboxId labelValue =
+  dns01TargetMaterializerManifests
+    awsDns01MaterializerName
+    "aws-cert-manager-run"
+    awsDns01VaultPath
+    prodboxId
+    labelValue
+
+dns01TargetMaterializerManifests
+  :: String -> String -> String -> String -> String -> [Value]
+dns01TargetMaterializerManifests materializerName vaultRole vaultPath prodboxId labelValue =
+  [ serviceAccount
+  , role
+  , roleBinding
+  , job
+  ]
+ where
+  metadata =
+    object
+      [ "name" .= materializerName
+      , "namespace" .= certManagerNamespace
+      , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+      , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+      ]
+  serviceAccount =
+    object
+      [ "apiVersion" .= ("v1" :: String)
+      , "kind" .= ("ServiceAccount" :: String)
+      , "metadata" .= metadata
+      ]
+  role =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("Role" :: String)
+      , "metadata" .= metadata
+      , "rules"
+          .= [ object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "verbs" .= (["create"] :: [String])
+                 ]
+             , object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "resourceNames" .= ([route53CredentialsSecretName] :: [String])
+                 , "verbs" .= (["get", "update", "patch"] :: [String])
+                 ]
+             ]
+      ]
+  roleBinding =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("RoleBinding" :: String)
+      , "metadata" .= metadata
+      , "subjects"
+          .= [ object
+                 [ "kind" .= ("ServiceAccount" :: String)
+                 , "name" .= materializerName
+                 , "namespace" .= certManagerNamespace
+                 ]
+             ]
+      , "roleRef"
+          .= object
+            [ "apiGroup" .= ("rbac.authorization.k8s.io" :: String)
+            , "kind" .= ("Role" :: String)
+            , "name" .= materializerName
+            ]
+      ]
+  initScript =
+    unlines
+      [ "set -eu"
+      , "jwt=\"$(cat \"${VAULT_SA_TOKEN_FILE}\")\""
+      , "export VAULT_TOKEN=\"$(vault write -field=token \"auth/${VAULT_AUTH_PATH}/login\" role=\"${VAULT_ROLE}\" jwt=\"${jwt}\")\""
+      , "umask 077"
+      , "vault kv get -field=access_key_id secret/"
+          ++ vaultPath
+          ++ " > /vault-materialized/access-key-id"
+      , "vault kv get -field=secret_access_key secret/"
+          ++ vaultPath
+          ++ " > /vault-materialized/secret-access-key"
+      , "test -s /vault-materialized/access-key-id"
+      , "test -s /vault-materialized/secret-access-key"
+      , "chmod 0644 /vault-materialized/access-key-id /vault-materialized/secret-access-key"
+      ]
+  materializeScript =
+    unlines
+      [ "set -eu"
+      , "api_server=\"https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}\""
+      , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
+      , "access_key_b64=\"$(base64 < /vault-materialized/access-key-id | tr -d '\\n')\""
+      , "secret_key_b64=\"$(base64 < /vault-materialized/secret-access-key | tr -d '\\n')\""
+      , "test -n \"${access_key_b64}\""
+      , "test -n \"${secret_key_b64}\""
+      , "cat > /vault-materialized/create.json <<EOF"
+      , "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"${SECRET_NAME}\",\"labels\":{\"app.kubernetes.io/managed-by\":\"prodbox\"}},\"type\":\"Opaque\",\"data\":{\"access-key-id\":\"${access_key_b64}\",\"secret-access-key\":\"${secret_key_b64}\"}}"
+      , "EOF"
+      , "cat > /vault-materialized/patch.json <<EOF"
+      , "{\"type\":\"Opaque\",\"data\":{\"access-key-id\":\"${access_key_b64}\",\"secret-access-key\":\"${secret_key_b64}\"}}"
+      , "EOF"
+      , "create_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/json\" -o /vault-materialized/create-response.json -w '%{http_code}' --data-binary @/vault-materialized/create.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets\" || true)\""
+      , "case \"${create_code}\" in"
+      , "  201) exit 0 ;;"
+      , "  409)"
+      , "    patch_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /vault-materialized/patch-response.json -w '%{http_code}' --request PATCH --data-binary @/vault-materialized/patch.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets/${SECRET_NAME}\" || true)\""
+      , "    case \"${patch_code}\" in 200|201) exit 0 ;; *) echo 'home DNS01 Secret patch was refused' >&2; exit 1 ;; esac ;;"
+      , "  *) echo 'home DNS01 Secret create was refused' >&2; exit 1 ;;"
+      , "esac"
+      ]
+  job =
+    object
+      [ "apiVersion" .= ("batch/v1" :: String)
+      , "kind" .= ("Job" :: String)
+      , "metadata" .= metadata
+      , "spec"
+          .= object
+            [ "backoffLimit" .= (0 :: Int)
+            , "ttlSecondsAfterFinished" .= (60 :: Int)
+            , "template"
+                .= object
+                  [ "metadata"
+                      .= object
+                        [ "labels"
+                            .= object
+                              [ Key.fromString prodboxLabelKey .= labelValue
+                              , "app.kubernetes.io/name" .= materializerName
+                              ]
+                        ]
+                  , "spec"
+                      .= object
+                        [ "serviceAccountName" .= materializerName
+                        , "restartPolicy" .= ("Never" :: String)
+                        , "initContainers"
+                            .= [ object
+                                   [ "name" .= ("vault-secrets" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.publicVaultImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ envVar "VAULT_ADDR" "http://vault.vault.svc.cluster.local:8200"
+                                          , envVar "VAULT_AUTH_PATH" "kubernetes"
+                                          , envVar "VAULT_ROLE" vaultRole
+                                          , envVar "VAULT_SA_TOKEN_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          ]
+                                   , "command" .= (["/bin/sh", "-ec", initScript] :: [String])
+                                   , "volumeMounts" .= [materializedVolumeMount]
+                                   ]
+                               ]
+                        , "containers"
+                            .= [ object
+                                   [ "name" .= ("materialize-route53-secret" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.harborCurlImage
+                                   , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                   , "env"
+                                       .= [ object
+                                              [ "name" .= ("POD_NAMESPACE" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "fieldRef"
+                                                        .= object ["fieldPath" .= ("metadata.namespace" :: String)]
+                                                    ]
+                                              ]
+                                          , envVar "SECRET_NAME" route53CredentialsSecretName
+                                          , envVar "SERVICEACCOUNT_TOKEN_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                          , envVar "SERVICEACCOUNT_CA_FILE" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                                          ]
+                                   , "command" .= (["/bin/sh", "-ec", materializeScript] :: [String])
+                                   , "volumeMounts" .= [materializedVolumeMount]
+                                   ]
+                               ]
+                        , "volumes"
+                            .= [ object
+                                   [ "name" .= ("vault-materialized" :: String)
+                                   , "emptyDir"
+                                       .= object
+                                         [ "medium" .= ("Memory" :: String)
+                                         , "sizeLimit" .= ("1Mi" :: String)
+                                         ]
+                                   ]
+                               ]
+                        ]
+                  ]
+            ]
+      ]
+  envVar :: String -> String -> Value
+  envVar name value = object ["name" .= name, "value" .= value]
+  materializedVolumeMount =
+    object
+      [ "name" .= ("vault-materialized" :: String)
+      , "mountPath" .= ("/vault-materialized" :: String)
       ]
 
 -- | Sprint 7.15: the EAB HMAC secret materializer — a ServiceAccount, a
@@ -5744,6 +6630,8 @@ acmeEabMaterializerManifests prodboxId labelValue =
   [ serviceAccount
   , role
   , roleBinding
+  , clusterRole
+  , clusterRoleBinding
   , job
   ]
  where
@@ -5800,6 +6688,49 @@ acmeEabMaterializerManifests prodboxId labelValue =
             , "name" .= acmeEabMaterializerName
             ]
       ]
+  clusterRole =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("ClusterRole" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= acmeEabMaterializerName
+            , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+            , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+            ]
+      , "rules"
+          .= [ object
+                 [ "apiGroups" .= (["cert-manager.io"] :: [String])
+                 , "resources" .= (["clusterissuers"] :: [String])
+                 , "resourceNames" .= ([publicEdgeClusterIssuerName] :: [String])
+                 , "verbs" .= (["get", "patch"] :: [String])
+                 ]
+             ]
+      ]
+  clusterRoleBinding =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("ClusterRoleBinding" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= acmeEabMaterializerName
+            , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+            , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+            ]
+      , "subjects"
+          .= [ object
+                 [ "kind" .= ("ServiceAccount" :: String)
+                 , "name" .= acmeEabMaterializerName
+                 , "namespace" .= certManagerNamespace
+                 ]
+             ]
+      , "roleRef"
+          .= object
+            [ "apiGroup" .= ("rbac.authorization.k8s.io" :: String)
+            , "kind" .= ("ClusterRole" :: String)
+            , "name" .= acmeEabMaterializerName
+            ]
+      ]
   vaultImage = ContainerImage.renderImageRef ContainerImage.publicVaultImage
   curlImage = ContainerImage.renderImageRef ContainerImage.harborCurlImage
   initScript =
@@ -5813,6 +6744,13 @@ acmeEabMaterializerManifests prodboxId labelValue =
           ++ " secret/"
           ++ acmeEabVaultPath
           ++ " > /vault-materialized/hmac-key"
+      , "vault kv get -field="
+          ++ acmeEabVaultKeyIdField
+          ++ " secret/"
+          ++ acmeEabVaultPath
+          ++ " > /vault-materialized/key-id"
+      , "test -s /vault-materialized/hmac-key"
+      , "test -s /vault-materialized/key-id"
       , -- The sibling 'materialize-eab-secret' container runs the curl image
         -- as a different (non-root) UID than this vault-image init container,
         -- so the @umask 077@ file (0600, owned by the init UID) is otherwise
@@ -5821,7 +6759,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
         -- volume is a pod-scoped in-memory emptyDir, so widening this handoff
         -- file to 0644 for the sibling read keeps the secret inside the pod
         -- trust boundary.
-        "chmod 0644 /vault-materialized/hmac-key"
+        "chmod 0644 /vault-materialized/hmac-key /vault-materialized/key-id"
       ]
   materializeScript =
     unlines
@@ -5829,27 +6767,38 @@ acmeEabMaterializerManifests prodboxId labelValue =
       , "api_server=\"https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}\""
       , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
       , "hmac_b64=\"$(base64 < /vault-materialized/hmac-key | tr -d '\\n')\""
+      , "key_id=\"$(cat /vault-materialized/key-id)\""
+      , "printf '%s' \"${key_id}\" | grep -Eq '^[A-Za-z0-9._~-]{1,512}$' || { echo 'materialized EAB key ID has an unsupported shape' >&2; exit 1; }"
       , -- Fail loud rather than materialize an empty Secret: an empty HMAC
         -- here surfaces only later as the opaque ZeroSSL "cannot sign JWS
         -- with an empty MAC key" error. If the handoff file is empty or
-        -- unreadable, abort the Job (backoffLimit retries) instead.
+        -- unreadable, fail the one-shot Job without retrying it.
         "[ -n \"${hmac_b64}\" ] || { echo 'materialized EAB HMAC is empty: secret/acme/eab#hmac_key is missing/empty in Vault or the handoff file was unreadable' >&2 ; exit 1 ; }"
-      , "cat > /tmp/secret-create.json <<EOF"
+      , "cat > /vault-materialized/secret-create.json <<EOF"
       , "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"${SECRET_NAME}\",\"labels\":{\"app.kubernetes.io/managed-by\":\"prodbox\"}},\"type\":\"Opaque\",\"data\":{\""
           ++ acmeEabSecretKey
           ++ "\":\"${hmac_b64}\"}}"
       , "EOF"
-      , "cat > /tmp/secret-patch.json <<EOF"
+      , "cat > /vault-materialized/secret-patch.json <<EOF"
       , "{\"type\":\"Opaque\",\"data\":{\"" ++ acmeEabSecretKey ++ "\":\"${hmac_b64}\"}}"
       , "EOF"
-      , "create_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/json\" -o /tmp/secret-create-response.json -w '%{http_code}' --data-binary @/tmp/secret-create.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets\" || true)\""
+      , "create_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/json\" -o /vault-materialized/secret-create-response.json -w '%{http_code}' --data-binary @/vault-materialized/secret-create.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets\" || true)\""
       , "case \"${create_code}\" in"
-      , "  201) exit 0 ;;"
+      , "  201) ;;"
       , "  409)"
-      , "    patch_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /tmp/secret-patch-response.json -w '%{http_code}' --request PATCH --data-binary @/tmp/secret-patch.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets/${SECRET_NAME}\" || true)\""
-      , "    case \"${patch_code}\" in 200|201) exit 0 ;; *) cat /tmp/secret-patch-response.json >&2 ; exit 1 ;; esac ;;"
-      , "  *) cat /tmp/secret-create-response.json >&2 ; exit 1 ;;"
+      , "    patch_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /vault-materialized/secret-patch-response.json -w '%{http_code}' --request PATCH --data-binary @/vault-materialized/secret-patch.json \"${api_server}/api/v1/namespaces/${POD_NAMESPACE}/secrets/${SECRET_NAME}\" || true)\""
+      , "    case \"${patch_code}\" in 200|201) ;; *) echo 'EAB Secret patch was refused' >&2 ; exit 1 ;; esac ;;"
+      , "  *) echo 'EAB Secret create was refused' >&2 ; exit 1 ;;"
       , "esac"
+      , "cat > /vault-materialized/issuer-patch.json <<EOF"
+      , "{\"spec\":{\"acme\":{\"externalAccountBinding\":{\"keyID\":\"${key_id}\",\"keySecretRef\":{\"name\":\""
+          ++ acmeEabSecretName
+          ++ "\",\"key\":\""
+          ++ acmeEabSecretKey
+          ++ "\"}}}}}"
+      , "EOF"
+      , "issuer_code=\"$(curl -sS --cacert \"${SERVICEACCOUNT_CA_FILE}\" -H \"Authorization: Bearer ${token}\" -H \"Content-Type: application/merge-patch+json\" -o /vault-materialized/issuer-patch-response.json -w '%{http_code}' --request PATCH --data-binary @/vault-materialized/issuer-patch.json \"${api_server}/apis/cert-manager.io/v1/clusterissuers/${ISSUER_NAME}\" || true)\""
+      , "case \"${issuer_code}\" in 200) exit 0 ;; *) echo 'ClusterIssuer EAB patch was refused' >&2; exit 1 ;; esac"
       ]
   job =
     object
@@ -5858,7 +6807,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
       , "metadata" .= managedMetadata []
       , "spec"
           .= object
-            [ "backoffLimit" .= (6 :: Int)
+            [ "backoffLimit" .= (0 :: Int)
             , "ttlSecondsAfterFinished" .= (60 :: Int)
             , "template"
                 .= object
@@ -5869,7 +6818,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
                   , "spec"
                       .= object
                         [ "serviceAccountName" .= acmeEabMaterializerName
-                        , "restartPolicy" .= ("OnFailure" :: String)
+                        , "restartPolicy" .= ("Never" :: String)
                         , "initContainers"
                             .= [ object
                                    [ "name" .= ("vault-secrets" :: String)
@@ -5908,6 +6857,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
                                                     ]
                                               ]
                                           , envVar "SECRET_NAME" acmeEabSecretName
+                                          , envVar "ISSUER_NAME" publicEdgeClusterIssuerName
                                           , envVar
                                               "SERVICEACCOUNT_TOKEN_FILE"
                                               "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -5920,7 +6870,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
                                        .= [ object
                                               [ "name" .= ("vault-materialized" :: String)
                                               , "mountPath" .= ("/vault-materialized" :: String)
-                                              , "readOnly" .= True
+                                              , "readOnly" .= False
                                               ]
                                           ]
                                    ]
@@ -5969,58 +6919,22 @@ acmeRoute53Solver awsRegion hostedZoneId =
           ]
     ]
 
-emptyRoute53Credentials :: ValidatedSettings -> Credentials
-emptyRoute53Credentials settings =
-  Credentials
-    { access_key_id = ""
-    , secret_access_key = ""
-    , session_token = Nothing
-    , region = awsCredentialRegion (aws (validatedConfig settings))
-    }
-
--- | The ZeroSSL ACME @ClusterIssuer@ @spec.acme@ object: the
--- @acme.server@ directory, the ZeroSSL account key, the DNS-01 Route 53
--- solver, and the required ZeroSSL external account binding.
---
--- Sprint 7.15: the @externalAccountBinding.keyID@ is no longer plaintext
--- in config; the IO caller resolves it host-side from Vault
--- @secret/acme/eab#key_id@ and supplies it as @Maybe Text@. The binding is
--- rendered only when EAB is configured (both @SecretRef.Vault@ references
--- present) /and/ the key ID resolved; its @keySecretRef@ points at the
--- @acme-eab-credentials@ Secret the EAB materializer Job creates from
--- Vault. The key ID is not secret, hence inline; the HMAC key never
--- transits the operator host.
-acmeClusterIssuerSpec :: ValidatedSettings -> Maybe Text.Text -> Text.Text -> Value
-acmeClusterIssuerSpec settings resolvedEabKeyId hostedZoneId =
-  object $
+-- | Secret-free base for the ZeroSSL ACME @ClusterIssuer@.  When EAB is
+-- configured, the namespace-scoped one-shot materializer patches the exact
+-- @externalAccountBinding@ from its in-memory Vault projection.  Neither EAB
+-- field is representable at this host rendering boundary.
+acmeClusterIssuerSpec :: ValidatedSettings -> Text.Text -> Value
+acmeClusterIssuerSpec settings hostedZoneId =
+  object
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
     , "privateKeySecretRef" .= object ["name" .= zerosslAccountKeySecretName]
     , "solvers" .= [acmeRoute53Solver (awsCredentialRegion awsConfig) hostedZoneId]
     ]
-      ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) externalAccountBinding
  where
   config = validatedConfig settings
   awsConfig = aws config
   acmeConfig = acme config
-  eabConfigured =
-    case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
-      (Just _, Just _) -> True
-      _ -> False
-  externalAccountBinding =
-    case (eabConfigured, resolvedEabKeyId) of
-      (True, Just keyId) ->
-        Just
-          ( object
-              [ "keyID" .= Text.unpack keyId
-              , "keySecretRef"
-                  .= object
-                    [ "name" .= acmeEabSecretName
-                    , "key" .= acmeEabSecretKey
-                    ]
-              ]
-          )
-      _ -> Nothing
 
 ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode
 ensurePostgresOperatorRuntime repoRoot prodboxId labelValue = do
@@ -6055,136 +6969,6 @@ postgresOperatorHelmValues prodboxId _labelValue =
     , "disableTelemetry" .= True
     , "fullnameOverride" .= patroniOperatorDeploymentName
     , "podAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-    ]
-
-reconcileDnsBootstrapRecord :: FilePath -> ValidatedSettings -> IO ExitCode
-reconcileDnsBootstrapRecord repoRoot settings =
-  if not (pulumi_enable_dns_bootstrap (deployment (validatedConfig settings)))
-    then pure ExitSuccess
-    else do
-      publicIpResult <- resolveDnsBootstrapIp settings
-      case publicIpResult of
-        Left err -> failWith err
-        Right publicIp -> do
-          environment <- getEnvironment
-          awsEnvironment <- awsCommandEnvironment repoRoot environment settings
-          let config = validatedConfig settings
-              zoneIdValue = Text.unpack (zone_id (route53 config))
-              ttlValue = fromIntegral (demo_ttl (domain config)) :: Integer
-              fqdnValues = Dns.configuredPublicHostFqdns settings
-          foldM
-            (reconcileDnsBootstrapFqdn repoRoot awsEnvironment zoneIdValue ttlValue publicIp)
-            ExitSuccess
-            fqdnValues
-
-reconcileDnsBootstrapFqdn
-  :: FilePath
-  -> [(String, String)]
-  -> String
-  -> Integer
-  -> String
-  -> ExitCode
-  -> String
-  -> IO ExitCode
-reconcileDnsBootstrapFqdn repoRoot awsEnvironment zoneIdValue ttlValue publicIp exitCode fqdn =
-  case exitCode of
-    ExitFailure _ -> pure exitCode
-    ExitSuccess ->
-      withTemporaryJsonBytes
-        "prodbox-dns-bootstrap"
-        (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
-        ( \payloadPath ->
-            runAwsRoute53ChangeWithRetries
-              repoRoot
-              awsEnvironment
-              [ "route53"
-              , "change-resource-record-sets"
-              , "--hosted-zone-id"
-              , zoneIdValue
-              , "--change-batch"
-              , "file://" ++ payloadPath
-              ]
-        )
-
-runAwsRoute53ChangeWithRetries :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
-runAwsRoute53ChangeWithRetries repoRoot awsEnvironment arguments =
-  go (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy)
- where
-  go attemptsRemaining = do
-    outputResult <-
-      captureSubprocessResult
-        Subprocess
-          { subprocessPath = "aws"
-          , subprocessArguments = arguments
-          , subprocessEnvironment = Just awsEnvironment
-          , subprocessWorkingDirectory = Just repoRoot
-          }
-    case outputResult of
-      Failure err -> failWith ("failed to start aws: " ++ err)
-      Success output ->
-        case processExitCode output of
-          ExitSuccess -> do
-            emitCapturedProcessOutput output
-            pure ExitSuccess
-          failure@(ExitFailure _)
-            | attemptsRemaining > 1 && isRetryableRoute53CredentialFailure output -> do
-                writeDiagnosticLine
-                  ( "Retrying aws "
-                      ++ unwords arguments
-                      ++ " after AWS credential propagation failure ("
-                      ++ show (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy - attemptsRemaining + 1)
-                      ++ "/"
-                      ++ show (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy)
-                      ++ "): "
-                      ++ outputDetail output
-                  )
-                threadDelay
-                  ( retryDelayMicros
-                      route53CredentialPropagationRetryPolicy
-                      (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy - attemptsRemaining)
-                  )
-                go (attemptsRemaining - 1)
-            | otherwise -> do
-                emitCapturedProcessOutput output
-                pure failure
-
-isRetryableRoute53CredentialFailure :: ProcessOutput -> Bool
-isRetryableRoute53CredentialFailure output =
-  isRetryableTransientFailure
-    [ "invalidclienttokenid"
-    , "security token included in the request is invalid"
-    , "unrecognizedclientexception"
-    , "accessdenied"
-    , "not authorized to perform: route53:"
-    ]
-    (outputDetail output)
-
-resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
-resolveDnsBootstrapIp settings = do
-  maybeBootstrapIp <- lookupNonEmptyEnv "PRODBOX_PULUMI_DNS_BOOTSTRAP_IP"
-  case maybeBootstrapIp of
-    Just value -> pure (Right value)
-    Nothing ->
-      case nonEmptyTextValue =<< bootstrap_public_ip_override (deployment (validatedConfig settings)) of
-        Just value -> pure (Right value)
-        Nothing -> fetchPublicIp
-
-route53AChangeBatch :: String -> String -> String -> Integer -> Value
-route53AChangeBatch action fqdn publicIp ttlValue =
-  object
-    [ "Comment" .= ("prodbox bootstrap DNS reconcile" :: String)
-    , "Changes"
-        .= [ object
-               [ "Action" .= action
-               , "ResourceRecordSet"
-                   .= object
-                     [ "Name" .= fqdn
-                     , "Type" .= ("A" :: String)
-                     , "TTL" .= ttlValue
-                     , "ResourceRecords" .= [object ["Value" .= publicIp]]
-                     ]
-               ]
-           ]
     ]
 
 ensureHelmRepoAdded :: FilePath -> String -> String -> IO ExitCode
@@ -6427,18 +7211,6 @@ rootChartGuardrailMetadata namespace name =
           ]
     ]
 
-awsCommandEnvironment
-  :: FilePath -> [(String, String)] -> ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment repoRoot baseEnvironment settings = do
-  credentialsResult <-
-    resolveAwsCredentialsRefFromHostVault
-      repoRoot
-      "aws"
-      (aws (validatedConfig settings))
-  case credentialsResult of
-    Left err -> fail ("load operational AWS credentials from Vault: " ++ err)
-    Right credentials -> pure (overlayAwsCredentials baseEnvironment credentials)
-
 lookupNonEmptyEnv :: String -> IO (Maybe String)
 lookupNonEmptyEnv name = do
   maybeValue <- lookupEnv name
@@ -6450,13 +7222,6 @@ lookupNonEmptyEnv name = do
               then Nothing
               else Just trimmed
       Nothing -> Nothing
-
-nonEmptyTextValue :: Text.Text -> Maybe String
-nonEmptyTextValue rawValue =
-  let trimmed = trimWhitespace (Text.unpack rawValue)
-   in if trimmed == ""
-        then Nothing
-        else Just trimmed
 
 mirrorClusterImagesOnce :: FilePath -> IO ExitCode
 mirrorClusterImagesOnce repoRoot =
@@ -8160,15 +8925,6 @@ customImagePushRetryPolicy =
     , retryPolicyBaseDelayMicros = 5000000
     , retryPolicyMultiplier = 1
     , retryPolicyMaxDelayMicros = 5000000
-    }
-
-route53CredentialPropagationRetryPolicy :: RetryPolicy
-route53CredentialPropagationRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 30
-    , retryPolicyBaseDelayMicros = 10000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 10000000
     }
 
 runCommand :: Subprocess -> IO ExitCode

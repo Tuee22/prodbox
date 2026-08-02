@@ -91,6 +91,7 @@ data FloorParentRef = FloorParentRef
   { parent_cluster_id :: Text
   , parent_vault_address :: Text
   , parent_transit_key :: Text
+  , parent_authority_endpoint :: Text
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -143,6 +144,7 @@ toBasicsParentRef ref =
     { parentRefClusterId = parent_cluster_id ref
     , parentRefVaultAddress = parent_vault_address ref
     , parentRefTransitKey = parent_transit_key ref
+    , parentRefAuthorityEndpoint = parent_authority_endpoint ref
     }
 
 -- | Load the sealed-Vault bootstrap floor by decoding the Tier-0

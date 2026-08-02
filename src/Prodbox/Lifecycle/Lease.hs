@@ -1,5 +1,7 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -143,7 +145,8 @@ import Prodbox.Lifecycle.CheckpointAuthority
 newtype AuthorityTime = AuthorityTime
   { internalAuthorityTimeMicros :: Natural
   }
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A strictly positive authority-clock duration.
 newtype AuthorityDuration = AuthorityDuration
@@ -179,7 +182,8 @@ addAuthorityDuration = addDuration
 newtype OwnerNonce = OwnerNonce
   { internalOwnerNonceText :: Text
   }
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 newtype FencingToken = FencingToken
   { internalFencingTokenValue :: Natural
@@ -862,6 +866,12 @@ data LeaseRefusal
   = LeaseAuthorityMissing
   | LeaseAuthorityCorrupt !Text
   | LeaseAuthorityUnobservable !Text
+  | -- | The authority object-store endpoint was transiently unreachable (a
+    -- not-yet-ready port-forward / NodePort), distinct from a genuine
+    -- authority-loss: it is retryable within the lease readiness budget and the
+    -- bounded-runner monitor keeps the gate closed while retrying (see
+    -- 'Prodbox.Lifecycle.LeaseRuntime').  Every other refusal stays terminal.
+    LeaseAuthorityEndpointUnready !Text
   | LeaseCoordinateMismatch !Text !Text
   | LeaseKeyMismatch !LeaseKey !LeaseKey
   | LeaseOwnerMismatch !OwnerNonce !OwnerNonce
@@ -906,6 +916,8 @@ decideLeaseAcquire policy now request maybeWitness observation
                 (projectionWithGrant (firstGrant policy now request))
             )
         ModelBCorrupt detail -> LeaseAcquireRefused (LeaseAuthorityCorrupt detail)
+        ModelBEndpointUnready detail ->
+          LeaseAcquireRefused (LeaseAuthorityEndpointUnready detail)
         ModelBUnobservable detail ->
           LeaseAcquireRefused (LeaseAuthorityUnobservable detail)
         ModelBObserved version projection ->
@@ -1007,6 +1019,8 @@ decideLeaseRelease now coordinate grant observation =
       case observation of
         ModelBMissing -> LeaseReleaseRefused LeaseAuthorityMissing
         ModelBCorrupt detail -> LeaseReleaseRefused (LeaseAuthorityCorrupt detail)
+        ModelBEndpointUnready detail ->
+          LeaseReleaseRefused (LeaseAuthorityEndpointUnready detail)
         ModelBUnobservable detail ->
           LeaseReleaseRefused (LeaseAuthorityUnobservable detail)
         ModelBObserved version projection ->
@@ -1438,6 +1452,7 @@ activeLeaseObservation observation =
   case observation of
     ModelBMissing -> Left LeaseAuthorityMissing
     ModelBCorrupt detail -> Left (LeaseAuthorityCorrupt detail)
+    ModelBEndpointUnready detail -> Left (LeaseAuthorityEndpointUnready detail)
     ModelBUnobservable detail -> Left (LeaseAuthorityUnobservable detail)
     ModelBObserved version projection ->
       case leaseProjectionActiveGrant projection of

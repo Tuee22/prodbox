@@ -13,6 +13,7 @@ module Prodbox.Aws.Native.ServiceQuotas
   ( QuotaIncreaseRequest (..)
   , RequestStatus (..)
   , RequestedQuotaChange (..)
+  , RequestedQuotaChangeHistoryItem (..)
   , ServiceQuotaValue (..)
   , ServiceQuotasClient (..)
   , newServiceQuotasClient
@@ -22,7 +23,9 @@ module Prodbox.Aws.Native.ServiceQuotas
   , renderQuotaIncreaseBody
   , renderGetServiceQuotaBody
   , renderGetRequestedChangeBody
+  , renderListRequestedChangeHistoryBody
   , parseRequestedQuotaChange
+  , parseRequestedQuotaChangeHistoryPage
   , parseServiceQuota
   )
 where
@@ -36,6 +39,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.Scientific (toRealFloat)
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Prodbox.Aws.CredentialHandle
   ( CredentialHandle
   , credentialHandleRegion
@@ -48,7 +52,7 @@ import Prodbox.Aws.Native.Wire
   , AwsErrorFormat (JsonErrorFormat)
   , AwsScope (AwsScope)
   , AwsTimestamp
-  , Idempotency (Idempotent)
+  , Idempotency (Idempotent, Mutating)
   , NativeAwsSender
   , SignedHttpRequest
   , buildSignedRequest
@@ -76,6 +80,21 @@ data RequestedQuotaChange = RequestedQuotaChange
   }
   deriving (Eq, Show)
 
+-- | Authoritative per-quota history member.  AWS does not accept a client
+-- token for @RequestServiceQuotaIncrease@, so recovery must match all of the
+-- provider-authored identity fields plus the desired value and attempt-time
+-- window rather than inventing an idempotency token.
+data RequestedQuotaChangeHistoryItem = RequestedQuotaChangeHistoryItem
+  { requestedHistoryId :: !Text
+  , requestedHistoryServiceCode :: !Text
+  , requestedHistoryQuotaCode :: !Text
+  , requestedHistoryDesiredValue :: !Double
+  , requestedHistoryStatus :: !RequestStatus
+  , requestedHistoryCreatedEpochSeconds :: !Double
+  , requestedHistoryLastUpdatedEpochSeconds :: !Double
+  }
+  deriving (Eq, Show)
+
 data ServiceQuotaValue = ServiceQuotaValue
   { serviceQuotaCode :: !Text
   , serviceQuotaValue :: !Double
@@ -88,6 +107,10 @@ data ServiceQuotasClient = ServiceQuotasClient
       -> IO (Either AwsClientError RequestedQuotaChange)
   , getServiceQuota :: Text -> Text -> IO (Either AwsClientError ServiceQuotaValue)
   , getRequestedServiceQuotaChange :: Text -> IO (Either AwsClientError RequestedQuotaChange)
+  , listRequestedServiceQuotaChangeHistoryByQuota
+      :: Text
+      -> Text
+      -> IO (Either AwsClientError [RequestedQuotaChangeHistoryItem])
   }
 
 newServiceQuotasClient :: CredentialHandle origin -> NativeAwsSender -> ServiceQuotasClient
@@ -96,6 +119,7 @@ newServiceQuotasClient handle sender =
     { requestServiceQuotaIncrease = runRequestIncrease handle sender
     , getServiceQuota = runGetServiceQuota handle sender
     , getRequestedServiceQuotaChange = runGetRequestedChange handle sender
+    , listRequestedServiceQuotaChangeHistoryByQuota = runListRequestedChangeHistory handle sender
     }
 
 serviceQuotasEndpoint :: ByteString -> AwsEndpoint
@@ -136,6 +160,16 @@ renderGetRequestedChangeBody :: Text -> ByteString
 renderGetRequestedChangeBody requestId =
   "{\"RequestId\":" <> jsonString requestId <> "}"
 
+renderListRequestedChangeHistoryBody :: Text -> Text -> Maybe Text -> ByteString
+renderListRequestedChangeHistoryBody serviceCode quotaCode nextToken =
+  "{\"ServiceCode\":"
+    <> jsonString serviceCode
+    <> ",\"QuotaCode\":"
+    <> jsonString quotaCode
+    <> ",\"MaxResults\":100"
+    <> maybe "" (\token -> ",\"NextToken\":" <> jsonString token) nextToken
+    <> "}"
+
 jsonString :: Text -> ByteString
 jsonString = BL.toStrict . Aeson.encode
 
@@ -146,6 +180,31 @@ parseRequestedQuotaChange body = do
   changeId <- lookupText "Id" requested
   status <- lookupText "Status" requested
   pure (RequestedQuotaChange changeId (parseRequestStatus status))
+
+parseRequestedQuotaChangeHistoryPage
+  :: ByteString
+  -> Either String ([RequestedQuotaChangeHistoryItem], Maybe Text)
+parseRequestedQuotaChangeHistoryPage body = do
+  root <- decodeObject body
+  requested <- lookupArray "RequestedQuotas" root
+  items <- traverse parseHistoryItem requested
+  nextToken <- lookupOptionalText "NextToken" root
+  pure (items, normalizeToken nextToken)
+ where
+  parseHistoryItem value = case value of
+    Aeson.Object item ->
+      RequestedQuotaChangeHistoryItem
+        <$> lookupText "Id" item
+        <*> lookupText "ServiceCode" item
+        <*> lookupText "QuotaCode" item
+        <*> lookupNumber "DesiredValue" item
+        <*> (parseRequestStatus <$> lookupText "Status" item)
+        <*> lookupNumber "Created" item
+        <*> lookupNumber "LastUpdated" item
+    _ -> Left "ServiceQuotas: history member is not a JSON object"
+  normalizeToken value = case Text.strip <$> value of
+    Just token | not (Text.null token) -> Just token
+    _ -> Nothing
 
 parseServiceQuota :: ByteString -> Either String ServiceQuotaValue
 parseServiceQuota body = do
@@ -183,6 +242,18 @@ lookupNumber field obj = case KeyMap.lookup (Key.fromText field) obj of
   Just (Aeson.Number value) -> Right (toRealFloat value)
   _ -> Left ("ServiceQuotas: missing numeric field " ++ show field)
 
+lookupArray :: Text -> Aeson.Object -> Either String [Aeson.Value]
+lookupArray field obj = case KeyMap.lookup (Key.fromText field) obj of
+  Just (Aeson.Array values) -> Right (foldr (:) [] values)
+  _ -> Left ("ServiceQuotas: missing array field " ++ show field)
+
+lookupOptionalText :: Text -> Aeson.Object -> Either String (Maybe Text)
+lookupOptionalText field obj = case KeyMap.lookup (Key.fromText field) obj of
+  Nothing -> Right Nothing
+  Just Aeson.Null -> Right Nothing
+  Just (Aeson.String value) -> Right (Just value)
+  _ -> Left ("ServiceQuotas: invalid optional string field " ++ show field)
+
 signQuota
   :: CredentialHandle origin -> ByteString -> ByteString -> AwsTimestamp -> SignedHttpRequest
 signQuota handle target body ts =
@@ -211,7 +282,7 @@ runRequestIncrease handle sender req = do
       sender
       (signQuota handle (quotaTarget "RequestServiceQuotaIncrease") (renderQuotaIncreaseBody req))
       "servicequotas:RequestServiceQuotaIncrease"
-      Idempotent
+      Mutating
       JsonErrorFormat
   pure (raw >>= first AwsResponseParseFailure . parseRequestedQuotaChange)
 
@@ -249,3 +320,36 @@ runGetRequestedChange handle sender requestId = do
       Idempotent
       JsonErrorFormat
   pure (raw >>= first AwsResponseParseFailure . parseRequestedQuotaChange)
+
+runListRequestedChangeHistory
+  :: CredentialHandle origin
+  -> NativeAwsSender
+  -> Text
+  -> Text
+  -> IO (Either AwsClientError [RequestedQuotaChangeHistoryItem])
+runListRequestedChangeHistory handle sender serviceCode quotaCode =
+  go 0 [] Nothing []
+ where
+  maximumPages = 100 :: Int
+  go page seen token accumulated
+    | page >= maximumPages =
+        pure (Left (AwsResponseParseFailure "ServiceQuotas: history page limit exceeded"))
+    | maybe False (`elem` seen) token =
+        pure (Left (AwsResponseParseFailure "ServiceQuotas: repeated history next token"))
+    | otherwise = do
+        raw <-
+          performAwsRequest
+            sender
+            ( signQuota
+                handle
+                (quotaTarget "ListRequestedServiceQuotaChangeHistoryByQuota")
+                (renderListRequestedChangeHistoryBody serviceCode quotaCode token)
+            )
+            "servicequotas:ListRequestedServiceQuotaChangeHistoryByQuota"
+            Idempotent
+            JsonErrorFormat
+        case raw >>= first AwsResponseParseFailure . parseRequestedQuotaChangeHistoryPage of
+          Left err -> pure (Left err)
+          Right (items, Nothing) -> pure (Right (accumulated <> items))
+          Right (items, Just next) ->
+            go (page + 1) (maybe seen (: seen) token) (Just next) (accumulated <> items)

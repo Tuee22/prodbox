@@ -1,0 +1,70 @@
+{{- if .Values.enabled }}
+# No ingress is admitted. The one-shot process can reach only DNS and Vault;
+# the AWS-admin schema additionally needs provider HTTPS and its exact
+# secret-free Lifecycle Authority calls plus metadata-only Target Agent
+# observation. Plaintext material enters only the attested one-shot worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "credential-provisioner.name" . }}-isolation
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "credential-provisioner.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prodbox-{{ include "credential-provisioner.name" . }}
+      prodbox.io/permit-id: {{ .Values.permit.id | quote }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    {{- if eq .Values.ingressSchema "aws-admin" }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lifecycle-authority
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-lifecycle-authority
+      ports:
+        - protocol: TCP
+          port: 8600
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: target-secret-agent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-target-secret-agent
+      ports:
+        - protocol: TCP
+          port: 8600
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

@@ -10,6 +10,7 @@ module Prodbox.Minio.ObjectStoreTypes
   , ObjectVersion (..)
   , VersionedObject (..)
   , ConditionalPutResult (..)
+  , ConditionalDeleteResult (..)
   , defaultObjectStoreBucket
   )
 where
@@ -50,6 +51,11 @@ data VersionedObject = VersionedObject
 data ConditionalPutResult
   = ConditionalPutApplied
   | ConditionalPutConflict
+  deriving (Eq, Show)
+
+data ConditionalDeleteResult
+  = ConditionalDeleteApplied
+  | ConditionalDeleteConflict
   deriving (Eq, Show)
 
 defaultObjectStoreBucket :: String

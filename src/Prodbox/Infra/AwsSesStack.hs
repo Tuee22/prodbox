@@ -8,40 +8,37 @@ module Prodbox.Infra.AwsSesStack
   , AwsSesCheckpointSnapshot (..)
   , AwsSesPresenceProbe (..)
   , AwsSesTargetSelection
-  , AwsSesTransactionStage (..)
+  , AwsSesLifecycleAuthorityAuthentication
   , awsSesStackName
-  , awsSesDesiredPresentStages
-  , runAwsSesTransactionStagesWith
+  , awsSesLegacyPulumiBackend
   , awsSesPresenceInventoryComplete
   , awsSesTargetSelectionForSink
+  , awsSesTargetSesSmtpSink
   , defaultAwsSesTargetSelection
-  , keycloakSmtpVaultFields
   , mkAwsSesTargetSelection
   , classifyAwsSesPresenceOutput
-  , observeAwsSesPresence
   , observeAwsSesCheckpoint
+  , observeAwsSesCheckpointWithAuthentication
   , ensureAwsSesStackResources
-  , ensureAwsSesStackResourcesForAuthorityAndTarget
-  , ensureAwsSesStackResourcesForTarget
-  , syncKeycloakSmtpChartSecrets
-  , syncKeycloakSmtpChartSecretsForTarget
+  , ensureAwsSesStackResourcesWithAuthentication
   , destroyAwsSesStack
+  , destroyAwsSesStackWithAuthentication
+  , destroyAwsSesProviderResourcesWithCredentials
+  , destroyAwsSesProviderResourcesWithCredentialsAndAuthentication
+  , observeAwsSesProviderResourcesWithCredentials
+  , observeAwsSesProviderResourcesWithCredentialsAndAuthentication
+  , awsSesProviderPulumiResourceUrns
+  , awsSesSmtpPulumiResourceUrns
+  , parseAwsSesPulumiResourceUrns
   , awsSesStackResidueStatus
-  , assertNoAwsSesStackResidue
   , migrateAwsSesStackBackend
+  , migrateAwsSesStackBackendWithAuthentication
   , renderAwsSesStackReport
   , parseAwsSesStackFromOutputs
   )
 where
 
-import Codec.Serialise (serialise)
-import Control.Exception
-  ( SomeException
-  , mask
-  , throwIO
-  , try
-  )
-import Control.Monad (foldM, void)
+import Control.Monad (foldM, unless, when)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -49,15 +46,12 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
-import Data.List (find, isInfixOf, sort)
+import Data.List (isInfixOf, sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.CLI.Interactive
   ( awsSesMigrateBackendGuard
   , requireInteractiveTty
@@ -65,178 +59,78 @@ import Prodbox.CLI.Interactive
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
   , writeError
-  , writeOutput
   , writeOutputLine
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthentication
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchAuthenticatedProviderIntentFresh
+  , renderProviderCallerError
   )
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
-  , loadOperationalAwsCredentials
   , pulumiAwsProviderEnv
-  , settingsAwsEnv
-  )
-import Prodbox.Infra.AwsSesLeaseRole
-  ( awsSesLeaseRoleArn
-  )
-import Prodbox.Infra.AwsSesSmtpKey
-  ( awsSesSmtpCommitCoordinate
-  , createAwsSesSmtpAccessKey
-  , deleteAwsSesSmtpAccessKey
-  , observeAwsSesSmtpKeyInventory
-  , smtpKeyMaterialDigest
   )
 import Prodbox.Infra.LongLivedPulumiBackend
   ( loadAdminAwsCredentials
   , longLivedBackendErrorMessage
   , longLivedPulumiBackendUrlEither
+  , purgeRemainingVersions
   )
 import Prodbox.Infra.MinioBackend
   ( pulumiBackendLoginTimeoutSeconds
   )
-import Prodbox.Lifecycle.Authority.OperationStore
-  ( operationRecordCodec
-  )
-import Prodbox.Lifecycle.AuthorityConfig
-  ( resolveLongLivedCheckpointAuthority
-  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
-  , ModelBCasAdapter (..)
-  , ModelBObjectCoordinate
-  , ModelBObservation (..)
-  , StoreLifetime (ChartLifetime, ClusterRetained)
   , TargetClusterSecretSink
   , checkpointAuthorityClusterId
-  , checkpointAuthorityGatewayEndpoint
-  , mkChartLifetimeCoordinate
-  , mkClusterRetainedCoordinate
   , mkTargetClusterSecretSink
-  , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
   )
-import Prodbox.Lifecycle.CheckpointAuthorityStore
-  ( ModelBCodec (..)
-  , gatewayModelBCasAdapter
-  )
-import Prodbox.Lifecycle.DesiredPresence qualified as DesiredPresence
-import Prodbox.Lifecycle.HostDirectAuthorityStore
-  ( materialHostDirectModelBCasAdapter
-  )
-import Prodbox.Lifecycle.Lease
-  ( AuthorityDuration
-  , LeaseGrant
-  , LeaseKey
-  , LeasePolicy
-  , LeaseProjection
-  , LeaseRecoveryPredecessor
-  , LeaseUsePermit
-  , LeaseWork (..)
-  , ProviderObservation (..)
-  , addAuthorityDuration
-  , decodeLeaseProjection
-  , defaultSesLeasePolicy
-  , encodeLeaseProjection
-  , leaseAcquireCoordinate
-  , leaseKeyAccount
-  , leasePolicyGrantTtl
-  , leaseRecoveryNotBefore
-  , leaseUseDeadline
-  )
-import Prodbox.Lifecycle.LeaseInterpreter
-  ( LeaseAcquisition (..)
-  , LeaseInterpreter
-  , acquireLeaseDetailedWith
-  , fencedCommitPermitWith
-  , releaseLeaseWith
-  , runLeaseWorkWith
-  )
-import Prodbox.Lifecycle.LeaseRuntime
-  ( beginProductionLeaseAcquire
-  , discoverAwsSesLeaseKey
-  , leaseScopedAwsCredentials
-  , mintLeaseScopedAwsSession
-  , mkProductionLeaseRuntime
-  , observeGatewayAuthorityTime
-  , productionLeaseInterpreter
-  , waitForGatewayAuthorityTime
-  )
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent
+      ( ReconcileSesCaptureBucket
+      , ReconcileSesDkim
+      , ReconcileSesDns
+      , ReconcileSesReceiptRules
+      , ReconcileSesSendingIdentity
+      )
+  , mkSesBucketRef
+  , mkSesDnsRef
+  , mkSesIdentityRef
+  , mkSesRuleSetRef
+  )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
-import Prodbox.Lifecycle.SmtpKeyRepair
-  ( SmtpCommittedProjection
-  , committedSmtpCredentialGeneration
-  , committedSmtpCredentialKeyId
-  , committedSmtpCredentialMaterial
-  , decodeSmtpCommittedProjection
-  , encodeSmtpCommittedProjection
-  , mkSmtpKeyInventoryBound
-  , smtpAccessKeyIdText
-  )
-import Prodbox.Lifecycle.SmtpKeyRepairInterpreter
-  ( SmtpKeyRepairInterpreter (..)
-  , SmtpKeyRepairRequest (..)
-  , runSmtpKeyRepairWith
-  , smtpKeyRepairOutcomeCredential
-  )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( CredentialGeneration
-  , RegisteredTargetSet
-  , TargetIntentCoordinate
-  , TargetIntentProjection
-  , TargetValueDigest
-  , credentialGenerationValue
-  , decodeTargetIntentProjection
-  , encodeTargetIntentProjection
+  ( RegisteredTargetSet
   , mkRegisteredTargetSet
-  , mkTargetIntentCoordinate
   , registeredTargetByIdentity
-  , sha256TargetValueDigest
-  )
-import Prodbox.Lifecycle.TargetCommitInterpreter
-  ( TargetCommitInterpreter (..)
-  , TargetRecoveryInterpreter (..)
-  , runPreparedTargetCommit
-  , runSuccessorTargetRecoveryAfter
-  )
-import Prodbox.Lifecycle.TargetSecretStore
-  ( gatewayTargetSecretAdapter
   )
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability (..)
   , EncryptedBackendError
   , LegacyPulumiBackend (..)
   , PulumiStackRef (..)
-  , classifyCheckpointBytes
+  , observeStackCheckpoint
   , renderEncryptedBackendError
   , withDecryptedStackEnvironment
-  , withFencedDecryptedStackEnvironment
   , withMigratedDecryptedStackEnvironment
-  )
-import Prodbox.Pulumi.HostDirectObjectStore
-  ( HostDirectPulumiMaterial
-  , resolveHostDirectPulumiMaterial
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Readiness
-  ( AwsSesProviderReadiness (..)
-  , AwsSesReadiness (..)
-  , AwsSesReadinessEnvironments (..)
-  , AwsSesReadinessExpectation
-  , AwsSesReadinessScope (..)
-  , canonicalAwsSesPropagationPolicy
-  , mkAwsSesReadinessExpectation
-  , observeAwsSesReadiness
-  , pollAwsSesReadiness
-  , providerThenSemanticReadiness
-  , renderAwsSesReadinessPollFailure
-  , sesCaptureKeyPrefix
+  ( sesCaptureKeyPrefix
   , sesCaptureReadinessKey
   , sesInboundMxPriority
   , sesInboundMxTarget
   , sesReceiveRuleName
   , sesReceiveRuleSetName
   )
-import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
   ( ConfigFile
   , Credentials (..)
@@ -298,15 +192,13 @@ data AwsSesStackSnapshot = AwsSesStackSnapshot
   , sesSnapshotCaptureBucketArn :: String
   , sesSnapshotCaptureBucketKeyPrefix :: String
   , sesSnapshotCaptureReadinessKey :: String
-  , sesSnapshotSmtpEndpoint :: String
-  , sesSnapshotSmtpIamUserName :: String
-  , sesSnapshotSmtpIamUserArn :: String
-  , sesSnapshotSmtpIamAccessKeyId :: Maybe String
   }
   deriving (Eq, Show)
 
 -- | Finite fixed-name resources used by checkpoint import/repair. This is an
--- authoritative AWS inventory, not a projection of Pulumi state.
+-- authoritative AWS inventory, not a projection of Pulumi state. The SMTP IAM
+-- member remains only for compatibility observation of pre-cutover state; it
+-- is not part of the Provider desired-present inventory.
 data AwsSesResource
   = AwsSesCaptureBucket
   | AwsSesCaptureReadinessObject
@@ -320,38 +212,20 @@ data AwsSesPresenceInventory = AwsSesPresenceInventory
   }
   deriving (Eq, Show)
 
--- | The one supported desired-present transaction order.  Keeping readiness
--- separate from Pulumi reconciliation prevents a successful provider return
--- from being mistaken for externally visible IAM/SES/S3 state, while keeping
--- SMTP repair and target materialization inside the final fenced work budget.
-data AwsSesTransactionStage
-  = AwsSesStageReconcile
-  | AwsSesStageAwaitReady
-  | AwsSesStageRepairAndMaterializeSmtp
-  deriving (Bounded, Enum, Eq, Show)
-
-awsSesDesiredPresentStages :: [AwsSesTransactionStage]
-awsSesDesiredPresentStages =
-  [ AwsSesStageReconcile
-  , AwsSesStageAwaitReady
-  , AwsSesStageRepairAndMaterializeSmtp
-  ]
-
 awsSesPresenceInventoryComplete :: AwsSesPresenceInventory -> Bool
 awsSesPresenceInventoryComplete inventory =
   sort (awsSesPresentResources inventory)
     == sort
       [ AwsSesCaptureBucket
       , AwsSesCaptureReadinessObject
-      , AwsSesSmtpIamUser
       , AwsSesReceiveRuleSet
       , AwsSesReceiveRule
       ]
 
 -- | One selected target plus the complete finite set a successor must be able
 -- to reason about.  The selected sink must be byte-for-byte the registered
--- sink for its identity; endpoint substitution is therefore rejected before
--- any target intent is prepared.
+-- sink for its identity; coordinate substitution is therefore rejected before
+-- any target intent is prepared. Transport is not part of this value.
 data AwsSesTargetSelection = AwsSesTargetSelection
   { awsSesRegisteredTargets :: !RegisteredTargetSet
   , awsSesSelectedTarget :: !TargetClusterSecretSink
@@ -373,12 +247,8 @@ mkAwsSesTargetSelection registered selected =
               }
     _ -> Left "selected SES target sink is not the exact registered sink for its identity"
 
--- | Operator-default target selection.  The retained home gateway is the
--- selected sink.  The AWS identity is registered with an intentionally
--- unreachable placeholder endpoint so the projection identity set remains
--- stable across home/AWS runs; a capability-derived AWS run replaces that
--- endpoint with its live scoped port-forward.  If an outstanding AWS intent
--- exists, the placeholder fails closed instead of redirecting it to home.
+-- | Operator-default target selection. The retained home Target Agent identity
+-- is selected; its authenticated transport is supplied independently.
 defaultAwsSesTargetSelection
   :: LongLivedCheckpointAuthority -> Either String AwsSesTargetSelection
 defaultAwsSesTargetSelection authority = do
@@ -388,16 +258,15 @@ defaultAwsSesTargetSelection authority = do
 -- | Construct the complete, stable SES target registry around one explicitly
 -- selected sink.  The retained authority always defines the exact home sink.
 -- A home selection must match that sink byte-for-byte; an AWS selection must
--- use the canonical EKS identity and SMTP secret coordinate, while its scoped
--- live gateway endpoint remains caller-supplied (for example a port-forward).
--- No other target identity or home endpoint substitution is accepted.
+-- use the canonical EKS identity and SMTP secret coordinate. No transport URL
+-- is part of either coordinate.
 awsSesTargetSelectionForSink
   :: LongLivedCheckpointAuthority
   -> TargetClusterSecretSink
   -> Either String AwsSesTargetSelection
 awsSesTargetSelectionForSink authority selected = do
   home <- awsSesHomeTargetSink authority
-  awsPlaceholder <- awsSesAwsPlaceholderTargetSink
+  awsTarget <- awsSesTargetSesSmtpSink (Text.pack awsEksCanonicalClusterName)
   let selectedIdentity = targetSecretSinkIdentity selected
       homeIdentity = targetSecretSinkIdentity home
       awsIdentity = Text.pack awsEksCanonicalClusterName
@@ -413,18 +282,12 @@ awsSesTargetSelectionForSink authority selected = do
             else
               Left
                 "selected SES home target must exactly match the retained authority sink"
-          registered <- first show (mkRegisteredTargetSet 2 [home, awsPlaceholder])
+          registered <- first show (mkRegisteredTargetSet 2 [home, awsTarget])
           mkAwsSesTargetSelection registered home
         else
           if selectedIdentity == awsIdentity
             then do
-              canonicalAws <-
-                first show $
-                  mkTargetClusterSecretSink
-                    awsIdentity
-                    (targetSecretSinkGatewayEndpoint selected)
-                    "secret"
-                    "keycloak/smtp"
+              canonicalAws <- awsSesTargetSesSmtpSink awsIdentity
               if selected == canonicalAws
                 then pure ()
                 else
@@ -439,19 +302,15 @@ awsSesTargetSelectionForSink authority selected = do
 awsSesHomeTargetSink
   :: LongLivedCheckpointAuthority -> Either String TargetClusterSecretSink
 awsSesHomeTargetSink authority =
-  first show $
-    mkTargetClusterSecretSink
-      (checkpointAuthorityClusterId authority)
-      (checkpointAuthorityGatewayEndpoint authority)
-      "secret"
-      "keycloak/smtp"
+  awsSesTargetSesSmtpSink (checkpointAuthorityClusterId authority)
 
-awsSesAwsPlaceholderTargetSink :: Either String TargetClusterSecretSink
-awsSesAwsPlaceholderTargetSink =
+-- | Compile the exact @TargetSesSmtp@ Vault lane for a Target Agent identity.
+-- Endpoint discovery and request authentication belong to the client binding.
+awsSesTargetSesSmtpSink :: Text.Text -> Either String TargetClusterSecretSink
+awsSesTargetSesSmtpSink identity =
   first show $
     mkTargetClusterSecretSink
-      (Text.pack awsEksCanonicalClusterName)
-      "http://127.0.0.1:1"
+      identity
       "secret"
       "keycloak/smtp"
 
@@ -481,14 +340,6 @@ data AwsSesStackConfig = AwsSesStackConfig
   , sesStackAwsRegion :: String
   }
   deriving (Eq, Show)
-
-awsSesPresenceProbeResource :: AwsSesPresenceProbe -> AwsSesResource
-awsSesPresenceProbeResource probe = case probe of
-  AwsSesCaptureBucketProbe _ -> AwsSesCaptureBucket
-  AwsSesCaptureReadinessObjectProbe _ -> AwsSesCaptureReadinessObject
-  AwsSesSmtpIamUserProbe -> AwsSesSmtpIamUser
-  AwsSesReceiveRuleSetProbe -> AwsSesReceiveRuleSet
-  AwsSesReceiveRuleProbe -> AwsSesReceiveRule
 
 awsSesPresenceProbeOperation :: AwsSesPresenceProbe -> String
 awsSesPresenceProbeOperation probe =
@@ -619,163 +470,55 @@ awsSesProbeReportsNotFound probe rawDetail =
     AwsSesReceiveRuleSetProbe -> ["rulesetdoesnotexist"]
     AwsSesReceiveRuleProbe -> ["ruledoesnotexist"]
 
-observeAwsSesPresenceProbe
-  :: FilePath
-  -> [(String, String)]
-  -> AwsSesPresenceProbe
-  -> IO (ResidueStatus.PresenceObservation ())
-observeAwsSesPresenceProbe workingDir environment probe = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments = awsSesPresenceProbeArguments probe
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just workingDir
-        }
-  pure $ case result of
-    Failure err ->
-      ResidueStatus.PresenceUnobservable
-        ResidueStatus.ObservationFailure
-          { ResidueStatus.observationFailureOperation = awsSesPresenceProbeOperation probe
-          , ResidueStatus.observationFailureDetail = "failed to start aws: " ++ err
-          }
-    Success output -> classifyAwsSesPresenceOutput probe output
-
-observeAwsSesPresenceWith
-  :: FilePath
-  -> [(String, String)]
-  -> AwsSesStackConfig
-  -> IO (ResidueStatus.PresenceObservation AwsSesPresenceInventory)
-observeAwsSesPresenceWith workingDir environment stackConfig = do
-  let probes =
-        [ AwsSesCaptureBucketProbe (sesStackCaptureBucket stackConfig)
-        , AwsSesCaptureReadinessObjectProbe (sesStackCaptureBucket stackConfig)
-        , AwsSesSmtpIamUserProbe
-        , AwsSesReceiveRuleSetProbe
-        , AwsSesReceiveRuleProbe
-        ]
-  observations <-
-    mapM
-      (\probe -> (probe,) <$> observeAwsSesPresenceProbe workingDir environment probe)
-      probes
-  pure $
-    case find (isUnobservable . snd) observations of
-      Just (_, ResidueStatus.PresenceUnobservable failure) ->
-        ResidueStatus.PresenceUnobservable failure
-      _ ->
-        let presentResources =
-              [ awsSesPresenceProbeResource probe
-              | (probe, ResidueStatus.PresencePresent ()) <- observations
-              ]
-         in case presentResources of
-              [] -> ResidueStatus.PresenceAbsent
-              resources ->
-                ResidueStatus.PresencePresent
-                  AwsSesPresenceInventory
-                    { awsSesPresentResources = resources
-                    }
- where
-  isUnobservable observation = case observation of
-    ResidueStatus.PresenceUnobservable _ -> True
-    _ -> False
-
--- | Production authoritative AWS inventory observation. Configuration or
--- credential acquisition failures are unobservable facts and therefore close
--- the desired-present gate.
-observeAwsSesPresence
-  :: FilePath -> IO (ResidueStatus.PresenceObservation AwsSesPresenceInventory)
-observeAwsSesPresence repoRoot = do
-  let projectDir = awsSesPulumiProjectDir repoRoot
-  operationalResult <- loadOperationalAwsCredentials repoRoot
-  configResult <- case operationalResult of
-    Left err -> pure (Left err)
-    Right credentials -> resolveAwsSesStackConfigForCredentials repoRoot credentials
-  case (configResult, operationalResult) of
-    (Left err, _) -> pure (presenceObservationFailure "resolve aws-ses configuration" err)
-    (_, Left err) -> pure (presenceObservationFailure "load operational AWS credential" err)
-    (Right stackConfig, Right operationalCredentials) -> do
-      providerEnvironment <- pulumiSesProviderBaseEnv operationalCredentials
-      observeAwsSesPresenceWith
-        projectDir
-        (awsCliCredsFromProviderEnv providerEnvironment)
-        stackConfig
-
 -- | Production Model-B checkpoint observation. Empty objects are corrupt for
 -- desired-present repair (they were positively observed but are not usable),
 -- while only a missing object becomes 'CheckpointMissing'.
 observeAwsSesCheckpoint
   :: FilePath -> IO (ResidueStatus.CheckpointObservation AwsSesCheckpointSnapshot)
 observeAwsSesCheckpoint repoRoot = do
-  authorityResult <- resolveLongLivedCheckpointAuthority repoRoot
-  case authorityResult of
-    Left err -> pure (checkpointObservationFailure "resolve retained checkpoint authority" err)
-    Right authority ->
-      case awsSesCheckpointCoordinate authority of
-        Left err -> pure (checkpointObservationFailure "resolve aws-ses checkpoint coordinate" err)
-        Right coordinate ->
-          observeAwsSesCheckpointWith
-            (gatewayModelBCasAdapter authority byteStringModelBCodec)
-            coordinate
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> observeAwsSesCheckpointWithAuthentication authentication repoRoot)
+  pure $ case authenticated of
+    Left err ->
+      checkpointObservationFailure
+        "authenticate aws-ses checkpoint observation"
+        (renderLifecycleAuthorityAuthenticationError err)
+    Right observation -> observation
 
-observeAwsSesCheckpointWith
-  :: ModelBCasAdapter 'ChartLifetime IO ByteString
-  -> ModelBObjectCoordinate 'ChartLifetime
+observeAwsSesCheckpointWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> IO (ResidueStatus.CheckpointObservation AwsSesCheckpointSnapshot)
-observeAwsSesCheckpointWith adapter coordinate = do
-  observed <- modelBObserve adapter coordinate
-  pure $ case observed of
-    ModelBMissing -> ResidueStatus.CheckpointMissing
-    ModelBCorrupt detail -> corruptCheckpoint (Text.unpack detail)
-    ModelBUnobservable detail ->
-      checkpointObservationFailure "observe aws-ses Model-B checkpoint" (Text.unpack detail)
-    ModelBObserved _ bytes ->
-      case classifyCheckpointBytes (Just bytes) of
-        CheckpointAbsent -> ResidueStatus.CheckpointMissing
-        CheckpointEmpty -> corruptCheckpoint "checkpoint object is empty"
-        CheckpointCorrupt detail -> corruptCheckpoint detail
-        CheckpointPresent ->
-          ResidueStatus.CheckpointValid
-            AwsSesCheckpointSnapshot
-              { awsSesCheckpointStackName = awsSesStackName
-              }
+observeAwsSesCheckpointWithAuthentication authentication repoRoot = do
+  observed <- observeStackCheckpoint authentication repoRoot awsSesPulumiStackRef
+  pure (awsSesCheckpointObservationFromAuthorityResult observed)
 
-awsSesCheckpointCoordinate
-  :: LongLivedCheckpointAuthority -> Either String (ModelBObjectCoordinate 'ChartLifetime)
-awsSesCheckpointCoordinate authority =
-  case mkChartLifetimeCoordinate authority "pulumi-stack/aws-ses" of
-    Left err -> Left (show err)
-    Right coordinate -> Right coordinate
+awsSesCheckpointObservationFromAuthorityResult
+  :: Either EncryptedBackendError CheckpointObservability
+  -> ResidueStatus.CheckpointObservation AwsSesCheckpointSnapshot
+awsSesCheckpointObservationFromAuthorityResult observed =
+  case observed of
+    Left err ->
+      checkpointObservationFailure
+        "observe registered aws-ses checkpoint"
+        (renderEncryptedBackendError err)
+    Right observability -> awsSesCheckpointObservationFromObservability observability
 
-byteStringModelBCodec :: ModelBCodec ByteString
-byteStringModelBCodec =
-  ModelBCodec
-    { encodeModelBValue = Right
-    , decodeModelBValue = Right
-    }
-
-leaseProjectionModelBCodec :: LeasePolicy -> ModelBCodec LeaseProjection
-leaseProjectionModelBCodec policy =
-  ModelBCodec
-    { encodeModelBValue = Right . encodeLeaseProjection
-    , decodeModelBValue = first show . decodeLeaseProjection policy
-    }
-
-smtpCommittedModelBCodec :: ModelBCodec SmtpCommittedProjection
-smtpCommittedModelBCodec =
-  ModelBCodec
-    { encodeModelBValue = first show . encodeSmtpCommittedProjection
-    , decodeModelBValue = first show . decodeSmtpCommittedProjection
-    }
-
-targetIntentModelBCodec
-  :: RegisteredTargetSet -> ModelBCodec TargetIntentProjection
-targetIntentModelBCodec registered =
-  ModelBCodec
-    { encodeModelBValue = Right . encodeTargetIntentProjection
-    , decodeModelBValue =
-        first show . decodeTargetIntentProjection registered
-    }
+awsSesCheckpointObservationFromObservability
+  :: CheckpointObservability
+  -> ResidueStatus.CheckpointObservation AwsSesCheckpointSnapshot
+awsSesCheckpointObservationFromObservability observability = case observability of
+  CheckpointAbsent -> ResidueStatus.CheckpointMissing
+  CheckpointEmpty -> corruptCheckpoint "checkpoint object is empty"
+  CheckpointCorrupt detail -> corruptCheckpoint detail
+  CheckpointPresent ->
+    ResidueStatus.CheckpointValid
+      AwsSesCheckpointSnapshot
+        { awsSesCheckpointStackName = awsSesStackName
+        }
 
 corruptCheckpoint
   :: String -> ResidueStatus.CheckpointObservation snapshot
@@ -794,15 +537,6 @@ checkpointObservationFailure operation detail =
       , ResidueStatus.observationFailureDetail = detail
       }
 
-presenceObservationFailure
-  :: String -> String -> ResidueStatus.PresenceObservation inventory
-presenceObservationFailure operation detail =
-  ResidueStatus.PresenceUnobservable
-    ResidueStatus.ObservationFailure
-      { ResidueStatus.observationFailureOperation = operation
-      , ResidueStatus.observationFailureDetail = detail
-      }
-
 renderObservationFailure :: ResidueStatus.ObservationFailure -> String
 renderObservationFailure failure =
   ResidueStatus.observationFailureOperation failure
@@ -814,10 +548,13 @@ renderObservationFailure failure =
 -- when the stack is absent, the backend is unreachable, or the outputs
 -- cannot be parsed — matching the @Maybe@ contract the destroy path
 -- previously got from the file cache.
-fetchAwsSesStackSnapshotFromBackend
-  :: FilePath -> IO (Maybe AwsSesStackSnapshot)
-fetchAwsSesStackSnapshotFromBackend repoRoot = do
-  outputsResult <- LiveResidue.fetchAwsSesStackOutputs repoRoot
+fetchAwsSesStackSnapshotFromBackendWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO (Maybe AwsSesStackSnapshot)
+fetchAwsSesStackSnapshotFromBackendWithAuthentication authentication repoRoot = do
+  outputsResult <-
+    LiveResidue.fetchAwsSesStackOutputsWithAuthentication authentication repoRoot
   pure $ case outputsResult of
     Left _ -> Nothing
     Right outputs -> either (const Nothing) Just (parseAwsSesStackFromOutputs outputs)
@@ -843,11 +580,7 @@ parseAwsSesStackFromOutputs outputs = do
   captureBucketArn <- requireMapString outputs "capture_bucket_arn"
   captureBucketKeyPrefix <- requireMapString outputs "capture_bucket_key_prefix"
   captureReadinessKey <- requireMapString outputs "capture_readiness_key"
-  smtpEndpoint <- requireMapString outputs "smtp_endpoint"
-  smtpIamUserName <- requireMapString outputs "smtp_iam_user_name"
-  smtpIamUserArn <- requireMapString outputs "smtp_iam_user_arn"
-  let smtpIamAccessKeyId = optionalMapString outputs "smtp_iam_access_key_id"
-      snapshot =
+  let snapshot =
         AwsSesStackSnapshot
           { sesSnapshotStackName = awsSesStackName
           , sesSnapshotBackendBucket = backendBucket
@@ -863,10 +596,6 @@ parseAwsSesStackFromOutputs outputs = do
           , sesSnapshotCaptureBucketArn = captureBucketArn
           , sesSnapshotCaptureBucketKeyPrefix = captureBucketKeyPrefix
           , sesSnapshotCaptureReadinessKey = captureReadinessKey
-          , sesSnapshotSmtpEndpoint = smtpEndpoint
-          , sesSnapshotSmtpIamUserName = smtpIamUserName
-          , sesSnapshotSmtpIamUserArn = smtpIamUserArn
-          , sesSnapshotSmtpIamAccessKeyId = smtpIamAccessKeyId
           }
   validateAwsSesStackSnapshot snapshot
 
@@ -883,57 +612,6 @@ requireMapString outputs key =
 requireMapInt :: Map Text.Text Text.Text -> String -> Either String Int
 requireMapInt outputs key =
   requireIntOutput key =<< requireMapString outputs key
-
-optionalMapString :: Map Text.Text Text.Text -> String -> Maybe String
-optionalMapString outputs key = do
-  raw <- Map.lookup (Text.pack key) outputs
-  let value = Text.strip raw
-  if Text.null value then Nothing else Just (Text.unpack value)
-
-snapshotFromOutputs :: Value -> Either String AwsSesStackSnapshot
-snapshotFromOutputs (Object obj) = do
-  backendBucket <- requireString obj "backend_bucket"
-  awsRegion <- requireString obj "aws_region"
-  sendingDomain <- requireString obj "sending_domain"
-  receiveSubdomain <- requireString obj "receive_subdomain"
-  receiveSubdomainMxFqdn <- requireString obj "receive_subdomain_mx_fqdn"
-  receiveSubdomainMxPriority <-
-    requireString obj "receive_subdomain_mx_priority"
-      >>= requireIntOutput "receive_subdomain_mx_priority"
-  receiveSubdomainMxTarget <- requireString obj "receive_subdomain_mx_target"
-  receiveRuleSetName <- requireString obj "receive_rule_set_name"
-  receiveRuleName <- requireString obj "receive_rule_name"
-  captureBucketName <- requireString obj "capture_bucket_name"
-  captureBucketArn <- requireString obj "capture_bucket_arn"
-  captureBucketKeyPrefix <- requireString obj "capture_bucket_key_prefix"
-  captureReadinessKey <- requireString obj "capture_readiness_key"
-  smtpEndpoint <- requireString obj "smtp_endpoint"
-  smtpIamUserName <- requireString obj "smtp_iam_user_name"
-  smtpIamUserArn <- requireString obj "smtp_iam_user_arn"
-  let smtpIamAccessKeyId = optionalString obj "smtp_iam_access_key_id"
-      snapshot =
-        AwsSesStackSnapshot
-          { sesSnapshotStackName = awsSesStackName
-          , sesSnapshotBackendBucket = backendBucket
-          , sesSnapshotAwsRegion = awsRegion
-          , sesSnapshotSendingDomain = sendingDomain
-          , sesSnapshotReceiveSubdomain = receiveSubdomain
-          , sesSnapshotReceiveSubdomainMxFqdn = receiveSubdomainMxFqdn
-          , sesSnapshotReceiveSubdomainMxPriority = receiveSubdomainMxPriority
-          , sesSnapshotReceiveSubdomainMxTarget = receiveSubdomainMxTarget
-          , sesSnapshotReceiveRuleSetName = receiveRuleSetName
-          , sesSnapshotReceiveRuleName = receiveRuleName
-          , sesSnapshotCaptureBucketName = captureBucketName
-          , sesSnapshotCaptureBucketArn = captureBucketArn
-          , sesSnapshotCaptureBucketKeyPrefix = captureBucketKeyPrefix
-          , sesSnapshotCaptureReadinessKey = captureReadinessKey
-          , sesSnapshotSmtpEndpoint = smtpEndpoint
-          , sesSnapshotSmtpIamUserName = smtpIamUserName
-          , sesSnapshotSmtpIamUserArn = smtpIamUserArn
-          , sesSnapshotSmtpIamAccessKeyId = smtpIamAccessKeyId
-          }
-  validateAwsSesStackSnapshot snapshot
-snapshotFromOutputs _ = Left "aws-ses pulumi output must be a JSON object"
 
 requireIntOutput :: String -> String -> Either String Int
 requireIntOutput key raw =
@@ -979,20 +657,6 @@ validateAwsSesStackSnapshot snapshot = do
               ++ show expected
           )
 
-requireString :: KeyMap.KeyMap Value -> String -> Either String String
-requireString obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (String text) ->
-      let str = Text.unpack text
-       in if null str then Left ("missing string output " ++ key) else Right str
-    _ -> Left ("missing string output " ++ key)
-
-optionalString :: KeyMap.KeyMap Value -> String -> Maybe String
-optionalString obj key = case KeyMap.lookup (Key.fromString key) obj of
-  Just (String raw)
-    | not (Text.null (Text.strip raw)) -> Just (Text.unpack (Text.strip raw))
-  _ -> Nothing
-
 renderAwsSesStackReport :: AwsSesStackSnapshot -> Int -> String
 renderAwsSesStackReport snapshot objectCount =
   unlines
@@ -1011,14 +675,7 @@ renderAwsSesStackReport snapshot objectCount =
       , "CAPTURE_BUCKET_ARN=" ++ sesSnapshotCaptureBucketArn snapshot
       , "CAPTURE_BUCKET_KEY_PREFIX=" ++ sesSnapshotCaptureBucketKeyPrefix snapshot
       , "CAPTURE_READINESS_KEY=" ++ sesSnapshotCaptureReadinessKey snapshot
-      , "SMTP_ENDPOINT=" ++ sesSnapshotSmtpEndpoint snapshot
-      , "SMTP_IAM_USER_NAME=" ++ sesSnapshotSmtpIamUserName snapshot
-      , "SMTP_IAM_USER_ARN=" ++ sesSnapshotSmtpIamUserArn snapshot
       ]
-        ++ maybe
-          []
-          (\keyId -> ["SMTP_IAM_ACCESS_KEY_ID=" ++ keyId])
-          (sesSnapshotSmtpIamAccessKeyId snapshot)
     )
 
 -- | Sprint 7.16: the SES stack's AWS region now comes from the EPHEMERAL admin
@@ -1086,8 +743,7 @@ syncAwsSesStackConfig projectDir environment stackConfig =
   foldM runConfigSet ExitSuccess configEntries
  where
   configEntries =
-    [ ("parentZoneId", sesStackParentZoneId stackConfig)
-    , ("senderDomain", sesStackSenderDomain stackConfig)
+    [ ("senderDomain", sesStackSenderDomain stackConfig)
     , ("receiveSubdomain", sesStackReceiveSubdomain stackConfig)
     , ("captureBucket", sesStackCaptureBucket stackConfig)
     , ("awsRegion", sesStackAwsRegion stackConfig)
@@ -1150,19 +806,26 @@ pulumiSesProviderBaseEnv adminCreds = do
     )
 
 withAwsSesEncryptedStackEnvironment
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> FilePath
   -> Credentials
   -> [(String, String)]
   -> ([(String, String)] -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withAwsSesEncryptedStackEnvironment repoRoot projectDir adminCreds environment action = do
+withAwsSesEncryptedStackEnvironment authentication repoRoot projectDir adminCreds environment action = do
   legacyBackend <- awsSesLegacyPulumiBackend repoRoot projectDir adminCreds
   case legacyBackend of
     Nothing ->
-      withDecryptedStackEnvironment repoRoot awsSesPulumiStackRef environment action
+      withDecryptedStackEnvironment authentication repoRoot awsSesPulumiStackRef environment action
     Just legacy ->
-      withMigratedDecryptedStackEnvironment repoRoot awsSesPulumiStackRef legacy environment action
+      withMigratedDecryptedStackEnvironment
+        authentication
+        repoRoot
+        awsSesPulumiStackRef
+        legacy
+        environment
+        action
 
 awsSesLegacyPulumiBackend
   :: FilePath -> FilePath -> Credentials -> IO (Maybe LegacyPulumiBackend)
@@ -1239,10 +902,6 @@ pulumiStackSelect projectDir environment createIfMissing =
                   | otherwise ->
                       PulumiStackSelectFailed (renderProcessDetail output)
 
-pulumiUp :: FilePath -> [(String, String)] -> IO ExitCode
-pulumiUp projectDir environment =
-  runPulumiCommand projectDir environment ["up", "--yes", "--stack", awsSesStackName]
-
 pulumiDestroyQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
 pulumiDestroyQuiet projectDir environment =
   runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsSesStackName]
@@ -1254,451 +913,10 @@ pulumiStackRemoveQuiet projectDir environment force =
     environment
     (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsSesStackName])
 
-pulumiStackOutputs :: FilePath -> [(String, String)] -> IO (Either String Value)
-pulumiStackOutputs projectDir environment = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "pulumi"
-        , subprocessArguments = ["stack", "output", "--json", "--stack", awsSesStackName]
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just projectDir
-        }
-  case result of
-    Failure err -> pure (Left ("failed to run pulumi stack output: " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure (Left ("pulumi stack output failed: " ++ trim (processStderr output)))
-        ExitSuccess ->
-          case eitherDecode (BL8.pack (processStdout output)) of
-            Left err -> pure (Left ("failed to parse pulumi output JSON: " ++ err))
-            Right value -> pure (Right value)
-
-data AwsSesLeaseTransaction = AwsSesLeaseTransaction
-  { awsSesTransactionRepoRoot :: !FilePath
-  , awsSesTransactionRetainedMaterial :: !HostDirectPulumiMaterial
-  , awsSesTransactionAuthority :: !LongLivedCheckpointAuthority
-  , awsSesTransactionPolicy :: !LeasePolicy
-  , awsSesTransactionLeaseCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
-  , awsSesTransactionLeaseKey :: !LeaseKey
-  , awsSesTransactionTargetCoordinate :: !TargetIntentCoordinate
-  , awsSesTransactionInterpreter :: !(LeaseInterpreter IO (Maybe AwsSesPresenceInventory))
-  , awsSesTransactionStackConfig :: !AwsSesStackConfig
-  , awsSesTransactionOperationalCredentials :: !Credentials
-  , awsSesTransactionProjectDir :: !FilePath
-  }
-
-leaseRuntimePollMicros :: Int
-leaseRuntimePollMicros = 1000000
-
--- | Acquire the retained account-scoped lease, recover any predecessor's
--- cross-authority intent, run the caller, and owner/fence-release on every
--- ordinary, exceptional, or asynchronous exit.
-withAwsSesLeaseTransaction
-  :: FilePath
-  -> AwsSesTargetSelection
-  -> (AwsSesLeaseTransaction -> LeaseGrant -> IO (Either String value))
-  -> IO (Either String value)
-withAwsSesLeaseTransaction repoRoot selection action = do
-  operationalResult <- loadOperationalAwsCredentials repoRoot
-  authorityResult <- resolveLongLivedCheckpointAuthority repoRoot
-  case (operationalResult, authorityResult) of
-    (Left err, _) -> pure (Left ("load operational AWS credentials: " ++ err))
-    (_, Left err) -> pure (Left err)
-    (Right operationalCredentials, Right authority) ->
-      runAwsSesLeaseTransaction
-        repoRoot
-        authority
-        operationalCredentials
-        selection
-        action
-
--- | The explicit-authority transaction boundary used by capability-derived
--- retained SES preparation.  It deliberately does not resolve or infer the
--- authority from repository state; all lease, checkpoint, recovery, and
--- target-intent operations use the supplied retained authority.
-withAwsSesLeaseTransactionForAuthority
-  :: FilePath
-  -> LongLivedCheckpointAuthority
-  -> AwsSesTargetSelection
-  -> (AwsSesLeaseTransaction -> LeaseGrant -> IO (Either String value))
-  -> IO (Either String value)
-withAwsSesLeaseTransactionForAuthority repoRoot authority selection action = do
-  operationalResult <- loadOperationalAwsCredentials repoRoot
-  case operationalResult of
-    Left err -> pure (Left ("load operational AWS credentials: " ++ err))
-    Right operationalCredentials ->
-      runAwsSesLeaseTransaction
-        repoRoot
-        authority
-        operationalCredentials
-        selection
-        action
-
-runAwsSesLeaseTransaction
-  :: FilePath
-  -> LongLivedCheckpointAuthority
-  -> Credentials
-  -> AwsSesTargetSelection
-  -> (AwsSesLeaseTransaction -> LeaseGrant -> IO (Either String value))
-  -> IO (Either String value)
-runAwsSesLeaseTransaction repoRoot authority operationalCredentials selection action = do
-  let projectDir = awsSesPulumiProjectDir repoRoot
-      policy = defaultSesLeasePolicy
-  configResult <-
-    resolveAwsSesStackConfigForCredentials repoRoot operationalCredentials
-  keyResult <- discoverAwsSesLeaseKey operationalCredentials
-  case (configResult, keyResult) of
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left ("discover aws-ses lease identity: " ++ show err))
-    (Right stackConfig, Right leaseKey) ->
-      case mkTargetIntentCoordinate authority leaseKey of
-        Left err -> pure (Left ("resolve target-intent coordinate: " ++ show err))
-        Right targetCoordinate -> do
-          materialResult <- resolveHostDirectPulumiMaterial repoRoot
-          case materialResult of
-            Left err -> pure (Left ("resolve retained authority material: " ++ err))
-            Right retainedMaterial -> do
-              providerEnvironment <- pulumiSesProviderBaseEnv operationalCredentials
-              let leaseAdapter =
-                    materialHostDirectModelBCasAdapter
-                      retainedMaterial
-                      authority
-                      (leaseProjectionModelBCodec policy)
-              case mkProductionLeaseRuntime
-                authority
-                leaseAdapter
-                policy
-                (fromIntegral leaseRuntimePollMicros)
-                ( observeAwsSesProviderQuiescence
-                    projectDir
-                    (awsCliCredsFromProviderEnv providerEnvironment)
-                    stackConfig
-                ) of
-                Left err -> pure (Left ("configure aws-ses lease runtime: " ++ show err))
-                Right runtime -> do
-                  requestResult <- beginProductionLeaseAcquire authority policy leaseKey
-                  case requestResult of
-                    Left err -> pure (Left ("begin aws-ses lease acquisition: " ++ show err))
-                    Right request -> do
-                      let interpreter = productionLeaseInterpreter runtime
-                          leaseCoordinate = leaseAcquireCoordinate request
-                      acquisitionResult <- acquireLeaseDetailedWith interpreter policy request
-                      case acquisitionResult of
-                        Left err -> pure (Left ("acquire aws-ses lease: " ++ show err))
-                        Right acquisition ->
-                          runAcquiredLease
-                            interpreter
-                            policy
-                            leaseCoordinate
-                            (leaseAcquisitionGrant acquisition)
-                            ( do
-                                recovery <-
-                                  recoverAwsSesTargetIntents
-                                    retainedMaterial
-                                    authority
-                                    interpreter
-                                    policy
-                                    leaseCoordinate
-                                    (leaseAcquisitionGrant acquisition)
-                                    (leaseAcquisitionRecoveryPredecessor acquisition)
-                                    selection
-                                    targetCoordinate
-                                case recovery of
-                                  Left err -> pure (Left err)
-                                  Right () ->
-                                    action
-                                      AwsSesLeaseTransaction
-                                        { awsSesTransactionRepoRoot = repoRoot
-                                        , awsSesTransactionRetainedMaterial = retainedMaterial
-                                        , awsSesTransactionAuthority = authority
-                                        , awsSesTransactionPolicy = policy
-                                        , awsSesTransactionLeaseCoordinate = leaseCoordinate
-                                        , awsSesTransactionLeaseKey = leaseKey
-                                        , awsSesTransactionTargetCoordinate = targetCoordinate
-                                        , awsSesTransactionInterpreter = interpreter
-                                        , awsSesTransactionStackConfig = stackConfig
-                                        , awsSesTransactionOperationalCredentials = operationalCredentials
-                                        , awsSesTransactionProjectDir = projectDir
-                                        }
-                                      (leaseAcquisitionGrant acquisition)
-                            )
-
-runAcquiredLease
-  :: LeaseInterpreter IO inventory
-  -> LeasePolicy
-  -> ModelBObjectCoordinate 'ClusterRetained
-  -> LeaseGrant
-  -> IO (Either String value)
-  -> IO (Either String value)
-runAcquiredLease interpreter policy coordinate grant action =
-  mask $ \restore -> do
-    actionResult <- tryAny (restore action)
-    releaseResult <- releaseLeaseWith interpreter policy coordinate grant
-    case actionResult of
-      Left exception -> do
-        case releaseResult of
-          Left releaseError ->
-            writeDiagnosticLine
-              ( "aws-ses lease release also failed during exception cleanup: "
-                  ++ show releaseError
-              )
-          Right () -> pure ()
-        throwIO exception
-      Right (Left actionError) ->
-        pure $ case releaseResult of
-          Left releaseError ->
-            Left
-              ( actionError
-                  ++ "; aws-ses lease release also failed: "
-                  ++ show releaseError
-              )
-          Right () -> Left actionError
-      Right (Right value) ->
-        pure $ case releaseResult of
-          Left releaseError ->
-            Left ("aws-ses lease release failed: " ++ show releaseError)
-          Right () -> Right value
-
-tryAny :: IO value -> IO (Either SomeException value)
-tryAny = try
-
-observeAwsSesProviderQuiescence
-  :: FilePath
-  -> [(String, String)]
-  -> AwsSesStackConfig
-  -> IO (ProviderObservation (Maybe AwsSesPresenceInventory))
-observeAwsSesProviderQuiescence projectDir environment stackConfig = do
-  observed <- observeAwsSesPresenceWith projectDir environment stackConfig
-  pure $ case observed of
-    ResidueStatus.PresenceAbsent -> ProviderQuiescent Nothing
-    ResidueStatus.PresencePresent inventory -> ProviderQuiescent (Just inventory)
-    ResidueStatus.PresenceUnobservable failure ->
-      ProviderUnobservable (Text.pack (show failure))
-
-recoverAwsSesTargetIntents
-  :: HostDirectPulumiMaterial
-  -> LongLivedCheckpointAuthority
-  -> LeaseInterpreter IO inventory
-  -> LeasePolicy
-  -> ModelBObjectCoordinate 'ClusterRetained
-  -> LeaseGrant
-  -> Maybe LeaseRecoveryPredecessor
-  -> AwsSesTargetSelection
-  -> TargetIntentCoordinate
-  -> IO (Either String ())
-recoverAwsSesTargetIntents _ _ _ _ _ _ Nothing _ _ = pure (Right ())
-recoverAwsSesTargetIntents retainedMaterial authority leaseInterpreter policy leaseCoordinate currentGrant (Just predecessor) selection coordinate = do
-  let base =
-        targetCommitInterpreterFor
-          retainedMaterial
-          authority
-          leaseInterpreter
-          leaseCoordinate
-          currentGrant
-          selection
-      recovery =
-        TargetRecoveryInterpreter
-          { targetRecoveryBaseInterpreter = base
-          , targetRecoveryWaitUntil =
-              waitForGatewayAuthorityTime authority leaseRuntimePollMicros
-          , targetRecoveryWaitFor = waitForAuthorityDuration authority
-          }
-  result <-
-    runSuccessorTargetRecoveryAfter
-      recovery
-      (awsSesRegisteredTargets selection)
-      coordinate
-      policy
-      (leaseRecoveryNotBefore predecessor)
-  pure (first (("recover predecessor target intents: " ++) . show) (void result))
-
-waitForAuthorityDuration
-  :: LongLivedCheckpointAuthority
-  -> AuthorityDuration
-  -> IO (Either Text.Text ())
-waitForAuthorityDuration authority duration = do
-  nowResult <- observeGatewayAuthorityTime authority
-  case nowResult of
-    Left err -> pure (Left err)
-    Right now ->
-      waitForGatewayAuthorityTime
-        authority
-        leaseRuntimePollMicros
-        (addAuthorityDuration now duration)
-
-targetCommitInterpreterFor
-  :: HostDirectPulumiMaterial
-  -> LongLivedCheckpointAuthority
-  -> LeaseInterpreter IO inventory
-  -> ModelBObjectCoordinate 'ClusterRetained
-  -> LeaseGrant
-  -> AwsSesTargetSelection
-  -> TargetCommitInterpreter IO (Map Text.Text Text.Text)
-targetCommitInterpreterFor retainedMaterial authority leaseInterpreter leaseCoordinate grant selection =
-  TargetCommitInterpreter
-    { targetCommitGlobalAdapter =
-        materialHostDirectModelBCasAdapter
-          retainedMaterial
-          authority
-          (targetIntentModelBCodec (awsSesRegisteredTargets selection))
-    , targetCommitSinkAdapter = gatewayTargetSecretAdapter
-    , targetCommitCurrentPermit =
-        first (Text.pack . show)
-          <$> fencedCommitPermitWith leaseInterpreter leaseCoordinate grant
-    , targetCommitCurrentAuthorityTime = observeGatewayAuthorityTime authority
-    , targetCommitDigestPayload = smtpTargetPayloadDigest
-    }
-
-smtpTargetPayloadDigest :: Map Text.Text Text.Text -> TargetValueDigest
-smtpTargetPayloadDigest =
-  sha256TargetValueDigest
-    . BL.toStrict
-    . serialise
-    . Map.toAscList
-
--- | Re-materialize already committed SMTP material into the selected target.
--- Unlike the retired Pulumi-output path, this never reads a secret output or
--- writes Vault with a host root token.
-syncKeycloakSmtpChartSecrets :: FilePath -> IO (Either String ())
-syncKeycloakSmtpChartSecrets repoRoot = do
-  authorityResult <- resolveLongLivedCheckpointAuthority repoRoot
-  case authorityResult >>= defaultAwsSesTargetSelection of
-    Left err -> pure (Left err)
-    Right selection -> syncKeycloakSmtpChartSecretsForTarget repoRoot selection
-
-syncKeycloakSmtpChartSecretsForTarget
-  :: FilePath -> AwsSesTargetSelection -> IO (Either String ())
-syncKeycloakSmtpChartSecretsForTarget repoRoot selection =
-  withAwsSesLeaseTransaction repoRoot selection $ \transaction grant ->
-    runLeaseWorkAsString
-      (awsSesTransactionInterpreter transaction)
-      (awsSesTransactionPolicy transaction)
-      (awsSesTransactionLeaseCoordinate transaction)
-      LeaseSmtpCommitWork
-      grant
-      ( \permit -> do
-          committed <- observeCommittedSmtpProjection transaction
-          case committed of
-            Left err -> pure (Left (Text.pack err))
-            Right projection ->
-              first Text.pack
-                <$> materializeCommittedSmtp
-                  transaction
-                  selection
-                  grant
-                  permit
-                  projection
-      )
-
-observeCommittedSmtpProjection
-  :: AwsSesLeaseTransaction -> IO (Either String SmtpCommittedProjection)
-observeCommittedSmtpProjection transaction = do
-  leaseKeyResult <-
-    discoverAwsSesLeaseKey (awsSesTransactionOperationalCredentials transaction)
-  case leaseKeyResult of
-    Left err -> pure (Left (show err))
-    Right leaseKey ->
-      case awsSesSmtpCommitCoordinate (awsSesTransactionAuthority transaction) leaseKey of
-        Left err -> pure (Left (show err))
-        Right coordinate -> do
-          observed <-
-            modelBObserve
-              ( materialHostDirectModelBCasAdapter
-                  (awsSesTransactionRetainedMaterial transaction)
-                  (awsSesTransactionAuthority transaction)
-                  smtpCommittedModelBCodec
-              )
-              coordinate
-          pure $ case observed of
-            ModelBObserved _ committed -> Right committed
-            ModelBMissing ->
-              Left "no fenced SMTP credential is committed; reconcile aws-ses first"
-            ModelBCorrupt detail -> Left ("SMTP committed projection is corrupt: " ++ Text.unpack detail)
-            ModelBUnobservable detail -> Left ("SMTP committed projection is unobservable: " ++ Text.unpack detail)
-
-runLeaseWorkAsString
-  :: LeaseInterpreter IO inventory
-  -> LeasePolicy
-  -> ModelBObjectCoordinate 'ClusterRetained
-  -> LeaseWork
-  -> LeaseGrant
-  -> (LeaseUsePermit -> IO (Either Text.Text value))
-  -> IO (Either String value)
-runLeaseWorkAsString interpreter policy coordinate work grant action =
-  first show
-    <$> runLeaseWorkWith interpreter policy coordinate work grant action
-
-materializeCommittedSmtp
-  :: AwsSesLeaseTransaction
-  -> AwsSesTargetSelection
-  -> LeaseGrant
-  -> LeaseUsePermit
-  -> SmtpCommittedProjection
-  -> IO (Either String ())
-materializeCommittedSmtp transaction selection grant permit committed =
-  case smtpVaultFieldsFromCommitted (awsSesTransactionStackConfig transaction) committed of
-    Left err -> pure (Left err)
-    Right fields -> do
-      let digest = smtpTargetPayloadDigest fields
-          targetInterpreter =
-            targetCommitInterpreterFor
-              (awsSesTransactionRetainedMaterial transaction)
-              (awsSesTransactionAuthority transaction)
-              (awsSesTransactionInterpreter transaction)
-              (awsSesTransactionLeaseCoordinate transaction)
-              grant
-              selection
-      result <-
-        runPreparedTargetCommit
-          targetInterpreter
-          (awsSesRegisteredTargets selection)
-          (awsSesTransactionTargetCoordinate transaction)
-          (awsSesSelectedTarget selection)
-          (committedSmtpCredentialGeneration committed)
-          digest
-          (leaseUseDeadline permit)
-          fields
-      pure (first (("materialize fenced SMTP target: " ++) . show) (void result))
-
-smtpVaultFieldsFromCommitted
-  :: AwsSesStackConfig
-  -> SmtpCommittedProjection
-  -> Either String (Map Text.Text Text.Text)
-smtpVaultFieldsFromCommitted stackConfig committed = do
-  material <-
-    maybe
-      (Left "committed SMTP credential has no recoverable secret material")
-      Right
-      (committedSmtpCredentialMaterial committed)
-  secretText <-
-    first
-      (const "committed SMTP credential secret material is not valid UTF-8")
-      (TextEncoding.decodeUtf8' material)
-  pure
-    ( keycloakSmtpVaultFields
-        (sesStackAwsRegion stackConfig)
-        (sesStackSenderDomain stackConfig)
-        ("email-smtp." ++ sesStackAwsRegion stackConfig ++ ".amazonaws.com")
-        (Text.unpack (smtpAccessKeyIdText (committedSmtpCredentialKeyId committed)))
-        (Text.unpack secretText)
-    )
-
-keycloakSmtpVaultFields
-  :: String -> String -> String -> String -> String -> Map Text.Text Text.Text
-keycloakSmtpVaultFields awsRegion senderDomain smtpEndpoint smtpAccessKeyId smtpSecret =
-  let region = Text.pack awsRegion
-      fromAddress = Text.pack ("noreply@" ++ senderDomain)
-   in Map.fromList
-        [ ("host", Text.pack smtpEndpoint)
-        , ("port", "587")
-        , ("from", fromAddress)
-        , ("from_display_name", "prodbox")
-        , ("reply_to", fromAddress)
-        , ("username", Text.pack smtpAccessKeyId)
-        , ("password", derivedSesSmtpPassword region (Text.pack smtpSecret))
-        ]
+-- | Compatibility name for the common caller-bound Lifecycle Authority
+-- authentication capability. The constructor stays opaque; production callers
+-- obtain it only from the explicit host provisioner.
+type AwsSesLifecycleAuthorityAuthentication = LifecycleAuthorityAuthentication
 
 runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runPulumiCommand projectDir environment arguments = do
@@ -1781,612 +999,87 @@ trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
 -- backend survives only as an optional first-touch migration source.
 ensureAwsSesStackResources :: FilePath -> IO ExitCode
 ensureAwsSesStackResources repoRoot = do
-  authorityResult <- resolveLongLivedCheckpointAuthority repoRoot
-  case authorityResult >>= defaultAwsSesTargetSelection of
-    Left err -> failWith err
-    Right selection -> ensureAwsSesStackResourcesForTarget repoRoot selection
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> ensureAwsSesStackResourcesWithAuthentication authentication repoRoot)
+  case authenticated of
+    Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+    Right exitCode -> pure exitCode
 
-ensureAwsSesStackResourcesForTarget
-  :: FilePath -> AwsSesTargetSelection -> IO ExitCode
-ensureAwsSesStackResourcesForTarget repoRoot selection = do
-  let projectDir = awsSesPulumiProjectDir repoRoot
-  projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
-  if not projectExists
-    then failWith ("Pulumi AWS SES project missing: " ++ projectDir)
-    else do
-      result <-
-        withAwsSesLeaseTransaction repoRoot selection $ \transaction grant ->
-          runAwsSesTransactionStagesWith
-            (runAwsSesTransactionStage selection transaction grant)
-      case result of
-        Left err -> failWith err
-        Right () -> pure ExitSuccess
-
--- | Capability-derived retained SES preparation with both authorities made
--- explicit.  The selected registry is revalidated against the supplied
--- retained authority before any credentials are loaded or lease is acquired,
--- and the transaction never re-resolves that authority from ambient state.
-ensureAwsSesStackResourcesForAuthorityAndTarget
-  :: FilePath
-  -> LongLivedCheckpointAuthority
-  -> AwsSesTargetSelection
+ensureAwsSesStackResourcesWithAuthentication
+  :: AwsSesLifecycleAuthorityAuthentication
+  -> FilePath
   -> IO ExitCode
-ensureAwsSesStackResourcesForAuthorityAndTarget repoRoot authority selection =
-  case awsSesTargetSelectionForSink authority (awsSesSelectedTarget selection) of
+ensureAwsSesStackResourcesWithAuthentication authentication repoRoot = do
+  configResult <- loadConfigFile repoRoot
+  case configResult >>= awsSesProviderIntents of
     Left err -> failWith err
-    Right canonicalSelection
-      | canonicalSelection /= selection ->
-          failWith
-            "selected SES target registry does not match the supplied retained authority"
-      | otherwise -> do
-          let projectDir = awsSesPulumiProjectDir repoRoot
-          projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
-          if not projectExists
-            then failWith ("Pulumi AWS SES project missing: " ++ projectDir)
-            else do
-              result <-
-                withAwsSesLeaseTransactionForAuthority
-                  repoRoot
-                  authority
-                  selection
-                  ( \transaction grant ->
-                      runAwsSesTransactionStagesWith
-                        (runAwsSesTransactionStage selection transaction grant)
-                  )
-              case result of
-                Left err -> failWith err
-                Right () -> pure ExitSuccess
-
-runAwsSesTransactionStage
-  :: AwsSesTargetSelection
-  -> AwsSesLeaseTransaction
-  -> LeaseGrant
-  -> AwsSesTransactionStage
-  -> IO (Either String ())
-runAwsSesTransactionStage selection transaction grant stage =
-  case stage of
-    AwsSesStageReconcile -> runAwsSesReconcileStage transaction grant
-    AwsSesStageAwaitReady -> runAwsSesReadinessStage transaction grant
-    AwsSesStageRepairAndMaterializeSmtp ->
-      runAwsSesSmtpStage selection transaction grant
-
--- | Interpret the exact production stage list with fail-fast sequencing.
--- This is the injected production seam used by tests to prove an await-stage
--- timeout, hard semantic failure, or unobservable result cannot reach SMTP
--- repair/materialization.  There is deliberately no destroy stage: ordinary
--- failure unwinds through the enclosing lease release while retaining the
--- long-lived stack.
-runAwsSesTransactionStagesWith
-  :: (Monad m)
-  => (AwsSesTransactionStage -> m (Either errorValue ()))
-  -> m (Either errorValue ())
-runAwsSesTransactionStagesWith runStage = go awsSesDesiredPresentStages
+    Right intents -> dispatchProviderIntents intents
  where
-  go [] = pure (Right ())
-  go (stage : remaining) = do
-    result <- runStage stage
+  dispatchProviderIntents [] = pure ExitSuccess
+  dispatchProviderIntents ((label, prefix, intent) : remaining) = do
+    result <-
+      dispatchAuthenticatedProviderIntentFresh
+        authentication
+        prefix
+        intent
     case result of
-      Left err -> pure (Left err)
-      Right () -> go remaining
+      Left err -> failWith (renderProviderCallerError err)
+      Right evidence -> do
+        writeOutputLine (label ++ Text.unpack evidence)
+        dispatchProviderIntents remaining
 
-runAwsSesReconcileStage
-  :: AwsSesLeaseTransaction -> LeaseGrant -> IO (Either String ())
-runAwsSesReconcileStage transaction grant =
-  runLeaseWorkAsString
-    (awsSesTransactionInterpreter transaction)
-    (awsSesTransactionPolicy transaction)
-    (awsSesTransactionLeaseCoordinate transaction)
-    LeaseReconcileWork
-    grant
-    ( \permit -> do
-        sessionResult <- mintAwsSesWorkSession transaction permit
-        case sessionResult of
-          Left err -> pure (Left err)
-          Right sessionCredentials -> do
-            baseEnvironment <- pulumiSesProviderBaseEnv sessionCredentials
-            result <-
-              reconcileAwsSesDesiredPresence
-                transaction
-                grant
-                sessionCredentials
-                baseEnvironment
-            pure (first Text.pack result)
-    )
+awsSesProviderIntents
+  :: ConfigFile
+  -> Either String [(String, Text.Text, ProviderIntent)]
+awsSesProviderIntents config = do
+  validateAwsBootstrapConfig config
+  let sesConfig = ses config
+      sender = Text.strip (sender_domain sesConfig)
+      recipient = Text.strip (receive_subdomain sesConfig)
+      bucketName = Text.strip (capture_bucket sesConfig)
+      hostedZoneId = Text.strip (zone_id (route53 config))
+  identity <- first show (mkSesIdentityRef sender)
+  bucket <- first show (mkSesBucketRef bucketName)
+  dns <- first show (mkSesDnsRef hostedZoneId sender recipient)
+  rules <-
+    first
+      show
+      ( mkSesRuleSetRef
+          (Text.pack sesReceiveRuleSetName)
+          recipient
+          bucketName
+      )
+  pure
+    [
+      ( "AWS SES sending-identity Provider receipt: "
+      , "operator-reconcile-ses-identity"
+      , ReconcileSesSendingIdentity identity
+      )
+    ,
+      ( "AWS SES DKIM Provider receipt: "
+      , "operator-reconcile-ses-dkim"
+      , ReconcileSesDkim identity
+      )
+    ,
+      ( "AWS SES DNS Provider receipt: "
+      , "operator-reconcile-ses-dns"
+      , ReconcileSesDns dns
+      )
+    ,
+      ( "AWS SES capture-bucket Provider receipt: "
+      , "operator-reconcile-ses-capture"
+      , ReconcileSesCaptureBucket bucket
+      )
+    ,
+      ( "AWS SES receipt-rules Provider receipt: "
+      , "operator-reconcile-ses-rules"
+      , ReconcileSesReceiptRules rules
+      )
+    ]
 
-reconcileAwsSesDesiredPresence
-  :: AwsSesLeaseTransaction
-  -> LeaseGrant
-  -> Credentials
-  -> [(String, String)]
-  -> IO (Either String ())
-reconcileAwsSesDesiredPresence transaction grant sessionCredentials baseEnvironment =
-  case awsSesCheckpointCoordinate (awsSesTransactionAuthority transaction) of
-    Left err -> pure (Left err)
-    Right checkpointCoordinate -> do
-      legacy <-
-        awsSesLegacyPulumiBackend
-          (awsSesTransactionRepoRoot transaction)
-          (awsSesTransactionProjectDir transaction)
-          sessionCredentials
-      let authority = awsSesTransactionAuthority transaction
-          checkpointAdapter =
-            gatewayModelBCasAdapter authority byteStringModelBCodec
-          leaseInterpreter = awsSesTransactionInterpreter transaction
-          leaseCoordinate = awsSesTransactionLeaseCoordinate transaction
-          projectDir = awsSesTransactionProjectDir transaction
-          stackConfig = awsSesTransactionStackConfig transaction
-          awsEnvironment = awsCliCredsFromProviderEnv baseEnvironment
-          authorizeCheckpoint =
-            first show
-              <$> fencedCommitPermitWith leaseInterpreter leaseCoordinate grant
-      result <-
-        DesiredPresence.reconcileDesiredPresence
-          DesiredPresence.DesiredPresenceHooks
-            { DesiredPresence.observeDesiredResourcePresence =
-                observeAwsSesPresenceWith projectDir awsEnvironment stackConfig
-            , DesiredPresence.observeDesiredResourceCheckpoint =
-                observeAwsSesCheckpointWith checkpointAdapter checkpointCoordinate
-            , DesiredPresence.enactDesiredPresenceAction = \desiredAction -> do
-                writeOutputLine
-                  ( "AWS SES desired-present action: "
-                      ++ renderAwsSesDesiredPresenceAction desiredAction
-                  )
-                backendResult <-
-                  withFencedDecryptedStackEnvironment
-                    checkpointAdapter
-                    checkpointCoordinate
-                    leaseCoordinate
-                    legacy
-                    awsSesPulumiStackRef
-                    baseEnvironment
-                    authorizeCheckpoint
-                    ( \environment ->
-                        runEnsureAwsSesPulumiCycle
-                          projectDir
-                          environment
-                          stackConfig
-                    )
-                pure (first renderEncryptedBackendError backendResult)
-            }
-      pure $ case result of
-        Left failure ->
-          Left
-            ( "aws-ses desired-present reconcile refused or failed: "
-                ++ show failure
-            )
-        Right _ -> Right ()
-
-runAwsSesReadinessStage
-  :: AwsSesLeaseTransaction -> LeaseGrant -> IO (Either String ())
-runAwsSesReadinessStage transaction grant =
-  runLeaseWorkAsString
-    (awsSesTransactionInterpreter transaction)
-    (awsSesTransactionPolicy transaction)
-    (awsSesTransactionLeaseCoordinate transaction)
-    LeaseReadinessWork
-    grant
-    ( \permit -> do
-        sessionResult <- mintAwsSesWorkSession transaction permit
-        case sessionResult of
-          Left err -> pure (Left err)
-          Right sessionCredentials -> do
-            controlPlaneBaseEnvironment <- pulumiSesProviderBaseEnv sessionCredentials
-            captureBaseEnvironment <-
-              pulumiSesProviderBaseEnv (awsSesTransactionOperationalCredentials transaction)
-            let readinessEnvironments =
-                  AwsSesReadinessEnvironments
-                    { awsSesControlPlaneEnvironment =
-                        awsCliCredsFromProviderEnv controlPlaneBaseEnvironment
-                    , awsSesCaptureEnvironment =
-                        awsCliCredsFromProviderEnv captureBaseEnvironment
-                    }
-            case awsSesReadinessExpectationForConfig (awsSesTransactionStackConfig transaction) of
-              Left err -> pure (Left (Text.pack err))
-              Right expectation -> do
-                readinessResult <-
-                  pollAwsSesReadiness canonicalAwsSesPropagationPolicy $
-                    observeAwsSesReadinessAfterProviderPresence
-                      transaction
-                      readinessEnvironments
-                      expectation
-                case readinessResult of
-                  Left failure ->
-                    pure (Left (Text.pack (renderAwsSesReadinessPollFailure failure)))
-                  Right () -> do
-                    writeOutputLine
-                      "AWS SES semantic readiness: exact sender, MX, receipt rule, and operational capture list/get are Ready."
-                    pure (Right ())
-    )
-
-awsSesReadinessExpectationForConfig
-  :: AwsSesStackConfig -> Either String AwsSesReadinessExpectation
-awsSesReadinessExpectationForConfig stackConfig =
-  mkAwsSesReadinessExpectation
-    (sesStackSenderDomain stackConfig)
-    (sesStackParentZoneId stackConfig)
-    (sesStackAwsRegion stackConfig)
-    (sesStackReceiveSubdomain stackConfig)
-    (sesStackCaptureBucket stackConfig)
-
--- | One poll attempt first proves the complete typed provider inventory, then
--- and only then performs semantic reconnaissance.  Missing provider resources
--- are a propagation 'Pending'; inability to observe them is terminal and
--- fail-closed.  Both layers therefore share the same bounded poll and preserve
--- the final structured reason before the enclosing lease-work deadline.
-observeAwsSesReadinessAfterProviderPresence
-  :: AwsSesLeaseTransaction
-  -> AwsSesReadinessEnvironments
-  -> AwsSesReadinessExpectation
-  -> IO AwsSesReadiness
-observeAwsSesReadinessAfterProviderPresence transaction environments expectation = do
-  providerThenSemanticReadiness observeProvider observeSemantic
- where
-  observeProvider = do
-    observed <-
-      observeAwsSesPresenceWith
-        (awsSesTransactionProjectDir transaction)
-        (awsSesControlPlaneEnvironment environments)
-        (awsSesTransactionStackConfig transaction)
-    pure $
-      case observed of
-        ResidueStatus.PresencePresent inventory
-          | awsSesPresenceInventoryComplete inventory -> AwsSesProviderReady
-          | otherwise ->
-              AwsSesProviderPending
-                ( "registered resources currently visible: "
-                    ++ show (awsSesPresentResources inventory)
-                )
-        ResidueStatus.PresenceAbsent ->
-          AwsSesProviderPending "no registered AWS SES resources are currently visible"
-        ResidueStatus.PresenceUnobservable failure ->
-          AwsSesProviderUnobservable
-            ("provider inventory is unobservable: " ++ renderObservationFailure failure)
-
-  observeSemantic =
-    observeAwsSesReadiness
-      (awsSesTransactionProjectDir transaction)
-      environments
-      expectation
-      AwsSesCompleteReadiness
-
-runAwsSesSmtpStage
-  :: AwsSesTargetSelection
-  -> AwsSesLeaseTransaction
-  -> LeaseGrant
-  -> IO (Either String ())
-runAwsSesSmtpStage selection transaction grant =
-  runLeaseWorkAsString
-    (awsSesTransactionInterpreter transaction)
-    (awsSesTransactionPolicy transaction)
-    (awsSesTransactionLeaseCoordinate transaction)
-    LeaseSmtpCommitWork
-    grant
-    ( \permit -> do
-        sessionResult <- mintAwsSesWorkSession transaction permit
-        case sessionResult of
-          Left err -> pure (Left err)
-          Right sessionCredentials -> do
-            baseEnvironment <- pulumiSesProviderBaseEnv sessionCredentials
-            repairResult <-
-              repairAwsSesSmtpCredential
-                transaction
-                grant
-                (awsCliCredsFromProviderEnv baseEnvironment)
-            case repairResult of
-              Left err -> pure (Left (Text.pack err))
-              Right committed ->
-                first Text.pack
-                  <$> materializeCommittedSmtp
-                    transaction
-                    selection
-                    grant
-                    permit
-                    committed
-    )
-
-repairAwsSesSmtpCredential
-  :: AwsSesLeaseTransaction
-  -> LeaseGrant
-  -> [(String, String)]
-  -> IO (Either String SmtpCommittedProjection)
-repairAwsSesSmtpCredential transaction grant environment =
-  case ( awsSesSmtpCommitCoordinate
-           (awsSesTransactionAuthority transaction)
-           (awsSesTransactionLeaseKey transaction)
-       , mkSmtpKeyInventoryBound 2
-       ) of
-    (Left err, _) -> pure (Left (show err))
-    (_, Left err) -> pure (Left (show err))
-    (Right projectionCoordinate, Right inventoryBound) -> do
-      let authority = awsSesTransactionAuthority transaction
-          leaseCoordinate = awsSesTransactionLeaseCoordinate transaction
-          leaseInterpreter = awsSesTransactionInterpreter transaction
-          smtpInterpreter =
-            SmtpKeyRepairInterpreter
-              { smtpKeyRepairModelB =
-                  materialHostDirectModelBCasAdapter
-                    (awsSesTransactionRetainedMaterial transaction)
-                    authority
-                    smtpCommittedModelBCodec
-              , smtpKeyRepairOperationModelB =
-                  materialHostDirectModelBCasAdapter
-                    (awsSesTransactionRetainedMaterial transaction)
-                    authority
-                    (operationRecordCodec 16384)
-              , smtpKeyRepairAuthorityNow = observeGatewayAuthorityTime authority
-              , smtpKeyRepairWaitUntil =
-                  waitForGatewayAuthorityTime authority leaseRuntimePollMicros
-              , smtpKeyRepairObserveInventory =
-                  observeAwsSesSmtpKeyInventory
-                    (awsSesTransactionProjectDir transaction)
-                    environment
-              , smtpKeyRepairDeleteKey =
-                  deleteAwsSesSmtpAccessKey
-                    (awsSesTransactionProjectDir transaction)
-                    environment
-              , smtpKeyRepairFreshFencedPermit =
-                  first (Text.pack . show)
-                    <$> fencedCommitPermitWith leaseInterpreter leaseCoordinate grant
-              , smtpKeyRepairCreateKey = \_ ->
-                  createAwsSesSmtpAccessKey
-                    (awsSesTransactionProjectDir transaction)
-                    environment
-              , smtpKeyRepairDigestMaterial = smtpKeyMaterialDigest
-              }
-          request =
-            SmtpKeyRepairRequest
-              { smtpKeyRepairProjectionCoordinate = projectionCoordinate
-              , smtpKeyRepairLeaseCoordinate = leaseCoordinate
-              , smtpKeyRepairOperationCoordinate =
-                  awsSesSmtpOperationCoordinate
-                    authority
-                    (awsSesTransactionLeaseKey transaction)
-              , smtpKeyRepairInventoryBound = inventoryBound
-              , smtpKeyRepairLeasePolicy = awsSesTransactionPolicy transaction
-              }
-      result <- runSmtpKeyRepairWith smtpInterpreter request
-      pure
-        ( first
-            (("repair fenced SES SMTP credential: " ++) . show)
-            (smtpKeyRepairOutcomeCredential <$> result)
-        )
-
-awsSesSmtpOperationCoordinate
-  :: LongLivedCheckpointAuthority
-  -> LeaseKey
-  -> CredentialGeneration
-  -> Either Text.Text (ModelBObjectCoordinate 'ClusterRetained)
-awsSesSmtpOperationCoordinate authority leaseKey generation =
-  first
-    (Text.pack . show)
-    ( mkClusterRetainedCoordinate
-        authority
-        ( "smtp-create-operation/"
-            <> leaseKeyAccount leaseKey
-            <> "/"
-            <> Text.pack (show (credentialGenerationValue generation))
-        )
-    )
-
-mintAwsSesWorkSession
-  :: AwsSesLeaseTransaction
-  -> LeaseUsePermit
-  -> IO (Either Text.Text Credentials)
-mintAwsSesWorkSession transaction permit = do
-  case awsSesLeaseRoleArn (leaseKeyAccount (awsSesTransactionLeaseKey transaction)) of
-    Left err -> pure (Left (Text.pack (show err)))
-    Right roleArn -> do
-      result <-
-        mintLeaseScopedAwsSession
-          (awsSesTransactionAuthority transaction)
-          roleArn
-          (awsSesTransactionPolicy transaction)
-          (awsSesTransactionOperationalCredentials transaction)
-          permit
-          (leasePolicyGrantTtl (awsSesTransactionPolicy transaction))
-      pure (first (Text.pack . show) (leaseScopedAwsCredentials <$> result))
-
-renderAwsSesDesiredPresenceAction
-  :: DesiredPresence.DesiredPresenceAction AwsSesPresenceInventory AwsSesCheckpointSnapshot
-  -> String
-renderAwsSesDesiredPresenceAction action = case action of
-  DesiredPresence.CreateFromAbsentMissingCheckpoint ->
-    "create (AWS absent, checkpoint missing)"
-  DesiredPresence.CreateFromAbsentValidCheckpoint _ ->
-    "create/reconcile (AWS absent, checkpoint valid)"
-  DesiredPresence.CreateFromAbsentCorruptCheckpoint _ ->
-    "create and replace corrupt checkpoint"
-  DesiredPresence.ImportPresentMissingCheckpoint _ ->
-    "import live AWS inventory into missing checkpoint"
-  DesiredPresence.ReconcilePresentValidCheckpoint _ _ ->
-    "reconcile live AWS inventory with valid checkpoint"
-  DesiredPresence.RepairPresentCorruptCheckpoint _ _ ->
-    "repair corrupt checkpoint from live AWS inventory"
-
-runEnsureAwsSesPulumiCycle
-  :: FilePath
-  -> [(String, String)]
-  -> AwsSesStackConfig
-  -> IO (Either String ())
-runEnsureAwsSesPulumiCycle projectDir baseEnvironment stackConfig = do
-  loginExit <- pulumiLogin projectDir baseEnvironment
-  case loginExit of
-    ExitFailure _ -> pure (Left "pulumi login failed")
-    ExitSuccess -> do
-      initialSelect <- pulumiStackSelect projectDir baseEnvironment False
-      case initialSelect of
-        PulumiStackSelectFailed detail ->
-          pure (Left ("pulumi stack select failed: " ++ detail))
-        PulumiStackSelected ->
-          runEnsureAwsSesPulumiUp projectDir baseEnvironment stackConfig
-        PulumiStackMissing -> do
-          createSelect <- pulumiStackSelect projectDir baseEnvironment True
-          case createSelect of
-            PulumiStackMissing ->
-              pure (Left "pulumi stack select reported a missing stack after --create")
-            PulumiStackSelectFailed detail ->
-              pure (Left ("pulumi stack select failed: " ++ detail))
-            PulumiStackSelected -> do
-              repairResult <-
-                recoverAwsSesPulumiStateFromLiveResources
-                  projectDir
-                  baseEnvironment
-                  stackConfig
-              case repairResult of
-                Left err -> pure (Left err)
-                Right () ->
-                  runEnsureAwsSesPulumiUp projectDir baseEnvironment stackConfig
-
-runEnsureAwsSesPulumiUp
-  :: FilePath
-  -> [(String, String)]
-  -> AwsSesStackConfig
-  -> IO (Either String ())
-runEnsureAwsSesPulumiUp projectDir baseEnvironment stackConfig = do
-  syncExit <- syncAwsSesStackConfig projectDir baseEnvironment stackConfig
-  case syncExit of
-    ExitFailure _ -> pure (Left "pulumi config set failed")
-    ExitSuccess -> do
-      upExit <- pulumiUp projectDir baseEnvironment
-      case upExit of
-        ExitFailure _ -> pure (Left "pulumi up failed")
-        ExitSuccess -> do
-          outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-          case outputsResult of
-            Left err -> pure (Left err)
-            Right outputs ->
-              case snapshotFromOutputs outputs of
-                Left err -> pure (Left err)
-                Right snapshot -> do
-                  writeOutput (renderAwsSesStackReport snapshot 0)
-                  pure (Right ())
-
-recoverAwsSesPulumiStateFromLiveResources
-  :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO (Either String ())
-recoverAwsSesPulumiStateFromLiveResources projectDir scratchEnvironment stackConfig = do
-  bucketImport <-
-    repairObservedResource
-      (AwsSesCaptureBucketProbe (sesStackCaptureBucket stackConfig))
-      "AWS SES state repair: importing existing capture bucket into the long-lived Pulumi stack"
-      (pure (Right ()))
-      "aws:s3/bucket:Bucket"
-      "captureBucketResource"
-      (sesStackCaptureBucket stackConfig)
-  case bucketImport of
-    Left err -> pure (Left err)
-    Right () -> do
-      canaryImport <-
-        repairObservedResource
-          (AwsSesCaptureReadinessObjectProbe (sesStackCaptureBucket stackConfig))
-          "AWS SES state repair: importing the existing capture-readiness object into the long-lived Pulumi stack"
-          (pure (Right ()))
-          "aws:s3/bucketObjectv2:BucketObjectv2"
-          "captureReadinessObject"
-          (sesStackCaptureBucket stackConfig ++ "/" ++ sesCaptureReadinessKey)
-      case canaryImport of
-        Left err -> pure (Left err)
-        Right () -> do
-          userImport <-
-            repairObservedResource
-              AwsSesSmtpIamUserProbe
-              "AWS SES state repair: importing existing SMTP IAM user into the long-lived Pulumi stack"
-              (pure (Right ()))
-              "aws:iam/user:User"
-              "smtpUser"
-              sesSmtpUserName
-          case userImport of
-            Left err -> pure (Left err)
-            Right () -> do
-              ruleSetImport <-
-                repairObservedResource
-                  AwsSesReceiveRuleSetProbe
-                  "AWS SES state repair: importing existing SES receipt rule set into the long-lived Pulumi stack"
-                  (pure (Right ()))
-                  "aws:ses/receiptRuleSet:ReceiptRuleSet"
-                  "receiveRuleSet"
-                  sesReceiveRuleSetName
-              case ruleSetImport of
-                Left err -> pure (Left err)
-                Right () ->
-                  repairObservedResource
-                    AwsSesReceiveRuleProbe
-                    "AWS SES state repair: importing existing SES receipt rule into the long-lived Pulumi stack"
-                    (pure (Right ()))
-                    "aws:ses/receiptRule:ReceiptRule"
-                    "receiveRule"
-                    (sesReceiveRuleSetName ++ ":" ++ sesReceiveRuleName)
- where
-  -- Sprint 7.23: the scratch file-backend env strips standard AWS_* creds
-  -- ('Prodbox.Pulumi.EncryptedBackend.fileBackendEnvironment'), but state
-  -- recovery's live-resource probes (`aws` CLI), `pulumi import` (default aws
-  -- provider) need them — otherwise every
-  -- probe fails, nothing is imported, and `pulumi up` tries to CREATE
-  -- already-live resources (EntityAlreadyExists / AlreadyExists /
-  -- BucketAlreadyOwnedByYou). Re-derive AWS_* from the PRODBOX_PULUMI_AWS_*
-  -- provider creds that survive in the scratch env.
-  environment = awsCliCredsFromProviderEnv scratchEnvironment
-  repairObservedResource probe narration beforeImport resourceType resourceName resourceId = do
-    observation <- observeAwsSesPresenceProbe projectDir environment probe
-    case observation of
-      ResidueStatus.PresenceAbsent -> pure (Right ())
-      ResidueStatus.PresenceUnobservable failure ->
-        pure
-          ( Left
-              ( "AWS SES state repair refused because presence is unobservable: "
-                  ++ renderObservationFailure failure
-              )
-          )
-      ResidueStatus.PresencePresent () -> do
-        writeDiagnosticLine narration
-        preparation <- beforeImport
-        case preparation of
-          Left err -> pure (Left err)
-          Right () ->
-            pulumiImportResource
-              projectDir
-              environment
-              resourceType
-              resourceName
-              resourceId
-
-pulumiImportResource
-  :: FilePath -> [(String, String)] -> String -> String -> String -> IO (Either String ())
-pulumiImportResource projectDir environment resourceType resourceName resourceId = do
-  result <-
-    runPulumiCommandQuiet
-      projectDir
-      environment
-      [ "import"
-      , "--yes"
-      , "--stack"
-      , awsSesStackName
-      , "--protect=false"
-      , "--non-interactive"
-      , "--suppress-outputs"
-      , resourceType
-      , resourceName
-      , resourceId
-      ]
-  pure $ case result of
-    Left err ->
-      Left
-        ( "pulumi import failed for "
-            ++ resourceName
-            ++ " ("
-            ++ resourceType
-            ++ "): "
-            ++ err
-        )
-    Right () -> Right ()
-
--- | Sprint 7.23: re-derive standard @AWS_*@ credentials from the
--- @PRODBOX_PULUMI_AWS_*@ provider credentials that survive in the scratch
--- file-backend env. The standard @AWS_*@ names are stripped by
--- 'Prodbox.Pulumi.EncryptedBackend.fileBackendEnvironment' (to keep the scratch
--- backend isolated from the object-store credentials), but AWS-SES state
--- recovery's @aws@ CLI probes, @pulumi import@ (default aws provider), and IAM
--- key rotation must authenticate to AWS. Overlays the mapped values onto the
--- env, leaving @PULUMI_BACKEND_URL@ and everything else intact.
 awsCliCredsFromProviderEnv :: [(String, String)] -> [(String, String)]
 awsCliCredsFromProviderEnv environment =
   foldr overlay environment providerToAwsCli
@@ -2405,20 +1098,380 @@ awsCliCredsFromProviderEnv environment =
 
 destroyAwsSesStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsSesStack repoRoot summary = do
-  statusResult <- destroyAwsSesStackStatus repoRoot summary
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> destroyAwsSesStackWithAuthentication authentication repoRoot summary)
+  case authenticated of
+    Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+    Right exitCode -> pure exitCode
+
+destroyAwsSesStackWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Bool
+  -> IO ExitCode
+destroyAwsSesStackWithAuthentication authentication repoRoot summary = do
+  statusResult <- destroyAwsSesStackStatus authentication repoRoot summary
   case statusResult of
     Left err -> failWith err
     Right status -> do
       writeOutputLine ("AWS SES stack: " ++ status)
       pure ExitSuccess
 
+-- | The exact non-credential resources currently owned by the @aws-ses@
+-- Pulumi program.  SMTP IAM and the default provider are deliberately absent.
+-- The URNs are stable ownership coordinates rather than display names, so a
+-- targeted destroy cannot expand into the later SMTP-IAM graph node.
+awsSesProviderPulumiResourceUrns :: [Text.Text]
+awsSesProviderPulumiResourceUrns =
+  map
+    awsSesResourceUrn
+    [ ("aws:s3/bucket:Bucket", "captureBucketResource")
+    , ("aws:s3/bucketPolicy:BucketPolicy", "captureBucketPolicy")
+    , ("aws:s3/bucketObjectv2:BucketObjectv2", "captureReadinessObject")
+    , ("aws:ses/domainIdentity:DomainIdentity", "sendingIdentity")
+    , ("aws:ses/domainDkim:DomainDkim", "sendingIdentityDkim")
+    , ("aws:route53/record:Record", "sendingIdentityVerificationRecord")
+    , ("aws:route53/record:Record", "sendingIdentityDkimRecord0")
+    , ("aws:route53/record:Record", "sendingIdentityDkimRecord1")
+    , ("aws:route53/record:Record", "sendingIdentityDkimRecord2")
+    , ("aws:route53/record:Record", "receiveSubdomainMx")
+    , ("aws:ses/receiptRuleSet:ReceiptRuleSet", "receiveRuleSet")
+    , ("aws:ses/receiptRule:ReceiptRule", "receiveRule")
+    , ("aws:ses/activeReceiptRuleSet:ActiveReceiptRuleSet", "receiveActiveRuleSet")
+    ]
+
+-- | Compatibility URNs for checkpoints created before SMTP-IAM ownership left
+-- Pulumi. They remain observable by the separately typed Admin teardown path;
+-- the current Provider program cannot construct either resource. A provider
+-- destroy verifies that any such legacy subset is unchanged.
+awsSesSmtpPulumiResourceUrns :: [Text.Text]
+awsSesSmtpPulumiResourceUrns =
+  map
+    awsSesResourceUrn
+    [ ("aws:iam/user:User", "smtpUser")
+    , ("aws:iam/userPolicy:UserPolicy", "smtpUserPolicy")
+    ]
+
+awsSesResourceUrn :: (Text.Text, Text.Text) -> Text.Text
+awsSesResourceUrn (resourceType, logicalName) =
+  "urn:pulumi:"
+    <> Text.pack awsSesStackName
+    <> "::prodbox-aws-ses::"
+    <> resourceType
+    <> "::"
+    <> logicalName
+
+-- | Decode the exact resource URNs from @pulumi stack export@.  Missing or
+-- malformed deployment/resource fields are unobservable, never an empty
+-- stack: treating corrupt state as absence would let teardown skip live AWS
+-- resources.
+parseAwsSesPulumiResourceUrns :: String -> Either String [Text.Text]
+parseAwsSesPulumiResourceUrns payload = do
+  value <- first ("failed to decode Pulumi stack export: " ++) (eitherDecode (BL8.pack payload))
+  deployment <- requireObjectField "deployment" value
+  resources <- requireArrayField "resources" deployment
+  traverse requireResourceUrn (foldr (:) [] resources)
+ where
+  requireObjectField field (Object fields) =
+    case KeyMap.lookup (Key.fromString field) fields of
+      Just (Object objectValue) -> Right objectValue
+      _ -> Left ("Pulumi stack export is missing object field '" ++ field ++ "'")
+  requireObjectField field _ =
+    Left ("Pulumi stack export is missing object field '" ++ field ++ "'")
+
+  requireArrayField field fields =
+    case KeyMap.lookup (Key.fromString field) fields of
+      Just (Array values) -> Right values
+      _ -> Left ("Pulumi stack deployment is missing array field '" ++ field ++ "'")
+
+  requireResourceUrn (Object resource) =
+    case KeyMap.lookup (Key.fromString "urn") resource of
+      Just (String urn) | not (Text.null (Text.strip urn)) -> Right urn
+      _ -> Left "Pulumi stack resource is missing a non-empty urn"
+  requireResourceUrn _ = Left "Pulumi stack resource is not an object"
+
+-- | Destroy only the provider family through Pulumi's exact target set. The
+-- encrypted checkpoint wrapper persists the resulting target removals, while
+-- compatibility SMTP-IAM URNs are compared before/after and may not change.
+-- This is intentionally not implemented by relabelling the broad stack destroy.
+destroyAwsSesProviderResourcesWithCredentials
+  :: FilePath
+  -> Credentials
+  -> IO (Either String ())
+destroyAwsSesProviderResourcesWithCredentials repoRoot credentials = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      ( \authentication ->
+          destroyAwsSesProviderResourcesWithCredentialsAndAuthentication
+            authentication
+            repoRoot
+            credentials
+      )
+  pure $ case authenticated of
+    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right result -> result
+
+destroyAwsSesProviderResourcesWithCredentialsAndAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Credentials
+  -> IO (Either String ())
+destroyAwsSesProviderResourcesWithCredentialsAndAuthentication authentication repoRoot credentials = do
+  let projectDir = awsSesPulumiProjectDir repoRoot
+  configResult <- resolveAwsSesStackConfigForCredentials repoRoot credentials
+  case configResult of
+    Left detail -> pure (Left detail)
+    Right stackConfig -> do
+      baseEnvironment <- pulumiSesProviderBaseEnv credentials
+      result <-
+        withAwsSesEncryptedStackEnvironment
+          authentication
+          repoRoot
+          projectDir
+          credentials
+          baseEnvironment
+          (destroyProviderTargets projectDir stackConfig)
+      pure (first renderEncryptedBackendError result)
+
+destroyProviderTargets
+  :: FilePath
+  -> AwsSesStackConfig
+  -> [(String, String)]
+  -> IO (Either String ())
+destroyProviderTargets projectDir stackConfig environment = do
+  loginResult <- pulumiLoginQuiet projectDir environment
+  case loginResult of
+    Left detail -> pure (Left ("pulumi login failed: " ++ detail))
+    Right () -> do
+      selection <- pulumiStackSelect projectDir environment False
+      case selection of
+        PulumiStackMissing ->
+          pure (Left "aws-ses checkpoint is absent; provider resource absence cannot be proven")
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+        PulumiStackSelected -> do
+          beforeResult <- readAwsSesPulumiResourceUrns projectDir environment
+          case beforeResult of
+            Left detail -> pure (Left detail)
+            Right beforeUrns -> do
+              let providerTargets = presentUrns awsSesProviderPulumiResourceUrns beforeUrns
+                  smtpBefore = presentUrns awsSesSmtpPulumiResourceUrns beforeUrns
+              if null providerTargets
+                then pure (Right ())
+                else do
+                  purgeResult <-
+                    if captureBucketUrn `elem` providerTargets
+                      then
+                        purgeAwsSesCaptureBucket
+                          projectDir
+                          (awsCliCredsFromProviderEnv environment)
+                          (sesStackCaptureBucket stackConfig)
+                      else pure (Right ())
+                  case purgeResult of
+                    Left detail -> pure (Left detail)
+                    Right () -> do
+                      destroyResult <-
+                        runPulumiCommandQuiet
+                          projectDir
+                          environment
+                          ( [ "destroy"
+                            , "--yes"
+                            , "--stack"
+                            , awsSesStackName
+                            , "--non-interactive"
+                            , "--suppress-outputs"
+                            ]
+                              ++ concatMap (\urn -> ["--target", Text.unpack urn]) providerTargets
+                          )
+                      case destroyResult of
+                        Left detail -> pure (Left ("provider-only pulumi destroy failed: " ++ detail))
+                        Right () -> do
+                          afterResult <- readAwsSesPulumiResourceUrns projectDir environment
+                          pure $ do
+                            afterUrns <- afterResult
+                            let providerAfter = presentUrns awsSesProviderPulumiResourceUrns afterUrns
+                                smtpAfter = presentUrns awsSesSmtpPulumiResourceUrns afterUrns
+                            unless (null providerAfter) $
+                              Left
+                                ( "provider-only Pulumi read-back still contains targets: "
+                                    ++ show providerAfter
+                                )
+                            when (smtpAfter /= smtpBefore) $
+                              Left
+                                ( "provider-only Pulumi destroy changed the SMTP IAM family: before="
+                                    ++ show smtpBefore
+                                    ++ ", after="
+                                    ++ show smtpAfter
+                                )
+                            Right ()
+ where
+  captureBucketUrn =
+    awsSesResourceUrn ("aws:s3/bucket:Bucket", "captureBucketResource")
+
+-- | Read-only target-state observation used after a successful action and on
+-- receipt recovery.  A missing/corrupt/unreachable checkpoint is not absence.
+observeAwsSesProviderResourcesWithCredentials
+  :: FilePath
+  -> Credentials
+  -> IO ResidueStatus.ResidueStatus
+observeAwsSesProviderResourcesWithCredentials repoRoot credentials = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      ( \authentication ->
+          observeAwsSesProviderResourcesWithCredentialsAndAuthentication
+            authentication
+            repoRoot
+            credentials
+      )
+  pure $ case authenticated of
+    Left err -> providerUnreachable (renderLifecycleAuthorityAuthenticationError err)
+    Right status -> status
+
+observeAwsSesProviderResourcesWithCredentialsAndAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Credentials
+  -> IO ResidueStatus.ResidueStatus
+observeAwsSesProviderResourcesWithCredentialsAndAuthentication authentication repoRoot credentials = do
+  let projectDir = awsSesPulumiProjectDir repoRoot
+  baseEnvironment <- pulumiSesProviderBaseEnv credentials
+  result <-
+    withAwsSesEncryptedStackEnvironment
+      authentication
+      repoRoot
+      projectDir
+      credentials
+      baseEnvironment
+      (observeProviderTargets projectDir)
+  pure $ case result of
+    Left err -> providerUnreachable (renderEncryptedBackendError err)
+    Right status -> status
+
+observeProviderTargets
+  :: FilePath
+  -> [(String, String)]
+  -> IO (Either String ResidueStatus.ResidueStatus)
+observeProviderTargets projectDir environment = do
+  loginResult <- pulumiLoginQuiet projectDir environment
+  case loginResult of
+    Left detail -> pure (Left ("pulumi login failed: " ++ detail))
+    Right () -> do
+      selection <- pulumiStackSelect projectDir environment False
+      case selection of
+        PulumiStackMissing ->
+          pure (Left "aws-ses checkpoint is absent; provider resource absence cannot be proven")
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+        PulumiStackSelected -> do
+          urnResult <- readAwsSesPulumiResourceUrns projectDir environment
+          pure $ do
+            urns <- urnResult
+            let present = presentUrns awsSesProviderPulumiResourceUrns urns
+            Right $ case present of
+              [] -> ResidueStatus.ResidueAbsent
+              _ ->
+                ResidueStatus.ResiduePresent
+                  ( ResidueStatus.ResidueDetails
+                      ("Pulumi checkpoint retains provider targets: " ++ show present)
+                      awsSesStackName
+                  )
+
+readAwsSesPulumiResourceUrns
+  :: FilePath
+  -> [(String, String)]
+  -> IO (Either String [Text.Text])
+readAwsSesPulumiResourceUrns projectDir environment = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "pulumi"
+        , subprocessArguments = ["stack", "export", "--stack", awsSesStackName]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
+        }
+  pure $ case result of
+    Failure detail -> Left ("failed to start pulumi stack export: " ++ detail)
+    Success output -> case processExitCode output of
+      ExitFailure code ->
+        Left
+          ( "pulumi stack export exited with code "
+              ++ show code
+              ++ ": "
+              ++ renderProcessDetail output
+          )
+      ExitSuccess -> parseAwsSesPulumiResourceUrns (processStdout output)
+
+presentUrns :: [Text.Text] -> [Text.Text] -> [Text.Text]
+presentUrns registered observed = filter (`elem` observed) registered
+
+purgeAwsSesCaptureBucket
+  :: FilePath
+  -> [(String, String)]
+  -> String
+  -> IO (Either String ())
+purgeAwsSesCaptureBucket workingDirectory environment bucket = do
+  headResult <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments = ["s3api", "head-bucket", "--bucket", bucket]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just workingDirectory
+        }
+  case headResult of
+    Failure detail -> pure (Left ("failed to start aws s3api head-bucket: " ++ detail))
+    Success output ->
+      case classifyAwsSesPresenceOutput (AwsSesCaptureBucketProbe bucket) output of
+        ResidueStatus.PresenceAbsent -> pure (Right ())
+        ResidueStatus.PresenceUnobservable failure ->
+          pure (Left (renderObservationFailure failure))
+        ResidueStatus.PresencePresent () -> do
+          currentResult <-
+            captureSubprocessResult
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments = ["s3", "rm", "s3://" ++ bucket, "--recursive"]
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just workingDirectory
+                }
+          case currentResult of
+            Failure detail -> pure (Left ("failed to start aws s3 rm: " ++ detail))
+            Success currentOutput -> case processExitCode currentOutput of
+              ExitFailure code ->
+                pure
+                  ( Left
+                      ( "aws s3 rm exited with code "
+                          ++ show code
+                          ++ ": "
+                          ++ renderProcessDetail currentOutput
+                      )
+                  )
+              ExitSuccess -> purgeRemainingVersions workingDirectory environment bucket Nothing
+
+providerUnreachable :: String -> ResidueStatus.ResidueStatus
+providerUnreachable detail =
+  ResidueStatus.ResidueUnreachable
+    (ResidueStatus.ResidueQueryFailed detail)
+
 -- | Sprint 7.14: aws-ses destroy authenticates the AWS provider with
 -- admin credentials (`aws_admin_for_test_simulation.*`) and consults the
 -- encrypted scratch backend. The operational @aws.*@ block is no longer
 -- read on this path.
-destroyAwsSesStackStatus :: FilePath -> Bool -> IO (Either String String)
-destroyAwsSesStackStatus repoRoot summary = do
-  currentSnapshot <- fetchAwsSesStackSnapshotFromBackend repoRoot
+destroyAwsSesStackStatus
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Bool
+  -> IO (Either String String)
+destroyAwsSesStackStatus authentication repoRoot summary = do
+  currentSnapshot <-
+    fetchAwsSesStackSnapshotFromBackendWithAuthentication authentication repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
   adminResult <- loadAdminAwsCredentials repoRoot
   case adminResult of
@@ -2432,6 +1485,7 @@ destroyAwsSesStackStatus repoRoot summary = do
       backendEnvironment <- pulumiSesProviderBaseEnv adminCreds
       backendResult <-
         withAwsSesEncryptedStackEnvironment
+          authentication
           repoRoot
           projectDir
           adminCreds
@@ -2521,56 +1575,6 @@ exitToEither :: String -> ExitCode -> Either String ()
 exitToEither _ ExitSuccess = Right ()
 exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ show code)
 
--- Residue assertion. After teardown there should be no SES sending domain identity, no
--- active receive rule set referencing the receive subdomain, and no capture S3 bucket on
--- the supported AWS account.
-assertNoAwsSesStackResidue :: FilePath -> IO (Either String ())
-assertNoAwsSesStackResidue repoRoot = do
-  configResult <- resolveAwsSesStackConfig repoRoot
-  case configResult of
-    Left err -> pure (Left err)
-    Right stackConfig -> do
-      let captureBucket = sesStackCaptureBucket stackConfig
-      bucketResidue <- discoverBucketResidue repoRoot captureBucket
-      case bucketResidue of
-        Left err -> pure (Left err)
-        Right True ->
-          pure
-            ( Left
-                ( "S3 capture bucket `"
-                    ++ captureBucket
-                    ++ "` still exists after destroy; manual cleanup required"
-                )
-            )
-        Right False -> pure (Right ())
-
-discoverBucketResidue :: FilePath -> String -> IO (Either String Bool)
-discoverBucketResidue repoRoot bucketName = do
-  envResult <- settingsAwsEnv repoRoot
-  case envResult of
-    Left err -> pure (Left err)
-    Right environment -> do
-      result <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "s3api"
-                , "head-bucket"
-                , "--bucket"
-                , bucketName
-                ]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Nothing
-            }
-      pure $ case result of
-        Failure err -> Left ("failed to start aws s3api head-bucket: " ++ err)
-        Success output ->
-          case classifyAwsSesPresenceOutput (AwsSesCaptureBucketProbe bucketName) output of
-            ResidueStatus.PresenceAbsent -> Right False
-            ResidueStatus.PresencePresent () -> Right True
-            ResidueStatus.PresenceUnobservable failure -> Left (renderObservationFailure failure)
-
 failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
@@ -2585,6 +1589,20 @@ failWith message = do
 migrateAwsSesStackBackend :: FilePath -> IO ExitCode
 migrateAwsSesStackBackend repoRoot = do
   requireInteractiveTty awsSesMigrateBackendGuard
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> migrateAwsSesStackBackendWithAuthentication authentication repoRoot)
+  case authenticated of
+    Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+    Right exitCode -> pure exitCode
+
+migrateAwsSesStackBackendWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO ExitCode
+migrateAwsSesStackBackendWithAuthentication authentication repoRoot = do
   adminResult <- loadAdminAwsCredentials repoRoot
   case adminResult of
     Left err -> failWith err
@@ -2598,6 +1616,7 @@ migrateAwsSesStackBackend repoRoot = do
           writeOutputLine "AWS_SES_BACKEND_MIGRATION"
           runResult <-
             withAwsSesEncryptedStackEnvironment
+              authentication
               repoRoot
               projectDir
               adminCreds

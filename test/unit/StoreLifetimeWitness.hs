@@ -98,7 +98,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "home-control"
-        "https://gateway.example.test"
         "prodbox-state"
         "lifecycle"
         "transit/prodbox"

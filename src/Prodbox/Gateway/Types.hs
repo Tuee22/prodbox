@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -11,6 +12,7 @@ module Prodbox.Gateway.Types
   , GatewayAwsCreds (..)
   , GatewayMinioCreds (..)
   , GatewayVaultAuth (..)
+  , GatewayLifecycleAuthority (..)
   , ChannelName (..)
   , ConnectionKey (..)
   , Disposition (..)
@@ -34,6 +36,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Time.Clock (UTCTime)
 import GHC.Generics (Generic)
 import Prodbox.Cbor (CborPayload (..), cborPayloadFromJsonValue)
+import Prodbox.ControlPlane.Client (ControlPlaneEndpoint)
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data ChannelName = MeshChannel | GatewayChannel
   deriving (Eq, Ord, Show)
@@ -129,6 +133,17 @@ data GatewayVaultAuth = GatewayVaultAuth
   }
   deriving (Eq, Show)
 
+-- | Exact retained Lifecycle Authority observation capability available to the
+-- Gateway Runtime.  The role index prevents substitution of another standing
+-- control-plane endpoint; the response client additionally validates the
+-- compiled service identity and this authority scope before exposing an epoch.
+data GatewayLifecycleAuthority = GatewayLifecycleAuthority
+  { gatewayLifecycleAuthorityScope :: !String
+  , gatewayLifecycleAuthorityEndpoint
+      :: !(ControlPlaneEndpoint 'LifecycleAuthorityRuntime)
+  }
+  deriving (Eq, Show)
+
 data DaemonConfig = DaemonConfig
   { daemonNodeId :: String
   , daemonCertFile :: FilePath
@@ -143,6 +158,7 @@ data DaemonConfig = DaemonConfig
   , daemonDrainDeadlineSeconds :: Maybe Int
   , daemonConfigLogLevel :: Maybe String
   , daemonVaultAuth :: Maybe GatewayVaultAuth
+  , daemonLifecycleAuthority :: Maybe GatewayLifecycleAuthority
   , daemonDnsWriteGate :: Maybe DnsWriteGate
   , daemonAwsCreds :: Maybe GatewayAwsCreds
   , daemonMinioCreds :: Maybe GatewayMinioCreds

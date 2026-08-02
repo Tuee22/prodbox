@@ -52,7 +52,7 @@ retainedSesPreparationSuite =
           awsPreparation = requiredPreparationPlan SubstrateAws
       homePreparation `shouldBe` awsPreparation
       retainedSesPreparationPrecondition homePreparation
-        `shouldBe` RetainedSesGatewayObjectStoreReady
+        `shouldBe` RetainedSesTargetSecretAgentReady
       retainedSesPreparationTrace homePreparation
         `shouldBe` [ RetainedSesAcquire
                    , RetainedSesReconcile
@@ -79,13 +79,25 @@ retainedSesPreparationSuite =
       targetSecretSinkIdentity (retainedSesTargetSecretSink preparationInputs)
         `shouldBe` "aws-eks"
 
+    it "contains no retained-SES Gateway endpoint or object-store readiness fallback" $ do
+      runnerSource <- readFile "src/Prodbox/TestRunner.hs"
+      restoreSource <- readFile "src/Prodbox/TestRestore.hs"
+      mapM_
+        (runnerSource `shouldNotContain`)
+        [ "checkpointAuthorityGatewayEndpoint"
+        , "RetainedSesGatewayObjectStoreReady"
+        , "prepareAwsTarget"
+        ]
+      restoreSource `shouldNotContain` "RetainedSesGatewayObjectStoreReady"
+      restoreSource `shouldNotContain` "gatewayDaemonLivenessPrecondition"
+
     it "checks readiness then invokes one registered atomic ensure with exact plan and inputs" $ do
       let restorePlan = buildRestoreCyclePlan SubstrateAws SesRequired
           nestedPlan = requiredPreparationPlan SubstrateAws
       (result, events) <- runFakeRestore restorePlan FakeSuccess
       result `shouldBe` Right ()
       readinessEvents events
-        `shouldBe` [(RetainedSesGatewayObjectStoreReady, preparationInputs)]
+        `shouldBe` [(RetainedSesTargetSecretAgentReady, preparationInputs)]
       ensureEvents events `shouldBe` [(nestedPlan, preparationInputs)]
       events `shouldSatisfy` dependentChartsRan
       events `shouldSatisfy` retainedResourceWasNeverDestroyed
@@ -94,7 +106,7 @@ retainedSesPreparationSuite =
       (result, events) <- runFakeRestore requiredHomePlan FakeReadinessFailure
       result `shouldBe` Left ReadinessFailed
       readinessEvents events
-        `shouldBe` [(RetainedSesGatewayObjectStoreReady, preparationInputs)]
+        `shouldBe` [(RetainedSesTargetSecretAgentReady, preparationInputs)]
       ensureEvents events `shouldBe` []
       events `shouldSatisfy` dependentChartsDidNotRun
       events `shouldSatisfy` retainedResourceWasNeverDestroyed
@@ -104,7 +116,7 @@ retainedSesPreparationSuite =
       (result, events) <- runFakeRestore requiredHomePlan FakeEnsureFailure
       result `shouldBe` Left EnsureFailed
       readinessEvents events
-        `shouldBe` [(RetainedSesGatewayObjectStoreReady, preparationInputs)]
+        `shouldBe` [(RetainedSesTargetSecretAgentReady, preparationInputs)]
       ensureEvents events `shouldBe` [(nestedPlan, preparationInputs)]
       events `shouldSatisfy` dependentChartsDidNotRun
       events `shouldSatisfy` retainedResourceWasNeverDestroyed
@@ -143,7 +155,6 @@ preparationInputs =
         expectRight
           ( mkLongLivedCheckpointAuthority
               "home-control"
-              "https://gateway.home.example.test"
               "prodbox-state"
               "lifecycle"
               "transit/prodbox"
@@ -152,7 +163,6 @@ preparationInputs =
         expectRight
           ( mkTargetClusterSecretSink
               "aws-eks"
-              "https://gateway.aws.example.test"
               "secret"
               "keycloak/smtp"
           )

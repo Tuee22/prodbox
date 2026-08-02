@@ -1,6 +1,10 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Closed, operation-indexed Bootstrap Broker programs.  This is the only
 -- executable vocabulary exposed to a broker interpreter: there is no generic
@@ -23,10 +27,13 @@ module Prodbox.Bootstrap.Broker.Program
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Char (isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.Request (RequestDigest)
 import Prodbox.Bootstrap.Broker.Types
   ( AccessorAbsenceAttestation
   , ArtifactDigest
@@ -46,6 +53,10 @@ import Prodbox.Bootstrap.Broker.Types
   , RootAccessorInventory
   , VaultStorageGeneration
   )
+import Prodbox.Cluster.FederationRegistration
+  ( ChildCustodyExport
+  , FederationRegistrationCompletion
+  )
 import Prodbox.ControlPlane.CapabilityKind
   ( CapabilityKind (..)
   , CapabilityOp (..)
@@ -63,7 +74,8 @@ import Prodbox.Tls.CertScope
   )
 
 data BootstrapStatus = BootstrapStatus
-  { bootstrapStatusInitialized :: !Bool
+  { bootstrapStatusStorageGeneration :: !VaultStorageGeneration
+  , bootstrapStatusInitialized :: !Bool
   , bootstrapStatusSealed :: !Bool
   , bootstrapStatusRecoveryCustodyDurable :: !Bool
   , bootstrapStatusInitializationAmbiguous :: !Bool
@@ -82,6 +94,9 @@ data BootstrapMutationReceipt = BootstrapMutationReceipt
   , bootstrapMutationChanged :: !Bool
   }
   deriving (Eq, Show)
+
+deriving stock instance Generic BootstrapMutationReceipt
+deriving anyclass instance Serialise BootstrapMutationReceipt
 
 data VaultPkiStatus
   = VaultPkiBaselineAbsent
@@ -156,8 +171,13 @@ data BrokerProgram (operation :: CapabilityKind) result where
   ProveRootAccessorsAbsent
     :: RootAccessorInventory
     -> BrokerProgram 'VaultBootstrapMutate AccessorAbsenceAttestation
-  CommitChildCustody
+  PrepareChildCustody
     :: ChildCustodyBinding
+    -> RequestDigest
+    -> ArtifactDigest
+    -> BrokerProgram 'VaultBootstrapMutate ChildCustodyExport
+  FinalizeChildCustody
+    :: FederationRegistrationCompletion
     -> BrokerProgram 'VaultBootstrapMutate ParentCustodyAcknowledgement
   DeliverChildRecovery
     :: ChildCustodyBinding
@@ -223,7 +243,8 @@ brokerProgramCapabilityRef references program = case program of
   ResetAmbiguousInitialization _ _ -> bootstrapMutateRef references
   InventoryRootAccessors -> bootstrapMutateRef references
   ProveRootAccessorsAbsent _ -> bootstrapMutateRef references
-  CommitChildCustody _ -> bootstrapMutateRef references
+  PrepareChildCustody {} -> bootstrapMutateRef references
+  FinalizeChildCustody _ -> bootstrapMutateRef references
   DeliverChildRecovery {} -> bootstrapMutateRef references
   ObservePostUnsealHandoff _ _ -> bootstrapObserveRef references
   ReconcileAllowlistedBaseline _ -> baselineReconcileRef references
@@ -245,7 +266,8 @@ brokerProgramCapabilityOp program = case program of
   ResetAmbiguousInitialization _ _ -> OpVaultBootstrapMutate
   InventoryRootAccessors -> OpVaultBootstrapMutate
   ProveRootAccessorsAbsent _ -> OpVaultBootstrapMutate
-  CommitChildCustody _ -> OpVaultBootstrapMutate
+  PrepareChildCustody {} -> OpVaultBootstrapMutate
+  FinalizeChildCustody _ -> OpVaultBootstrapMutate
   DeliverChildRecovery {} -> OpVaultBootstrapMutate
   ObservePostUnsealHandoff _ _ -> OpVaultBootstrapObserve
   ReconcileAllowlistedBaseline _ -> OpVaultBaselineReconcile

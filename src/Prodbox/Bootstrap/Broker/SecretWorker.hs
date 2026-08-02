@@ -1,9 +1,12 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LinearTypes #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Pure protocol for the Bootstrap Broker's isolated secret workers.
 --
@@ -33,13 +36,30 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , mkWorkerSessionId
   , renderWorkerSessionId
   , WorkerSessionAccessor
+  , workerSessionNotIssued
   , mkWorkerSessionAccessor
   , renderWorkerSessionAccessor
+  , workerSessionAccessorIssued
 
     -- * Secret-free request metadata
   , SecretWorkerOperation (..)
+  , SecretWorkerIntent
+  , mkSecretWorkerIntent
+  , secretWorkerIntentOperation
+  , secretWorkerIntentImageDigest
+  , secretWorkerIntentServiceAccount
+  , secretWorkerIntentSessionId
+  , secretWorkerIntentSessionAccessor
+  , secretWorkerIntentFenceGeneration
+  , secretWorkerIntentOwnerNonce
+  , secretWorkerIntentActionDigest
+  , secretWorkerIntentRequestDigest
+  , secretWorkerIntentStorageGeneration
+  , secretWorkerIntentOperationDeadline
+  , bindSecretWorkerIntent
   , SecretFreeWorkerRequest
   , mkSecretFreeWorkerRequest
+  , secretWorkerRequestIntent
   , secretWorkerRequestOperation
   , secretWorkerRequestPodUid
   , secretWorkerRequestImageDigest
@@ -55,6 +75,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
 
     -- * Exact workload attestation
   , RawSecretWorkerAttestation (..)
+  , projectObservedSecretFreeWorkerRequest
   , SecretWorkerAttestationObservation (..)
   , AttestedSecretWorker
   , attestedSecretWorkerRequest
@@ -66,6 +87,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , SecretWorkerEffectPermit
   , secretWorkerEffectPermitOperation
   , secretWorkerEffectPermitDeadline
+  , secretWorkerEffectPermitRequest
   , SecretWorkerEffectRefusal (..)
   , authorizeSecretWorkerEffect
 
@@ -86,6 +108,8 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , unsealWorkerResult
   , unlockRotationWorkerResult
   , transitRotationWorkerResult
+  , transitRotationWithSessionWorkerResult
+  , generatedRootCiphertextWorkerResult
   , durablePreparedInitialization
   , durableResumedInitialization
   , durableEncryptedInitialization
@@ -94,6 +118,8 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , durableUnsealResult
   , durableUnlockRotationResult
   , durableTransitRotationResult
+  , durableWorkerSessionAccessor
+  , durableGeneratedRootCiphertext
   , secretWorkerDurableResultOperation
   , RawSecretWorkerReceipt (..)
   , SecretWorkerReceipt
@@ -130,6 +156,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
     -- * Restart/disconnect recovery
   , SecretWorkerInterruption (..)
   , SecretWorkerDurableCheckpoint
+  , secretWorkerIntentCheckpoint
   , noSecretWorkerReceipt
   , receiptCapturedCheckpoint
   , authoritativelyRecoveredWorkerCheckpoint
@@ -139,6 +166,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , workerAbsentCheckpoint
   , unobservableWorkerCheckpoint
   , secretWorkerCheckpointRequest
+  , secretWorkerCheckpointIntent
   , secretWorkerCheckpointReceipt
   , secretWorkerCheckpointResult
   , SecretWorkerRecoveryRefusal (..)
@@ -147,10 +175,12 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Kind (Type)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceGeneration
   , BootstrapSessionFence
@@ -171,7 +201,10 @@ import Prodbox.Bootstrap.Broker.Fence
   , vaultEffectPermitRequestDigest
   , vaultEffectPermitStorageGeneration
   )
-import Prodbox.Bootstrap.Broker.PgpBoundary (PreparedInitRecipients)
+import Prodbox.Bootstrap.Broker.PgpBoundary
+  ( GeneratedRootCiphertext
+  , PreparedInitRecipients
+  )
 import Prodbox.Bootstrap.Broker.Program (BootstrapMutationReceipt)
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
@@ -254,16 +287,32 @@ mkWorkerSessionId raw =
 renderWorkerSessionId :: WorkerSessionId -> Text
 renderWorkerSessionId (WorkerSessionId value) = value
 
-newtype WorkerSessionAccessor = WorkerSessionAccessor Text
+-- | Server-issued Vault token accessor, or explicit evidence that this worker
+-- never opened an authenticated Vault session. Production create intents
+-- always carry 'workerSessionNotIssued'; only a successful Vault login may
+-- replace it in the durable worker receipt.
+data WorkerSessionAccessor
+  = WorkerSessionNotIssued
+  | WorkerSessionAccessor !Text
   deriving stock (Eq, Ord, Show)
+
+workerSessionNotIssued :: WorkerSessionAccessor
+workerSessionNotIssued = WorkerSessionNotIssued
 
 mkWorkerSessionAccessor
   :: Text -> Either SecretWorkerValueError WorkerSessionAccessor
 mkWorkerSessionAccessor raw =
-  WorkerSessionAccessor <$> boundedIdentity "worker session accessor" 256 raw
+  if Text.strip raw == renderWorkerSessionAccessor WorkerSessionNotIssued
+    then Left (SecretWorkerIdentityForbiddenCharacter "worker session accessor")
+    else WorkerSessionAccessor <$> boundedIdentity "worker session accessor" 256 raw
 
 renderWorkerSessionAccessor :: WorkerSessionAccessor -> Text
+renderWorkerSessionAccessor WorkerSessionNotIssued = Text.pack "not-issued"
 renderWorkerSessionAccessor (WorkerSessionAccessor value) = value
+
+workerSessionAccessorIssued :: WorkerSessionAccessor -> Maybe Text
+workerSessionAccessorIssued WorkerSessionNotIssued = Nothing
+workerSessionAccessorIssued (WorkerSessionAccessor value) = Just value
 
 data SecretWorkerOperation
   = SecretWorkerPrepareInitialization
@@ -273,7 +322,84 @@ data SecretWorkerOperation
   | SecretWorkerUnseal
   | SecretWorkerRotateUnlockBundle
   | SecretWorkerRotateTransitKey
+  | SecretWorkerCompleteGeneratedRoot
   deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+-- | Durable create intent for exactly one worker. Kubernetes assigns a Pod
+-- UID only after create, so that API-owned identity is deliberately absent.
+-- Persisting this value before the POST makes a lost create response safely
+-- recoverable by exact-name observation.
+data SecretWorkerIntent = SecretWorkerIntent
+  { internalWorkerIntentOperation :: !SecretWorkerOperation
+  , internalWorkerIntentImageDigest :: !WorkerImageDigest
+  , internalWorkerIntentServiceAccount :: !WorkerServiceAccount
+  , internalWorkerIntentSessionId :: !WorkerSessionId
+  , internalWorkerIntentSessionAccessor :: !WorkerSessionAccessor
+  , internalWorkerIntentFenceGeneration :: !BootstrapFenceGeneration
+  , internalWorkerIntentOwnerNonce :: !OwnerNonce
+  , internalWorkerIntentActionDigest :: !ArtifactDigest
+  , internalWorkerIntentRequestDigest :: !RequestDigest
+  , internalWorkerIntentStorageGeneration :: !VaultStorageGeneration
+  , internalWorkerIntentOperationDeadline :: !OperationDeadline
+  }
+  deriving stock (Eq, Show)
+
+mkSecretWorkerIntent
+  :: SecretWorkerOperation
+  -> WorkerImageDigest
+  -> WorkerServiceAccount
+  -> WorkerSessionId
+  -> WorkerSessionAccessor
+  -> BootstrapSessionFence
+  -> SecretWorkerIntent
+mkSecretWorkerIntent operation imageDigest serviceAccount sessionId sessionAccessor fence =
+  SecretWorkerIntent
+    { internalWorkerIntentOperation = operation
+    , internalWorkerIntentImageDigest = imageDigest
+    , internalWorkerIntentServiceAccount = serviceAccount
+    , internalWorkerIntentSessionId = sessionId
+    , internalWorkerIntentSessionAccessor = sessionAccessor
+    , internalWorkerIntentFenceGeneration = bootstrapFenceGeneration fence
+    , internalWorkerIntentOwnerNonce = bootstrapFenceOwnerNonce fence
+    , internalWorkerIntentActionDigest = bootstrapFenceActionDigest fence
+    , internalWorkerIntentRequestDigest = bootstrapFenceRequestDigest fence
+    , internalWorkerIntentStorageGeneration = bootstrapFenceStorageGeneration fence
+    , internalWorkerIntentOperationDeadline = bootstrapFenceOperationDeadline fence
+    }
+
+secretWorkerIntentOperation :: SecretWorkerIntent -> SecretWorkerOperation
+secretWorkerIntentOperation = internalWorkerIntentOperation
+
+secretWorkerIntentImageDigest :: SecretWorkerIntent -> WorkerImageDigest
+secretWorkerIntentImageDigest = internalWorkerIntentImageDigest
+
+secretWorkerIntentServiceAccount :: SecretWorkerIntent -> WorkerServiceAccount
+secretWorkerIntentServiceAccount = internalWorkerIntentServiceAccount
+
+secretWorkerIntentSessionId :: SecretWorkerIntent -> WorkerSessionId
+secretWorkerIntentSessionId = internalWorkerIntentSessionId
+
+secretWorkerIntentSessionAccessor :: SecretWorkerIntent -> WorkerSessionAccessor
+secretWorkerIntentSessionAccessor = internalWorkerIntentSessionAccessor
+
+secretWorkerIntentFenceGeneration :: SecretWorkerIntent -> BootstrapFenceGeneration
+secretWorkerIntentFenceGeneration = internalWorkerIntentFenceGeneration
+
+secretWorkerIntentOwnerNonce :: SecretWorkerIntent -> OwnerNonce
+secretWorkerIntentOwnerNonce = internalWorkerIntentOwnerNonce
+
+secretWorkerIntentActionDigest :: SecretWorkerIntent -> ArtifactDigest
+secretWorkerIntentActionDigest = internalWorkerIntentActionDigest
+
+secretWorkerIntentRequestDigest :: SecretWorkerIntent -> RequestDigest
+secretWorkerIntentRequestDigest = internalWorkerIntentRequestDigest
+
+secretWorkerIntentStorageGeneration
+  :: SecretWorkerIntent -> VaultStorageGeneration
+secretWorkerIntentStorageGeneration = internalWorkerIntentStorageGeneration
+
+secretWorkerIntentOperationDeadline :: SecretWorkerIntent -> OperationDeadline
+secretWorkerIntentOperationDeadline = internalWorkerIntentOperationDeadline
 
 -- | Controller-owned metadata for exactly one worker.  Every field is an
 -- identifier, digest, generation, or absolute deadline; secret bytes cannot
@@ -304,19 +430,48 @@ mkSecretFreeWorkerRequest
   -> BootstrapSessionFence
   -> SecretFreeWorkerRequest
 mkSecretFreeWorkerRequest operation podUid imageDigest serviceAccount sessionId sessionAccessor fence =
+  bindSecretWorkerIntent
+    podUid
+    ( mkSecretWorkerIntent
+        operation
+        imageDigest
+        serviceAccount
+        sessionId
+        sessionAccessor
+        fence
+    )
+
+bindSecretWorkerIntent :: WorkerPodUid -> SecretWorkerIntent -> SecretFreeWorkerRequest
+bindSecretWorkerIntent podUid intent =
   SecretFreeWorkerRequest
-    { internalWorkerRequestOperation = operation
+    { internalWorkerRequestOperation = secretWorkerIntentOperation intent
     , internalWorkerRequestPodUid = podUid
-    , internalWorkerRequestImageDigest = imageDigest
-    , internalWorkerRequestServiceAccount = serviceAccount
-    , internalWorkerRequestSessionId = sessionId
-    , internalWorkerRequestSessionAccessor = sessionAccessor
-    , internalWorkerRequestFenceGeneration = bootstrapFenceGeneration fence
-    , internalWorkerRequestOwnerNonce = bootstrapFenceOwnerNonce fence
-    , internalWorkerRequestActionDigest = bootstrapFenceActionDigest fence
-    , internalWorkerRequestDigest = bootstrapFenceRequestDigest fence
-    , internalWorkerRequestStorageGeneration = bootstrapFenceStorageGeneration fence
-    , internalWorkerRequestOperationDeadline = bootstrapFenceOperationDeadline fence
+    , internalWorkerRequestImageDigest = secretWorkerIntentImageDigest intent
+    , internalWorkerRequestServiceAccount = secretWorkerIntentServiceAccount intent
+    , internalWorkerRequestSessionId = secretWorkerIntentSessionId intent
+    , internalWorkerRequestSessionAccessor = secretWorkerIntentSessionAccessor intent
+    , internalWorkerRequestFenceGeneration = secretWorkerIntentFenceGeneration intent
+    , internalWorkerRequestOwnerNonce = secretWorkerIntentOwnerNonce intent
+    , internalWorkerRequestActionDigest = secretWorkerIntentActionDigest intent
+    , internalWorkerRequestDigest = secretWorkerIntentRequestDigest intent
+    , internalWorkerRequestStorageGeneration = secretWorkerIntentStorageGeneration intent
+    , internalWorkerRequestOperationDeadline = secretWorkerIntentOperationDeadline intent
+    }
+
+secretWorkerRequestIntent :: SecretFreeWorkerRequest -> SecretWorkerIntent
+secretWorkerRequestIntent request =
+  SecretWorkerIntent
+    { internalWorkerIntentOperation = secretWorkerRequestOperation request
+    , internalWorkerIntentImageDigest = secretWorkerRequestImageDigest request
+    , internalWorkerIntentServiceAccount = secretWorkerRequestServiceAccount request
+    , internalWorkerIntentSessionId = secretWorkerRequestSessionId request
+    , internalWorkerIntentSessionAccessor = secretWorkerRequestSessionAccessor request
+    , internalWorkerIntentFenceGeneration = secretWorkerRequestFenceGeneration request
+    , internalWorkerIntentOwnerNonce = secretWorkerRequestOwnerNonce request
+    , internalWorkerIntentActionDigest = secretWorkerRequestActionDigest request
+    , internalWorkerIntentRequestDigest = secretWorkerRequestDigest request
+    , internalWorkerIntentStorageGeneration = secretWorkerRequestStorageGeneration request
+    , internalWorkerIntentOperationDeadline = secretWorkerRequestOperationDeadline request
     }
 
 secretWorkerRequestOperation :: SecretFreeWorkerRequest -> SecretWorkerOperation
@@ -377,6 +532,30 @@ data RawSecretWorkerAttestation = RawSecretWorkerAttestation
   , rawWorkerOperationDeadline :: !OperationDeadline
   }
   deriving stock (Eq, Show)
+
+-- | Reconstruct the secret-free ingress binding carried by one typed but
+-- still-untrusted Pod observation. This does /not/ create an
+-- 'AttestedSecretWorker'; callers must first verify their expected operation,
+-- action/request digests, generation, image, ServiceAccount, and Pod
+-- lifecycle. The host attach boundary uses the projection only after those
+-- checks, so the canonical stdin frame can bind the API-assigned UID.
+projectObservedSecretFreeWorkerRequest
+  :: RawSecretWorkerAttestation -> SecretFreeWorkerRequest
+projectObservedSecretFreeWorkerRequest raw =
+  SecretFreeWorkerRequest
+    { internalWorkerRequestOperation = rawWorkerOperation raw
+    , internalWorkerRequestPodUid = rawWorkerPodUid raw
+    , internalWorkerRequestImageDigest = rawWorkerImageDigest raw
+    , internalWorkerRequestServiceAccount = rawWorkerServiceAccount raw
+    , internalWorkerRequestSessionId = rawWorkerSessionId raw
+    , internalWorkerRequestSessionAccessor = rawWorkerSessionAccessor raw
+    , internalWorkerRequestFenceGeneration = rawWorkerFenceGeneration raw
+    , internalWorkerRequestOwnerNonce = rawWorkerOwnerNonce raw
+    , internalWorkerRequestActionDigest = rawWorkerActionDigest raw
+    , internalWorkerRequestDigest = rawWorkerRequestDigest raw
+    , internalWorkerRequestStorageGeneration = rawWorkerStorageGeneration raw
+    , internalWorkerRequestOperationDeadline = rawWorkerOperationDeadline raw
+    }
 
 data SecretWorkerAttestationObservation
   = SecretWorkerAttestationMissing
@@ -502,6 +681,11 @@ secretWorkerEffectPermitOperation = internalWorkerEffectPermitOperation
 
 secretWorkerEffectPermitDeadline :: SecretWorkerEffectPermit -> Deadline
 secretWorkerEffectPermitDeadline = internalWorkerEffectPermitDeadline
+
+secretWorkerEffectPermitRequest
+  :: SecretWorkerEffectPermit -> SecretFreeWorkerRequest
+secretWorkerEffectPermitRequest =
+  attestedSecretWorkerRequest . internalWorkerEffectPermitAttestation
 
 data SecretWorkerEffectRefusal
   = SecretWorkerEffectDeadlineElapsed
@@ -661,6 +845,7 @@ data SecretWorkerOutcome
   | SecretWorkerUnsealed
   | SecretWorkerUnlockBundleRotated
   | SecretWorkerTransitKeyRotated
+  | SecretWorkerGeneratedRootCompleted
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Closed durable output family for one-shot workers. Constructors remain
@@ -677,7 +862,10 @@ data SecretWorkerDurableResult
   | InternalFinalizedInitializationResult !FinalUnlockBundle
   | InternalUnsealResult !BootstrapMutationReceipt
   | InternalUnlockRotationResult !BootstrapMutationReceipt
-  | InternalTransitRotationResult !BootstrapMutationReceipt
+  | InternalTransitRotationResult
+      !BootstrapMutationReceipt
+      !WorkerSessionAccessor
+  | InternalGeneratedRootCiphertextResult !GeneratedRootCiphertext
   deriving stock (Eq, Show)
 
 preparedInitializationWorkerResult
@@ -708,7 +896,18 @@ unlockRotationWorkerResult = InternalUnlockRotationResult
 
 transitRotationWorkerResult
   :: BootstrapMutationReceipt -> SecretWorkerDurableResult
-transitRotationWorkerResult = InternalTransitRotationResult
+transitRotationWorkerResult receipt =
+  InternalTransitRotationResult receipt workerSessionNotIssued
+
+transitRotationWithSessionWorkerResult
+  :: BootstrapMutationReceipt
+  -> WorkerSessionAccessor
+  -> SecretWorkerDurableResult
+transitRotationWithSessionWorkerResult = InternalTransitRotationResult
+
+generatedRootCiphertextWorkerResult
+  :: GeneratedRootCiphertext -> SecretWorkerDurableResult
+generatedRootCiphertextWorkerResult = InternalGeneratedRootCiphertextResult
 
 durablePreparedInitialization
   :: SecretWorkerDurableResult -> Maybe PreparedInitRecipients
@@ -754,7 +953,19 @@ durableUnlockRotationResult result = case result of
 durableTransitRotationResult
   :: SecretWorkerDurableResult -> Maybe BootstrapMutationReceipt
 durableTransitRotationResult result = case result of
-  InternalTransitRotationResult receipt -> Just receipt
+  InternalTransitRotationResult receipt _ -> Just receipt
+  _ -> Nothing
+
+durableWorkerSessionAccessor
+  :: SecretWorkerDurableResult -> WorkerSessionAccessor
+durableWorkerSessionAccessor result = case result of
+  InternalTransitRotationResult _ accessor -> accessor
+  _ -> workerSessionNotIssued
+
+durableGeneratedRootCiphertext
+  :: SecretWorkerDurableResult -> Maybe GeneratedRootCiphertext
+durableGeneratedRootCiphertext result = case result of
+  InternalGeneratedRootCiphertextResult ciphertext -> Just ciphertext
   _ -> Nothing
 
 secretWorkerDurableResultOperation
@@ -767,7 +978,8 @@ secretWorkerDurableResultOperation result = case result of
   InternalFinalizedInitializationResult _ -> SecretWorkerFinalizeInitialization
   InternalUnsealResult _ -> SecretWorkerUnseal
   InternalUnlockRotationResult _ -> SecretWorkerRotateUnlockBundle
-  InternalTransitRotationResult _ -> SecretWorkerRotateTransitKey
+  InternalTransitRotationResult _ _ -> SecretWorkerRotateTransitKey
+  InternalGeneratedRootCiphertextResult _ -> SecretWorkerCompleteGeneratedRoot
 
 -- | Raw, secret-free worker-boundary receipt.  It is not trusted merely by
 -- decoding: 'captureSecretWorkerReceipt' checks every field against the
@@ -890,10 +1102,14 @@ captureSecretWorkerReceipt (ExecutedSecretWorker permit) observed durableResult 
     SecretWorkerReceiptSessionIdMismatch
     (secretWorkerRequestSessionId request)
     (rawWorkerReceiptSessionId observed)
-  requireEqual
-    SecretWorkerReceiptSessionAccessorMismatch
-    (secretWorkerRequestSessionAccessor request)
-    (rawWorkerReceiptSessionAccessor observed)
+  if workerReceiptAccessorValid request operation (rawWorkerReceiptSessionAccessor observed)
+    then Right ()
+    else
+      Left
+        ( SecretWorkerReceiptSessionAccessorMismatch
+            (secretWorkerRequestSessionAccessor request)
+            (rawWorkerReceiptSessionAccessor observed)
+        )
   requireEqual
     SecretWorkerReceiptRequestDigestMismatch
     (secretWorkerRequestDigest request)
@@ -919,7 +1135,7 @@ captureSecretWorkerReceipt (ExecutedSecretWorker permit) observed durableResult 
                     , internalWorkerReceiptPodUid = secretWorkerRequestPodUid request
                     , internalWorkerReceiptSessionId = secretWorkerRequestSessionId request
                     , internalWorkerReceiptSessionAccessor =
-                        secretWorkerRequestSessionAccessor request
+                        rawWorkerReceiptSessionAccessor observed
                     , internalWorkerReceiptRequestDigest = secretWorkerRequestDigest request
                     , internalWorkerReceiptStorageGeneration =
                         secretWorkerRequestStorageGeneration request
@@ -968,6 +1184,7 @@ secretWorkerCleanupBinding receipt =
 
 data SecretWorkerLifecycleObservation
   = SecretWorkerSessionRevoked !SecretWorkerCleanupBinding
+  | SecretWorkerSessionNotIssued !SecretWorkerCleanupBinding
   | SecretWorkerProcessExited !SecretWorkerCleanupBinding !Int
   | SecretWorkerPodDeleted !SecretWorkerCleanupBinding
   | SecretWorkerPodAbsent !SecretWorkerCleanupBinding
@@ -1016,7 +1233,14 @@ confirmSecretWorkerSessionRevoked captured observation =
       Left (SecretWorkerCleanupObservationUnobservable detail)
     SecretWorkerSessionRevoked observed -> do
       requireCleanupBinding (capturedBinding captured) observed
-      pure SessionRevokedSecretWorker {internalRevokedCaptured = captured}
+      case workerSessionAccessorIssued (cleanupWorkerSessionAccessor observed) of
+        Just _ -> pure SessionRevokedSecretWorker {internalRevokedCaptured = captured}
+        Nothing -> Left (SecretWorkerCleanupUnexpectedObservation observation)
+    SecretWorkerSessionNotIssued observed -> do
+      requireCleanupBinding (capturedBinding captured) observed
+      case workerSessionAccessorIssued (cleanupWorkerSessionAccessor observed) of
+        Nothing -> pure SessionRevokedSecretWorker {internalRevokedCaptured = captured}
+        Just _ -> Left (SecretWorkerCleanupUnexpectedObservation observation)
     _ -> Left (SecretWorkerCleanupUnexpectedObservation observation)
 
 confirmSecretWorkerExited
@@ -1086,6 +1310,8 @@ advanceSecretWorkerCleanupCheckpoint expected checkpoint observation =
       workerAbsentCheckpoint <$> confirmSecretWorkerAbsent deleted observation
     InternalWorkerCheckpointUnobservable detail ->
       Left (SecretWorkerCleanupCheckpointUnobservable detail)
+    InternalWorkerIntent _ ->
+      Left SecretWorkerCleanupCheckpointNotAdvanceable
     InternalNoWorkerReceipt _ ->
       Left SecretWorkerCleanupCheckpointNotAdvanceable
     InternalWorkerAuthoritativelyRecovered _ _ ->
@@ -1110,7 +1336,8 @@ data SecretWorkerInterruption
 -- | Durable controller progress.  Constructors are private: later cleanup
 -- checkpoints can only be projected from the corresponding exact read-back.
 data SecretWorkerDurableCheckpoint
-  = InternalNoWorkerReceipt !SecretFreeWorkerRequest
+  = InternalWorkerIntent !SecretWorkerIntent
+  | InternalNoWorkerReceipt !SecretFreeWorkerRequest
   | InternalWorkerAuthoritativelyRecovered
       !SecretFreeWorkerRequest
       !SecretWorkerDurableResult
@@ -1121,6 +1348,10 @@ data SecretWorkerDurableCheckpoint
   | InternalWorkerAbsent !AbsentSecretWorker
   | InternalWorkerCheckpointUnobservable !Text
   deriving stock (Eq, Show)
+
+secretWorkerIntentCheckpoint
+  :: SecretWorkerIntent -> SecretWorkerDurableCheckpoint
+secretWorkerIntentCheckpoint = InternalWorkerIntent
 
 noSecretWorkerReceipt
   :: SecretFreeWorkerRequest -> SecretWorkerDurableCheckpoint
@@ -1172,6 +1403,7 @@ secretWorkerCheckpointRequest
   :: SecretWorkerDurableCheckpoint
   -> Either SecretWorkerRecoveryRefusal SecretFreeWorkerRequest
 secretWorkerCheckpointRequest checkpoint = case checkpoint of
+  InternalWorkerIntent _ -> Left SecretWorkerRecoveryPodUidUnbound
   InternalNoWorkerReceipt request -> Right request
   InternalWorkerAuthoritativelyRecovered request _ -> Right request
   InternalReceiptCaptured captured -> Right (internalCapturedRequest captured)
@@ -1189,9 +1421,17 @@ secretWorkerCheckpointRequest checkpoint = case checkpoint of
   InternalWorkerCheckpointUnobservable detail ->
     Left (SecretWorkerRecoveryCheckpointUnobservable detail)
 
+secretWorkerCheckpointIntent
+  :: SecretWorkerDurableCheckpoint
+  -> Either SecretWorkerRecoveryRefusal SecretWorkerIntent
+secretWorkerCheckpointIntent checkpoint = case checkpoint of
+  InternalWorkerIntent intent -> Right intent
+  _ -> secretWorkerRequestIntent <$> secretWorkerCheckpointRequest checkpoint
+
 secretWorkerCheckpointReceipt
   :: SecretWorkerDurableCheckpoint -> Maybe SecretWorkerReceipt
 secretWorkerCheckpointReceipt checkpoint = case checkpoint of
+  InternalWorkerIntent _ -> Nothing
   InternalNoWorkerReceipt _ -> Nothing
   InternalWorkerAuthoritativelyRecovered _ _ -> Nothing
   InternalReceiptCaptured captured -> Just (capturedSecretWorkerReceipt captured)
@@ -1208,6 +1448,7 @@ secretWorkerCheckpointReceipt checkpoint = case checkpoint of
 secretWorkerCheckpointResult
   :: SecretWorkerDurableCheckpoint -> Maybe SecretWorkerDurableResult
 secretWorkerCheckpointResult checkpoint = case checkpoint of
+  InternalWorkerIntent _ -> Nothing
   InternalNoWorkerReceipt _ -> Nothing
   InternalWorkerAuthoritativelyRecovered _ result -> Just result
   InternalReceiptCaptured captured -> Just (capturedSecretWorkerResult captured)
@@ -1226,6 +1467,7 @@ secretWorkerCheckpointResult checkpoint = case checkpoint of
 
 data SecretWorkerRecoveryRefusal
   = SecretWorkerRecoveryCheckpointUnobservable !Text
+  | SecretWorkerRecoveryPodUidUnbound
   | SecretWorkerRecoveryRequestMismatch
   deriving stock (Eq, Show)
 
@@ -1248,6 +1490,45 @@ data SecretWorkerRecoveryDecision
   | SecretWorkerRecoveryRefused !SecretWorkerRecoveryRefusal
   deriving stock (Eq, Show)
 
+deriving stock instance Generic WorkerPodUid
+deriving anyclass instance Serialise WorkerPodUid
+deriving stock instance Generic WorkerImageDigest
+deriving anyclass instance Serialise WorkerImageDigest
+deriving stock instance Generic WorkerServiceAccount
+deriving anyclass instance Serialise WorkerServiceAccount
+deriving stock instance Generic WorkerSessionId
+deriving anyclass instance Serialise WorkerSessionId
+deriving stock instance Generic WorkerSessionAccessor
+deriving anyclass instance Serialise WorkerSessionAccessor
+deriving stock instance Generic SecretWorkerOperation
+deriving anyclass instance Serialise SecretWorkerOperation
+deriving stock instance Generic SecretWorkerIntent
+deriving anyclass instance Serialise SecretWorkerIntent
+deriving stock instance Generic SecretFreeWorkerRequest
+deriving anyclass instance Serialise SecretFreeWorkerRequest
+deriving stock instance Generic SecretWorkerOutcome
+deriving anyclass instance Serialise SecretWorkerOutcome
+deriving stock instance Generic SecretWorkerDurableResult
+deriving anyclass instance Serialise SecretWorkerDurableResult
+deriving stock instance Generic RawSecretWorkerReceipt
+deriving anyclass instance Serialise RawSecretWorkerReceipt
+deriving stock instance Generic SecretWorkerReceipt
+deriving anyclass instance Serialise SecretWorkerReceipt
+deriving stock instance Generic ReceiptCapturedSecretWorker
+deriving anyclass instance Serialise ReceiptCapturedSecretWorker
+deriving stock instance Generic SecretWorkerCleanupBinding
+deriving anyclass instance Serialise SecretWorkerCleanupBinding
+deriving stock instance Generic SessionRevokedSecretWorker
+deriving anyclass instance Serialise SessionRevokedSecretWorker
+deriving stock instance Generic ExitedSecretWorker
+deriving anyclass instance Serialise ExitedSecretWorker
+deriving stock instance Generic DeletedSecretWorker
+deriving anyclass instance Serialise DeletedSecretWorker
+deriving stock instance Generic AbsentSecretWorker
+deriving anyclass instance Serialise AbsentSecretWorker
+deriving stock instance Generic SecretWorkerDurableCheckpoint
+deriving anyclass instance Serialise SecretWorkerDurableCheckpoint
+
 decideSecretWorkerRecovery
   :: SecretFreeWorkerRequest
   -> SecretWorkerInterruption
@@ -1255,6 +1536,8 @@ decideSecretWorkerRecovery
   -> SecretWorkerRecoveryDecision
 decideSecretWorkerRecovery expectedRequest interruption checkpoint =
   case checkpoint of
+    InternalWorkerIntent _ ->
+      SecretWorkerRecoveryRefused SecretWorkerRecoveryPodUidUnbound
     InternalWorkerCheckpointUnobservable detail ->
       SecretWorkerRecoveryRefused
         (SecretWorkerRecoveryCheckpointUnobservable detail)
@@ -1310,6 +1593,7 @@ workerOperationEffect operation = case operation of
   SecretWorkerUnseal -> BootstrapVaultSubmitUnsealShare
   SecretWorkerRotateUnlockBundle -> BootstrapVaultRotateUnlockBundle
   SecretWorkerRotateTransitKey -> BootstrapVaultRotateTransitKey
+  SecretWorkerCompleteGeneratedRoot -> BootstrapVaultSubmitGenerateRootShare
 
 outcomeMatchesOperation :: SecretWorkerOperation -> SecretWorkerOutcome -> Bool
 outcomeMatchesOperation operation outcome = case (operation, outcome) of
@@ -1320,6 +1604,7 @@ outcomeMatchesOperation operation outcome = case (operation, outcome) of
   (SecretWorkerUnseal, SecretWorkerUnsealed) -> True
   (SecretWorkerRotateUnlockBundle, SecretWorkerUnlockBundleRotated) -> True
   (SecretWorkerRotateTransitKey, SecretWorkerTransitKeyRotated) -> True
+  (SecretWorkerCompleteGeneratedRoot, SecretWorkerGeneratedRootCompleted) -> True
   _ -> False
 
 interruptionRequiresRefusal :: SecretWorkerInterruption -> Bool
@@ -1341,6 +1626,24 @@ receiptMatchesRequest request receipt =
       == secretWorkerRequestStorageGeneration request
     && secretWorkerReceiptFenceGeneration receipt
       == secretWorkerRequestFenceGeneration request
+
+workerReceiptAccessorValid
+  :: SecretFreeWorkerRequest
+  -> SecretWorkerOperation
+  -> WorkerSessionAccessor
+  -> Bool
+workerReceiptAccessorValid request operation observed =
+  case workerSessionAccessorIssued (secretWorkerRequestSessionAccessor request) of
+    -- Compatibility for already-persisted checkpoints from the former
+    -- correlation-accessor schema. New production intents never take this
+    -- branch.
+    Just expected -> workerSessionAccessorIssued observed == Just expected
+    Nothing -> case operation of
+      SecretWorkerRotateTransitKey ->
+        case workerSessionAccessorIssued observed of
+          Just _ -> True
+          Nothing -> False
+      _ -> observed == workerSessionNotIssued
 
 capturedBinding :: ReceiptCapturedSecretWorker -> SecretWorkerCleanupBinding
 capturedBinding = secretWorkerCleanupBinding . capturedSecretWorkerReceipt

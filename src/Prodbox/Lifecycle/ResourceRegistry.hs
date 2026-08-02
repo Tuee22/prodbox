@@ -1,3 +1,6 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Sprint 4.21: the IO-bearing managed-resource registry and the
 -- 'reconcileAbsent' teardown reconciler that
 -- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
@@ -17,6 +20,8 @@ module Prodbox.Lifecycle.ResourceRegistry
   , perRunManagedResources
   , longLivedManagedResources
   , desiredPresentManagedResources
+  , desiredAbsentManagedResources
+  , legacyHarborHelmResource
   , awsSesPulumiResource
   , pulsarTopicManagedResource
   , pairPerRunResidue
@@ -24,16 +29,28 @@ module Prodbox.Lifecycle.ResourceRegistry
   , resourcesToDestroy
   , residueGateRefusalList
   , reconcileAbsent
+  , managedDestroyCapability
   )
 where
 
 import Control.Monad (foldM)
+import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( PlanOptions (..)
   , PulumiCommand (..)
   )
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
 import Prodbox.CLI.Pulumi (runPulumiCommand)
+import Prodbox.ControlPlane.CapabilityKind (CapabilityKind (ManagedDestroy))
+import Prodbox.ControlPlane.CapabilityRef (CapabilityRef, mkCapabilityRef)
+import Prodbox.ControlPlane.Coordinate
+  ( mkAuthorityScope
+  , mkCapabilityEndpoint
+  , mkCoordinate
+  , mkLogicalName
+  , mkServiceIdentity
+  )
+import Prodbox.Lifecycle.HelmRelease qualified as HelmRelease
 import Prodbox.Lifecycle.LiveResidue
   ( destroyRetainedPublicEdgeTls
   , publicEdgeTlsResourceName
@@ -44,6 +61,7 @@ import Prodbox.Lifecycle.ResidueStatus
   , residueBlocksTeardownGate
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Lifecycle.TargetCommitIntent (mkCredentialGeneration)
 import Prodbox.Pulsar.TopicResidue
   ( ManagedTopic (..)
   , PulsarTopicBroker
@@ -66,8 +84,21 @@ data ManagedResource = ManagedResource
   , resourceEnsureCommand :: Maybe String
   , resourceEnsurePresent :: Maybe (FilePath -> IO ExitCode)
   , resourceDestroyCommand :: String
+  , resourceDestroyCapability :: Either String (CapabilityRef 'ManagedDestroy)
   , resourceDestroy :: FilePath -> IO ExitCode
   }
+
+managedDestroyCapability :: String -> Either String (CapabilityRef 'ManagedDestroy)
+managedDestroyCapability logical = do
+  service <- firstShow (mkServiceIdentity "lifecycle-provider-worker")
+  scope <- firstShow (mkAuthorityScope "home/prodbox")
+  endpoint <- firstShow (mkCapabilityEndpoint "provider-worker:8443")
+  name <- firstShow (mkLogicalName (Text.pack logical))
+  generation <- firstShow (mkCredentialGeneration 1)
+  pure (mkCapabilityRef (mkCoordinate service scope endpoint name generation))
+ where
+  firstShow :: (Show errorType) => Either errorType value -> Either String value
+  firstShow = either (Left . show) Right
 
 -- | Sprint 4.34: the chart workloads whose replica counts are governed by the
 -- pure autoscaler planner. Their live scale-up / scale-down interpreter is
@@ -91,6 +122,7 @@ perRunManagedResources =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack eks destroy --yes"
+      , resourceDestroyCapability = managedDestroyCapability "aws-eks"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiEksDestroy True noPlan)
       }
   , ManagedResource
@@ -99,6 +131,7 @@ perRunManagedResources =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack aws-subzone destroy --yes"
+      , resourceDestroyCapability = managedDestroyCapability "aws-eks-subzone"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSubzoneDestroy True noPlan)
       }
   , ManagedResource
@@ -107,6 +140,7 @@ perRunManagedResources =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws stack test destroy --yes"
+      , resourceDestroyCapability = managedDestroyCapability "aws-test"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiTestDestroy True noPlan)
       }
   ]
@@ -130,6 +164,7 @@ longLivedManagedResources =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox nuke"
+      , resourceDestroyCapability = managedDestroyCapability publicEdgeTlsResourceName
       , resourceDestroy = destroyPublicEdgeTlsCertificate
       }
   ]
@@ -153,6 +188,7 @@ awsSesPulumiResource =
               runPulumiCommand repoRoot (PulumiAwsSesResources (PlanOptions False Nothing))
           )
     , resourceDestroyCommand = "prodbox aws stack aws-ses destroy --yes"
+    , resourceDestroyCapability = managedDestroyCapability "aws-ses"
     , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSesDestroy True (PlanOptions False Nothing))
     }
 
@@ -162,6 +198,41 @@ awsSesPulumiResource =
 -- account-scoped @aws-ses@ stack has a registered ensure action.
 desiredPresentManagedResources :: [ManagedResource]
 desiredPresentManagedResources = [awsSesPulumiResource]
+
+-- | Resources retained only for cleanup compatibility. They can never be
+-- ensured present; their registered program is observe → destroy → exact
+-- absence read-back.
+desiredAbsentManagedResources :: [ManagedResource]
+desiredAbsentManagedResources = [legacyHarborHelmResource]
+
+legacyHarborHelmResource :: ManagedResource
+legacyHarborHelmResource =
+  ManagedResource
+    { resourceName = "legacy-harbor-helm-release"
+    , resourceClass = PerRun
+    , resourceEnsureCommand = Nothing
+    , resourceEnsurePresent = Nothing
+    , resourceDestroyCommand = "prodbox cluster reconcile"
+    , resourceDestroyCapability = managedDestroyCapability "legacy-harbor-helm-release"
+    , resourceDestroy = destroyLegacyHarborRelease
+    }
+
+destroyLegacyHarborRelease :: FilePath -> IO ExitCode
+destroyLegacyHarborRelease repoRoot =
+  case HelmRelease.mkHelmReleaseCoordinate "harbor" "harbor" of
+    Left coordinateError -> do
+      writeDiagnosticLine ("Legacy Harbor release coordinate is invalid: " ++ show coordinateError)
+      pure (ExitFailure 1)
+    Right coordinate -> do
+      result <- HelmRelease.reconcileHelmReleaseAbsent repoRoot coordinate
+      case result of
+        Left failure -> do
+          writeDiagnosticLine
+            ("Legacy Harbor release desired-absence reconciliation failed: " ++ show failure)
+          pure (ExitFailure 1)
+        Right outcome -> do
+          writeOutputLine ("Legacy Harbor release absence: " ++ show outcome)
+          pure ExitSuccess
 
 -- | Sprint 4.35: adapt a typed Pulsar topic into the managed-resource
 -- registry. Topics are dynamic broker resources, so the static
@@ -180,6 +251,7 @@ pulsarTopicManagedResource broker topic =
           PerRun -> "prodbox cluster delete --cascade"
           LongLived -> "prodbox nuke"
           Operational -> "prodbox nuke"
+    , resourceDestroyCapability = managedDestroyCapability (managedTopicResourceName topic)
     , resourceDestroy = \_repoRoot -> do
         result <- deleteTopic broker topic
         case result of

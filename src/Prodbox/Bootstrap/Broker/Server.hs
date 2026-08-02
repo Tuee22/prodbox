@@ -1150,7 +1150,8 @@ brokerRouteOperationTag route = case route of
   BrokerVaultPkiStatus -> Request.ObserveVaultPki
   BrokerVaultPkiIssueTestCertificate -> Request.IssueVaultPkiTestCertificate
   BrokerVaultResetAmbiguousInitialization -> Request.RecoverAmbiguousInitialization
-  BrokerChildCustodyCommit -> Request.CommitChildInitCustody
+  BrokerChildCustodyPrepare -> Request.PrepareChildInitCustody
+  BrokerChildCustodyFinalize -> Request.FinalizeChildInitCustody
   BrokerChildRecoveryDeliver -> Request.DeliverChildRecovery
   BrokerChildRecoveryObserve -> Request.ObserveChildRecoveryDelivery
 

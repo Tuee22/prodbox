@@ -151,19 +151,14 @@ data ComponentId
   | ComponentChartWebsocket
   | ComponentChartGateway
   | -- Control-plane charts (internal; not on the public `prodbox charts` surface)
-    -- Sprint 3.26: the physically separate pre-Vault Bootstrap Broker. It is a
-    -- chart-only node (no native home-platform install step) so it is resolvable
-    -- and renderable by the chart platform without altering the production
-    -- `cluster reconcile` topology; wiring it as the sole pre-Vault unsealer
-    -- ahead of `ComponentVaultUnsealed` is a Standard-P cutover, deliberately not
-    -- done here.
+    -- The physically separate pre-Vault Bootstrap Broker. Sprint 4.50 makes this
+    -- a real native-reconcile component: Vault-unsealed depends on its rollout
+    -- barrier, so a missing or unready Broker stops the plan before bootstrap.
     ComponentChartBootstrapBroker
-  | -- Sprint 3.26: the five standing control-plane role charts — the retained
-    -- home Lifecycle Authority, the fenced Provider Worker, the Authority Backup
-    -- and TLS Retention Adapters, and the substrate-local Target Secret Agent.
-    -- Each is a chart-only node (no native install step) whose production
-    -- interpreter lands in Phase 4, so rendering the charts here does not alter
-    -- the production `cluster reconcile` topology.
+  | -- The five standing control-plane role charts — the retained home Lifecycle
+    -- Authority, fenced Provider Worker, Authority Backup and TLS Retention
+    -- Adapters, and substrate-local Target Secret Agent. Sprint 4.50 gives each
+    -- its own native-reconcile rollout barrier and dependency edges.
     ComponentChartLifecycleAuthority
   | ComponentChartProviderWorker
   | ComponentChartAuthorityBackup
@@ -568,11 +563,11 @@ componentCapabilityOp = \case
   ComponentChartApi -> OpWorkloadAvailability
   ComponentChartWebsocket -> OpWorkloadAvailability
   ComponentChartGateway -> OpGatewayFrontDoor
-  -- Sprint 3.26: the broker is a standard rollout-readiness workload chart, so
-  -- it proves availability like the other charts (not the gateway front door).
+  -- The broker is a standard rollout-readiness workload chart, so it proves
+  -- availability like the other charts (not the gateway front door).
   ComponentChartBootstrapBroker -> OpWorkloadAvailability
-  -- Sprint 3.26: the five standing control-plane charts each prove availability
-  -- through an ordinary rollout-readiness workload gate.
+  -- The five standing control-plane charts each prove availability through an
+  -- ordinary rollout-readiness workload gate.
   ComponentChartLifecycleAuthority -> OpWorkloadAvailability
   ComponentChartProviderWorker -> OpWorkloadAvailability
   ComponentChartAuthorityBackup -> OpWorkloadAvailability
@@ -696,22 +691,23 @@ tierRank tier = case tier of
   TierInternalCas -> 1
   TierExternalIntent -> 2
 
--- | Sprint 3.23: the chart-only deploy order (dependencies-before-dependents)
--- reachable from a given chart component, sourced from the validated graph but
--- keeping only chart→chart edges. Infrastructure dependencies (the registry,
--- the Percona operator) are ordering/gate concerns for the reconcile driver and
--- the operator gate, not the chart deploy list — so they are filtered here,
--- reproducing the historical hardcoded chart dependency order. Reuses the shared
--- acyclic expansion, so a chart cycle is rejected exactly as before.
+-- | The chart-only deploy order (dependencies-before-dependents) reachable from
+-- a given chart component. The validated component graph also contains
+-- cross-family ordering edges: standing control-plane roles gate public
+-- workloads, but they must be reconciled in their own namespaces rather than
+-- folded into a workload's Helm release closure. Keep only dependencies from
+-- the root chart's deployment family while the native reconcile planner
+-- continues to consume the complete graph. Reuses the shared acyclic
+-- expansion, so a cycle inside one deployment family is rejected exactly as
+-- before.
 chartComponentDeployOrder :: ComponentDag -> ComponentId -> Either String [ComponentId]
 chartComponentDeployOrder dag root =
   acyclicTopologicalOrder componentIdText fromEnum chartAdjacency [root]
  where
   chartAdjacency cid =
-    fmap (filter isChartComponent . componentDependencyIds) (lookupComponentNode cid dag)
-  isChartComponent cid = case chartNameForComponent cid of
-    Just _ -> True
-    Nothing -> False
+    fmap
+      (filter (isSameChartDeploymentFamily root) . componentDependencyIds)
+      (lookupComponentNode cid dag)
 
 -- | Sprint 3.23: the direct chart-level dependencies of a chart component (the
 -- chart→chart edges only), for the @charts list@ / @charts status@ dependency
@@ -720,11 +716,34 @@ directChartDependencies :: ComponentDag -> ComponentId -> [ComponentId]
 directChartDependencies dag cid =
   case lookupComponentNode cid dag of
     Nothing -> []
-    Just node -> filter isChartComponent (componentDependencyIds node)
- where
-  isChartComponent c = case chartNameForComponent c of
-    Just _ -> True
-    Nothing -> False
+    Just node -> filter (isSameChartDeploymentFamily cid) (componentDependencyIds node)
+
+-- | Deployment-family equivalence for graph-backed Helm expansion. Public
+-- workload charts may depend on one another, standing control-plane roles may
+-- depend on one another, and the pre-Vault Broker is its own family. A
+-- non-chart component never participates in a Helm closure.
+isSameChartDeploymentFamily :: ComponentId -> ComponentId -> Bool
+isSameChartDeploymentFamily root candidate =
+  chartDeploymentFamily root == chartDeploymentFamily candidate
+    && chartDeploymentFamily root /= Nothing
+
+chartDeploymentFamily :: ComponentId -> Maybe Int
+chartDeploymentFamily component = case component of
+  ComponentChartBootstrapBroker -> Just 0
+  ComponentChartLifecycleAuthority -> Just 1
+  ComponentChartProviderWorker -> Just 1
+  ComponentChartAuthorityBackup -> Just 1
+  ComponentChartTlsRetention -> Just 1
+  ComponentChartTargetSecretAgent -> Just 1
+  ComponentChartPulsar -> Just 2
+  ComponentChartRedis -> Just 2
+  ComponentChartKeycloakPostgres -> Just 2
+  ComponentChartKeycloak -> Just 2
+  ComponentChartVscode -> Just 2
+  ComponentChartApi -> Just 2
+  ComponentChartWebsocket -> Just 2
+  ComponentChartGateway -> Just 2
+  _ -> Nothing
 
 -- | Sprint 3.23: the distinct operator-gated dependencies (readiness
 -- 'ProbeOperatorAvailable') that the given consumer components directly depend
@@ -759,6 +778,10 @@ operatorAvailableGates dag consumers =
 --   * Charts order behind their platform dependencies; @keycloak-postgres@ gates
 --     on the Percona operator being @Available@ (a deep operator gate), not
 --     merely present (Sprint `3.23`).
+--   * Every independent steady-state root orders behind the completed Authority
+--     Backup transition. That component's readiness includes backup admission,
+--     the in-force-config CAS, and projection reload, so no steady mutation can
+--     race the bootstrap configuration it is meant to consume.
 defaultComponentGraph :: [ComponentNode]
 defaultComponentGraph =
   [ node ComponentClusterBase [] ProbeServiceActive
@@ -767,6 +790,7 @@ defaultComponentGraph =
       [ orderingOn ComponentClusterBase
       , orderingOn ComponentRegistry
       , orderingOn ComponentVaultUnsealed
+      , orderingOn ComponentChartAuthorityBackup
       ]
       ProbeRolloutComplete
   , node
@@ -774,18 +798,22 @@ defaultComponentGraph =
       [ orderingOn ComponentClusterBase
       , orderingOn ComponentRegistry
       , orderingOn ComponentVaultUnsealed
+      , orderingOn ComponentChartAuthorityBackup
       ]
       ProbeRolloutComplete
   , node
       ComponentCertManager
-      [orderingOn ComponentClusterBase, orderingOn ComponentRegistry]
+      [ orderingOn ComponentClusterBase
+      , orderingOn ComponentRegistry
+      , orderingOn ComponentChartAuthorityBackup
+      ]
       ProbeRolloutComplete
   , node ComponentMinio [orderingOn ComponentClusterBase] ProbeRolloutComplete
   , node ComponentVaultWorkload [orderingOn ComponentClusterBase] ProbeRolloutComplete
   , node
       ComponentVaultUnsealed
       [ orderingOn ComponentVaultWorkload
-      , orderingOn ComponentGatewayDaemonPreVault
+      , orderingOn ComponentChartBootstrapBroker
       ]
       ProbeVaultUnsealed
   , node
@@ -797,27 +825,27 @@ defaultComponentGraph =
       [ orderingOn ComponentClusterBase
       , orderingOn ComponentRegistry
       , orderingOn ComponentVaultUnsealed
+      , orderingOn ComponentChartAuthorityBackup
       ]
       ProbeOperatorAvailable
   , node
-      ComponentGatewayDaemonPreVault
-      [ orderingOn ComponentMinio
-      , orderingOn ComponentCertManager
-      , orderingOn ComponentVaultWorkload
-      , orderingOn ComponentRegistry
-      ]
-      ProbeRolloutComplete
-  , node
       ComponentGatewayDaemonFull
       [ orderingOn ComponentVaultUnsealed
-      , orderingOn ComponentGatewayDaemonPreVault
+      , orderingOn ComponentChartLifecycleAuthority
+      , orderingOn ComponentChartAuthorityBackup
       , backendWriteOn ComponentMinio
       ]
       (ProbeBackendRoundTrip ComponentMinio)
   , -- Charts (deploy behind the registry — their images are mirrored there — and
     -- behind their platform dependencies).
-    node ComponentChartPulsar [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , node ComponentChartRedis [orderingOn ComponentRegistry] ProbeRolloutComplete
+    node
+      ComponentChartPulsar
+      [orderingOn ComponentRegistry, orderingOn ComponentChartAuthorityBackup]
+      ProbeRolloutComplete
+  , node
+      ComponentChartRedis
+      [orderingOn ComponentRegistry, orderingOn ComponentChartAuthorityBackup]
+      ProbeRolloutComplete
   , node
       ComponentChartKeycloakPostgres
       [orderingOn ComponentRegistry, orderingOn ComponentPerconaPostgresOperator]
@@ -827,28 +855,62 @@ defaultComponentGraph =
       [orderingOn ComponentChartKeycloakPostgres]
       ProbeRolloutComplete
   , node ComponentChartVscode [orderingOn ComponentChartKeycloak] ProbeRolloutComplete
-  , node ComponentChartApi [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , node
+      ComponentChartApi
+      [orderingOn ComponentRegistry, orderingOn ComponentChartAuthorityBackup]
+      ProbeRolloutComplete
   , node ComponentChartWebsocket [orderingOn ComponentChartRedis] ProbeRolloutComplete
   , node ComponentChartGateway [orderingOn ComponentChartPulsar] ProbeRolloutComplete
-  , -- Sprint 3.26: the pre-Vault Bootstrap Broker chart deploys behind the
-    -- registry (its image is mirrored there), like the other charts. It is a
-    -- chart-only node: nothing in the production reconcile depends on it and it
-    -- contributes no native install step, so it is resolvable/renderable by the
-    -- plan builder without changing the production topology. Making
-    -- `ComponentVaultUnsealed` depend on it (broker as the sole pre-Vault
-    -- unsealer, retiring `ComponentGatewayDaemonPreVault`) is a Standard-P
-    -- cutover, deliberately not wired here.
-    node ComponentChartBootstrapBroker [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , -- Sprint 3.26: the five standing control-plane charts are chart-only nodes
-    -- behind the registry (their images are mirrored there), each with no
-    -- dependants and no native install step, so they are resolvable/renderable
-    -- without changing the production `cluster reconcile` topology. Phase 4 binds
-    -- their production interpreters and any real ordering edges.
-    node ComponentChartLifecycleAuthority [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , node ComponentChartProviderWorker [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , node ComponentChartAuthorityBackup [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , node ComponentChartTlsRetention [orderingOn ComponentRegistry] ProbeRolloutComplete
-  , node ComponentChartTargetSecretAgent [orderingOn ComponentRegistry] ProbeRolloutComplete
+  , -- Sprint 4.50: the Broker is the sole production pre-Vault workload. Its
+    -- image and bootstrap store are available before the Vault-unsealed
+    -- transition; `ComponentVaultUnsealed` therefore depends on this rollout.
+    node
+      ComponentChartBootstrapBroker
+      [ orderingOn ComponentMinio
+      , orderingOn ComponentVaultWorkload
+      , orderingOn ComponentRegistry
+      ]
+      ProbeRolloutComplete
+  , -- The home Target Agent is the first post-Vault standing role because the
+    -- genesis path seals its one-time material directly to that Agent.
+    node
+      ComponentChartTargetSecretAgent
+      [orderingOn ComponentRegistry, orderingOn ComponentVaultUnsealed]
+      ProbeRolloutComplete
+  , -- Authority owns retained primary state and starts frozen; it requires the
+    -- live primary store, baseline Vault, and home Agent binding.
+    node
+      ComponentChartLifecycleAuthority
+      [ orderingOn ComponentRegistry
+      , orderingOn ComponentVaultUnsealed
+      , orderingOn ComponentMinio
+      , orderingOn ComponentChartTargetSecretAgent
+      ]
+      ProbeRolloutComplete
+  , -- Normal provider admission is impossible until the independent backup
+    -- adapter is present. The worker is deployed afterward but remains governed
+    -- by the Authority's admission state.
+    node
+      ComponentChartAuthorityBackup
+      [orderingOn ComponentRegistry, orderingOn ComponentChartLifecycleAuthority]
+      ProbeRolloutComplete
+  , node
+      ComponentChartProviderWorker
+      [ orderingOn ComponentRegistry
+      , orderingOn ComponentChartLifecycleAuthority
+      , orderingOn ComponentChartAuthorityBackup
+      ]
+      ProbeRolloutComplete
+  , -- TLS retention consumes Authority outbox work and the selected Agent's
+    -- exact envelope lane; it does not depend on the provider worker.
+    node
+      ComponentChartTlsRetention
+      [ orderingOn ComponentRegistry
+      , orderingOn ComponentChartLifecycleAuthority
+      , orderingOn ComponentChartTargetSecretAgent
+      , orderingOn ComponentChartAuthorityBackup
+      ]
+      ProbeRolloutComplete
   ]
  where
   node cid deps probe =

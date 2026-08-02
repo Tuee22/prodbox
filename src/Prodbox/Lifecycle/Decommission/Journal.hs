@@ -16,10 +16,10 @@
 -- discarded.
 --
 -- This module is pure; the fsync-ordered append and the truncate-to-@recoveredValidBytes@
--- effect are the separate barrier increment. It deliberately does NOT yet decide
--- runner-semantic conflicts (a reused node/attempt identifier standing for a
--- different intent); that check layers on top once the runner fixes the payload
--- vocabulary.
+-- effect are the separate barrier increment. After this structural recovery,
+-- 'Prodbox.Lifecycle.Decommission.Runner.validateReceiptSemantics' validates the
+-- fixed payload vocabulary and rejects conflicting/reused identities or an
+-- impossible intent/observation/result sequence before resumption.
 module Prodbox.Lifecycle.Decommission.Journal
   ( JournalRecoveryError (..)
   , RecoveryOutcome (..)

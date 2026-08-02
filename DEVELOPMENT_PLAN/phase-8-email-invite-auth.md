@@ -20,11 +20,12 @@
 
 ## Phase Status
 
-⏸️ **Reopened and blocked by Sprint `7.33`.** Sprint `8.11` replaces the long synchronous SES
+✅ **Reclosed 2026-08-02 on Sprint `8.12`.** Sprint `8.11` replaces the long synchronous SES
 lease bracket with a revisioned, restart-resumable provider workflow whose mutation lease covers
 only non-idempotent provider work and whose target deliveries flow through a durable outbox.
-Sprint `8.12`, blocked by `8.11`, owns the invite-specific crash/fault campaign and records the
-current-revision deployment-qualification evidence. Sprint `8.10` remains Done for exact semantic
+Sprint `8.12` supplies the invite-specific deterministic crash/fault campaign and the non-partial
+current-revision qualification schema. Live qualification evidence remains pending under Standards
+O/P. Sprint `8.10` remains Done for exact semantic
 SES classification; its classifier becomes one stage of the new workflow.
 
 ✅ **Reclosed 2026-07-11 on semantic SES readiness.** Sprint `8.10` replaces the
@@ -1500,18 +1501,26 @@ path is ready. Command exit success proves only that AWS answered; it is not the
 - The readiness classifier links to Sprint `5.17`'s visible await-ready plan step and Sprint
   `4.47`'s desired-present reconciler.
 
-## Sprint 8.11: Revisioned SES Workflow and Durable Target Delivery [⏸️ Blocked]
+## Sprint 8.11: Revisioned SES Workflow and Durable Target Delivery [✅ Done]
 
-**Status**: Blocked
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned SES workflow/credential-ownership modules under
-`src/Prodbox/Ses/Workflow/`, migration of `src/Prodbox/Infra/AwsSesStack.hs` and
-`pulumi/aws-ses/Main.yaml`, closed `SesSmtpSource` custody/rewrap integration with the Lifecycle
-Authority/Target Agents, and pure/fake AWS workflow tests
-**Blocked by**: Sprint `7.33`
+**Implementation**: active. `src/Prodbox/Ses/Workflow/Model.hs` now defines the revision-bound
+aggregate, total command/event fold, exclusive `LegacyPulumiWriter` /
+`CredentialMigrationFrozen` / `ProvisionerWriter` ownership states, and disjoint Provider,
+operator-material, custody, and admin-teardown effect families. The exact-revision Model-B
+repository and coordinator observe before apply, read back after response loss, then CAS-commit the
+event. Adoption requires checkpoint release, retained custody, and every target read-back; newer
+generations cannot overtake unresolved targets. Fenced GC covers the exact primary/backup immutable
+version set and refuses open rollback windows, live references, missing/unobservable copies, and
+partial deletion. The current Pulumi program is audited as provider-only while its two legacy SMTP
+URNs remain typed migration evidence. Production bindings reuse the landed Credential Provisioner,
+retained-material Target-Agent, semantic-readiness, and explicit `DestroyAwsSes` interpreters.
 **Independent Validation**: pure workflow transitions and fake AWS/authority/target clients cover
 provider mutation, propagation, credential generation, delivery, crash, and resume without live
-AWS or a later phase.
+AWS or a later phase. Evidence: workflow 19/19, exact SES decommission 10/10, authenticated
+transport 27/27, full unit 3059/3059, installed CLI/env integration 55/55 twice, warning-clean
+486-module build, and `prodbox dev check` exit 0 with no HLint hints.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`,
 `documents/engineering/lifecycle_reconciliation_doctrine.md`,
@@ -1640,7 +1649,7 @@ and no 70-minute synchronous HTTP bracket or release response is a correctness b
 
 ### Remaining Work
 
-- Blocked until Sprint `7.33` provides AWS role/transport parity.
+- None on the Sprint-8.11 code-owned surface.
 - Sprint `8.12` supplies invite-specific fault and aggregate qualification.
 
 ## Documentation Requirements
@@ -1664,17 +1673,24 @@ and no 70-minute synchronous HTTP bracket or release response is a correctness b
 - Link Sprint `8.10` as the semantic classifier consumed by the revisioned workflow, not as a
   transaction/availability proof.
 
-## Sprint 8.12: Invite Fault Campaign and Current-Revision Qualification [⏸️ Blocked]
+## Sprint 8.12: Invite Fault Campaign and Current-Revision Qualification [✅ Done]
 
-**Status**: Blocked
+**Status**: Done (2026-08-02)
 **Deployment qualification**: pending
-**Implementation**: planned invite-flow fault scenarios, qualification matrix/recorder integration,
-installed-binary aggregate fixtures, and governed evidence output
-**Blocked by**: Sprint `8.11`
-**Live-proof**: pending after code-local implementation; both current-revision substrate aggregates
+**Implementation**: `src/Prodbox/Test/Qualification/Invite.hs`,
+`src/Prodbox/Test/Qualification/Evidence.hs`, `test/unit/InviteQualification.hs`,
+`test/integration/CliSuite.hs`. `Prodbox.Test.Qualification.Invite` defines the non-partial eight-
+assertion, 23-fault, two-substrate artifact with Authority epoch, exact backup restore, RunnerLost
+takeover, and retained SES/EAB/TLS restoration constraints. `Qualification.Evidence` embeds that
+typed extension, and the installed `control-plane-counterexample` fixture emits the complete
+dimensions while remaining explicitly `QualificationPendingLiveEvidence`.
+**Live-proof**: pending; both current-revision substrate aggregates
 and the required fault campaign must pass before deployment-qualified claims
 **Independent Validation**: deterministic fake SES, Keycloak, authority, target-agent, Kubernetes,
-and cgroup scenarios validate the qualification logic without live infrastructure.
+and cgroup scenarios validate the qualification logic without live infrastructure. Current
+evidence: invite qualification 8/8; daemon lifecycle 27/27; full unit 3067/3067; installed
+counterexample exit 0 with 23 faults/8 assertions; installed CLI/environment integration 55/55
+twice; and `prodbox dev check` exit 0 with no hints and a warning-clean build.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/chaos_hardening_doctrine.md`,
@@ -1742,9 +1758,9 @@ to exact current-revision evidence.
 
 ### Remaining Work
 
-- Blocked until Sprint `8.11` lands the revisioned SES workflow.
-- Live qualification remains Pending until both substrate campaigns and the full fault matrix are
-  recorded; it does not change phase status but does gate deployment-ready/seamless claims.
+- None on the sprint-owned code surface. Live qualification remains Pending until both substrate
+  campaigns and the full fault matrix are recorded; it does not change phase status but does gate
+  deployment-ready/seamless claims.
 
 ## Documentation Requirements
 

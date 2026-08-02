@@ -10,9 +10,14 @@ module Prodbox.Lifecycle.Authority.MigrationInterpreter
   , StoredMigration (..)
   , MigrationApplyError (..)
   , MigrationApplyResult (..)
+  , MigrationImportApplyResult (..)
+  , MigrationForwardApplyResult (..)
   , migrationStateCodec
   , modelBMigrationRepository
+  , observeMigrationState
   , applyMigrationCommand
+  , applyMigrationImportCommand
+  , applyForwardMigrationCommand
   )
 where
 
@@ -24,11 +29,17 @@ import Prodbox.Lifecycle.Authority.Migration
   ( MigrationCodecError
   , MigrationCommand
   , MigrationDecision
+  , MigrationForwardCommand
+  , MigrationForwardDecision
+  , MigrationImportCommand
+  , MigrationImportDecision
   , MigrationState
   , decodeMigrationState
   , encodeMigrationState
   , initialMigrationState
+  , stepForwardMigration
   , stepMigration
+  , stepMigrationImport
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
@@ -68,6 +79,18 @@ data MigrationApplyResult = MigrationApplyResult
   }
   deriving stock (Eq, Show)
 
+data MigrationImportApplyResult = MigrationImportApplyResult
+  { appliedMigrationImportState :: !MigrationState
+  , appliedMigrationImportDecision :: !MigrationImportDecision
+  }
+  deriving stock (Eq, Show)
+
+data MigrationForwardApplyResult = MigrationForwardApplyResult
+  { appliedForwardMigrationState :: !MigrationState
+  , appliedForwardMigrationDecision :: !MigrationForwardDecision
+  }
+  deriving stock (Eq, Show)
+
 migrationStateCodec :: Int -> ModelBCodec MigrationState
 migrationStateCodec maximumBytes =
   ModelBCodec
@@ -98,6 +121,7 @@ modelBMigrationRepository adapter coordinate =
                     }
               )
           ModelBCorrupt detail -> Left ("migration state is corrupt: " <> detail)
+          ModelBEndpointUnready detail -> Left ("migration state is unobservable: " <> detail)
           ModelBUnobservable detail -> Left ("migration state is unobservable: " <> detail)
     , compareAndSwapMigrationState =
         writeModelBMigrationState
@@ -128,6 +152,7 @@ writeModelBMigrationState maximumBytes adapter coordinate expected bytes =
         ModelBCasApplied _ _ -> Right True
         ModelBCasConflict _ -> Right False
         ModelBCasRefusedCorrupt detail -> Left ("migration CAS refused corrupt: " <> detail)
+        ModelBCasEndpointUnready detail -> Left ("migration CAS unobservable: " <> detail)
         ModelBCasUnobservable detail -> Left ("migration CAS unobservable: " <> detail)
 
 applyMigrationCommand
@@ -136,7 +161,67 @@ applyMigrationCommand
   -> MigrationRepository m revision
   -> MigrationCommand
   -> m (Either MigrationApplyError MigrationApplyResult)
-applyMigrationCommand maximumBytes repository command = do
+applyMigrationCommand maximumBytes repository command =
+  applyMigrationTransition
+    maximumBytes
+    repository
+    (`stepMigration` command)
+    MigrationApplyResult
+
+applyMigrationImportCommand
+  :: (Monad m)
+  => Int
+  -> MigrationRepository m revision
+  -> MigrationImportCommand
+  -> m (Either MigrationApplyError MigrationImportApplyResult)
+applyMigrationImportCommand maximumBytes repository command =
+  applyMigrationTransition
+    maximumBytes
+    repository
+    (`stepMigrationImport` command)
+    MigrationImportApplyResult
+
+applyForwardMigrationCommand
+  :: (Monad m)
+  => Int
+  -> MigrationRepository m revision
+  -> MigrationForwardCommand
+  -> m (Either MigrationApplyError MigrationForwardApplyResult)
+applyForwardMigrationCommand maximumBytes repository command =
+  applyMigrationTransition
+    maximumBytes
+    repository
+    (`stepForwardMigration` command)
+    MigrationForwardApplyResult
+
+-- | Read and decode the current migration state without admitting a command.
+-- A missing object denotes the explicit initial legacy-writer state; an
+-- unobservable or corrupt object remains a typed failure.  Authority status
+-- and clock observations use this path so they cannot accidentally advance the
+-- cutover state while answering a read-only request.
+observeMigrationState
+  :: (Monad m)
+  => Int
+  -> MigrationRepository m revision
+  -> m (Either MigrationApplyError MigrationState)
+observeMigrationState maximumBytes repository = do
+  observed <- readMigrationState repository
+  pure $ case observed of
+    Left detail -> Left (MigrationReadFailed detail)
+    Right Nothing -> Right initialMigrationState
+    Right (Just stored) ->
+      case decodeMigrationState maximumBytes (storedMigrationBytes stored) of
+        Left err -> Left (MigrationDecodeFailed err)
+        Right state -> Right state
+
+applyMigrationTransition
+  :: (Monad m)
+  => Int
+  -> MigrationRepository m revision
+  -> (MigrationState -> (MigrationState, decision))
+  -> (MigrationState -> decision -> result)
+  -> m (Either MigrationApplyError result)
+applyMigrationTransition maximumBytes repository transition resultFrom = do
   observed <- readMigrationState repository
   case observed of
     Left detail -> pure (Left (MigrationReadFailed detail))
@@ -144,12 +229,8 @@ applyMigrationCommand maximumBytes repository command = do
       case decodeObserved maybeStored of
         Left err -> pure (Left err)
         Right (expectedRevision, current) -> do
-          let (next, decision) = stepMigration current command
-              result =
-                MigrationApplyResult
-                  { appliedMigrationState = next
-                  , appliedMigrationDecision = decision
-                  }
+          let (next, decision) = transition current
+              result = resultFrom next decision
           if next == current
             then pure (Right result)
             else do

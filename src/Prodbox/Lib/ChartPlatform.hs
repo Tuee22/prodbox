@@ -5,8 +5,6 @@ module Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
-  , PatroniAuthObservation (..)
-  , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
@@ -24,19 +22,17 @@ module Prodbox.Lib.ChartPlatform
   , gatewayRestServicePort
   , keycloakVscodeClientId
   , keycloakRealmName
-  , kubernetesSecretDecodedDataField
   , observePatroniOperatorAvailableWith
   , operatorAvailableTarget
   , operatorGateResult
-  , patroniSeedMismatchDecision
   , renderChartList
   , renderChartStatus
-  , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   , retainedPublicEdgeTlsSecretManifest
   , resolveChart
   , resolveChartSecrets
+  , resolveRuntimeChartImageForSubstrate
   , resolveDependencyOrder
   , supportedChartNames
   , validateOperatorGatesWith
@@ -77,7 +73,7 @@ import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
-import Data.ByteString.Base64 qualified as B64
+import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit, isSpace, toLower)
@@ -93,13 +89,20 @@ import Data.List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.ChartStatics qualified as BrokerChartStatics
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.Placement qualified as Placement
 import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
-import Prodbox.Config.Basics (basicsClusterId)
+import Prodbox.Config.Basics
+  ( ParentRef
+  , basicsClusterId
+  , basicsParentRef
+  , parentRefAuthorityEndpoint
+  , parentRefClusterId
+  )
 import Prodbox.Config.ComponentGraph
   ( ComponentId (..)
   , ComponentNode
@@ -117,15 +120,54 @@ import Prodbox.Config.ComponentGraph
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( controlPlaneSigningKeyName
+  , controlPlaneSigningKeyRefFor
+  , localServiceCaller
+  , trustedCallersForRoute
+  )
+import Prodbox.ControlPlane.CallerPrincipal (callerPrincipalCode)
+import Prodbox.ControlPlane.DedicatedAdapterStore (awsS3EndpointForRegion)
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthenticationError
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  , withLifecycleAuthorityAuthenticatedTransport
+  , withSelectedTargetSecretAgentAuthenticatedTransport
+  , withTargetSecretAgentAuthenticatedTransport
+  , withTlsRetentionAuthenticatedTransport
+  )
+import Prodbox.ControlPlane.Route
+  ( controlPlaneRoutePath
+  , routesForRole
+  )
+import Prodbox.ControlPlane.TargetSecretAgentExecution
+  ( mkTargetAgentRolloutIdentity
+  , targetAgentIdentityText
+  , targetAgentRolloutDigest
+  )
+import Prodbox.ControlPlane.TlsRetentionAuthorityClient
+  ( mkTlsRetentionAuthorityClient
+  )
+import Prodbox.ControlPlane.TlsRetentionClient
+  ( tlsRetentionClientWithTransport
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflow
+  ( TlsRetentionWorkflow (..)
+  , TlsRetentionWorkflowError
+  , TlsWorkflowRestoreOutcome (..)
+  , TlsWorkflowRetainOutcome (..)
+  , restorePublicEdgeTlsWorkflow
+  , retainPublicEdgeTlsWorkflow
+  )
+import Prodbox.ControlPlane.TlsTargetAgentClient
+  ( tlsTargetAgentClientWithTransport
+  )
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
-import Prodbox.Infra.LongLivedPulumiBackend
-  ( getLongLivedObject
-  , putLongLivedObject
-  , resolveLongLivedAdminS3Context
-  )
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
@@ -141,6 +183,9 @@ import Prodbox.Lib.Storage
   , workloadStorageSize
   )
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
+import Prodbox.Lifecycle.Authority.TlsRetention
+  ( KeyRotationApproval (KeyRotationNotApproved)
+  )
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
@@ -190,6 +235,7 @@ import Prodbox.Retry
   , RetryPolicy (..)
   , pollUntilReady
   )
+import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Service
   ( AsServiceError (..)
   , HasPg (..)
@@ -200,6 +246,7 @@ import Prodbox.Settings
   , AwsSubstrateSection (..)
   , ConfigFile (..)
   , DeploymentSection (..)
+  , PulumiStateBackendSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
   , certDnsNamesForServedHost
@@ -213,8 +260,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
-import Prodbox.Tls.CertScope (CertScopeSet)
-import Prodbox.Vault.Host (readHostVaultKvField, writeHostVaultKvObject)
+import Prodbox.Tls.CertScope (CertScopeSet, renderCertScopeSet)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -529,16 +575,16 @@ resolveChart repoRoot chartName =
           }
     _
       | chartName `elem` controlPlaneRoleChartNames ->
-          -- Sprint 3.26: the five standing control-plane role charts are internal
-          -- (absent from `supportedChartNames`, so off the public `prodbox charts`
-          -- surface), own no separately-provisioned PVC (the Lifecycle Authority's
-          -- journal is a StatefulSet-managed volumeClaimTemplate), and require no
-          -- public host.
+          -- The five standing control-plane role charts are internal (absent
+          -- from `supportedChartNames`, so off the public `prodbox charts`
+          -- surface) and require no public host. The Lifecycle Authority's
+          -- retained journal is pre-provisioned through ChartPlatform; the four
+          -- stateless roles have no storage binding.
           Right
             ChartDefinition
               { chartDefinitionName = chartName
               , chartDefinitionChartDir = repoRoot </> "charts" </> chartName
-              , chartDefinitionStorage = []
+              , chartDefinitionStorage = controlPlaneChartStorage chartName
               , chartDefinitionRequiresPublicHost = False
               }
     _ ->
@@ -548,6 +594,27 @@ resolveChart repoRoot chartName =
             ++ "'. Supported charts: "
             ++ intercalate ", " supportedChartNames
         )
+
+-- | Standing-role storage is normally empty. The retained home Lifecycle
+-- Authority is the exception: its StatefulSet journal claim must be
+-- pre-provisioned through the same typed ChartPlatform storage path as every
+-- other repo-owned manual-PV workload. Keeping the exact generated PVC name in
+-- the chart definition makes `helm --wait` observe a bindable claim rather than
+-- timing out on an unowned volumeClaimTemplate.
+controlPlaneChartStorage :: String -> [ChartStorageSpec]
+controlPlaneChartStorage chartName =
+  case chartName of
+    "lifecycle-authority" ->
+      [ ChartStorageSpec
+          { chartStorageSpecStatefulSetName = "lifecycle-authority"
+          , chartStorageSpecPersistentVolumeClaimName =
+              "authority-journal-lifecycle-authority-0"
+          , chartStorageSpecWorkloadProfileId = "lifecycle-authority"
+          , chartStorageSpecOrdinal = 0
+          , chartStorageSpecClaimSuffix = "authority-journal"
+          }
+      ]
+    _ -> []
 
 buildChartDeploymentPlan
   :: FilePath
@@ -589,10 +656,22 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
         if "gateway" `elem` releaseOrder
           then fmap (fmap Just) (resolveGatewayTier0DhallForSubstrate substrate repoRoot)
           else pure (Right Nothing)
+      controlPlaneClusterIdResult <-
+        if "gateway" `elem` releaseOrder
+          || "bootstrap-broker" `elem` releaseOrder
+          || any (`elem` releaseOrder) controlPlaneRoleChartNames
+          then fmap (fmap Just) (resolveClusterIdentityForSubstrate substrate repoRoot)
+          else pure (Right Nothing)
+      controlPlaneParentRefResult <-
+        if "bootstrap-broker" `elem` releaseOrder
+          then resolveParentRegistrationForSubstrate substrate repoRoot
+          else pure (Right Nothing)
       pure $ do
         maybeRuntimeImage <- runtimeImageResult
         maybeGatewayHostedZoneId <- gatewayHostedZoneIdResult
         maybeGatewayTier0Dhall <- gatewayTier0DhallResult
+        maybeControlPlaneClusterId <- controlPlaneClusterIdResult
+        maybeControlPlaneParentRef <- controlPlaneParentRefResult
         buildChartDeploymentPlanPure
           substrate
           repoRoot
@@ -603,6 +682,8 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
           maybeRuntimeImage
           maybeGatewayHostedZoneId
           maybeGatewayTier0Dhall
+          maybeControlPlaneClusterId
+          maybeControlPlaneParentRef
 
 buildChartDeletePlan
   :: FilePath
@@ -794,12 +875,16 @@ deployChartPlan plan = do
               case ensureResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                  restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
-                  case restoreResult of
+                  accessResult <- ensurePublicEdgeTlsAgentAccess planToDeploy
+                  case accessResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                      deployResult <- foldM deployRelease (Right ()) missing
-                      pure (deployResult >> Right (renderDeployReport plan))
+                      restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
+                      case restoreResult of
+                        Left err -> pure (Left err)
+                        Right () -> do
+                          deployResult <- foldM deployRelease (Right ()) missing
+                          pure (deployResult >> Right (renderDeployReport plan))
  where
   deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
   deployRelease (Left err) _ = pure (Left err)
@@ -873,21 +958,11 @@ deployChartPlan plan = do
                               Left err -> pure (Left err)
                               Right () -> finishStagedPatroniRelease release
 
-  -- After the staged Patroni bring-up reports ready, mirror the
-  -- operator-generated pguser password into Vault so the keycloak release
-  -- deployed later in this same plan reads a @KC_DB_PASSWORD@ that matches the
-  -- live role (see 'syncPatroniAppPasswordToVault'). Scoped to the home
-  -- substrate's staged path, mirroring the preflight reset.
+  -- Keycloak consumes the operator-owned pguser Secret directly through its
+  -- exact @postgres.passwordSecretName@ projection. No host or Target Agent
+  -- payload read/write is needed after Patroni becomes ready.
   finishStagedPatroniRelease :: ChartReleasePlan -> IO (Either String ())
-  finishStagedPatroniRelease release = do
-    readyResult <- validateReleaseReady release
-    case readyResult of
-      Left err -> pure (Left err)
-      Right () ->
-        syncPatroniAppPasswordToVault
-          (chartDeploymentPlanRepoRoot plan)
-          (chartReleasePlanNamespace release)
-          (chartDeploymentPlanRootChart plan)
+  finishStagedPatroniRelease = validateReleaseReady
 
   -- Sprint 3.13 chunk 13: derive the bootstrap anchor PV from live k8s state
   -- (the Patroni primary endpoint -> primary pod -> its PVC -> bound PV) when
@@ -1718,100 +1793,6 @@ discoverPatroniAnchorPersistentVolumeName namespace = do
     Nothing -> pure Nothing
     Just claimName -> readOptionalPersistentVolumeNameForClaim namespace claimName
 
--- | Observe whether the Vault-backed Patroni application-role password still
--- authenticates against the preserved cluster's @pg_authid@ hash. This is
--- the effectful half of the loud-failure guard; the pure policy is
--- 'patroniSeedMismatchDecision'.
---
--- Steps, all best-effort (any failure short of a definite authentication
--- rejection classifies as 'PatroniAuthUnobservable' so a fresh install or
--- a transient probe miss never blocks the deploy):
---
---   1. Read the application-role password from Vault KV through the host
---      Vault helper.
---   2. Resolve the primary Pod for the cluster. Absent ⇒ no running
---      Postgres to probe ⇒ unobservable.
---   3. Run a probe-only @psql@ connection inside the primary Pod using the
---      Vault-backed password. Exit 0 ⇒ matches; an authentication-failure
---      diagnostic ⇒ rejected; anything else ⇒ unobservable.
-probePatroniAppRoleAuth :: FilePath -> String -> IO PatroniAuthObservation
-probePatroniAppRoleAuth repoRoot namespace = do
-  passwordResult <-
-    readHostVaultKvField
-      repoRoot
-      "secret"
-      (Text.pack (keycloakPostgresAppVaultPath namespace))
-      "password"
-  case passwordResult of
-    Left err ->
-      pure
-        ( PatroniAuthUnobservable
-            ("Vault read of Patroni app-role password failed: " ++ err)
-        )
-    Right password -> do
-      maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
-      case maybePrimaryPodName of
-        Nothing ->
-          pure (PatroniAuthUnobservable "no Patroni primary Pod found; nothing to probe")
-        Just primaryPodName ->
-          probePatroniPsqlAuth namespace primaryPodName (Text.unpack password)
-
--- | Sprint 3.16 (boundary probe). Run a probe-only @psql@ connection in the
--- primary Pod authenticating as the Patroni application role with the
--- supplied password, and classify the result. The password is passed via
--- @PGPASSWORD@ in the exec environment and is never written to a log or
--- argv slot (it would otherwise show in process listings).
-probePatroniPsqlAuth :: String -> String -> String -> IO PatroniAuthObservation
-probePatroniPsqlAuth namespace primaryPodName derivedPassword = do
-  result <-
-    runPg
-      [ "exec"
-      , primaryPodName
-      , "--namespace"
-      , namespace
-      , "--container"
-      , "database"
-      , "--"
-      , "env"
-      , "PGPASSWORD=" ++ derivedPassword
-      , "psql"
-      , "--host"
-      , "127.0.0.1"
-      , "--username"
-      , patroniUsername
-      , "--dbname"
-      , patroniDatabaseName
-      , "--no-password"
-      , "--tuples-only"
-      , "--command"
-      , "SELECT 1"
-      ]
-  pure $ case result of
-    Left err ->
-      PatroniAuthUnobservable
-        ("psql probe subprocess failed: " ++ Text.unpack (serviceErrorMessage (toServiceError err)))
-    Right output ->
-      case processExitCode output of
-        ExitSuccess -> PatroniAuthMatches
-        ExitFailure _ ->
-          let diagnostic = processStderr output ++ "\n" ++ processStdout output
-           in if isPostgresAuthenticationFailure diagnostic
-                then PatroniAuthRejected
-                else
-                  PatroniAuthUnobservable
-                    ("psql probe did not yield an authentication verdict: " ++ trimWhitespace diagnostic)
-
--- | Sprint 3.16 (pure). Recognise a Postgres password-authentication
--- rejection in a @psql@ diagnostic blob. PostgreSQL emits
--- @"password authentication failed for user"@ (SQLSTATE @28P01@) for a
--- wrong password; @"role ... does not exist"@ (@28000@) is a different
--- failure that must NOT be read as a seed mismatch. Pure so the unit
--- suite can pin the recognition without a live Postgres.
-isPostgresAuthenticationFailure :: String -> Bool
-isPostgresAuthenticationFailure diagnostic =
-  "password authentication failed" `isInfixOf` diagnostic
-    || "28P01" `isInfixOf` diagnostic
-
 readOptionalPatroniPrimaryPodName :: String -> IO (Maybe String)
 readOptionalPatroniPrimaryPodName namespace = do
   result <-
@@ -1905,8 +1886,10 @@ buildChartDeploymentPlanPure
   -> Maybe ResolvedCustomImage
   -> Maybe String
   -> Maybe String
+  -> Maybe Text.Text
+  -> Maybe ParentRef
   -> Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall = do
+buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef = do
   when
     (chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
@@ -1959,6 +1942,8 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
           maybeRuntimeImage
           maybeGatewayHostedZoneId
           maybeGatewayTier0Dhall
+          maybeControlPlaneClusterId
+          maybeControlPlaneParentRef
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = chartDefinitionName definition
@@ -2060,18 +2045,38 @@ resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings =
 -- cannot drift from the daemon-owned schema.
 resolveGatewayTier0DhallForSubstrate
   :: Substrate -> FilePath -> IO (Either String String)
-resolveGatewayTier0DhallForSubstrate substrate repoRoot =
+resolveGatewayTier0DhallForSubstrate substrate repoRoot = do
+  clusterIdResult <- resolveClusterIdentityForSubstrate substrate repoRoot
+  pure (renderGatewayTier0Dhall <$> clusterIdResult)
+
+-- | Resolve the same substrate identity for every standing control-plane role.
+-- It is mounted explicitly in schema-v3 role config; no role guesses identity
+-- from its namespace or consults environment variables.
+resolveClusterIdentityForSubstrate
+  :: Substrate -> FilePath -> IO (Either String Text.Text)
+resolveClusterIdentityForSubstrate substrate repoRoot =
   case substrate of
     SubstrateHomeLocal -> do
       basicsResult <- loadUnencryptedBasics repoRoot
       pure $ case basicsResult of
-        Left err -> Left ("gateway Tier-0 home cluster identity unavailable: " ++ err)
-        Right basics -> Right (renderGatewayTier0Dhall (basicsClusterId basics))
+        Left err -> Left ("control-plane Tier-0 home cluster identity unavailable: " ++ err)
+        Right basics -> Right (basicsClusterId basics)
     SubstrateAws ->
-      pure
-        ( Right
-            (renderGatewayTier0Dhall (Text.pack AwsEks.awsEksCanonicalClusterName))
-        )
+      pure (Right (Text.pack AwsEks.awsEksCanonicalClusterName))
+
+resolveParentRegistrationForSubstrate
+  :: Substrate -> FilePath -> IO (Either String (Maybe ParentRef))
+resolveParentRegistrationForSubstrate substrate repoRoot =
+  case substrate of
+    SubstrateHomeLocal -> do
+      basicsResult <- loadUnencryptedBasics repoRoot
+      pure $ case basicsResult of
+        Left err -> Left ("bootstrap-broker Tier-0 parent reference unavailable: " ++ err)
+        Right basics -> Right (basicsParentRef basics)
+    -- The harness-owned EKS substrate is a clean root deployment.  A future
+    -- federated EKS child must carry its own substrate Tier-0 projection rather
+    -- than borrowing the home cluster's parent reference.
+    SubstrateAws -> pure (Right Nothing)
 
 renderGatewayTier0Dhall :: Text.Text -> String
 renderGatewayTier0Dhall clusterId =
@@ -2105,8 +2110,10 @@ renderReleaseValuesJson
   -> Maybe ResolvedCustomImage
   -> Maybe String
   -> Maybe String
+  -> Maybe Text.Text
+  -> Maybe ParentRef
   -> Either String String
-renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall = do
+renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef = do
   baseValues <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
@@ -2148,8 +2155,8 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
             valuesForWebsocket substrate namespace rootChart settings chartSecrets fqdn maybeRuntimeImage
           Nothing -> Left "websocket requires a public host"
       "gateway" ->
-        case (maybePublicFqdn, maybeGatewayHostedZoneId, maybeGatewayTier0Dhall) of
-          (Just fqdn, Just zoneId, Just gatewayTier0Dhall) ->
+        case (maybePublicFqdn, maybeGatewayHostedZoneId, maybeGatewayTier0Dhall, maybeControlPlaneClusterId) of
+          (Just fqdn, Just zoneId, Just gatewayTier0Dhall, Just clusterId) ->
             valuesForGateway
               substrate
               namespace
@@ -2160,24 +2167,54 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
               maybeRuntimeImage
               zoneId
               gatewayTier0Dhall
-          (Nothing, _, _) -> Left "gateway requires a public host"
-          (_, Nothing, _) -> Left "gateway requires a Route 53 hosted zone id"
-          (_, _, Nothing) -> Left "gateway requires a substrate-specific Tier-0 document"
+              clusterId
+          (Nothing, _, _, _) -> Left "gateway requires a public host"
+          (_, Nothing, _, _) -> Left "gateway requires a Route 53 hosted zone id"
+          (_, _, Nothing, _) -> Left "gateway requires a substrate-specific Tier-0 document"
+          (_, _, _, Nothing) -> Left "gateway requires an explicit Lifecycle Authority scope"
       "bootstrap-broker" ->
-        valuesForBootstrapBroker namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForBootstrapBrokerWithParent
+            clusterId
+            maybeControlPlaneParentRef
+            namespace
+            rootChart
+            maybeRuntimeImage
       "lifecycle-authority" ->
-        valuesForLifecycleAuthority namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForLifecycleAuthority clusterId namespace rootChart maybeRuntimeImage
       "provider-worker" ->
-        valuesForProviderWorker namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForProviderWorker clusterId namespace rootChart maybeRuntimeImage
       "authority-backup" ->
-        valuesForAuthorityBackup namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForAuthorityBackup
+            settings
+            clusterId
+            namespace
+            rootChart
+            maybeRuntimeImage
       "tls-retention" ->
-        valuesForTlsRetention namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForTlsRetention
+            substrate
+            settings
+            clusterId
+            namespace
+            rootChart
+            maybeRuntimeImage
       "target-secret-agent" ->
-        valuesForTargetSecretAgent namespace rootChart maybeRuntimeImage
+        requireControlPlaneClusterId >>= \clusterId ->
+          valuesForTargetSecretAgent clusterId namespace rootChart maybeRuntimeImage
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   values <- attachResourcePlanValues substrate settings definition rootChart baseValues
   pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
+ where
+  requireControlPlaneClusterId =
+    maybe
+      (Left "standing control-plane role requires an explicit substrate cluster identity")
+      Right
+      maybeControlPlaneClusterId
 
 attachResourcePlanValues
   :: Substrate -> ValidatedSettings -> ChartDefinition -> String -> Value -> Either String Value
@@ -2554,8 +2591,18 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
 -- 'attachResourcePlanValues' (the @bootstrap-broker@ workload profile), so it is
 -- intentionally absent here.
 valuesForBootstrapBroker
-  :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
+  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForBootstrapBroker clusterId =
+  valuesForBootstrapBrokerWithParent clusterId Nothing
+
+valuesForBootstrapBrokerWithParent
+  :: Text.Text
+  -> Maybe ParentRef
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForBootstrapBrokerWithParent clusterId maybeParent namespace rootChart maybeRuntimeImage = do
   resolvedImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -2581,6 +2628,12 @@ valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
           -- compiled BrokerChartStatics, matching the generated @values.yaml@
           -- block and the hand-written templates.
           "serviceAccount" .= BrokerChartStatics.brokerChartStaticsServiceAccountValue
+        , "client" .= BrokerChartStatics.brokerChartStaticsClientValue
+        , "worker"
+            .= object
+              [ "imageRepository"
+                  .= BrokerChartStatics.brokerStaticWorkerImageRepository statics
+              ]
         , "vault"
             .= object
               [ "role" .= BrokerChartStatics.brokerStaticVaultRole statics
@@ -2610,9 +2663,62 @@ valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
                     ]
               ]
         , "listener" .= object ["port" .= (8600 :: Int)]
-        , "config" .= object ["brokerDhall" .= ("" :: String)]
+        , "config"
+            .= object
+              [ "brokerDhall"
+                  .= renderBootstrapBrokerConfigDhall clusterId maybeParent statics
+              ]
         ]
     )
+
+renderBootstrapBrokerConfigDhall
+  :: Text.Text -> Maybe ParentRef -> BrokerChartStatics.BrokerChartStatics -> String
+renderBootstrapBrokerConfigDhall clusterId maybeParent statics =
+  "{ schemaVersion = 2"
+    ++ ", cluster_id = "
+    ++ renderDhallText clusterId
+    ++ ", vault_address = "
+    ++ renderDhallText "http://vault.vault.svc.cluster.local:8200"
+    ++ ", service_identity = "
+    ++ renderDhallText (BrokerChartStatics.brokerStaticClientServiceAccount statics)
+    ++ ", listener = { listen_host = \"127.0.0.1\", listen_port = 8600 }"
+    ++ ", bootstrap_store = "
+    ++ "{ store_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
+    ++ ", store_bucket = \"prodbox-state\""
+    ++ storeKey "vault_storage_generation_key" "vault-storage-generation"
+    ++ storeKey "bootstrap_session_fence_key" "bootstrap-session-fence"
+    ++ storeKey "prepared_init_envelope_key" "prepared-init-envelope"
+    ++ storeKey "encrypted_init_response_key" "encrypted-init-response"
+    ++ storeKey "final_unlock_bundle_key" "final-unlock-bundle"
+    ++ storeKey "child_custody_receipt_key" "child-custody-receipt"
+    ++ storeKey "child_recovery_delivery_key" "child-recovery-delivery"
+    ++ storeKey "root_init_journal_key" "root-init-journal"
+    ++ storeKey "root_session_journal_key" "root-session-journal"
+    ++ storeKey "child_custody_journal_key" "child-custody-journal"
+    ++ storeKey "child_recovery_journal_key" "child-recovery-journal"
+    ++ storeKey "post_unseal_handoff_key" "post-unseal-handoff"
+    ++ storeKey "secret_worker_checkpoint_key" "secret-worker-checkpoint"
+    ++ " }"
+    ++ ", limits = { queue_capacity = 64, max_request_body_bytes = 65536"
+    ++ ", request_deadline_milliseconds = 300000, drain_deadline_milliseconds = 60000 }"
+    ++ ", parent_registration = "
+    ++ renderParentRegistration maybeParent
+    ++ " }"
+ where
+  storeKey field suffix =
+    ", "
+      ++ field
+      ++ " = "
+      ++ renderDhallText ("bootstrap/" <> Text.strip clusterId <> "/" <> suffix)
+  renderParentRegistration parent = case parent of
+    Nothing ->
+      "None { parent_cluster_id : Text, parent_authority_endpoint : Text }"
+    Just ref ->
+      "Some { parent_cluster_id = "
+        ++ renderDhallText (parentRefClusterId ref)
+        ++ ", parent_authority_endpoint = "
+        ++ renderDhallText (parentRefAuthorityEndpoint ref)
+        ++ " }"
 
 -- | Sprint 3.26: shared deployed-values builder for the five standing
 -- control-plane role charts. Every identity/probe value is projected from the
@@ -2623,26 +2729,41 @@ valuesForBootstrapBroker namespace rootChart maybeRuntimeImage = do
 -- is intentionally absent here. StatefulSet-specific values (the Lifecycle
 -- Authority journal storage class) come from the chart's @values.yaml@ default.
 valuesForControlPlaneRole
-  :: String
+  :: Text.Text
+  -> RuntimeRole
+  -> String
   -> Value
   -> Text.Text
   -> Text.Text
   -> Text.Text
   -> String
   -> String
+  -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForControlPlaneRole chartName serviceAccountValue vaultRole livenessPath readinessPath namespace rootChart maybeRuntimeImage = do
+valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue vaultRole livenessPath readinessPath roleStoreDhall namespace rootChart maybeRuntimeImage = do
   resolvedImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left (chartName ++ " chart requires a resolved image reference")
+  rolloutToken <-
+    maybe
+      (Left (chartName ++ " chart requires an immutable runtime image rollout digest"))
+      Right
+      (resolvedCustomImageRolloutToken resolvedImage)
+  targetAgentIdentity <-
+    first
+      Text.unpack
+      (mkTargetAgentRolloutIdentity clusterId (Text.pack rolloutToken))
   pure
     ( object
         [ "global"
             .= object
               [ "namespace" .= namespace
               , "rootChart" .= rootChart
+              , "clusterIdentity" .= clusterId
+              , "targetAgentIdentity" .= targetAgentIdentityText targetAgentIdentity
+              , "targetAgentRolloutDigest" .= targetAgentRolloutDigest targetAgentIdentity
               ]
         , "podAnnotations"
             .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedImage)
@@ -2665,19 +2786,67 @@ valuesForControlPlaneRole chartName serviceAccountValue vaultRole livenessPath r
         , "config"
             .= object
               [ "roleDhall"
-                  .= ( "{ schema_version = 2, runtime_role = \""
-                         ++ chartName
-                         ++ "\", vault_address = \"http://vault.vault.svc.cluster.local:8200\""
-                         ++ ", vault_auth_path = \"kubernetes\""
-                         ++ ", vault_role = \""
-                         ++ Text.unpack vaultRole
-                         ++ "\""
-                         ++ ", service_account_token_file = \"/var/run/secrets/kubernetes.io/serviceaccount/token\" }"
+                  .= ( "{ schema_version = 7, runtime_role = "
+                         ++ renderDhallText (Text.pack chartName)
+                         ++ ", cluster_id = "
+                         ++ renderDhallText clusterId
+                         ++ ", target_agent_identity = "
+                         ++ renderDhallText (targetAgentIdentityText targetAgentIdentity)
+                         ++ ", role_store = "
+                         ++ roleStoreDhall
+                         ++ ", vault_address = "
+                         ++ renderDhallText "http://vault.vault.svc.cluster.local:8200"
+                         ++ ", vault_auth_path = "
+                         ++ renderDhallText "kubernetes"
+                         ++ ", vault_role = "
+                         ++ renderDhallText vaultRole
+                         ++ ", service_account_token_file = "
+                         ++ renderDhallText "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                         ++ ", request_authentication = "
+                         ++ renderControlPlaneAuthenticationDhall runtimeRole
+                         ++ " }"
                          :: String
                      )
               ]
         ]
     )
+
+renderControlPlaneAuthenticationDhall :: RuntimeRole -> String
+renderControlPlaneAuthenticationDhall role =
+  "{ maximum_trusted_callers_per_route = "
+    ++ show maximumPerRoute
+    ++ ", signing_principal_code = "
+    ++ show (callerPrincipalCode signingCaller)
+    ++ ", signing_key_name = "
+    ++ renderDhallText
+      (controlPlaneSigningKeyName (controlPlaneSigningKeyRefFor signingCaller))
+    ++ ", trusted_callers = "
+    ++ renderEntries entries
+    ++ " }"
+ where
+  signingCaller = localServiceCaller role
+  routes = routesForRole role
+  entries =
+    [ (route, caller)
+    | route <- routes
+    , caller <- trustedCallersForRoute route
+    ]
+  maximumPerRoute = maximum (1 : fmap (length . trustedCallersForRoute) routes)
+  renderEntries values =
+    "[ "
+      ++ intercalate ", " (fmap renderEntry values)
+      ++ " ]"
+  renderEntry (route, caller) =
+    "{ trusted_route_path = "
+      ++ renderDhallText (Text.pack (controlPlaneRoutePath route))
+      ++ ", trusted_caller_code = "
+      ++ show (callerPrincipalCode caller)
+      ++ ", trusted_signing_key_name = "
+      ++ renderDhallText
+        ( controlPlaneSigningKeyName
+            (controlPlaneSigningKeyRefFor caller)
+        )
+      ++ " }"
 
 -- | The constant-time liveness/readiness probe timing shared by every standing
 -- control-plane role chart (identical to the Bootstrap Broker's).
@@ -2702,75 +2871,213 @@ controlPlaneProbeTimingValue =
           ]
     ]
 
-valuesForLifecycleAuthority :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForLifecycleAuthority namespace rootChart maybeRuntimeImage =
+valuesForLifecycleAuthority
+  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForLifecycleAuthority clusterId namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
+    clusterId
+    LifecycleAuthorityRuntime
     "lifecycle-authority"
     AuthorityStatics.lifecycleAuthorityChartStaticsServiceAccountValue
     (AuthorityStatics.lifecycleAuthorityStaticVaultRole s)
     (AuthorityStatics.lifecycleAuthorityStaticLivenessPath s)
     (AuthorityStatics.lifecycleAuthorityStaticReadinessPath s)
+    ( roleStorePrimaryDhall
+        "http://minio.prodbox.svc.cluster.local:9000"
+        "prodbox-state"
+    )
     namespace
     rootChart
     maybeRuntimeImage
  where
   s = AuthorityStatics.lifecycleAuthorityChartStatics
 
-valuesForProviderWorker :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForProviderWorker namespace rootChart maybeRuntimeImage =
+valuesForProviderWorker
+  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForProviderWorker clusterId namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
+    clusterId
+    ProviderWorkerRuntime
     "provider-worker"
     ProviderWorkerStatics.providerWorkerChartStaticsServiceAccountValue
     (ProviderWorkerStatics.providerWorkerStaticVaultRole s)
     (ProviderWorkerStatics.providerWorkerStaticLivenessPath s)
     (ProviderWorkerStatics.providerWorkerStaticReadinessPath s)
+    roleStoreProviderWorkerDhall
     namespace
     rootChart
     maybeRuntimeImage
  where
   s = ProviderWorkerStatics.providerWorkerChartStatics
 
-valuesForAuthorityBackup :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForAuthorityBackup namespace rootChart maybeRuntimeImage =
+valuesForAuthorityBackup
+  :: ValidatedSettings
+  -> Text.Text
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForAuthorityBackup settings clusterId namespace rootChart maybeRuntimeImage = do
+  (bucket, region) <- dedicatedAdapterBackend settings
+  let prefix = "authority-backup-store/" <> Text.strip clusterId
   valuesForControlPlaneRole
+    clusterId
+    AuthorityBackupRuntime
     "authority-backup"
     AuthorityBackupStatics.authorityBackupChartStaticsServiceAccountValue
     (AuthorityBackupStatics.authorityBackupStaticVaultRole s)
     (AuthorityBackupStatics.authorityBackupStaticLivenessPath s)
     (AuthorityBackupStatics.authorityBackupStaticReadinessPath s)
+    (roleStoreAuthorityBackupDhall (awsS3EndpointForRegion region) region bucket prefix)
     namespace
     rootChart
     maybeRuntimeImage
  where
   s = AuthorityBackupStatics.authorityBackupChartStatics
 
-valuesForTlsRetention :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForTlsRetention namespace rootChart maybeRuntimeImage =
+valuesForTlsRetention
+  :: Substrate
+  -> ValidatedSettings
+  -> Text.Text
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForTlsRetention substrate settings clusterId namespace rootChart maybeRuntimeImage = do
+  (bucket, region) <- dedicatedAdapterBackend settings
+  servedFqdn <- resolveRootPublicFqdn substrate settings rootChart
+  scopeSet <-
+    certScopeSetForServedHost
+      (domain (validatedConfig settings))
+      (aws_substrate (validatedConfig settings))
+      (Text.pack servedFqdn)
+  let prefix = Text.pack (publicEdgeTlsRetentionKey substrate scopeSet)
+      prefixStem = Text.pack ("public-edge-tls/" ++ substrateId substrate ++ "/")
+  scopeKey <-
+    maybe
+      (Left "TLS retention key is outside its canonical substrate prefix")
+      Right
+      (Text.stripPrefix prefixStem prefix)
   valuesForControlPlaneRole
+    clusterId
+    TlsRetentionRuntime
     "tls-retention"
     TlsRetentionStatics.tlsRetentionChartStaticsServiceAccountValue
     (TlsRetentionStatics.tlsRetentionStaticVaultRole s)
     (TlsRetentionStatics.tlsRetentionStaticLivenessPath s)
     (TlsRetentionStatics.tlsRetentionStaticReadinessPath s)
+    ( roleStoreTlsRetentionDhall
+        (awsS3EndpointForRegion region)
+        region
+        bucket
+        (Text.pack (substrateId substrate))
+        scopeKey
+        prefix
+    )
     namespace
     rootChart
     maybeRuntimeImage
  where
   s = TlsRetentionStatics.tlsRetentionChartStatics
 
-valuesForTargetSecretAgent :: String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForTargetSecretAgent namespace rootChart maybeRuntimeImage =
+valuesForTargetSecretAgent
+  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForTargetSecretAgent clusterId namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
+    clusterId
+    TargetSecretAgentRuntime
     "target-secret-agent"
     TargetSecretAgentStatics.targetSecretAgentChartStaticsServiceAccountValue
     (TargetSecretAgentStatics.targetSecretAgentStaticVaultRole s)
     (TargetSecretAgentStatics.targetSecretAgentStaticLivenessPath s)
     (TargetSecretAgentStatics.targetSecretAgentStaticReadinessPath s)
+    roleStoreTargetSecretAgentDhall
     namespace
     rootChart
     maybeRuntimeImage
  where
   s = TargetSecretAgentStatics.targetSecretAgentChartStatics
+
+dedicatedAdapterBackend :: ValidatedSettings -> Either String (Text.Text, Text.Text)
+dedicatedAdapterBackend settings = do
+  let backend = pulumi_state_backend (validatedConfig settings)
+      bucket = Text.strip (psbBucketName backend)
+      region = Text.strip (psbRegion backend)
+  when
+    (Text.null bucket)
+    (Left "pulumi_state_backend.bucket_name is required for a dedicated adapter")
+  when (Text.null region) (Left "pulumi_state_backend.region is required for a dedicated adapter")
+  Right (bucket, region)
+
+roleStoreTypeDhall :: String
+roleStoreTypeDhall =
+  "< None"
+    ++ " | ProviderWorker"
+    ++ " | TargetSecretAgent"
+    ++ " | Primary : { primary_endpoint : Text, primary_bucket : Text }"
+    ++ " | AuthorityBackup : { authority_backup_endpoint : Text, authority_backup_region : Text, authority_backup_bucket : Text, authority_backup_prefix : Text }"
+    ++ " | TlsRetention : { tls_retention_endpoint : Text, tls_retention_region : Text, tls_retention_bucket : Text, tls_retention_substrate : Text, tls_retention_scope_key : Text, tls_retention_prefix : Text }"
+    ++ " >"
+
+roleStoreProviderWorkerDhall :: String
+roleStoreProviderWorkerDhall = roleStoreTypeDhall ++ ".ProviderWorker"
+
+roleStoreTargetSecretAgentDhall :: String
+roleStoreTargetSecretAgentDhall = roleStoreTypeDhall ++ ".TargetSecretAgent"
+
+roleStorePrimaryDhall :: Text.Text -> Text.Text -> String
+roleStorePrimaryDhall endpoint bucket =
+  roleStoreTypeDhall
+    ++ ".Primary { primary_endpoint = "
+    ++ renderDhallText endpoint
+    ++ ", primary_bucket = "
+    ++ renderDhallText bucket
+    ++ " }"
+
+roleStoreAuthorityBackupDhall
+  :: Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> String
+roleStoreAuthorityBackupDhall endpoint region bucket prefix =
+  roleStoreTypeDhall
+    ++ ".AuthorityBackup { authority_backup_endpoint = "
+    ++ renderDhallText endpoint
+    ++ ", authority_backup_region = "
+    ++ renderDhallText region
+    ++ ", authority_backup_bucket = "
+    ++ renderDhallText bucket
+    ++ ", authority_backup_prefix = "
+    ++ renderDhallText prefix
+    ++ " }"
+
+roleStoreTlsRetentionDhall
+  :: Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> String
+roleStoreTlsRetentionDhall endpoint region bucket substrate scopeKey prefix =
+  roleStoreTypeDhall
+    ++ ".TlsRetention { tls_retention_endpoint = "
+    ++ renderDhallText endpoint
+    ++ ", tls_retention_region = "
+    ++ renderDhallText region
+    ++ ", tls_retention_bucket = "
+    ++ renderDhallText bucket
+    ++ ", tls_retention_substrate = "
+    ++ renderDhallText substrate
+    ++ ", tls_retention_scope_key = "
+    ++ renderDhallText scopeKey
+    ++ ", tls_retention_prefix = "
+    ++ renderDhallText prefix
+    ++ " }"
+
+renderDhallText :: Text.Text -> String
+renderDhallText = show . Text.unpack
 
 valuesForGateway
   :: Substrate
@@ -2782,8 +3089,9 @@ valuesForGateway
   -> Maybe ResolvedCustomImage
   -> String
   -> String
+  -> Text.Text
   -> Either String Value
-valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId gatewayTier0Dhall = do
+valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId gatewayTier0Dhall lifecycleAuthorityScope = do
   -- Sprint 3.18: the per-node event keys and gateway AWS/MinIO credentials
   -- are Vault KV objects rendered into config.dhall as SecretRef.Vault
   -- references. The legacy 'gatewayEventKeys' parameter is vestigial and
@@ -2837,6 +3145,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
           "ports" .= ChartStatics.gatewayChartStaticsPortsValue
         , "nodePort" .= ChartStatics.gatewayChartStaticsNodePortValue
         , "serviceAccount" .= ChartStatics.gatewayChartStaticsServiceAccountValue
+        , "externalCallers" .= ChartStatics.gatewayChartStaticsExternalCallersValue
         , "probes" .= GatewayProbe.gatewayLifecycleProbeValues
         , "timing"
             .= object
@@ -2851,6 +3160,15 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
           -- it renders the physically separated StatefulSet workloads.
           "emitterPersistence" .= emitterPersistence
         , "tier0" .= object ["prodboxDhall" .= gatewayTier0Dhall]
+        , "lifecycleAuthority"
+            .= object
+              [ "scope" .= lifecycleAuthorityScope
+              , "endpoint"
+                  .= ( "http://lifecycle-authority."
+                         ++ namespace
+                         ++ ".svc.cluster.local:8600"
+                     )
+              ]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
         , "vault"
             .= object
@@ -2872,7 +3190,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
                 -- node event keys (VaultInventory).
                 "paths"
                   .= object
-                    [ "aws" .= ("gateway/gateway/aws" :: String)
+                    [ "aws" .= ("aws/gateway-dns" :: String)
                     , "minio" .= ("gateway/gateway/minio" :: String)
                     ]
               ]
@@ -3384,87 +3702,6 @@ renderDeleteReport plan =
     ]
       ++ renderStorageReport (chartReleasePlanStorageBindings release)
 
--- | The observable result of probing a preserved Patroni datadir for whether
--- the Vault-backed role password still authenticates against the @pg_authid@
--- hash the datadir carries. Kept deliberately separate from the boundary
--- probe so the loud-failure policy is unit-testable without a live Postgres.
-data PatroniAuthObservation
-  = -- | The probe connected with the Vault-backed password — the preserved
-    -- @pg_authid@ hash matches the current Vault KV value.
-    PatroniAuthMatches
-  | -- | The probe reached Postgres but the Vault-backed password was
-    -- rejected: the preserved @.data/@ does not match the current Vault KV
-    -- value.
-    PatroniAuthRejected
-  | -- | The probe could not observe @pg_authid@ at all (no primary Pod
-    -- yet, psql unavailable, connection refused). The 'String' carries the
-    -- operator-facing reason. "Cannot observe" is never treated as
-    -- "mismatch": a first install (no running Postgres) and a transient
-    -- probe failure must not block the deploy with a destructive-sounding
-    -- error.
-    PatroniAuthUnobservable !String
-  deriving (Eq, Show)
-
--- | Sprint 3.16 (pure decision). Whether the Patroni storage step may
--- proceed, or must fail loudly before any chart deploy mutates state.
-data PatroniResetDecision
-  = -- | Proceed: either the Vault-backed password authenticates, or the datadir
-    -- could not be observed (so there is no proven mismatch to be loud
-    -- about).
-    PatroniResetProceed
-  | -- | A proven seed\/@pg_authid@ mismatch. Carries the structured,
-    -- operator-facing message naming the namespace\/role pair and the
-    -- resolution options. Never a silent destructive reset.
-    PatroniResetLoudFailure !String
-  deriving (Eq, Show)
-
--- | Sprint 3.16 (pure decision). Map an authentication observation for a
--- @(namespace, role)@ pair to the reset decision. The only path to a loud
--- failure is a definite 'PatroniAuthRejected'; a match or an
--- un-observable probe both proceed, so a fresh install or a transient
--- probe miss never surfaces as the destructive-mismatch error. This is the
--- doctrine-prescribed replacement for the former silent @pure (Right ())@
--- no-op (@secret_derivation_doctrine.md §8@).
-patroniSeedMismatchDecision
-  :: String
-  -- ^ Kubernetes namespace of the preserved Patroni cluster.
-  -> String
-  -- ^ Patroni role name whose Vault-backed password was probed.
-  -> PatroniAuthObservation
-  -> PatroniResetDecision
-patroniSeedMismatchDecision namespace role observation =
-  case observation of
-    PatroniAuthMatches -> PatroniResetProceed
-    PatroniAuthUnobservable _ -> PatroniResetProceed
-    PatroniAuthRejected ->
-      PatroniResetLoudFailure
-        ( "Patroni preserved-data mismatch: the Vault-backed password for role `"
-            ++ role
-            ++ "` in namespace `"
-            ++ namespace
-            ++ "` does not authenticate against the preserved `pg_authid` hash. "
-            ++ "The preserved `.data/"
-            ++ namespace
-            ++ "/keycloak-postgres/...` datadir was written under a different "
-            ++ "Vault KV password (or an earlier secret root) while the datadir was "
-            ++ "retained. prodbox refuses to silently reset preserved Postgres "
-            ++ "storage. Resolve by either (a) restoring the Vault data / `.data/` "
-            ++ "snapshot pair whose password matches this datadir, or (b) deliberately wiping the "
-            ++ "affected `.data/"
-            ++ namespace
-            ++ "/keycloak-postgres/` subtree so a fresh cluster is provisioned "
-            ++ "against the current Vault password."
-        )
-
--- | Sprint 3.16. Render a 'PatroniResetDecision' to the
--- @Either String ()@ shape the storage step consumes: a proceed decision
--- is @Right ()@; a loud failure is @Left@ with the structured message.
-renderPatroniResetDecision :: PatroniResetDecision -> Either String ()
-renderPatroniResetDecision decision =
-  case decision of
-    PatroniResetProceed -> Right ()
-    PatroniResetLoudFailure message -> Left message
-
 ensureChartStorage :: ChartDeploymentPlan -> IO (Either String ())
 ensureChartStorage plan = do
   let bindings = concatMap chartReleasePlanStorageBindings (chartDeploymentPlanReleases plan)
@@ -3596,38 +3833,11 @@ ensureChartStorage plan = do
   -- escape hatch can never fire. The previous silent-reset arm of
   -- 'shouldResetPatroniStorage' (chunk 14 in the spec) is therefore dead too.
   --
-  -- Instead of silently resetting preserved storage, probe whether the
-  -- Vault-backed Patroni app-role password still authenticates against the
-  -- preserved `pg_authid` hash and
-  -- FAIL LOUDLY on a proven mismatch. The pure loud-failure policy lives in
-  -- 'patroniSeedMismatchDecision' (unit-tested); this arm is only the
-  -- boundary probe that reads the expected password from Vault and observes
-  -- `pg_authid` through a probe-only Postgres connection. The probe is
-  -- best-effort: a fresh install (no primary Pod) or any
-  -- transient probe failure classifies as "cannot observe" and proceeds —
-  -- only a definite authentication rejection triggers the loud failure.
+  -- The old mismatch probe exported the Target password to the host. The
+  -- mismatch state is now structurally removed: Keycloak consumes the same
+  -- operator-owned pguser Secret that PGO uses for the live role.
   resetPatroniStorageIfRequested :: IO (Either String ())
-  resetPatroniStorageIfRequested = do
-    -- Percona owns the pguser password (see 'syncPatroniAppPasswordToVault');
-    -- mirror the live operator-generated value into Vault BEFORE probing so a
-    -- cluster that is already running is measured against the password the
-    -- operator actually applied — not the now-stale Vault seed. On a fresh
-    -- install the operator Secret is absent and this is a no-op, leaving the
-    -- probe's "no primary Pod ⇒ unobservable ⇒ proceed" path intact.
-    syncResult <-
-      syncPatroniAppPasswordToVault
-        (chartDeploymentPlanRepoRoot plan)
-        (chartDeploymentPlanNamespace plan)
-        (chartDeploymentPlanRootChart plan)
-    case syncResult of
-      Left err -> pure (Left ("sync Patroni app password to Vault: " ++ err))
-      Right () -> do
-        observation <-
-          probePatroniAppRoleAuth (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
-        pure
-          ( renderPatroniResetDecision
-              (patroniSeedMismatchDecision (chartDeploymentPlanNamespace plan) patroniUsername observation)
-          )
+  resetPatroniStorageIfRequested = pure (Right ())
 
   -- The Patroni anchor decision now derives from live k8s state alone
   -- (Sprint 3.13 chunk 13). 'discoverPatroniAnchorPersistentVolumeName'
@@ -3751,7 +3961,161 @@ namespaceManifest namespace rootChart =
 planOwnsPublicEdgeCertificate :: ChartDeploymentPlan -> Bool
 planOwnsPublicEdgeCertificate plan =
   chartDeploymentPlanNamespace plan == "vscode"
-    && any ((== "keycloak") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan)
+    && chartDeploymentPlanRootChart plan == "vscode"
+
+-- | Install the exact-name Kubernetes capability before restore. Non-forcing
+-- server-side apply names the object even on first creation, so
+-- @resourceNames@ constrains restore creation. The Target Agent refuses a
+-- differing existing Secret before apply. Only the one-shot worker
+-- ServiceAccount receives this capability; the standing Agent is coordinator-
+-- and metadata-only.
+ensurePublicEdgeTlsAgentAccess :: ChartDeploymentPlan -> IO (Either String ())
+ensurePublicEdgeTlsAgentAccess plan
+  | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
+  | otherwise = do
+      roleApplied <- applyManifest role
+      case roleApplied of
+        Left err -> pure (Left err)
+        Right () -> do
+          bindingApplied <- applyManifest binding
+          case bindingApplied of
+            Left err -> pure (Left err)
+            Right () -> do
+              apiAddress <- readKubernetesApiServiceIpv4
+              case apiAddress of
+                Left err -> pure (Left err)
+                Right address -> applyManifest (apiEgress address)
+ where
+  namespace = chartDeploymentPlanNamespace plan
+  roleName :: String
+  roleName = "prodbox-public-edge-tls-target-agent"
+  targetWorkerServiceAccount = "prodbox-target-secret-worker" :: String
+  role =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("Role" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= roleName
+            , "namespace" .= namespace
+            , "labels" .= object ["app.kubernetes.io/managed-by" .= ("prodbox" :: String)]
+            ]
+      , "rules"
+          .= [ object
+                 [ "apiGroups" .= ([""] :: [String])
+                 , "resources" .= (["secrets"] :: [String])
+                 , "resourceNames" .= [publicEdgeTlsSecretName]
+                 , "verbs" .= (["get", "patch"] :: [String])
+                 ]
+             ]
+      ]
+  binding =
+    object
+      [ "apiVersion" .= ("rbac.authorization.k8s.io/v1" :: String)
+      , "kind" .= ("RoleBinding" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= roleName
+            , "namespace" .= namespace
+            , "labels" .= object ["app.kubernetes.io/managed-by" .= ("prodbox" :: String)]
+            ]
+      , "subjects"
+          .= [ object
+                 [ "kind" .= ("ServiceAccount" :: String)
+                 , "name" .= targetWorkerServiceAccount
+                 , "namespace" .= ("target-secret-agent" :: String)
+                 ]
+             ]
+      , "roleRef"
+          .= object
+            [ "apiGroup" .= ("rbac.authorization.k8s.io" :: String)
+            , "kind" .= ("Role" :: String)
+            , "name" .= roleName
+            ]
+      ]
+  apiEgress address =
+    object
+      [ "apiVersion" .= ("networking.k8s.io/v1" :: String)
+      , "kind" .= ("NetworkPolicy" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= ("target-secret-agent-kubernetes-api" :: String)
+            , "namespace" .= ("target-secret-agent" :: String)
+            , "labels" .= object ["app.kubernetes.io/managed-by" .= ("prodbox" :: String)]
+            ]
+      , "spec"
+          .= object
+            [ "podSelector"
+                .= object
+                  [ "matchLabels"
+                      .= object
+                        [ "app.kubernetes.io/name"
+                            .= ("prodbox-target-secret-worker" :: String)
+                        ]
+                  ]
+            , "policyTypes" .= (["Egress"] :: [String])
+            , "egress"
+                .= [ object
+                       [ "to"
+                           .= [ object
+                                  [ "ipBlock"
+                                      .= object ["cidr" .= (address ++ "/32")]
+                                  ]
+                              ]
+                       , "ports"
+                           .= [ object
+                                  [ "protocol" .= ("TCP" :: String)
+                                  , "port" .= (443 :: Int)
+                                  ]
+                              ]
+                       ]
+                   ]
+            ]
+      ]
+
+readKubernetesApiServiceIpv4 :: IO (Either String String)
+readKubernetesApiServiceIpv4 = do
+  observed <-
+    runCaptured
+      "kubectl get kubernetes API Service ClusterIP"
+      "kubectl"
+      [ "get"
+      , "service"
+      , "kubernetes"
+      , "--namespace"
+      , "default"
+      , "-o"
+      , "jsonpath={.spec.clusterIP}"
+      ]
+  pure $ do
+    output <- observed
+    case processExitCode output of
+      ExitFailure _ ->
+        Left
+          ( "kubectl get kubernetes API Service failed: "
+              ++ processStderr output
+              ++ processStdout output
+          )
+      ExitSuccess ->
+        let address = trimWhitespace (processStdout output)
+         in if validIpv4Literal address
+              then Right address
+              else Left "kubernetes API Service did not report a valid IPv4 ClusterIP"
+
+validIpv4Literal :: String -> Bool
+validIpv4Literal value = case splitOnDot value of
+  [a, b, c, d] -> all validOctet [a, b, c, d]
+  _ -> False
+ where
+  validOctet octet =
+    not (null octet)
+      && all isDigit octet
+      && case (reads octet :: [(Int, String)]) of
+        [(number, "")] -> number >= 0 && number <= 255
+        _ -> False
+  splitOnDot input = case break (== '.') input of
+    (part, []) -> [part]
+    (part, _ : rest) -> part : splitOnDot rest
 
 -- | Sprint 8.7: the cert-manager @Certificate@ resource name for the
 -- public-edge listener (the chart names it after @gateway.tlsSecretName@).
@@ -3802,7 +4166,7 @@ renderPublicEdgePreserveOutcome outcome = case outcome of
   PreserveNotOwned ->
     "public-edge cert: not owned by this release; nothing to preserve."
   PreservedToRetentionStore ->
-    "public-edge cert: retained to the long-lived S3 store."
+    "public-edge cert: retained through the Authority and TLS Retention Adapter."
   PreserveSkippedNoRetentionStore detail ->
     "public-edge cert: retention store unavailable ("
       ++ detail
@@ -3818,73 +4182,38 @@ preservePublicEdgeTlsSecretBeforeDelete
   :: ChartDeploymentPlan -> IO (Either String PublicEdgePreserveOutcome)
 preservePublicEdgeTlsSecretBeforeDelete plan
   | not (planOwnsPublicEdgeCertificate plan) = pure (Right PreserveNotOwned)
-  | otherwise = do
-      maybeSecretResult <-
-        readOptionalKubernetesSecret
-          (chartDeploymentPlanNamespace plan)
-          publicEdgeTlsSecretName
-      case maybeSecretResult of
-        -- An unobservable owned certificate refuses; it never collapses
-        -- to "absent/clean".
-        Left err -> pure (Left err)
-        Right maybeSecret -> do
-          maybeCertResult <-
-            readOptionalKubernetesCertificate
-              (chartDeploymentPlanNamespace plan)
-              publicEdgeTlsCertificateName
-          case maybeCertResult of
-            Left err -> pure (Left err)
-            Right maybeCertificate ->
-              case (classifyPublicEdgePreserve maybeSecret maybeCertificate, maybeSecret) of
-                (PreservedToRetentionStore, Just secretValue) ->
-                  retainPublicEdgeSecretToStore plan secretValue
-                (other, _) -> pure (Right other)
-
--- | Sprint 8.7: write the live public-edge cert Secret into the
--- long-lived S3 retention store under the substrate + exact-scope key. Degrades
--- gracefully: when the retention store (admin creds / long-lived bucket)
--- or the compiled scope is unavailable, the live cert is left in place and a
--- non-fatal 'PreserveSkippedNoRetentionStore' is returned — the delete is
--- not failed, and the certificate still exists in-cluster.
-retainPublicEdgeSecretToStore
-  :: ChartDeploymentPlan -> Value -> IO (Either String PublicEdgePreserveOutcome)
-retainPublicEdgeSecretToStore plan secretValue =
-  case chartDeploymentPlanCertScopeSet plan of
-    Nothing ->
-      pure
-        (Right (PreserveSkippedNoRetentionStore "no canonical certificate scope resolved for the deployment"))
-    Just scopeSet ->
-      putPublicEdgeCertToStore
-        (chartDeploymentPlanRepoRoot plan)
-        (chartDeploymentPlanSubstrate plan)
-        scopeSet
-        secretValue
-
--- | Sprint 8.8: the shared S3 write for the public-edge production cert
--- retention store. Writes @secretValue@ (the full @kubectl get secret -o
--- json@ payload) under the substrate + exact canonical-scope retention key.
--- Degrades to a typed
--- 'PreserveSkippedNoRetentionStore' when the admin S3 context is unavailable;
--- only a genuine put failure is fatal ('Left').
-putPublicEdgeCertToStore
-  :: FilePath -> Substrate -> CertScopeSet -> Value -> IO (Either String PublicEdgePreserveOutcome)
-putPublicEdgeCertToStore repoRoot substrate scopeSet secretValue = do
-  contextResult <- resolveLongLivedAdminS3Context repoRoot
-  case contextResult of
-    Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
-    Right (environment, section) -> do
-      let key = publicEdgeTlsRetentionKey substrate scopeSet
-      putResult <-
-        withTempFile "prodbox-public-edge-tls-retain-" $ \path handle -> do
-          BL.hPutStr handle (Pretty.encodePretty' prettyJsonConfig secretValue)
-          hClose handle
-          putLongLivedObject repoRoot environment section key path
-      pure $ case putResult of
-        Left err -> Left ("public-edge cert retention put failed: " ++ err)
-        Right () -> Right PreservedToRetentionStore
+  | otherwise = case chartDeploymentPlanCertScopeSet plan of
+      Nothing ->
+        pure
+          ( Right
+              ( PreserveSkippedNoRetentionStore
+                  "no canonical certificate scope resolved for the deployment"
+              )
+          )
+      Just scopeSet -> do
+        retained <-
+          runPublicEdgeTlsWorkflow
+            (chartDeploymentPlanRepoRoot plan)
+            (chartDeploymentPlanSubstrate plan)
+            scopeSet
+            (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
+        case retained of
+          Left err -> pure (Left err)
+          Right (TlsWorkflowRetained _) -> pure (Right PreservedToRetentionStore)
+          Right TlsWorkflowNothingToRetain -> classifyMissingSource
+ where
+  classifyMissingSource = do
+    observed <-
+      readOptionalKubernetesCertificate
+        (chartDeploymentPlanNamespace plan)
+        publicEdgeTlsCertificateName
+    pure $ case observed of
+      Left err -> Left err
+      Right (Just _) -> Right PreserveDeferredIssuanceInFlight
+      Right Nothing -> Right PreserveNothingToRetain
 
 -- | Sprint 8.8: retain the freshly-issued public-edge production cert to the
--- long-lived S3 store the moment it is confirmed ready (called from the
+-- durable TLS workflow the moment it is confirmed ready (called from the
 -- harness public-edge readiness gate). This closes the vicious cycle where a
 -- cert that issued but was never captured — the prior design only retained on
 -- the next @charts delete@, and flaky ZeroSSL issuance meant the cert was
@@ -3910,80 +4239,118 @@ retainReadyPublicEdgeCertificate repoRoot substrate = do
             (Text.pack fqdn) of
             Left err -> pure (Left err)
             Right scopeSet -> do
-              secretResult <-
-                readOptionalKubernetesSecret publicEdgeTlsNamespace publicEdgeTlsSecretName
-              case secretResult of
-                Left err -> pure (Left err)
-                Right Nothing -> pure (Right PreserveNothingToRetain)
-                Right (Just secretValue) ->
-                  putPublicEdgeCertToStore repoRoot substrate scopeSet secretValue
+              retained <-
+                runPublicEdgeTlsWorkflow
+                  repoRoot
+                  substrate
+                  scopeSet
+                  (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
+              pure $ case retained of
+                Left err -> Left err
+                Right TlsWorkflowNothingToRetain -> Right PreserveNothingToRetain
+                Right (TlsWorkflowRetained _) -> Right PreservedToRetentionStore
 
 restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeTlsSecretAfterNamespaceCreate plan
   | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
-  | otherwise = do
-      targetResult <-
-        readOptionalKubernetesSecret
-          (chartDeploymentPlanNamespace plan)
-          publicEdgeTlsSecretName
-      case targetResult of
-        Left err -> pure (Left err)
-        -- A live cert is already present; nothing to restore.
-        Right (Just _) -> pure (Right ())
-        Right Nothing -> restorePublicEdgeSecretFromStore plan
+  | otherwise = case chartDeploymentPlanCertScopeSet plan of
+      Nothing -> pure (Right ())
+      Just scopeSet -> do
+        trustedNow <- currentTrustedTlsTime
+        restored <-
+          runPublicEdgeTlsWorkflow
+            (chartDeploymentPlanRepoRoot plan)
+            (chartDeploymentPlanSubstrate plan)
+            scopeSet
+            (`restorePublicEdgeTlsWorkflow` trustedNow)
+        pure $ case restored of
+          Left err -> Left err
+          Right TlsWorkflowIssuancePermitted -> Right ()
+          Right (TlsWorkflowRestored _) -> Right ()
 
--- | Sprint 8.7: restore the retained public-edge cert from the long-lived
--- S3 store into the deploy namespace before cert-manager would order a
--- fresh certificate. Because the S3 store is durable across cluster
--- lifetime, this restore-before-issue works on EVERY rebuild path —
--- including a fresh cluster / post-@rke2 delete@ — not just a
--- chart-delete → redeploy. Restore addresses only the exact canonical scope
--- key compiled into the deployment plan; a changed SAN set is intentionally
--- absent at that coordinate so cert-manager issues it once. Degrades
--- gracefully: if the store is
--- unavailable (no admin creds / bucket on this host) or holds no retained
--- cert, the deploy proceeds and cert-manager issues a fresh certificate.
-restorePublicEdgeSecretFromStore :: ChartDeploymentPlan -> IO (Either String ())
-restorePublicEdgeSecretFromStore plan =
-  case chartDeploymentPlanCertScopeSet plan of
-    Nothing -> pure (Right ())
-    Just scopeSet -> do
-      contextResult <- resolveLongLivedAdminS3Context (chartDeploymentPlanRepoRoot plan)
-      case contextResult of
-        -- No retention store on this host; cert-manager issues fresh.
-        Left _ -> pure (Right ())
-        Right (environment, section) -> do
-          let key =
-                publicEdgeTlsRetentionKey (chartDeploymentPlanSubstrate plan) scopeSet
-          fetchResult <-
-            withTempFile "prodbox-public-edge-tls-restore-" $ \path handle -> do
-              hClose handle
-              getResult <-
-                getLongLivedObject (chartDeploymentPlanRepoRoot plan) environment section key path
-              case getResult of
-                Left err -> pure (Left err)
-                Right False -> pure (Right Nothing)
-                Right True -> do
-                  contents <- BL.readFile path
-                  case eitherDecode contents :: Either String Value of
-                    Left decodeErr ->
-                      pure (Left ("retained public-edge cert decode failed: " ++ decodeErr))
-                    Right value -> pure (Right (Just value))
-          case fetchResult of
-            Left err -> pure (Left ("public-edge cert restore get failed: " ++ err))
-            -- Nothing retained; cert-manager issues fresh on this deploy.
-            Right Nothing -> pure (Right ())
-            Right (Just retainedValue) ->
-              case retainedPublicEdgeTlsSecretManifest
-                (chartDeploymentPlanNamespace plan)
-                publicEdgeTlsSecretName
-                retainedValue of
-                Left err -> pure (Left err)
-                Right restoredSecret -> applyManifest restoredSecret
+runPublicEdgeTlsWorkflow
+  :: FilePath
+  -> Substrate
+  -> CertScopeSet
+  -> ( TlsRetentionWorkflow IO
+       -> IO (Either TlsRetentionWorkflowError value)
+     )
+  -> IO (Either String value)
+runPublicEdgeTlsWorkflow repoRoot substrate scopeSet action = do
+  selectedEnvironment <- getEnvironment
+  opened <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> withAuthority authentication selectedEnvironment)
+  pure (flattenAuthentication opened)
+ where
+  withAuthority authentication selectedEnvironment = do
+    opened <-
+      withLifecycleAuthorityAuthenticatedTransport
+        authentication
+        (withTlsRetentionAuthority authentication selectedEnvironment)
+    pure (flattenAuthentication opened)
+
+  withTlsRetentionAuthority authentication selectedEnvironment authorityTransport =
+    case mkTlsRetentionAuthorityClient
+      authorityTransport
+      (Text.pack (substrateId substrate))
+      (renderCertScopeSet scopeSet) of
+      Left err -> pure (Left (show err))
+      Right authorityClient ->
+        withRetainedHome authentication selectedEnvironment authorityClient
+
+  withRetainedHome authentication selectedEnvironment authorityClient = do
+    opened <-
+      withTargetSecretAgentAuthenticatedTransport authentication $ \homeTransport ->
+        let homeAgent = tlsTargetAgentClientWithTransport homeTransport
+         in case substrate of
+              SubstrateHomeLocal ->
+                withAdapter authentication authorityClient homeAgent homeAgent
+              SubstrateAws -> do
+                selected <-
+                  withSelectedTargetSecretAgentAuthenticatedTransport
+                    authentication
+                    selectedEnvironment
+                    ( \selectedTransport ->
+                        withAdapter
+                          authentication
+                          authorityClient
+                          homeAgent
+                          (tlsTargetAgentClientWithTransport selectedTransport)
+                    )
+                pure (flattenAuthentication selected)
+    pure (flattenAuthentication opened)
+
+  withAdapter authentication authorityClient homeAgent selectedAgent = do
+    opened <-
+      withTlsRetentionAuthenticatedTransport authentication $ \adapterTransport ->
+        first show
+          <$> action
+            TlsRetentionWorkflow
+              { tlsWorkflowAuthority = authorityClient
+              , tlsWorkflowAdapter = tlsRetentionClientWithTransport adapterTransport
+              , tlsWorkflowRetainedHomeAgent = homeAgent
+              , tlsWorkflowSelectedAgent = selectedAgent
+              }
+    pure (flattenAuthentication opened)
+
+flattenAuthentication
+  :: Either LifecycleAuthorityAuthenticationError (Either String value)
+  -> Either String value
+flattenAuthentication =
+  either (Left . renderLifecycleAuthorityAuthenticationError) id
+
+currentTrustedTlsTime :: IO Natural
+currentTrustedTlsTime = do
+  now <- getPOSIXTime
+  pure (fromInteger (max 0 (floor now)))
 
 -- | Read an optional cert-manager @Certificate@ resource as JSON
--- (@Nothing@ when absent). Mirrors 'readOptionalKubernetesSecret'; used
--- by the preserve classifier to detect issuance-in-flight.
+-- (@Nothing@ when absent). This non-secret resource distinguishes a genuine
+-- empty deployment from issuance in flight after the selected Agent reports
+-- that the exact TLS Secret is absent.
 readOptionalKubernetesCertificate :: String -> String -> IO (Either String (Maybe Value))
 readOptionalKubernetesCertificate namespace certificateName = do
   outputResult <-
@@ -4019,119 +4386,6 @@ readOptionalKubernetesCertificate namespace certificateName = do
               ++ processStderr output
               ++ processStdout output
           )
-
-readOptionalKubernetesSecret :: String -> String -> IO (Either String (Maybe Value))
-readOptionalKubernetesSecret namespace secretName = do
-  outputResult <-
-    runCaptured
-      ("kubectl get secret " ++ secretName)
-      "kubectl"
-      [ "get"
-      , "secret"
-      , secretName
-      , "--namespace"
-      , namespace
-      , "--ignore-not-found=true"
-      , "-o"
-      , "json"
-      ]
-  pure $ do
-    output <- outputResult
-    case processExitCode output of
-      ExitSuccess ->
-        let stdoutText = trimWhitespace (processStdout output)
-         in if null stdoutText
-              then Right Nothing
-              else
-                either
-                  (Left . ("kubectl get secret returned unexpected JSON payload: " ++))
-                  (Right . Just)
-                  (eitherDecode (BL8.pack stdoutText))
-      ExitFailure _ ->
-        Left
-          ( "kubectl get secret "
-              ++ secretName
-              ++ " failed: "
-              ++ processStderr output
-              ++ processStdout output
-          )
-
--- | Extract and base64-decode a @data@ field from a Kubernetes Secret JSON
--- payload (as returned by @kubectl get secret -o json@). Returns @Right
--- Nothing@ when the Secret has no @data@ map or the field is absent/null, so a
--- caller can treat "not present yet" as a benign no-op. Pure so the
--- Secret→Vault password sync's decode step can be unit-tested without a live
--- cluster.
-kubernetesSecretDecodedDataField :: Text.Text -> Value -> Either String (Maybe String)
-kubernetesSecretDecodedDataField field =
-  parseEither parser
- where
-  parser = withObject "Secret" $ \obj -> do
-    maybeData <- obj .:? "data"
-    case (maybeData :: Maybe (KeyMap.KeyMap Value)) of
-      Nothing -> pure Nothing
-      Just dataObj ->
-        case KeyMap.lookup (Key.fromText field) dataObj of
-          Nothing -> pure Nothing
-          Just Null -> pure Nothing
-          Just (String b64) ->
-            case decodeBase64SecretField b64 of
-              Left err -> fail err
-              Right decoded -> pure (Just decoded)
-          Just _ ->
-            fail ("Secret data field `" ++ Text.unpack field ++ "` is not a string")
-
--- | Decode a standard (single-line) base64 Secret @data@ value to its plain
--- text. Pure; shared by 'kubernetesSecretDecodedDataField'.
-decodeBase64SecretField :: Text.Text -> Either String String
-decodeBase64SecretField b64 =
-  case B64.decode (TextEncoding.encodeUtf8 (Text.strip b64)) of
-    Left err -> Left ("base64 decode of Secret data field failed: " ++ err)
-    Right bytes ->
-      case TextEncoding.decodeUtf8' bytes of
-        Left err -> Left ("utf8 decode of Secret data field failed: " ++ show err)
-        Right text -> Right (Text.unpack text)
-
--- | Percona PGO v2 (crVersion 2.9.0) OWNS the @pguser@ password: the operator
--- generates its own random value, writes it into the operator-managed
--- @<cluster>-pguser-keycloak@ Secret, and computes the role's SCRAM verifier
--- from it — overwriting the password the pre-install materializer seeded from
--- Vault. The Vault-authority model therefore inverts for this one role: Vault
--- must FOLLOW the operator-generated password, not seed it. This reads the
--- operator-owned Secret's @password@ and writes it into the Vault KV object the
--- keycloak Deployment and the preserved-data preflight both read
--- (@secret/<ns>/keycloak-postgres/patroni/app@), so all three — the live
--- @pg_authid@ hash, keycloak's @KC_DB_PASSWORD@, and the preflight probe — agree.
---
--- Idempotent and best-effort: when the operator Secret is absent (fresh
--- install, cluster not yet created) it is a no-op success; the post-readiness
--- caller re-runs it once the operator has generated the password. Because the
--- chart-secret bootstrap only ever generates a Vault field that is absent
--- ('materializeMissingFields'/'fieldSatisfied'), a value synced here survives
--- every subsequent reconcile.
-syncPatroniAppPasswordToVault :: FilePath -> String -> String -> IO (Either String ())
-syncPatroniAppPasswordToVault repoRoot namespace rootChart = do
-  secretResult <-
-    readOptionalKubernetesSecret namespace (patroniCredentialsSecretName rootChart)
-  case secretResult of
-    Left err -> pure (Left ("read operator pguser Secret: " ++ err))
-    Right Nothing -> pure (Right ())
-    Right (Just secretValue) ->
-      case kubernetesSecretDecodedDataField "password" secretValue of
-        Left err -> pure (Left err)
-        Right Nothing -> pure (Right ())
-        Right (Just password)
-          | null (trimWhitespace password) -> pure (Right ())
-          | otherwise ->
-              writeHostVaultKvObject
-                repoRoot
-                "secret"
-                (Text.pack (keycloakPostgresAppVaultPath namespace))
-                ( Map.fromList
-                    [ ("username", Text.pack patroniUsername)
-                    , ("password", Text.pack password)
-                    ]
-                )
 
 retainedPublicEdgeTlsSecretManifest :: String -> String -> Value -> Either String Value
 retainedPublicEdgeTlsSecretManifest targetNamespace targetName secretValue =

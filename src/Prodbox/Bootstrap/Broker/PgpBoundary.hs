@@ -1,6 +1,10 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Typed OpenPGP/AEAD boundary for bootstrap custody.  This module specifies
 -- the cryptographic effects without pretending that an offline fake performs
@@ -46,6 +50,7 @@ module Prodbox.Bootstrap.Broker.PgpBoundary
   , generatedChildRecoveryPublicKeyBase64
   , GeneratedChildRecoveryCiphertext
   , mkGeneratedChildRecoveryCiphertext
+  , generatedChildRecoveryCiphertextFromRoot
   , GeneratedRootAction (..)
   , GeneratedRootActionKind (..)
   , allGeneratedRootActionKinds
@@ -62,6 +67,7 @@ module Prodbox.Bootstrap.Broker.PgpBoundary
   , mkGeneratedChildRecoveryPrimitiveBoundary
   , withGeneratedRootRecipientFromPrimitive
   , withGeneratedChildRecoveryRecipientFromPrimitive
+  , withPgpSecretPayloadBytes
   , PgpCustodyPrimitiveBoundary (..)
   , PgpBoundary
   , mkPgpBoundary
@@ -75,6 +81,7 @@ module Prodbox.Bootstrap.Broker.PgpBoundary
   )
 where
 
+import Codec.Serialise (Serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -83,6 +90,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Fence
@@ -287,6 +295,20 @@ data PreparedInitRecipients
       !VerifiedBurnRecipient
   deriving (Eq, Show)
 
+-- These values are the public/ciphertext-only portion of the crash-safe
+-- worker result.  The enclosing store codec applies its byte bound and
+-- canonical read-back check before any value reaches the engine.
+deriving stock instance Generic RecoveryRecipientPublicKey
+deriving anyclass instance Serialise RecoveryRecipientPublicKey
+deriving stock instance Generic BurnRecipientPublicKey
+deriving anyclass instance Serialise BurnRecipientPublicKey
+deriving stock instance Generic VerifiedBurnRecipient
+deriving anyclass instance Serialise VerifiedBurnRecipient
+deriving stock instance Generic PreparedRecoveryRecipient
+deriving anyclass instance Serialise PreparedRecoveryRecipient
+deriving stock instance Generic PreparedInitRecipients
+deriving anyclass instance Serialise PreparedInitRecipients
+
 preparedInitRecoveryRecipient
   :: PreparedInitRecipients -> PreparedRecoveryRecipient
 preparedInitRecoveryRecipient (PreparedInitRecipients recoveryRecipient _) = recoveryRecipient
@@ -336,7 +358,8 @@ mkGeneratedRootPublicKey encoded =
   GeneratedRootPublicKey <$> validatePublicKeyBase64 encoded
 
 newtype GeneratedRootCiphertext = GeneratedRootCiphertext ByteString
-  deriving (Eq)
+  deriving stock (Eq, Generic)
+  deriving anyclass (Serialise)
 
 instance Show GeneratedRootCiphertext where
   show _ = "GeneratedRootCiphertext <redacted>"
@@ -368,7 +391,8 @@ mkGeneratedChildRecoveryPublicKey encoded =
 
 newtype GeneratedChildRecoveryCiphertext
   = GeneratedChildRecoveryCiphertext ByteString
-  deriving (Eq)
+  deriving stock (Eq, Generic)
+  deriving anyclass (Serialise)
 
 instance Show GeneratedChildRecoveryCiphertext where
   show _ = "GeneratedChildRecoveryCiphertext <redacted>"
@@ -379,6 +403,15 @@ mkGeneratedChildRecoveryCiphertext bytes
   | BS.null bytes || BS.length bytes > 4 * 1024 * 1024 =
       Left PgpGeneratedChildRecoveryCiphertextRejected
   | otherwise = Right (GeneratedChildRecoveryCiphertext bytes)
+
+-- | Nominally narrow the ciphertext emitted by Vault's one generated-root
+-- endpoint into the child-recovery workflow.  The bytes are unchanged; the
+-- distinct result type prevents a child token from entering the root-baseline
+-- action family after this projection.
+generatedChildRecoveryCiphertextFromRoot
+  :: GeneratedRootCiphertext -> GeneratedChildRecoveryCiphertext
+generatedChildRecoveryCiphertextFromRoot (GeneratedRootCiphertext bytes) =
+  GeneratedChildRecoveryCiphertext bytes
 
 -- | The complete vocabulary that may consume a generated-root session token.
 -- Every action is bound to the exact durable root session.  There is no raw
@@ -1277,6 +1310,12 @@ mkPgpBoundary custodyPrimitive rootPrimitive childPrimitive =
     , withGeneratedChildRecoveryRecipient =
         withGeneratedChildRecoveryRecipientFromPrimitive childPrimitive
     }
+
+-- | Scope the sole opaque-payload elimination to the trusted primitive
+-- boundary. Callers cannot retain a 'SecretPayload' constructor or inspect it
+-- through ordinary typeclass machinery.
+withPgpSecretPayloadBytes :: SecretPayload -> (ByteString -> result) -> result
+withPgpSecretPayloadBytes = RequestInternal.withSecretPayloadBytes
 
 validatePreparedInputs
   :: PristineStorageProof

@@ -54,8 +54,10 @@ usable by developers or externally invoked automation; it does not authorize a r
 <!-- prodbox:command-surface-toplevel:start -->
 | Command | Kind | Purpose |
 |---------|------|---------|
+| `admin-action` | Group | Attested exceptional-action worker |
 | `aws` | Group | AWS IAM and quota management |
 | `bootstrap-broker` | Group | Pre-Vault Bootstrap Broker operations |
+| `credential-provisioner` | Group | Attested one-shot credential workers |
 | `lifecycle-authority` | Group | Dedicated lifecycle-authority runtime |
 | `provider-worker` | Group | Dedicated provider-worker runtime |
 | `authority-backup` | Group | Dedicated authority-backup runtime |
@@ -167,6 +169,12 @@ The contract does **not** apply to:
 The per-group command matrix (generated; do not edit by hand):
 
 <!-- prodbox:command-surface-matrix:start -->
+### `prodbox admin-action`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox admin-action run` | none | `--action`, `--operation-id`, `--deadline-micros`, `--pod-name-file`, `--pod-uid-file`, `--service-account-token-file`, `--dry-run`, `--plan-file` |
+
 ### `prodbox aws`
 
 | Command | Arguments | Options |
@@ -195,6 +203,14 @@ The per-group command matrix (generated; do not edit by hand):
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox bootstrap-broker start` | none | `--config`, `--dry-run`, `--plan-file` |
+| `prodbox bootstrap-broker secret-worker` | none | `--operation`, `--config` |
+
+### `prodbox credential-provisioner`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox credential-provisioner run` | none | `--ingress-schema`, `--mode`, `--operation-id`, `--permit-id`, `--request-digest`, `--deadline-micros`, `--image-digest`, `--authority-scope`, `--authority-endpoint`, `--pod-name-file`, `--pod-uid-file`, `--service-account-token-file`, `--dry-run`, `--plan-file` |
+| `prodbox credential-provisioner target-worker` | none | `--target`, `--target-agent-identity`, `--material-schema`, `--image-digest`, `--request-digest`, `--deadline-micros`, `--pod-uid-file`, `--pod-name-file`, `--service-account-token-file`, `--dry-run`, `--plan-file` |
 
 ### `prodbox lifecycle-authority`
 
@@ -323,7 +339,7 @@ The per-group command matrix (generated; do not edit by hand):
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox nuke` | none | `--dry-run`, `--plan-file` |
+| `prodbox nuke` | none | `--dry-run`, `--plan-file`, `--receipt` |
 
 ### `prodbox test`
 
@@ -341,8 +357,11 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration aws-eks` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration env` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration gateway-daemon` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
-| `prodbox test integration gateway-pods` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration gateway-pods` | none | `--coverage`, `--cov-fail-under`, `--substrate`, `--record-profile` |
 | `prodbox test integration gateway-partition` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration control-plane-counterexample` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration certificate-scope` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |

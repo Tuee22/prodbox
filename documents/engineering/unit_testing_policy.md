@@ -66,6 +66,9 @@ current-revision deployment evidence are owned only by the
    service rate, queue occupancy/wait, saturation, deadline misses, and latency.
 8. Cleanup obligations are registered before mutation and interpreted as an always-run DAG.
    Failure injection must prove that independent cleanup continues and all outcomes aggregate.
+   The focused cleanup matrix also covers index-before-primary response loss, bounded namespace
+   non-reuse, expired-fence takeover, cancellation rethrow after shielded cleanup, exact report-
+   backup receipt ordering, retention refusal, and digest-tombstone compaction.
 9. A revision that changes deployment behavior is not closed by unit/fake evidence alone. It must
    satisfy [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
@@ -310,15 +313,15 @@ unobservable required evidence are absorbing. Warning evidence resets only the c
 window. A replacement Pod or later idle sample cannot erase the run-wide record. Only an explicitly
 compiled planned rollout may reset the success window.
 
-An unobservable observation is absorbing once folded, but a *transient* unobservable — a
-freshly-(re)started Pod whose working set metrics-server has not yet scraped — is distinguished from a
-persistent one before any sample is recorded. At the restore-time gateway reconcile the recorded
-sample is preceded by a bounded, read-only observability wait (folded into a throwaway state, never the
-run recorder): the wait polls until the runtime is observable or the budget is exhausted, so a
-not-yet-scraped fresh Pod is waited out rather than latched as fatal on the first observation, while a
-runtime that stays unobservable past the budget is still folded and fails closed and a genuine
-unhealthy/over-threshold runtime is observable immediately and fails closed with no delay (Sprint 5.24;
-`gatewayStabilityUnreachableIsTransient`).
+A *persistently* unobservable observation is absorbing once folded, but a **not-yet-observable** one —
+a freshly-(re)started but healthy Pod whose working set metrics-server has not yet scraped — is a
+distinct **non-terminal** observation (`GatewayObservationIncomplete`), routed like a pending Pod: it
+resets the consecutive-success window but is never latched, so a healthy not-yet-scraped Pod cannot
+poison the run. Only evidence that stays unobservable past the bounded readiness budget, or a static
+policy mismatch, is absorbing. This is the typed three-valued readiness rule owned by
+[bootstrap_readiness_doctrine.md §2.4](bootstrap_readiness_doctrine.md#24-dependency-readiness-vs-runtime-stability):
+the harness enforces it structurally — the fold cannot promote the non-terminal constructor to fatal —
+not with a timed wait (Sprint 5.25, superseding the Sprint 5.24 observability-wait band-aid).
 
 The historical restart/OOM/memory-only gateway fold is an incomplete compatibility projection. It
 does not qualify the redesigned services without CPU, queue, deadline, and latency evidence.
@@ -524,6 +527,15 @@ result, start/completion timestamps, and evidence digest. Missing or stale field
 qualification. Evidence from an older revision or a weaker topology cannot close the current
 counterexample.
 
+### Clean-room interruption matrix
+
+The clean-room handoff suite enumerates every prefix of the versioned migration/restore/cleanup
+trace and proves restart selects exactly the next action. Negative tables cover skipped and
+duplicated boundaries, pre-cutover observation retry, post-cutover rollback refusal before
+mutation, removed-path/transport residue, and the isolated replacement topology. The named
+installed-binary validation renders the same plan and runs the repository absence/conformance gate;
+there is no separate shell implementation of the migration contract.
+
 ## Intent Ownership
 
 This document owns testing-layer boundaries, interpreter-only mocking, deadline/load/chaos proof
@@ -542,3 +554,11 @@ business semantics, substrate inventory, or cleanup implementation details.
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
 - [Code Quality Doctrine](./code_quality.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
+## Invite Qualification Recorder
+
+Sprint `8.12`'s pure recorder requires every `InviteFaultPoint` exactly once. Each result is
+queryable, converges or refuses closed, and attempts cleanup. Tables remove one fault/assertion or
+substrate row, duplicate a fault, drift a canonical command, fail backup restore or Runner takeover,
+and inject prompt/rotation/EAB-reset/generic-export/Authority-plaintext evidence; every variant must
+refuse. Installed-binary fixtures additionally prove that complete simulated evidence remains
+`QualificationPendingLiveEvidence`.

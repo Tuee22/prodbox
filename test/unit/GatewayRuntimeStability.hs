@@ -62,7 +62,11 @@ gatewayRuntimeStabilitySuite =
               }
           , PendingTag
           )
-        , ("unobservable", Just 0, Nothing, readySample, UnobservableTag)
+        , -- A Ready Pod whose metrics scrape has not yet landed is a non-terminal
+          -- warming-up observation, never latched as fatal.
+          ("incomplete", Just 0, Nothing, readySample, IncompleteTag)
+        , -- A backwards restart counter is a genuinely-broken (terminal) read.
+          ("unobservable", Just 2, Just 79, readySample {gatewaySampleRestartCount = Just 1}, UnobservableTag)
         ]
 
     it "fails a currently Ready Pod when lastState retains OOMKilled" $ do
@@ -172,42 +176,43 @@ gatewayRuntimeStabilitySuite =
       gatewayRuntimeStabilityReport replacedState `shouldBe` NotStableYet 0 2
       gatewayRuntimeStabilityReport nextState `shouldBe` NotStableYet 1 2
 
-    it "fails closed when required metrics are unobservable" $ do
-      let state =
+    it "treats an unscraped-metrics Ready Pod as a non-absorbing warming-up sample" $ do
+      -- A Ready+Running Pod whose metrics-server scrape has not yet landed folds
+      -- to a non-terminal NotStableYet (never a latched StabilityUnreachable), so
+      -- the shared recorder is not poisoned: a subsequent green sample advances.
+      let warming =
             observeGatewayRuntimePayloads
               sampleTime
               (podsPayload [podValue "gateway-a" "uid-a" 0 Nothing])
               emptyListPayload
               emptyListPayload
               (initialGatewayStabilityState policyTwoSamples)
-      gatewayRuntimeStabilityReport state `shouldSatisfy` isUnreachableReport
+      gatewayRuntimeStabilityReport warming `shouldBe` NotStableYet 0 2
+      let advanced =
+            observeGatewayRuntimePayloads
+              sampleTime
+              (podsPayload [podValue "gateway-a" "uid-a" 0 Nothing])
+              emptyListPayload
+              (metricsPayload [("gateway-a", 70)])
+              warming
+      gatewayRuntimeStabilityReport advanced `shouldBe` NotStableYet 1 2
 
-    it "fails closed for each unobservable Pod-status field before considering metrics" $ do
-      let cases :: [(String, GatewayPodSample, GatewayUnobservableReason)]
+    it "classifies each incomplete Pod-status field as a non-absorbing warming-up observation" $ do
+      let cases :: [(String, GatewayPodSample, GatewayObservationIncompleteReason)]
           cases =
-            [
-              ( "phase"
-              , readySample {gatewaySamplePhase = Nothing}
-              , GatewayPhaseUnobservable
-              )
-            ,
-              ( "Ready condition"
-              , readySample {gatewaySampleReady = Nothing}
-              , GatewayReadinessUnobservable
-              )
-            ,
-              ( "restart count"
-              , readySample {gatewaySampleRestartCount = Nothing}
-              , GatewayRestartCountUnobservable
-              )
+            [ ("phase", readySample {gatewaySamplePhase = Nothing}, GatewayPhaseIncomplete)
+            , ("Ready condition", readySample {gatewaySampleReady = Nothing}, GatewayReadinessIncomplete)
+            , ("restart count", readySample {gatewaySampleRestartCount = Nothing}, GatewayRestartCountIncomplete)
             ,
               ( "container limit"
               , readySample {gatewaySampleCurrentLimitBytes = Nothing}
-              , GatewayContainerLimitUnobservable
+              , GatewayContainerLimitIncomplete
               )
             ]
       mapM_
-        ( \(label, sample, expectedReason) ->
+        ( \(label, sample, expectedReason) -> do
+            (label, observationIncompleteReason (classifyGatewayPodHealth thresholds (Just 0) (Just 79) sample))
+              `shouldBe` (label, Just expectedReason)
             let state =
                   foldGatewayRuntimeSnapshot
                     GatewayRuntimeSnapshot
@@ -215,37 +220,30 @@ gatewayRuntimeStabilitySuite =
                       , gatewaySnapshotSamples = [sample]
                       }
                     (initialGatewayStabilityState policyTwoSamples)
-             in (label, observationUnreachableReason (gatewayRuntimeStabilityReport state))
-                  `shouldBe` (label, Just expectedReason)
+            (label, gatewayRuntimeStabilityReport state) `shouldBe` (label, NotStableYet 0 2)
         )
         cases
 
-    it "treats a fresh-Pod observability gap as transient while a static policy mismatch stays fatal" $ do
-      -- A freshly-(re)started Ready Pod with no metrics-server scrape yet folds to
-      -- StabilityUnreachable, but its reason is transient: the restore-time
-      -- observability wait retries rather than latching it as fatal.
-      let freshPodMemoryUnobservable =
-            gatewayRuntimeStabilityReport
-              ( foldGatewayRuntimeSnapshot
-                  GatewayRuntimeSnapshot
-                    { gatewaySnapshotMemoryThresholds = thresholds
-                    , gatewaySnapshotSamples =
-                        [readySample {gatewaySampleWorkingSetBytes = Nothing}]
-                    }
-                  (initialGatewayStabilityState policyTwoSamples)
-              )
-      freshPodMemoryUnobservable `shouldSatisfy` isTransientlyUnreachableReport
-      -- A transient kubectl/API read failure is also worth waiting out.
-      gatewayStabilityUnreachableIsTransient
-        (GatewayPayloadUnreachable (GatewayPayloadError GatewayPodsPayload "kubectl timed out"))
-        `shouldBe` True
-      -- A static policy mismatch never clears by waiting, so it stays fatal.
-      gatewayStabilityUnreachableIsTransient
-        ( GatewaySnapshotPolicyMismatch
-            (GatewayMemoryThresholds 80 100 120)
-            (GatewayMemoryThresholds 80 100 121)
-        )
-        `shouldBe` False
+    it "keeps a regressed restart terminal and a policy mismatch fatal (guards the split direction)" $ do
+      -- A backwards restart counter is a definitive fault (terminal), not a
+      -- warming-up gap — so it is 'GatewayPodUnobservable', never incomplete.
+      let regressed =
+            classifyGatewayPodHealth
+              thresholds
+              (Just 2)
+              (Just 79)
+              (readySample {gatewaySampleRestartCount = Just 1})
+      observationTag regressed `shouldBe` ("unobservable", UnobservableTag)
+      observationIncompleteReason regressed `shouldBe` Nothing
+      -- A static policy mismatch stays absorbing/fatal.
+      let mismatch =
+            foldGatewayRuntimeSnapshot
+              GatewayRuntimeSnapshot
+                { gatewaySnapshotMemoryThresholds = GatewayMemoryThresholds 80 100 121
+                , gatewaySnapshotSamples = [readySample]
+                }
+              (initialGatewayStabilityState policyTwoSamples)
+      gatewayRuntimeStabilityReport mismatch `shouldSatisfy` isUnreachableReport
 
     it "absorbs OOM evidence from Kubernetes Events as well as container status" $ do
       let state =
@@ -380,6 +378,7 @@ data ObservationTag
   | MemoryWarningTag
   | MemoryFailureTag
   | PendingTag
+  | IncompleteTag
   | UnobservableTag
   deriving (Eq, Show)
 
@@ -392,6 +391,7 @@ observationTag observation =
     GatewayMemoryPressure GatewayMemoryWarning _ -> ("warning", MemoryWarningTag)
     GatewayMemoryPressure GatewayMemoryFailure _ -> ("failure", MemoryFailureTag)
     GatewayPodPending _ -> ("pending", PendingTag)
+    GatewayObservationIncomplete _ _ -> ("incomplete", IncompleteTag)
     GatewayPodUnobservable _ _ -> ("unobservable", UnobservableTag)
 
 thresholds :: GatewayMemoryThresholds
@@ -575,16 +575,10 @@ isUnreachableReport report =
     StabilityUnreachable _ -> True
     _ -> False
 
-isTransientlyUnreachableReport :: GatewayRuntimeStabilityReport -> Bool
-isTransientlyUnreachableReport report =
-  case report of
-    StabilityUnreachable reason -> gatewayStabilityUnreachableIsTransient reason
-    _ -> False
-
-observationUnreachableReason
-  :: GatewayRuntimeStabilityReport
-  -> Maybe GatewayUnobservableReason
-observationUnreachableReason report =
-  case report of
-    StabilityUnreachable (GatewayPodObservationUnreachable reason _) -> Just reason
+observationIncompleteReason
+  :: GatewayPodHealthObservation
+  -> Maybe GatewayObservationIncompleteReason
+observationIncompleteReason observation =
+  case observation of
+    GatewayObservationIncomplete reason _ -> Just reason
     _ -> Nothing

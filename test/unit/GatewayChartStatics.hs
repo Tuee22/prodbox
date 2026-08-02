@@ -30,6 +30,10 @@ gatewayChartStaticsSuite =
       gatewayStaticRestPort gatewayChartStatics `shouldBe` 8443
       gatewayStaticEventsPort gatewayChartStatics `shouldBe` 8444
       gatewayStaticNodePort gatewayChartStatics `shouldBe` 30443
+      gatewayStaticExternalCallerServiceAccounts gatewayChartStatics
+        `shouldBe` [ "prodbox-control-plane-operator"
+                   , "prodbox-control-plane-test-harness"
+                   ]
 
     it "renders the generated values block from the typed statics" $ do
       renderGatewayChartStaticsYaml
@@ -41,6 +45,10 @@ gatewayChartStaticsSuite =
           , "  rest: 30443"
           , "serviceAccount:"
           , "  name: prodbox-gateway-daemon"
+          , "externalCallers:"
+          , "  serviceAccounts:"
+          , "    - prodbox-control-plane-operator"
+          , "    - prodbox-control-plane-test-harness"
           ]
 
     it "certifies the committed values.yaml equals the compiled projection" $ do
@@ -63,6 +71,24 @@ gatewayChartStaticsSuite =
       valuesContents <- readFile (repoRoot </> "charts" </> "gateway" </> "values.yaml")
       gatewayChartStaticViolations serviceAccountContents deploymentContents valuesContents
         `shouldBe` []
+
+    it "renders non-automounting self-only TokenRequest RBAC for every host caller" $ do
+      repoRoot <- getCurrentDirectory
+      let templatePath =
+            repoRoot
+              </> "charts"
+              </> "gateway"
+              </> "templates"
+              </> "external-caller-serviceaccounts.yaml"
+      template <- readFile templatePath
+      template `shouldContain` "range $serviceAccount := .Values.externalCallers.serviceAccounts"
+      template `shouldContain` "automountServiceAccountToken: false"
+      template `shouldContain` "serviceaccounts/token"
+      template `shouldContain` "resourceNames:"
+      template `shouldContain` "name: {{ $serviceAccount | quote }}"
+      template `shouldContain` "kind: RoleBinding"
+      template `shouldNotContain` "prodbox-control-plane-operator"
+      template `shouldNotContain` "prodbox-control-plane-test-harness"
 
     it "rejects a hand-written ServiceAccount name hard-coded to the raw role literal" $ do
       let rawServiceAccount = "metadata:\n  name: prodbox-gateway-daemon\n"

@@ -1,11 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
+-- | The @aws-test@ public surface after the Provider-Worker cutover.  The
+-- host retains only pure output decoding and read-only checkpoint consumers;
+-- every create/destroy effect is a typed Authority-dispatched Provider intent.
 module Prodbox.Infra.AwsTestStack
   ( AwsTestNode (..)
   , AwsTestStackSnapshot (..)
   , awsTestStackName
   , ensureAwsTestStackResources
+  , ensureAwsTestStackResourcesWithAuthentication
   , destroyAwsTestStack
+  , destroyAwsTestStackWithAuthentication
   , awsTestStackResidueStatus
   , assertNoAwsTestStackResidue
   , renderAwsTestStackReport
@@ -16,82 +22,44 @@ module Prodbox.Infra.AwsTestStack
 where
 
 import Control.Exception (IOException, bracket, catch)
-import Control.Monad (foldM, forM, when)
-import Data.Aeson
-  ( Value (..)
-  , eitherDecode
-  )
+import Control.Monad (when)
+import Data.Aeson (Value (Array, Object, String), eitherDecode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (isAsciiUpper, toLower)
-import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
-import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
+import Prodbox.CLI.Output (writeError, writeOutputLine)
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthentication
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
   )
-import Prodbox.CLI.Output
-  ( writeDiagnosticLine
-  , writeError
-  , writeOutput
-  , writeOutputLine
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchAuthenticatedProviderIntentFresh
+  , renderProviderCallerError
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Http.Client
-  ( defaultHttpConfig
-  , httpGetText
-  , renderHttpError
-  )
-import Prodbox.Infra.AwsProviderCredentials qualified as AwsProviderCredentials
-import Prodbox.Infra.MinioBackend
-  ( pulumiBackendLoginTimeoutSeconds
-  )
+import Prodbox.Http.Client (defaultHttpConfig, httpGetText, renderHttpError)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
+  , mkAwsTestProviderStackConfig
+  , mkProviderRevision
+  , mkProviderStackRef
+  )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
-import Prodbox.Pulumi.EncryptedBackend
-  ( PulumiStackRef (..)
-  , renderEncryptedBackendError
-  , withDecryptedStackEnvironment
-  )
-import Prodbox.Result (Result (..))
-import Prodbox.Settings
-  ( Credentials (..)
-  )
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
-  , runSubprocessStreaming
-  )
-import System.Directory
-  ( doesFileExist
-  , getTemporaryDirectory
-  , removeFile
-  )
-import System.Environment (getEnvironment)
-import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.IO (hClose, hPutStr, openTempFile)
 import System.Posix.Files (ownerReadMode, ownerWriteMode, setFileMode, unionFileModes)
 
 awsTestStackName :: String
 awsTestStackName = "aws-test"
 
-awsTestPulumiStackRef :: PulumiStackRef
-awsTestPulumiStackRef =
-  PulumiStackRef "prodbox-aws-test" (Text.pack awsTestStackName)
-
-awsTestPulumiProjectDir :: FilePath -> FilePath
-awsTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-test"
-
--- | Sprint 4.16 typed residue status. Delegates to the live
--- @pulumi stack ls --json@ source-of-truth query through
--- 'Prodbox.Lifecycle.LiveResidue'; callers that need all three
--- per-run statuses should call 'queryPerRunResidueStatuses' directly
--- to share the MinIO port-forward bracket.
 awsTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsTestStackResidueStatus repoRoot =
   LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
@@ -115,50 +83,101 @@ data AwsTestStackSnapshot = AwsTestStackSnapshot
   }
   deriving (Eq, Show)
 
-newtype AwsTestStackConfig = AwsTestStackConfig
-  { testStackOperatorCidr :: String
-  }
-  deriving (Eq, Show)
+ensureAwsTestStackResources :: FilePath -> IO ExitCode
+ensureAwsTestStackResources repoRoot =
+  withOperatorLifecycleAuthority repoRoot $ \authentication ->
+    ensureAwsTestStackResourcesWithAuthentication authentication repoRoot
 
--- | Sprint 4.18 sixth chunk: materialize the Pulumi-owned @aws-test@
--- SSH private key into a scoped temp file (chmod 600), hand the path
--- to the action, then clean up on exit. Replaces the legacy host-side
--- @ssh-keygen@ + @.prodbox-state\/aws-test\/id_ed25519@ persistent
--- file. The keypair now lives entirely in the Pulumi stack state: the
--- @aws-test@ Pulumi program declares a @tls:PrivateKey@ resource and
--- exports the private key as @ssh_private_key@ (secret-protected).
---
--- Throws via 'error' when:
---
---   * the live MinIO backend has no @aws-test@ snapshot to read, or
---   * the @ssh_private_key@ output is missing / empty.
---
--- The bracket guarantees the temp file is removed on all exit paths
--- including async exceptions in the action.
-withAwsTestSshPrivateKey :: FilePath -> (FilePath -> IO a) -> IO a
+ensureAwsTestStackResourcesWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> IO ExitCode
+ensureAwsTestStackResourcesWithAuthentication authentication _repoRoot = do
+  publicIp <- fetchPublicIpv4
+  case ( mkProviderStackRef "aws-test"
+       , mkProviderRevision 1
+       , case publicIp of
+           Left err -> Left err
+           Right value ->
+             case mkAwsTestProviderStackConfig (Text.pack (value <> "/32")) of
+               Left err -> Left (show err)
+               Right config -> Right config
+       ) of
+    (Right ref, Right revision, Right config) ->
+      dispatchStack
+        authentication
+        "operator-reconcile-aws-test"
+        "AWS test Provider receipt: "
+        (ReconcileRegisteredStack ref revision config)
+    (refResult, revisionResult, configResult) ->
+      failWith
+        ( "build typed AWS test Provider intent: "
+            ++ show (refResult, revisionResult, configResult)
+        )
+
+destroyAwsTestStack :: FilePath -> Bool -> IO ExitCode
+destroyAwsTestStack repoRoot summary =
+  withOperatorLifecycleAuthority repoRoot $ \authentication ->
+    destroyAwsTestStackWithAuthentication authentication repoRoot summary
+
+destroyAwsTestStackWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Bool
+  -> IO ExitCode
+destroyAwsTestStackWithAuthentication authentication _repoRoot _summary =
+  case ( mkProviderStackRef "aws-test"
+       , mkProviderRevision 1
+       , mkAwsTestProviderStackConfig "127.0.0.1/32"
+       ) of
+    (Right ref, Right revision, Right config) ->
+      dispatchStack
+        authentication
+        "operator-destroy-aws-test"
+        "AWS test Provider destroy receipt: "
+        (DestroyRegisteredStack ref revision config)
+    (refResult, revisionResult, configResult) ->
+      failWith
+        ( "build typed AWS test destroy intent: "
+            ++ show (refResult, revisionResult, configResult)
+        )
+
+dispatchStack
+  :: LifecycleAuthorityAuthentication
+  -> Text.Text
+  -> String
+  -> ProviderIntent
+  -> IO ExitCode
+dispatchStack authentication submissionPrefix label intent = do
+  result <-
+    dispatchAuthenticatedProviderIntentFresh authentication submissionPrefix intent
+  case result of
+    Left err -> failWith (renderProviderCallerError err)
+    Right evidence -> do
+      writeOutputLine (label ++ Text.unpack evidence)
+      pure ExitSuccess
+
+withOperatorLifecycleAuthority
+  :: FilePath
+  -> (LifecycleAuthorityAuthentication -> IO ExitCode)
+  -> IO ExitCode
+withOperatorLifecycleAuthority repoRoot action = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication LifecycleAuthorityOperator repoRoot action
+  case authenticated of
+    Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+    Right exitCode -> pure exitCode
+
+withAwsTestSshPrivateKey :: FilePath -> (FilePath -> IO value) -> IO value
 withAwsTestSshPrivateKey repoRoot action = do
   outputsResult <-
     LiveResidue.fetchPerRunStackOutputs
       repoRoot
       (StackOutputs.StackName (Text.pack awsTestStackName))
-  outputs <- case outputsResult of
-    Left err ->
-      error
-        ( "withAwsTestSshPrivateKey: aws-test Pulumi outputs unavailable from the live MinIO backend: "
-            ++ err
-        )
-    Right o -> pure o
-  privateKey <- case Map.lookup (Text.pack "ssh_private_key") outputs of
-    Nothing ->
-      error
-        "withAwsTestSshPrivateKey: aws-test Pulumi outputs missing required field 'ssh_private_key'"
-    Just text ->
-      let s = Text.unpack text
-       in if null s
-            then
-              error
-                "withAwsTestSshPrivateKey: aws-test Pulumi outputs field 'ssh_private_key' is empty"
-            else pure s
+  outputs <- either (error . ("aws-test checkpoint unavailable: " ++)) pure outputsResult
+  privateKey <- case Map.lookup "ssh_private_key" outputs of
+    Just value | not (Text.null value) -> pure (Text.unpack value)
+    _ -> error "aws-test checkpoint is missing non-empty ssh_private_key"
   systemTemp <- getTemporaryDirectory
   bracket
     (openTempFile systemTemp "prodbox-aws-test-ssh-key-")
@@ -166,54 +185,23 @@ withAwsTestSshPrivateKey repoRoot action = do
         hClose handle `catch` \(_ :: IOException) -> pure ()
         removeFile path `catch` \(_ :: IOException) -> pure ()
     )
-    ( \(tempPath, handle) -> do
+    ( \(path, handle) -> do
         hPutStr handle privateKey
-        when (not (null privateKey) && last privateKey /= '\n') (hPutStr handle "\n")
+        when (last privateKey /= '\n') (hPutStr handle "\n")
         hClose handle
-        setFileMode tempPath (unionFileModes ownerReadMode ownerWriteMode)
-        action tempPath
+        setFileMode path (unionFileModes ownerReadMode ownerWriteMode)
+        action path
     )
 
-nodeFromJson :: Value -> Either String AwsTestNode
-nodeFromJson (Object obj) = do
-  name <- requireString obj "name"
-  az <- requireString obj "availability_zone"
-  instanceId <- requireString obj "instance_id"
-  privateIp <- requireString obj "private_ip"
-  publicIp <- requireString obj "public_ip"
-  Right
-    AwsTestNode
-      { testNodeName = name
-      , testNodeAvailabilityZone = az
-      , testNodeInstanceId = instanceId
-      , testNodePrivateIp = privateIp
-      , testNodePublicIp = publicIp
-      }
-nodeFromJson _ = Left "node must be a JSON object"
-
--- | Sprint 4.18: decode the @nodes@ Pulumi output (a JSON-encoded
--- array of node objects) from the live @aws-test@ stack outputs map
--- returned by 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'.
--- Replaces the legacy @.prodbox-state/aws-test/stack-snapshot.json@
--- file-IO path on the test-validation surface.
 parseAwsTestNodesFromOutputs
   :: Map.Map Text.Text Text.Text -> Either String [AwsTestNode]
-parseAwsTestNodesFromOutputs outputs =
-  case Map.lookup (Text.pack "nodes") outputs of
-    Nothing -> Left "aws-test Pulumi outputs missing required field 'nodes'"
-    Just rawText ->
-      case eitherDecode (BL8.pack (Text.unpack rawText)) of
-        Left err -> Left ("aws-test Pulumi output 'nodes' is not valid JSON: " ++ err)
-        Right (Array arr) -> mapM nodeFromJson (Vector.toList arr)
-        Right _ -> Left "aws-test Pulumi output 'nodes' must be a JSON array"
+parseAwsTestNodesFromOutputs outputs = do
+  raw <- requireMapText outputs "nodes"
+  case eitherDecode (BL8.pack (Text.unpack raw)) of
+    Left err -> Left ("aws-test Pulumi output 'nodes' is not valid JSON: " ++ err)
+    Right (Array values) -> traverse nodeFromJson (Vector.toList values)
+    Right _ -> Left "aws-test Pulumi output 'nodes' must be a JSON array"
 
--- | Sprint 4.18: decode a full 'AwsTestStackSnapshot' from the live
--- @Map Text Text@ outputs returned by
--- 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'. Mirrors the
--- ensure-path 'snapshotFromOutputs' but reads the flat map shape where
--- complex outputs (@subnet_ids@, @nodes@) arrive as JSON-encoded
--- strings. Replaces the legacy file-snapshot read in the destroy and
--- residue-assertion paths.
 parseAwsTestStackFromOutputs
   :: Map.Map Text.Text Text.Text -> Either String AwsTestStackSnapshot
 parseAwsTestStackFromOutputs outputs = do
@@ -222,7 +210,7 @@ parseAwsTestStackFromOutputs outputs = do
   subnetIds <- requireMapStringList outputs "subnet_ids"
   securityGroupId <- requireMapString outputs "security_group_id"
   nodes <- parseAwsTestNodesFromOutputs outputs
-  Right
+  pure
     AwsTestStackSnapshot
       { testSnapshotStackName = awsTestStackName
       , testSnapshotBackendBucket = backendBucket
@@ -232,74 +220,42 @@ parseAwsTestStackFromOutputs outputs = do
       , testSnapshotNodes = nodes
       }
 
--- | Sprint 4.18: live source-of-truth read of the @aws-test@ stack's
--- snapshot from the in-cluster MinIO Pulumi backend. Returns 'Nothing'
--- when the stack is absent, the backend is unreachable, or the outputs
--- cannot be parsed — matching the @Maybe@ contract the destroy and
--- residue-assertion paths previously got from the file cache, so the
--- absent path falls back to the tag-based residue scan as before.
-fetchAwsTestSnapshotFromBackend :: FilePath -> IO (Maybe AwsTestStackSnapshot)
-fetchAwsTestSnapshotFromBackend repoRoot = do
-  outputsResult <-
-    LiveResidue.fetchPerRunStackOutputs
-      repoRoot
-      (StackOutputs.StackName (Text.pack awsTestStackName))
-  pure $ case outputsResult of
-    Left _ -> Nothing
-    Right outputs -> either (const Nothing) Just (parseAwsTestStackFromOutputs outputs)
+nodeFromJson :: Value -> Either String AwsTestNode
+nodeFromJson (Object value) =
+  AwsTestNode
+    <$> requireJsonString value "name"
+    <*> requireJsonString value "availability_zone"
+    <*> requireJsonString value "instance_id"
+    <*> requireJsonString value "private_ip"
+    <*> requireJsonString value "public_ip"
+nodeFromJson _ = Left "aws-test node must be a JSON object"
 
-requireMapString :: Map.Map Text.Text Text.Text -> String -> Either String String
-requireMapString outputs key =
-  case Map.lookup (Text.pack key) outputs of
-    Nothing -> Left ("aws-test Pulumi outputs missing required field '" ++ key ++ "'")
-    Just text ->
-      let s = Text.unpack text
-       in if null s then Left ("aws-test Pulumi output '" ++ key ++ "' is empty") else Right s
+requireJsonString :: KeyMap.KeyMap Value -> String -> Either String String
+requireJsonString value field = case KeyMap.lookup (Key.fromString field) value of
+  Just (String textValue) | not (Text.null textValue) -> Right (Text.unpack textValue)
+  _ -> Left ("aws-test node is missing non-empty field '" ++ field ++ "'")
 
-requireMapStringList :: Map.Map Text.Text Text.Text -> String -> Either String [String]
-requireMapStringList outputs key =
-  case Map.lookup (Text.pack key) outputs of
-    Nothing -> Left ("aws-test Pulumi outputs missing required field '" ++ key ++ "'")
-    Just text ->
-      case eitherDecode (BL8.pack (Text.unpack text)) of
-        Left err -> Left ("aws-test Pulumi output '" ++ key ++ "' is not valid JSON: " ++ err)
-        Right (Array arr) -> mapM (mapEntryString key) (Vector.toList arr)
-        Right _ -> Left ("aws-test Pulumi output '" ++ key ++ "' must be a JSON array")
+requireMapText
+  :: Map.Map Text.Text Text.Text -> String -> Either String Text.Text
+requireMapText outputs field = case Map.lookup (Text.pack field) outputs of
+  Just value | not (Text.null value) -> Right value
+  _ -> Left ("aws-test Pulumi outputs missing non-empty field '" ++ field ++ "'")
+
+requireMapString
+  :: Map.Map Text.Text Text.Text -> String -> Either String String
+requireMapString outputs = fmap Text.unpack . requireMapText outputs
+
+requireMapStringList
+  :: Map.Map Text.Text Text.Text -> String -> Either String [String]
+requireMapStringList outputs field = do
+  raw <- requireMapText outputs field
+  case eitherDecode (BL8.pack (Text.unpack raw)) of
+    Left err -> Left ("aws-test Pulumi output '" ++ field ++ "' is not valid JSON: " ++ err)
+    Right (Array values) -> traverse textEntry (Vector.toList values)
+    Right _ -> Left ("aws-test Pulumi output '" ++ field ++ "' must be a JSON array")
  where
-  mapEntryString k v = case v of
-    String t ->
-      let s = Text.unpack t
-       in if null s then Left ("aws-test Pulumi output '" ++ k ++ "' contains an empty string") else Right s
-    _ -> Left ("aws-test Pulumi output '" ++ k ++ "' must contain strings only")
-
-requireString :: KeyMap.KeyMap Value -> String -> Either String String
-requireString obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (String text) ->
-      let str = Text.unpack text
-       in if null str then Left ("missing string output " ++ key) else Right str
-    _ -> Left ("missing string output " ++ key)
-
-requireStringList :: KeyMap.KeyMap Value -> String -> Either String [String]
-requireStringList obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Array arr) ->
-      mapM (requireStringListEntry key) (Vector.toList arr)
-    _ -> Left ("missing list output " ++ key)
-
-requireStringListEntry :: String -> Value -> Either String String
-requireStringListEntry key value =
-  case value of
-    String text ->
-      let str = Text.unpack text
-       in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
-    _ -> Left ("output " ++ key ++ " must contain strings only")
-
-requireNodeList :: KeyMap.KeyMap Value -> String -> Either String [AwsTestNode]
-requireNodeList obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Array arr) -> mapM nodeFromJson (Vector.toList arr)
-    _ -> Left ("missing node list " ++ key)
+  textEntry (String value) | not (Text.null value) = Right (Text.unpack value)
+  textEntry _ = Left ("aws-test Pulumi output '" ++ field ++ "' must contain non-empty strings")
 
 renderAwsTestStackReport :: AwsTestStackSnapshot -> Int -> String
 renderAwsTestStackReport snapshot objectCount =
@@ -312,686 +268,43 @@ renderAwsTestStackReport snapshot objectCount =
       , "SECURITY_GROUP_ID=" ++ testSnapshotSecurityGroupId snapshot
       , "NODE_COUNT=" ++ show (length (testSnapshotNodes snapshot))
       ]
-        ++ concatMap renderNodeReport (zip [0 ..] (testSnapshotNodes snapshot))
+        ++ concatMap renderNode (zip [0 :: Int ..] (testSnapshotNodes snapshot))
     )
+ where
+  renderNode (index, node) =
+    [ "NODE_" ++ show index ++ "_NAME=" ++ testNodeName node
+    , "NODE_" ++ show index ++ "_AZ=" ++ testNodeAvailabilityZone node
+    , "NODE_" ++ show index ++ "_INSTANCE_ID=" ++ testNodeInstanceId node
+    , "NODE_" ++ show index ++ "_PRIVATE_IP=" ++ testNodePrivateIp node
+    , "NODE_" ++ show index ++ "_PUBLIC_IP=" ++ testNodePublicIp node
+    ]
 
-renderNodeReport :: (Int, AwsTestNode) -> [String]
-renderNodeReport (index, node) =
-  [ "NODE_" ++ show index ++ "_NAME=" ++ testNodeName node
-  , "NODE_" ++ show index ++ "_AZ=" ++ testNodeAvailabilityZone node
-  , "NODE_" ++ show index ++ "_INSTANCE_ID=" ++ testNodeInstanceId node
-  , "NODE_" ++ show index ++ "_PRIVATE_IP=" ++ testNodePrivateIp node
-  , "NODE_" ++ show index ++ "_PUBLIC_IP=" ++ testNodePublicIp node
-  ]
-
-settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])
-settingsAwsEnv repoRoot = do
-  credentialsResult <- AwsProviderCredentials.loadPulumiProviderCredentials repoRoot
-  case credentialsResult of
-    Left err -> pure (Left err)
-    Right credentials -> do
-      baseEnv <- getEnvironment
-      pure (Right (overlayAwsCredentials baseEnv credentials))
+assertNoAwsTestStackResidue
+  :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String ())
+assertNoAwsTestStackResidue repoRoot _ = do
+  status <- awsTestStackResidueStatus repoRoot
+  pure $ case status of
+    ResidueStatus.ResidueAbsent -> Right ()
+    ResidueStatus.ResiduePresent detail -> Left (ResidueStatus.renderResidueDetails detail)
+    ResidueStatus.ResidueUnreachable detail ->
+      Left (ResidueStatus.renderResidueUnreachableReason detail)
 
 fetchPublicIpv4 :: IO (Either String String)
 fetchPublicIpv4 = do
   result <- httpGetText defaultHttpConfig "https://api.ipify.org"
-  case result of
-    Left err -> pure (Left ("failed to fetch public IP: " ++ renderHttpError err))
-    Right body ->
-      let ip = trim body
-       in if length (filter (== '.') ip) == 3
-            then pure (Right ip)
-            else pure (Left ("unexpected public IP response: " ++ ip))
-
-pulumiProviderBaseEnv :: FilePath -> IO (Either String [(String, String)])
-pulumiProviderBaseEnv repoRoot = do
-  credentialsResult <- AwsProviderCredentials.loadPulumiProviderCredentials repoRoot
-  case credentialsResult of
-    Left err -> pure (Left err)
-    Right providerCredentials -> do
-      currentEnv <- getEnvironment
-      let path = maybe "" id (lookup "PATH" currentEnv)
-          home = maybe "" id (lookup "HOME" currentEnv)
-          providerEnv = pulumiAwsProviderEnv providerCredentials
-      pure
-        ( Right
-            ( [ ("AWS_EC2_METADATA_DISABLED", "true")
-              , ("PULUMI_SKIP_UPDATE_CHECK", "true")
-              , ("PATH", path)
-              , ("HOME", home)
-              , ("LANG", "C.UTF-8")
-              ]
-                ++ providerEnv
-            )
-        )
-
-pulumiAwsProviderEnv :: Credentials -> [(String, String)]
-pulumiAwsProviderEnv creds =
-  baseEntries
-    ++ case session_token creds of
-      Just token -> [("PRODBOX_PULUMI_AWS_SESSION_TOKEN", Text.unpack token)]
-      Nothing -> []
- where
-  baseEntries =
-    [ ("PRODBOX_PULUMI_AWS_ACCESS_KEY_ID", Text.unpack (access_key_id creds))
-    , ("PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key creds))
-    , ("PRODBOX_PULUMI_AWS_REGION", Text.unpack (region creds))
-    , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", Text.unpack (region creds))
-    ]
-
--- | Resolve Vault-backed AWS provider credentials for the @aws-test@
--- Pulumi destroy path. Supported Pulumi stack operations fail closed when
--- @secret/gateway/gateway/aws@ is absent instead of falling back to raw
--- Dhall credentials.
-loadOperationalAwsCredentials :: FilePath -> IO (Either String Credentials)
-loadOperationalAwsCredentials =
-  AwsProviderCredentials.loadPulumiProviderCredentials
-
-runEnsureAwsTestPulumiCycle
-  :: FilePath
-  -> AwsTestStackConfig
-  -> [(String, String)]
-  -> IO (Either String ())
-runEnsureAwsTestPulumiCycle projectDir stackConfig environment = do
-  loginExit <- pulumiLogin projectDir environment
-  case loginExit of
-    ExitFailure _ -> pure (Left "pulumi login failed")
-    ExitSuccess -> do
-      selectExit <- pulumiStackSelect projectDir environment True
-      case selectExit of
-        PulumiStackSelected -> do
-          syncExit <- syncAwsTestStackConfig projectDir environment stackConfig
-          case syncExit of
-            ExitFailure _ -> pure (Left "pulumi config set failed")
-            ExitSuccess -> do
-              upExit <- pulumiUp projectDir environment
-              case upExit of
-                ExitFailure _ -> pure (Left "pulumi up failed")
-                ExitSuccess -> do
-                  outputsResult <- pulumiStackOutputs projectDir environment
-                  case outputsResult of
-                    Left err -> pure (Left err)
-                    Right outputs ->
-                      case snapshotFromOutputs outputs of
-                        Left err -> pure (Left err)
-                        Right snapshot -> do
-                          writeOutput (renderAwsTestStackReport snapshot 0)
-                          pure (Right ())
-        PulumiStackMissing ->
-          pure (Left "pulumi stack select reported a missing stack after --create")
-        PulumiStackSelectFailed detail ->
-          pure (Left ("pulumi stack select failed: " ++ detail))
-
-resolveAwsTestStackConfig :: FilePath -> IO (Either String AwsTestStackConfig)
-resolveAwsTestStackConfig _repoRoot = do
-  publicIpResult <- fetchPublicIpv4
-  case publicIpResult of
-    Left err -> pure (Left err)
-    Right publicIp ->
-      pure
-        ( Right
-            AwsTestStackConfig
-              { testStackOperatorCidr = publicIp ++ "/32"
-              }
-        )
-
--- | Sprint 4.18 sixth chunk: @publicKey@ is no longer a config input —
--- the Pulumi stack owns the keypair via a @tls:PrivateKey@ resource and
--- exposes @ssh_private_key@ as a secret output.
-syncAwsTestStackConfig :: FilePath -> [(String, String)] -> AwsTestStackConfig -> IO ExitCode
-syncAwsTestStackConfig projectDir environment stackConfig =
-  foldM runConfigSet ExitSuccess configEntries
- where
-  configEntries =
-    [ (False, "operatorCidr", testStackOperatorCidr stackConfig)
-    ]
-
-  runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
-  runConfigSet failure@(ExitFailure _) _ = pure failure
-  runConfigSet ExitSuccess (secretValue, key, value) =
-    runPulumiCommand
-      projectDir
-      environment
-      ( ["config", "set", "--stack", awsTestStackName]
-          ++ ["--secret" | secretValue]
-          ++ [key, value]
-      )
-
-pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
-pulumiLogin projectDir environment = do
-  loginResult <- pulumiLoginQuiet projectDir environment
-  case loginResult of
-    Right () -> pure ExitSuccess
-    Left err -> do
-      writeDiagnosticLine ("pulumi login failed: " ++ err)
-      pure (ExitFailure 1)
-
-pulumiLoginQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
-pulumiLoginQuiet projectDir environment =
-  runPulumiCommandQuiet
-    projectDir
-    environment
-    ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
-
-data PulumiStackSelectResult
-  = PulumiStackSelected
-  | PulumiStackMissing
-  | PulumiStackSelectFailed String
-
-pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
-pulumiStackSelect projectDir environment createIfMissing =
-  let arguments =
-        ["stack", "select", awsTestStackName]
-          ++ ["--create" | createIfMissing]
-          -- Sprint 7.23 follow-up: `plaintext` is not a valid pulumi
-          -- secrets-provider URL on current pulumi (`open secrets.Keeper: no
-          -- scheme in URL "plaintext"`); use the empty-passphrase provider like
-          -- aws-ses. The scratch env sets `PULUMI_CONFIG_PASSPHRASE = ""`;
-          -- at-rest secrecy is the Model-B Vault-Transit envelope.
-          ++ if createIfMissing then ["--secrets-provider", "passphrase"] else []
-   in if createIfMissing
-        then do
-          exitCode <- runPulumiCommand projectDir environment arguments
-          pure $
-            case exitCode of
-              ExitSuccess -> PulumiStackSelected
-              ExitFailure _ -> PulumiStackSelectFailed "pulumi stack select failed"
-        else do
-          result <-
-            captureSubprocessResult
-              Subprocess
-                { subprocessPath = "pulumi"
-                , subprocessArguments = arguments
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just projectDir
-                }
-          pure $
-            case result of
-              Failure err -> PulumiStackSelectFailed err
-              Success output ->
-                case processExitCode output of
-                  ExitSuccess -> PulumiStackSelected
-                  ExitFailure _
-                    | isMissingPulumiStackError awsTestStackName (renderProcessDetail output) ->
-                        PulumiStackMissing
-                    | otherwise ->
-                        PulumiStackSelectFailed (renderProcessDetail output)
-
-pulumiUp :: FilePath -> [(String, String)] -> IO ExitCode
-pulumiUp projectDir environment =
-  runPulumiCommand projectDir environment ["up", "--yes", "--stack", awsTestStackName]
-
-pulumiDestroyQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
-pulumiDestroyQuiet projectDir environment =
-  runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
-
-pulumiRefreshQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
-pulumiRefreshQuiet projectDir environment =
-  runPulumiCommandQuiet projectDir environment ["refresh", "--yes", "--stack", awsTestStackName]
-
-pulumiStackRemoveQuiet :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiStackRemoveQuiet projectDir environment force =
-  runPulumiCommandQuiet
-    projectDir
-    environment
-    (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsTestStackName])
-
-pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiLoginEither projectDir environment summary
-  | summary = pulumiLoginQuiet projectDir environment
-  | otherwise = exitToEither "pulumi login" <$> pulumiLogin projectDir environment
-
-pulumiDestroyEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiDestroyEither projectDir environment summary
-  | summary = pulumiDestroyQuiet projectDir environment
-  | otherwise =
-      exitToEither "pulumi destroy"
-        <$> runPulumiCommand projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
-
-pulumiRefreshEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiRefreshEither projectDir environment summary
-  | summary = pulumiRefreshQuiet projectDir environment
-  | otherwise =
-      exitToEither "pulumi refresh"
-        <$> runPulumiCommand projectDir environment ["refresh", "--yes", "--stack", awsTestStackName]
-
-pulumiStackRemoveEither :: FilePath -> [(String, String)] -> Bool -> Bool -> IO (Either String ())
-pulumiStackRemoveEither projectDir environment force summary
-  | summary = pulumiStackRemoveQuiet projectDir environment force
-  | otherwise =
-      exitToEither "pulumi stack rm"
-        <$> runPulumiCommand
-          projectDir
-          environment
-          (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsTestStackName])
-
-exitToEither :: String -> ExitCode -> Either String ()
-exitToEither _ ExitSuccess = Right ()
-exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ show code)
-
-pulumiStackOutputs :: FilePath -> [(String, String)] -> IO (Either String Value)
-pulumiStackOutputs projectDir environment = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "pulumi"
-        , subprocessArguments = ["stack", "output", "--json", "--stack", awsTestStackName]
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just projectDir
-        }
-  case result of
-    Failure err -> pure (Left ("failed to run pulumi stack output: " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          pure (Left ("pulumi stack output failed: " ++ trim (processStderr output)))
-        ExitSuccess ->
-          case eitherDecode (BL8.pack (processStdout output)) of
-            Left err -> pure (Left ("failed to parse pulumi output JSON: " ++ err))
-            Right value -> pure (Right value)
-
-runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
-runPulumiCommand projectDir environment arguments = do
-  result <-
-    runSubprocessStreaming
-      Subprocess
-        { subprocessPath = "pulumi"
-        , subprocessArguments = arguments
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just projectDir
-        }
-  case result of
-    Failure err -> do
-      writeDiagnosticLine err
-      pure (ExitFailure 1)
-    Success exitCode -> pure exitCode
-
-runPulumiCommandQuiet :: FilePath -> [(String, String)] -> [String] -> IO (Either String ())
-runPulumiCommandQuiet projectDir environment arguments = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath =
-            if isPulumiLoginCommand arguments
-              then "timeout"
-              else "pulumi"
-        , subprocessArguments =
-            if isPulumiLoginCommand arguments
-              then
-                [ "--kill-after=10s"
-                , show pulumiBackendLoginTimeoutSeconds
-                , "pulumi"
-                ]
-                  ++ arguments
-                  ++ ["--non-interactive"]
-              else arguments
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just projectDir
-        }
-  pure $
-    case result of
-      Failure err -> Left err
-      Success output ->
-        case processExitCode output of
-          ExitSuccess -> Right ()
-          ExitFailure 124
-            | isPulumiLoginCommand arguments ->
-                Left
-                  ( "timed out after "
-                      ++ show pulumiBackendLoginTimeoutSeconds
-                      ++ " seconds while running `pulumi login` against the MinIO backend"
-                  )
-          ExitFailure _ -> Left (renderProcessDetail output)
-
-isPulumiLoginCommand :: [String] -> Bool
-isPulumiLoginCommand arguments =
-  case arguments of
-    "login" : _ -> True
-    _ -> False
-
-snapshotFromOutputs :: Value -> Either String AwsTestStackSnapshot
-snapshotFromOutputs (Object obj) = do
-  stackName <- Right awsTestStackName
-  backendBucket <- requireString obj "backend_bucket"
-  vpcId <- requireString obj "vpc_id"
-  subnetIds <- requireStringList obj "subnet_ids"
-  securityGroupId <- requireString obj "security_group_id"
-  nodes <- requireNodeList obj "nodes"
-  if length nodes /= 3
-    then Left ("expected exactly 3 Pulumi-managed nodes, found " ++ show (length nodes))
-    else
-      Right
-        AwsTestStackSnapshot
-          { testSnapshotStackName = stackName
-          , testSnapshotBackendBucket = backendBucket
-          , testSnapshotVpcId = vpcId
-          , testSnapshotSubnetIds = subnetIds
-          , testSnapshotSecurityGroupId = securityGroupId
-          , testSnapshotNodes = nodes
-          }
-snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
-
-resourceStillExists :: FilePath -> [String] -> IO (Either String Bool)
-resourceStillExists repoRoot command =
-  case command of
-    [] -> pure (Left "resource existence check requires a command")
-    subprocessPath : subprocessArguments -> do
-      envResult <- settingsAwsEnv repoRoot
-      case envResult of
-        Left err -> pure (Left err)
-        Right environment -> do
-          result <-
-            captureSubprocessResult
-              Subprocess
-                { subprocessPath = subprocessPath
-                , subprocessArguments = subprocessArguments
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Nothing
-                }
-          case result of
-            Failure err -> pure (Left err)
-            Success output ->
-              case processExitCode output of
-                ExitSuccess -> pure (Right True)
-                ExitFailure _ ->
-                  let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
-                   in if isResourceMissing detail
-                        then pure (Right False)
-                        else pure (Left (unwords command ++ " failed: " ++ detail))
-
-instanceStillExists :: FilePath -> String -> IO (Either String Bool)
-instanceStillExists repoRoot instanceId = do
-  envResult <- settingsAwsEnv repoRoot
-  case envResult of
-    Left err -> pure (Left err)
-    Right environment -> do
-      result <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Nothing
-            }
-      case result of
-        Failure err -> pure (Left err)
-        Success output ->
-          case processExitCode output of
-            ExitFailure _ ->
-              let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
-               in if isResourceMissing detail
-                    then pure (Right False)
-                    else
-                      pure (Left ("aws ec2 describe-instances --instance-ids " ++ instanceId ++ " failed: " ++ detail))
-            ExitSuccess ->
-              case eitherDecode (BL8.pack (processStdout output)) of
-                Left err -> pure (Left ("failed to parse EC2 instance JSON: " ++ err))
-                Right payload -> pure (instanceDescribeShowsActiveInstance payload)
-
-isResourceMissing :: String -> Bool
-isResourceMissing detail =
-  let lowered = map toLowerAscii detail
-   in any
-        (`isSubstring` lowered)
-        [ "notfound"
-        , "not found"
-        , "does not exist"
-        , "invalidgroup.notfound"
-        , "invalidsubnetid.notfound"
-        , "invalidvpcid.notfound"
-        , "invalidinstanceid.notfound"
-        , "nokeypair"
-        , "nosuchentity"
-        ]
-
-isSubstring :: String -> String -> Bool
-isSubstring needle haystack = any (startsWith needle) (tails haystack)
- where
-  startsWith [] _ = True
-  startsWith _ [] = False
-  startsWith (a : as) (b : bs) = a == b && startsWith as bs
-  tails [] = [[]]
-  tails s@(_ : rest) = s : tails rest
-
-toLowerAscii :: Char -> Char
-toLowerAscii c
-  | isAsciiUpper c = toEnum (fromEnum c + 32)
-  | otherwise = c
-
-assertNoAwsTestStackResidue :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String ())
-assertNoAwsTestStackResidue repoRoot maybeSnapshot = do
-  snapshot <- case maybeSnapshot of
-    Just s -> pure (Just s)
-    Nothing -> fetchAwsTestSnapshotFromBackend repoRoot
-  case snapshot of
-    Nothing -> pure (Right ())
-    Just current -> do
-      remainingItems <- checkResidueItems repoRoot current
-      case remainingItems of
-        Left err -> pure (Left err)
-        Right remaining ->
-          if null remaining
-            then pure (Right ())
-            else pure (Left ("AWS test stack residue remains: " ++ joinComma remaining))
-
-checkResidueItems :: FilePath -> AwsTestStackSnapshot -> IO (Either String [String])
-checkResidueItems repoRoot snapshot = do
-  vpcResult <-
-    resourceStillExists
-      repoRoot
-      ["aws", "ec2", "describe-vpcs", "--vpc-ids", testSnapshotVpcId snapshot]
-  case vpcResult of
-    Left err -> pure (Left err)
-    Right _vpcExists -> do
-      subnetResults <- forM (testSnapshotSubnetIds snapshot) $ \subnetId ->
-        resourceStillExists repoRoot ["aws", "ec2", "describe-subnets", "--subnet-ids", subnetId]
-      sgResult <-
-        resourceStillExists
-          repoRoot
-          ["aws", "ec2", "describe-security-groups", "--group-ids", testSnapshotSecurityGroupId snapshot]
-      instanceResults <- forM (testSnapshotNodes snapshot) $ \node ->
-        instanceStillExists repoRoot (testNodeInstanceId node)
-      let allResults =
-            [("vpc=" ++ testSnapshotVpcId snapshot, vpcResult)]
-              ++ zipWith (\sid r -> ("subnet=" ++ sid, r)) (testSnapshotSubnetIds snapshot) subnetResults
-              ++ [("security-group=" ++ testSnapshotSecurityGroupId snapshot, sgResult)]
-              ++ zipWith
-                (\n r -> ("instance=" ++ testNodeInstanceId n, r))
-                (testSnapshotNodes snapshot)
-                instanceResults
-      case mapM snd allResults of
-        Left err -> pure (Left err)
-        Right existsList ->
-          pure (Right [label | (label, True) <- zip (map fst allResults) existsList])
-
-instanceDescribeShowsActiveInstance :: Value -> Either String Bool
-instanceDescribeShowsActiveInstance (Object obj) =
-  case KeyMap.lookup (Key.fromString "Reservations") obj of
-    Just (Array reservations) ->
-      fmap or (mapM reservationHasActiveInstance (Vector.toList reservations))
-    _ -> Left "describe-instances response missing Reservations array"
- where
-  reservationHasActiveInstance :: Value -> Either String Bool
-  reservationHasActiveInstance (Object reservationObj) =
-    case KeyMap.lookup (Key.fromString "Instances") reservationObj of
-      Just (Array instancesArray) ->
-        fmap or (mapM instanceIsActive (Vector.toList instancesArray))
-      _ -> Left "describe-instances reservation missing Instances array"
-  reservationHasActiveInstance _ = Left "describe-instances reservation must be an object"
-
-  instanceIsActive :: Value -> Either String Bool
-  instanceIsActive (Object instanceObj) =
-    case KeyMap.lookup (Key.fromString "State") instanceObj of
-      Just (Object stateObj) ->
-        case KeyMap.lookup (Key.fromString "Name") stateObj of
-          Just (String stateName) ->
-            pure (Text.unpack stateName /= "terminated")
-          _ -> Left "describe-instances state missing Name"
-      _ -> Left "describe-instances instance missing State object"
-  instanceIsActive _ = Left "describe-instances instance must be an object"
-instanceDescribeShowsActiveInstance _ = Left "describe-instances response must be a JSON object"
-
-ensureAwsTestStackResources :: FilePath -> IO ExitCode
-ensureAwsTestStackResources repoRoot = do
-  let projectDir = awsTestPulumiProjectDir repoRoot
-  projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
-  if not projectExists
-    then failWith ("Pulumi AWS test project missing: " ++ projectDir)
-    else do
-      configResult <- resolveAwsTestStackConfig repoRoot
-      case configResult of
-        Left err -> failWith err
-        Right stackConfig -> do
-          providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-          case providerEnvironmentResult of
-            Left err -> failWith err
-            Right providerEnvironment -> do
-              backendResult <-
-                withDecryptedStackEnvironment
-                  repoRoot
-                  awsTestPulumiStackRef
-                  providerEnvironment
-                  (runEnsureAwsTestPulumiCycle projectDir stackConfig)
-              case backendResult of
-                Left err -> failWith (renderEncryptedBackendError err)
-                Right () -> pure ExitSuccess
-
-destroyAwsTestStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsTestStack repoRoot summary = do
-  statusResult <- destroyAwsTestStackStatus repoRoot summary
-  case statusResult of
-    Left err -> failWith err
-    Right status -> do
-      writeOutputLine ("AWS test stack: " ++ status)
-      pure ExitSuccess
-
-runDestroyAwsTestPulumiCycle
-  :: FilePath
-  -> FilePath
-  -> Maybe AwsTestStackSnapshot
-  -> Bool
-  -> [(String, String)]
-  -> IO (Either String String)
-runDestroyAwsTestPulumiCycle repoRoot projectDir currentSnapshot summary environment = do
-  loginResult <- pulumiLoginEither projectDir environment summary
-  case loginResult of
-    Left err -> pure (Left ("pulumi login failed: " ++ err))
-    Right () -> do
-      selectExit <- pulumiStackSelect projectDir environment False
-      case selectExit of
-        PulumiStackSelected -> do
-          operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
-          case operationalCredentialsResult of
-            Left err ->
-              pure
-                ( Left
-                    ( "operational AWS credentials are required to destroy the AWS test stack once a Pulumi stack exists: "
-                        ++ err
-                    )
-                )
-            Right _operationalCredentials -> do
-              configResult <- resolveAwsTestStackConfig repoRoot
-              case configResult of
-                Left err -> pure (Left err)
-                Right stackConfig -> do
-                  syncExit <- syncAwsTestStackConfig projectDir environment stackConfig
-                  case syncExit of
-                    ExitFailure _ -> pure (Left "pulumi config set failed")
-                    ExitSuccess -> do
-                      destroyResult <- pulumiDestroyEither projectDir environment summary
-                      case destroyResult of
-                        Left _ -> do
-                          _ <- pulumiRefreshEither projectDir environment summary
-                          retryResult <- pulumiDestroyEither projectDir environment summary
-                          case retryResult of
-                            Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
-                            Right () -> completeDestroy repoRoot projectDir environment currentSnapshot summary
-                        Right () ->
-                          completeDestroy repoRoot projectDir environment currentSnapshot summary
-        PulumiStackMissing ->
-          case currentSnapshot of
-            Nothing ->
-              pure (Right ("already absent from the local Pulumi backend" :: String))
-            Just _ -> finalizeDestroy repoRoot currentSnapshot
-        PulumiStackSelectFailed detail ->
-          pure (Left ("pulumi stack select failed: " ++ detail))
-
--- | Sprint 7.22: gate the per-run destroy INVOCATION on a read-only
--- checkpoint observation before touching @pulumi stack output@ / @pulumi
--- destroy@ or the in-cluster @minio@ k8s secret. Absent → skip; corrupt /
--- unreadable → clean refuse naming the prune recovery; present → the real
--- destroy body ('destroyAwsTestStackStatusPresent').
-destroyAwsTestStackStatus :: FilePath -> Bool -> IO (Either String String)
-destroyAwsTestStackStatus repoRoot summary = do
-  status <- LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
-  case LiveResidue.perRunDestroyDecisionFromStatus
-    awsTestStackName
-    "prodbox aws stack test prune-corrupt-checkpoint --yes"
-    status of
-    LiveResidue.PerRunDestroySkip skipMessage -> pure (Right skipMessage)
-    LiveResidue.PerRunDestroyRefuse refusal -> pure (Left refusal)
-    LiveResidue.PerRunDestroyProceed -> destroyAwsTestStackStatusPresent repoRoot summary
-
-destroyAwsTestStackStatusPresent :: FilePath -> Bool -> IO (Either String String)
-destroyAwsTestStackStatusPresent repoRoot summary = do
-  currentSnapshot <- fetchAwsTestSnapshotFromBackend repoRoot
-  let projectDir = awsTestPulumiProjectDir repoRoot
-  providerEnvironmentResult <- pulumiProviderBaseEnv repoRoot
-  case providerEnvironmentResult of
-    Left err -> pure (Left err)
-    Right providerEnvironment -> do
-      backendResult <-
-        withDecryptedStackEnvironment
-          repoRoot
-          awsTestPulumiStackRef
-          providerEnvironment
-          (runDestroyAwsTestPulumiCycle repoRoot projectDir currentSnapshot summary)
-      pure $ case backendResult of
-        Left err -> Left (renderEncryptedBackendError err)
-        Right status -> Right status
-
-completeDestroy
-  :: FilePath
-  -> FilePath
-  -> [(String, String)]
-  -> Maybe AwsTestStackSnapshot
-  -> Bool
-  -> IO (Either String String)
-completeDestroy repoRoot projectDir environment currentSnapshot summary = do
-  _ <- pulumiStackRemoveEither projectDir environment False summary
-  finalizeDestroy repoRoot currentSnapshot
-
-finalizeDestroy :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String String)
-finalizeDestroy repoRoot currentSnapshot = do
-  residueResult <- assertNoAwsTestStackResidue repoRoot currentSnapshot
-  case residueResult of
-    Left err -> pure (Left err)
-    Right () -> pure (Right ("destroyed and residue check passed" :: String))
-
-failWith :: String -> IO ExitCode
-failWith message = do
-  writeError (fatalError (Text.pack message))
-  pure (ExitFailure 1)
+  pure $ case result of
+    Left err -> Left ("failed to fetch public IP: " ++ renderHttpError err)
+    Right body
+      | length (filter (== '.') body) == 3 -> Right body
+      | otherwise -> Left ("unexpected public IP response: " ++ body)
 
 joinComma :: [String] -> String
-joinComma [] = ""
-joinComma items = foldr1 (\a b -> a ++ "," ++ b) items
+joinComma = foldr join ""
+ where
+  join value "" = value
+  join value rest = value ++ "," ++ rest
 
-trim :: String -> String
-trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
-
-renderProcessDetail :: ProcessOutput -> String
-renderProcessDetail output =
-  case filter (not . null) [trim (processStderr output), trim (processStdout output)] of
-    [] -> "subprocess exited without output"
-    rendered -> foldr1 (\left right -> left ++ " | " ++ right) rendered
-
-isMissingPulumiStackError :: String -> String -> Bool
-isMissingPulumiStackError stackName detail =
-  let lowered = map toLower detail
-      loweredStackName = map toLower stackName
-   in "no stack named" `isInfixOf` lowered
-        && loweredStackName `isInfixOf` lowered
-        && "found" `isInfixOf` lowered
+failWith :: String -> IO ExitCode
+failWith detail = do
+  writeError (fatalError (Text.pack detail))
+  pure (ExitFailure 1)

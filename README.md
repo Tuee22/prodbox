@@ -291,6 +291,11 @@ topology diagram and dependency order live only in
 - The Gateway Runtime owns mesh, ownership projection, its encrypted identity-bound local emitter
   journal and, on home only, the registered Gateway-DNS effect. One actor holds the whole
   stage/fsync/publish/commit/fsync transition; EKS Gateway DNS mutation is disabled.
+- On EKS, Broker, Gateway diagnostics, Target Secret Agent, and Provider Worker have distinct
+  Service transports; Lifecycle Authority remains on retained home. AWS public A records flow only
+  through registered Authority/Provider intents, while cert-manager receives only its run-scoped
+  target Vault generation through a memory-only one-shot materializer. Deterministic EKS IAM names
+  bind both run/stack and cluster identity for exact recovery and cleanup.
 - Capability observation, admission, and execution use one operation-indexed `CapabilityRef` and one
   propagated absolute deadline.
 
@@ -323,6 +328,11 @@ always-run cleanup, and current-revision home/AWS qualification. The Foundation 
 failure mechanisms: a compiled service boundary, durability-indexed retained storage, derived
 restoration, measured capacity certification, and elimination of the hot-path per-request Vault
 login and subprocess object-store client.
+
+The measured-capacity recorder is available as
+`prodbox test integration gateway-pods --record-profile`. It writes
+`dhall/capacity/measured/gateway.dhall` only after a healthy 30-minute/300-sample window; committing
+that first profile activates the existing gateway capacity-certification gate.
 
 ## Install And Build
 
@@ -595,7 +605,7 @@ Validate the executable-sibling operator config:
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws quotas check`, `aws quotas request` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
 | AWS validation stacks | `aws stack eks reconcile`, `aws stack eks destroy --yes`, `aws stack aws-subzone reconcile`, `aws stack aws-subzone destroy --yes`, `aws stack test reconcile`, `aws stack test destroy --yes`, `aws stack aws-ses reconcile`, `aws stack aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
-| Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets. The target binds bounded bootstrap leaves to the exact Bootstrap Broker capability and post-unseal work to least-privilege Vault interpreters; combined gateway and direct-host routes are pre-cutover legacy tracked in the cleanup ledger (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
+| Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets. Bounded bootstrap leaves use the exact Bootstrap Broker capability and post-unseal work uses least-privilege Vault interpreters; the former combined Gateway and host-direct lifecycle routes are removed and guarded by source/route lints (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
 | Validation | `dev check`, `dev lint ...`, `dev docs ...`, `test lint`, `test ...`, `dev tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
@@ -849,6 +859,8 @@ These commands run real native Haskell validation flows against the named enviro
 ./.build/prodbox test integration gateway-daemon
 ./.build/prodbox test integration gateway-pods
 ./.build/prodbox test integration gateway-partition
+./.build/prodbox test integration certificate-scope
+./.build/prodbox test integration clean-room-handoff
 ./.build/prodbox test integration charts-platform
 ./.build/prodbox test integration pulsar-broker
 ./.build/prodbox test integration keycloak-invite
@@ -857,6 +869,14 @@ These commands run real native Haskell validation flows against the named enviro
 ./.build/prodbox test integration sealed-vault
 ./.build/prodbox test integration lifecycle
 ```
+
+`certificate-scope` opens the real public HTTPS endpoint, verifies the TLS chain and hostname,
+then compares the presented DNS SANs with the exact canonical `CertScopeSet`; cert-manager Ready
+status by itself is not serving evidence.
+
+`clean-room-handoff` renders the versioned authority-cutover/restore/cleanup trace, verifies that
+interruption resumes only the exact next boundary, and runs the retired lifecycle-transport absence
+guards through the installed binary.
 
 `./.build/prodbox test integration sealed-vault` asserts the fail-closed invariant: a sealed Vault leaves PVs and MinIO
 objects intact while revealing no secrets, no active Dhall, no Pulumi state, and no downstream
@@ -939,3 +959,19 @@ prodbox/
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)
 - [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
 - [Agent Guidelines (AGENTS.md)](./AGENTS.md)
+
+### Retained SES workflow
+
+SES reconciliation is revisioned and crash-resumable through the retained Lifecycle Authority.
+Provider mutation owns no SMTP credential resources; the Credential Provisioner is the sole SMTP
+IAM writer, and retained-home custody delivers generation-bound SMTP material independently to the
+home or AWS Target Agent. Ordinary test postflight retains this long-lived aggregate. Its explicit
+destruction remains `prodbox aws stack aws-ses destroy --yes`, executed through the governed
+`DestroyAwsSes` dependency graph.
+
+### Deployment qualification
+
+Code-local qualification fixtures remain explicitly pending. Final qualification requires
+independent green `prodbox test all` and `prodbox test all --substrate aws` governed artifacts with
+the complete invite assertions, mandatory fault campaign, exact backup restore, cleanup-owner
+takeover, retained-generation restoration, and authoritative cleanup evidence.

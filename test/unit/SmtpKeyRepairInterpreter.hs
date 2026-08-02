@@ -282,12 +282,17 @@ smtpKeyRepairInterpreterSuite =
       fakePermitRequests inventoryFinal `shouldBe` 0
       fakeCreateRequests inventoryFinal `shouldBe` 0
 
-    it "leaves SMTP access-key ownership to the Haskell repair interpreter" $ do
+    it "keeps the entire SMTP IAM family out of the Provider Pulumi program" $ do
       repoRoot <- getCurrentDirectory
       program <- readFile (repoRoot </> "pulumi" </> "aws-ses" </> "Main.yaml")
-      program `shouldContain` "  smtpUser:"
+      program `shouldNotContain` "  smtpUser:"
+      program `shouldNotContain` "  smtpUserPolicy:"
       program `shouldNotContain` "  smtpUserAccessKey:"
       program `shouldNotContain` "type: aws:iam:AccessKey"
+      program `shouldNotContain` "type: aws:iam:User"
+      program `shouldNotContain` "type: aws:iam:UserPolicy"
+      program `shouldNotContain` "smtp_iam_user_name:"
+      program `shouldNotContain` "smtp_iam_user_arn:"
       program `shouldNotContain` "smtp_iam_access_key_id:"
       program `shouldNotContain` "smtp_iam_secret_access_key:"
 
@@ -517,7 +522,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "home-control"
-        "http://127.0.0.1:30120"
         "prodbox-state"
         "retained"
         "transit/prodbox"

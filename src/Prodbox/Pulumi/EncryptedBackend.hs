@@ -17,17 +17,21 @@ module Prodbox.Pulumi.EncryptedBackend
   , PulumiStackRef (..)
   , classifyCheckpointBytes
   , collectScratchCheckpoint
-  , deleteLogicalPulumiStackWith
+  , canonicalizeLegacyPulumiCheckpoint
+  , exportLegacyPulumiCheckpoint
   , fileBackendEnvironment
   , hydrateScratchCheckpoint
   , observeStackCheckpoint
+  , observeStackCheckpointAuthenticated
   , observeStackCheckpointWith
-  , productionHooksWithHostFallback
   , pruneLogicalPulumiStack
+  , removeLegacyPulumiStack
   , renderCheckpointObservability
   , renderEncryptedBackendError
   , stackCheckpointPath
-  , withDaemonFirstFallback
+  , withAuthenticatedFencedDecryptedStackEnvironment
+  , withAuthenticatedDecryptedStackEnvironment
+  , withAuthenticatedObservedDecryptedStackEnvironment
   , withDecryptedStack
   , withDecryptedStackEnvironment
   , withFencedDecryptedStackEnvironment
@@ -37,6 +41,8 @@ module Prodbox.Pulumi.EncryptedBackend
 where
 
 import Control.Exception (IOException, bracket, try)
+import Control.Monad qualified
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value (Object), eitherDecodeStrict')
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString (ByteString)
@@ -44,12 +50,43 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.Char (isSpace, toLower)
 import Data.List (isInfixOf)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Gateway.Types (PeerEndpoint)
+import Data.Text.Encoding qualified as TextEncoding
+import Numeric (showHex)
+import Prodbox.ControlPlane.AuthenticatedTransport
+  ( AuthenticatedClientTransport
+  )
+import Prodbox.ControlPlane.AuthorityOperationClient
+  ( AuthorityOperationAdmission (..)
+  , AuthorityOperationClient (..)
+  , lifecycleAuthorityOperationClientAuthenticated
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( LifecycleAuthorityAuthentication
+  , renderLifecycleAuthorityAuthenticationError
+  , withLifecycleAuthorityAuthenticatedTransport
+  )
+import Prodbox.ControlPlane.PulumiCheckpointClient
+  ( PulumiCheckpointAuthority (..)
+  , lifecycleAuthorityPulumiCheckpointAuthenticated
+  )
+import Prodbox.ControlPlane.PulumiCheckpointEndpoint
+  ( PulumiCheckpointObservation (..)
+  , PulumiCheckpointPublicationResult (..)
+  , PulumiCheckpointRetirementResult (..)
+  )
 import Prodbox.Infra.MinioBackend
   ( pulumiBackendLoginTimeoutSeconds
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry
+  ( ClientSubmissionKey
+  , mkClientSubmissionKey
+  )
+import Prodbox.Lifecycle.Authority.Submission
+  ( OperationId
+  , RequestDigest (RequestDigest)
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
@@ -64,24 +101,24 @@ import Prodbox.Lifecycle.Lease
   ( FencedCommitPermit
   , modelBLeaseGuardFromPermit
   )
-import Prodbox.Minio.EncryptedObject
-  ( LogicalObject (LogicalPulumiStack)
-  , objectKeyForOpaqueId
-  , opaqueObjectId
-  )
-import Prodbox.Minio.ObjectStore
-  ( ObjectStoreConfig (..)
-  , deleteObject
-  )
-import Prodbox.Pulumi.HostDirectObjectStore
-  ( HostDirectPulumiHandle
-  , hostDirectDeletePulumiObject
-  , hostDirectGetPulumiObject
-  , hostDirectPutPulumiObject
-  , resolveHostDirectPulumiMaterial
-  , withHostDirectPulumiPortForward
+import Prodbox.Lifecycle.PulumiCheckpoint
+  ( CanonicalPulumiCheckpoint
+  , PulumiCheckpointDigest
+  , PulumiCheckpointPayloadKind
+    ( PulumiFileBackendCheckpoint
+    , PulumiLegacyExportCheckpoint
+    )
+  , RegisteredPulumiCheckpoint
+  , canonicalPulumiCheckpointBytes
+  , canonicalPulumiCheckpointDigest
+  , decodeCanonicalPulumiCheckpoint
+  , pulumiCheckpointDigestText
+  , pulumiCheckpointMaximumBytes
+  , registeredPulumiCheckpointFor
+  , registeredPulumiCheckpointName
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -97,7 +134,6 @@ import System.Directory
   , getTemporaryDirectory
   , removeFile
   )
-import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath
   ( takeDirectory
@@ -167,6 +203,18 @@ data LoadedCheckpoint = LoadedCheckpoint
   , loadedCheckpointFromLegacy :: Bool
   }
 
+data AuthorityCheckpointClients = AuthorityCheckpointClients
+  { authorityOperationClient :: !(AuthorityOperationClient IO)
+  , authorityCheckpointClient :: !(PulumiCheckpointAuthority IO)
+  , authorityCheckpointRegistration :: !RegisteredPulumiCheckpoint
+  }
+
+data AuthorityLoadedCheckpoint = AuthorityLoadedCheckpoint
+  { authorityLoadedBytes :: !(Maybe ByteString)
+  , authorityLoadedExpectedDigest :: !(Maybe PulumiCheckpointDigest)
+  , authorityLoadedFromLegacy :: !Bool
+  }
+
 -- | Sprint 7.21: the observability classes of a per-run Pulumi
 -- checkpoint, applying the
 -- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
@@ -225,35 +273,100 @@ renderCheckpointObservability observability = case observability of
   CheckpointPresent -> "present"
 
 withDecryptedStack
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> (PulumiScratch -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStack repoRoot stackRef action = do
-  endpoint <- pulumiObjectGatewayEndpoint
-  -- Attempt the daemon-only path first (unchanged, zero extra cost when the
-  -- daemon is healthy). The checkpoint LOAD happens before @action@, so a
-  -- daemon-down failure surfaces as 'EncryptedBackendLoadFailed' BEFORE pulumi
-  -- runs; on exactly that error, retry the whole flow host-directly under one
-  -- port-forward (so the load and the post-pulumi store\/delete reuse it), and
-  -- pulumi is never run twice. Any other error (a real action\/store failure) is
-  -- returned as-is. Sprint: host-direct fallback.
-  firstResult <- withDecryptedStackWith (productionHooks endpoint) stackRef action
-  case firstResult of
-    Left (EncryptedBackendLoadFailed daemonDetail) ->
-      retryLoadWithHostFallback repoRoot daemonDetail $ \handle ->
-        withDecryptedStackWith (productionHooksWithHostFallback endpoint handle) stackRef action
-    other -> pure other
+withDecryptedStack authentication _repoRoot stackRef action =
+  withAuthorityCheckpointTransport authentication stackRef $ \clients ->
+    withAuthorityCheckpointStack clients Nothing True (pure (Right ())) stackRef action
 
 withDecryptedStackEnvironment
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> [(String, String)]
   -> ([(String, String)] -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStackEnvironment repoRoot stackRef environment action =
-  withDecryptedStack repoRoot stackRef $ \scratch ->
+withDecryptedStackEnvironment authentication repoRoot stackRef environment action =
+  withDecryptedStack authentication repoRoot stackRef $ \scratch ->
     action (fileBackendEnvironment scratch environment)
+
+-- | Provider-Worker production entrypoint.  The outbound Authority transport
+-- is already authenticated as the Provider service; no host-side operator
+-- authentication or repository-root discovery participates in checkpoint
+-- hydration/publication.
+withAuthenticatedDecryptedStackEnvironment
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> PulumiStackRef
+  -> [(String, String)]
+  -> ([(String, String)] -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withAuthenticatedDecryptedStackEnvironment transport stackRef environment action =
+  case authorityCheckpointClients transport stackRef of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right clients ->
+      withAuthorityCheckpointStack
+        clients
+        Nothing
+        True
+        (pure (Right ()))
+        stackRef
+        (\scratch -> action (fileBackendEnvironment scratch environment))
+
+-- | Read-only Provider observation over an Authority-backed checkpoint.  It
+-- hydrates RAM scratch and runs the exact observer but never collects,
+-- publishes, or retires a checkpoint.
+withAuthenticatedObservedDecryptedStackEnvironment
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> PulumiStackRef
+  -> [(String, String)]
+  -> ([(String, String)] -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withAuthenticatedObservedDecryptedStackEnvironment transport stackRef environment action =
+  case authorityCheckpointClients transport stackRef of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right clients -> do
+      loaded <- loadAuthorityCheckpoint clients Nothing
+      case loaded of
+        Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+        Right checkpoint ->
+          withRamScratch stackRef $ \scratch -> do
+            hydrated <- hydrateScratchCheckpoint scratch (authorityLoadedBytes checkpoint)
+            case hydrated of
+              Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+              Right () -> do
+                result <- action (fileBackendEnvironment scratch environment)
+                pure (either (Left . EncryptedBackendActionFailed) Right result)
+
+-- | Desired-present retained-stack variant over the caller-bound Authority
+-- clients.  The caller's lease proof is revalidated immediately before the
+-- Authority mutation; the checkpoint route then enforces the exact predecessor
+-- digest CAS and registered stack identity.  A desired-present action may not
+-- retire its checkpoint.
+withAuthenticatedFencedDecryptedStackEnvironment
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> Maybe LegacyPulumiBackend
+  -> PulumiStackRef
+  -> [(String, String)]
+  -> IO (Either String FencedCommitPermit)
+  -> ([(String, String)] -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withAuthenticatedFencedDecryptedStackEnvironment transport maybeLegacy stackRef environment authorizeCommit action =
+  case authorityCheckpointClients transport stackRef of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right clients ->
+      withAuthorityCheckpointStack
+        clients
+        maybeLegacy
+        False
+        ( do
+            authorization <- authorizeCommit
+            pure (Control.Monad.void authorization)
+        )
+        stackRef
+        (\scratch -> action (fileBackendEnvironment scratch environment))
 
 -- | Fenced variant for a long-lived desired-present transaction. The
 -- checkpoint is loaded and conditionally replaced through the same retained
@@ -326,29 +439,33 @@ withFencedDecryptedStackEnvironment adapter coordinate leaseCoordinate maybeLega
                           )
                       ModelBCasRefusedCorrupt detail ->
                         pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+                      ModelBCasEndpointUnready detail ->
+                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
                       ModelBCasUnobservable detail ->
                         pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
 
 withMigratedDecryptedStackEnvironment
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> LegacyPulumiBackend
   -> [(String, String)]
   -> ([(String, String)] -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withMigratedDecryptedStackEnvironment repoRoot stackRef legacy environment action =
-  withDecryptedStackMigrating repoRoot stackRef legacy $ \scratch ->
+withMigratedDecryptedStackEnvironment authentication repoRoot stackRef legacy environment action =
+  withDecryptedStackMigrating authentication repoRoot stackRef legacy $ \scratch ->
     action (fileBackendEnvironment scratch environment)
 
 withDecryptedStackMigrating
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> LegacyPulumiBackend
   -> (PulumiScratch -> IO (Either String a))
   -> IO (Either EncryptedBackendError a)
-withDecryptedStackMigrating _repoRoot stackRef legacy action = do
-  endpoint <- pulumiObjectGatewayEndpoint
-  withDecryptedStackWith (productionHooksWithLegacy legacy endpoint) stackRef action
+withDecryptedStackMigrating authentication _repoRoot stackRef legacy action =
+  withAuthorityCheckpointTransport authentication stackRef $ \clients ->
+    withAuthorityCheckpointStack clients (Just legacy) True (pure (Right ())) stackRef action
 
 data FencedLoadedCheckpoint = FencedLoadedCheckpoint
   { fencedLoadedBytes :: !(Maybe ByteString)
@@ -367,6 +484,7 @@ loadFencedCheckpoint adapter coordinate maybeLegacy _stackRef = do
   case observation of
     ModelBMissing -> loadLegacy Nothing
     ModelBCorrupt detail -> pure (Left ("fenced checkpoint is corrupt: " ++ Text.unpack detail))
+    ModelBEndpointUnready detail -> pure (Left (Text.unpack detail))
     ModelBUnobservable detail -> pure (Left (Text.unpack detail))
     ModelBObserved version bytes
       | checkpointBytesUsable bytes ->
@@ -429,6 +547,372 @@ finalizeFencedAction maybeLegacy _stackRef migratedFromLegacy actionResult =
                 Left err -> Left (EncryptedBackendLegacyDeleteFailed err)
                 Right () -> Right value
 
+withAuthorityCheckpointTransport
+  :: LifecycleAuthorityAuthentication
+  -> PulumiStackRef
+  -> (AuthorityCheckpointClients -> IO (Either EncryptedBackendError a))
+  -> IO (Either EncryptedBackendError a)
+withAuthorityCheckpointTransport authentication stackRef action = do
+  transported <-
+    withLifecycleAuthorityAuthenticatedTransport
+      authentication
+      (runWithCheckpointClients stackRef action)
+  pure $ case transported of
+    Left err ->
+      Left
+        ( EncryptedBackendLoadFailed
+            (renderLifecycleAuthorityAuthenticationError err)
+        )
+    Right result -> result
+
+runWithCheckpointClients
+  :: PulumiStackRef
+  -> (AuthorityCheckpointClients -> IO (Either EncryptedBackendError a))
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either EncryptedBackendError a)
+runWithCheckpointClients stackRef action transport =
+  case authorityCheckpointClients transport stackRef of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right clients -> action clients
+
+authorityCheckpointClients
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> PulumiStackRef
+  -> Either String AuthorityCheckpointClients
+authorityCheckpointClients transport stackRef = do
+  registered <-
+    mapLeft
+      (\err -> "Pulumi checkpoint coordinates are not registered: " ++ show err)
+      ( registeredPulumiCheckpointFor
+          (pulumiProjectName stackRef)
+          (pulumiStackName stackRef)
+      )
+  Right
+    AuthorityCheckpointClients
+      { authorityOperationClient =
+          lifecycleAuthorityOperationClientAuthenticated transport
+      , authorityCheckpointClient =
+          lifecycleAuthorityPulumiCheckpointAuthenticated transport registered
+      , authorityCheckpointRegistration = registered
+      }
+
+withAuthorityCheckpointStack
+  :: AuthorityCheckpointClients
+  -> Maybe LegacyPulumiBackend
+  -> Bool
+  -> IO (Either String ())
+  -> PulumiStackRef
+  -> (PulumiScratch -> IO (Either String a))
+  -> IO (Either EncryptedBackendError a)
+withAuthorityCheckpointStack clients maybeLegacy allowRetirement authorizeCommit stackRef action = do
+  loadedResult <- loadAuthorityCheckpoint clients maybeLegacy
+  case loadedResult of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right loaded ->
+      withRamScratch stackRef $ \scratch -> do
+        hydrateResult <- hydrateScratchCheckpoint scratch (authorityLoadedBytes loaded)
+        case hydrateResult of
+          Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+          Right () -> do
+            actionResult <- action scratch
+            collected <- collectScratchCheckpoint scratch
+            case collected of
+              Left detail -> pure (Left (EncryptedBackendCollectFailed detail))
+              Right Nothing
+                | not allowRetirement ->
+                    pure
+                      ( Left
+                          ( EncryptedBackendStoreFailed
+                              "fenced desired-present reconcile produced no checkpoint; Authority retirement is not permitted"
+                          )
+                      )
+              Right checkpointBytes -> do
+                authorized <- authorizeCommit
+                case authorized of
+                  Left detail ->
+                    pure
+                      ( Left
+                          ( EncryptedBackendStoreFailed
+                              ("checkpoint commit refused: " ++ detail)
+                          )
+                      )
+                  Right () -> do
+                    persisted <-
+                      persistAuthorityCheckpoint
+                        clients
+                        (authorityLoadedExpectedDigest loaded)
+                        checkpointBytes
+                    case persisted of
+                      Left detail -> pure (Left (EncryptedBackendStoreFailed detail))
+                      Right () ->
+                        finalizeAuthorityAction
+                          maybeLegacy
+                          (authorityLoadedFromLegacy loaded)
+                          actionResult
+
+loadAuthorityCheckpoint
+  :: AuthorityCheckpointClients
+  -> Maybe LegacyPulumiBackend
+  -> IO (Either String AuthorityLoadedCheckpoint)
+loadAuthorityCheckpoint clients maybeLegacy = do
+  observed <-
+    retryAuthorityCall
+      "observe registered Pulumi checkpoint"
+      authorityClientRetryAttempts
+      (observePulumiCheckpoint (authorityCheckpointClient clients))
+  case observed of
+    Left detail -> pure (Left detail)
+    Right observation -> case observation of
+      PulumiCheckpointMissing -> loadLegacyCheckpoint maybeLegacy Nothing
+      PulumiCheckpointCurrent checkpoint ->
+        pure
+          ( Right
+              AuthorityLoadedCheckpoint
+                { authorityLoadedBytes =
+                    Just (canonicalPulumiCheckpointBytes checkpoint)
+                , authorityLoadedExpectedDigest =
+                    Just (canonicalPulumiCheckpointDigest checkpoint)
+                , authorityLoadedFromLegacy = False
+                }
+          )
+      PulumiCheckpointCorrupt detail ->
+        pure (Left ("Lifecycle Authority checkpoint is corrupt: " ++ Text.unpack detail))
+      PulumiCheckpointCorruptAt _ detail ->
+        pure (Left ("Lifecycle Authority checkpoint is corrupt: " ++ Text.unpack detail))
+      PulumiCheckpointEndpointUnready detail ->
+        pure (Left ("Lifecycle Authority checkpoint endpoint is not ready: " ++ Text.unpack detail))
+      PulumiCheckpointUnobservable detail ->
+        pure (Left ("Lifecycle Authority checkpoint is unobservable: " ++ Text.unpack detail))
+
+loadLegacyCheckpoint
+  :: Maybe LegacyPulumiBackend
+  -> Maybe PulumiCheckpointDigest
+  -> IO (Either String AuthorityLoadedCheckpoint)
+loadLegacyCheckpoint maybeLegacy expected = case maybeLegacy of
+  Nothing -> pure (Right (emptyAuthorityLoaded expected))
+  Just legacy -> do
+    loaded <- exportLegacyPulumiCheckpoint legacy
+    pure $ do
+      bytes <- loaded
+      Right
+        AuthorityLoadedCheckpoint
+          { authorityLoadedBytes = bytes
+          , authorityLoadedExpectedDigest = expected
+          , authorityLoadedFromLegacy = maybe False (const True) bytes
+          }
+
+emptyAuthorityLoaded :: Maybe PulumiCheckpointDigest -> AuthorityLoadedCheckpoint
+emptyAuthorityLoaded expected =
+  AuthorityLoadedCheckpoint
+    { authorityLoadedBytes = Nothing
+    , authorityLoadedExpectedDigest = expected
+    , authorityLoadedFromLegacy = False
+    }
+
+persistAuthorityCheckpoint
+  :: AuthorityCheckpointClients
+  -> Maybe PulumiCheckpointDigest
+  -> Maybe ByteString
+  -> IO (Either String ())
+persistAuthorityCheckpoint clients expected maybeBytes = case maybeBytes of
+  Nothing -> retireAuthorityCheckpoint clients expected
+  Just bytes ->
+    case decodeCanonicalPulumiCheckpoint
+      (Set.singleton PulumiFileBackendCheckpoint)
+      pulumiCheckpointMaximumBytes
+      bytes of
+      Left detail ->
+        pure
+          ( Left
+              ( "refusing to publish a non-canonical Pulumi file-backend checkpoint: "
+                  ++ show detail
+              )
+          )
+      Right checkpoint -> publishAuthorityCheckpoint clients expected checkpoint
+
+publishAuthorityCheckpoint
+  :: AuthorityCheckpointClients
+  -> Maybe PulumiCheckpointDigest
+  -> CanonicalPulumiCheckpoint
+  -> IO (Either String ())
+publishAuthorityCheckpoint clients expected checkpoint = do
+  let candidate = canonicalPulumiCheckpointDigest checkpoint
+  operationResult <-
+    submitCheckpointOperation clients "publish" expected (Just candidate)
+  case operationResult of
+    Left detail -> pure (Left detail)
+    Right operation -> do
+      published <-
+        retryAuthorityCall
+          "publish registered Pulumi checkpoint"
+          authorityClientRetryAttempts
+          ( publishPulumiCheckpoint
+              (authorityCheckpointClient clients)
+              operation
+              expected
+              checkpoint
+          )
+      pure $ do
+        result <- published
+        case result of
+          PulumiCheckpointPublished actual
+            | actual == candidate -> Right ()
+            | otherwise -> Left "Lifecycle Authority published a different checkpoint digest"
+          PulumiCheckpointAlreadyCurrent actual
+            | actual == candidate -> Right ()
+            | otherwise -> Left "Lifecycle Authority reported a different current checkpoint digest"
+          PulumiCheckpointPublicationConflict observation ->
+            Left
+              ( "Lifecycle Authority checkpoint publication conflicted with "
+                  ++ checkpointObservationToken observation
+              )
+          PulumiCheckpointPublicationRefused detail -> Left (Text.unpack detail)
+          PulumiCheckpointPublicationUnavailable detail -> Left (Text.unpack detail)
+
+retireAuthorityCheckpoint
+  :: AuthorityCheckpointClients
+  -> Maybe PulumiCheckpointDigest
+  -> IO (Either String ())
+retireAuthorityCheckpoint clients expected = do
+  operationResult <- submitCheckpointOperation clients "retire" expected Nothing
+  case operationResult of
+    Left detail -> pure (Left detail)
+    Right operation -> do
+      retired <-
+        retryAuthorityCall
+          "retire registered Pulumi checkpoint"
+          authorityClientRetryAttempts
+          ( retirePulumiCheckpoint
+              (authorityCheckpointClient clients)
+              operation
+              expected
+          )
+      pure $ do
+        result <- retired
+        case result of
+          PulumiCheckpointAlreadyAbsent -> Right ()
+          PulumiCheckpointRetiredAndReadBack -> Right ()
+          PulumiCheckpointRetirementRefused observation ->
+            Left
+              ( "Lifecycle Authority checkpoint retirement conflicted with "
+                  ++ checkpointObservationToken observation
+              )
+          PulumiCheckpointRetirementUnavailable detail -> Left (Text.unpack detail)
+
+submitCheckpointOperation
+  :: AuthorityCheckpointClients
+  -> Text
+  -> Maybe PulumiCheckpointDigest
+  -> Maybe PulumiCheckpointDigest
+  -> IO (Either String OperationId)
+submitCheckpointOperation clients kind expected candidate =
+  case checkpointOperationIdentity
+    (authorityCheckpointRegistration clients)
+    kind
+    expected
+    candidate of
+    Left detail -> pure (Left detail)
+    Right (submissionKey, requestDigest) -> do
+      admitted <-
+        retryAuthorityCall
+          "submit registered checkpoint operation"
+          authorityClientRetryAttempts
+          ( submitAuthorityOperation
+              (authorityOperationClient clients)
+              submissionKey
+              requestDigest
+          )
+      pure $ do
+        admission <- admitted
+        Right $ case admission of
+          AuthorityOperationAdmissionAccepted operation -> operation
+          AuthorityOperationAdmissionDuplicate operation -> operation
+
+checkpointOperationIdentity
+  :: RegisteredPulumiCheckpoint
+  -> Text
+  -> Maybe PulumiCheckpointDigest
+  -> Maybe PulumiCheckpointDigest
+  -> Either String (ClientSubmissionKey, RequestDigest)
+checkpointOperationIdentity registered kind expected candidate = do
+  let fingerprint =
+        sha256Hex
+          ( TextEncoding.encodeUtf8
+              ( Text.intercalate
+                  "\NUL"
+                  [ "pulumi-checkpoint-operation-v1"
+                  , registeredPulumiCheckpointName registered
+                  , kind
+                  , maybe "absent" pulumiCheckpointDigestText expected
+                  , maybe "absent" pulumiCheckpointDigestText candidate
+                  ]
+              )
+          )
+  submissionKey <-
+    mapLeft
+      (\err -> "construct stable checkpoint submission key: " ++ show err)
+      (mkClientSubmissionKey ("pulumi-checkpoint-v1-" <> fingerprint))
+  Right (submissionKey, RequestDigest ("sha256-" <> fingerprint))
+
+retryAuthorityCall
+  :: (Show err)
+  => String
+  -> Int
+  -> IO (Either err value)
+  -> IO (Either String value)
+retryAuthorityCall label maximumAttempts call = go maximumAttempts
+ where
+  go remaining = do
+    attempted <- call
+    case attempted of
+      Right value -> pure (Right value)
+      Left err
+        | remaining > 1 -> go (remaining - 1)
+        | otherwise -> pure (Left (label ++ " failed after bounded retry: " ++ show err))
+
+authorityClientRetryAttempts :: Int
+authorityClientRetryAttempts = 3
+
+checkpointObservationToken :: PulumiCheckpointObservation -> String
+checkpointObservationToken observation = case observation of
+  PulumiCheckpointMissing -> "an absent checkpoint"
+  PulumiCheckpointCurrent _ -> "a different current checkpoint"
+  PulumiCheckpointCorrupt _ -> "a corrupt checkpoint"
+  PulumiCheckpointCorruptAt _ _ -> "a corrupt checkpoint"
+  PulumiCheckpointEndpointUnready _ -> "an endpoint-unready checkpoint"
+  PulumiCheckpointUnobservable _ -> "an unobservable checkpoint"
+
+finalizeAuthorityAction
+  :: Maybe LegacyPulumiBackend
+  -> Bool
+  -> Either String a
+  -> IO (Either EncryptedBackendError a)
+finalizeAuthorityAction maybeLegacy migratedFromLegacy actionResult =
+  case actionResult of
+    Left detail -> pure (Left (EncryptedBackendActionFailed detail))
+    Right value
+      | not migratedFromLegacy -> pure (Right value)
+      | otherwise -> case maybeLegacy of
+          Nothing ->
+            pure
+              ( Left
+                  ( EncryptedBackendLegacyDeleteFailed
+                      "checkpoint recorded a legacy migration without a legacy backend"
+                  )
+              )
+          Just legacy -> do
+            deleted <- removeLegacyPulumiStack legacy
+            pure $ case deleted of
+              Left detail -> Left (EncryptedBackendLegacyDeleteFailed detail)
+              Right () -> Right value
+
+sha256Hex :: ByteString -> Text
+sha256Hex = Text.pack . concatMap byteHex . BS.unpack . SHA256.hash
+ where
+  byteHex byte =
+    let rendered = showHex byte ""
+     in if length rendered == 1 then '0' : rendered else rendered
+
 withDecryptedStackWith
   :: EncryptedBackendHooks a
   -> PulumiStackRef
@@ -473,23 +957,64 @@ withDecryptedStackWith hooks stackRef action = do
 -- or re-storing the object (it must not mutate teardown state just to
 -- observe it). Resolves the same Vault-backed material as
 -- 'withDecryptedStack', then classifies the loaded bytes purely.
--- The host-direct fallback for the residue OBSERVE is applied by the caller
--- ('Prodbox.Lifecycle.LiveResidue.observePerRunWithSharedFallback'), which
--- batches all per-run stacks under ONE shared port-forward (so a degraded daemon
--- costs at most one root-token load + one port-forward across the query). This
--- daemon-only observe stays the base primitive.
+-- Observation uses the same caller-bound Authority client as mutation. A
+-- transport failure remains fail-closed; callers cannot recover by selecting
+-- or reading an underlying object-store coordinate.
 observeStackCheckpoint
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> IO (Either EncryptedBackendError CheckpointObservability)
-observeStackCheckpoint _repoRoot stackRef = do
-  endpoint <- pulumiObjectGatewayEndpoint
-  observeStackCheckpointWith (productionHooks endpoint) stackRef
+observeStackCheckpoint authentication _repoRoot stackRef =
+  withAuthorityCheckpointTransport authentication stackRef observeWithClients
+ where
+  observeWithClients = observeAuthorityCheckpointObservability
 
--- | Sprint 7.22: delete one per-run stack's encrypted Model-B checkpoint
--- object from the object-store through the daemon object-store API. The daemon
--- resolves Vault material with Kubernetes auth and reaches MinIO in-cluster, so
--- the host does not open a MinIO port-forward on the supported prune path.
+observeStackCheckpointAuthenticated
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> PulumiStackRef
+  -> IO (Either EncryptedBackendError CheckpointObservability)
+observeStackCheckpointAuthenticated transport stackRef =
+  case authorityCheckpointClients transport stackRef of
+    Left detail -> pure (Left (EncryptedBackendLoadFailed detail))
+    Right clients -> observeAuthorityCheckpointObservability clients
+
+observeAuthorityCheckpointObservability
+  :: AuthorityCheckpointClients
+  -> IO (Either EncryptedBackendError CheckpointObservability)
+observeAuthorityCheckpointObservability clients = do
+  observed <-
+    retryAuthorityCall
+      "observe registered Pulumi checkpoint"
+      authorityClientRetryAttempts
+      (observePulumiCheckpoint (authorityCheckpointClient clients))
+  pure $ case observed of
+    Left detail -> Left (EncryptedBackendLoadFailed detail)
+    Right PulumiCheckpointMissing -> Right CheckpointAbsent
+    Right (PulumiCheckpointCurrent checkpoint) ->
+      Right
+        ( classifyCheckpointBytes
+            (Just (canonicalPulumiCheckpointBytes checkpoint))
+        )
+    Right (PulumiCheckpointCorrupt detail) ->
+      Right (CheckpointCorrupt (Text.unpack detail))
+    Right (PulumiCheckpointCorruptAt _ detail) ->
+      Right (CheckpointCorrupt (Text.unpack detail))
+    Right (PulumiCheckpointEndpointUnready detail) ->
+      Left
+        ( EncryptedBackendLoadFailed
+            ("Lifecycle Authority checkpoint endpoint is not ready: " ++ Text.unpack detail)
+        )
+    Right (PulumiCheckpointUnobservable detail) ->
+      Left
+        ( EncryptedBackendLoadFailed
+            ("Lifecycle Authority checkpoint is unobservable: " ++ Text.unpack detail)
+        )
+
+-- | Retire one per-run stack's registered checkpoint through the Lifecycle
+-- Authority. The predecessor digest is re-observed immediately before the
+-- retirement operation is admitted, so prune cannot become an arbitrary blob
+-- deletion or race a successor publication.
 -- This is the prune primitive behind
 -- @prodbox aws stack \<stack> prune-corrupt-checkpoint@; the caller
 -- ('Prodbox.Lifecycle.LiveResidue.pruneCorruptPerRunCheckpoint') first
@@ -497,33 +1022,41 @@ observeStackCheckpoint _repoRoot stackRef = do
 -- (non-empty, unparseable) or empty checkpoint — never for a present one,
 -- which would orphan live AWS resources.
 pruneLogicalPulumiStack
-  :: FilePath
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> PulumiStackRef
   -> IO (Either EncryptedBackendError ())
-pruneLogicalPulumiStack repoRoot stackRef = do
-  endpoint <- pulumiObjectGatewayEndpoint
-  deleteResult <- GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
-  case deleteResult of
-    Right () -> pure (Right ())
-    -- Daemon delete failed: retry host-directly under one port-forward. Only the
-    -- combined daemon+host failure surfaces as 'EncryptedBackendDeleteFailed'.
-    -- Sprint: host-direct fallback.
-    Left gatewayErr -> do
-      let daemonDetail = GatewayClient.renderGatewayError gatewayErr
-      materialResult <- resolveHostDirectPulumiMaterial repoRoot
-      case materialResult of
-        Left matErr ->
-          pure (Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail matErr)))
-        Right material -> do
-          pfResult <-
-            withHostDirectPulumiPortForward material $ \handle ->
-              hostDirectDeletePulumiObject handle (pulumiStackName stackRef)
-          pure $ case pfResult of
-            Left pfErr ->
-              Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail pfErr))
-            Right (Left hostErr) ->
-              Left (EncryptedBackendDeleteFailed (combinedFallbackError "delete" daemonDetail hostErr))
-            Right (Right ()) -> Right ()
+pruneLogicalPulumiStack authentication _repoRoot stackRef =
+  withAuthorityCheckpointTransport authentication stackRef $ \clients -> do
+    observed <-
+      retryAuthorityCall
+        "observe checkpoint before retirement"
+        authorityClientRetryAttempts
+        (observePulumiCheckpoint (authorityCheckpointClient clients))
+    case observed of
+      Left detail -> pure (Left (EncryptedBackendDeleteFailed detail))
+      Right PulumiCheckpointMissing -> pure (Right ())
+      Right (PulumiCheckpointCorruptAt digest _) -> do
+        retired <- retireAuthorityCheckpoint clients (Just digest)
+        pure (mapLeft EncryptedBackendDeleteFailed retired)
+      Right (PulumiCheckpointCorrupt _) ->
+        pure
+          ( Left
+              ( EncryptedBackendDeleteFailed
+                  "corrupt checkpoint observation did not carry its Authority predecessor digest"
+              )
+          )
+      Right (PulumiCheckpointCurrent _) ->
+        pure
+          ( Left
+              ( EncryptedBackendDeleteFailed
+                  "refusing to prune a valid current Pulumi checkpoint"
+              )
+          )
+      Right (PulumiCheckpointEndpointUnready detail) ->
+        pure (Left (EncryptedBackendDeleteFailed (Text.unpack detail)))
+      Right (PulumiCheckpointUnobservable detail) ->
+        pure (Left (EncryptedBackendDeleteFailed (Text.unpack detail)))
 
 -- | Hooks-driven read-only observability query (testable seam). Runs the
 -- Vault gate, loads the encrypted-or-legacy checkpoint bytes, and applies
@@ -658,6 +1191,83 @@ collectScratchCheckpoint scratch = do
       readResult <- tryRead (pulumiScratchCheckpointPath scratch)
       pure (Just <$> readResult)
 
+-- | Convert the exact bounded @pulumi stack export@ bytes obtained by the
+-- one-shot Admin Action Runner into the normal file-backend checkpoint shape.
+-- Conversion happens in fresh RAM scratch and requires no AWS or retained-store
+-- credential.  The Lifecycle Authority can therefore publish only bytes whose
+-- raw source digest was verified against the signed permit, without acquiring
+-- the legacy backend credential itself.
+canonicalizeLegacyPulumiCheckpoint
+  :: LegacyPulumiBackend
+  -> PulumiStackRef
+  -> ByteString
+  -> IO (Either EncryptedBackendError CanonicalPulumiCheckpoint)
+canonicalizeLegacyPulumiCheckpoint legacy stackRef sourceBytes =
+  case decodeCanonicalPulumiCheckpoint
+    (Set.singleton PulumiLegacyExportCheckpoint)
+    pulumiCheckpointMaximumBytes
+    sourceBytes of
+    Left err -> pure (Left (EncryptedBackendHydrateFailed (show err)))
+    Right canonicalSource ->
+      withRamScratch stackRef $ \scratch -> do
+        let importPath = pulumiScratchRoot scratch </> "legacy-export.json"
+            scratchLegacy =
+              legacy
+                { legacyPulumiEnvironment =
+                    fileBackendEnvironment scratch (legacyPulumiEnvironment legacy)
+                }
+        written <-
+          tryWrite importPath (Just (canonicalPulumiCheckpointBytes canonicalSource))
+        case written of
+          Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+          Right () -> do
+            loggedIn <-
+              runLegacyPulumiExit
+                "pulumi login against migration scratch backend"
+                scratchLegacy
+                ["login", pulumiScratchBackendUrl scratch]
+            case loggedIn of
+              Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+              Right _ -> do
+                initialized <-
+                  runLegacyPulumiExit
+                    "pulumi stack init in migration scratch backend"
+                    scratchLegacy
+                    ["stack", "init", Text.unpack (pulumiStackName stackRef)]
+                case initialized of
+                  Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+                  Right _ -> do
+                    imported <-
+                      runLegacyPulumiExit
+                        "pulumi stack import into migration scratch backend"
+                        scratchLegacy
+                        [ "stack"
+                        , "import"
+                        , "--stack"
+                        , Text.unpack (pulumiStackName stackRef)
+                        , "--file"
+                        , importPath
+                        ]
+                    case imported of
+                      Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
+                      Right _ -> do
+                        collected <- collectScratchCheckpoint scratch
+                        pure $ case collected of
+                          Left detail -> Left (EncryptedBackendCollectFailed detail)
+                          Right Nothing ->
+                            Left
+                              ( EncryptedBackendCollectFailed
+                                  "legacy import produced no file-backend checkpoint"
+                              )
+                          Right (Just bytes) ->
+                            mapLeft
+                              (EncryptedBackendCollectFailed . show)
+                              ( decodeCanonicalPulumiCheckpoint
+                                  (Set.singleton PulumiFileBackendCheckpoint)
+                                  pulumiCheckpointMaximumBytes
+                                  bytes
+                              )
+
 stackCheckpointPath :: FilePath -> PulumiStackRef -> FilePath
 stackCheckpointPath scratchRoot stackRef =
   scratchRoot
@@ -693,143 +1303,6 @@ fileBackendEnvironment scratch =
     , "AWS_DEFAULT_REGION"
     , "PULUMI_CONFIG_PASSPHRASE"
     ]
-
-deleteLogicalPulumiStackWith
-  :: ObjectStoreConfig
-  -> ByteString
-  -> PulumiStackRef
-  -> IO (Either String ())
-deleteLogicalPulumiStackWith config hmacKey stackRef =
-  deleteObject config (logicalPulumiObjectKey hmacKey stackRef)
-
--- | The daemon-mediated object-store ops retry on TRANSIENT transport failures
--- ('GatewayClient.retryGatewayTransient'): this no-fallback hook set is used by
--- 'observeStackCheckpoint' and the per-run postflight destroys, which run during
--- the destructive Phase 1.6 chart cycle that rolls the gateway Deployments — so
--- a read/delete can hit the daemon mid-restart and get @Connection refused@.
--- Bridge that window rather than surfacing 'EncryptedBackendLoadFailed'. (The
--- host-direct fallback variant below overrides these with its own daemon-first,
--- MinIO-fallback ops and so does not need the retry.)
-productionHooks :: PeerEndpoint -> EncryptedBackendHooks a
-productionHooks endpoint =
-  EncryptedBackendHooks
-    { encryptedBackendGate = pure VaultGateProceed
-    , encryptedBackendLoad = \stackRef ->
-        mapLeft GatewayClient.renderGatewayError
-          <$> GatewayClient.retryGatewayTransient
-            GatewayClient.daemonRestartBridgeRetryPolicy
-            (GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef))
-    , encryptedBackendLoadLegacy = \_ -> pure (Right Nothing)
-    , encryptedBackendStore = \stackRef bytes ->
-        mapLeft GatewayClient.renderGatewayError
-          <$> GatewayClient.retryGatewayTransient
-            GatewayClient.daemonRestartBridgeRetryPolicy
-            (GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes)
-    , encryptedBackendDelete =
-        \stackRef ->
-          mapLeft GatewayClient.renderGatewayError
-            <$> GatewayClient.retryGatewayTransient
-              GatewayClient.daemonRestartBridgeRetryPolicy
-              (GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef))
-    , encryptedBackendDeleteLegacy = \_ -> pure (Right ())
-    , encryptedBackendWithScratch = withRamScratch
-    }
-
--- | Daemon-first, host-direct-fallback hooks (Sprint: host-direct fallback).
--- Identical to 'productionHooks' except that the three object-store ops
--- (load\/store\/delete) try the in-cluster gateway daemon first and, only on a
--- daemon failure ('Left'), retry the same logical op host-directly through the
--- supplied 'HostDirectPulumiHandle' (an already-open MinIO port-forward). A
--- daemon @Right _@ — including @Right Nothing@ (a positively-absent object) —
--- short-circuits and never triggers the fallback. The gate, scratch, and legacy
--- seams are inherited unchanged (per-run stacks have no legacy backend).
-productionHooksWithHostFallback :: PeerEndpoint -> HostDirectPulumiHandle -> EncryptedBackendHooks a
-productionHooksWithHostFallback endpoint handle =
-  (productionHooks endpoint)
-    { encryptedBackendLoad = \stackRef ->
-        withDaemonFirstFallback
-          "load"
-          ( mapLeft GatewayClient.renderGatewayError
-              <$> GatewayClient.getPulumiObject endpoint (pulumiStackName stackRef)
-          )
-          (hostDirectGetPulumiObject handle (pulumiStackName stackRef))
-    , encryptedBackendStore = \stackRef bytes ->
-        withDaemonFirstFallback
-          "store"
-          ( mapLeft GatewayClient.renderGatewayError
-              <$> GatewayClient.putPulumiObject endpoint (pulumiStackName stackRef) bytes
-          )
-          (hostDirectPutPulumiObject handle (pulumiStackName stackRef) bytes)
-    , encryptedBackendDelete = \stackRef ->
-        withDaemonFirstFallback
-          "delete"
-          ( mapLeft GatewayClient.renderGatewayError
-              <$> GatewayClient.deletePulumiObject endpoint (pulumiStackName stackRef)
-          )
-          (hostDirectDeletePulumiObject handle (pulumiStackName stackRef))
-    }
-
--- | Run the daemon op; only on a daemon failure ('Left', both errors already
--- rendered to 'String') run the host-direct op. A daemon @Right value@ (absence
--- included) is returned immediately. When both fail, the combined detail names
--- both, so the surfaced error is fail-closed and actionable. Polymorphic in the
--- op's success type (@Maybe ByteString@ for load, @()@ for store\/delete).
-withDaemonFirstFallback
-  :: String
-  -> IO (Either String r)
-  -> IO (Either String r)
-  -> IO (Either String r)
-withDaemonFirstFallback context daemonOp hostOp = do
-  daemonResult <- daemonOp
-  case daemonResult of
-    Right value -> pure (Right value)
-    Left daemonErr -> do
-      hostResult <- hostOp
-      pure $ case hostResult of
-        Right value -> Right value
-        Left hostErr -> Left (combinedFallbackError context daemonErr hostErr)
-
--- | Retry an object-store-backed action host-directly after the daemon LOAD
--- failed. Resolves the host-direct material and opens ONE MinIO port-forward;
--- @run@ executes the full flow with 'productionHooksWithHostFallback' inside that
--- forward (its own hooks combine the daemon+host detail on a host failure).
--- The first-attempt daemon detail is folded in only when the host MATERIAL or
--- the port-forward itself is unavailable.
-retryLoadWithHostFallback
-  :: FilePath
-  -> String
-  -> (HostDirectPulumiHandle -> IO (Either EncryptedBackendError a))
-  -> IO (Either EncryptedBackendError a)
-retryLoadWithHostFallback repoRoot daemonDetail run = do
-  materialResult <- resolveHostDirectPulumiMaterial repoRoot
-  case materialResult of
-    Left matErr ->
-      pure (Left (EncryptedBackendLoadFailed (combinedFallbackError "load" daemonDetail matErr)))
-    Right material -> do
-      pfResult <- withHostDirectPulumiPortForward material run
-      pure $ case pfResult of
-        Left pfErr -> Left (EncryptedBackendLoadFailed (combinedFallbackError "load" daemonDetail pfErr))
-        Right result -> result
-
--- | The operator-visible detail when the daemon object-store op and its
--- host-direct MinIO fallback both fail — names both so the residue status line
--- explains the whole picture rather than a bare @503@.
-combinedFallbackError :: String -> String -> String -> String
-combinedFallbackError context daemonDetail hostDetail =
-  "gateway daemon object-store "
-    ++ context
-    ++ " failed ("
-    ++ daemonDetail
-    ++ "); host-direct MinIO fallback also failed ("
-    ++ hostDetail
-    ++ ")"
-
-productionHooksWithLegacy :: LegacyPulumiBackend -> PeerEndpoint -> EncryptedBackendHooks a
-productionHooksWithLegacy legacy endpoint =
-  (productionHooks endpoint)
-    { encryptedBackendLoadLegacy = \_ -> exportLegacyPulumiCheckpoint legacy
-    , encryptedBackendDeleteLegacy = \_ -> removeLegacyPulumiStack legacy
-    }
 
 exportLegacyPulumiCheckpoint :: LegacyPulumiBackend -> IO (Either String (Maybe ByteString))
 exportLegacyPulumiCheckpoint legacy =
@@ -1000,25 +1473,6 @@ removeCheckpointTemp (path, handle) = do
   _ <- try (removeFile path) :: IO (Either IOException ())
   pure ()
 
-pulumiObjectGatewayEndpoint :: IO PeerEndpoint
-pulumiObjectGatewayEndpoint = do
-  override <- lookupEnv "PRODBOX_TEST_GATEWAY_NODEPORT"
-  pure
-    ( GatewayClient.hostLoopbackGatewayEndpoint
-        (maybe defaultPulumiGatewayNodePort parseGatewayNodePort override)
-    )
-
--- Kept local to avoid importing Prodbox.Host into the Pulumi layer; Host depends
--- on PublicEdge -> LiveResidue -> StackOutputs -> EncryptedBackend.
-defaultPulumiGatewayNodePort :: Int
-defaultPulumiGatewayNodePort = 30443
-
-parseGatewayNodePort :: String -> Int
-parseGatewayNodePort raw =
-  case reads raw of
-    [(port, "")] | port > 0 -> port
-    _ -> defaultPulumiGatewayNodePort
-
 withRamScratch
   :: PulumiStackRef
   -> (PulumiScratch -> IO (Either EncryptedBackendError a))
@@ -1035,14 +1489,6 @@ withRamScratch stackRef action = do
   if shmExists
     then runWith "/dev/shm"
     else withSystemTempDirectory "prodbox-pulumi-" (action . scratchAt)
-
-logicalPulumiStack :: PulumiStackRef -> LogicalObject
-logicalPulumiStack stackRef =
-  LogicalPulumiStack (pulumiStackName stackRef)
-
-logicalPulumiObjectKey :: ByteString -> PulumiStackRef -> Text
-logicalPulumiObjectKey hmacKey =
-  objectKeyForOpaqueId . opaqueObjectId hmacKey . logicalPulumiStack
 
 tryWrite :: FilePath -> Maybe ByteString -> IO (Either String ())
 tryWrite path Nothing = do

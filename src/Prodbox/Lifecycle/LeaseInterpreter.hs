@@ -156,6 +156,10 @@ acquireLeaseDetailedWith interpreter policy request = acquireLoop Nothing
           case casResult of
             ModelBCasApplied _ _ -> confirmAfterCas maybeRecovery
             ModelBCasConflict _ -> retryAfter maybeRecovery now
+            -- A transient endpoint-unready CAS is retried within the acquire
+            -- deadline (the conditional write re-observes the expected version
+            -- first, so retry is safe), never failed closed as a terminal loss.
+            ModelBCasEndpointUnready _ -> retryAfter maybeRecovery now
             ModelBCasRefusedCorrupt detail ->
               pure (Left (LeaseExecutionCasCorrupt detail))
             ModelBCasUnobservable detail ->
@@ -330,6 +334,17 @@ releaseLeaseWith interpreter policy coordinate grant = do
                     Left detail ->
                       pure (Left (LeaseExecutionClockUnobservable detail))
                     Right () -> releaseLoop deadline
+                -- Transient endpoint-unready is retried within the release
+                -- deadline, exactly like a conflict, never failed closed.
+                ModelBCasEndpointUnready _ -> do
+                  waited <-
+                    leaseInterpreterWaitUntil
+                      interpreter
+                      (min deadline (nextAuthorityTick now))
+                  case waited of
+                    Left detail ->
+                      pure (Left (LeaseExecutionClockUnobservable detail))
+                    Right () -> releaseLoop deadline
                 ModelBCasRefusedCorrupt detail ->
                   pure (Left (LeaseExecutionCasCorrupt detail))
                 ModelBCasUnobservable detail ->
@@ -343,6 +358,7 @@ recoveryPredecessor policy observation =
   case observation of
     ModelBMissing -> Left LeaseAuthorityMissing
     ModelBCorrupt detail -> Left (LeaseAuthorityCorrupt detail)
+    ModelBEndpointUnready detail -> Left (LeaseAuthorityEndpointUnready detail)
     ModelBUnobservable detail -> Left (LeaseAuthorityUnobservable detail)
     ModelBObserved _ projection ->
       case leaseProjectionRecoveryPredecessor policy projection of

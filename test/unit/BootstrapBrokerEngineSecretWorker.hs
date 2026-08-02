@@ -87,7 +87,7 @@ engineSecretWorkerSuite =
         events <- harnessEvents harness
         lifecycleEvents events
           `shouldBe` [WorkerRan, SessionRevoked, ProcessExited, PodDeleted, PodAbsent]
-        checkpointWrites events `shouldBe` 6
+        checkpointWrites events `shouldBe` 7
         countEvent WorkerRecovered events `shouldBe` 0
 
     it "resumes exactly the next action from every receipt checkpoint" $ do
@@ -157,6 +157,54 @@ engineSecretWorkerSuite =
             events <- harnessEvents harness
             countEvent WorkerRan events `shouldBe` 1
             countEvent WorkerRecovered events `shouldBe` 1
+
+    it "re-observes the fixed Pod after its create response is lost and binds the API UID once" $ do
+      let request =
+            workerRequest
+              "lost-create-response"
+              '7'
+              SecretWorkerInitialize
+              canonicalFence
+      harness <-
+        newHarness LoseCreateResponse [request] Nothing healthyTimes
+      first <-
+        drive
+          harness
+          SecretWorkerControllerRestarted
+          SecretWorkerInitialize
+          canonicalFence
+          (vaultPermitFor canonicalFence SecretWorkerInitialize)
+          (unexpectedRunner harness)
+          (unexpectedRecovery harness)
+      first
+        `shouldBe` Left
+          (EngineSecretWorkerBoundaryRefused WorkloadCreateResponseLost)
+      firstCheckpoint <- currentCheckpoint harness
+      case firstCheckpoint of
+        Nothing -> expectationFailure "expected durable worker intent"
+        Just (_, _, checkpoint) -> do
+          secretWorkerCheckpointIntent checkpoint
+            `shouldBe` Right (secretWorkerRequestIntent request)
+          secretWorkerCheckpointRequest checkpoint
+            `shouldBe` Left SecretWorkerRecoveryPodUidUnbound
+      second <-
+        drive
+          harness
+          SecretWorkerControllerRestarted
+          SecretWorkerInitialize
+          canonicalFence
+          (vaultPermitFor canonicalFence SecretWorkerInitialize)
+          (successfulRunner harness request)
+          (unexpectedRecovery harness)
+      case second of
+        Left failure -> expectationFailure (show failure)
+        Right (receipt, "executed") ->
+          assertCompletedCheckpoint harness request receipt
+        Right success -> expectationFailure ("unexpected result: " ++ show success)
+      events <- harnessEvents harness
+      countEvent WorkerAllocated events `shouldBe` 1
+      countEvent WorkloadCreated events `shouldBe` 2
+      countEvent WorkerRan events `shouldBe` 1
 
     it "refuses an authoritative result with a wrong constructor or stale binding" $ do
       let request =
@@ -442,7 +490,7 @@ engineSecretWorkerSuite =
           NoFault
           [request]
           Nothing
-          [freshNow, deadlineNow]
+          [freshNow, freshNow, deadlineNow]
       result <-
         drive
           harness
@@ -458,7 +506,7 @@ engineSecretWorkerSuite =
       events <- harnessEvents harness
       countEvent WorkerRan events `shouldBe` 0
       countEvent WorkerDiscarded events `shouldBe` 1
-      checkpointWrites events `shouldBe` 1
+      checkpointWrites events `shouldBe` 2
 
     it "refuses a fence clock crossing before transfer with effect count zero" $ do
       let request =
@@ -495,7 +543,7 @@ engineSecretWorkerSuite =
       events <- harnessEvents harness
       countEvent WorkerRan events `shouldBe` 0
       countEvent WorkerDiscarded events `shouldBe` 1
-      checkpointWrites events `shouldBe` 1
+      checkpointWrites events `shouldBe` 2
 
     it "rechecks time for cleanup CAS and stops before the next physical mutation" $ do
       let request = workerRequest "late-cleanup" '6' SecretWorkerInitialize canonicalFence
@@ -504,7 +552,7 @@ engineSecretWorkerSuite =
           NoFault
           [request]
           Nothing
-          [freshNow, freshNow, freshNow, deadlineNow]
+          [freshNow, freshNow, freshNow, freshNow, deadlineNow]
       result <-
         drive
           harness
@@ -517,7 +565,7 @@ engineSecretWorkerSuite =
       result `shouldBe` Left EngineSecretWorkerCheckpointPermitDeadlineElapsed
       events <- harnessEvents harness
       lifecycleEvents events `shouldBe` [WorkerRan, SessionRevoked]
-      countEvent CheckpointCased events `shouldBe` 1
+      countEvent CheckpointCased events `shouldBe` 2
 
     it "never reports completion until authoritative absence is checkpointed and read back" $ do
       let request = workerRequest "absence" '7' SecretWorkerInitialize canonicalFence
@@ -573,6 +621,8 @@ engineSecretWorkerSuite =
 
 data TestBoundaryError
   = NoAllocatedRequest
+  | UnexpectedAllocatedRequest
+  | WorkloadCreateResponseLost
   | UnexpectedWorkerRun
   | UnexpectedReceiptRecovery
   | PermitCouldNotBeMinted
@@ -587,6 +637,7 @@ data CleanupPoint
 
 data Fault
   = NoFault
+  | LoseCreateResponse
   | LoseReceiptCheckpointResponse
   | LoseAbsentCheckpointResponse
   | AttestationUnobservable
@@ -690,12 +741,23 @@ boundaryFor harness =
     { observeSecretWorkerMonotonicNow = do
         recordEvent harness ClockObserved
         Right <$> takeTime harness
-    , allocateSecretWorkerRequest = \_operation _fence -> do
+    , allocateSecretWorkerIntent = \_operation _fence -> do
         recordEvent harness WorkerAllocated
-        takeRequest harness
-    , createSecretWorkerWorkload = \_request -> do
+        fmap secretWorkerRequestIntent <$> peekRequest harness
+    , createSecretWorkerWorkload = \intent -> do
         recordEvent harness WorkloadCreated
-        pure (Right ())
+        fault <- stateFault <$> readIORef harness
+        case fault of
+          LoseCreateResponse -> do
+            modifyIORef' harness $ \state -> state {stateFault = NoFault}
+            pure (Left WorkloadCreateResponseLost)
+          _ -> do
+            requestResult <- takeRequest harness
+            pure $ do
+              request <- requestResult
+              if secretWorkerRequestIntent request == intent
+                then Right request
+                else Left UnexpectedAllocatedRequest
     , observeSecretWorkerAttestation = \request -> do
         recordEvent harness AttestationObserved
         fault <- stateFault <$> readIORef harness
@@ -891,6 +953,14 @@ takeRequest harness = do
       modifyIORef' harness $ \current ->
         current {stateRequests = remaining}
       pure (Right request)
+
+peekRequest
+  :: Harness -> IO (Either TestBoundaryError SecretFreeWorkerRequest)
+peekRequest harness = do
+  requests <- stateRequests <$> readIORef harness
+  pure $ case requests of
+    [] -> Left NoAllocatedRequest
+    request : _ -> Right request
 
 takeTime :: Harness -> IO MonotonicInstant
 takeTime harness = do
@@ -1128,6 +1198,7 @@ effectFor operation = case operation of
   SecretWorkerUnseal -> BootstrapVaultSubmitUnsealShare
   SecretWorkerRotateUnlockBundle -> BootstrapVaultRotateUnlockBundle
   SecretWorkerRotateTransitKey -> BootstrapVaultRotateTransitKey
+  SecretWorkerCompleteGeneratedRoot -> BootstrapVaultSubmitGenerateRootShare
 
 outcomeFor :: SecretWorkerOperation -> SecretWorkerOutcome
 outcomeFor operation = case operation of
@@ -1138,6 +1209,7 @@ outcomeFor operation = case operation of
   SecretWorkerUnseal -> SecretWorkerUnsealed
   SecretWorkerRotateUnlockBundle -> SecretWorkerUnlockBundleRotated
   SecretWorkerRotateTransitKey -> SecretWorkerTransitKeyRotated
+  SecretWorkerCompleteGeneratedRoot -> SecretWorkerGeneratedRootCompleted
 
 driverTestOperations :: [SecretWorkerOperation]
 driverTestOperations =

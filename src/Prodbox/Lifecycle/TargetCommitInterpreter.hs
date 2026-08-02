@@ -247,6 +247,8 @@ compactAllTerminalIntents interpreter registered coordinate =
       ModelBMissing -> pure (Right ())
       ModelBCorrupt detail ->
         pure (Left (TargetCommitCompactionNotConfirmed detail))
+      ModelBEndpointUnready detail ->
+        pure (Left (TargetCommitCompactionNotConfirmed detail))
       ModelBUnobservable detail ->
         pure (Left (TargetCommitCompactionNotConfirmed detail))
       ModelBObserved _ projection ->
@@ -318,6 +320,8 @@ runSuccessorTargetRecoveryAfter recovery registered coordinate policy recoveryNo
       case initial of
         ModelBMissing -> pure (Right TargetRecoveryRunAlreadyResolved)
         ModelBCorrupt detail ->
+          pure (Left (TargetCommitCompactionNotConfirmed detail))
+        ModelBEndpointUnready detail ->
           pure (Left (TargetCommitCompactionNotConfirmed detail))
         ModelBUnobservable detail ->
           pure (Left (TargetCommitCompactionNotConfirmed detail))

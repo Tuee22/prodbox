@@ -163,6 +163,17 @@ or a wildcard anchored at a zone the operator has not delegated in config, is re
 constructors plus fail-fast config validation. The default configured scope set is the selected
 substrate's exact served host, so there is no behavior change until an operator widens scope.
 
+### Serving-level validation
+
+`prodbox test integration certificate-scope --substrate <home-local|aws>` proves the certificate
+at the serving boundary. After the typed public-edge prerequisite, it performs a real HTTPS request,
+opens a hostname-verifying TLS handshake with SNI, extracts the leaf certificate through OpenSSL,
+and compares its canonical DNS subjectAltName set with the exact `CertScopeSet` projection. A
+cert-manager `Ready` condition is insufficient, and a certificate that merely covers the listener
+while presenting a broader or narrower SAN set fails. Wildcards remain certificate scopes only;
+the validation probes the substrate's explicit bound hostname and does not invent wildcard-derived
+listeners or DNS records.
+
 ### Coverage and narrowing semantics
 
 A wildcard scope must be anchored at a config-declared delegated zone (the home parent zone or

@@ -194,7 +194,7 @@ gatewayBoundedSuite =
         readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
       let probeSurface =
             sourceBetween
-              "dispatchGatewayRoute sock env now rawRequest route = case route of"
+              "dispatchGatewayRoute sock env now route = case route of"
               "  RouteMetrics -> do"
               daemonSource
       probeSurface `shouldContain` "RouteHealthz"

@@ -16,25 +16,29 @@
 --
 -- The builders are pure/monad-generic over the injected repositories, so an
 -- in-memory fixture drives every route/arm through the seam without a live cluster,
--- Vault, or object store. Supplying the concrete production repositories (over the
--- role's Kubernetes-auth Vault session and in-cluster MinIO Service DNS) and
--- installing the built interpreter in @runControlPlaneRole@ over a real socket
--- remain the live-coupled follow-ons (Standard O), exactly as for the endpoints.
+-- Vault, or object store. The executable runtime supplies the Lifecycle Authority's
+-- concrete Kubernetes-auth Vault / in-cluster MinIO repositories; the other role
+-- compositions remain independently injectable.
 --
--- Only the roles whose every owned route already has both a landed request handler
--- and a landed @(status, summary)@ projection get a complete builder here: the
--- Lifecycle Authority (@migration/apply@ + @operations/submit@ +
--- @operations/observe@), TLS Retention (@store@ + @restore@), Authority Backup
--- (@copy@ + @observe@), and the Provider Worker (@apply@ + @observe@). Only the
--- Target Secret Agent's @complete@ arm (deliberately opaque so a @complete@ request
--- cannot reconstruct a readback — Standard-O agent binding) is not yet landed, so
--- that single role keeps the shared fail-closed interpreter rather than a
--- partially-bound one.
+-- Every role whose endpoint algebra is landed has a complete builder here.
+-- Target material installation is intentionally absent: the standing Target
+-- Agent exposes only authenticated, arm-specific metadata and one-shot worker
+-- coordination handlers composed by the production runtime.
 module Prodbox.ControlPlane.RoleInterpreters
   ( lifecycleAuthorityInterpreter
+  , lifecycleAuthorityAdmissionInterpreter
+  , lifecycleAuthorityAdmissionAuthenticatedHandler
+  , LifecycleAuthorityDecommissionInputs (..)
+  , lifecycleAuthorityDecommissionAuthenticatedHandler
+  , lifecycleAuthorityTlsRetentionAuthenticatedHandler
+  , lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
   , tlsRetentionInterpreter
   , authorityBackupInterpreter
   , providerWorkerInterpreter
+  , targetSecretAgentTlsAuthenticatedHandler
+  , TargetSecretAgentDecommissionInputs (..)
+  , targetSecretAgentDecommissionAuthenticatedHandler
+  , targetSecretAgentAdminActionAuthenticatedHandler
   )
 where
 
@@ -42,29 +46,84 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TextEncoding
+import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
+  ( AdminActionAuthorityExecutionBoundary
+  , AdminActionEffectRepository
+  , adminActionAuthorityExecutionResponseBody
+  , adminActionAuthorityExecutionResponseStatus
+  , serveAdminActionAuthorityExecutionRequest
+  )
+import Prodbox.ControlPlane.AdminActionTargetEndpoint
+  ( AdminActionTargetVerification (..)
+  , adminActionTargetResponseBody
+  , adminCustodyTombstoneResponseStatus
+  , adminTargetTombstoneResponseStatus
+  , serveAdminCustodyTombstoneRequest
+  , serveAdminTargetTombstoneRequest
+  )
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRoleHandler (..)
+  )
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+  ( AuthorityAdmissionRepository
+  , authorityOperationObserveHttpStatus
+  , authorityOperationObserveResponseBody
+  , authorityOperationSubmitHttpStatus
+  , authorityOperationSubmitResponseBody
+  , authorityTransitionHttpStatus
+  , authorityTransitionSummary
+  , serveAuthorityControlRequest
+  , serveAuthorityOperationObserveRequest
+  , serveAuthorityOperationSubmitRequest
+  )
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
   ( AuthorityBackupRepository
+  , authorityBackupCopyResponseBody
   , authorityBackupHttpStatus
+  , authorityBackupObserveResponseBody
   , authorityBackupObserveStatus
-  , authorityBackupObserveSummary
-  , authorityBackupSummary
   , serveBackupCopyRequest
-  , serveBackupObserve
+  , serveBackupObserveRequest
   )
-import Prodbox.ControlPlane.Codec (controlPlaneRequestCodecToken)
+import Prodbox.ControlPlane.AuthorityBackupExportEndpoint
+  ( authorityBackupExportHttpStatus
+  , authorityBackupExportResponseBody
+  , serveAuthorityBackupExportRequest
+  )
+import Prodbox.ControlPlane.AuthorityObservationEndpoint
+  ( authorityObservationHttpStatus
+  , authorityObservationResponseBody
+  , serveLifecycleAuthorityAggregateObserveRequest
+  , serveLifecycleAuthorityObserveRequest
+  )
+import Prodbox.ControlPlane.CallerPrincipal
+  ( CallerPrincipal (CallerAdminActionRunner)
+  )
+import Prodbox.ControlPlane.CleanupRunEndpoint
+  ( CleanupRunRepositoryProvider
+  , cleanupRunEndpointBody
+  , cleanupRunEndpointStatus
+  , serveCleanupRunRequest
+  )
+import Prodbox.ControlPlane.ConfigEndpoint
+  ( ConfigAuthorityRepository
+  , configEndpointHttpStatus
+  , configEndpointResponseBody
+  , serveConfigObserveRequest
+  , serveConfigProposeCasRequest
+  )
 import Prodbox.ControlPlane.MigrationEndpoint
   ( migrationEndpointHttpStatus
   , migrationEndpointSummary
+  , serveAuthorityMigrationApply
   , serveMigrationApply
   )
-import Prodbox.ControlPlane.OperationEndpoint
-  ( OperationSubmissionRepository
-  , operationObserveHttpStatus
-  , operationObserveSummary
-  , operationSubmitHttpStatus
-  , operationSubmitSummary
-  , serveOperationObserveRequest
-  , serveOperationSubmitRequest
+import Prodbox.ControlPlane.ProjectionImportEndpoint
+  ( ProjectionImportHandler
+  , projectionImportEndpointHttpStatus
+  , projectionImportEndpointSummary
+  , runProjectionImportHandler
   )
 import Prodbox.ControlPlane.ProviderWorkEndpoint
   ( ProviderWorkRepository
@@ -75,15 +134,55 @@ import Prodbox.ControlPlane.ProviderWorkEndpoint
   , serveProviderWorkApplyRequest
   , serveProviderWorkObserve
   )
+import Prodbox.ControlPlane.PulumiCheckpointEndpoint
+  ( PulumiCheckpointHandler
+  , pulumiCheckpointResponseBody
+  , pulumiCheckpointResponseHttpStatus
+  , runPulumiCheckpointHandler
+  )
+import Prodbox.ControlPlane.RequestAuthentication
+  ( VerifiedCallerSlot (verifiedCallerSlotPrincipal)
+  )
+import Prodbox.ControlPlane.RetainedSesLeaseEndpoint
+  ( RetainedSesLeaseHandler
+  , retainedSesLeaseResponseBody
+  , retainedSesLeaseResponseHttpStatus
+  , runRetainedSesLeaseHandler
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
       ( AuthorityBackupCopy
       , AuthorityBackupObserve
+      , LifecycleAdminActionExecution
+      , LifecycleAuthorityBackupExport
+      , LifecycleAuthorityControl
+      , LifecycleAuthorityDecommissionExport
+      , LifecycleAuthorityDecommissionStop
+      , LifecycleAuthorityObserve
+      , LifecycleCleanupRun
+      , LifecycleConfigObserve
+      , LifecycleConfigProposeCas
       , LifecycleMigrationApply
       , LifecycleOperationObserve
       , LifecycleOperationSubmit
+      , LifecycleProjectionImport
+      , LifecyclePulumiCheckpoint
+      , LifecycleRetainedSesLease
+      , LifecycleTlsRetentionObserve
+      , LifecycleTlsRetentionPromote
       , ProviderWorkApply
       , ProviderWorkObserve
+      , TargetSecretAdminActionCustodyTombstone
+      , TargetSecretAdminActionGenerationTombstone
+      , TargetSecretDecommissionCustodyTombstone
+      , TargetSecretDecommissionInventory
+      , TargetSecretDecommissionTombstone
+      , TargetTlsHomeRewrap
+      , TargetTlsHomeWrap
+      , TargetTlsPrepareExchange
+      , TargetTlsRestore
+      , TargetTlsRetain
+      , TargetTlsVerifySource
       , TlsRetentionRestore
       , TlsRetentionStore
       )
@@ -91,55 +190,522 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadyz)
   )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( TargetSecretPayload
+  )
+import Prodbox.ControlPlane.TlsDekExchange (TlsDekTransitBoundary)
+import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
+  ( TlsAuthorityRepositoryResolver
+  , serveTlsAuthorityObserveRequest
+  , serveTlsAuthorityPromoteRequest
+  , tlsAuthorityResponseBody
+  , tlsAuthorityResponseHttpStatus
+  )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsRetentionRepository
   , serveTlsRestoreRequest
   , serveTlsStoreRequest
-  , tlsRetentionHttpStatus
-  , tlsRetentionSummary
+  , tlsRestoreHttpStatus
+  , tlsRestoreResponseBody
+  , tlsStoreHttpStatus
+  , tlsStoreResponseBody
   )
+import Prodbox.ControlPlane.TlsTargetAgentEndpoint
+  ( TlsSecretBoundary
+  , serveTlsHomeRewrapRequest
+  , serveTlsHomeWrapRequest
+  , serveTlsTargetPrepareRequest
+  , serveTlsTargetRestoreRequest
+  , serveTlsTargetRetainRequest
+  , serveTlsTargetVerifyRequest
+  , tlsHomeRewrapHttpStatus
+  , tlsHomeRewrapResponseBody
+  , tlsHomeWrapHttpStatus
+  , tlsHomeWrapResponseBody
+  , tlsTargetPrepareHttpStatus
+  , tlsTargetPrepareResponseBody
+  , tlsTargetRestoreHttpStatus
+  , tlsTargetRestoreResponseBody
+  , tlsTargetRetainHttpStatus
+  , tlsTargetRetainResponseBody
+  , tlsTargetVerifyHttpStatus
+  , tlsTargetVerifyResponseBody
+  )
+import Prodbox.Lifecycle.AdminAction.Authority
+  ( AdminActionAuthorityRepository
+  )
+import Prodbox.Lifecycle.Authority.Admission (AuthorityAdmissionAggregate)
 import Prodbox.Lifecycle.Authority.MigrationInterpreter (MigrationRepository)
+import Prodbox.Lifecycle.Decommission.AuthorityExport
+  ( AuthorityDecommissionExportRepository
+  , AuthorityManifestSigner
+  , authorityDecommissionExportHttpStatus
+  , authorityDecommissionExportResponseBody
+  , serveAuthorityDecommissionExportRequest
+  )
+import Prodbox.Lifecycle.Decommission.AuthorityStop
+  ( AuthorityDecommissionStopRepository
+  , authorityDecommissionStopHttpStatus
+  , authorityDecommissionStopResponseBody
+  , serveAuthorityDecommissionStopRequest
+  )
+import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
+import Prodbox.Lifecycle.Decommission.RetainedCustodyTombstone
+  ( RetainedCustodyBoundary
+  , retainedCustodyTombstoneHttpStatus
+  , retainedCustodyTombstoneResponseBody
+  , serveRetainedCustodyTombstoneRequest
+  )
+import Prodbox.Lifecycle.Decommission.TargetInventory
+  ( TargetDecommissionInventoryBoundary
+  , serveTargetDecommissionInventoryRequest
+  , targetDecommissionInventoryHttpStatus
+  , targetDecommissionInventoryResponseBody
+  )
+import Prodbox.Lifecycle.Decommission.TargetTombstone
+  ( TargetGenerationTombstoneRegistry
+  , serveTargetGenerationTombstoneRequest
+  , targetGenerationTombstoneHttpStatus
+  , targetGenerationTombstoneResponseBody
+  )
+import Prodbox.Lifecycle.Lease (AuthorityTime)
 
--- | Build the Lifecycle Authority role's interpreter, binding all three of its
--- owned routes to their landed handlers over the injected retained repositories:
--- @migration/apply@ → 'serveMigrationApply', @operations/submit@ →
--- 'serveOperationSubmitRequest', and @operations/observe@ →
--- 'serveOperationObserveRequest'. @maximumBytes@ bounds each request body;
--- @readyz@ is the injected readiness probe. Every route the role owns resolves to a
--- handler, so no owned route falls through to @503 interpreter-unavailable@.
+-- | Context-free Lifecycle Authority composition over the retained admission
+-- aggregate.  Operation and checkpoint routes deliberately do not appear here: they require
+-- a verified caller slot and are exposed only by
+-- 'lifecycleAuthorityAdmissionAuthenticatedHandler'.
+lifecycleAuthorityAdmissionInterpreter
+  :: (Monad m)
+  => Int
+  -> m Bool
+  -> Text
+  -> m (Either Text Natural)
+  -> (AuthorityAdmissionAggregate -> Either Text ByteString)
+  -> AuthorityAdmissionRepository m revision
+  -> ProjectionImportHandler m
+  -> RetainedSesLeaseHandler m
+  -> PulumiCheckpointHandler m
+  -> RoleInterpreter m
+lifecycleAuthorityAdmissionInterpreter
+  maximumBytes
+  readyz
+  authorityScope
+  observeNow
+  encodeAggregate
+  repository
+  projectionImportHandler
+  retainedSesLeaseHandler
+  _pulumiCheckpointHandler =
+    RoleInterpreter
+      { interpreterReadyz = readyz
+      , interpreterHandle = handle
+      }
+   where
+    handle route body = case route of
+      LifecycleAuthorityControl -> do
+        result <-
+          serveAuthorityControlRequest
+            maximumBytes
+            repository
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( authorityTransitionHttpStatus result
+              , encodeSummary (authorityTransitionSummary result)
+              )
+          )
+      LifecycleAuthorityBackupExport -> do
+        result <-
+          serveAuthorityBackupExportRequest
+            maximumBytes
+            encodeAggregate
+            repository
+            body
+        pure
+          ( Just
+              ( authorityBackupExportHttpStatus result
+              , authorityBackupExportResponseBody result
+              )
+          )
+      LifecycleRetainedSesLease -> do
+        result <-
+          runRetainedSesLeaseHandler
+            retainedSesLeaseHandler
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( retainedSesLeaseResponseHttpStatus result
+              , retainedSesLeaseResponseBody result
+              )
+          )
+      LifecycleMigrationApply -> do
+        result <-
+          serveAuthorityMigrationApply
+            maximumBytes
+            repository
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( migrationEndpointHttpStatus result
+              , encodeSummary (migrationEndpointSummary result)
+              )
+          )
+      LifecycleProjectionImport -> do
+        result <-
+          runProjectionImportHandler
+            projectionImportHandler
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( projectionImportEndpointHttpStatus result
+              , encodeSummary (projectionImportEndpointSummary result)
+              )
+          )
+      LifecycleAuthorityObserve -> do
+        result <-
+          serveLifecycleAuthorityAggregateObserveRequest
+            maximumBytes
+            authorityScope
+            observeNow
+            repository
+            (LazyByteString.fromStrict body)
+        pure (Just (authorityObservationHttpStatus result, authorityObservationResponseBody result))
+      _ -> pure Nothing
+
+-- | Production Lifecycle Authority handler.  Authentication constructs the
+-- opaque caller slot; the operation payload carries only a stable submission
+-- key (and digest for submit), so neither a raw body nor a context-free caller
+-- can inject a principal, client sequence, or signing-key generation.
+lifecycleAuthorityAdmissionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> m Bool
+  -> Text
+  -> m (Either Text Natural)
+  -> (AuthorityAdmissionAggregate -> Either Text ByteString)
+  -> AuthorityAdmissionRepository m revision
+  -> ConfigAuthorityRepository m
+  -> ProjectionImportHandler m
+  -> RetainedSesLeaseHandler m
+  -> PulumiCheckpointHandler m
+  -> CleanupRunRepositoryProvider m cleanupRevision
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityAdmissionAuthenticatedHandler
+  maximumBytes
+  readyz
+  authorityScope
+  observeNow
+  encodeAggregate
+  repository
+  configRepository
+  projectionImportHandler
+  retainedSesLeaseHandler
+  pulumiCheckpointHandler
+  cleanupRunProvider =
+    AuthenticatedRoleHandler
+      { authenticatedHandlerReadyz = readyz
+      , authenticatedHandlerHandle = handle
+      }
+   where
+    contextFree =
+      lifecycleAuthorityAdmissionInterpreter
+        maximumBytes
+        readyz
+        authorityScope
+        observeNow
+        encodeAggregate
+        repository
+        projectionImportHandler
+        retainedSesLeaseHandler
+        pulumiCheckpointHandler
+    handle callerSlot route body = case route of
+      LifecycleOperationSubmit -> do
+        result <-
+          serveAuthorityOperationSubmitRequest
+            maximumBytes
+            repository
+            callerSlot
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( authorityOperationSubmitHttpStatus result
+              , authorityOperationSubmitResponseBody result
+              )
+          )
+      LifecycleOperationObserve -> do
+        result <-
+          serveAuthorityOperationObserveRequest
+            maximumBytes
+            repository
+            callerSlot
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( authorityOperationObserveHttpStatus result
+              , authorityOperationObserveResponseBody result
+              )
+          )
+      LifecyclePulumiCheckpoint -> do
+        result <-
+          runPulumiCheckpointHandler
+            pulumiCheckpointHandler
+            callerSlot
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( pulumiCheckpointResponseHttpStatus result
+              , pulumiCheckpointResponseBody result
+              )
+          )
+      LifecycleConfigObserve -> do
+        result <-
+          serveConfigObserveRequest
+            maximumBytes
+            configRepository
+            callerSlot
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( configEndpointHttpStatus result
+              , configEndpointResponseBody result
+              )
+          )
+      LifecycleConfigProposeCas -> do
+        result <-
+          serveConfigProposeCasRequest
+            maximumBytes
+            configRepository
+            callerSlot
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( configEndpointHttpStatus result
+              , configEndpointResponseBody result
+              )
+          )
+      LifecycleCleanupRun -> do
+        result <-
+          serveCleanupRunRequest
+            cleanupRunProvider
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( cleanupRunEndpointStatus result
+              , cleanupRunEndpointBody result
+              )
+          )
+      _ -> interpreterHandle contextFree route body
+
+-- | Production inputs for Authority-owned decommission export.  The
+-- unprovisioned constructor is an explicit deployment state, rather than a
+-- dummy repository or signer that might accidentally authorize an export.
+-- Its diagnostic is retained for the composition owner; the wire response is
+-- deliberately a stable non-sensitive token.
+data LifecycleAuthorityDecommissionInputs m
+  = LifecycleAuthorityDecommissionUnprovisioned !Text
+  | LifecycleAuthorityDecommissionProvisioned
+      !(AuthorityDecommissionExportRepository m)
+      !(AuthorityManifestSigner m)
+      !FrameDigest
+      !(AuthorityDecommissionStopRepository m)
+
+-- | Add authenticated Authority decommission export to an existing
+-- role-specific handler.  Authentication and replay protection remain outside
+-- this layer, so only a 'VerifiedCallerSlot' can reach the export repository.
+-- Missing production inputs make readiness false and return an explicit @503@
+-- without freezing admission, reading a plan, or invoking a signer.
+lifecycleAuthorityDecommissionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> LifecycleAuthorityDecommissionInputs m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityDecommissionAuthenticatedHandler maximumBytes inputs inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadyz = case inputs of
+        LifecycleAuthorityDecommissionUnprovisioned _ -> pure False
+        LifecycleAuthorityDecommissionProvisioned {} ->
+          authenticatedHandlerReadyz inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    LifecycleAuthorityDecommissionExport -> case inputs of
+      LifecycleAuthorityDecommissionUnprovisioned _ ->
+        pure (Just (503, "authority-decommission-export-unprovisioned\n"))
+      LifecycleAuthorityDecommissionProvisioned repository signer _ _ -> do
+        result <-
+          serveAuthorityDecommissionExportRequest
+            maximumBytes
+            repository
+            signer
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( authorityDecommissionExportHttpStatus result
+              , authorityDecommissionExportResponseBody result
+              )
+          )
+    LifecycleAuthorityDecommissionStop -> case inputs of
+      LifecycleAuthorityDecommissionUnprovisioned _ ->
+        pure (Just (503, "authority-decommission-stop-unprovisioned\n"))
+      LifecycleAuthorityDecommissionProvisioned _ _ expectedSigner repository -> do
+        result <-
+          serveAuthorityDecommissionStopRequest
+            maximumBytes
+            expectedSigner
+            repository
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( authorityDecommissionStopHttpStatus result
+              , authorityDecommissionStopResponseBody result
+              )
+          )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Add the Authority-owned TLS current-reference fold to an authenticated
+-- Lifecycle Authority handler.  The resolver fixes the retained coordinate
+-- from the validated substrate/scope slot; no object key or CAS revision is
+-- accepted over the wire.
+lifecycleAuthorityTlsRetentionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> TlsAuthorityRepositoryResolver m revision
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    LifecycleTlsRetentionObserve -> do
+      response <-
+        serveTlsAuthorityObserveRequest
+          maximumBytes
+          resolve
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    LifecycleTlsRetentionPromote -> do
+      response <-
+        serveTlsAuthorityPromoteRequest
+          maximumBytes
+          resolve
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Add the one Admin-Action-only Authority execution lane.  Besides the
+-- closed route topology, this layer defensively requires the dedicated Runner
+-- principal before constructing the caller-bound legacy checkpoint boundary.
+-- The signed permit is then reverified by the endpoint with the live Authority
+-- public generation before either durable state or a destination checkpoint is
+-- touched.
+lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> (VerifiedCallerSlot -> AdminActionAuthorityExecutionBoundary m)
+  -> (Text -> Either Text (AdminActionEffectRepository m effectRevision))
+  -> (Text -> Either Text (AdminActionAuthorityRepository m authorityRevision))
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
+  maximumBytes
+  boundaryForCaller
+  resolveEffectRepository
+  resolveAuthorityRepository
+  inner =
+    AuthenticatedRoleHandler
+      { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+      , authenticatedHandlerHandle = handle
+      }
+   where
+    handle callerSlot route body = case route of
+      LifecycleAdminActionExecution
+        | verifiedCallerSlotPrincipal callerSlot /= CallerAdminActionRunner ->
+            pure (Just (403, "admin-action-runner-caller-required\n"))
+        | otherwise -> do
+            response <-
+              serveAdminActionAuthorityExecutionRequest
+                maximumBytes
+                (boundaryForCaller callerSlot)
+                resolveEffectRepository
+                resolveAuthorityRepository
+                (LazyByteString.fromStrict body)
+            pure
+              ( Just
+                  ( adminActionAuthorityExecutionResponseStatus response
+                  , adminActionAuthorityExecutionResponseBody response
+                  )
+              )
+      _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Build the legacy migration-only Lifecycle Authority interpreter.  The
+-- caller-selected client/sequence operation endpoint is deliberately not
+-- composed here; production operations exist only on the authenticated
+-- aggregate handler above.
+--
+-- The remaining routes bind to their landed handlers over injected retained repositories:
+-- @migration/apply@ → 'serveMigrationApply', @migration/import@ → the fully
+-- bound 'ProjectionImportHandler', @authority/observe@ →
+-- 'serveLifecycleAuthorityObserveRequest'. @maximumBytes@ bounds each request
+-- body and @readyz@ is the injected readiness probe.
 lifecycleAuthorityInterpreter
   :: (Monad m)
   => Int
   -> m Bool
+  -> Text
+  -> m (Either Text Natural)
   -> MigrationRepository m revision
-  -> OperationSubmissionRepository m
+  -> ProjectionImportHandler m
+  -> PulumiCheckpointHandler m
   -> RoleInterpreter m
-lifecycleAuthorityInterpreter maximumBytes readyz migrationRepository submissionRepository =
-  RoleInterpreter
-    { interpreterReadyz = readyz
-    , interpreterHandle = handle
-    }
- where
-  handle route body = case route of
-    LifecycleMigrationApply -> do
-      result <- serveMigrationApply maximumBytes migrationRepository (LazyByteString.fromStrict body)
-      pure (Just (migrationEndpointHttpStatus result, encodeSummary (migrationEndpointSummary result)))
-    LifecycleOperationSubmit -> do
-      result <-
-        serveOperationSubmitRequest maximumBytes submissionRepository (LazyByteString.fromStrict body)
-      pure (Just (operationSubmitHttpStatus result, encodeSummary (operationSubmitSummary result)))
-    LifecycleOperationObserve -> do
-      outcome <-
-        serveOperationObserveRequest maximumBytes submissionRepository (LazyByteString.fromStrict body)
-      pure . Just $ case outcome of
-        Right status -> (operationObserveHttpStatus status, encodeSummary (operationObserveSummary status))
-        Left err -> (400, encodeSummary ("operation-observe-bad-request:" <> controlPlaneRequestCodecToken err))
-    _ -> pure Nothing
+lifecycleAuthorityInterpreter
+  maximumBytes
+  readyz
+  authorityScope
+  observeNow
+  migrationRepository
+  projectionImportHandler
+  _pulumiCheckpointHandler =
+    RoleInterpreter
+      { interpreterReadyz = readyz
+      , interpreterHandle = handle
+      }
+   where
+    handle route body = case route of
+      LifecycleMigrationApply -> do
+        result <- serveMigrationApply maximumBytes migrationRepository (LazyByteString.fromStrict body)
+        pure (Just (migrationEndpointHttpStatus result, encodeSummary (migrationEndpointSummary result)))
+      LifecycleProjectionImport -> do
+        result <-
+          runProjectionImportHandler
+            projectionImportHandler
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( projectionImportEndpointHttpStatus result
+              , encodeSummary (projectionImportEndpointSummary result)
+              )
+          )
+      LifecycleAuthorityObserve -> do
+        result <-
+          serveLifecycleAuthorityObserveRequest
+            maximumBytes
+            authorityScope
+            observeNow
+            migrationRepository
+            (LazyByteString.fromStrict body)
+        pure (Just (authorityObservationHttpStatus result, authorityObservationResponseBody result))
+      _ -> pure Nothing
 
 -- | Build the TLS Retention role's interpreter, binding both owned routes to their
 -- landed handlers over the injected retention repository: @store@ →
--- 'serveTlsStoreRequest' and @restore@ → 'serveTlsRestoreRequest', both projecting
--- through 'tlsRetentionHttpStatus' / 'tlsRetentionSummary'.
+-- 'serveTlsStoreRequest' and @restore@ → 'serveTlsRestoreRequest'. Successful
+-- responses preserve the canonical binary receipt/observation; failures expose
+-- only the endpoint's stable summary token.
 tlsRetentionInterpreter
   :: (Monad m)
   => Int
@@ -155,20 +721,17 @@ tlsRetentionInterpreter maximumBytes readyz repository =
   handle route body = case route of
     TlsRetentionStore -> do
       result <- serveTlsStoreRequest maximumBytes repository (LazyByteString.fromStrict body)
-      pure (Just (tlsRetentionHttpStatus result, encodeSummary (tlsRetentionSummary result)))
+      pure (Just (tlsStoreHttpStatus result, tlsStoreResponseBody result))
     TlsRetentionRestore -> do
       result <- serveTlsRestoreRequest maximumBytes repository (LazyByteString.fromStrict body)
-      pure (Just (tlsRetentionHttpStatus result, encodeSummary (tlsRetentionSummary result)))
+      pure (Just (tlsRestoreHttpStatus result, tlsRestoreResponseBody result))
     _ -> pure Nothing
 
 -- | Build the Authority Backup role's interpreter, binding both owned routes to
--- their landed handlers over the injected admission-state repository: @copy@ →
--- 'serveBackupCopyRequest' (decode the bounded canonical command, decide the
--- backup-repair transition, and compare-and-swap only a genuine advance) and
--- @observe@ → 'serveBackupObserve' (read the current admission state, no mutation).
--- Every route the role owns resolves to a handler, so no owned route falls through
--- to @503 interpreter-unavailable@. The concrete retained-store CAS repository is the
--- live-coupled follow-on (Standard-O), exactly as for the other role interpreters.
+-- their landed opaque-byte handlers over the injected repository: @copy@ writes
+-- one content-addressed ciphertext blob and confirms its bytes; @observe@ accepts
+-- the exact class/digest coordinate and returns the canonical binary observation.
+-- The Adapter neither decodes Authority state nor makes an admission decision.
 authorityBackupInterpreter
   :: (Monad m)
   => Int
@@ -184,11 +747,10 @@ authorityBackupInterpreter maximumBytes readyz repository =
   handle route body = case route of
     AuthorityBackupCopy -> do
       result <- serveBackupCopyRequest maximumBytes repository (LazyByteString.fromStrict body)
-      pure (Just (authorityBackupHttpStatus result, encodeSummary (authorityBackupSummary result)))
+      pure (Just (authorityBackupHttpStatus result, authorityBackupCopyResponseBody result))
     AuthorityBackupObserve -> do
-      state <- serveBackupObserve repository
-      pure
-        (Just (authorityBackupObserveStatus state, encodeSummary (authorityBackupObserveSummary state)))
+      result <- serveBackupObserveRequest maximumBytes repository (LazyByteString.fromStrict body)
+      pure (Just (authorityBackupObserveStatus result, authorityBackupObserveResponseBody result))
     _ -> pure Nothing
 
 -- | Build the fenced Provider Worker role's interpreter, binding both owned routes
@@ -222,6 +784,220 @@ providerWorkerInterpreter maximumBytes readyz repository =
       pure
         (Just (providerWorkObserveStatus state, encodeSummary (providerWorkObserveSummary state)))
     _ -> pure Nothing
+
+-- | Add the exact TLS Secret lane to the authenticated Target Agent handler.
+-- The lane has no coordinate input: Kubernetes namespace/name and the Transit
+-- key are already fixed by the supplied production boundaries. Plaintext is
+-- decoded only inside the selected Agent during seal/apply.
+targetSecretAgentTlsAuthenticatedHandler
+  :: Int
+  -> TlsSecretBoundary IO
+  -> TlsDekTransitBoundary IO
+  -> AuthenticatedRoleHandler IO
+  -> AuthenticatedRoleHandler IO
+targetSecretAgentTlsAuthenticatedHandler maximumBytes secretBoundary transit inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    TargetTlsPrepareExchange -> do
+      result <-
+        serveTlsTargetPrepareRequest
+          maximumBytes
+          transit
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsTargetPrepareHttpStatus result, tlsTargetPrepareResponseBody result))
+    TargetTlsRetain -> do
+      result <-
+        serveTlsTargetRetainRequest
+          maximumBytes
+          secretBoundary
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsTargetRetainHttpStatus result, tlsTargetRetainResponseBody result))
+    TargetTlsHomeWrap -> do
+      result <-
+        serveTlsHomeWrapRequest
+          maximumBytes
+          transit
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsHomeWrapHttpStatus result, tlsHomeWrapResponseBody result))
+    TargetTlsHomeRewrap -> do
+      result <-
+        serveTlsHomeRewrapRequest
+          maximumBytes
+          transit
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsHomeRewrapHttpStatus result, tlsHomeRewrapResponseBody result))
+    TargetTlsRestore -> do
+      result <-
+        serveTlsTargetRestoreRequest
+          maximumBytes
+          secretBoundary
+          transit
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsTargetRestoreHttpStatus result, tlsTargetRestoreResponseBody result))
+    TargetTlsVerifySource -> do
+      result <-
+        serveTlsTargetVerifyRequest
+          maximumBytes
+          secretBoundary
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsTargetVerifyHttpStatus result, tlsTargetVerifyResponseBody result))
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Production inputs for exact Target generation tombstoning.  The pinned
+-- signer digest is the trust root for the Authority manifest, and the registry
+-- contains only locally owned, exact target coordinates.
+data TargetSecretAgentDecommissionInputs m
+  = TargetSecretAgentDecommissionUnprovisioned !Text
+  | TargetSecretAgentDecommissionProvisioned
+      !FrameDigest
+      !(TargetGenerationTombstoneRegistry m TargetSecretPayload)
+      !(TargetDecommissionInventoryBoundary m TargetSecretPayload)
+      !(RetainedCustodyBoundary m)
+
+-- | Add the authenticated tombstone route to an existing Target Secret Agent
+-- handler.  An unprovisioned signer trust root or registry is represented by
+-- the closed constructor above: readiness is false and the valid authenticated
+-- request receives a stable @503@ before any target observation or deletion.
+targetSecretAgentDecommissionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> TargetSecretAgentDecommissionInputs m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+targetSecretAgentDecommissionAuthenticatedHandler maximumBytes inputs inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadyz = case inputs of
+        TargetSecretAgentDecommissionUnprovisioned _ -> pure False
+        TargetSecretAgentDecommissionProvisioned {} ->
+          authenticatedHandlerReadyz inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    TargetSecretDecommissionTombstone -> case inputs of
+      TargetSecretAgentDecommissionUnprovisioned _ ->
+        pure (Just (503, "target-generation-tombstone-unprovisioned\n"))
+      TargetSecretAgentDecommissionProvisioned expectedSigner registry _ _ -> do
+        result <-
+          serveTargetGenerationTombstoneRequest
+            maximumBytes
+            expectedSigner
+            registry
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( targetGenerationTombstoneHttpStatus result
+              , targetGenerationTombstoneResponseBody result
+              )
+          )
+    TargetSecretDecommissionInventory -> case inputs of
+      TargetSecretAgentDecommissionUnprovisioned _ ->
+        pure (Just (503, "target-decommission-inventory-unprovisioned\n"))
+      TargetSecretAgentDecommissionProvisioned _ _ boundary _ -> do
+        result <-
+          serveTargetDecommissionInventoryRequest
+            maximumBytes
+            boundary
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( targetDecommissionInventoryHttpStatus result
+              , targetDecommissionInventoryResponseBody result
+              )
+          )
+    TargetSecretDecommissionCustodyTombstone -> case inputs of
+      TargetSecretAgentDecommissionUnprovisioned _ ->
+        pure (Just (503, "retained-custody-tombstone-unprovisioned\n"))
+      TargetSecretAgentDecommissionProvisioned expectedSigner _ _ boundary -> do
+        result <-
+          serveRetainedCustodyTombstoneRequest
+            maximumBytes
+            expectedSigner
+            boundary
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( retainedCustodyTombstoneHttpStatus result
+              , retainedCustodyTombstoneResponseBody result
+              )
+          )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Add the two Admin-Action-only Target tombstone lanes.  Unlike the
+-- decommission routes above, these verify the complete backup-bound and
+-- Pod-bound Admin Action permit with the live Authority Transit public key.
+-- The verified caller must also be the dedicated Runner principal; operator,
+-- harness, Authority, and every standing service are refused even if a trust
+-- registry is accidentally widened.
+targetSecretAgentAdminActionAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> AuthorityManifestSigner m
+  -> m (Either Text AuthorityTime)
+  -> Text
+  -> TargetGenerationTombstoneRegistry m TargetSecretPayload
+  -> RetainedCustodyBoundary m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+targetSecretAgentAdminActionAuthenticatedHandler
+  maximumBytes
+  signer
+  now
+  localIdentity
+  registry
+  custody
+  inner =
+    AuthenticatedRoleHandler
+      { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+      , authenticatedHandlerHandle = handle
+      }
+   where
+    verification =
+      AdminActionTargetVerification
+        { adminTargetAuthoritySigner = signer
+        , adminTargetCurrentTime = now
+        , adminTargetLocalIdentity = localIdentity
+        }
+    handle callerSlot route body
+      | route `elem` adminRoutes
+          && verifiedCallerSlotPrincipal callerSlot /= CallerAdminActionRunner =
+          pure (Just (403, "admin-action-runner-caller-required\n"))
+      | otherwise = case route of
+          TargetSecretAdminActionGenerationTombstone -> do
+            response <-
+              serveAdminTargetTombstoneRequest
+                maximumBytes
+                verification
+                registry
+                (LazyByteString.fromStrict body)
+            pure
+              ( Just
+                  ( adminTargetTombstoneResponseStatus response
+                  , adminActionTargetResponseBody response
+                  )
+              )
+          TargetSecretAdminActionCustodyTombstone -> do
+            response <-
+              serveAdminCustodyTombstoneRequest
+                maximumBytes
+                verification
+                custody
+                (LazyByteString.fromStrict body)
+            pure
+              ( Just
+                  ( adminCustodyTombstoneResponseStatus response
+                  , adminActionTargetResponseBody response
+                  )
+              )
+          _ -> authenticatedHandlerHandle inner callerSlot route body
+    adminRoutes =
+      [ TargetSecretAdminActionGenerationTombstone
+      , TargetSecretAdminActionCustodyTombstone
+      ]
 
 encodeSummary :: Text -> ByteString
 encodeSummary = TextEncoding.encodeUtf8

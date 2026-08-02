@@ -45,17 +45,19 @@ import Prodbox.Lifecycle.CheckpointAuthority
   )
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionManifest
-  , decodeDecommissionManifest
-  , decommissionManifestDigest
-  , encodeDecommissionManifest
+  ( VerifiedDecommissionManifest
+  , decodeSignedDecommissionManifest
+  , encodeSignedDecommissionManifest
+  , verifiedManifestDigest
+  , verifiedSignedManifest
+  , verifySignedDecommissionManifest
   )
 
 -- | The retained store of the committed plan: read the current committed manifest
 -- (if any) and initialize-if-absent a proposed one.
 data DecommissionCommitRepository m revision = DecommissionCommitRepository
-  { readCommittedManifest :: m (Either Text (Maybe (revision, DecommissionManifest)))
-  , initializeCommittedManifest :: DecommissionManifest -> m (Either Text Bool)
+  { readCommittedManifest :: m (Either Text (Maybe (revision, VerifiedDecommissionManifest)))
+  , initializeCommittedManifest :: VerifiedDecommissionManifest -> m (Either Text Bool)
   }
 
 data DecommissionCommitError
@@ -71,23 +73,41 @@ data DecommissionCommitOutcome
     RefusedDifferentPlan !FrameDigest !FrameDigest
   deriving stock (Eq, Show)
 
--- | The Model-B payload codec for a committed manifest.
-decommissionManifestCodec :: Int -> ModelBCodec DecommissionManifest
-decommissionManifestCodec maximumBytes =
+-- | The Model-B payload codec for an authenticated complete manifest.  Decoding
+-- re-verifies the signature against the externally pinned signer digest before a
+-- retained value can enter the repository.
+decommissionManifestCodec :: Int -> FrameDigest -> ModelBCodec VerifiedDecommissionManifest
+decommissionManifestCodec maximumBytes expectedSigner =
   ModelBCodec
-    { encodeModelBValue = Right . LazyByteString.toStrict . encodeDecommissionManifest
-    , decodeModelBValue =
-        either (Left . show) Right
-          . decodeDecommissionManifest maximumBytes
-          . LazyByteString.fromStrict
+    { encodeModelBValue = encodeVerifiedManifest
+    , decodeModelBValue = \bytes -> do
+        signed <-
+          either
+            (Left . show)
+            Right
+            ( decodeSignedDecommissionManifest
+                maximumBytes
+                expectedSigner
+                (LazyByteString.fromStrict bytes)
+            )
+        either (Left . show) Right (verifySignedDecommissionManifest expectedSigner signed)
     }
+ where
+  encodeVerifiedManifest verified =
+    case verifySignedDecommissionManifest expectedSigner (verifiedSignedManifest verified) of
+      Left err -> Left (show err)
+      Right authenticated ->
+        Right
+          ( LazyByteString.toStrict
+              (encodeSignedDecommissionManifest (verifiedSignedManifest authenticated))
+          )
 
 -- | Bind the commit repository to a retained Model-B coordinate. The type index
 -- rejects a chart-lifetime or cross-cluster coordinate at this authority-primary
 -- boundary.
 modelBDecommissionCommitRepository
   :: (Monad m)
-  => ModelBCasAdapter 'ClusterRetained m DecommissionManifest
+  => ModelBCasAdapter 'ClusterRetained m VerifiedDecommissionManifest
   -> ModelBObjectCoordinate 'ClusterRetained
   -> DecommissionCommitRepository m ModelBObjectVersion
 modelBDecommissionCommitRepository adapter coordinate =
@@ -98,6 +118,7 @@ modelBDecommissionCommitRepository adapter coordinate =
           ModelBMissing -> Right Nothing
           ModelBObserved revision manifest -> Right (Just (revision, manifest))
           ModelBCorrupt detail -> Left ("committed decommission manifest is corrupt: " <> detail)
+          ModelBEndpointUnready detail -> Left ("committed decommission manifest is unobservable: " <> detail)
           ModelBUnobservable detail -> Left ("committed decommission manifest is unobservable: " <> detail)
     , initializeCommittedManifest = \manifest -> do
         result <- modelBCompareAndSwap adapter (ModelBInitialize coordinate manifest)
@@ -105,6 +126,7 @@ modelBDecommissionCommitRepository adapter coordinate =
           ModelBCasApplied _ _ -> Right True
           ModelBCasConflict _ -> Right False
           ModelBCasRefusedCorrupt detail -> Left ("commit CAS refused corrupt: " <> detail)
+          ModelBCasEndpointUnready detail -> Left ("commit CAS unobservable: " <> detail)
           ModelBCasUnobservable detail -> Left ("commit CAS unobservable: " <> detail)
     }
 
@@ -112,7 +134,7 @@ modelBDecommissionCommitRepository adapter coordinate =
 commitDecommissionManifest
   :: (Monad m)
   => DecommissionCommitRepository m revision
-  -> DecommissionManifest
+  -> VerifiedDecommissionManifest
   -> m (Either DecommissionCommitError DecommissionCommitOutcome)
 commitDecommissionManifest repository proposed = do
   current <- readCommittedManifest repository
@@ -125,13 +147,13 @@ commitDecommissionManifest repository proposed = do
         Right False -> Left CommitConcurrentWrite
         Right True -> Right CommittedNew
     Right (Just (_, committed))
-      | decommissionManifestDigest committed == decommissionManifestDigest proposed ->
+      | verifiedManifestDigest committed == verifiedManifestDigest proposed ->
           pure (Right CommittedAlready)
       | otherwise ->
           pure
             ( Right
                 ( RefusedDifferentPlan
-                    (decommissionManifestDigest committed)
-                    (decommissionManifestDigest proposed)
+                    (verifiedManifestDigest committed)
+                    (verifiedManifestDigest proposed)
                 )
             )

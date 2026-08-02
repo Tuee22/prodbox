@@ -1,5 +1,8 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Pure Bootstrap Broker orchestration after encrypted recovery custody.
 --
@@ -80,7 +83,9 @@ module Prodbox.Bootstrap.Broker.Model
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.List (nub, sort)
+import GHC.Generics (Generic)
 import Prodbox.Bootstrap.Broker.Custody
 import Prodbox.Bootstrap.Broker.Types
 
@@ -118,6 +123,9 @@ data RootSessionCompletion = RootSessionCompletion
 -- distinct, as are baseline application/read-back and revocation/absence.
 data RootSessionPhase
   = RootSessionCancelIncompleteGenerateRoot
+  | RootSessionPreAuditorGenerateRootPending
+  | RootSessionPreAuditorGenerateRootInFlight
+  | RootSessionPreAuditorAccessorJournalPending !RootPolicyAccessor
   | RootSessionInventoryStaleAccessors
   | RootSessionRevokeStaleAccessors
       !RootAccessorInventory
@@ -143,6 +151,14 @@ data RootSessionPhase
   | RootSessionCurrentAbsencePending
       !RootPolicyAccessor
       !(Maybe BaselineReadBackReceipt)
+  | RootSessionPostBaselineInventoryPending !BaselineReadBackReceipt
+  | RootSessionPostBaselineRevocationPending
+      !BaselineReadBackReceipt
+      !RootAccessorInventory
+      ![RootPolicyAccessor]
+  | RootSessionPostBaselineZeroProofPending
+      !BaselineReadBackReceipt
+      !RootAccessorInventory
   | RootSessionClosed
       !BaselineReadBackReceipt
       !AccessorAbsenceAttestation
@@ -156,6 +172,7 @@ data RootSessionState = RootSessionState
   { rootSessionStateBinding :: !RootSessionBinding
   , rootSessionStateDisposition :: !CustodyDisposition
   , rootSessionStatePhase :: !RootSessionPhase
+  , rootSessionStateProvisioner :: !(Maybe ProvisionerSessionState)
   }
   deriving stock (Eq)
 
@@ -167,6 +184,8 @@ instance Show RootSessionState where
       ++ show (rootSessionStateDisposition state)
       ++ ", phase = "
       ++ rootSessionPhaseName (rootSessionStatePhase state)
+      ++ ", provisioner = "
+      ++ maybe "not-started" (show . provisionerSessionPhase) (rootSessionStateProvisioner state)
       ++ "}"
 
 data RootSessionCommand
@@ -270,6 +289,11 @@ instance Show RootSessionEvent where
 
 data RootSessionPlan
   = RootSessionPlanCancelIncompleteGenerateRoot !RootSessionBinding
+  | RootSessionPlanGeneratePreAuditorRoot !RootSessionBinding
+  | RootSessionPlanAwaitPreAuditorRootAccessor !RootSessionBinding
+  | RootSessionPlanJournalPreAuditorAccessor
+      !RootSessionBinding
+      !RootPolicyAccessor
   | RootSessionPlanInventoryStaleAccessors !VaultStorageGeneration
   | RootSessionPlanRevokeStaleAccessor !RootPolicyAccessor
   | RootSessionPlanProveStableAccessorAbsence !RootAccessorInventory
@@ -285,6 +309,9 @@ data RootSessionPlan
   | RootSessionPlanRevokeCurrentAccessor !RootPolicyAccessor
   | RootSessionPlanArmCurrentAccessorAbsenceCheck !RootPolicyAccessor
   | RootSessionPlanProveCurrentAccessorAbsent !RootPolicyAccessor
+  | RootSessionPlanInventoryPostBaselineAccessors !VaultStorageGeneration
+  | RootSessionPlanRevokePostBaselineAccessor !RootPolicyAccessor
+  | RootSessionPlanProvePostBaselineZero !RootAccessorInventory
   | RootSessionPlanFinishCancellation !AccessorAbsenceAttestation
   | RootSessionPlanComplete !RootSessionCompletion
   | RootSessionPlanCancelledClean !AccessorAbsenceAttestation
@@ -295,6 +322,12 @@ instance Show RootSessionPlan where
     case plan of
       RootSessionPlanCancelIncompleteGenerateRoot _ ->
         "RootSessionPlanCancelIncompleteGenerateRoot"
+      RootSessionPlanGeneratePreAuditorRoot _ ->
+        "RootSessionPlanGeneratePreAuditorRoot"
+      RootSessionPlanAwaitPreAuditorRootAccessor _ ->
+        "RootSessionPlanAwaitPreAuditorRootAccessor"
+      RootSessionPlanJournalPreAuditorAccessor _ _ ->
+        "RootSessionPlanJournalPreAuditorAccessor"
       RootSessionPlanInventoryStaleAccessors _ ->
         "RootSessionPlanInventoryStaleAccessors"
       RootSessionPlanRevokeStaleAccessor _ ->
@@ -321,6 +354,12 @@ instance Show RootSessionPlan where
         "RootSessionPlanArmCurrentAccessorAbsenceCheck"
       RootSessionPlanProveCurrentAccessorAbsent _ ->
         "RootSessionPlanProveCurrentAccessorAbsent"
+      RootSessionPlanInventoryPostBaselineAccessors _ ->
+        "RootSessionPlanInventoryPostBaselineAccessors"
+      RootSessionPlanRevokePostBaselineAccessor _ ->
+        "RootSessionPlanRevokePostBaselineAccessor"
+      RootSessionPlanProvePostBaselineZero _ ->
+        "RootSessionPlanProvePostBaselineZero"
       RootSessionPlanFinishCancellation _ ->
         "RootSessionPlanFinishCancellation"
       RootSessionPlanComplete _ -> "RootSessionPlanComplete"
@@ -362,6 +401,7 @@ newRootSessionState sessionId custody =
     { rootSessionStateBinding = mkRootSessionBinding sessionId custody
     , rootSessionStateDisposition = CustodyRunning
     , rootSessionStatePhase = RootSessionCancelIncompleteGenerateRoot
+    , rootSessionStateProvisioner = Nothing
     }
 
 decideRootSession
@@ -416,6 +456,7 @@ restartRootSession replacementSessionId state
                 (rootSessionBindingCustody oldBinding)
           , rootSessionStateDisposition = rootSessionStateDisposition state
           , rootSessionStatePhase = RootSessionCancelIncompleteGenerateRoot
+          , rootSessionStateProvisioner = Nothing
           }
  where
   oldBinding = rootSessionStateBinding state
@@ -485,7 +526,15 @@ evolveRootSessionPhase
 evolveRootSessionPhase state event =
   case (rootSessionStatePhase state, event) of
     (RootSessionCancelIncompleteGenerateRoot, RootSessionIncompleteGenerateRootCancelled) ->
-      withRootSessionPhase state RootSessionInventoryStaleAccessors
+      withRootSessionPhase state RootSessionPreAuditorGenerateRootPending
+    (RootSessionPreAuditorGenerateRootPending, RootSessionShortLivedRootGenerationStarted) ->
+      withRootSessionPhase state RootSessionPreAuditorGenerateRootInFlight
+    (RootSessionPreAuditorGenerateRootInFlight, RootSessionGeneratedAccessorCaptured accessor) ->
+      withRootSessionPhase state (RootSessionPreAuditorAccessorJournalPending accessor)
+    (RootSessionPreAuditorAccessorJournalPending expected, RootSessionGeneratedAccessorJournaled actual)
+      | actual == expected ->
+          withRootSessionPhase state (RootSessionAccessorJournaled actual)
+      | otherwise -> Left RootSessionAccessorJournalMismatch
     (RootSessionGenerateRootInFlight _, RootSessionIncompleteGenerateRootCancelled) ->
       withRootSessionPhase state RootSessionInventoryStaleAccessors
     (RootSessionInventoryStaleAccessors, RootSessionAccessorInventoryConfirmed inventory) -> do
@@ -563,8 +612,40 @@ evolveRootSessionPhase state event =
           Just baselineReceipt ->
             withRootSessionPhase
               state
-              (RootSessionClosed baselineReceipt absence)
+              (RootSessionPostBaselineInventoryPending baselineReceipt)
           Nothing -> withRootSessionPhase state (RootSessionCancelledClean absence)
+    ( RootSessionPostBaselineInventoryPending receipt
+      , RootSessionAccessorInventoryConfirmed inventory
+      ) -> do
+        requireRootAccessorInventory (rootSessionStateBinding state) inventory
+        case rootAccessorInventoryAccessors inventory of
+          [] ->
+            withRootSessionPhase
+              state
+              (RootSessionPostBaselineZeroProofPending receipt inventory)
+          accessors ->
+            withRootSessionPhase
+              state
+              (RootSessionPostBaselineRevocationPending receipt inventory accessors)
+    ( RootSessionPostBaselineRevocationPending receipt inventory (expected : remaining)
+      , RootSessionStaleAccessorRevoked actual
+      )
+        | actual == expected ->
+            if null remaining
+              then
+                withRootSessionPhase
+                  state
+                  (RootSessionPostBaselineZeroProofPending receipt inventory)
+              else
+                withRootSessionPhase
+                  state
+                  (RootSessionPostBaselineRevocationPending receipt inventory remaining)
+        | otherwise -> Left RootSessionStaleAccessorOrderMismatch
+    ( RootSessionPostBaselineZeroProofPending receipt inventory
+      , RootSessionStableAccessorAbsenceConfirmed absence
+      ) -> do
+        requireExactAbsence inventory absence RootSessionStableAbsenceMismatch
+        withRootSessionPhase state (RootSessionClosed receipt absence)
     (RootSessionGenerateRootPending absence, RootSessionCancellationCompleted) -> do
       requireRootSessionCancellation state
       withRootSessionPhase state (RootSessionCancelledClean absence)
@@ -610,14 +691,20 @@ rootSessionEventIsSafetyTail event =
     RootSessionCurrentAccessorAbsenceConfirmed _ -> True
     RootSessionCancellationCompleted -> True
     RootSessionCancellationLatched _ -> True
-    RootSessionShortLivedRootGenerationStarted -> False
-    RootSessionAllowlistedBaselineArmed -> False
+    RootSessionShortLivedRootGenerationStarted -> True
+    RootSessionAllowlistedBaselineArmed -> True
 
 planRunningRootSession :: RootSessionState -> RootSessionPlan
 planRunningRootSession state =
   case rootSessionStatePhase state of
     RootSessionCancelIncompleteGenerateRoot ->
       RootSessionPlanCancelIncompleteGenerateRoot binding
+    RootSessionPreAuditorGenerateRootPending ->
+      RootSessionPlanGeneratePreAuditorRoot binding
+    RootSessionPreAuditorGenerateRootInFlight ->
+      RootSessionPlanAwaitPreAuditorRootAccessor binding
+    RootSessionPreAuditorAccessorJournalPending accessor ->
+      RootSessionPlanJournalPreAuditorAccessor binding accessor
     RootSessionInventoryStaleAccessors ->
       RootSessionPlanInventoryStaleAccessors generation
     RootSessionRevokeStaleAccessors inventory remaining ->
@@ -644,6 +731,14 @@ planRunningRootSession state =
       RootSessionPlanArmCurrentAccessorAbsenceCheck accessor
     RootSessionCurrentAbsencePending accessor _ ->
       RootSessionPlanProveCurrentAccessorAbsent accessor
+    RootSessionPostBaselineInventoryPending _ ->
+      RootSessionPlanInventoryPostBaselineAccessors generation
+    RootSessionPostBaselineRevocationPending _ _ remaining ->
+      case remaining of
+        accessor : _ -> RootSessionPlanRevokePostBaselineAccessor accessor
+        [] -> RootSessionPlanInventoryPostBaselineAccessors generation
+    RootSessionPostBaselineZeroProofPending _ inventory ->
+      RootSessionPlanProvePostBaselineZero inventory
     RootSessionClosed receipt absence ->
       RootSessionPlanComplete
         RootSessionCompletion
@@ -657,47 +752,7 @@ planRunningRootSession state =
   generation = rootSessionStorageGeneration binding
 
 planCancellingRootSession :: RootSessionState -> RootSessionPlan
-planCancellingRootSession state =
-  case rootSessionStatePhase state of
-    RootSessionCancelIncompleteGenerateRoot ->
-      RootSessionPlanCancelIncompleteGenerateRoot binding
-    RootSessionInventoryStaleAccessors ->
-      RootSessionPlanInventoryStaleAccessors generation
-    RootSessionRevokeStaleAccessors inventory remaining ->
-      planStaleAccessorCleanup inventory remaining
-    RootSessionStableAbsencePending inventory ->
-      RootSessionPlanProveStableAccessorAbsence inventory
-    RootSessionGenerateRootPending absence ->
-      RootSessionPlanFinishCancellation absence
-    RootSessionGenerateRootInFlight _ ->
-      RootSessionPlanCancelIncompleteGenerateRoot binding
-    RootSessionAccessorJournalPending _ accessor ->
-      RootSessionPlanJournalGeneratedAccessor binding accessor
-    RootSessionAccessorJournaled accessor ->
-      RootSessionPlanArmCurrentRevocation accessor
-    RootSessionBaselineMutationPending accessor ->
-      RootSessionPlanArmCurrentRevocation accessor
-    RootSessionBaselineApplied accessor ->
-      RootSessionPlanArmCurrentRevocation accessor
-    RootSessionBaselineReadBack accessor _ ->
-      RootSessionPlanArmCurrentRevocation accessor
-    RootSessionCurrentRevocationPending accessor _ ->
-      RootSessionPlanRevokeCurrentAccessor accessor
-    RootSessionCurrentRevoked accessor _ ->
-      RootSessionPlanArmCurrentAccessorAbsenceCheck accessor
-    RootSessionCurrentAbsencePending accessor _ ->
-      RootSessionPlanProveCurrentAccessorAbsent accessor
-    RootSessionClosed receipt absence ->
-      RootSessionPlanComplete
-        RootSessionCompletion
-          { completedRootSessionBinding = binding
-          , completedRootBaselineReadBack = receipt
-          , completedRootAccessorAbsence = absence
-          }
-    RootSessionCancelledClean absence -> RootSessionPlanCancelledClean absence
- where
-  binding = rootSessionStateBinding state
-  generation = rootSessionStorageGeneration binding
+planCancellingRootSession = planRunningRootSession
 
 planStaleAccessorCleanup
   :: RootAccessorInventory -> [RootPolicyAccessor] -> RootSessionPlan
@@ -805,12 +860,26 @@ phaseInvariantViolations binding phase =
       maybe [] (baselineViolations binding) receipt
     RootSessionCurrentAbsencePending _ receipt ->
       maybe [] (baselineViolations binding) receipt
+    RootSessionPostBaselineInventoryPending receipt ->
+      baselineViolations binding receipt
+    RootSessionPostBaselineRevocationPending receipt inventory remaining ->
+      baselineViolations binding receipt
+        ++ inventoryViolations binding inventory
+        ++ [ RootSessionRemainingAccessorNotInventoried accessor
+           | accessor <- remaining
+           , accessor `notElem` rootAccessorInventoryAccessors inventory
+           ]
+    RootSessionPostBaselineZeroProofPending receipt inventory ->
+      baselineViolations binding receipt ++ inventoryViolations binding inventory
     RootSessionClosed receipt absence ->
       baselineViolations binding receipt
-        ++ currentAbsenceViolations binding absence
+        ++ absenceGenerationViolations binding absence
     RootSessionCancelledClean absence ->
       absenceGenerationViolations binding absence
     RootSessionCancelIncompleteGenerateRoot -> []
+    RootSessionPreAuditorGenerateRootPending -> []
+    RootSessionPreAuditorGenerateRootInFlight -> []
+    RootSessionPreAuditorAccessorJournalPending _ -> []
     RootSessionInventoryStaleAccessors -> []
     RootSessionAccessorJournaled _ -> []
     RootSessionBaselineMutationPending _ -> []
@@ -856,24 +925,17 @@ baselineViolations binding receipt =
   expectedGeneration = rootSessionStorageGeneration binding
   actualGeneration = baselineReadBackStorageGeneration receipt
 
-currentAbsenceViolations
-  :: RootSessionBinding
-  -> AccessorAbsenceAttestation
-  -> [RootSessionInvariantViolation]
-currentAbsenceViolations binding absence =
-  absenceGenerationViolations binding absence
-    ++ case rootAccessorInventoryAccessors (accessorAbsenceInventory absence) of
-      [_] -> []
-      accessors ->
-        case accessors of
-          accessor : _ -> [RootSessionCurrentAbsenceDiffers accessor]
-          [] -> [RootSessionInventoryNotCanonical]
-
 rootSessionPhaseName :: RootSessionPhase -> String
 rootSessionPhaseName phase =
   case phase of
     RootSessionCancelIncompleteGenerateRoot ->
       "RootSessionCancelIncompleteGenerateRoot"
+    RootSessionPreAuditorGenerateRootPending ->
+      "RootSessionPreAuditorGenerateRootPending"
+    RootSessionPreAuditorGenerateRootInFlight ->
+      "RootSessionPreAuditorGenerateRootInFlight"
+    RootSessionPreAuditorAccessorJournalPending _ ->
+      "RootSessionPreAuditorAccessorJournalPending"
     RootSessionInventoryStaleAccessors -> "RootSessionInventoryStaleAccessors"
     RootSessionRevokeStaleAccessors _ _ -> "RootSessionRevokeStaleAccessors"
     RootSessionStableAbsencePending _ -> "RootSessionStableAbsencePending"
@@ -891,15 +953,41 @@ rootSessionPhaseName phase =
     RootSessionCurrentRevoked _ _ -> "RootSessionCurrentRevoked"
     RootSessionCurrentAbsencePending _ _ ->
       "RootSessionCurrentAbsencePending"
+    RootSessionPostBaselineInventoryPending _ ->
+      "RootSessionPostBaselineInventoryPending"
+    RootSessionPostBaselineRevocationPending {} ->
+      "RootSessionPostBaselineRevocationPending"
+    RootSessionPostBaselineZeroProofPending {} ->
+      "RootSessionPostBaselineZeroProofPending"
     RootSessionClosed _ _ -> "RootSessionClosed"
     RootSessionCancelledClean _ -> "RootSessionCancelledClean"
 
 -- Normal provisioner login -------------------------------------------------
 
 data ProvisionerSessionPhase
-  = ProvisionerLoggedOut
-  | ProvisionerLoginPending
+  = ProvisionerPreLoginCleanupPending
+  | ProvisionerLoggedOut !ProvisionerAccessorAbsenceAttestation
+  | ProvisionerLoginPending !ProvisionerAccessorAbsenceAttestation
   | ProvisionerLoggedIn !ProvisionerLoginReceipt
+  | ProvisionerBaselineApplyPending !ProvisionerLoginReceipt
+  | ProvisionerBaselineApplied !ProvisionerLoginReceipt
+  | ProvisionerBaselineReadBackPending !ProvisionerLoginReceipt
+  | ProvisionerBaselineReadBack
+      !ProvisionerLoginReceipt
+      !BaselineReadBackReceipt
+  | ProvisionerRevocationPending
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerRevoked
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerAbsencePending
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerClosed
+      !ProvisionerLoginReceipt
+      !BaselineReadBackReceipt
+      !ProvisionerAccessorAbsenceAttestation
   deriving stock (Eq, Show)
 
 data ProvisionerSessionState = ProvisionerSessionState
@@ -909,21 +997,63 @@ data ProvisionerSessionState = ProvisionerSessionState
   deriving stock (Eq, Show)
 
 data ProvisionerSessionCommand
-  = ArmProvisionerLogin
+  = ConfirmProvisionerPolicyAccessorsAbsent
+      !ProvisionerAccessorAbsenceAttestation
+  | ArmProvisionerLogin
   | ConfirmProvisionerLogin !ProvisionerLoginReceipt
+  | ArmProvisionerBaselineApply
+  | ConfirmProvisionerBaselineApplied
+  | ArmProvisionerBaselineReadBack
+  | ConfirmProvisionerBaselineReadBack !BaselineReadBackReceipt
+  | ArmProvisionerRevocation
+  | ConfirmProvisionerRevoked
+  | ArmProvisionerAccessorAbsenceCheck
+  | ConfirmProvisionerAccessorAbsent
+      !ProvisionerAccessorAbsenceAttestation
   | InvalidateProvisionerLogin
   deriving stock (Eq, Show)
 
 data ProvisionerSessionEvent
-  = ProvisionerLoginArmed
+  = ProvisionerPolicyAccessorsAbsent
+      !ProvisionerAccessorAbsenceAttestation
+  | ProvisionerLoginArmed
   | ProvisionerLoginConfirmed !ProvisionerLoginReceipt
+  | ProvisionerBaselineApplyArmed
+  | ProvisionerBaselineAppliedConfirmed
+  | ProvisionerBaselineReadBackArmed
+  | ProvisionerBaselineReadBackConfirmed !BaselineReadBackReceipt
+  | ProvisionerRevocationArmed
+  | ProvisionerRevocationConfirmed
+  | ProvisionerAccessorAbsenceCheckArmed
+  | ProvisionerAccessorAbsenceConfirmed
+      !ProvisionerAccessorAbsenceAttestation
   | ProvisionerLoginInvalidated
   deriving stock (Eq, Show)
 
 data ProvisionerSessionPlan
-  = ProvisionerPlanArmLogin !VaultStorageGeneration
+  = ProvisionerPlanCleanupPolicyAccessors !VaultStorageGeneration
+  | ProvisionerPlanArmLogin !VaultStorageGeneration
   | ProvisionerPlanLogin !VaultStorageGeneration
-  | ProvisionerPlanReady !ProvisionerLoginReceipt
+  | ProvisionerPlanArmBaselineApply !ProvisionerLoginReceipt
+  | ProvisionerPlanApplyBaseline !ProvisionerLoginReceipt
+  | ProvisionerPlanArmBaselineReadBack !ProvisionerLoginReceipt
+  | ProvisionerPlanReadBackBaseline !ProvisionerLoginReceipt
+  | ProvisionerPlanArmRevocation
+      !ProvisionerLoginReceipt
+      !BaselineReadBackReceipt
+  | ProvisionerPlanRevoke
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerPlanArmAccessorAbsence
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerPlanProveAccessorAbsent
+      !ProvisionerLoginReceipt
+      !(Maybe BaselineReadBackReceipt)
+  | ProvisionerPlanComplete
+      !ProvisionerLoginReceipt
+      !BaselineReadBackReceipt
+      !ProvisionerAccessorAbsenceAttestation
   deriving stock (Eq, Show)
 
 data ProvisionerSessionError
@@ -933,6 +1063,11 @@ data ProvisionerSessionError
   | ProvisionerSessionGenerationMismatch
       !VaultStorageGeneration
       !VaultStorageGeneration
+  | ProvisionerSessionReadBackMismatch
+      !BaselineReadBackReceipt
+      !BaselineReadBackReceipt
+  | ProvisionerSessionAbsenceTargetMismatch
+      !ProvisionerAccessor
   deriving stock (Eq, Show)
 
 newProvisionerSessionState
@@ -940,7 +1075,7 @@ newProvisionerSessionState
 newProvisionerSessionState completion =
   ProvisionerSessionState
     { provisionerSessionRootCompletion = completion
-    , provisionerSessionPhase = ProvisionerLoggedOut
+    , provisionerSessionPhase = ProvisionerPreLoginCleanupPending
     }
 
 decideProvisionerSession
@@ -958,13 +1093,43 @@ evolveProvisionerSession
   -> Either ProvisionerSessionError ProvisionerSessionState
 evolveProvisionerSession state event =
   case (provisionerSessionPhase state, event) of
-    (ProvisionerLoggedOut, ProvisionerLoginArmed) ->
-      Right state {provisionerSessionPhase = ProvisionerLoginPending}
-    (ProvisionerLoginPending, ProvisionerLoginConfirmed receipt) -> do
+    (ProvisionerPreLoginCleanupPending, ProvisionerPolicyAccessorsAbsent absence) -> do
+      requireProvisionerAbsenceGeneration state absence
+      Right state {provisionerSessionPhase = ProvisionerLoggedOut absence}
+    (ProvisionerLoggedOut absence, ProvisionerLoginArmed) ->
+      Right state {provisionerSessionPhase = ProvisionerLoginPending absence}
+    (ProvisionerLoginPending _, ProvisionerLoginConfirmed receipt) -> do
       requireProvisionerGeneration state receipt
       Right state {provisionerSessionPhase = ProvisionerLoggedIn receipt}
+    (ProvisionerLoggedIn receipt, ProvisionerBaselineApplyArmed) ->
+      Right state {provisionerSessionPhase = ProvisionerBaselineApplyPending receipt}
+    (ProvisionerBaselineApplyPending receipt, ProvisionerBaselineAppliedConfirmed) ->
+      Right state {provisionerSessionPhase = ProvisionerBaselineApplied receipt}
+    (ProvisionerBaselineApplied receipt, ProvisionerBaselineReadBackArmed) ->
+      Right state {provisionerSessionPhase = ProvisionerBaselineReadBackPending receipt}
+    (ProvisionerBaselineReadBackPending receipt, ProvisionerBaselineReadBackConfirmed readBack) -> do
+      requireProvisionerReadBack state readBack
+      Right state {provisionerSessionPhase = ProvisionerBaselineReadBack receipt readBack}
+    (ProvisionerBaselineReadBack receipt readBack, ProvisionerRevocationArmed) ->
+      Right
+        state
+          { provisionerSessionPhase =
+              ProvisionerRevocationPending receipt (Just readBack)
+          }
+    (ProvisionerRevocationPending receipt readBack, ProvisionerRevocationConfirmed) ->
+      Right state {provisionerSessionPhase = ProvisionerRevoked receipt readBack}
+    (ProvisionerRevoked receipt readBack, ProvisionerAccessorAbsenceCheckArmed) ->
+      Right state {provisionerSessionPhase = ProvisionerAbsencePending receipt readBack}
+    (ProvisionerAbsencePending receipt readBack, ProvisionerAccessorAbsenceConfirmed absence) -> do
+      requireProvisionerAccessorAbsence state receipt absence
+      Right
+        state
+          { provisionerSessionPhase = case readBack of
+              Just receiptReadBack -> ProvisionerClosed receipt receiptReadBack absence
+              Nothing -> ProvisionerLoggedOut absence
+          }
     (_, ProvisionerLoginInvalidated) ->
-      Right state {provisionerSessionPhase = ProvisionerLoggedOut}
+      Right state {provisionerSessionPhase = ProvisionerPreLoginCleanupPending}
     (phase, _) -> Left (ProvisionerSessionPhaseRefusal phase event)
 
 applyProvisionerSessionCommand
@@ -978,28 +1143,87 @@ applyProvisionerSessionCommand state command = do
 planProvisionerSession :: ProvisionerSessionState -> ProvisionerSessionPlan
 planProvisionerSession state =
   case provisionerSessionPhase state of
-    ProvisionerLoggedOut -> ProvisionerPlanArmLogin generation
-    ProvisionerLoginPending -> ProvisionerPlanLogin generation
-    ProvisionerLoggedIn receipt -> ProvisionerPlanReady receipt
+    ProvisionerPreLoginCleanupPending -> ProvisionerPlanCleanupPolicyAccessors generation
+    ProvisionerLoggedOut _ -> ProvisionerPlanArmLogin generation
+    ProvisionerLoginPending _ -> ProvisionerPlanLogin generation
+    ProvisionerLoggedIn receipt -> ProvisionerPlanArmBaselineApply receipt
+    ProvisionerBaselineApplyPending receipt -> ProvisionerPlanApplyBaseline receipt
+    ProvisionerBaselineApplied receipt -> ProvisionerPlanArmBaselineReadBack receipt
+    ProvisionerBaselineReadBackPending receipt -> ProvisionerPlanReadBackBaseline receipt
+    ProvisionerBaselineReadBack receipt readBack ->
+      ProvisionerPlanArmRevocation receipt readBack
+    ProvisionerRevocationPending receipt readBack ->
+      ProvisionerPlanRevoke receipt readBack
+    ProvisionerRevoked receipt readBack ->
+      ProvisionerPlanArmAccessorAbsence receipt readBack
+    ProvisionerAbsencePending receipt readBack ->
+      ProvisionerPlanProveAccessorAbsent receipt readBack
+    ProvisionerClosed receipt readBack absence ->
+      ProvisionerPlanComplete receipt readBack absence
  where
   generation = provisionerSessionGeneration state
 
 restartProvisionerSession :: ProvisionerSessionState -> ProvisionerSessionState
 restartProvisionerSession state =
-  state {provisionerSessionPhase = ProvisionerLoggedOut}
+  state {provisionerSessionPhase = restartedPhase}
+ where
+  restartedPhase = case provisionerSessionPhase state of
+    ProvisionerPreLoginCleanupPending -> ProvisionerPreLoginCleanupPending
+    ProvisionerLoggedOut _ -> ProvisionerPreLoginCleanupPending
+    ProvisionerLoginPending _ -> ProvisionerPreLoginCleanupPending
+    ProvisionerLoggedIn receipt -> ProvisionerRevocationPending receipt Nothing
+    ProvisionerBaselineApplyPending receipt -> ProvisionerRevocationPending receipt Nothing
+    ProvisionerBaselineApplied receipt -> ProvisionerRevocationPending receipt Nothing
+    ProvisionerBaselineReadBackPending receipt -> ProvisionerRevocationPending receipt Nothing
+    ProvisionerBaselineReadBack receipt readBack ->
+      ProvisionerRevocationPending receipt (Just readBack)
+    ProvisionerRevocationPending receipt readBack ->
+      ProvisionerRevocationPending receipt readBack
+    ProvisionerRevoked receipt readBack -> ProvisionerRevoked receipt readBack
+    ProvisionerAbsencePending receipt readBack ->
+      ProvisionerAbsencePending receipt readBack
+    closed@ProvisionerClosed {} -> closed
 
 provisionerSessionIsReady :: ProvisionerSessionState -> Bool
 provisionerSessionIsReady state =
   case provisionerSessionPhase state of
-    ProvisionerLoggedIn _ -> True
+    ProvisionerClosed {} -> True
     _ -> False
+
+provisionerPhaseReceipt
+  :: ProvisionerSessionPhase -> Maybe ProvisionerLoginReceipt
+provisionerPhaseReceipt phase = case phase of
+  ProvisionerPreLoginCleanupPending -> Nothing
+  ProvisionerLoggedOut _ -> Nothing
+  ProvisionerLoginPending _ -> Nothing
+  ProvisionerLoggedIn receipt -> Just receipt
+  ProvisionerBaselineApplyPending receipt -> Just receipt
+  ProvisionerBaselineApplied receipt -> Just receipt
+  ProvisionerBaselineReadBackPending receipt -> Just receipt
+  ProvisionerBaselineReadBack receipt _ -> Just receipt
+  ProvisionerRevocationPending receipt _ -> Just receipt
+  ProvisionerRevoked receipt _ -> Just receipt
+  ProvisionerAbsencePending receipt _ -> Just receipt
+  ProvisionerClosed receipt _ _ -> Just receipt
 
 provisionerEventForCommand
   :: ProvisionerSessionCommand -> ProvisionerSessionEvent
 provisionerEventForCommand command =
   case command of
+    ConfirmProvisionerPolicyAccessorsAbsent absence ->
+      ProvisionerPolicyAccessorsAbsent absence
     ArmProvisionerLogin -> ProvisionerLoginArmed
     ConfirmProvisionerLogin receipt -> ProvisionerLoginConfirmed receipt
+    ArmProvisionerBaselineApply -> ProvisionerBaselineApplyArmed
+    ConfirmProvisionerBaselineApplied -> ProvisionerBaselineAppliedConfirmed
+    ArmProvisionerBaselineReadBack -> ProvisionerBaselineReadBackArmed
+    ConfirmProvisionerBaselineReadBack readBack ->
+      ProvisionerBaselineReadBackConfirmed readBack
+    ArmProvisionerRevocation -> ProvisionerRevocationArmed
+    ConfirmProvisionerRevoked -> ProvisionerRevocationConfirmed
+    ArmProvisionerAccessorAbsenceCheck -> ProvisionerAccessorAbsenceCheckArmed
+    ConfirmProvisionerAccessorAbsent absence ->
+      ProvisionerAccessorAbsenceConfirmed absence
     InvalidateProvisionerLogin -> ProvisionerLoginInvalidated
 
 requireProvisionerGeneration
@@ -1012,6 +1236,42 @@ requireProvisionerGeneration state receipt
  where
   expected = provisionerSessionGeneration state
   actual = provisionerLoginStorageGeneration receipt
+
+requireProvisionerAbsenceGeneration
+  :: ProvisionerSessionState
+  -> ProvisionerAccessorAbsenceAttestation
+  -> Either ProvisionerSessionError ()
+requireProvisionerAbsenceGeneration state absence
+  | actual == expected = Right ()
+  | otherwise = Left (ProvisionerSessionGenerationMismatch expected actual)
+ where
+  expected = provisionerSessionGeneration state
+  actual =
+    provisionerAccessorInventoryGeneration
+      (provisionerAccessorAbsenceInventory absence)
+
+requireProvisionerReadBack
+  :: ProvisionerSessionState
+  -> BaselineReadBackReceipt
+  -> Either ProvisionerSessionError ()
+requireProvisionerReadBack state actual
+  | actual == expected = Right ()
+  | otherwise = Left (ProvisionerSessionReadBackMismatch expected actual)
+ where
+  expected = completedRootBaselineReadBack (provisionerSessionRootCompletion state)
+
+requireProvisionerAccessorAbsence
+  :: ProvisionerSessionState
+  -> ProvisionerLoginReceipt
+  -> ProvisionerAccessorAbsenceAttestation
+  -> Either ProvisionerSessionError ()
+requireProvisionerAccessorAbsence state receipt absence = do
+  requireProvisionerAbsenceGeneration state absence
+  if provisionerLoginAccessor receipt
+    `elem` provisionerAccessorInventoryAccessors
+      (provisionerAccessorAbsenceInventory absence)
+    then Right ()
+    else Left (ProvisionerSessionAbsenceTargetMismatch (provisionerLoginAccessor receipt))
 
 provisionerSessionGeneration
   :: ProvisionerSessionState -> VaultStorageGeneration
@@ -1263,6 +1523,23 @@ data BootstrapProjectionInvariantViolation
   | BootstrapProjectionHandoffReceiptGenerationDiffers
   deriving stock (Eq, Show)
 
+deriving stock instance Generic RootSessionBinding
+deriving anyclass instance Serialise RootSessionBinding
+deriving stock instance Generic RootSessionCompletion
+deriving anyclass instance Serialise RootSessionCompletion
+deriving stock instance Generic RootSessionPhase
+deriving anyclass instance Serialise RootSessionPhase
+deriving stock instance Generic RootSessionState
+deriving anyclass instance Serialise RootSessionState
+deriving stock instance Generic ProvisionerSessionPhase
+deriving anyclass instance Serialise ProvisionerSessionPhase
+deriving stock instance Generic ProvisionerSessionState
+deriving anyclass instance Serialise ProvisionerSessionState
+deriving stock instance Generic PostUnsealHandoffPhase
+deriving anyclass instance Serialise PostUnsealHandoffPhase
+deriving stock instance Generic PostUnsealHandoffState
+deriving anyclass instance Serialise PostUnsealHandoffState
+
 mkBootstrapProjection
   :: RootInitState
   -> VaultSealState
@@ -1349,10 +1626,11 @@ bootstrapProjectionInvariantViolations projection =
             | provisionerSessionRootCompletion session /= completion
             ]
               ++ case provisionerSessionPhase session of
-                ProvisionerLoggedIn receipt ->
-                  [ BootstrapProjectionProvisionerGenerationDiffers
-                  | provisionerLoginStorageGeneration receipt /= rootGeneration
-                  ]
+                phase
+                  | Just receipt <- provisionerPhaseReceipt phase ->
+                      [ BootstrapProjectionProvisionerGenerationDiffers
+                      | provisionerLoginStorageGeneration receipt /= rootGeneration
+                      ]
                 _ -> []
 
   childViolations =

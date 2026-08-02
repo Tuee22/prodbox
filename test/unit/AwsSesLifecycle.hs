@@ -20,13 +20,10 @@ import Prodbox.Infra.AwsSesStack
   ( AwsSesPresenceInventory (..)
   , AwsSesResource (..)
   , AwsSesStackSnapshot (..)
-  , AwsSesTransactionStage (..)
-  , awsSesDesiredPresentStages
   , awsSesPresenceInventoryComplete
   , awsSesTargetSelectionForSink
   , defaultAwsSesTargetSelection
   , parseAwsSesStackFromOutputs
-  , runAwsSesTransactionStagesWith
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -38,36 +35,35 @@ import TestSupport
 
 awsSesLifecycleSuite :: SuiteBuilder ()
 awsSesLifecycleSuite =
-  describe "Sprint 4.47 production SES transaction" $ do
-    it "orders reconcile, semantic readiness, then fenced SMTP materialization" $
-      awsSesDesiredPresentStages
-        `shouldBe` [ AwsSesStageReconcile
-                   , AwsSesStageAwaitReady
-                   , AwsSesStageRepairAndMaterializeSmtp
+  describe "Sprint 4.47 frozen pre-cutover SES counterexample" $ do
+    it "records the superseded non-credential ordering without a production capability" $
+      frozenAwsSesDesiredPresentStages
+        `shouldBe` [ FrozenAwsSesStageReconcile
+                   , FrozenAwsSesStageAwaitReady
                    ]
 
-    it "runs SMTP materialization only after the production await stage succeeds" $ do
+    it "preserves the historical fail-fast trace as test-only evidence" $ do
       successfulTrace <- newIORef []
       successful <-
-        runAwsSesTransactionStagesWith $ \stage -> do
+        runFrozenAwsSesTransactionStagesWith $ \stage -> do
           modifyIORef' successfulTrace (++ [stage])
           pure (Right () :: Either String ())
       successful `shouldBe` Right ()
-      readIORef successfulTrace `shouldReturn` awsSesDesiredPresentStages
+      readIORef successfulTrace `shouldReturn` frozenAwsSesDesiredPresentStages
 
       mapM_
         ( \failureDetail -> do
             failedTrace <- newIORef []
             failed <-
-              runAwsSesTransactionStagesWith $ \stage -> do
+              runFrozenAwsSesTransactionStagesWith $ \stage -> do
                 modifyIORef' failedTrace (++ [stage])
                 pure $
-                  if stage == AwsSesStageAwaitReady
+                  if stage == FrozenAwsSesStageAwaitReady
                     then Left failureDetail
                     else Right ()
             failed `shouldBe` Left failureDetail
             readIORef failedTrace
-              `shouldReturn` [AwsSesStageReconcile, AwsSesStageAwaitReady]
+              `shouldReturn` [FrozenAwsSesStageReconcile, FrozenAwsSesStageAwaitReady]
         )
         ( [ "semantic readiness timed out"
           , "semantic readiness Failed"
@@ -83,7 +79,6 @@ awsSesLifecycleSuite =
               [ AwsSesReceiveRule
               , AwsSesCaptureBucket
               , AwsSesCaptureReadinessObject
-              , AwsSesSmtpIamUser
               , AwsSesReceiveRuleSet
               ]
           }
@@ -92,7 +87,6 @@ awsSesLifecycleSuite =
         AwsSesPresenceInventory
           { awsSesPresentResources =
               [ AwsSesCaptureBucket
-              , AwsSesSmtpIamUser
               , AwsSesReceiveRuleSet
               ]
           }
@@ -119,14 +113,11 @@ awsSesLifecycleSuite =
       awsSesTargetSelectionForSink testAuthority homeTarget
         `shouldBe` defaultAwsSesTargetSelection testAuthority
 
-    it "accepts a scoped live endpoint only for the canonical AWS target" $
+    it "accepts the canonical AWS target coordinate" $
       awsSesTargetSelectionForSink testAuthority awsTarget
         `shouldSatisfy` isRight
 
-    it "rejects home endpoint substitution and noncanonical identities" $ do
-      awsSesTargetSelectionForSink testAuthority substitutedHomeTarget
-        `shouldBe` Left
-          "selected SES home target must exactly match the retained authority sink"
+    it "rejects noncanonical target identities" $ do
       awsSesTargetSelectionForSink testAuthority otherTarget
         `shouldBe` Left
           "selected SES target identity is neither the retained home authority nor canonical AWS EKS"
@@ -136,11 +127,38 @@ awsSesLifecycleSuite =
         `shouldBe` Left
           "selected SES AWS target must use the canonical SMTP secret coordinate"
 
+-- Frozen evidence of the retired host-direct transaction shape. Keeping this
+-- private to the test suite prevents it from becoming a production capability
+-- while retaining the historical failure-order counterexample.
+data FrozenAwsSesTransactionStage
+  = FrozenAwsSesStageReconcile
+  | FrozenAwsSesStageAwaitReady
+  deriving (Eq, Show)
+
+frozenAwsSesDesiredPresentStages :: [FrozenAwsSesTransactionStage]
+frozenAwsSesDesiredPresentStages =
+  [ FrozenAwsSesStageReconcile
+  , FrozenAwsSesStageAwaitReady
+  ]
+
+runFrozenAwsSesTransactionStagesWith
+  :: (Monad action)
+  => (FrozenAwsSesTransactionStage -> action (Either failure ()))
+  -> action (Either failure ())
+runFrozenAwsSesTransactionStagesWith runStage =
+  go frozenAwsSesDesiredPresentStages
+ where
+  go [] = pure (Right ())
+  go (stage : remaining) = do
+    result <- runStage stage
+    case result of
+      Left failure -> pure (Left failure)
+      Right () -> go remaining
+
 testAuthority :: LongLivedCheckpointAuthority
 testAuthority =
   case mkLongLivedCheckpointAuthority
     "prodbox-home"
-    "http://127.0.0.1:31822"
     "prodbox-state"
     "model-b"
     "prodbox" of
@@ -149,33 +167,27 @@ testAuthority =
 
 homeTarget :: TargetClusterSecretSink
 homeTarget =
-  targetSink "prodbox-home" "http://127.0.0.1:31822" "keycloak/smtp"
+  targetSink "prodbox-home" "keycloak/smtp"
 
 awsTarget :: TargetClusterSecretSink
 awsTarget =
   targetSink
     (Text.pack awsEksCanonicalClusterName)
-    "http://127.0.0.1:43117"
     "keycloak/smtp"
-
-substitutedHomeTarget :: TargetClusterSecretSink
-substitutedHomeTarget =
-  targetSink "prodbox-home" "http://127.0.0.1:49999" "keycloak/smtp"
 
 otherTarget :: TargetClusterSecretSink
 otherTarget =
-  targetSink "some-other-cluster" "http://127.0.0.1:43117" "keycloak/smtp"
+  targetSink "some-other-cluster" "keycloak/smtp"
 
 substitutedAwsTarget :: TargetClusterSecretSink
 substitutedAwsTarget =
   targetSink
     (Text.pack awsEksCanonicalClusterName)
-    "http://127.0.0.1:43117"
     "somewhere/else"
 
-targetSink :: Text.Text -> Text.Text -> Text.Text -> TargetClusterSecretSink
-targetSink identity endpoint path =
-  case mkTargetClusterSecretSink identity endpoint "secret" path of
+targetSink :: Text.Text -> Text.Text -> TargetClusterSecretSink
+targetSink identity path =
+  case mkTargetClusterSecretSink identity "secret" path of
     Left err -> error (show err)
     Right target -> target
 
@@ -195,7 +207,4 @@ canonicalSesOutputs =
     , ("capture_bucket_arn", "arn:aws:s3:::prodbox-test-ses-capture")
     , ("capture_bucket_key_prefix", "inbound/")
     , ("capture_readiness_key", "inbound/.prodbox-readiness-capability-probe")
-    , ("smtp_endpoint", "email-smtp.us-east-1.amazonaws.com")
-    , ("smtp_iam_user_name", "prodbox-ses-smtp")
-    , ("smtp_iam_user_arn", "arn:aws:iam::123456789012:user/prodbox-ses-smtp")
     ]

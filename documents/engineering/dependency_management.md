@@ -33,10 +33,14 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   selects its role through the pod `args:` (`gateway start` vs `workload start`); the image's
   `ENTRYPOINT` is bare `tini -- prodbox`. The image follows the single-stage `ubuntu:24.04`
   doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
-  PID 1. The current pre-cutover image includes the official AWS CLI bundle; target Gateway Runtime
-  and Credential Provisioner never shell out to it. Provider/Admin Action workers may retain only
-  operation-scoped Pulumi child use; native home DNS and IAM/S3/STS/Route53/ServiceQuotas adapters
-  do not depend on the CLI. The supported custom-image publish path
+  PID 1. The image includes the official AWS CLI bundle and pins Pulumi CLI `3.228.0`; it copies
+  the four checked-in YAML programs to `/opt/build/pulumi/`. The Provider Worker can select only
+  the three compiled non-SES program paths (`aws-eks`, `aws-eks-subzone`, and `aws-test`); its four
+  SES resource arms use the exact native client and cannot construct SMTP IAM. Target Gateway
+  Runtime and Credential Provisioner never shell out
+  to either tool. Provider/Admin Action workers may retain only operation-scoped Pulumi child use;
+  native home DNS and IAM/S3/STS/Route53/ServiceQuotas adapters do not depend on the CLI. The
+  supported custom-image publish path
   uses ordinary host-native `docker build` plus `docker push` to the canonical in-cluster registry endpoint (`127.0.0.1:30080`).
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
@@ -150,7 +154,8 @@ daemon authentication.
 - Haskell quality tools: `fourmolu`, `hlint`
 - Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
-- Infrastructure tooling: `pulumi`
+- Infrastructure tooling: Pulumi CLI `3.228.0` in the union runtime image; host-side `pulumi`
+  remains an explicit prerequisite only for pre-cutover operator surfaces tracked for deletion
 - Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
 
 `prodbox dev lint haskell` and `prodbox dev check` bootstrap the repo-local style-tool sandbox at
@@ -179,11 +184,13 @@ Checklist:
 
 ## Toolchain Pinning
 
-The exact GHC and Cabal versions every project under this doctrine builds with:
+The exact GHC and Cabal versions every project under this doctrine builds with, plus the Provider
+Worker image's exact Pulumi CLI version, are:
 
 ```text
 GHC 9.12.4
 Cabal 3.16.1.0
+Pulumi CLI 3.228.0 (Provider Worker image)
 ```
 
 These are not floors or recommendations. The `.cabal` file declares

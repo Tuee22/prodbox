@@ -16,6 +16,7 @@ module Prodbox.TestRunner
   , awsSubstrateBootstrapPreMonitorSteps
   , awsSubstrateBootstrapPostMonitorSteps
   , awsPostflightDestroyCommandArgs
+  , awsHarnessCleanupTopology
   , GatewayRuntimeValidationBoundary (..)
   , gatewayRuntimeValidationBoundary
   , publicEdgeCertificateReissueStatusPatch
@@ -39,7 +40,6 @@ import Control.Exception
   ( SomeException
   , displayException
   , finally
-  , throwIO
   , try
   )
 import Control.Monad (foldM, unless)
@@ -47,6 +47,7 @@ import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
 import Data.List (dropWhileEnd, find, isInfixOf, isPrefixOf)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -57,7 +58,6 @@ import Prodbox.Aws
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   )
-import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -80,13 +80,18 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
-  , gatewayNamespace
-  , observeGatewayBackendRoundTripOnceAt
-  , observeGatewayReadyzOnceAt
+  , reconcileAcmeEabFixture
   , rke2InstallPresent
+  , runCascadeDrainResult
   )
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityTestHarness)
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  , withTargetSecretAgentAuthenticatedTransport
+  )
 import Prodbox.EffectDAG
   ( fromRootIds
   )
@@ -95,22 +100,12 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Gateway.PortForward
-  ( GatewayServicePortForward (..)
-  , renderGatewayPortForwardError
-  , withGatewayServicePortForward
-  )
-import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
-  , withEksKubeconfig
   )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Lib.ChartPlatform
-  ( gatewayRestServiceName
-  , gatewayRestServicePort
-  , renderPublicEdgePreserveOutcome
+  ( renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   )
 import Prodbox.Lib.Storage
@@ -118,20 +113,17 @@ import Prodbox.Lib.Storage
   , testDataRootRelative
   , testManualPvHostRootEnv
   )
-import Prodbox.Lifecycle.AuthorityConfig
-  ( checkpointGatewayNodePort
-  , resolveLongLivedCheckpointAuthority
-  )
+import Prodbox.Lifecycle.AuthorityConfig (resolveLongLivedCheckpointAuthority)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( checkpointAuthorityClusterId
-  , checkpointAuthorityGatewayEndpoint
-  , mkTargetClusterSecretSink
   )
-import Prodbox.Lifecycle.Preconditions
-  ( checkAll
-  , renderPreconditionFailures
-  )
+import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
+import Prodbox.Lifecycle.ResourceRegistry
+  ( ManagedResource (resourceName)
+  , managedDestroyCapability
+  , perRunManagedResources
+  )
 import Prodbox.Lifecycle.RestoreGraph
   ( RestoreNodeResult (..)
   , RestoreOutcome (..)
@@ -160,17 +152,15 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , DomainSection (..)
   , Route53Section (..)
-  , ValidatedSettings (..)
+  , SeedInForceOutcome
   , acme
   , aws
   , defaultConfigFile
   , deployment
   , domain
-  , forceSyncInForceConfigFromFile
   , loadTestTopology
-  , resolveAwsCredentialsRefFromHostVault
+  , reconcileInForceConfigFromFile
   , route53
-  , validateAndLoadSettings
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -180,6 +170,23 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Test.CleanupRun
+  ( CleanupDependencyKind (..)
+  , CleanupNodeOutcome (..)
+  , CleanupNodeState (..)
+  , CleanupRunReport (..)
+  )
+import Prodbox.Test.CleanupRunRunner
+  ( CleanupRunDriverResult (..)
+  )
+import Prodbox.Test.DurableCleanupComposition
+  ( runDurableCleanupComposition
+  )
+import Prodbox.Test.ManagedCleanupPlan
+  ( CapabilityBoundCleanupAction (..)
+  , ManagedCleanupEdge (..)
+  , managedResourceCleanupAction
+  )
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -199,7 +206,6 @@ import Prodbox.TestRestore
   , RetainedSesPreparationStep (..)
   , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
-  , gatewayDaemonLivenessPrecondition
   , restoreChartId
   , restoreStepResetsGatewayHealthyWindow
   , retainedSesPreparationTrace
@@ -216,6 +222,7 @@ import Prodbox.TestValidation
   , GatewayRuntimeStabilityRecorder
   , newGatewayRuntimeStabilityRecorder
   , pauseGatewayRuntimeStabilityMonitor
+  , recordGatewayMeasuredProfile
   , recordGatewayRuntimeStabilitySample
   , refreshGatewayRuntimeStabilityMonitor
   , resetGatewayRuntimeStabilityHealthyWindow
@@ -330,7 +337,7 @@ runLegacyTestCommand repoRoot command = do
   environment <- addBuildSupportEnvironment repoRoot baseEnvironment
   let plan = testExecutionPlan (testSubstrate command) (testScope command)
   writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
-  case testScope command of
+  testExit <- case testScope command of
     TestLint -> runLintFirst repoRoot environment
     TestAll -> do
       lintExit <- runLintFirst repoRoot environment
@@ -339,6 +346,9 @@ runLegacyTestCommand repoRoot command = do
           runPlannedTests repoRoot environment plan
         failure@(ExitFailure _) -> pure failure
     _ -> runPlannedTests repoRoot environment plan
+  case (testExit, testRecordProfile command) of
+    (ExitSuccess, True) -> recordGatewayMeasuredProfile (testSubstrate command) repoRoot
+    _ -> pure testExit
 
 runTestModePreflight :: FilePath -> IO ExitCode
 runTestModePreflight repoRoot = do
@@ -563,8 +573,6 @@ topologyConfigSetupInput testDataPath =
     , configSetupDemoTtlInput = demo_ttl (domain defaultConfigFile)
     , configSetupAcmeEmailInput = email (acme defaultConfigFile)
     , configSetupAcmeServerInput = server (acme defaultConfigFile)
-    , configSetupAcmeEabKeyIdInput = Nothing
-    , configSetupAcmeEabHmacKeyInput = Nothing
     , configSetupDevModeInput = dev_mode (deployment defaultConfigFile)
     , configSetupBootstrapPublicIpOverrideInput =
         bootstrap_public_ip_override (deployment defaultConfigFile)
@@ -598,6 +606,7 @@ testScopeForTopologySuite suiteName =
     "gateway-daemon" -> Right (TestIntegration IntegrationGatewayDaemon)
     "gateway-pods" -> Right (TestIntegration IntegrationGatewayPods)
     "gateway-partition" -> Right (TestIntegration IntegrationGatewayPartition)
+    "control-plane-counterexample" -> Right (TestIntegration IntegrationControlPlaneCounterexample)
     "ha-rke2-aws" -> Right (TestIntegration IntegrationHaRke2Aws)
     "lifecycle" -> Right (TestIntegration IntegrationLifecycle)
     "pulumi" -> Right (TestIntegration IntegrationPulumi)
@@ -781,19 +790,28 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
                   -- reconcile (which reads the in-force SSoT) sees the populated
                   -- `route53.zone_id`. Fixes a cluster established before the
                   -- operator fields were populated (stale SSoT).
-                  syncExit <- runForceSyncInForceConfig repoRoot
+                  syncExit <- runReconcileInForceConfig repoRoot
                   case syncExit of
                     failure@(ExitFailure _) -> pure failure
                     ExitSuccess -> do
-                      setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
-                      case setupExit of
-                        failure@(ExitFailure _) -> pure failure
-                        ExitSuccess ->
-                          runWithAwsHarnessCleanup
-                            repoRoot
-                            environment
-                            suitePlan
-                            (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
+                      runWithAwsHarnessCleanup
+                        repoRoot
+                        environment
+                        suitePlan
+                        ( do
+                            setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
+                            case setupExit of
+                              failure@(ExitFailure _) -> pure failure
+                              ExitSuccess -> do
+                                ingressExit <-
+                                  if harnessNeedsVaultBeforeSetup suitePlan
+                                    then runHarnessAcmeEabIngress repoRoot
+                                    else pure ExitSuccess
+                                case ingressExit of
+                                  failure@(ExitFailure _) -> pure failure
+                                  ExitSuccess ->
+                                    runNativeSuiteBody repoRoot environment haskellSuites suitePlan
+                        )
 
 -- | Sprint 7.6 orphan-safety: run the suite body, then destroy every
 -- per-run Pulumi stack the suite may have provisioned before clearing
@@ -827,64 +845,127 @@ runWithAwsHarnessCleanup
   -> IO ExitCode
   -> IO ExitCode
 runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
-  result <- try body :: IO (Either SomeException ExitCode)
-  destroyExit <- runSequentially (awsPostflightDestroyActions repoRoot environment suitePlan)
-  cleanupExit <- runConditionalHarnessTeardown destroyExit
-  case result of
-    Left exc -> do
-      writeDiagnosticLine
-        ("AWS harness cleanup ran after async exception: " ++ show exc)
-      _ <- writeReason destroyExit cleanupExit
-      throwIO exc
-    Right suiteExit ->
-      pure
-        ( preferEarlierFailure
-            suiteExit
-            (preferEarlierFailure destroyExit cleanupExit)
-        )
- where
-  -- Sprint 7.10: clear operational @aws.*@ + delete the operational
-  -- @prodbox@ user only when the per-run destroy succeeded. On a
-  -- per-run destroy failure, preserve the operational credentials so the
-  -- orphaned per-run resources can be destroyed on retry, and explain the
-  -- recovery path.
-  runConditionalHarnessTeardown :: ExitCode -> IO ExitCode
-  runConditionalHarnessTeardown destroyExit
-    | clearOperationalCredsAfterPostflight destroyExit =
-        runManagedAwsHarnessTeardown repoRoot
-    | otherwise = do
-        writeDiagnosticLine
-          ( "Per-run AWS postflight cleanup failed ("
-              ++ show destroyExit
-              ++ "); the per-run AWS stacks (aws-eks, aws-eks-subzone, "
-              ++ "aws-test) or test-scoped EBS volumes may still hold live resources. PRESERVING "
-              ++ "operational aws.* and the operational `prodbox` IAM "
-              ++ "user so the orphaned per-run resources can be destroyed on "
-              ++ "retry. Skipping the operational-credential teardown to "
-              ++ "avoid stranding the orphans without the credentials "
-              ++ "required to delete them. Recover with: resolve the "
-              ++ "destroy failure (e.g. wait out / clean up the orphan "
-              ++ "ENIs behind a DependencyViolation), then "
-              ++ "`prodbox aws stack <stack> destroy --yes` for each "
-              ++ "remaining per-run stack, `prodbox aws ebs reap-test --yes` "
-              ++ "for any test-scoped EBS volumes, then `prodbox aws teardown` to "
-              ++ "clear the operational credentials."
+  planned <- awsHarnessCleanupPlan repoRoot environment suitePlan
+  case planned of
+    Left detail -> failWith detail
+    Right (recoveryActions, actions, edges) -> do
+      driven <-
+        runDurableCleanupComposition
+          repoRoot
+          recoveryActions
+          actions
+          edges
+          ( do
+              exitCode <- body
+              pure $ case exitCode of
+                ExitSuccess -> Right ExitSuccess
+                ExitFailure code -> Left (Text.pack ("suite exited " ++ show code))
           )
-        -- The per-run destroy failure is already surfaced as the
-        -- composed exit code; the held teardown is not itself a failure.
-        pure ExitSuccess
+      case driven of
+        Left detail -> failWith ("Durable AWS harness cleanup failed: " ++ show detail)
+        Right result -> do
+          let report = cleanupDriverReport result
+              cleanupFailed = any cleanupNodeFailed (Map.elems (cleanupReportNodeStates report))
+          if cleanupFailed
+            then do
+              writeDiagnosticLine ("Durable AWS harness cleanup report: " ++ show report)
+              pure (ExitFailure 1)
+            else case cleanupDriverPrimaryValue result of
+              Just exitCode -> pure exitCode
+              Nothing -> pure (ExitFailure 1)
 
-  writeReason :: ExitCode -> ExitCode -> IO ()
-  writeReason destroyExit cleanupExit =
-    case (destroyExit, cleanupExit) of
-      (ExitSuccess, ExitSuccess) -> pure ()
-      _ ->
-        writeDiagnosticLine
-          ( "AWS harness cleanup non-zero: destroy="
-              ++ show destroyExit
-              ++ ", harnessTeardown="
-              ++ show cleanupExit
-          )
+cleanupNodeFailed :: CleanupNodeState -> Bool
+cleanupNodeFailed state = case state of
+  CleanupNodeCompleted _ CleanupNodeSucceeded -> False
+  CleanupNodeCompleted _ (CleanupNodeFailed _) -> True
+  CleanupNodeBlocked _ -> True
+  CleanupNodePending -> True
+  CleanupNodeRunning _ -> True
+
+awsHarnessCleanupPlan
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> IO
+       ( Either
+           String
+           ( [CapabilityBoundCleanupAction]
+           , [CapabilityBoundCleanupAction]
+           , [ManagedCleanupEdge]
+           )
+       )
+awsHarnessCleanupPlan repoRoot environment suitePlan = do
+  let includePerRun = nativeMayProvisionPerRunAwsStacks suitePlan
+  pure $ do
+    recoveryActions <- cleanupActions True
+    actions <- cleanupActions includePerRun
+    let (_, edges) = awsHarnessCleanupTopology suitePlan
+    Right (recoveryActions, actions, edges)
+ where
+  cleanupActions includePerRun = do
+    let resources = if includePerRun then perRunManagedResources else []
+    managed <- traverse (either (Left . show) Right . managedResourceCleanupAction) resources
+    drain <- if includePerRun then fmap pure (cleanupAction "aws-k8s-drain" runDrain) else Right []
+    unseal <-
+      if includePerRun
+        then fmap pure (cleanupCommandAction "aws-vault-unseal" ["vault", "unseal"])
+        else Right []
+    ebs <-
+      if includePerRun
+        then fmap pure (cleanupCommandAction "aws-test-ebs" ["aws", "ebs", "reap-test", "--yes"])
+        else Right []
+    teardown <- fmap pure (cleanupAction "aws-operational-teardown" runManagedTeardown)
+    Right (drain ++ unseal ++ managed ++ ebs ++ teardown)
+
+  cleanupCommandAction name arguments =
+    cleanupAction name (runNativeCliCommandForExitCode repoRoot environment arguments)
+  cleanupAction name action = do
+    capability <- Right =<< managedDestroyCapability name
+    Right
+      CapabilityBoundCleanupAction
+        { capabilityBoundCleanupName = name
+        , capabilityBoundCleanupRef = capability
+        , executeCapabilityBoundCleanup = const (exitOutcome <$> action)
+        }
+  runDrain = do
+    result <- runCascadeDrainResult repoRoot SubstrateAws
+    pure $ case result of
+      K8sDrain.DrainSucceeded -> ExitSuccess
+      K8sDrain.DrainSkipped _ -> ExitFailure 1
+      K8sDrain.DrainTimedOut _ -> ExitFailure 1
+      K8sDrain.DrainFailed _ -> ExitFailure 1
+  runManagedTeardown = runManagedAwsHarnessTeardown repoRoot
+  exitOutcome exitCode = case exitCode of
+    ExitSuccess -> CleanupNodeSucceeded
+    ExitFailure code -> CleanupNodeFailed (Text.pack ("cleanup exited " ++ show code))
+
+awsHarnessCleanupTopology :: NativeSuitePlan -> ([String], [ManagedCleanupEdge])
+awsHarnessCleanupTopology suitePlan =
+  let includePerRun = nativeMayProvisionPerRunAwsStacks suitePlan
+      names = [resourceName resource | includePerRun, resource <- perRunManagedResources]
+      actionNames =
+        (if includePerRun then ["aws-k8s-drain", "aws-vault-unseal"] else [])
+          ++ names
+          ++ ["aws-test-ebs" | includePerRun]
+          ++ ["aws-operational-teardown"]
+      chain = zipWith requiresAttempt names (drop 1 names)
+      prefix = case names of
+        [] -> []
+        firstName : _ ->
+          [ ManagedCleanupEdge "aws-k8s-drain" CleanupRequiresAttempt "aws-vault-unseal"
+          , ManagedCleanupEdge "aws-vault-unseal" CleanupRequiresAttempt firstName
+          ]
+      ebsEdges = case reverse names of
+        [] -> []
+        finalName : _ -> [ManagedCleanupEdge finalName CleanupRequiresAttempt "aws-test-ebs"]
+      credentialEdges =
+        [ ManagedCleanupEdge resource CleanupRequiresSuccess "aws-operational-teardown"
+        | resource <- names ++ ["aws-test-ebs" | includePerRun]
+        ]
+   in (actionNames, prefix ++ chain ++ ebsEdges ++ credentialEdges)
+ where
+  requiresAttempt predecessor successor =
+    ManagedCleanupEdge predecessor CleanupRequiresAttempt successor
 
 -- | Sprint 7.10 pure decision: should the operational-credential
 -- teardown ('runManagedAwsHarnessTeardown') run after the per-run
@@ -901,29 +982,6 @@ clearOperationalCredsAfterPostflight destroyExit =
   case destroyExit of
     ExitSuccess -> True
     ExitFailure _ -> False
-
-awsPostflightDestroyActions
-  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
-awsPostflightDestroyActions repoRoot environment suitePlan =
-  case awsPostflightDestroyCommandArgs suitePlan of
-    [] -> []
-    commands ->
-      emitLineAction
-        ( "Auto-destroying per-run AWS Pulumi stacks (aws-eks, "
-            ++ "aws-eks-subzone, aws-test). aws-ses is retained per the "
-            ++ "long-lived cross-substrate shared-infrastructure class."
-        )
-        -- The `lifecycle` validation tears the cluster down and reconciles it,
-        -- which brings up a fresh Vault that auto-unseals from the durable unlock
-        -- bundle — but under host memory pressure that unseal can lose the race,
-        -- leaving Vault sealed. Every per-run destroy needs Vault (Pulumi backend
-        -- in MinIO + AWS deployment credentials), so an idempotent `vault unseal`
-        -- here (no-op when already unsealed) closes the teardown→destroy race; if
-        -- the cluster is genuinely down it fails and the destroys are skipped,
-        -- preserving the operational credentials for manual recovery as before.
-        : runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
-        : map (runNativeCliCommandForExitCode repoRoot environment) commands
-        ++ [runNativeCliCommandForExitCode repoRoot environment ["aws", "ebs", "reap-test", "--yes"]]
 
 awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
 awsPostflightDestroyCommandArgs suitePlan =
@@ -1621,76 +1679,27 @@ prepareRetainedSesForSubstrate repoRoot _environment substrate preparationPlan =
         SubstrateHomeLocal -> prepareHome authority
         SubstrateAws -> prepareAws authority
  where
-  prepareHome authority = do
-    let endpoint =
-          GatewayClient.hostLoopbackGatewayEndpoint checkpointGatewayNodePort
-    if Text.pack (peerRestUrl endpoint)
-      /= checkpointAuthorityGatewayEndpoint authority
-      then
-        failWith
-          "Retained SES preparation refused: the canonical home gateway endpoint does not match the retained checkpoint authority."
-      else case mkTargetClusterSecretSink
-        (checkpointAuthorityClusterId authority)
-        (checkpointAuthorityGatewayEndpoint authority)
-        "secret"
-        "keycloak/smtp" of
-        Left err -> failWith (show err)
-        Right target ->
-          prepareRetainedSesAtTarget
-            repoRoot
-            endpoint
-            preparationPlan
-            RetainedSesPreparationInputs
-              { retainedSesCheckpointAuthority = authority
-              , retainedSesTargetSecretSink = target
-              }
-
-  prepareAws authority = do
-    settingsResult <- validateAndLoadSettings repoRoot
-    case settingsResult of
+  prepareHome authority =
+    case AwsSesStack.awsSesTargetSesSmtpSink (checkpointAuthorityClusterId authority) of
       Left err -> failWith err
-      Right settings -> do
-        credentialsResult <-
-          resolveAwsCredentialsRefFromHostVault
-            repoRoot
-            "aws"
-            (aws (validatedConfig settings))
-        case credentialsResult of
-          Left err ->
-            failWith ("load operational AWS credentials from Vault: " ++ err)
-          Right credentials ->
-            withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-              baseEnvironment <- awsCliSubprocessEnvironment credentials
-              let kubeEnvironment =
-                    ("KUBECONFIG", kubeconfigPath)
-                      : filter ((/= "KUBECONFIG") . fst) baseEnvironment
-                  portForwardSpec =
-                    GatewayServicePortForward
-                      { gatewayPortForwardNamespace = gatewayNamespace
-                      , gatewayPortForwardServiceName = gatewayRestServiceName
-                      , gatewayPortForwardRemotePort = gatewayRestServicePort
-                      , gatewayPortForwardEnvironment = Just kubeEnvironment
-                      , gatewayPortForwardWorkingDirectory = Just repoRoot
-                      }
-              forwarded <-
-                withGatewayServicePortForward
-                  portForwardSpec
-                  (prepareAwsTarget authority)
-              case forwarded of
-                Left err -> failWith (renderGatewayPortForwardError err)
-                Right exitCode -> pure exitCode
-
-  prepareAwsTarget authority endpoint =
-    case mkTargetClusterSecretSink
-      (Text.pack awsEksCanonicalClusterName)
-      (Text.pack (peerRestUrl endpoint))
-      "secret"
-      "keycloak/smtp" of
-      Left err -> failWith (show err)
       Right target ->
         prepareRetainedSesAtTarget
           repoRoot
-          endpoint
+          preparationPlan
+          RetainedSesPreparationInputs
+            { retainedSesCheckpointAuthority = authority
+            , retainedSesTargetSecretSink = target
+            }
+
+  -- The selected substrate kubeconfig scopes the role-specific Target Agent
+  -- Service transport. The retained home Authority carries only the committed
+  -- target intent/ciphertext receipts; no Gateway path participates.
+  prepareAws authority =
+    case AwsSesStack.awsSesTargetSesSmtpSink (Text.pack awsEksCanonicalClusterName) of
+      Left err -> failWith err
+      Right target ->
+        prepareRetainedSesAtTarget
+          repoRoot
           preparationPlan
           RetainedSesPreparationInputs
             { retainedSesCheckpointAuthority = authority
@@ -1699,11 +1708,10 @@ prepareRetainedSesForSubstrate repoRoot _environment substrate preparationPlan =
 
 prepareRetainedSesAtTarget
   :: FilePath
-  -> PeerEndpoint
   -> RetainedSesPreparationPlan
   -> RetainedSesPreparationInputs
   -> IO ExitCode
-prepareRetainedSesAtTarget repoRoot endpoint preparationPlan inputs = do
+prepareRetainedSesAtTarget repoRoot preparationPlan inputs = do
   writeOutputLine
     "Retained SES preparation: acquire -> reconcile -> await-ready -> sync-target -> release"
   interpretationResult <-
@@ -1720,18 +1728,22 @@ prepareRetainedSesAtTarget repoRoot endpoint preparationPlan inputs = do
  where
   checkTargetReadiness readinessPrecondition _ =
     case readinessPrecondition of
-      RetainedSesGatewayObjectStoreReady -> do
-        let daemonPrecondition =
-              gatewayDaemonLivenessPrecondition
-                GatewayClient.daemonRestartBridgeRetryPolicy
-                (peerRestUrl endpoint)
-                (observeGatewayReadyzOnceAt endpoint)
-                (observeGatewayBackendRoundTripOnceAt endpoint)
-        preconditionResult <- checkAll [daemonPrecondition]
-        case preconditionResult of
-          Left failures ->
-            Left <$> failWith (renderPreconditionFailures failures)
-          Right () -> pure (Right ())
+      RetainedSesTargetSecretAgentReady -> do
+        authenticated <-
+          withHostLifecycleAuthorityAuthentication
+            LifecycleAuthorityTestHarness
+            repoRoot
+            ( \authentication ->
+                withTargetSecretAgentAuthenticatedTransport
+                  authentication
+                  (\_transport -> pure ())
+            )
+        case authenticated of
+          Left err ->
+            Left <$> failWith (renderLifecycleAuthorityAuthenticationError err)
+          Right (Left err) ->
+            Left <$> failWith (renderLifecycleAuthorityAuthenticationError err)
+          Right (Right ()) -> pure (Right ())
 
   runRegisteredEnsure plannedPreparation selectedInputs =
     case validateAwsSesPreparationTrace plannedPreparation of
@@ -1741,12 +1753,19 @@ prepareRetainedSesAtTarget repoRoot endpoint preparationPlan inputs = do
           (retainedSesCheckpointAuthority selectedInputs)
           (retainedSesTargetSecretSink selectedInputs) of
           Left err -> Left <$> failWith err
-          Right selection -> do
-            ensureExit <-
-              AwsSesStack.ensureAwsSesStackResourcesForAuthorityAndTarget
+          Right _selection -> do
+            authenticated <-
+              withHostLifecycleAuthorityAuthentication
+                LifecycleAuthorityTestHarness
                 repoRoot
-                (retainedSesCheckpointAuthority selectedInputs)
-                selection
+                ( \authentication ->
+                    AwsSesStack.ensureAwsSesStackResourcesWithAuthentication
+                      authentication
+                      repoRoot
+                )
+            ensureExit <- case authenticated of
+              Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+              Right exitCode -> pure exitCode
             pure $
               case ensureExit of
                 ExitSuccess -> Right ()
@@ -1767,17 +1786,12 @@ validateAwsSesPreparationTrace preparationPlan =
         )
  where
   expectedTrace =
-    RetainedSesAcquire
-      : map awsStageToPreparationStep AwsSesStack.awsSesDesiredPresentStages
-      ++ [RetainedSesRelease]
-
-awsStageToPreparationStep
-  :: AwsSesStack.AwsSesTransactionStage -> RetainedSesPreparationStep
-awsStageToPreparationStep awsStage =
-  case awsStage of
-    AwsSesStack.AwsSesStageReconcile -> RetainedSesReconcile
-    AwsSesStack.AwsSesStageAwaitReady -> RetainedSesAwaitReady
-    AwsSesStack.AwsSesStageRepairAndMaterializeSmtp -> RetainedSesSyncTarget
+    [ RetainedSesAcquire
+    , RetainedSesReconcile
+    , RetainedSesAwaitReady
+    , RetainedSesSyncTarget
+    , RetainedSesRelease
+    ]
 
 awsSubstrateBootstrapCommandArgs :: NativeSuitePlan -> [[String]]
 awsSubstrateBootstrapCommandArgs suitePlan =
@@ -1961,6 +1975,9 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationGatewayDaemon -> GatewayRuntimeNoBoundary
     ValidationGatewayPods -> GatewayRuntimeNoBoundary
     ValidationGatewayPartition -> GatewayRuntimeNoBoundary
+    ValidationControlPlaneCounterexample -> GatewayRuntimeNoBoundary
+    ValidationCertificateScope -> GatewayRuntimeNoBoundary
+    ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary
     ValidationChartsPlatform -> GatewayRuntimeNoBoundary
     ValidationResourceGuardrails -> GatewayRuntimeNoBoundary
     ValidationDaemonBootstrap -> GatewayRuntimeNoBoundary
@@ -2058,26 +2075,24 @@ runConfigRegenFromTestSecrets repoRoot policyTier = do
       failWith ("Harness config regeneration from test-secrets.dhall failed: " ++ err)
     Right (Right ()) -> pure ExitSuccess
 
--- | Sprint 5.10 follow-up: after the pre-reconcile has unsealed Vault, force the
--- in-force config SSoT to match the regenerated binary-sibling config, so the
--- edge reconcile (which reads the in-force SSoT) sees the harness-populated
--- @route53.zone_id@ etc. On a freshly-established cluster the in-force SSoT seeds
--- from the file automatically; this fixes the case where the cluster was
--- established BEFORE the operator fields were populated, leaving a stale SSoT
--- that fails the gateway-chart deploy. Best-effort: a graceful no-op when not
--- established / Vault sealed; loud 'ExitFailure' only on a real MinIO write
--- failure.
-runForceSyncInForceConfig :: FilePath -> IO ExitCode
-runForceSyncInForceConfig repoRoot = do
+-- | Submit the harness-authored Tier-0 bytes through the same authenticated,
+-- generation-CAS Authority protocol as an operator.  Missing, corrupt, frozen,
+-- or unobservable Authority state is a loud harness failure.
+runReconcileInForceConfig :: FilePath -> IO ExitCode
+runReconcileInForceConfig repoRoot = do
   result <-
-    try (forceSyncInForceConfigFromFile repoRoot)
-      :: IO (Either SomeException (Either String ()))
+    try
+      ( reconcileInForceConfigFromFile
+          LifecycleAuthorityTestHarness
+          repoRoot
+      )
+      :: IO (Either SomeException (Either String SeedInForceOutcome))
   case result of
     Left err ->
       failWith ("Harness in-force config sync failed: " ++ displayException err)
     Right (Left err) ->
       failWith ("Harness in-force config sync failed: " ++ err)
-    Right (Right ()) -> pure ExitSuccess
+    Right (Right _) -> pure ExitSuccess
 
 runManagedAwsHarnessSetup :: FilePath -> PolicyTier -> IO ExitCode
 runManagedAwsHarnessSetup repoRoot policyTier = do
@@ -2092,6 +2107,19 @@ runManagedAwsHarnessSetup repoRoot policyTier = do
       writeOutput output
       pure ExitSuccess
 
+runHarnessAcmeEabIngress :: FilePath -> IO ExitCode
+runHarnessAcmeEabIngress repoRoot = do
+  ingressResult <-
+    try (reconcileAcmeEabFixture LifecycleAuthorityTestHarness repoRoot)
+      :: IO (Either SomeException ())
+  case ingressResult of
+    Left err ->
+      failWith
+        ( "Managed ACME EAB Authority ingress failed: "
+            ++ displayException err
+        )
+    Right () -> pure ExitSuccess
+
 runManagedAwsHarnessTeardown :: FilePath -> IO ExitCode
 runManagedAwsHarnessTeardown repoRoot = do
   teardownResult <- try (runAwsIamHarnessTeardown repoRoot) :: IO (Either SomeException String)
@@ -2104,12 +2132,6 @@ runManagedAwsHarnessTeardown repoRoot = do
     Right output -> do
       writeOutput output
       pure ExitSuccess
-
-preferEarlierFailure :: ExitCode -> ExitCode -> ExitCode
-preferEarlierFailure earlierResult cleanupResult =
-  case earlierResult of
-    failure@(ExitFailure _) -> failure
-    ExitSuccess -> cleanupResult
 
 runCommandForExitCode :: Subprocess -> IO ExitCode
 runCommandForExitCode spec = do

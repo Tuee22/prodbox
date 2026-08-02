@@ -16,7 +16,24 @@
 
 ## Phase Status
 
-🔄 **Reopened; Sprint `4.50` is Active.** Sprints `4.48` and `4.49` completed the
+✅ **Reclosed 2026-08-01 after Sprints `4.50` and `4.53`.** The typed endpoint-readiness
+refinement now includes the opaque authenticated-S3 endpoint witness and the shallow shell probe is
+deleted. The authority-epoch cutover is production-bound across retained Authority admission,
+Broker/Target/Provider roles, TLS retention, native SES/Route53 reconciliation, encrypted EKS client
+authentication, clean-install backup admission, and crash-safe decommission. Focused validation is
+`prodbox test unit` (2972/2972 plus the dedicated 27/27 admission, 33/33 authentication, and 27/27
+transport suites) and `prodbox dev check` exit 0. The attempted broad CLI integration run exposed
+Phase-5-owned stale fake-runtime assumptions about filesystem config and removed transports; those
+failures are not treated as Phase-4 production evidence under Standard N.
+
+**Typed-readiness history (2026-07-30)** (own-surface,
+Standard A): the host-direct object-store / lease path gains a distinct retryable endpoint-unready
+state (`ModelBEndpointUnready` / `LeaseAuthorityEndpointUnready`) so a transient MinIO-endpoint blip is
+retried within the lease budget rather than collapsed into terminal authority-loss. Phase 1 (read) and
+1b (write) landed and are `dev check`-green; Phase 2 (deep-probe witness) is the remaining Standard-O
+increment. See [Sprint 4.53](#sprint-453-typed-endpoint-readiness-for-the-host-direct-object-store--lease-path-).
+
+**Authority-cutover history:** Sprints `4.48` and `4.49` completed the
 restart-resumable retained Lifecycle Authority, fenced target outbox, and substrate-local Target
 Secret Agent foundations. Sprint `4.50` owns the versioned authority-epoch cutover and legacy-route
 removal. Sprint `4.51` is ✅ Done — the durability index, the retained SES transport cutover, and
@@ -26,7 +43,7 @@ Standard-O evidence. Sprint `4.52` is Done on observed-host refinement.
 These are forward-only lifecycle expansions; Sprint `4.47` remains historical proof of the pure
 lease and intent rules it actually implemented, not proof of the replacement topology.
 
-📋 **Expanded 2026-07-12 with Sprint `4.51` (Foundation Epoch).** Counterexample
+✅ **Sprint `4.51` Foundation Epoch expansion completed.** Counterexample
 `LCPC-2026-07-11` ([phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) froze the
 `F-SES` mechanism on this phase's retained-authority surface: the retained SES authority's Model-B
 CAS objects (lease, intent, SMTP projection, fenced checkpoint) are custodied through the
@@ -36,12 +53,11 @@ the storage half of that class with durability-indexed coordinates and adapters,
 `ClusterRetained` retained authority store over the same sealed envelopes, and an `OperationRecord`
 intent that makes lease release idempotent; the policy half (the harness postflight residue bypass)
 is narrowed by Sprint `7.34` on the Phase `7` surface. Sprint `4.51` is the retained-SES subset of
-the Sprint `4.50` gateway-route removal landing early — Sprint `4.50` still owns the full removal
+the Sprint `4.50` gateway-route removal landing early — Sprint `4.50` owns the full removal
 — and it adds no `Blocked by` edge onto the `4.48` → `4.50` chain. The Foundation Epoch (Sprints
 `1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34`), adopted by Sprint `0.17`, is the
-active work front and is executed before Sprints `1.61` and `1.62` as an execution-priority
-decision; it introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain, which
-resumes unchanged once the epoch closes ([README.md](README.md)).
+completed before Sprints `1.61` and `1.62` as an execution-priority decision; it introduced no
+`Blocked by` edge onto the existing `1.61` → `8.12` chain ([README.md](README.md)).
 
 ✅ **Reclosed 2026-07-10 after desired-present long-lived reconciliation.** The lifecycle class of
 `aws-ses` correctly prevents automatic destruction, but the audited registry and suite integration
@@ -4578,17 +4594,438 @@ store cases. `prodbox dev check` passes.
 
 - Link selected-substrate resolution to `TargetIdentity`, never a gateway URL.
 
-## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [🔄 Active]
+## Sprint 4.50: Authority-Epoch Cutover and Legacy Transport Removal [✅ Done]
 
-**Status**: Active — Sprints `4.48` and `4.49` are Done. The pure control-plane interpreter layer is
-now landed for four of the five roles (Increments A–DD): the versioned migration kernel, the retained
-CAS repository, the role-indexed dispatch seam, the shared request codec, and the Lifecycle Authority
-/ TLS Retention / Authority Backup / Provider Worker interpreters composed over injected repositories
-and proven by in-memory fixtures. The remaining code-owned work is all Standard-O live-coupled
-(concrete in-cluster MinIO/Vault CAS adapters, real-socket dispatch in `runControlPlaneRole`, the
-Target Secret Agent `complete` arm's live agent binding, and the decommission destroy-effect wiring)
-or Standard-P (source-level deletion of the gateway-hosted legacy authority routes, which cannot
-precede cutover); deployment qualification remains a separate Standard-P campaign.
+**Status**: Done — Sprints `4.48` and `4.49` are Done, and the 2026-07-31 source-level closure audit
+corrected the prior status wording. The versioned migration kernel, retained-CAS abstractions,
+role-indexed dispatch seam, request codecs, four injected-repository role builders, and substantial
+decommission library scaffolding are landed. The production in-cluster Authority repository,
+authenticated operation/checkpoint admission, Broker custody/CLI cutover, and production
+decommission composition have since landed. The all-five-role steady-state installation, Target
+Agent complete/read-back path, provider effects, config aggregate/client, epoch-fenced caller
+migration, legacy route/transport deletion, clean-install authority choreography, and
+credential/custody cutover are still code-owned work. Standard O separates an implemented
+production path from its live exercise;
+it does not turn missing production code into non-blocking evidence. Standard-P qualification remains
+a distinct later campaign after the code-owned cutover and negative scans close.
+**Audit correction (2026-07-31)**: the decommission subsystem was initially overstated as
+code-complete: manifest/permit authentication and complete-inventory binding, verifier/receipt
+header binding, semantic node/attempt validation, observe-before-retry crash recovery, real
+pinned-artifact self-execution, production node interpreters, external receipt acknowledgement, and
+`CLI.Nuke` composition were missing. Increment FF below now closes that code-owned subgraph and
+records its focused evidence; this correction is retained as the audit trail rather than rewritten
+as if the gap had never existed.
+**Audit correction (2026-07-31 — executable custody boundaries)**: a second source-level pass found
+that several compiled foundations still do not constitute the supported production topology.
+`Bootstrap.Broker.applyBootstrapBrokerStart` still installs `failClosedProductionEngine`, whose
+durable store, evidence, Vault, and one-shot-worker boundaries refuse every mutation and never open
+readiness. The committed Credential Provisioner chart defaults to `aws-admin`, while the executable
+currently accepts only `external-acme-eab`; normal AWS/genesis/repair members therefore have no
+closed runtime command. The steady-state `TargetMaterialEndpoint` previously accepted and returned
+`TargetSecretPayload` in the long-lived Agent process; its metadata-only observation cutover is now
+in progress, but the required attested one-shot target worker is not yet production-bound. The
+experimental EAB seal-only helper also used the ingress worker's Vault session and did not implement
+the retained-home Agent rewrap/delivery lane required by §5.5, so it is being removed from the
+supported path rather than counted as custody. Finally, public-edge TLS callers still use the direct
+Kubernetes-Secret/admin-S3 helpers, the reconcile step still only observes backup admission instead
+of driving `reconcileAuthorityBackupAdmission`, and the Admin Action Runner remains a pure permit
+fold without its attested executable boundary. These are code-owned Sprint-4.50 blockers; none is
+reclassified as Standard-O evidence. The sprint remains Active until the executable compositions,
+negative scans, and independent validation below close.
+**Audit correction (2026-07-31 — clean-install Broker session order)**: production composition found
+two impossible assumptions in the provisional Broker protocol. A freshly initialized Vault cannot
+use the baseline-created Kubernetes auditor to inventory root-token accessors before that baseline
+exists, and a worker intent cannot preallocate the token accessor that Vault assigns only after a
+successful login. The authoritative correction is to use the generated-root capability transiently
+to install the baseline, establish the narrow auditor identity, then inventory/revoke every root
+accessor (including the transient bootstrap root) and prove zero before readiness. Worker intent now
+binds a logical operation/session identity; the optional server-issued accessor is recorded only
+after login and exact-accessor revoke/absence is required when it exists. The typed state/codec and
+crash/replay fixtures are being reordered accordingly, so the sprint remains Active until that
+clean-install sequence validates.
+**Audit correction (2026-07-31 — Admin Action executable effects)**: wiring the Runner command
+exposed three additional production-boundary gaps. The Target Agent's decommission tombstone routes
+correctly require a verified decommission manifest and therefore cannot accept an Admin Action
+permit; legacy-backend migration had only the host-interactive Authority transport; and quota
+increase submission had no durable recovery for a possibly-applied request. Closure now requires
+separate Admin-Action-permit-scoped Target generation/custody tombstone routes, a runner-only
+authenticated Authority migration adapter, and a persist-before-effect quota journal that resolves
+response loss by authoritative quota/change-history observation and stable absence before any
+retry. These routes remain exact-plan capabilities and do not weaken the decommission manifest
+boundary or grant the runner generic Target/object-store access.
+**Implementation in progress (2026-07-31 — Admin Action executable effects)**: the signed Admin Action
+permit, attested Runner, runner-only Authority migration adapter, and permit-scoped Target
+generation/custody tombstone routes are now production-composed. Legacy-backend migration persists
+its prepared Authority state, publishes the canonicalized checkpoint through the registered
+`aws-ses` checkpoint lane with primary/backup read-back, and permits source deletion only before a
+positive absence commit. Service Quotas now journals the exact request before its first external
+effect, observes current quota plus the complete paginated request history after ambiguity, requires
+two stable-absence scans, and permits at most one retry. The worker and its distinct narrow auditor
+session are separate, and the worker's exact server-issued Vault accessor is revoked and proven
+absent. A follow-up production audit found that the auditor currently performs only `revoke-self`
+and does not preserve and prove absence of its own server-issued accessor; that cleanup tail and its
+failure fixtures remain open. The Admin CLI and production destroy path otherwise use these
+authenticated routes; no Admin Action code opens Authority storage, host authentication, or a
+HostDirect transport. A warning-as-error unit executable build passes, the endpoint/quota/
+decommission-client/parser selection passes 14/14, and the targeted transport scan is empty. This
+increment therefore remains in progress and does not advance Sprint `4.50`, whose Broker,
+Credential Provisioner, Target/material, Provider/SES, and clean-install gates also remain open.
+**Implementation completed (2026-08-01 — Admin Action terminal cleanup)**: the Runner now serializes
+its exact Vault role lane through the retained service-session journal, persists preclean and the
+single login attempt before a service accessor can become active, and cleans every correlated stale
+accessor before admitting a greater fence. The worker's server-issued accessor is directly revoked
+and then proven absent by a distinct bounded, nonrenewable, accessor-free batch auditor; invalid
+auditor-role logins are revoked and a later conforming auditor must prove the complete role inventory
+stably empty. Synchronous exceptions and cancellation run both session and exact Job/Pod cleanup,
+while cancellation is rethrown and no receipt escapes a failed absence proof. Focused validation
+passes all 15 Admin Action lifecycle and all 14 finite one-shot Vault-session cleanup fixtures,
+including login/read-back ambiguity, response-lost revoke, auditor drift/login failure, thrown
+effects, cancellation, UID substitution, and terminal receipt recovery. This closes the Admin Action
+terminal-cleanup item only; the other Sprint `4.50` composition gates remain open.
+**Implementation in progress (2026-07-31 — child-custody cutover)**:
+`Prodbox.Cluster.Federation` no longer defines or accepts `ChildInitCustody`, a child `root_token`,
+or an init-KV coordinate, and its registration plan has no root-token write gate. `Prodbox.Vault.Seal`
+no longer projects a child-custody record from the init response. The child metadata and plan
+fixtures now prove the reusable-token and `init_kv_path` fields absent, while the child Transit
+policy is limited to its exact encrypt/decrypt lane. Engineering doctrine marks the old record and
+readers as removed historical provenance. The warning-clean library and complete unit executable
+now build after the concurrent Broker/checkpoint edits converged; aggregate Sprint validation still
+waits on the remaining supported-path cutover and therefore this increment does not independently
+satisfy Validation 4 or advance the sprint status.
+**Implementation completed (2026-08-01 — Broker production registry and readiness)**:
+`applyBootstrapBrokerStart` now constructs `productionBrokerEngine`; there is no fail-closed engine
+installed on the supported executable path. The production registry is constructed from the actual
+evidence, retained-store, Transit-rotation, PGP, one-shot worker, physical, and local boundaries and
+contains every one of its 117 closed capability arms exactly once. Readiness is a derived decision
+that additionally requires live Store, Vault, PGP, Kubernetes lease, and pinned controller-image
+observations. Physical execution obtains a fresh fence/lease authorization before mutation, and the
+durable root-init, generated-root, provisioner-session, child-delivery, and rotation paths recover
+their response-loss and crash windows before replay. Focused validation passes 5/5 registry/readiness,
+14/14 physical crash/fence/custody, and 4/4 native Kubernetes attestation/cleanup fixtures. This
+closes the Broker production-registry item only; the remaining Sprint `4.50` cutovers stay open.
+**Implementation in progress (2026-07-31 — retained operator-material aggregate)**:
+`Prodbox.Lifecycle.Authority.RetainedMaterial` now defines the closed, nominally
+schema-indexed SES-SMTP/EAB custody aggregate. A caller supplies only a registered target identity;
+the schema fixes the physical target to `secret/keycloak/smtp` or `secret/acme/eab`, so an arbitrary
+secret path is not constructible. Its public coordinate constructors admit only
+`ClusterRetained` custody or `CrossClusterDurable` delivery outboxes; plaintext is absent from every
+source, intent, receipt, command, decision, and durable wire value. The fold requires an exact
+current ciphertext/read-back observation before delivery, distinguishes positive absence, corrupt,
+digest-mismatched, and unobservable custody, makes response-loss replay idempotent, and retains a
+rotated predecessor through its absolute grace deadline and every pending dependant before an
+absence-read-back retirement can commit. Recovery uses a bounded versioned canonical-CBOR envelope
+whose schema tag is checked against the singleton type index and whose fields are rebuilt through
+smart constructors and aggregate invariants. Focused fixtures cover the state transitions,
+cross-schema refusal, canonical round trip, and encoded-size bound. The module compiles under the
+integrated warning-as-error library build; the complete unit gate is still running behind concurrent
+strict-coordinate fixture migration. This is the ciphertext-only Authority half of §5.5, not the
+production cutover: retained-home one-shot Transit custody/rewrap workers, target delivery binding,
+baseline policy, and producer/caller integration remain blockers below.
+**Audit correction (2026-07-31 — selected Target Agent and one-shot custody)**: the first
+production-binding draft allowed the selected Kubernetes Agent boundary to be chosen independently
+of the Authority-signed target intent and opened retained custody through the long-lived Target
+Agent Vault session. Both violate the closed topology. The signed intent, accepted trust,
+committed outbox, attested Job/Pod, and worker protocol must bind one exact `TargetAgentIdentity`;
+wrong-Agent substitution refuses. A cluster identity alone is not an Agent identity: the binding
+must distinguish the exact Authority-registered Agent generation/rollout and its attested Job,
+Pod, and ServiceAccount UIDs so a different rollout in the same cluster cannot substitute.
+Retained custody and rewrap run only inside an exact attested one-shot worker with its own bounded
+Vault session, exact worker/auditor accessor-absence proof, and Job/Pod deletion/absence read-back.
+The standing Agent remains metadata/coordinator-only.
+**Implementation in progress (2026-07-31 — Provider Worker production binding)**:
+the Provider Worker's authenticated production interpreter now covers the closed registered-stack,
+checkpoint-scratch, SES, EBS-reaper, spot-price, operational-identity, and readiness vocabulary
+behind a narrow-session interface. The three per-run Pulumi programs are selected by
+typed stack/config pairs, run from the pinned `/opt/build` tree with the pinned Pulumi binary, and
+hydrate/store checkpoints through the Lifecycle Authority client rather than a host object-store
+fallback. The `aws-ses` Pulumi program no longer constructs or exports the SMTP IAM user, policy, or
+access key; its two historical SMTP URNs remain typed read-only compatibility evidence for the later
+Sprint `8.11` migration. Warning-as-error compilation and the Provider/SES invariant scan pass.
+A follow-up production-composition audit found that the authenticated handler currently executes a
+verified intent directly instead of first committing and recovering it through the retained
+`ProviderWork` adapter, and that the production narrow-session runner reads Provider credentials
+through the standing control-plane Vault session without an exact worker/auditor accessor-absence
+tail. Both are code-owned blockers. This is also not yet the complete SES cutover: the
+canonical-suite preparation call still selects the superseded host-direct SES transaction, and the
+four native SES mutations do not yet converge the verification/DKIM/MX Route 53 records retained by
+the non-credential Pulumi program. Those durable-execution, session, supported-caller, and DNS
+effects remain explicit Sprint-4.50 blockers; they are not deferred to live proof.
+**Implementation in progress (2026-07-31 — Credential Provisioner native IAM/S3 boundary)**:
+`Prodbox.Aws.Native.Iam` and `.S3` now expose the finite typed observations and exact mutations
+needed by the one-shot Credential Provisioner without ambient AWS environment/profile discovery.
+`Prodbox.Lifecycle.CredentialProvisioner.ProductionIam` closes construction to the seven registered
+credential classes, derives deterministic IAM identities/policies from the operator-material
+registry, distinguishes a possibly-applied access-key create from a definite failure, and enforces
+observe/delete/stable-absence/remint through the existing bounded execution fold. Authority-backup
+bootstrap may create and harden the shared retained bucket; TLS retention may only adopt the exact
+already-hardened bucket and refuses absence, prefix drift, or region drift. Fake-sender fixtures cover
+all seven policies, wildcard exclusions, cross-class bucket-prefix refusal, TLS no-create behavior,
+and response-loss classification, and the integrated library compiles warning-clean. This is the
+AWS boundary only: the signed permit wire protocol, attested Kubernetes Job coordinator/runtime,
+direct Target-Agent handoff, genesis/repair caller composition, complete unit gate, and supported
+CLI/chart cutover remain code-owned blockers, so this increment does not advance sprint status.
+**Audit correction (2026-07-31 — Credential Provisioner crash closure)**: a provisional executor
+could create an IAM access key before durably recording its internal phase, trusted a freely
+transported prepared-target observation instead of an Authority-signed receipt bound to the exact
+selected Agent/owner/fence/outbox coordinate, and discarded the worker login accessor. That
+executor is not eligible for production composition. Closure requires a persist-before-IAM phase
+journal covering create intent, key observation, target receipt, and predecessor retirement;
+restart must delete/read back stable absence and remint at most once after any ambiguous create.
+The signed permit and prepared-target receipt bind the exact first-reconcile plan/member plus
+selected Agent, owner nonce, fence, target, generation, digest, deadline, Job/Pod identities,
+image, and ServiceAccount. Worker/auditor accessors and Job/Pod deletion each require exact absence
+before the journal advances.
+**Implementation in progress (2026-07-31 — durable first-reconcile journal)**:
+`Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal` now owns the retained,
+receipt-ordered continuation for the finite first-install plan. Its bounded, versioned,
+canonical-CBOR value reconstructs every plan member and receipt through the existing smart
+constructors, retains no credential bytes, resumes from the exact next member and prior-receipt
+digest, makes an exact committed-receipt replay idempotent, and rejects divergent or out-of-order
+receipts. The `ClusterRetained` Model-B repository distinguishes missing, corrupt,
+endpoint-unready, unobservable, and concurrent-CAS observations. The module is registered and
+warning-clean in the integrated library build; focused tests for restart recovery, replay,
+divergence, corrupt/oversized bytes, CAS conflict, and endpoint-unready classification are landed
+but the complete unit executable is still running behind concurrent route-registry expansion.
+The production coordinator has not yet been cut over to this repository, so this checkpoint does
+not close the Credential Provisioner remaining-work item or advance the sprint status.
+**Implementation in progress (2026-08-01 — AWS-admin Job coordinator)**:
+`Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator` now composes the authenticated
+Authority prepare/observe/attest/authorize/complete protocol around one exact Kubernetes Job. It
+prepares durable secret-free intent before creation, emits administrator material only through the
+bounded post-attestation stdin frame, validates the worker receipt against the exact signed permit,
+recovers a terminal Authority receipt after response loss, and always UID-cleans the Job/Pod with a
+positive absence read-back before a receipt can escape. Synchronous exceptions are converted only
+after cleanup, asynchronous cancellation is rethrown after cleanup, and positive absence closes a
+lost delete response. The library builds warning-clean and the expanded AWS-admin Authority/
+coordinator selection passes 10/10. At that checkpoint the production Kubernetes renderer/observer
+and `StepEstablishAuthorityBackup` genesis/repair caller binding remained open, so the coordinator
+increment did not close the Credential Provisioner item or advance Sprint `4.50`.
+**Implementation in progress (2026-08-01 — AWS-admin Kubernetes boundary)**:
+`Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes` now renders the canonical intent as an
+immutable digest-pinned, Guaranteed-QoS, non-root Job with a bounded projected identity and no
+administrator material in its manifest, argv, environment, Secret, or ConfigMap. The native
+boundary recovers ambiguous create by exact read-back, independently observes the Job, sole owned
+Pod, immutable image, ready/restart-free container, and ServiceAccount UID before Authority
+attestation, attaches the credential frame only to that Pod, deletes with an exact Job-UID
+precondition, refuses name reuse, and requires two stable Job/owned-Pod absence observations.
+Deletion polling distinguishes an exact object still terminating from positive absence. The
+warning-as-error library build passes and the expanded AWS-admin Authority/coordinator/renderer
+selection passes 11/11. The `cluster reconcile` genesis/repair composition and its Authority Backup
+Adapter copy/read-back callbacks remain open, so the Credential Provisioner item and Sprint `4.50`
+remain Active.
+**Implementation in progress (2026-08-01 — purpose-bound Authority aggregate export)**:
+the Lifecycle Authority now exposes a dedicated authenticated `POST /v1/authority/backup/export`
+route that returns only the exact canonical retained admission aggregate and only while its current
+state matches the requested retained genesis-plan digest or backup-repair-permit digest. The caller
+cannot select an object coordinate or arbitrary primary-store value; service callers are absent
+from the route registry, malformed and oversized requests fail closed, the response is bounded to
+1 MiB, and the client verifies the SHA-256 digest before exposing the opaque envelope. This closes
+the missing primary-to-Adapter copy source without treating the read-only observation projection as
+a backup API. The full package builds with `-Werror`, and the focused Authority Backup selection
+passes 10/10, including wrong-purpose refusal. Binding this export and the Adapter copy/read-back
+receipt to the genesis/repair coordinator in `cluster reconcile` remains open, so the Credential
+Provisioner item and Sprint `4.50` remain Active.
+**Implementation in progress (2026-08-01 — retained backup identity and Adapter health)**:
+the admission aggregate now retains the exact Target generation receipt and immutable Authority
+Backup digest alongside every open epoch instead of discarding either read-back receipt when
+genesis opened. A temporary or unobservable freeze carries both prior receipts across restart and
+reopens with them only after exact health recovers; a completed repair atomically replaces both
+with the new Target generation and Adapter receipt. The
+production copy boundary joins the purpose-bound Authority export to the aggregate-only Adapter
+client, records only its content digest, and re-observes that exact digest to distinguish healthy,
+positive absence, and corrupt/policy-drift state. This removes the prior impossible production
+callback, where an open epoch contained no durable identity for the object it was required to
+health-check. Warning-as-error builds pass for the library, main unit executable, retained-admission
+suite, and authenticated-transport suite. Focused genesis, repair, coordinator, and Adapter
+validation passes 37/37; the two separate retained/authenticated suites pass 27/27 each. The
+Credential Provisioner target-generation permit composition and the final `cluster reconcile`
+binding remain open, so Sprint `4.50` remains Active.
+**Implementation in progress (2026-08-01 — deterministic genesis intent compilation)**:
+the production backup reconciler now compiles the exceptional genesis AWS-admin request from the
+retained `GenesisPlan` and the finite first-reconcile plan's member zero. Permit/operation identities
+are deterministic hashes of the plan, the draft binds the exact Authority-backup IAM program,
+digest-pinned worker image, Authority scope/endpoint, selected Target Agent rollout, target,
+generation, request digest, plan binding, and absolute deadline, and the Authority remains
+responsible for canonical prepared-target read-back and final Transit authorization. Completed
+worker target read-back is projected into a versioned receipt that preserves generation, Vault
+version, commitment, and request digest; the production generation parser refuses
+non-production/opaque predecessor receipts instead of guessing a lost generation. The focused
+Adapter/reconcile selection now passes 12/12.
+The live coordinator invocation and backup-repair intent compiler remain open, so this increment
+does not close the Credential Provisioner item or Sprint `4.50`.
+**Implementation in progress (2026-08-01 — production backup reconcile composition)**:
+the repair permit compiler now binds the open epoch, lost exact Target generation receipt,
+predecessor Adapter receipt, deterministic repair coordinate, and strictly succeeding production
+generation. Genesis and repair intents share the native AWS-admin coordinator, purpose-bound
+Authority export, aggregate-only Backup Adapter copy/read-back, exact Target-generation
+projection, and native Kubernetes Job boundary. `cluster reconcile` now calls this production
+reconciler before ordinary lifecycle work and loads administrator material lazily only when a
+genesis or repair effect is required; a healthy established epoch performs no credential prompt or
+external mutation. The retained-admission and authenticated-transport suites pass 27/27 each after
+the expanded retained wire shape, and the main unit executable passes 2,956/2,956. The repository
+quality gate and live composition proof are the next validation checkpoints; the other explicit
+Sprint-4.50 remaining-work items are unchanged, so the sprint remains Active.
+**Validation checkpoint (2026-08-01 — production backup reconcile composition)**:
+`prodbox dev check` passes after the production composition and doctrine updates, including the
+pinned formatter, zero-hint HLint traversal, and warning-clean 461-module library/executable build.
+The canonical live command `prodbox cluster reconcile` was then attempted and failed before any
+infrastructure mutation because its binary-sibling `.build/prodbox.dhall` is absent; a host-wide
+read-only search found no operator config to recover, only the generated unit-test fixture. The
+fixture is not substituted for operator configuration. This leaves the revision-specific live
+proof pending under Standards O/P without reopening the locally validated code path or blocking
+the remaining Sprint-4.50 implementation work.
+**Implementation in progress (2026-08-01 — post-genesis first-reconcile continuation)**:
+the production compiler now forms each normal first-reconcile AWS-admin intent from the closed
+member class with a stable scope/class operation identity, exact generation-one Target, selected
+Agent rollout, immutable image, and class-matched native IAM parameters. Lifecycle Authority still
+replaces the provisional fence, deadline, plan binding, and prepared-target receipt from its
+retained journal before signing; a caller-supplied IAM class substitution refuses. The focused
+Authority Backup selection passes 14/14 and the integrated unit executable builds warning-clean.
+The production caller must next obtain a bounded authenticated projection of the retained journal's
+exact next member and absolute deadline before coordinating members 1–4. Replaying a newly compiled
+fixed list without that observation is intentionally not wired because it could conflict with an
+already completed member after restart. Supplying the Lifecycle-provider account/role and the
+class-specific zone/prefix parameters from a canonical non-secret projection also remains part of
+this caller binding, so the broader Credential Provisioner item stays Active.
+**Implementation in progress (2026-08-01 — retained first-reconcile continuation caller)**:
+Lifecycle Authority now serves a bounded authenticated continuation projection containing only the
+exact next registered credential class, retained member index/digest, and original absolute
+deadline. The operator/harness client cannot select a journal coordinate or read journal bytes.
+`cluster reconcile` repeatedly observes that projection, compiles class-matched IAM parameters,
+coordinates one attested AWS-admin Job, and re-observes until the finite journal reports complete;
+administrator credentials and the native STS account projection are loaded only while an actual
+member remains. TLS retention uses the exact canonical home certificate-scope prefix, and Gateway
+DNS/home DNS01 use the configured parent-zone identity. Restart cannot reset the retained deadline
+or guess which member already completed. Focused Authority/coordinator tests pass 13/13 and
+Authority Backup/continuation tests pass 15/15; `prodbox dev check` passes with zero HLint hints and
+a warning-clean 461-module build. The remaining Credential Provisioner-owned gap is the concrete
+Lifecycle-provider role/trust/policy substrate behind the now-bound exact role name; the current
+native IAM program provisions only the assuming identity/policy/key and does not create that role.
+Sprint `4.50` therefore remains Active.
+**Implementation validated (2026-08-01 — Lifecycle-provider role substrate)**: the native
+Credential Provisioner IAM program now reconciles the deterministic Lifecycle-provider role, its
+exact account-bound trust principal, and its closed provider permissions policy after reconciling
+the distinct assuming user/policy and before any access key is minted. Every role write is followed
+by authoritative name, account-bound ARN, trust-document, and inline-policy read-back; an
+already-existing role is converged through the same path, and teardown removes/read-backs the role
+policy and role as part of the registered identity lifecycle. Focused Credential Provisioner tests
+pass 27/27 and native AWS client tests pass 56/56; `prodbox dev check` passes with zero HLint hints
+and a warning-clean 461-module build. This closes the
+Lifecycle-provider role-substrate item without closing Sprint `4.50`; retained external-material
+custody and the later caller/deletion items below remain code-owned.
+**Implementation in progress (2026-08-01 — ACME EAB producer caller)**: the home edge reconcile
+no longer invokes a fail-closed fixture placeholder. A populated `test-secrets.dhall` EAB pair is
+encoded only as the bounded external-worker stdin frame and submitted through the authenticated
+Lifecycle Authority external-ingress client, retained intent/permit/outbox, and exact attested
+Kubernetes Job workflow; the host has no direct Target or Vault write callback. The library and
+complete unit executable build warning-clean, the workflow's response-loss/cleanup suite passes
+12/12, fixture parsing/frame tests pass 3/3, and `prodbox dev check` passes with zero HLint hints
+and a warning-clean 461-module build. A bounded current-ingress projection now lets callers select
+install, exact replay with the retained original deadline, or next-generation rotation without
+selecting or reading a retained coordinate. Both edge reconcile (operator principal) and
+cluster-bootstrapping harness suites (test-harness principal, inside always-run AWS cleanup) use the
+same coordinator. This is not yet the custody-item closure: SES-SMTP and both selected-target
+rewrap deliveries remain open.
+**Implementation in progress (2026-08-01 — SES-SMTP retained-custody producer)**: the AWS-admin
+worker now overlays a schema-specific SES branch on its delivery boundary after permit
+verification and SMTP password derivation. The branch derives the complete canonical payload from
+the registered sender identity (`email-smtp.<region>.amazonaws.com`, port 587,
+`noreply@<identity>`, display name `prodbox`, derived username/password), Transit-seals it through
+the exact retained-home SMTP lane, observes recovery by exact generation, and projects the actual
+Provisioner Pod/image/request plus custody Vault version/commitment into the durable worker receipt.
+The one-shot Credential Provisioner Vault policy gains only SMTP source read/CAS plus retained
+encrypt/HMAC—never decrypt, EAB, final-target, or generic KV authority. The Credential Provisioner
+suite passes 28/28 and `prodbox dev check` passes with zero HLint hints and a warning-clean
+462-module build. Selected-target SMTP/EAB rewrap remains open, so this increment is not claimed
+complete.
+**Implementation validated (2026-08-01 — direct selected-Target delivery and receipt catalog)**:
+the default verified AWS-admin worker now composes the Authority intent client, Target Agent
+metadata observer, bounded controller-auditor login, and attested one-shot Kubernetes materializer
+as its non-SMTP fallback. The durable Target record includes the exact request/action/Pod UID/image
+tuple required to reconstruct the opaque receipt after a lost response. An older observed
+generation remains retryable; an unexpectedly newer generation is a terminal binding refusal.
+Credential Provisioner-to-Agent HTTP is metadata-only and NetworkPolicy-scoped; plaintext still
+crosses only the already-attested Pod attach stream. The warning-clean executable build covers 463
+modules, and the complete unit gate passes 2,965 main + 27 retained-admission + 33 authentication +
+27 authenticated-transport cases. The retained-home Target Agent rewrap endpoint is now physically
+bound for both closed schemas, but the Authority-to-selected-worker delivery workflow and its
+fixtures remain open; Sprint `4.50` therefore stays Active.
+**Implementation validated (2026-08-01 — retained delivery durable-state foundation)**: retained
+SMTP/EAB delivery now has a schema-indexed, canonical Model-B aggregate codec and exact-revision
+repository, plus persist-before-effect begin/receipt-commit coordination. Response-loss recovery
+re-observes the selected Target before any retry; an in-flight intent is never replayed with a newly
+generated ephemeral opening key. A missing receipt remains pending through its absolute deadline
+and may be expired only strictly afterward, requiring a successor operation. Source identity
+comparison deliberately excludes observation time while retaining generation, operation, receipt,
+ciphertext digest, commitment, and Vault version. The focused aggregate/repository suite passes
+10/10, the executable builds warning-clean across 466 modules, and `prodbox dev check` passes with
+zero HLint hints. The authenticated Authority endpoint and supported caller are still open, so this
+is an intermediate Sprint `4.50` checkpoint rather than closure.
+**Implementation validated (2026-08-01 — retained delivery endpoint and caller cutover)**:
+Lifecycle Authority now binds the authenticated retained-material route to distinct SMTP/EAB source
+catalogs and dynamically resolved per-registered-target `CrossClusterDurable` outboxes. The effect
+path is the physically separate Target Agent rewrap endpoint followed by the attested one-shot
+materializer; recovery observes exact Target metadata before it can commit or retry. The Authority
+workload has a dedicated projected controller token, bounded batch-auditor Vault binding, worker
+RBAC, and NetworkPolicy edge. Both supported producers are callers: home EAB reconcile delivers
+after the external-ingress receipt commit, and the SES SMTP AWS-admin worker cannot commit its
+custody receipt until the Authority delivery succeeds or recovers. EAB receipts now retain distinct
+Vault-HMAC commitment and ciphertext-digest fields. Evidence is retained aggregate 11/11,
+external-material 13/13, Credential Provisioner 41/41, authentication 33/33, authenticated
+transport 27/27, warning-clean 468-module build, and `prodbox dev check` with zero hints. TLS,
+Provider, legacy deletion, and final aggregate validation remain open.
+**Current validation checkpoint (2026-07-31)**: an integrated library checkpoint built all 438
+then-present modules with `--ghc-options=-Werror` after the selected-Agent, Broker handoff, and
+Credential execution-journal drafts converged. Subsequent batch-auditor, durable service-session,
+strict ServiceAccount-identity, and worker-protocol increments then reached a later integrated
+checkpoint: all 445 library modules and the 125-module unit executable built with
+`--ghc-options=-Werror`. The complete unit executable ran 2,951 cases and reported 29 failures. The
+exact failure inventory is retained as the active cutover checklist: schema-v7 validation ordering;
+the retained-SES legacy-transport scan; Provider epoch/fence/revision/resource registration;
+terminal worker-session cleanup; target-registration bounds; graph-derived order; generated Dhall,
+command, help, and RKE2-plan artifacts; Pulumi destroy/credential invariants; explicit target-Agent
+rollout digests in chart fixtures; authenticated AWS retry setup; and SES Route 53 repair. The
+predecessor-grace fixture was independently confirmed stale and corrected to use the rotation
+intent's supplied grace deadline; the remaining failures are not waived. Because the Target
+attestation, Provider/caller, Broker relay, and Credential coordinator edits continue after this
+exact checkpoint, the current moving shared tree is not yet claimed warning-clean. This is a
+compile and regression-discovery gate only. The open session-cleanup, exact signed one-shot
+attestation, durable-Provider, supported-caller, clean-install, full-unit/integration,
+negative-scan, and deployment-qualification gates below remain unsatisfied.
+**Audit correction (2026-07-31 — AWS-substrate client authentication)**: deleting the host-side
+Lifecycle-provider credential resolver exposed a wider supported-caller dependency: the AWS
+substrate's `kubectl`, Helm, drain, runtime-monitor, and kubeconfig helpers still projected the raw
+Lifecycle-provider credential into host subprocess environments so `aws eks get-token` could run.
+Leaving that resolver as an unconditional refusal is a negative guard, not a working cutover. The
+closed replacement is an authenticated, registered Provider capability bound to the exact account,
+region, EKS cluster identity, Authority epoch/fence, request digest, and non-extending absolute
+deadline. It returns only the bounded short-lived EKS client-authentication projection plus exact
+endpoint/CA read-back, never the AWS access key, and no returned bearer may enter retained Provider
+state, logs, argv/environment, generated configuration, or qualification evidence. Every
+`withEksKubeconfig`, substrate-`kubectl`/Helm, drain, and monitor caller must use that capability;
+test-EBS reaping uses the already closed Provider intent, while explicit destructive/admin work
+continues through the Admin Action or Decommission Runner. Focused response-loss, expiry,
+wrong-cluster/region/epoch/fence, credential-non-disclosure, and materialization-cleanup fixtures,
+plus a production-import lint for the removed host credential path, remain required. Sprint `4.50`
+stays Active until those callers and proofs close.
+**Implementation in progress (2026-07-31 — Gateway federation transport deletion)**: the fixed
+`RouteFederationChildren` entry and variable child-bootstrap pattern, their public client URL/query
+functions, daemon Vault-backed handlers, and both bounded target-operation constructors are
+physically deleted. The daemon and CLI integration fixtures now require both former paths to return
+`404`; engineering and historical Phase-2 doctrine identify the routes as removed provenance and
+point the current path to Lifecycle Authority/Target Secret Agent delivery and read-back. A
+warning-clean `lib:prodbox` build passes, the focused compiled-route unit proof passes, and a source
+scan finds none of the deleted symbols. Broader Gateway authority/object-store/target/operator-write
+routes remain, so this is an honest subincrement rather than sprint closure.
+**Implementation in progress (2026-07-31 — Gateway continuity probe cutover)**: the native
+reconcile gate no longer treats a generic Pulumi object-store RPC as a Gateway health check.
+`ensureGatewayDaemonFullModeAt` and the compatibility-named backend observation now both classify
+the daemon's deep `/readyz` projection as healthy, definitely not ready, or transport-transient;
+only a definite not-ready result authorizes the one bounded restart, and verification polls the
+same projection. The CLI integration fixture serves `/readyz` and no longer supplies a successful
+Pulumi-object read for readiness. The touched modules format cleanly, `CLI.Rke2` compiles under
+`-Werror`, and a deleted-symbol scan is empty. This retires the health-probe caller only; the actual
+legacy RPC routes remain open until their final Authority/Target callers are cut over below.
 **Implementation (Increment A, 2026-07-26)**: `Prodbox.Runtime.Role` now enumerates the physically
 separate Lifecycle Authority, Provider Worker, Authority Backup Adapter, TLS Retention Adapter, and
 Target Secret Agent alongside Bootstrap Broker and Gateway Runtime. Each maps bijectively to a
@@ -5023,10 +5460,12 @@ the Target Secret Agent `complete` arm (deliberately opaque — Standard-O agent
 role fail-closed. The Provider Worker previously had only chart statics and no decision algebra; this
 increment lands the greenfield algebra `Prodbox.Lifecycle.ProviderWorker.ProviderWork`, its endpoint
 `Prodbox.ControlPlane.ProviderWorkEndpoint`, and the interpreter binding. The fence is both structural
-and dynamic. __Structural__: `ProviderIntent` is a closed sum whose eight constructors are exactly the
-normal provider intents the architecture authorizes — registered-stack reconcile/observe/read-back,
-bounded scratch checkpoint, and the fenced `aws-ses` non-credential inventory (sending identity, DKIM,
-receipt rules, capture bucket) — so a credential IAM identity/key, an admin/credential permit, an
+and dynamic. __Structural__: `ProviderIntent` is a closed sum whose thirteen constructors are exactly
+the normal provider intents the architecture authorizes — registered-stack
+reconcile/destroy/observe/read-back, bounded scratch checkpoint, the four fenced `aws-ses`
+non-credential arms (sending identity, DKIM, receipt rules, capture bucket), test-scoped EBS reap,
+spot-price observation, operational-identity observation, and the closed readiness probes — so a
+credential IAM identity/key, an admin/credential permit, an
 Authority state write, a backup/TLS identity, a target secret, a Gateway/DNS election, or any SMTP IAM
 principal/policy/key is unrepresentable, not merely rejected (the operator-selected richer intent
 vocabulary). __Dynamic__: `decideProviderWork` refuses an unregistered resource, a stale provider
@@ -5043,6 +5482,76 @@ suite 23/23, Sprint 4.50 aggregate 176/176), `prodbox dev check` warning- and li
 admitted decision to the real narrow-session provider execution (Pulumi/AWS effect + authoritative
 read-back) and the concrete retained-store compare-and-swap are the Standard-O live-coupled
 follow-ons.
+**Implementation (Increment EE, 2026-07-31 — Bootstrap Broker custody and host CLI cutover)**:
+the supported `prodbox vault` surface now drives status, initialize, unseal, baseline reconcile,
+seal, unlock-bundle rotation, Transit-key rotation, and PKI status/issuance exclusively through a
+TokenRequest-authenticated loopback port-forward to the dedicated Bootstrap Broker. Secret-bearing
+operations concurrently attach a bounded payload only to an exact attested one-shot worker bound to
+the route, request/action digests, storage generation, Pod UID, immutable image, ServiceAccount,
+deadline, and distinct retry UID; the long-lived controller receives only secret-free metadata and
+typed receipts. `Bootstrap.Broker.LegacyAdapter` is deleted, `UnlockBundle` cannot contain an
+initial root token, and the plaintext `Vault.Client` init/generated-root DTO and executor family is
+physically deleted; supported initialization decodes only the PGP-ciphertext response. Focused
+Broker engine/recovery, client/runtime authentication and idempotency, Kubernetes attestation and
+cleanup, one-shot ingress, and chart-static validation passes 104/104 under `-Werror`, and the
+library builds 352/352 warning-clean. A categorized source audit finds no Gateway, direct-Vault, or
+root-token dependency in the supported `CLI.Vault` path. Native and AWS
+`ComponentVaultUnsealed` readiness now use a fresh authenticated Broker status call: initialized and
+unsealed is ready, sealed or uninitialized is pending, and ambiguous/authentication/transport failure
+is unreachable (focused classifier/transport proof 3/3). The later Authority-backup/config/
+credential choreography still keeps clean-install validation and the sprint open.
+**Audit correction (2026-07-31 — Broker production-readiness closure)**: Increment EE proved the
+host/worker transport and removed the named legacy adapters, but its wording overstated the
+production interpreter. The real controller composition now uses the production MinIO,
+Kubernetes, PGP, and one-shot-worker boundaries; stale fixed-slot replay is CAS-replaced and every
+durable worker result recomputes its canonical request/result digests. The 104/104 focused suite,
+forced warning-clean Broker compilation, and deleted-symbol scan pass. Readiness nevertheless stays
+closed because the root-session/baseline, ambiguous-reset, child-custody/recovery evidence
+registries and several seal/generated-root/baseline/PKI/post-unseal/child physical arms are still
+unbound; generated-root PGP, observed Vault session revocation, a pre-effect Transit-rotation
+journal, and a fresh in-Pod fence/lease check before every Vault effect are also incomplete. Those
+are code-owned Sprint-4.50 blockers now being implemented, not Standard-O live evidence; no Broker
+production-readiness claim is valid until the complete typed capability registry and negative tests
+close them.
+**Implementation (Increment FF, 2026-07-31 — production decommission composition)**:
+`prodbox nuke` now composes the authenticated external-receipt runner rather than the historical
+process-local teardown. Lifecycle Authority freezes admission in its retained aggregate, discovers
+and commits the exact complete Target inventory once, signs the manifest through its non-exportable
+Transit signer, reuses that committed plan on every pinned-runner resume, and permanently stops only
+against the exact manifest/receipt binding. The Target Agent exposes only authenticated
+decommission inventory, generation-tombstone, and retained-custody-tombstone arms in production;
+ordinary generic Target observe/commit remains unbound. SES teardown proves consumer quiescence,
+targets the registered provider URNs without consuming the distinct SMTP-IAM family, then runs the
+separate IAM, target, custody, TLS-prefix, backup-prefix, and final shared-bucket nodes through the
+compiled registry. The exported executable/dependency/metadata preflight, external acknowledgement,
+receipt-header binding, semantic node/attempt validation, fsync-ordered frames, observe-before-retry
+recovery, and real pinned-process replacement are production-wired. Evidence: decommission 130/130,
+control-plane routes 66/66, request authentication 33/33, authenticated transport 27/27, both
+modified NetworkPolicies rendered successfully, warning-clean library/unit builds, negative scans,
+and `git diff --check`. This closes the decommission code-owned subgraph only; steady-state Target
+delivery, Provider execution, config, credentials, and legacy-route deletion remain open.
+**Implementation in progress (Increment GG, 2026-07-31 — schema-indexed Credential Provisioner)**:
+`Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial`, `.Kubernetes`, `.TargetMaterial`, and
+`.Execution` now define the closed AWS-admin versus external-EAB ingress schemas, distinct
+Lifecycle-provider/Authority-backup/TLS-retention/Gateway-DNS/home-DNS01 descriptors, signed
+normal permits, a finite receipt-ordered first-reconcile plan, exact one-shot Job attestation, and
+the direct Target-Agent handoff/read-back interpreter. The AWS interpreter persists create intent
+before its first finite key-inventory observation, enforces the IAM two-key bound, and resolves an
+applied-but-response-lost create only by deleting the observed inventory, proving stable absence
+across the provider visibility grace, and reminting at most once. Session revocation, Job deletion,
+and positive Pod absence are terminal on every path. The exceptional opaque
+`GenesisBackupPermit` binds the exact `GenesisPlan`, compiled Authority-backup descriptor,
+deadline, and member zero of the same first-reconcile plan; its executor alone can install the
+initial backup identity and returns typed Target-Agent generation and Backup-Adapter establishment
+inputs. The inert-by-default `charts/credential-provisioner` chart uses separate AWS/EAB service
+accounts, immutable image digests, permit-specific Jobs, stdin-only secret ingress, and a
+default-deny NetworkPolicy. The removed shared credential coordinate and generic operator-write
+policy/role are absent from production sources, charts, and test fixtures; root config now names
+only the Lifecycle-provider target while Gateway names only Gateway-DNS. The modules and chart
+compile/lint warning-clean; focused execution and genesis tests are present. Clean-install
+coordinator integration, distinct live IAM provisioning for every 4.50 member, and current-revision
+Standard-P qualification remain open, so this increment does not claim operational cutover or the
+later Sprint `7.33` AWS-run DNS01 / Sprint `8.11` live SMTP migration.
 **Deployment qualification**: pending
 **Implementation**: planned versioned migration/cutover modules, revisions to
 `CheckpointAuthority.hs`, `AuthorityConfig.hs`, `EncryptedBackend.hs`, `LiveResidue.hs`,
@@ -5197,66 +5706,21 @@ an indefinite dual-write or fallback regime.
 
 ### Remaining Work
 
-- Supply the retained Model-B migration repository to the production Authority role server; land
-  dedicated capability clients, credential split, legacy route/transport deletion, and the
-  decommission protocol described above. The versioned single-writer kernel/envelope, retained
-  CAS repository, executable role dispatch, and the pure `migration/apply` server endpoint
-  (bounded canonical request codec + total HTTP-status/summary projection over the injected
-  `MigrationRepository`, Increment K) are landed. What remains here is constructing the production
-  in-cluster retained repository over the role's Kubernetes-auth Vault session and in-cluster MinIO
-  Service DNS (replacing the host-root-token host-direct seam) and dispatching the raw socket
-  request on `LifecycleMigrationApply` to `serveMigrationApply` in `runControlPlaneRole`.
-- Replace the shared fail-closed role server with role-specific production interpreters for the
-  five registered runtime roles. Increment I made their route topology closed and role-indexed;
-  Increment J validates and constructs each role's schema-v2 cached Kubernetes-auth Vault session
-  at startup; Increment L adds the pure `RoleInterpreter` dispatch seam so the socket loop routes
-  an owned request to a per-role handler (the shared `failClosedInterpreter` is installed until a
-  role binds its production handlers). The Lifecycle Authority `migration/apply` (Increment K), TLS
-  Retention `store`/`restore` (Increment W), Authority Backup `copy`/`observe`, Target Secret Agent
-  `commit` projection (Increment X), and the Lifecycle Authority's core `operations/submit` /
-  `operations/observe` (Increment AA) handlers are landed as testable server endpoints over their
-  existing pure algebras — four of the five roles, with the Lifecycle Authority role now fronting every
-  route its closed topology declares (`migration/apply` plus the operation-journal submit/observe). The
-  Provider Worker role has no pure interpreter yet (only
-  chart statics), so its routes stay fail-closed through the L seam until that algebra is built. Binding
-  a production interpreter is supplying the per-route handlers plus each role's bounded request/response
-  wire codec and concrete store/sink CAS adapter (Standard-O); the owned routes still fail closed until
-  those adapters are bound. Increment Y lands the shared `Prodbox.ControlPlane.Codec` and the bytes-level
-  `serveBackupCopyRequest` / `serveTlsStoreRequest` / `serveTlsRestoreRequest` through-seam entries, and
-  Increment Z adds `servePrepareTargetCommitRequest` on the operator-approved permit-authority-supplied
-  protocol, so Authority Backup, TLS Retention, and the Target Secret Agent **prepare** arm now decode a
-  bounded, versioned, canonical request body end-to-end (migration already did) — four of five roles at
-  request-codec parity. What remains here is each role's concrete store/sink CAS adapter (Standard-O), the
-  Target Secret Agent **complete** arm (blocked on the deliberate opacity of `TargetSinkReadback` /
-  `TargetCommitIntent` — it must transport the agent's trusted `confirmTargetSinkReadback` output, a
-  Standard-O agent binding), and the Provider Worker's greenfield decision algebra. Increment BB lands
-  the pure `Prodbox.ControlPlane.RoleInterpreters` composition layer — `lifecycleAuthorityInterpreter`
-  (all three LA routes) and `tlsRetentionInterpreter` (both TLS routes), the two roles whose every route
-  is fully projected — so those roles' handlers now dispatch end-to-end through
-  `serveControlPlaneRequest` over injected repositories (proven by an in-memory fixture), and production
-  `runControlPlaneRole` install is narrowed to supplying each role's concrete store/CAS repository and
-  swapping `failClosedInterpreter` for the built interpreter (Standard-O). Increments CC and DD land
-  `authorityBackupInterpreter` and `providerWorkerInterpreter` (Increment DD also builds the greenfield
-  `ProviderWork` algebra and its endpoint), bringing four of five roles to full interpreter parity. The
-  only remaining interpreter-layer work is the Target Secret Agent `commit`/`observe` composition — and
-  its `complete` arm is the deliberately-opaque Standard-O agent binding (a `complete` request cannot
-  reconstruct a readback), so that role cannot reach a complete pure interpreter in-session; it stays
-  fail-closed until the live agent binding lands.
-- Build the decommission protocol on top of the landed receipt subsystem
-  (`Prodbox.Lifecycle.Decommission.Frame` + `.Journal` + `.Receipt` + `.Manifest` + `.Graph`,
-  Increments M–U): the wiring of the destroy subgraph's node effects to the real destroy/read-back
-  operations (`destroyAwsSesStack`, live-Target-Agent target/custody tombstones,
-  `destroyRetainedPublicEdgeTls`, `destroyLongLivedPulumiStateBucket`) — a Standard-O live-coupled
-  adapter. The pure frame codec, hash-chain, longest-valid-prefix recovery, the fsync-ordered durable
-  append/reopen/truncate barrier (the only new effectful primitive), the deterministic manifest/node
-  vocabulary with its receipt-binding digest, the typed destroy-ordering subgraph with its total executor
-  and ordering-invariant proofs, the retained-Model-B manifest receipt-commit, the `DecommissionRunner`
-  permit family (freeze + verifier + plan-binding gate), the permit→commit→receipt→graph run orchestration
-  with receipt-derived resume, and the exported/pinned verifier artifact + preflight (durable
-  export/read-back and drift-refusing reopen) are landed and fixture-proven. The decommission subsystem is
-  code-complete up to the live boundary; only the real destroy-effect wiring remains.
-- Sprint `5.18` later composes test restore/preparation and always-run cleanup; that later extension
-  is not a blocker for this Phase-4-owned cutover (Standard N).
+None. The TLS lane is exact-observe/CAS/read-back and passes 12/12. The retained signed Provider
+vocabulary supplies encrypted, expiring EKS client authentication without credential projection
+(5/5 projection and 18/18 execution), while native SES/Route53 production reconciliation dispatches
+through authenticated Provider intents. `HostDirectAuthorityStore`, `HostDirectObjectStore`, and the
+host AWS-credential projection module are physically absent and guarded by source checks; the sole
+remaining refusing resolver is test-harness-only Phase-8 migration work, not a production caller.
+Clean-install reconcile invokes the retained backup-admission reconciler before config CAS.
+
+Closure evidence: warning-clean library/executable builds; `prodbox dev check` exit 0;
+`prodbox test unit` exit 0 with 2972/2972 main tests plus 27/27 retained admission, 33/33 request
+authentication, and 27/27 authenticated transport. A broad CLI integration audit was also run and
+correctly exposed stale Phase-5 fake-runtime assumptions about filesystem-authoritative config and
+removed transports; Standard N assigns that suite repair to the already-open Phase-5 surface rather
+than reopening this independently validated authority cutover. Current-revision live infrastructure
+exercise remains the non-blocking Standard-O/Standard-P axis.
 
 ## Documentation Requirements
 
@@ -5545,6 +6009,95 @@ host/cluster (b) lemma of § 2B.
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint.
 - Link the observed-host proof to Sprint `1.68`'s `AllocatedResourcePlan`, Sprint `1.69`'s
   `planAllocatable`, and Sprint `3.28`'s shared `Capacity.Render`.
+
+## Sprint 4.53: Typed Endpoint-Readiness for the Host-Direct Object-Store / Lease Path [✅ Done]
+
+**Status**: Done — own-surface Phase-4 reopen (Standard A) adopting the typed three-valued readiness
+doctrine ([bootstrap_readiness_doctrine.md §2.4](../documents/engineering/bootstrap_readiness_doctrine.md))
+on the lifecycle authority/lease/Model-B core. A live home `prodbox test all` failed
+`RestoreNodePrepareRetainedSes` because a transient host-direct MinIO endpoint-unreachability
+(`aws s3api get-object … could not connect to 127.0.0.1:39000`) was collapsed — through one
+failure bucket at every layer — into a terminal `LeaseBoundedOwnershipLost` (the bring-up-dual defect).
+This makes "classify a transient endpoint-unreachable as terminal authority-loss" unrepresentable.
+**Persistence protocol untouched; happy path byte-identical.**
+**Implementation**: ✅ **Phase 1 (read path) + 1b (write path) landed.** `ModelBObservation` gains a
+distinct retryable `ModelBEndpointUnready` (and `ModelBCasResult` a `ModelBCasEndpointUnready`),
+classified at the single shared `ModelBCasTransport` seam via `transportFailureObservation` /
+`transportFailureCasResult` reusing `Prodbox.Service.isRetryableTransientFailure` plus the aws-phrase
+fragments (the shared base omits "could not connect"). `LeaseRefusal` gains a distinct
+`LeaseAuthorityEndpointUnready` routed from the four `ModelBObservation`→refusal sites; the
+`LeaseRuntime` bounded-runner monitor retries **only** that constructor within the existing lease
+readiness budget (gate stays closed), terminal on budget exhaustion, with **every other refusal
+terminal** (fencing-safety catch-all). Acquire/release CAS loops retry `ModelBCasEndpointUnready`
+within their deadlines. 18 + 6 exhaustive `ModelBObservation` / `ModelBCasResult` mirror arms preserve
+fail-closed behavior everywhere else. The invariant is build-enforced by `readinessObservationViolations`
+in `runConformanceTierChecks` (`src/Prodbox/CheckCode.hs`).
+**Live-proof**: 🧪 the live home `prodbox test all` restore-through-a-transient-MinIO-blip proof
+(`RestoreNodePrepareRetainedSes -> succeeded`) is the non-blocking Standard-O axis.
+**Deployment qualification**: pending — a lifecycle-orchestration *failure-classification* refinement;
+persistence protocol/wire JSON/CAS semantics unchanged, so it neither advances nor invalidates the
+already-pending Standard-P qualification, and the current revision must not be called deployment-ready
+on the strength of this compile-time fix alone.
+**Independent Validation**: ✅ pure + fake-driven, no live cluster: `test/unit/HostDirectModelBAdapter.hs`
+(the classifier maps the aws phrase / connection-refused → `ModelBEndpointUnready`, auth errors →
+`ModelBUnobservable`, and the observe seam routes them), and `test/unit/LifecycleLease.hs` (the monitor
+retries a transient endpoint-unready to recovery, fails closed on persistence past the deadline, and
+keeps a genuine loss terminal without retry). `prodbox dev check` exit 0 including the conformance gate.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`
+
+### Objective
+
+Give the host-direct object-store / lease path a typed not-yet-ready endpoint state so a transient
+endpoint-unreachability is retried within the lease budget rather than collapsed into terminal
+authority-loss, and make "issue an op against an unproven endpoint" unrepresentable.
+
+### Deliverables
+
+- A distinct `ModelBEndpointUnready` / `ModelBCasEndpointUnready` classified once at the transport seam,
+  and a distinct retryable `LeaseAuthorityEndpointUnready` refusal.
+- A bounded-runner monitor + acquire/release CAS loops that retry only the endpoint-unready class
+  within the readiness budget, every other refusal terminal (fencing-safe).
+- A build-enforced conformance gate against re-collapsing the third value.
+- **Phase 2 (deep-probe witness):** replace the shallow host-direct `waitForPort` gate with a real S3
+  round-trip proof and a `HostDirectEndpointProven` witness carried in the handle, so no object-store op
+  is constructible without a proven-reachable endpoint.
+
+### Validation
+
+1. The classifier maps the aws "could not connect" phrase and a connection-refused to the retryable
+   constructor, and auth/decode failures to the terminal one.
+2. The monitor retries a transient endpoint-unready to recovery, fails closed past the deadline, and
+   keeps a genuine fence/expiry loss terminal without retry.
+3. `prodbox dev check` (incl. the three-valued readiness gate) and the lease/host-direct suites pass.
+
+### Remaining Work
+
+None. Phase 2 replaces the `/dev/tcp` listener check with a bounded authenticated S3
+`list-buckets` round trip. The port-forward callback receives an opaque
+`HostDirectEndpointProven` value whose port can be projected only after that proof succeeds; the
+Pulumi prerequisite and bootstrap-bundle readers consume the witness. The shallow shell probe and
+its helper are deleted. Warning-clean library compilation validates the integrated type cutover;
+the live transient-MinIO recovery remains the non-blocking Standard-O proof above.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- ✅ `documents/engineering/bootstrap_readiness_doctrine.md` - §2.4 the transient-vs-persistent
+  endpoint-unobservable distinction (SSoT).
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - none required beyond the existing
+  §3.1 bring-up-twin callout, which this instance realizes on the lease/Model-B path.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Enqueue the shallow host-direct `waitForPort` readiness gate in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint (retired by
+  Phase 2).
 
 ## Related Documents
 

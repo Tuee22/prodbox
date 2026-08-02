@@ -5,14 +5,53 @@ module ControlPlaneVaultSession
   )
 where
 
+import Data.Either (isLeft, isRight)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( controlPlaneSigningKeyInventory
+  , controlPlaneSigningKeyName
+  , controlPlaneSigningKeyRefFor
+  , credentialProvisionerCompletionVaultRole
+  , credentialProvisionerVaultRole
+  , harnessControlPlaneVaultRole
+  , operatorControlPlaneVaultRole
+  )
+import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (CallerService))
+import Prodbox.ControlPlane.InClusterAuthorityStore
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (..)
+  , externalCallerServiceAccount
+  , externalCallerServiceAccountReadArguments
+  , externalCallerTokenEligibilityArguments
+  , externalCallerTokenRequestArguments
+  , validateExternalCallerServiceAccountReadBack
+  )
+import Prodbox.ControlPlane.RetainedAuthentication
+  ( controlPlaneAuthorityEpochPath
+  , controlPlaneRequestReplayPath
+  )
+import Prodbox.ControlPlane.Runtime
+  ( LifecycleAuthorityCoordinates (..)
+  , lifecycleAuthorityRetainedSubmissionCapacity
+  , lifecycleAuthoritySubmissionCapacity
+  , mkLifecycleAuthorityCoordinates
+  )
 import Prodbox.ControlPlane.VaultSession
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( checkpointAuthorityClusterId
+  , checkpointAuthorityObjectBucket
+  , checkpointAuthorityObjectNamespace
+  , checkpointAuthorityVaultKeyspace
+  , modelBObjectLogicalName
+  )
 import Prodbox.Runtime.Role
+import Prodbox.Secret.VaultInventory qualified as VaultInventory
 import Prodbox.Vault.Client (VaultAddress (..))
 import Prodbox.Vault.Reconcile
   ( VaultKubernetesRoleSpec (..)
   , VaultPolicySpec (..)
   , VaultReconcilePlan (..)
+  , VaultTransitKeySpec (..)
   , defaultVaultReconcilePlan
   )
 import Prodbox.Vault.RoleId
@@ -55,6 +94,158 @@ controlPlaneVaultSessionSuite =
     it "reconciles one distinct policy and Kubernetes role for every standing process" $
       mapM_ assertReconciledStandingRole standingRoleBindings
 
+    it "binds custom projected JWT audiences only on exact one-shot roles" $ do
+      let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+          audienceOf name =
+            vaultKubernetesRoleSpecAudience
+              <$> exactlyOneRole name roles
+      audienceOf "prodbox-target-secret-worker"
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf "prodbox-target-secret-worker-auditor"
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf "prodbox-external-material-ingress"
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf "prodbox-credential-provisioner-auditor"
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf credentialProvisionerVaultRole
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf credentialProvisionerCompletionVaultRole
+        `shouldBe` Just (Just "prodbox-control-plane")
+      audienceOf "prodbox-admin-action-runner"
+        `shouldBe` Just (Just "vault")
+      audienceOf "prodbox-admin-action-session-auditor"
+        `shouldBe` Just (Just "vault")
+      audienceOf (vaultRoleIdText VaultRoleLifecycleAuthority)
+        `shouldBe` Just Nothing
+
+    it "separates the AWS-admin worker data session from its accessor-free terminal signer" $ do
+      let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          documentFor name =
+            case filter ((== name) . vaultPolicySpecName) policies of
+              [policy] -> Text.unpack (vaultPolicySpecDocument policy)
+              other -> error ("expected one policy for " <> show name <> ", got " <> show other)
+          workerDocument = documentFor credentialProvisionerVaultRole
+          completionDocument = documentFor credentialProvisionerCompletionVaultRole
+      workerDocument `shouldContain` "secret/data/control-plane/aws-admin-executions/*"
+      workerDocument `shouldNotContain` "transit/sign/prodbox-control-plane-credential-provisioner"
+      completionDocument `shouldContain` "transit/sign/prodbox-control-plane-credential-provisioner"
+      completionDocument `shouldContain` "secret/data/control-plane/authority-epoch"
+      completionDocument `shouldNotContain` "aws-admin-executions"
+      completionDocument `shouldNotContain` "auth/token/"
+
+    it "reconciles the closed Ed25519 Transit inventory and exact retained auth paths" $ do
+      let transitKeys = vaultReconcileTransitKeys defaultVaultReconcilePlan
+          policyNamed name =
+            filter
+              ((== name) . vaultPolicySpecName)
+              (vaultReconcilePolicies defaultVaultReconcilePlan)
+          assertRolePolicy (role, vaultRole) =
+            case policyNamed (vaultRoleIdText vaultRole) of
+              [policy] -> do
+                let document = Text.unpack (vaultPolicySpecDocument policy)
+                    ownKey =
+                      Text.unpack
+                        ( controlPlaneSigningKeyName
+                            (controlPlaneSigningKeyRefFor (CallerService role))
+                        )
+                document `shouldContain` ("path \"transit/sign/" ++ ownKey ++ "\"")
+                document
+                  `shouldContain` ( "path \"secret/data/"
+                                      ++ Text.unpack (controlPlaneRequestReplayPath role)
+                                      ++ "\""
+                                  )
+                document
+                  `shouldContain` ( "path \"secret/data/"
+                                      ++ Text.unpack controlPlaneAuthorityEpochPath
+                                      ++ "\""
+                                  )
+              other -> expectationFailure ("expected one auth policy, got " ++ show other)
+      mapM_
+        ( \ref ->
+            filter
+              ((== controlPlaneSigningKeyName ref) . vaultTransitKeySpecName)
+              transitKeys
+              `shouldBe` [VaultTransitKeySpec (controlPlaneSigningKeyName ref) "ed25519"]
+        )
+        controlPlaneSigningKeyInventory
+      mapM_
+        assertRolePolicy
+        standingRoleBindings
+
+    it "keeps operator and harness signing roles separate and seeds only the public epoch" $ do
+      let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+          policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          assertExternal name = do
+            filter ((== name) . vaultKubernetesRoleSpecName) roles
+              `shouldSatisfy` ((== 1) . length)
+            case filter ((== name) . vaultPolicySpecName) policies of
+              [policy] -> do
+                let document = Text.unpack (vaultPolicySpecDocument policy)
+                document `shouldContain` "transit/sign/prodbox-control-plane-"
+                document `shouldContain` "secret/data/control-plane/authority-epoch"
+                document `shouldNotContain` "request-replay"
+                document `shouldNotContain` "*"
+              other -> expectationFailure ("expected one external policy, got " ++ show other)
+      assertExternal operatorControlPlaneVaultRole
+      assertExternal harnessControlPlaneVaultRole
+      filter
+        ( (== VaultInventory.VaultSecretPath "secret" controlPlaneAuthorityEpochPath)
+            . VaultInventory.vaultSecretObjectPath
+        )
+        (vaultReconcileSecretObjects defaultVaultReconcilePlan)
+        `shouldBe` [ VaultInventory.VaultSecretObjectSpec
+                       (VaultInventory.VaultSecretPath "secret" controlPlaneAuthorityEpochPath)
+                       [ VaultInventory.VaultSecretFieldSpec
+                           "epoch"
+                           (VaultInventory.VaultSecretStatic "1")
+                       ]
+                   ]
+
+    it "binds each host caller to an exact non-automounting self-TokenRequest identity" $ do
+      let operator = LifecycleAuthorityOperator
+          harness = LifecycleAuthorityTestHarness
+          expectedSubject name = "--as=system:serviceaccount:gateway:" ++ name
+          assertCaller caller name duration = do
+            externalCallerServiceAccount caller `shouldBe` Text.pack name
+            externalCallerServiceAccountReadArguments caller
+              `shouldBe` [ "get"
+                         , "serviceaccount"
+                         , name
+                         , "--namespace"
+                         , "gateway"
+                         , "-o"
+                         , "jsonpath={.metadata.namespace}{'\\n'}{.metadata.name}{'\\n'}{.automountServiceAccountToken}{'\\n'}"
+                         ]
+            externalCallerTokenEligibilityArguments caller
+              `shouldBe` [ "auth"
+                         , "can-i"
+                         , "create"
+                         , "serviceaccounts/" ++ name
+                         , "--subresource=token"
+                         , "--namespace"
+                         , "gateway"
+                         , expectedSubject name
+                         ]
+            externalCallerTokenRequestArguments caller
+              `shouldBe` [ "create"
+                         , "token"
+                         , name
+                         , "--namespace"
+                         , "gateway"
+                         , "--duration=" ++ duration
+                         , expectedSubject name
+                         ]
+            validateExternalCallerServiceAccountReadBack
+              caller
+              ("gateway\n" ++ name ++ "\nfalse\n")
+              `shouldBe` Right ()
+            validateExternalCallerServiceAccountReadBack
+              caller
+              ("gateway\n" ++ name ++ "\ntrue\n")
+              `shouldSatisfy` isLeft
+      assertCaller operator "prodbox-control-plane-operator" "5m"
+      assertCaller harness "prodbox-control-plane-test-harness" "15m"
+
     it "keeps shared Gateway AWS and MinIO-root credentials out of standing-role policies" $ do
       let documents =
             Text.unlines
@@ -63,10 +254,60 @@ controlPlaneVaultSessionSuite =
               , vaultPolicySpecName policy
                   `elem` fmap (vaultRoleIdText . snd) standingRoleBindings
               ]
-      Text.unpack documents `shouldNotContain` "secret/data/gateway/gateway/aws"
+      Text.unpack documents `shouldNotContain` ("secret/data/gateway/" <> "gateway/aws")
       Text.unpack documents `shouldNotContain` "secret/data/minio/root"
       Text.unpack documents
         `shouldContain` "secret/data/minio/lifecycle-authority"
+
+    it "gives the Gateway client signing and epoch-read authority without replay ownership" $
+      case filter
+        ((== "prodbox-gateway") . vaultPolicySpecName)
+        (vaultReconcilePolicies defaultVaultReconcilePlan) of
+        [policy] -> do
+          let document = Text.unpack (vaultPolicySpecDocument policy)
+          document
+            `shouldContain` "transit/sign/prodbox-control-plane-service-gateway-runtime"
+          document `shouldContain` "secret/data/control-plane/authority-epoch"
+          document `shouldNotContain` "control-plane/request-replay"
+        other -> expectationFailure ("expected one Gateway policy, got " ++ show other)
+
+    it "accepts only a bounded in-cluster authority store coordinate" $ do
+      mkInClusterAuthorityStoreConfig
+        "prodbox-home"
+        defaultInClusterAuthorityEndpoint
+        defaultInClusterAuthorityBucket
+        `shouldSatisfy` isRight
+      mkInClusterAuthorityStoreConfig
+        "prodbox home"
+        defaultInClusterAuthorityEndpoint
+        defaultInClusterAuthorityBucket
+        `shouldHaveLeft` InClusterAuthorityClusterIdContainsWhitespace
+      mkInClusterAuthorityStoreConfig "prodbox-home" "127.0.0.1:9000" "prodbox-state"
+        `shouldHaveLeft` InClusterAuthorityEndpointInvalid "127.0.0.1:9000"
+
+    it "derives the canonical authority and its single retained admission coordinate" $ do
+      let storeConfig =
+            mustRight
+              ( mkInClusterAuthorityStoreConfig
+                  "prodbox-home"
+                  defaultInClusterAuthorityEndpoint
+                  defaultInClusterAuthorityBucket
+              )
+          coordinates = mustRight (mkLifecycleAuthorityCoordinates storeConfig)
+          authority = lifecycleCheckpointAuthority coordinates
+      checkpointAuthorityClusterId authority `shouldBe` "prodbox-home"
+      checkpointAuthorityObjectBucket authority `shouldBe` defaultInClusterAuthorityBucket
+      checkpointAuthorityObjectNamespace authority `shouldBe` "authority"
+      checkpointAuthorityVaultKeyspace authority `shouldBe` "secret/lifecycle"
+      modelBObjectLogicalName (lifecycleAuthorityAdmissionCoordinate coordinates)
+        `shouldBe` "authority/admission"
+      modelBObjectLogicalName (lifecycleAuthorityRetainedSesSmtpCoordinate coordinates)
+        `shouldBe` "retained-material/custody/ses-smtp-source"
+      modelBObjectLogicalName (lifecycleAuthorityRetainedAcmeEabCoordinate coordinates)
+        `shouldBe` "retained-material/custody/acme-eab-source"
+      lifecycleAuthoritySubmissionCapacity `shouldSatisfy` (> 0)
+      lifecycleAuthorityRetainedSubmissionCapacity
+        `shouldSatisfy` (>= lifecycleAuthoritySubmissionCapacity)
 
 standingRoleBindings :: [(RuntimeRole, VaultRoleId)]
 standingRoleBindings =
@@ -111,6 +352,12 @@ assertReconciledStandingRole (_, vaultRole) = do
       expectationFailure
         ("expected one standing role and policy, got " ++ show other)
 
+exactlyOneRole
+  :: Text.Text -> [VaultKubernetesRoleSpec] -> Maybe VaultKubernetesRoleSpec
+exactlyOneRole name roles = case filter ((== name) . vaultKubernetesRoleSpecName) roles of
+  [role] -> Just role
+  _ -> Nothing
+
 shouldHaveLeft
   :: (Eq err, Show err)
   => Either err value
@@ -119,3 +366,6 @@ shouldHaveLeft
 shouldHaveLeft result expected = case result of
   Left actual -> actual `shouldBe` expected
   Right _ -> expectationFailure "expected Left, got Right"
+
+mustRight :: (Show err) => Either err value -> value
+mustRight = either (error . show) id

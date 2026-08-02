@@ -168,14 +168,19 @@ Four further check families join the canonical quality gate under the Foundation
   gateway route registry and chart statics; a hand-authored raw literal for any of these in a
   template or values file is a lint failure. The single-source rule lives in
   [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md).
-- the **legacy escape registry bijection check** (Sprint `1.63`): every legacy escape call site
-  (gateway-hosted authority routes, the shared operational AWS credential, host-direct
-  Vault/MinIO seams, `aws` CLI subprocess object-store sites, per-request Vault logins) is
+- the **legacy escape registry bijection check** (Sprint `1.63`): every surviving legacy escape
+  call site (the shared operational AWS credential and `aws` CLI subprocess object-store sites) is
   enumerated in the machine-readable registry `src/Prodbox/Legacy/EscapeRegistry.hs`, and a
   source scan must match that registry bijectively: an unregistered new call site fails the
   build, and a registry entry with no surviving call site fails the build. This implements the
-  Standard P interim escape-path guard
+  Standard P interim escape-path guard. The former pre-Authority host-direct object-store seam was
+  removed with its registry entry; reintroducing it is not a supported compatibility option
   ([development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+- the **Gateway control-plane absence check** (Sprint `4.50`, folded into the Broker/Gateway
+  isolation conformance family): every Gateway source module is scanned for the deleted bootstrap,
+  federation-custody, Pulumi/object-store, Authority CAS/clock, target-secret, and operator-write
+  path literals and identifiers. Reintroducing any former route or client fails the gate; only
+  health, readiness, metrics, state, mesh transport, and the elected home DNS lane remain.
 - the **measured-profile conformance check** (Sprint `1.65`): authored Guaranteed-QoS envelopes
   are certified against the committed `MeasuredResourceProfile` artifacts under
   `dhall/capacity/measured/`; the check fails when an authored CPU value is below measured

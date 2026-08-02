@@ -51,6 +51,22 @@ controlPlaneRouteSuite =
         (\role -> routesForRole role `shouldSatisfy` (not . null))
         standingRoles
 
+    it "owns the closed projection-import command only at the Lifecycle Authority" $ do
+      decodeRoleRoute
+        LifecycleAuthorityRuntime
+        ControlPlanePost
+        "/v1/migration/import"
+        `shouldBe` Just LifecycleProjectionImport
+      mapM_
+        ( \otherRole ->
+            decodeRoleRoute
+              otherRole
+              ControlPlanePost
+              "/v1/migration/import"
+              `shouldBe` Nothing
+        )
+        (filter (/= LifecycleAuthorityRuntime) standingRoles)
+
     it "contains no generic object-store or Vault route" $
       mapM_
         ( \route -> do

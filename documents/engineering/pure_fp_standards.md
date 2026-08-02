@@ -444,3 +444,11 @@ topology, lifecycle business semantics, exact capacity thresholds, or implementa
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Refactoring Patterns](./refactoring_patterns.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
+## SES Workflow Algebra
+
+`Prodbox.Ses.Workflow.Model` is the canonical pure SES decision model. Explicit state, command,
+event, refusal, and effect ADTs make every known stage total and testable. Provider,
+operator-material, custody, and admin-teardown effects are separate data families rather than a
+stringly tagged universal request. `Prodbox.Ses.Workflow.Coordinator` interprets one decision,
+performs observe/apply/read-back convergence, and commits the resulting event through the
+exact-revision repository.

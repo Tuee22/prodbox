@@ -1,13 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Dns
-  ( changeRoute53ARecordSetInZone
+  ( HomeGatewayDnsObservation (..)
+  , changeRoute53ARecordSetInZone
   , configuredPublicHostFqdns
+  , decodeHomeGatewayDnsObservation
   , fetchPublicIp
   , preferredApiHostFqdn
   , preferredIdentityHostFqdn
   , preferredPublicHostFqdn
   , preferredWebsocketHostFqdn
+  , queryPublicEdgeDnsRecordValues
   , queryRoute53Record
   , queryRoute53ARecordValuesInZone
   , queryRoute53RecordInZone
@@ -18,50 +21,46 @@ where
 
 import Data.Aeson
   ( Value (..)
-  , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.List (nub)
+import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Vector qualified as Vector
-import Prodbox.AwsEnvironment
-  ( awsCliSubprocessEnvironment
-  )
 import Prodbox.CLI.Command (DnsCommand (..))
 import Prodbox.CLI.Output
   ( writeError
   , writeOutput
   )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchHostProviderIntentFresh
+  , renderProviderCallerError
+  )
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Http.Client
   ( defaultHttpConfig
   , httpGetText
   , renderHttpError
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObservePublicARecord, ReconcilePublicARecord)
+  , mkPublicARecordRef
+  )
 import Prodbox.PublicEdge
   ( publicFqdn
   , sharedPublicHostFqdns
   )
-import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( ConfigFile (..)
-  , Route53Section (..)
+  ( Route53Section (..)
   , ValidatedSettings (..)
-  , aws
-  , resolveAwsCredentialsRefFromHostVault
   , route53
   , validateAndLoadSettings
   )
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
-  )
+import Prodbox.Substrate (Substrate (..))
 import System.Exit
   ( ExitCode (..)
   )
@@ -125,16 +124,120 @@ fetchPublicIp = do
       [] -> Left "public IP lookup returned an empty response"
 
 queryRoute53Record :: FilePath -> ValidatedSettings -> String -> IO (Either String (Maybe String))
-queryRoute53Record repoRoot settings fqdn =
-  queryRoute53RecordInZone repoRoot settings (zone_id (route53 (validatedConfig settings))) fqdn
+queryRoute53Record _repoRoot settings fqdn = do
+  valuesResult <- queryHomeGatewayDnsRecordValues settings fqdn
+  pure $ case valuesResult of
+    Left err -> Left err
+    Right [] -> Right Nothing
+    Right (firstValue : _) -> Right (Just firstValue)
 
--- | Query a Route 53 hosted zone for an A record by FQDN. The hosted
--- zone is named explicitly so substrate-aware callers
--- (`prodbox host public-edge --substrate aws`) can target the
--- AWS-substrate subzone instead of the home substrate's zone. The
--- subprocess environment still authenticates with the operational
--- `aws.*` credentials from `prodbox.dhall` because every supported
--- Route 53 read on the supported path runs through that block.
+-- | Observe public-edge DNS through its substrate owner. Home observation is
+-- the exact, non-secret Gateway-DNS status projection. AWS observation is a
+-- registered, signed Authority/Provider read and never borrows or exports the
+-- LongLived home identity.
+queryPublicEdgeDnsRecordValues
+  :: FilePath
+  -> ValidatedSettings
+  -> Substrate
+  -> Text
+  -> String
+  -> IO (Either String [String])
+queryPublicEdgeDnsRecordValues repoRoot settings substrate hostedZoneId fqdn =
+  case substrate of
+    SubstrateHomeLocal -> queryHomeGatewayDnsRecordValues settings fqdn
+    SubstrateAws ->
+      queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn
+
+data HomeGatewayDnsObservation = HomeGatewayDnsObservation
+  { homeGatewayDnsObservationValue :: !(Maybe String)
+  , homeGatewayDnsObservationWritable :: !Bool
+  }
+  deriving (Eq, Show)
+
+queryHomeGatewayDnsRecordValues
+  :: ValidatedSettings -> String -> IO (Either String [String])
+queryHomeGatewayDnsRecordValues settings fqdn = do
+  endpoint <- GatewayClient.hostLoopbackGatewayEndpointFromEnv
+  stateResult <- GatewayClient.queryState endpoint
+  pure $ case stateResult of
+    Left err ->
+      Left
+        ( "Gateway-DNS observation failed: "
+            ++ GatewayClient.renderGatewayError err
+        )
+    Right state -> do
+      observed <-
+        decodeHomeGatewayDnsObservation
+          (zone_id (route53 (validatedConfig settings)))
+          fqdn
+          state
+      if homeGatewayDnsObservationWritable observed
+        then Right (maybe [] pure (homeGatewayDnsObservationValue observed))
+        else
+          Left "Gateway-DNS observation is bound to the requested record but its write authority is not ready"
+
+decodeHomeGatewayDnsObservation
+  :: Text -> String -> Value -> Either String HomeGatewayDnsObservation
+decodeHomeGatewayDnsObservation expectedZone expectedFqdn payload = do
+  state <- valueObject "Gateway state" payload
+  gateValue <- requiredField "dns_write_gate" state
+  gate <- valueObject "Gateway DNS write gate" gateValue
+  observedZone <- textField "zone_id" gate
+  observedFqdn <- textField "fqdn" gate
+  if observedZone == expectedZone
+    then Right ()
+    else Left "Gateway-DNS observation is bound to a different hosted zone"
+  if canonicalFqdn observedFqdn == canonicalFqdn (Text.pack expectedFqdn)
+    then Right ()
+    else Left "Gateway-DNS observation is bound to a different FQDN"
+  writable <- boolField "can_write_dns" state
+  observedValue <- optionalTextField "last_dns_write_ip" state
+  pure
+    HomeGatewayDnsObservation
+      { homeGatewayDnsObservationValue = Text.unpack <$> observedValue
+      , homeGatewayDnsObservationWritable = writable
+      }
+
+valueObject :: String -> Value -> Either String (KeyMap.KeyMap Value)
+valueObject _ (Object value) = Right value
+valueObject label _ = Left (label ++ " is not a JSON object")
+
+requiredField :: Text -> KeyMap.KeyMap Value -> Either String Value
+requiredField name fields =
+  case KeyMap.lookup (fromTextKey name) fields of
+    Nothing -> Left ("Gateway-DNS observation is missing `" ++ Text.unpack name ++ "`")
+    Just value -> Right value
+
+textField :: Text -> KeyMap.KeyMap Value -> Either String Text
+textField name fields = do
+  value <- requiredField name fields
+  case value of
+    String text -> Right text
+    _ -> Left ("Gateway-DNS observation field `" ++ Text.unpack name ++ "` is not text")
+
+boolField :: Text -> KeyMap.KeyMap Value -> Either String Bool
+boolField name fields = do
+  value <- requiredField name fields
+  case value of
+    Bool flag -> Right flag
+    _ -> Left ("Gateway-DNS observation field `" ++ Text.unpack name ++ "` is not boolean")
+
+optionalTextField :: Text -> KeyMap.KeyMap Value -> Either String (Maybe Text)
+optionalTextField name fields = do
+  value <- requiredField name fields
+  case value of
+    Null -> Right Nothing
+    String text -> Right (Just text)
+    _ -> Left ("Gateway-DNS observation field `" ++ Text.unpack name ++ "` is not text or null")
+
+fromTextKey :: Text -> Key.Key
+fromTextKey = Key.fromText
+
+canonicalFqdn :: Text -> Text
+canonicalFqdn = Text.toCaseFold . Text.dropWhileEnd (== '.')
+
+-- | Compatibility-shaped AWS observation surface backed by the typed Provider
+-- read. It must never resolve a Target generation onto the host.
 queryRoute53RecordInZone
   :: FilePath
   -> ValidatedSettings
@@ -154,35 +257,19 @@ queryRoute53ARecordValuesInZone
   -> Text
   -> String
   -> IO (Either String [String])
-queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId fqdn = do
-  environmentResult <- awsCliEnvironment repoRoot config
-  case environmentResult of
-    Left err -> pure (Left err)
-    Right environment -> do
-      outputResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "list-resource-record-sets"
-                , "--hosted-zone-id"
-                , Text.unpack hostedZoneId
-                , "--output"
-                , "json"
-                ]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      pure $
-        case outputResult of
-          Failure err -> Left ("failed to start `aws route53 list-resource-record-sets`: " ++ err)
-          Success output ->
-            case processExitCode output of
-              ExitSuccess -> parseRoute53RecordValues fqdn (processStdout output)
-              ExitFailure _ -> Left ("aws route53 list-resource-record-sets failed: " ++ outputDetail output)
- where
-  config = validatedConfig settings
+queryRoute53ARecordValuesInZone repoRoot _settings hostedZoneId fqdn =
+  case mkPublicARecordRef hostedZoneId (Text.pack fqdn) 60 ["0.0.0.0"] of
+    Left err -> pure (Left ("invalid registered AWS public A-record coordinate: " ++ show err))
+    Right ref -> do
+      observed <-
+        dispatchHostProviderIntentFresh
+          LifecycleAuthorityOperator
+          repoRoot
+          "observe-public-a"
+          (ObservePublicARecord ref)
+      pure $ case observed of
+        Left err -> Left (renderProviderCallerError err)
+        Right evidence -> parsePublicARecordEvidence evidence
 
 changeRoute53ARecordSetInZone
   :: FilePath
@@ -192,151 +279,34 @@ changeRoute53ARecordSetInZone
   -> [String]
   -> Int
   -> IO (Either String ())
-changeRoute53ARecordSetInZone repoRoot settings hostedZoneId fqdn recordValues ttlValue
+changeRoute53ARecordSetInZone repoRoot _settings hostedZoneId fqdn recordValues ttlValue
   | null recordValues = pure (Left ("refusing to write empty Route 53 A record set for " ++ fqdn))
-  | otherwise = do
-      environmentResult <- awsCliEnvironment repoRoot config
-      case environmentResult of
-        Left err -> pure (Left err)
-        Right environment -> do
-          changeResult <-
-            captureSubprocessResult
-              Subprocess
-                { subprocessPath = "aws"
-                , subprocessArguments =
-                    [ "route53"
-                    , "change-resource-record-sets"
-                    , "--hosted-zone-id"
-                    , Text.unpack hostedZoneId
-                    , "--change-batch"
-                    , BL8.unpack (encode (route53AChangeBatch "UPSERT" fqdn recordValues ttlValue))
-                    , "--query"
-                    , "ChangeInfo.Id"
-                    , "--output"
-                    , "text"
-                    ]
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-          case changeResult of
-            Failure err -> pure (Left ("failed to start `aws route53 change-resource-record-sets`: " ++ err))
-            Success changeOutput ->
-              case processExitCode changeOutput of
-                ExitFailure _ -> pure (Left ("aws route53 change-resource-record-sets failed: " ++ outputDetail changeOutput))
-                ExitSuccess -> do
-                  waitResult <-
-                    captureSubprocessResult
-                      Subprocess
-                        { subprocessPath = "aws"
-                        , subprocessArguments =
-                            [ "route53"
-                            , "wait"
-                            , "resource-record-sets-changed"
-                            , "--id"
-                            , trim (processStdout changeOutput)
-                            ]
-                        , subprocessEnvironment = Just environment
-                        , subprocessWorkingDirectory = Just repoRoot
-                        }
-                  pure $ case waitResult of
-                    Failure err -> Left ("failed to start `aws route53 wait resource-record-sets-changed`: " ++ err)
-                    Success waitOutput ->
-                      case processExitCode waitOutput of
-                        ExitSuccess -> Right ()
-                        ExitFailure _ -> Left ("aws route53 wait resource-record-sets-changed failed: " ++ outputDetail waitOutput)
- where
-  config = validatedConfig settings
+  | ttlValue <= 0 = pure (Left ("refusing invalid Route 53 TTL for " ++ fqdn))
+  | otherwise =
+      case mkPublicARecordRef
+        hostedZoneId
+        (Text.pack fqdn)
+        (fromIntegral ttlValue)
+        (map Text.pack (sort recordValues)) of
+        Left err -> pure (Left ("invalid registered AWS public A-record: " ++ show err))
+        Right ref -> do
+          reconciled <-
+            dispatchHostProviderIntentFresh
+              LifecycleAuthorityOperator
+              repoRoot
+              "reconcile-public-a"
+              (ReconcilePublicARecord ref)
+          pure $ case reconciled of
+            Left err -> Left (renderProviderCallerError err)
+            Right _ -> Right ()
 
-route53AChangeBatch :: String -> String -> [String] -> Int -> Value
-route53AChangeBatch action fqdn recordValues ttlValue =
-  object
-    [ "Changes"
-        .= [ object
-               [ "Action" .= action
-               , "ResourceRecordSet"
-                   .= object
-                     [ "Name" .= ensureTrailingDot fqdn
-                     , "Type" .= ("A" :: String)
-                     , "TTL" .= ttlValue
-                     , "ResourceRecords" .= map (\value -> object ["Value" .= value]) recordValues
-                     ]
-               ]
-           ]
-    ]
-
-parseRoute53RecordValues :: String -> String -> Either String [String]
-parseRoute53RecordValues fqdn stdoutText = do
-  payload <- eitherDecode (BL8.pack stdoutText) :: Either String Value
-  pure (recordIpsForFqdn (ensureTrailingDot fqdn) payload)
-
-recordIpsForFqdn :: String -> Value -> [String]
-recordIpsForFqdn fqdn payload =
-  case payload of
-    Object obj ->
-      case KeyMap.lookup "ResourceRecordSets" obj of
-        Just (Array records) -> findRecordIps fqdn (Vector.toList records)
-        _ -> []
-    _ -> []
-
-findRecordIps :: String -> [Value] -> [String]
-findRecordIps _ [] = []
-findRecordIps fqdn (value : remaining) =
-  case value of
-    Object obj ->
-      let nameMatches = KeyMap.lookup "Name" obj == Just (String (Text.pack fqdn))
-          typeMatches = KeyMap.lookup "Type" obj == Just (String "A")
-       in if nameMatches && typeMatches
-            then recordIps obj
-            else findRecordIps fqdn remaining
-    _ -> findRecordIps fqdn remaining
-
-recordIps :: KeyMap.KeyMap Value -> [String]
-recordIps obj =
-  case KeyMap.lookup "ResourceRecords" obj of
-    Just (Array records) -> mapMaybeValue recordValue (Vector.toList records)
-    _ -> []
-
-recordValue :: Value -> Maybe String
-recordValue value =
-  case value of
-    Object recordObj ->
-      case KeyMap.lookup "Value" recordObj of
-        Just (String recordText) -> Just (Text.unpack recordText)
-        _ -> Nothing
-    _ -> Nothing
-
-mapMaybeValue :: (a -> Maybe b) -> [a] -> [b]
-mapMaybeValue _ [] = []
-mapMaybeValue f (value : remaining) =
-  case f value of
-    Nothing -> mapMaybeValue f remaining
-    Just result -> result : mapMaybeValue f remaining
-
-ensureTrailingDot :: String -> String
-ensureTrailingDot value = if null value || last value == '.' then value else value ++ "."
-
--- | Route 53 subprocesses run through the single PATH/HOME/LANG-preserving
--- 'awsCliSubprocessEnvironment' builder so the bare @aws@ binary resolves on
--- hosts where @aws@ lives outside the default exec @PATH@. Sprint 1.30 fixed
--- the prior empty-base (`isolatedAwsEnvironment`) that dropped @PATH@.
-awsCliEnvironment :: FilePath -> ConfigFile -> IO (Either String [(String, String)])
-awsCliEnvironment repoRoot config = do
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-  case credentialsResult of
-    Left err -> pure (Left ("load operational AWS credentials from Vault: " ++ err))
-    Right credentials -> Right <$> awsCliSubprocessEnvironment credentials
-
-outputDetail :: ProcessOutput -> String
-outputDetail output =
-  case (trim (processStderr output), trim (processStdout output)) of
-    (stderrText, _) | stderrText /= "" -> stderrText
-    ("", stdoutText) | stdoutText /= "" -> stdoutText
-    _ -> "subprocess exited without output"
-
-trim :: String -> String
-trim = f . f
- where
-  f = reverse . dropWhile (`elem` [' ', '\n', '\r', '\t'])
+parsePublicARecordEvidence :: Text -> Either String [String]
+parsePublicARecordEvidence evidence =
+  case Text.stripPrefix "public-a-values:" evidence of
+    Nothing -> Left "Lifecycle Provider returned invalid public A-record evidence"
+    Just raw
+      | Text.null raw -> Right []
+      | otherwise -> Right (map Text.unpack (Text.splitOn "," raw))
 
 failWith :: String -> IO ExitCode
 failWith message = do

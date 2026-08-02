@@ -18,15 +18,12 @@ import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.Gateway.Client (authorityClockUrl)
-import Prodbox.Gateway.ObjectStore
-  ( AuthorityClockResponse (..)
-  , AuthorityObjectCasRequest (..)
+import Prodbox.ControlPlane.AuthorityObject
+  ( AuthorityObjectCasRequest (..)
   , AuthorityObjectLeaseGuard (..)
   , AuthorityObjectPayloadError (..)
   , authorityControlObjectPayloadMaxBytes
   , authorityObjectPayloadLimit
-  , authorityObjectRequestMaxBytes
   , authorityPulumiObjectPayloadMaxBytes
   , validateAuthorityObjectPayloadLength
   )
@@ -35,6 +32,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasAdapter (..)
   , ModelBCasRequest (..)
   , ModelBCasResult (..)
+  , ModelBCodec (..)
   , ModelBLeaseGuard (..)
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
@@ -50,10 +48,6 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , targetSecretSinkKvPath
   )
 import Prodbox.Lifecycle.CheckpointAuthority qualified
-import Prodbox.Lifecycle.CheckpointAuthorityStore
-  ( ModelBCodec (..)
-  , gatewayModelBCasAdapter
-  )
 import Prodbox.Lifecycle.Lease
   ( LeaseAcquireDecision (..)
   , LeaseCommitDecision (..)
@@ -153,6 +147,10 @@ import Prodbox.Lifecycle.LeaseRuntime
   , mintedAwsSession
   , mkProductionLeaseRuntime
   )
+import Prodbox.Lifecycle.ModelBCasTransport
+  ( ModelBTransport (..)
+  , modelBCasAdapterOverTransport
+  )
 import Prodbox.Settings (Credentials (..))
 import TestSupport
 
@@ -184,13 +182,6 @@ lifecycleLeaseSuite =
       authorityDurationFromMicros 0 `shouldBe` Left AuthorityDurationMustBePositive
       mkFencingToken 0 `shouldBe` Left FencingTokenMustBePositive
 
-    it "pins the explicit authority-clock wire contract" $ do
-      let response = AuthorityClockResponse 123456789
-      authorityClockUrl "https://gateway.example.test"
-        `shouldBe` "https://gateway.example.test/v1/object-store/authority/time"
-      (eitherDecode (encode response) :: Either String AuthorityClockResponse)
-        `shouldBe` Right response
-
     it "round-trips the physical owner/fence guard without exposing payload bytes" $ do
       let wireGuard =
             AuthorityObjectLeaseGuard
@@ -212,7 +203,6 @@ lifecycleLeaseSuite =
       show request `shouldNotContain` "sensitive-payload"
 
     it "keeps control projections at 1 MiB while retaining the 64 MiB checkpoint class" $ do
-      authorityObjectRequestMaxBytes `shouldBe` (64 * 1024 * 1024)
       authorityControlObjectPayloadMaxBytes `shouldBe` (1024 * 1024)
       authorityPulumiObjectPayloadMaxBytes `shouldBe` (64 * 1024 * 1024)
       authorityObjectPayloadLimit "leases/account/region/aws-ses"
@@ -778,6 +768,43 @@ lifecycleLeaseSuite =
                   )
               )
 
+    it "retries a transient endpoint-unready within the deadline, then succeeds on recovery" $ do
+      stateRef <- newFakeLeaseState (at 1000) ModelBMissing False
+      probeRef <-
+        newIORef
+          [ LeaseStillOwned
+          , LeaseLost (LeaseAuthorityEndpointUnready "minio-port-forward-blip")
+          , LeaseLost (LeaseAuthorityEndpointUnready "minio-port-forward-blip")
+          , LeaseStillOwned
+          ]
+      result <-
+        fakeRunBounded stateRef (at 5000) (scriptedOwnershipProbe probeRef) (pure ("committed" :: Text))
+      result `shouldBe` Right "committed"
+
+    it "fails closed when a transient endpoint-unready persists past the deadline" $ do
+      stateRef <- newFakeLeaseState (at 6000) ModelBMissing False
+      probeRef <-
+        newIORef
+          [ LeaseStillOwned
+          , LeaseLost (LeaseAuthorityEndpointUnready "minio-still-down")
+          ]
+      result <-
+        fakeRunBounded stateRef (at 5000) (scriptedOwnershipProbe probeRef) (pure ("committed" :: Text))
+      result
+        `shouldBe` Left (LeaseBoundedOwnershipLost (LeaseAuthorityEndpointUnready "minio-still-down"))
+
+    it "keeps a genuine ownership loss terminal without retry (fencing-safety pin)" $ do
+      stateRef <- newFakeLeaseState (at 1000) ModelBMissing False
+      probeRef <-
+        newIORef
+          [ LeaseStillOwned
+          , LeaseLost (LeaseGrantExpired (at 100) (at 200))
+          ]
+      result <-
+        fakeRunBounded stateRef (at 5000) (scriptedOwnershipProbe probeRef) (pure ("committed" :: Text))
+      result
+        `shouldBe` Left (LeaseBoundedOwnershipLost (LeaseGrantExpired (at 100) (at 200)))
+
     it "keeps retained authority and target sink coordinates non-interchangeable" $ do
       checkpointAuthorityClusterId authority `shouldBe` "home-control"
       targetSecretSinkIdentity targetSink `shouldBe` "aws-eks"
@@ -787,7 +814,6 @@ lifecycleLeaseSuite =
       modelBObjectLogicalName checkpoint `shouldBe` "checkpoints/aws-ses"
       mkLongLivedCheckpointAuthority
         "home control"
-        "https://gateway.example.test"
         "prodbox-state"
         "lifecycle"
         "transit/prodbox"
@@ -798,8 +824,12 @@ lifecycleLeaseSuite =
             expectRight
               (mkChartLifetimeCoordinate authority "pulumi-stack/aws-ses")
           adapter =
-            gatewayModelBCasAdapter
+            modelBCasAdapterOverTransport
               authority
+              ModelBTransport
+                { transportObserveObject = const (pure (Left "unexpected observe"))
+                , transportCasObject = const (pure (Left "unexpected CAS"))
+                }
               ModelBCodec
                 { encodeModelBValue = const (Left "projection exceeds bound")
                 , decodeModelBValue = Right
@@ -925,7 +955,7 @@ lifecycleLeaseSuite =
 
     it "validates the production monitor poll interval" $ do
       mkProductionLeaseRuntime
-        authority
+        (pure (Right (at 0)))
         ModelBCasAdapter
           { modelBObserve = const (pure ModelBMissing)
           , modelBCompareAndSwap = const (pure (ModelBCasUnobservable "unused"))
@@ -960,7 +990,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "home-control"
-        "https://gateway.example.test"
         "prodbox-state"
         "lifecycle"
         "transit/prodbox"
@@ -971,7 +1000,6 @@ targetSink =
   expectRight
     ( mkTargetClusterSecretSink
         "aws-eks"
-        "https://gateway.aws.example.test"
         "secret"
         "keycloak/smtp"
     )
@@ -1230,13 +1258,33 @@ fakeRunBounded stateRef deadline ownershipProbe action = do
     LeaseLost refusal -> pure (Left (LeaseBoundedOwnershipLost refusal))
     LeaseStillOwned -> do
       result <- action
-      after <- ownershipProbe
-      now <- fakeLeaseNow <$> readIORef stateRef
-      pure $ case after of
-        LeaseLost refusal -> Left (LeaseBoundedOwnershipLost refusal)
-        LeaseStillOwned
-          | now > deadline -> Left (LeaseBoundedDeadlineExceeded deadline)
-          | otherwise -> Right result
+      monitor result
+ where
+  -- Mirrors the real 'Prodbox.Lifecycle.LeaseRuntime' monitor refinement: a
+  -- transient endpoint-unready is retried within the deadline (gate stays
+  -- closed), terminal only on budget exhaustion; EVERY other refusal is
+  -- terminal immediately (never retried) — the fencing-safety catch-all.
+  monitor result = do
+    after <- ownershipProbe
+    now <- fakeLeaseNow <$> readIORef stateRef
+    case after of
+      LeaseLost (LeaseAuthorityEndpointUnready detail)
+        | now > deadline ->
+            pure (Left (LeaseBoundedOwnershipLost (LeaseAuthorityEndpointUnready detail)))
+        | otherwise -> monitor result
+      LeaseLost refusal -> pure (Left (LeaseBoundedOwnershipLost refusal))
+      LeaseStillOwned
+        | now > deadline -> pure (Left (LeaseBoundedDeadlineExceeded deadline))
+        | otherwise -> pure (Right result)
+
+-- | An ownership probe that replays a scripted sequence of statuses (one per
+-- call), defaulting to 'LeaseStillOwned' once exhausted.
+scriptedOwnershipProbe :: IORef [LeaseOwnershipStatus] -> IO LeaseOwnershipStatus
+scriptedOwnershipProbe probeRef = do
+  scripted <- readIORef probeRef
+  case scripted of
+    (next : rest) -> writeIORef probeRef rest >> pure next
+    [] -> pure LeaseStillOwned
 
 isCommitPermitFor
   :: Prodbox.Lifecycle.Lease.LeaseGrant

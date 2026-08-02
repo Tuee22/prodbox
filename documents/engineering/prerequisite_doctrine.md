@@ -364,3 +364,10 @@ above (prereqs gate `apply`) and
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+## SES Semantic Revision Evidence
+
+Provider command success is not SES readiness. The revisioned workflow commits provider mutation,
+then polls Sprint `8.10`'s exact sending identity, DKIM, MX, active rule, capture action, and S3
+list/get classifier without retaining the mutation permit. Only `AwsSesReady` for the aggregate's
+exact provider revision can commit semantic readiness; pending remains bounded, failed is terminal,
+and unobservable fails closed with visible evidence.

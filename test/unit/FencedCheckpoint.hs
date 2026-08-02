@@ -214,7 +214,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "prodbox-home"
-        "http://127.0.0.1:30443"
         "prodbox-state"
         "lifecycle"
         "secret/lifecycle"

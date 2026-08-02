@@ -1,5 +1,6 @@
 module CliSuite
   ( integrationCliSuite
+  , runInstalledWithFakeAuthority
   )
 where
 
@@ -17,6 +18,7 @@ import Control.Exception (SomeException, bracket, finally, try)
 import Control.Monad (void, when)
 import Data.ByteString.Char8 qualified as BS8
 import Data.List (find, findIndex, isInfixOf, sort)
+import FixtureServer (withVaultFixtureServer)
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (SockAddrInet)
@@ -42,9 +44,9 @@ import Prodbox.BuildSupport
   )
 import Prodbox.Http.Client
   ( HttpConfig (..)
+  , HttpError (..)
   , defaultHttpConfig
   , httpGetText
-  , renderHttpError
   )
 import System.Directory
   ( Permissions (..)
@@ -56,9 +58,9 @@ import System.Directory
   , listDirectory
   , setPermissions
   )
-import System.Environment (getEnvironment)
+import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process
   ( CreateProcess (cwd, env)
@@ -82,13 +84,12 @@ integrationCliSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "show"]) {cwd = Just tmpDir}
-            ""
+          runInstalledWithFakeAuthority tmpDir binary ["config", "show"]
 
+        when (exitCode /= ExitSuccess) (expectationFailure stderrText)
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
-        stdoutText `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
+        stdoutText `shouldContain` "aws.access_key_id=Vault:secret/aws/lifecycle-provider#access_key_id"
         stdoutText `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
 
     it "validates config without requiring any Python backend" $
@@ -97,11 +98,10 @@ integrationCliSuite = do
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
-        (exitCode, _, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "validate"]) {cwd = Just tmpDir}
-            ""
+        (exitCode, stdoutText, stderrText) <-
+          runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
 
+        when (exitCode /= ExitSuccess) (expectationFailure (stdoutText ++ stderrText))
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
 
@@ -151,7 +151,7 @@ integrationCliSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
         seedFakeVaultAwsCredentials
           tmpDir
-          gatewayAwsVaultPath
+          lifecycleProviderVaultPath
           "AKIASESREADY"
           "ses-ready-secret"
           Nothing
@@ -159,19 +159,17 @@ integrationCliSuite = do
         envVars <- fakeSesReadinessEnvironment tmpDir "ready"
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["host", "check-ses-readiness"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithFakeAuthorityEnvironment
+            tmpDir
+            binary
+            ["host", "check-ses-readiness"]
+            envVars
 
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
         stdoutText `shouldContain` "Retained SES semantic readiness: Ready"
         commands <- readFile (tmpDir </> "fake-ses-readiness-aws.txt")
-        commands `shouldContain` "sesv2|get-email-identity"
-        commands `shouldContain` "route53|list-resource-record-sets"
-        commands `shouldContain` "ses|describe-active-receipt-rule-set"
-        commands `shouldContain` "s3api|list-objects-v2"
-        commands `shouldContain` "s3api|get-object"
+        commands `shouldBe` "--version\n"
         commands `shouldNotContain` "create-"
         commands `shouldNotContain` "update-"
         commands `shouldNotContain` "put-"
@@ -184,7 +182,7 @@ integrationCliSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
         seedFakeVaultAwsCredentials
           tmpDir
-          gatewayAwsVaultPath
+          lifecycleProviderVaultPath
           "AKIASESFAILED"
           "ses-failed-secret"
           Nothing
@@ -192,17 +190,20 @@ integrationCliSuite = do
         envVars <- fakeSesReadinessEnvironment tmpDir "identity-failed"
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["host", "check-ses-readiness"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithFakeAuthorityEnvironment
+            tmpDir
+            binary
+            ["host", "check-ses-readiness"]
+            envVars
 
         exitCode `shouldBe` ExitFailure 1
         stdoutText `shouldBe` ""
         stderrText `shouldContain` "ses_sending_identity_verified"
-        stderrText `shouldContain` "SES semantic readiness check: Failed"
+        stderrText
+          `shouldContain` "AWS credential check failed through the authenticated Lifecycle Authority/Provider Worker"
         stderrText `shouldContain` "VerifiedForSendingStatus=False"
         stderrText `shouldContain` "Remedy:"
-        stderrText `shouldContain` "Retry the same harness-owned validation"
+        stderrText `shouldContain` "prodbox aws setup"
         stderrText `shouldNotContain` "aws stack aws-ses reconcile"
         stderrText `shouldNotContain` "pulumi up"
         stderrText `shouldNotContain` "manually provision"
@@ -238,9 +239,10 @@ integrationCliSuite = do
         let outputPath = tmpDir </> "gateway.dhall"
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["gateway", "config-gen", outputPath, "--node-id", "node-a"]) {cwd = Just tmpDir}
-            ""
+          runInstalledWithFakeAuthority
+            tmpDir
+            binary
+            ["gateway", "config-gen", outputPath, "--node-id", "node-a"]
 
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
@@ -275,66 +277,39 @@ integrationCliSuite = do
             requestLine <- takeMVar requestRef
             requestLine `shouldContain` "GET /v1/state"
 
-    it "Sprint 4.42: vault status prefers the daemon NodePort over direct host Vault seams" $
-      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
-        withFakeGatewayDaemonServer
-          [ ("/v1/state", 200, gatewayStateResponseJson)
-          ,
-            ( "/v1/bootstrap/vault/status"
-            , 200
-            , "{\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
-            )
-          ]
-          $ \gatewayPort requestsRef -> do
-            binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-            writeRepoMarkers tmpDir
-            writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
-            baseEnv <- getEnvironment
-            let envVars =
-                  ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
-                    : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:1")
-                    : baseEnv
+    it "vault status uses the caller-bound Bootstrap Broker transport" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
-            (exitCode, stdoutText, stderrText) <-
-              readCreateProcessWithExitCode
-                (proc binary ["vault", "status"]) {cwd = Just tmpDir, env = Just envVars}
-                ""
+        (exitCode, stdoutText, stderrText) <-
+          runInstalledWithFakeAuthority tmpDir binary ["vault", "status"]
 
-            exitCode `shouldBe` ExitSuccess
-            stderrText `shouldBe` ""
-            stdoutText `shouldContain` "Vault: initialized=True, sealed=False"
-            requests <- readMVar requestsRef
-            requests `shouldSatisfy` any ("GET /v1/state" `isInfixOf`)
-            requests `shouldSatisfy` any ("GET /v1/bootstrap/vault/status" `isInfixOf`)
+        exitCode `shouldBe` ExitSuccess
+        stderrText `shouldBe` ""
+        stdoutText
+          `shouldContain` "Vault status: {\"initialization_ambiguous\":false,\"initialized\":true,\"sealed\":false,\"storage_generation\":\"1\"}"
 
-    it "Sprint 4.42: broker-mediated Vault errors do not fall back to direct host Vault" $
-      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
-        withFakeGatewayDaemonServer
-          [ ("/v1/state", 200, gatewayStateResponseJson)
-          , ("/v1/bootstrap/vault/status", 503, "Vault status unavailable: sealed")
-          ]
-          $ \gatewayPort _requestsRef -> do
-            binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-            writeRepoMarkers tmpDir
-            writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
-            baseEnv <- getEnvironment
-            let envVars =
-                  ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
-                    : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:1")
-                    : baseEnv
+    it "Bootstrap Broker Vault decode failures do not fall back to direct host Vault" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        baseEnv <- getEnvironment
 
-            (exitCode, stdoutText, stderrText) <-
-              readCreateProcessWithExitCode
-                (proc binary ["vault", "status"]) {cwd = Just tmpDir, env = Just envVars}
-                ""
+        (exitCode, stdoutText, stderrText) <-
+          runInstalledWithFakeAuthorityEnvironment
+            tmpDir
+            binary
+            ["vault", "status"]
+            (("PRODBOX_TEST_BROKER_STATUS_MODE", "malformed") : baseEnv)
 
-            exitCode `shouldBe` ExitFailure 1
-            stderrText `shouldBe` ""
-            stdoutText `shouldContain` "broker-mediated Vault status failed"
-            stdoutText `shouldContain` "HTTP 503 response"
-            stdoutText `shouldNotContain` "127.0.0.1:1"
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldBe` ""
+        stdoutText `shouldContain` "Vault status failed: HTTP response decode error"
 
-    it "Sprint 2.26: gateway federation endpoints read parent-custodied child inventory" $
+    it "Sprint 4.50: removed gateway federation endpoints stay absent" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withFakeVaultServer $ \vaultPort -> do
           binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -376,23 +351,19 @@ integrationCliSuite = do
                 void (waitForProcess processHandle)
 
           flip finally stopGateway $ do
-            -- This fixture owns only the federation API boundary and deliberately
-            -- supplies no MinIO continuity authority. Wait for the real listener
-            -- instead of bypassing the fail-closed readiness projection.
+            -- Wait for the real listener, then prove neither fixed nor
+            -- variable-suffix federation transport survived the cutover.
             waitForGatewayHealthyProcess restPort processHandle stdoutPath stderrPath
-            childrenBody <- expectHttpText ("http://127.0.0.1:" ++ show restPort ++ "/v1/federation/children")
-            childrenBody `shouldContain` "\"cluster_id\":\"child-a\""
-            childrenBody `shouldContain` "\"kubeconfig_reference\":\"vault:secret/clusters/child-a/kubeconfig\""
-            childrenBody `shouldContain` "\"aws-eks\":\"org/prodbox-child-a/aws-eks\""
-            childrenBody `shouldNotContain` "s.child-transit"
-
-            bootstrapBody <-
-              expectHttpText
+            childrenResult <-
+              httpGetText
+                (HttpConfig 1000000)
+                ("http://127.0.0.1:" ++ show restPort ++ "/v1/federation/children")
+            childrenResult `shouldBe` Left (HttpStatus 404 "not found\n")
+            bootstrapResult <-
+              httpGetText
+                (HttpConfig 1000000)
                 ("http://127.0.0.1:" ++ show restPort ++ "/v1/federation/children/child-a/bootstrap")
-            bootstrapBody `shouldContain` "\"cluster_id\":\"child-a\""
-            bootstrapBody `shouldContain` "\"parent_vault_address\":\"http://parent-vault.example:8200\""
-            bootstrapBody `shouldContain` "\"transit_key\":\"prodbox-child-opaque\""
-            bootstrapBody `shouldContain` "\"token\":\"s.child-transit\""
+            bootstrapResult `shouldBe` Left (HttpStatus 404 "not found\n")
 
     it "fails fast when gateway start is missing required trust material" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
@@ -443,6 +414,49 @@ integrationCliSuite = do
       stdoutText `shouldContain` "Validation: gateway-partition"
       stdoutText `shouldContain` "FORMAL_MODEL_DELEGATED=false"
       stdoutText `shouldContain` "SINGLE_WRITER_AFTER_TAKEOVER=true"
+
+    it "runs the frozen control-plane counterexample through an installed binary" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "control-plane-counterexample"])
+              { cwd = Just repoRoot
+              }
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stderrText
+          `shouldContain` "[validation=control-plane-counterexample substrate=home-local] body exit=ExitSuccess"
+        stdoutText `shouldContain` "COUNTEREXAMPLE=LCPC-2026-07-11"
+        stdoutText `shouldContain` "SUPERSEDED_FAILURES=5"
+        stdoutText `shouldContain` "REPLACEMENT_CLOSURES=5"
+        stdoutText `shouldContain` "NORMALIZED_ENVELOPE_EQUAL=true"
+        stdoutText `shouldContain` "INVITE_FAULT_MATRIX=23"
+        stdoutText `shouldContain` "INVITE_ASSERTIONS=8"
+        stdoutText `shouldContain` "DEPLOYMENT_QUALIFICATION=QualificationPendingLiveEvidence"
+
+    it "exposes the certificate-scope serving validation through an installed binary" $ do
+      binary <- resolveBinaryPath
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "certificate-scope", "--help"])
+          ""
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText `shouldContain` "Verify live TLS serving and the exact presented SAN scope"
+
+    it "exposes the clean-room handoff validation through an installed binary" $ do
+      binary <- resolveBinaryPath
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "clean-room-handoff", "--help"])
+          ""
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText `shouldContain` "Verify clean-room migration, rollback refusal, and legacy absence"
 
     it "runs native resource-guardrails validation through fake Kubernetes resource JSON" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -627,7 +641,7 @@ integrationCliSuite = do
         legacyExitCode `shouldBe` ExitFailure 1
         legacyStdout `shouldContain` "Validation: daemon-bootstrap"
         legacyStderr `shouldContain` "legacy transport"
-        legacyStderr `shouldContain` "kubectl port-forward"
+        legacyStderr `shouldContain` "port-forward service/minio"
 
     it
       "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl"
@@ -639,9 +653,7 @@ integrationCliSuite = do
         envVars <- fakeChartEnvironment tmpDir
 
         (listExitCode, listStdout, listStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "list"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "list"] envVars
 
         listExitCode `shouldBe` ExitSuccess
         listStderr `shouldBe` ""
@@ -649,9 +661,7 @@ integrationCliSuite = do
         listStdout `shouldContain` "NAME=vscode"
 
         (statusExitCode, statusStdout, statusStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "status", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "status", "vscode"] envVars
 
         statusExitCode `shouldBe` ExitSuccess
         statusStderr `shouldBe` ""
@@ -660,9 +670,7 @@ integrationCliSuite = do
         statusStdout `shouldContain` "STORAGE_BINDING"
 
         (deployExitCode, deployStdout, deployStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "reconcile", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "reconcile", "vscode"] envVars
 
         when
           (deployExitCode /= ExitSuccess)
@@ -727,12 +735,11 @@ integrationCliSuite = do
                 : filter ((/= "PRODBOX_FAKE_HELM_LIST_JSON") . fst) envVars
 
         (secondDeployExitCode, secondDeployStdout, secondDeployStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "reconcile", "vscode"])
-              { cwd = Just tmpDir
-              , env = Just alreadyDeployedEnvVars
-              }
-            ""
+          runInstalledWithAuthorityEnvironment
+            tmpDir
+            binary
+            ["charts", "reconcile", "vscode"]
+            alreadyDeployedEnvVars
 
         when
           (secondDeployExitCode /= ExitSuccess)
@@ -756,9 +763,11 @@ integrationCliSuite = do
           `shouldBe` initialApplyTargetCount
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "delete", "vscode", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment
+            tmpDir
+            binary
+            ["charts", "delete", "vscode", "--yes"]
+            envVars
 
         when
           (deleteExitCode /= ExitSuccess)
@@ -798,9 +807,7 @@ integrationCliSuite = do
         let envVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : baseEnvVars
 
         (deployExitCode, deployStdout, deployStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["charts", "reconcile", "vscode"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "reconcile", "vscode"] envVars
 
         deployExitCode `shouldBe` ExitSuccess
         deployStderr `shouldBe` ""
@@ -1073,10 +1080,12 @@ integrationCliSuite = do
         helmRecord `shouldNotContain` "mcImage.repository"
         helmRecord `shouldContain` "/charts/vault|--namespace|vault|--create-namespace"
         -- registry:2 replaces the Harbor helm stack: no helm repo/install for the
-        -- registry (it is a single kubectl-applied Deployment), just a best-effort
-        -- uninstall of any legacy Harbor release left on a rebuilt-in-place cluster.
+        -- registry (it is a single kubectl-applied Deployment). The registered
+        -- desired-absence program observes a legacy release, uninstalls it, and
+        -- positively reads absence back before registry:2 is applied.
         helmRecord `shouldNotContain` "upgrade|--install|harbor|harbor/harbor"
         helmRecord `shouldNotContain` "persistence.imageChartStorage.type=s3"
+        helmRecord `shouldContain` "status|harbor|--namespace|harbor|--output|json"
         helmRecord `shouldContain` "uninstall|harbor|--namespace|harbor|--ignore-not-found"
         helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
         helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
@@ -1378,7 +1387,7 @@ integrationCliSuite = do
     -- in the long-lived `pulumi_state_backend` bucket, which only nuke's step 5
     -- destroys; these prove the confirmation gate and that path.
     it
-      "Sprint 8.8: nuke --dry-run plans to destroy the long-lived state bucket holding the retained cert"
+      "nuke --dry-run renders the authenticated shared-bucket-terminal protocol"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -1392,7 +1401,8 @@ integrationCliSuite = do
 
         exitCode `shouldBe` ExitSuccess
         stdoutText `shouldContain` "PRODBOX_NUKE_PLAN"
-        stdoutText `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+        stdoutText `shouldContain` "PROTOCOL=signed-external-decommission-v1"
+        stdoutText `shouldContain` "NODE=shared-object-bucket (unique terminal)"
         stdoutText `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
     it "Sprint 8.8: nuke refuses the total teardown when the typed confirmation is wrong" $
@@ -1405,7 +1415,10 @@ integrationCliSuite = do
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
-            (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
+            (proc binary ["nuke", "--receipt", takeDirectory tmpDir </> "nuke-receipt.json"])
+              { cwd = Just tmpDir
+              , env = Just nukeEnv
+              }
             "destroy please\n"
 
         exitCode `shouldBe` ExitFailure 1
@@ -1415,92 +1428,32 @@ integrationCliSuite = do
         pulumiRan `shouldBe` False
 
     it
-      "Sprint 1.36: vault lifecycle commands initialize, unseal, reconcile, rotate, issue PKI, and seal"
+      "Vault status and initialization use the caller-bound Bootstrap Broker state"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
         writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
-        withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
-          -- Sprint 7.25 (disk-free): the unlock bundle is MinIO-only, so init /
-          -- unseal / rotate write and read it through the durable object store.
-          -- This host-only test has no cluster MinIO, so point the bootstrap
-          -- bundle at a local file via the PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR test
-          -- seam (mirrors the existing PRODBOX_TEST_* Vault seams).
-          let bootstrapBundleDir = tmpDir </> ".bootstrap-bundle-store"
+        withFakeVaultLifecycleServer $ \vaultPort _stateRef -> do
           baseEnvVars <- fakeVaultLifecycleEnvironment vaultPort
-          let envVars = ("PRODBOX_TEST_BOOTSTRAP_BUNDLE_DIR", bootstrapBundleDir) : baseEnvVars
-              runVault args =
-                readCreateProcessWithExitCode
-                  (proc binary ("vault" : args)) {cwd = Just tmpDir, env = Just envVars}
-                  ""
+          let runVault args =
+                runInstalledWithFakeAuthorityEnvironment
+                  tmpDir
+                  binary
+                  ("vault" : args)
+                  baseEnvVars
 
           (initialStatusExit, initialStatusStdout, initialStatusStderr) <- runVault ["status"]
           initialStatusExit `shouldBe` ExitSuccess
           initialStatusStderr `shouldBe` ""
-          initialStatusStdout `shouldContain` "Vault: initialized=False, sealed=True"
+          initialStatusStdout
+            `shouldContain` "Vault status: {\"initialization_ambiguous\":false,\"initialized\":true,\"sealed\":false,\"storage_generation\":\"1\"}"
 
           (initExit, initStdout, initStderr) <- runVault ["init"]
           initExit `shouldBe` ExitSuccess
           initStderr `shouldBe` ""
-          initStdout `shouldContain` "Vault initialized; encrypted unlock bundle written"
-          -- Sprint 7.25: the bundle is written to the (test-seam) durable bundle
-          -- store, NOT host disk; the cluster-established marker is stamped on disk.
-          bundleExists <- doesFileExist (bootstrapBundleDir </> "bootstrap-bundle.enc")
-          bundleExists `shouldBe` True
-          markerExists <- doesFileExist (tmpDir </> ".data/prodbox/.cluster-established")
-          markerExists `shouldBe` True
-
-          (initAgainExit, initAgainStdout, initAgainStderr) <- runVault ["init"]
-          initAgainExit `shouldBe` ExitSuccess
-          initAgainStderr `shouldBe` ""
-          initAgainStdout `shouldContain` "Vault is already initialized; refusing to re-initialize"
-
-          (unsealExit, unsealStdout, unsealStderr) <- runVault ["unseal"]
-          unsealExit `shouldBe` ExitSuccess
-          unsealStderr `shouldBe` ""
-          unsealStdout `shouldContain` "Vault unsealed."
-
-          (reconcileExit, reconcileStdout, reconcileStderr) <- runVault ["reconcile"]
-          reconcileExit `shouldBe` ExitSuccess
-          reconcileStderr `shouldBe` ""
-          reconcileStdout `shouldContain` "Vault reconcile complete:"
-          reconcileStdout `shouldContain` "mount pki: present"
-          reconcileStdout `shouldContain` "policy prodbox-gateway: written"
-          reconcileStdout `shouldContain` "secret-object secret/minio/root: created"
-          reconcileStdout
-            `shouldContain` "secret-object secret/gateway/gateway/aws declared (managed by prodbox aws setup)"
-
-          (rotateBundleExit, rotateBundleStdout, rotateBundleStderr) <- runVault ["rotate-unlock-bundle"]
-          rotateBundleExit `shouldBe` ExitSuccess
-          rotateBundleStderr `shouldBe` ""
-          rotateBundleStdout `shouldContain` "Vault unlock bundle re-encrypted"
-
-          (rotateTransitExit, rotateTransitStdout, rotateTransitStderr) <-
-            runVault ["rotate-transit-key", "prodbox-minio-envelope"]
-          rotateTransitExit `shouldBe` ExitSuccess
-          rotateTransitStderr `shouldBe` ""
-          rotateTransitStdout `shouldContain` "Vault Transit key rotated: prodbox-minio-envelope"
-
-          (pkiStatusExit, pkiStatusStdout, pkiStatusStderr) <- runVault ["pki", "status"]
-          pkiStatusExit `shouldBe` ExitSuccess
-          pkiStatusStderr `shouldBe` ""
-          pkiStatusStdout `shouldContain` "Vault PKI: pki mount present."
-
-          (pkiIssueExit, pkiIssueStdout, pkiIssueStderr) <- runVault ["pki", "issue-test-cert"]
-          pkiIssueExit `shouldBe` ExitSuccess
-          pkiIssueStderr `shouldBe` ""
-          pkiIssueStdout `shouldContain` "Vault PKI test certificate issued:"
-          pkiIssueStdout `shouldContain` "-----BEGIN CERTIFICATE-----"
-
-          (sealExit, sealStdout, sealStderr) <- runVault ["seal"]
-          sealExit `shouldBe` ExitSuccess
-          sealStderr `shouldBe` ""
-          sealStdout `shouldContain` "Vault sealed."
-          finalState <- readMVar stateRef
-          fakeVaultLifecycleInitialized finalState `shouldBe` True
-          fakeVaultLifecycleSealed finalState `shouldBe` True
+          initStdout `shouldContain` "Vault already initialized."
 
     it "Sprint 1.37: aws stack reconcile refuses before Pulumi when Vault is sealed" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1528,7 +1481,7 @@ integrationCliSuite = do
           pulumiRan <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
           pulumiRan `shouldBe` False
 
-    it "Sprint 4.32: cluster federation register provisions the parent-side child bootstrap surface" $
+    it "cluster federation register refuses the removed reusable-token bootstrap surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
@@ -1569,37 +1522,19 @@ integrationCliSuite = do
                 }
               ""
 
-          when
-            (exitCode /= ExitSuccess)
-            (expectationFailure (unlines ["register stdout:", stdoutText, "register stderr:", stderrText]))
-          exitCode `shouldBe` ExitSuccess
-          stderrText `shouldBe` ""
-          stdoutText `shouldContain` "Cluster federation registration complete:"
-          stdoutText `shouldContain` "child_cluster_id=child-a"
-          stdoutText `shouldContain` "metadata_kv_path=secret/clusters/child-a/metadata"
-          stdoutText `shouldContain` "init_kv_path=secret/clusters/child-a/init"
-          stdoutText `shouldContain` "bootstrap_kv_path=secret/clusters/child-a/bootstrap"
-          stdoutText `shouldContain` "children_index_kv_path=secret/clusters/index"
-          stdoutText `shouldContain` "child_bootstrap_secret=vault/vault-transit-seal-token"
-          stdoutText `shouldNotContain` "s.child-transit"
-
-          kubectlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl.txt")
-          kubectlRecord `shouldContain` ("--kubeconfig|" ++ childKubeconfig ++ "|apply|-f|")
-          applyManifest <-
-            readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "vault-transit-seal-token"
-          applyManifest `shouldContain` "\"namespace\":\"vault\""
-          applyManifest `shouldContain` "\"name\":\"vault-transit-seal-token\""
+          exitCode `shouldBe` ExitFailure 1
+          stdoutText `shouldBe` ""
+          stderrText `shouldContain` "requires the Bootstrap Broker's receipt-bound child-custody workflow"
+          stderrText
+            `shouldContain` "reusable parent root-token and direct Vault write transport has been removed"
 
     it
-      "Sprint 8.8: nuke runs the total teardown on the typed confirmation and destroys the retained-cert state bucket"
+      "nuke refuses before admin/effects when the complete production decommission registry is unavailable"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir ->
         withFakeVaultServer $ \vaultPort ->
           withFakeGatewayDaemonServer
-            [ ("/v1/object-store/pulumi/get", 200, "{\"status\":\"absent\"}")
-            , ("/v1/object-store/pulumi/put", 200, "{}")
-            , ("/v1/object-store/pulumi/delete", 200, "{}")
-            ]
+            []
             $ \gatewayPort requestsRef -> do
               binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
               repoRoot <- getCurrentDirectory
@@ -1629,25 +1564,19 @@ integrationCliSuite = do
 
               (exitCode, stdoutText, stderrText) <-
                 readCreateProcessWithExitCode
-                  (proc binary ["nuke"]) {cwd = Just tmpDir, env = Just nukeEnv}
+                  (proc binary ["nuke", "--receipt", takeDirectory tmpDir </> "nuke-receipt.json"])
+                    { cwd = Just tmpDir
+                    , env = Just nukeEnv
+                    }
                   "NUKE EVERYTHING\n"
 
-              when
-                (exitCode /= ExitSuccess)
-                (expectationFailure (unlines ["nuke stdout:", stdoutText, "nuke stderr:", stderrText]))
-              exitCode `shouldBe` ExitSuccess
-              stdoutText `shouldContain` "step 1/5 aws-ses destroy complete"
-              stdoutText `shouldContain` "step 2/5 cluster cascade complete"
-              stdoutText `shouldContain` "step 3/5 operational IAM teardown complete"
-              stdoutText `shouldContain` "step 4/5 postflight tag sweep complete"
-              -- Step 5 (complete) destroyed the long-lived `pulumi_state_backend`
-              -- bucket where the retained public-edge certificate lives — the only
-              -- path that removes it (per the Sprint 4.24 LongLived classification).
-              stdoutText `shouldContain` "step 5/5 long-lived state-bucket destroy complete"
-              stdoutText `shouldContain` "prodbox nuke: total teardown complete."
+              exitCode `shouldBe` ExitFailure 1
+              stdoutText `shouldNotContain` "step 1/5"
+              stderrText `shouldContain` "decommission preparation refused"
+              stderrText `shouldContain` "caller-bound Lifecycle Authority Transit signer"
               requests <- readMVar requestsRef
-              requests `shouldSatisfy` any ("POST /v1/object-store/pulumi/get" `isInfixOf`)
-              requests `shouldSatisfy` any ("POST /v1/object-store/pulumi/delete" `isInfixOf`)
+              requests
+                `shouldSatisfy` all (not . ("POST /v1/object-store/pulumi/" `isInfixOf`))
 
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1685,24 +1614,22 @@ integrationCliSuite = do
           `shouldContain` "Retrying Harbor publication for mirror target 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
         upStdout `shouldContain` "Kubernetes control plane is running"
 
-        applyManifest <-
-          readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "\"externalAccountBinding\""
-        applyManifest `shouldContain` "\"ClusterIssuer\""
-        applyManifest `shouldContain` "\"externalAccountBinding\""
-        -- The EAB key ID is the host-resolved (Vault-sourced) value, rendered
-        -- inline on the issuer (it is not secret). The keySecretRef points at
-        -- the materialized Secret.
-        applyManifest `shouldContain` "\"keyID\":\"test-eab-key-id\""
-        applyManifest `shouldContain` "\"name\":\"acme-eab-credentials\""
-        applyManifest `shouldContain` "\"namespace\":\"cert-manager\""
-        -- Sprint 7.15: the EAB HMAC key is materialized from Vault by a
-        -- Vault-login Job, not rendered as inline plaintext stringData. The
+        issuerManifest <-
+          readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "\"ClusterIssuer\""
+        issuerManifest `shouldContain` "\"ClusterIssuer\""
+        issuerManifest `shouldNotContain` "\"externalAccountBinding\""
+        materializerManifest <-
+          readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "acme-eab-secret-materializer"
+        materializerManifest `shouldContain` "\"Job\""
+        materializerManifest `shouldContain` "\"name\":\"acme-eab-secret-materializer\""
+        materializerManifest `shouldContain` "\"namespace\":\"cert-manager\""
+        -- The EAB fields are projected inside the Vault-login materializer and
+        -- patched into the issuer; neither value is rendered by the host.
         -- materializer + its RBAC are present; the HMAC value never appears.
-        applyManifest `shouldContain` "acme-eab-secret-materializer"
-        applyManifest `shouldContain` "vault-materialized"
-        applyManifest `shouldContain` "hmac_key"
-        applyManifest `shouldNotContain` "test-eab-hmac-key"
-        applyManifest `shouldNotContain` "\"stringData\":{\"secret\":"
+        materializerManifest `shouldContain` "vault-materialized"
+        materializerManifest `shouldContain` "hmac_key"
+        materializerManifest `shouldNotContain` "test-eab-hmac-key"
+        materializerManifest `shouldNotContain` "\"stringData\":{\"secret\":"
 
     it "runs native gateway start and fails gracefully with a missing config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1790,6 +1717,11 @@ integrationCliSuite = do
               }
             ""
 
+        when
+          (exitCode /= ExitSuccess)
+          ( expectationFailure
+              ("broker dry-run stdout:\n" ++ stdoutText ++ "\nbroker dry-run stderr:\n" ++ stderrText)
+          )
         persistedPlan <- readFile planPath
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
@@ -1797,7 +1729,8 @@ integrationCliSuite = do
         stdoutText `shouldContain` "BOOTSTRAP_BROKER_START_PLAN"
         stdoutText `shouldContain` "RUNTIME_ROLE=bootstrap-broker"
         stdoutText `shouldContain` "LISTENER=127.0.0.1:18443"
-        stdoutText `shouldContain` "BOUNDARY_ADAPTERS=fail-closed"
+        stdoutText `shouldContain` "AUTHENTICATOR=kubernetes-tokenreview"
+        stdoutText `shouldContain` "MUTATION_ENGINE=production"
         stdoutText `shouldNotContain` "password"
         stdoutText `shouldNotContain` "root_token"
 
@@ -1820,8 +1753,6 @@ integrationCliSuite = do
                 , "1"
                 , ""
                 , "ops@resolvefintech.com"
-                , "test-eab-key-id"
-                , "test-eab-hmac-key"
                 , "1"
                 , ""
                 , ""
@@ -1835,8 +1766,11 @@ integrationCliSuite = do
                 ]
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "setup"]) {cwd = Just tmpDir, env = Just envVars}
+          runInstalledWithFakeAuthorityEnvironmentInput
+            tmpDir
+            binary
+            ["config", "setup"]
+            envVars
             inputText
 
         let failureOutput =
@@ -1850,36 +1784,40 @@ integrationCliSuite = do
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
         stdoutText `shouldContain` "ROUTE53_ZONE_ID=Z1234567890ABC"
-        stdoutText `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
+        stdoutText `shouldContain` "TIER0_ONLY=true"
+        stdoutText `shouldNotContain` "AWS_ACCESS_KEY_ID="
         configText <- readFile (tmpDir </> "prodbox.dhall")
         -- Sprint 1.42 Part B: `config setup` now authors the operator config into
         -- prodbox.dhall's `parameters` block, rendered canonically by Dhall.inject
         -- (no `Config.SecretRef.Vault` schema-qualified syntax). The sensitive
         -- AWS access key is a Vault pointer (mount/path/field), never plaintext.
         configText `shouldContain` ">.Vault"
-        configText `shouldContain` "path = \"gateway/gateway/aws\""
+        configText `shouldContain` "path = \"aws/lifecycle-provider\""
         configText `shouldContain` "field = \"access_key_id\""
         configText `shouldNotContain` "AKIAFAKESETUP"
         configText `shouldContain` "zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
         configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
-        -- Sprint 7.15: the prompted EAB key ID + HMAC key are written to Vault
-        -- (secret/acme/eab), never persisted into prodbox.dhall. The
-        -- config references them through a Vault SecretRef pointer.
+        -- EAB references are non-secret schema coordinates only. Config setup
+        -- neither prompts for nor writes either EAB field.
         configText `shouldContain` "eab_hmac_key = Some"
         configText `shouldContain` "field = \"hmac_key\""
-        configText `shouldNotContain` "test-eab-hmac-key"
-        configText `shouldNotContain` "test-eab-key-id"
-        setupVaultAccessKey <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
-        setupVaultAccessKey `shouldBe` "AKIAFAKESETUP"
-        setupVaultEabKeyId <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "key_id"
-        setupVaultEabKeyId `shouldBe` "test-eab-key-id"
-        setupVaultEabHmacKey <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "hmac_key"
-        setupVaultEabHmacKey `shouldBe` "test-eab-hmac-key"
+        setupVaultAccessKeyExists <-
+          doesFileExist
+            (fakeVaultKvDir tmpDir </> "secret" </> lifecycleProviderVaultPath </> "access_key_id")
+        setupVaultAccessKeyExists `shouldBe` False
+        setupVaultEabKeyIdExists <-
+          doesFileExist
+            (fakeVaultKvDir tmpDir </> "secret" </> acmeEabVaultPath </> "key_id")
+        setupVaultEabKeyIdExists `shouldBe` False
+        setupVaultEabHmacKeyExists <-
+          doesFileExist
+            (fakeVaultKvDir tmpDir </> "secret" </> acmeEabVaultPath </> "hmac_key")
+        setupVaultEabHmacKeyExists `shouldBe` False
         jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
         jsonExists `shouldBe` False
 
-    it "runs native aws setup and teardown through the built frontend with a fake AWS CLI" $
+    it "refuses aws setup when the authenticated Credential Provisioner is unavailable" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -1895,58 +1833,23 @@ integrationCliSuite = do
 
         let setupInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
         (setupExitCode, setupStdout, setupStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["aws", "setup", "--tier", "full"]) {cwd = Just tmpDir, env = Just envVars}
+          runInstalledWithFakeAuthorityEnvironmentInput
+            tmpDir
+            binary
+            ["aws", "setup", "--tier", "full"]
+            envVars
             setupInput
 
-        setupExitCode `shouldBe` ExitSuccess
-        setupStderr `shouldBe` ""
-        setupStdout `shouldContain` "IAM_USER=prodbox"
-        setupStdout `shouldContain` "POLICY_TIER=full"
-        setupStdout `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
-
-        configAfterSetup <- readFile (tmpDir </> "prodbox.dhall")
-        -- Sprint 1.42 Part B: the operator config is merged into prodbox.dhall's
-        -- `parameters` block, canonically rendered by Dhall.inject. The AWS access
-        -- key stays a Vault pointer (path/field), never a plaintext credential.
-        configAfterSetup `shouldContain` "path = \"gateway/gateway/aws\""
-        configAfterSetup `shouldContain` "field = \"access_key_id\""
-        configAfterSetup `shouldNotContain` "AKIAFAKESETUP"
-        vaultAccessKeyAfterSetup <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
-        vaultAccessKeyAfterSetup `shouldBe` "AKIAFAKESETUP"
-        setupAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
-        setupAdminKey `shouldContain` "ADMINKEY"
-        route53ProbeKey <-
-          readFile (tmpDir </> "fake-aws-state" </> "route53_get_hosted_zone_access_key_id")
-        route53ProbeKey `shouldContain` "AKIAFAKESETUP"
-
-        let teardownInput = unlines ["ADMINKEY", "admin-secret", "", ""]
-        (teardownExitCode, teardownStdout, teardownStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["aws", "teardown"]) {cwd = Just tmpDir, env = Just envVars}
-            teardownInput
-
-        teardownExitCode `shouldBe` ExitSuccess
-        teardownStderr `shouldBe` ""
-        teardownStdout `shouldContain` "USER_DELETED=true"
-        teardownStdout `shouldContain` "DELETED_ACCESS_KEYS=1"
-
-        configAfterTeardown <- readFile (tmpDir </> "prodbox.dhall")
-        configAfterTeardown `shouldContain` "path = \"gateway/gateway/aws\""
-        configAfterTeardown `shouldContain` "field = \"access_key_id\""
-        configAfterTeardown `shouldNotContain` "AKIAFAKESETUP"
-        configAfterTeardown `shouldNotContain` "fake-secret-access-key"
-        vaultAccessKeyAfterTeardown <-
-          readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
-        vaultSecretKeyAfterTeardown <-
-          readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "secret_access_key"
-        vaultAccessKeyAfterTeardown `shouldBe` ""
-        vaultSecretKeyAfterTeardown `shouldBe` ""
-        teardownAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_delete_user_access_key_id")
-        teardownAdminKey `shouldContain` "ADMINKEY"
+        setupExitCode `shouldBe` ExitFailure 1
+        setupStdout `shouldContain` "AWS setup creates or refreshes"
+        setupStderr
+          `shouldContain` "requires the executable authenticated Credential Provisioner"
+        setupStderr `shouldContain` "refusing IAM mutation"
+        createUserRecord <- doesFileExist (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
+        createUserRecord `shouldBe` False
 
     it
-      "runs native aws-iam validation through the shared harness and clears leaked operational credentials"
+      "refuses native aws-iam credential teardown when the authenticated Credential Provisioner is unavailable"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -1961,7 +1864,7 @@ integrationCliSuite = do
           (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
         seedFakeVaultAwsCredentials
           tmpDir
-          gatewayAwsVaultPath
+          lifecycleProviderVaultPath
           "AKIALEAKED"
           "leaked-secret"
           Nothing
@@ -1970,46 +1873,39 @@ integrationCliSuite = do
         envVars <- fakeAwsHarnessEnvironment tmpDir binary
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["test", "integration", "aws-iam"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithFakeAuthorityEnvironment
+            tmpDir
+            binary
+            ["test", "integration", "aws-iam"]
+            envVars
 
-        exitCode `shouldBe` ExitSuccess
-        stderrText `shouldContain` "[validation=aws-iam substrate=home-local] entering body"
-        stderrText `shouldContain` "[validation=aws-iam substrate=home-local] body exit=ExitSuccess"
+        exitCode `shouldBe` ExitFailure 1
         stdoutText `shouldContain` "Phase 1/2: validating integration prerequisites"
-        stdoutText `shouldContain` "Phase 2/2: running test suites"
-        stdoutText `shouldContain` "Validation: aws-iam"
-        stdoutText `shouldContain` "PREEXISTING_OPERATIONAL_USER=leaked-user"
-        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=ran"
-        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED=1"
-        stdoutText `shouldContain` "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED=2"
-        stdoutText `shouldContain` "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED=true"
-        stdoutText `shouldContain` "IAM_USER=prodbox"
-        stdoutText `shouldContain` "CREDENTIAL_SOURCE=iam-user"
-        stdoutText `shouldContain` "IAM_PRINCIPAL=iam-user"
-        stdoutText `shouldContain` "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true"
+        stdoutText `shouldNotContain` "Phase 2/2: running test suites"
+        stderrText `shouldContain` "Managed AWS IAM harness setup failed"
+        stderrText `shouldContain` "cannot observe the live state of operational-aws-config"
 
         configAfterHarness <- readFile (tmpDir </> "prodbox.dhall")
-        configAfterHarness `shouldContain` "path = \"gateway/gateway/aws\""
+        configAfterHarness `shouldContain` "path = \"aws/lifecycle-provider\""
         configAfterHarness `shouldContain` "field = \"access_key_id\""
         configAfterHarness `shouldNotContain` "AKIALEAKED"
         configAfterHarness `shouldNotContain` "leaked-secret"
-        vaultAccessKeyAfterHarness <- readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "access_key_id"
+        vaultAccessKeyAfterHarness <-
+          readFakeVaultField tmpDir "secret" lifecycleProviderVaultPath "access_key_id"
         vaultSecretKeyAfterHarness <-
-          readFakeVaultField tmpDir "secret" gatewayAwsVaultPath "secret_access_key"
-        vaultAccessKeyAfterHarness `shouldBe` ""
-        vaultSecretKeyAfterHarness `shouldBe` ""
+          readFakeVaultField tmpDir "secret" lifecycleProviderVaultPath "secret_access_key"
+        vaultAccessKeyAfterHarness `shouldBe` "AKIALEAKED"
+        vaultSecretKeyAfterHarness `shouldBe` "leaked-secret"
 
-        deletedUsers <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_users"))
-        deletedUsers `shouldBe` ["prodbox", "leaked-user", "prodbox"]
+        deletedUsers <- doesFileExist (tmpDir </> "fake-aws-state" </> "iam_deleted_users")
+        deletedUsers `shouldBe` False
         deletedPolicies <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_policies"))
         deletedPolicies `shouldBe` ["aws-eks-test-aws-lb-controller"]
         deletedRoles <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_roles"))
         deletedRoles `shouldBe` ["aws-eks-test-aws-lb-controller", "aws-eks-test-ebs-csi-driver"]
 
     it
-      "seeds the ACME EAB into Vault non-interactively from test-secrets.dhall's acme_eab block"
+      "does not bypass external-material ingress while running the IAM-only harness"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -2031,7 +1927,7 @@ integrationCliSuite = do
           )
         seedFakeVaultAwsCredentials
           tmpDir
-          gatewayAwsVaultPath
+          lifecycleProviderVaultPath
           "AKIALEAKED"
           "leaked-secret"
           Nothing
@@ -2040,19 +1936,24 @@ integrationCliSuite = do
         envVars <- fakeAwsHarnessEnvironment tmpDir binary
 
         (exitCode, _stdoutText, _stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["test", "integration", "aws-iam"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithFakeAuthorityEnvironment
+            tmpDir
+            binary
+            ["test", "integration", "aws-iam"]
+            envVars
 
-        exitCode `shouldBe` ExitSuccess
+        exitCode `shouldBe` ExitFailure 1
 
-        -- The suite-level IAM harness preflight materialized the ACME EAB into
-        -- the fake Vault at secret/acme/eab from the acme_eab fixture block,
-        -- the non-interactive analog of `prodbox config setup`'s EAB prompt.
-        eabKeyId <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "key_id"
-        eabHmacKey <- readFakeVaultField tmpDir "secret" acmeEabVaultPath "hmac_key"
-        eabKeyId `shouldBe` "test-eab-key-id"
-        eabHmacKey `shouldBe` "test-eab-hmac-key"
+        -- An IAM-only run has no attested ingress Job and therefore must not
+        -- project the fixture through a direct host/Vault fallback.
+        eabKeyIdExists <-
+          doesFileExist
+            (fakeVaultKvDir tmpDir </> "secret" </> acmeEabVaultPath </> "key_id")
+        eabHmacKeyExists <-
+          doesFileExist
+            (fakeVaultKvDir tmpDir </> "secret" </> acmeEabVaultPath </> "hmac_key")
+        eabKeyIdExists `shouldBe` False
+        eabHmacKeyExists `shouldBe` False
 
     it
       "runs native aws quota inspection and request flows through the built frontend with a fake AWS CLI"
@@ -2308,13 +2209,6 @@ waitForGatewayHealthyProcess port processHandle stdoutPath stderrPath = go (60 :
           , stderrText
           ]
       )
-
-expectHttpText :: String -> IO String
-expectHttpText url = do
-  result <- httpGetText (HttpConfig 1000000) url
-  case result of
-    Left err -> expectationFailure (renderHttpError err) >> pure ""
-    Right body -> pure body
 
 withFakeVaultServer :: (Int -> IO a) -> IO a
 withFakeVaultServer action =
@@ -2613,6 +2507,7 @@ writeRootBasics repoRoot vaultAddress configParameters =
         , "              { parent_cluster_id : Text"
         , "              , parent_vault_address : Text"
         , "              , parent_transit_key : Text"
+        , "              , parent_authority_endpoint : Text"
         , "              }"
         , "        }"
         , "    , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
@@ -2670,9 +2565,8 @@ testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenVa
          ]
 
 -- | Sprint 7.18: a @test-secrets.dhall@ that also populates the optional
--- @acme_eab@ block, so the suite-level IAM harness seeds @secret/acme/eab@
--- non-interactively (the harness simulating the interactive @config setup@ EAB
--- prompt). Placeholder EAB values only — never real ZeroSSL credentials.
+-- @acme_eab@ block for the separate external-material ingress fixture.
+-- Placeholder EAB values only — never real ZeroSSL credentials.
 testSecretsDhallWithAdminAndAcmeEab
   :: String -> String -> String -> Maybe String -> String -> String -> String
 testSecretsDhallWithAdminAndAcmeEab accessKeyId secretAccessKey regionValue sessionTokenValue eabKeyId eabHmacKey =
@@ -2708,11 +2602,11 @@ vaultSecretRefDhall mount path field =
     , "  }"
     ]
 
-gatewayAwsVaultPath :: String
-gatewayAwsVaultPath = "gateway/gateway/aws"
+lifecycleProviderVaultPath :: String
+lifecycleProviderVaultPath = "aws/lifecycle-provider"
 
--- | Sprint 7.15: the Vault KV logical path that holds the ZeroSSL EAB
--- material (key ID + HMAC key) seeded by @prodbox config setup@.
+-- | The legacy fixture path used only to prove that Tier-0/IAM-only commands
+-- do not write ZeroSSL EAB material around the external-ingress protocol.
 acmeEabVaultPath :: String
 acmeEabVaultPath = "acme/eab"
 
@@ -2818,7 +2712,7 @@ fakeSesReadinessEnvironment repoRoot mode = do
 fakeSesReadinessAwsScript :: FilePath -> String
 fakeSesReadinessAwsScript repoRoot =
   unlines
-    [ "#!/usr/bin/env bash"
+    [ "#!/bin/bash"
     , "set -euo pipefail"
     , "record_file=" ++ show (repoRoot </> "fake-ses-readiness-aws.txt")
     , "mode=${PRODBOX_FAKE_SES_READINESS_MODE:?}"
@@ -2904,6 +2798,9 @@ writeFakeAwsScript repoRoot = do
 fakeChartEnvironment :: FilePath -> IO [(String, String)]
 fakeChartEnvironment repoRoot = do
   fakeBin <- writeFakeChartScripts repoRoot
+  integrationExecutable <- getExecutablePath
+  let kubeconfigPath = repoRoot </> "fake-chart-kubeconfig"
+  writeFile kubeconfigPath "apiVersion: v1\nkind: Config\n"
   let recordDir = repoRoot </> "fake-chart-state"
   createDirectoryIfMissing True recordDir
   currentEnvironment <- getEnvironment
@@ -2925,6 +2822,9 @@ fakeChartEnvironment repoRoot = do
       , ("PRODBOX_FAKE_CHART_RECORD_DIR", recordDir)
       , ("PRODBOX_FAKE_HELM_LIST_JSON", "[]")
       , ("PRODBOX_TEST_HOST_VAULT_KV", "allow")
+      , ("PRODBOX_TEST_INTEGRATION_EXECUTABLE", integrationExecutable)
+      , ("PRODBOX_TEST_AUTHORITY_CONFIG_PATH", repoRoot </> "prodbox.dhall")
+      , ("KUBECONFIG", kubeconfigPath)
       ]
         ++ baseEnvironment
     )
@@ -3021,7 +2921,26 @@ fakeKubectlScript =
     , "  printf '%s' \"$count\""
     , "}"
     , "append_args \"$record_dir/kubectl.txt\" \"$@\""
+    , "if [[ \"${1:-}\" == '--kubeconfig' ]]; then shift 2; fi"
+    , "if [[ \"${1:-}\" == '--namespace' ]]; then shift 2; fi"
     , "case \"${1:-} ${2:-}\" in"
+    , "  'create token')"
+    , "    printf 'fixture-service-account-token'"
+    , "    ;;"
+    , "  'auth can-i')"
+    , "    printf 'yes\n'"
+    , "    ;;"
+    , "  'get serviceaccount')"
+    , "    printf 'gateway\n%s\nfalse\n' \"${3:-}\""
+    , "    ;;"
+    , "  'get service')"
+    , "    if [[ \"${3:-}\" == 'kubernetes' ]]; then printf '10.43.0.1'; else exit 1; fi"
+    , "    ;;"
+    , "  'port-forward service/lifecycle-authority'|'port-forward service/authority-backup'|'port-forward service/target-secret-agent'|'port-forward service/tls-retention')"
+    , "    mapping=${!#}"
+    , "    local_port=${mapping%%:*}"
+    , "    exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
+    , "    ;;"
     , "  'get nodes')"
     , "    cat <<'JSON'"
     , "{\"items\":[{\"metadata\":{\"name\":\"bathurst\"}}]}"
@@ -3187,11 +3106,14 @@ fakeRke2Environment repoRoot = do
   let recordDir = repoRoot </> "fake-rke2-state"
       socketPath = repoRoot </> "fake-rke2-containerd.sock"
       endpointStatusRoot = repoRoot </> "fake-endpoint-status"
+      kubeconfigPath = repoRoot </> "fake-rke2-kubeconfig"
   createDirectoryIfMissing True recordDir
   writeFile socketPath ""
+  writeFile kubeconfigPath "server: https://127.0.0.1:6443\n"
   createDirectoryIfMissing True endpointStatusRoot
   writeFile (endpointStatusRoot </> "rke2-pod.status") ""
   currentEnvironment <- getEnvironment
+  integrationExecutable <- getExecutablePath
   let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
       updatedPath = fakeBin ++ ":" ++ existingPath
       baseEnvironment =
@@ -3210,6 +3132,9 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_TEST_ROOT_VAULT_LIFECYCLE"
                           , "PRODBOX_TEST_CLUSTER_VAULT_STATUS"
                           , "PRODBOX_TEST_HOST_CAPACITY"
+                          , "PRODBOX_TEST_INTEGRATION_EXECUTABLE"
+                          , "PRODBOX_TEST_AUTHORITY_CONFIG_PATH"
+                          , "KUBECONFIG"
                           , "HOME"
                           ]
           )
@@ -3219,6 +3144,7 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_FAKE_RKE2_RECORD_DIR", recordDir)
       , ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath)
       , ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot)
+      , ("KUBECONFIG", kubeconfigPath)
       , -- These reconcile/delete tests model a no-AWS-substrate host where the
         -- per-run Pulumi stacks are genuinely absent. Declare that so the
         -- Sprint 4.19 fail-closed delete gate sees ResidueAbsent (pass) rather
@@ -3233,6 +3159,8 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_TEST_HOST_VAULT_KV", "allow")
       , ("PRODBOX_TEST_ROOT_VAULT_LIFECYCLE", "ready")
       , ("PRODBOX_TEST_CLUSTER_VAULT_STATUS", "ready")
+      , ("PRODBOX_TEST_INTEGRATION_EXECUTABLE", integrationExecutable)
+      , ("PRODBOX_TEST_AUTHORITY_CONFIG_PATH", repoRoot </> "prodbox.dhall")
       ,
         ( "PRODBOX_TEST_HOST_CAPACITY"
         , "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
@@ -3242,9 +3170,9 @@ fakeRke2Environment repoRoot = do
         ++ baseEnvironment
     )
 
--- | Run a graph-consuming reconcile against a daemon-shaped loopback fixture.
--- The readiness targets exercise the supported daemon Vault-status and
--- object-store interfaces; no direct-host Vault fallback is involved.
+-- | Run a graph-consuming reconcile against loopback service fixtures. The
+-- Gateway side exposes only its deep @/readyz@ projection; Vault status is
+-- supplied by the separately authenticated Bootstrap Broker fixture.
 runRke2ReconcileWithFakeGateway
   :: FilePath
   -> FilePath
@@ -3260,22 +3188,103 @@ runRke2ReconcileWithFakeGateway repoRoot binary arguments environment =
         }
       ""
 
+runInstalledWithFakeAuthority
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> IO (ExitCode, String, String)
+runInstalledWithFakeAuthority repoRoot binary arguments = do
+  runInstalledWithFakeAuthorityEnvironment repoRoot binary arguments []
+
+runInstalledWithFakeAuthorityEnvironment
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> [(String, String)]
+  -> IO (ExitCode, String, String)
+runInstalledWithFakeAuthorityEnvironment repoRoot binary arguments additionalEnvironment = do
+  runInstalledWithFakeAuthorityEnvironmentInput repoRoot binary arguments additionalEnvironment ""
+
+runInstalledWithFakeAuthorityEnvironmentInput
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> [(String, String)]
+  -> String
+  -> IO (ExitCode, String, String)
+runInstalledWithFakeAuthorityEnvironmentInput repoRoot binary arguments additionalEnvironment inputText = do
+  fixtureEnvironment <- fakeRke2Environment repoRoot
+  when
+    ( lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
+        && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing
+    )
+    (void (writeFakeAwsScript repoRoot))
+  let mergedPath =
+        case (lookup "PATH" additionalEnvironment, lookup "PATH" fixtureEnvironment) of
+          (Just additionalPath, Just fixturePath)
+            | lookup "PRODBOX_FAKE_SES_READINESS_MODE" additionalEnvironment /= Nothing ->
+                takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
+            | lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
+                && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing ->
+                takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
+            | otherwise -> fixturePath
+          (Just additionalPath, Nothing) -> additionalPath
+          (Nothing, Just fixturePath) -> fixturePath
+          (Nothing, Nothing) -> ""
+  withVaultFixtureServer $ \vaultPort ->
+    readCreateProcessWithExitCode
+      (proc binary arguments)
+        { cwd = Just repoRoot
+        , env =
+            Just
+              ( ("PATH", mergedPath)
+                  : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
+                  : filter (not . reservedKey . fst) additionalEnvironment
+                  ++ filter (not . reservedKey . fst) fixtureEnvironment
+              )
+        }
+      inputText
+ where
+  reservedKey key = key `elem` ["PATH", "PRODBOX_TEST_HOST_VAULT_ADDR"]
+
+runInstalledWithAuthorityEnvironment
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> [(String, String)]
+  -> IO (ExitCode, String, String)
+runInstalledWithAuthorityEnvironment repoRoot binary arguments environment =
+  withVaultFixtureServer $ \vaultPort ->
+    readCreateProcessWithExitCode
+      (proc binary arguments)
+        { cwd = Just repoRoot
+        , env =
+            Just
+              ( ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
+                  : filter ((/= "PRODBOX_TEST_HOST_VAULT_ADDR") . fst) environment
+              )
+        }
+      ""
+
 withFakeGatewayReadinessEnvironment
   :: [(String, String)] -> ([(String, String)] -> IO value) -> IO value
 withFakeGatewayReadinessEnvironment environment action =
   withFakeGatewayDaemonServer readinessResponses $ \gatewayPort _requestsRef ->
-    action
-      ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
-          : filter ((/= "PRODBOX_TEST_GATEWAY_NODEPORT") . fst) environment
-      )
+    withVaultFixtureServer $ \vaultPort ->
+      action
+        ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
+            : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
+            : filter (not . overridden . fst) environment
+        )
  where
+  overridden key = key `elem` ["PRODBOX_TEST_GATEWAY_NODEPORT", "PRODBOX_TEST_HOST_VAULT_ADDR"]
   readinessResponses =
     [
       ( "/v1/bootstrap/vault/status"
       , 200
       , "{\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
       )
-    , ("/v1/object-store/pulumi/get", 200, "{\"status\":\"absent\"}")
+    , ("/readyz", 200, "ready\n")
     ]
 
 writeFakeRke2Scripts :: FilePath -> IO FilePath
@@ -3551,8 +3560,18 @@ fakeRke2KubectlScript =
     , "      printf 'clusterroles.rbac.authorization.k8s.io\\n'"
     , "    fi"
     , "    ;;"
+    , "  auth)"
+    , "    if [[ \"${2:-}\" == 'can-i' ]]; then"
+    , "      printf 'yes\\n'"
+    , "    else"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
     , "  get)"
     , "    case \"${2:-}\" in"
+    , "      serviceaccount)"
+    , "        printf 'gateway\\n%s\\nfalse\\n' \"${3:-}\""
+    , "        ;;"
     , "      nodes)"
     , "        if [[ \"$*\" == *'-o|json'* || \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
@@ -3603,8 +3622,12 @@ fakeRke2KubectlScript =
     , "}"
     , "EOF"
     , "        ;;"
-    , "      secret)"
-    , "        if [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootUser'* ]]; then"
+    , "      secret|secret/*)"
+    , "        if [[ \"$*\" == *'secret/minio-oidc-client'* && \"$*\" == *'metadata.resourceVersion'* ]]; then"
+    , "          printf 'fixture-resource-version-1'"
+    , "        elif [[ \"$*\" == *'secret/'* && \"$*\" == *'metadata.uid'* ]]; then"
+    , "          printf 'fixture-secret-uid:fixture-resource-version-1'"
+    , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootUser'* ]]; then"
     , "          printf 'minioadmin'"
     , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootPassword'* ]]; then"
     , "          printf 'minioadmin123'"
@@ -3662,7 +3685,9 @@ fakeRke2KubectlScript =
     , "        fi"
     , "        ;;"
     , "      pods)"
-    , "        if [[ \"$*\" == *'-o json'* ]]; then"
+    , "        if [[ \"$*\" == *'--selector=job-name='* && \"$*\" == *'--output=name'* ]]; then"
+    , "          exit 0"
+    , "        elif [[ \"$*\" == *'-o json'* ]]; then"
     , "          if [[ \"$*\" == *'--namespace gateway'* ]]; then"
     , "            gateway_pods_sample=$(next_gateway_pods_sample)"
     , "            if [[ \"${PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE:-0}\" == \"$gateway_pods_sample\" ]]; then"
@@ -3709,10 +3734,20 @@ fakeRke2KubectlScript =
     , "    printf 'gateway fake workload logs are diagnostic-only\n'"
     , "    ;;"
     , "  port-forward)"
-    , "    trap 'exit 0' TERM INT"
-    , "    while true; do"
-    , "      sleep 1"
-    , "    done"
+    , "    if [[ \"$*\" == *'service/bootstrap-broker'* ]]; then"
+    , "      mapping=${!#}"
+    , "      local_port=${mapping%%:*}"
+    , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-broker-server \"$local_port\""
+    , "    elif [[ \"$*\" == *'service/lifecycle-authority'* || \"$*\" == *'service/authority-backup'* ]]; then"
+    , "      mapping=${!#}"
+    , "      local_port=${mapping%%:*}"
+    , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
+    , "    else"
+    , "      trap 'exit 0' TERM INT"
+    , "      while true; do"
+    , "        sleep 1"
+    , "      done"
+    , "    fi"
     , "    ;;"
     , "  apply)"
     , "    target=$(next_apply_target)"
@@ -3728,6 +3763,9 @@ fakeRke2KubectlScript =
     , "    ;;"
     , "  create)"
     , "    case \"${2:-}\" in"
+    , "      token)"
+    , "        printf 'fixture-service-account-token\\n'"
+    , "        ;;"
     , "      namespace)"
     , "        # Sprint 2.19: ensureGatewayMinioBootstrap pre-creates the gateway"
     , "        # namespace via `kubectl create namespace ... --dry-run=client -o yaml`"
@@ -3783,6 +3821,19 @@ fakeRke2HelmScript =
     , "  list)"
     , "    printf '[]\\n'"
     , "    ;;"
+    , "  status)"
+    , "    if [[ \"${2:-}\" == 'harbor' && ! -f \"$record_dir/harbor-uninstalled\" ]]; then"
+    , "      printf '{\"name\":\"harbor\",\"namespace\":\"harbor\"}\\n'"
+    , "    elif [[ \"${2:-}\" == 'harbor' ]]; then"
+    , "      printf 'Error: release: not found\\n' >&2"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
+    , "  uninstall)"
+    , "    if [[ \"${2:-}\" == 'harbor' ]]; then"
+    , "      : > \"$record_dir/harbor-uninstalled\""
+    , "    fi"
+    , "    ;;"
     , "  *)"
     , "    ;;"
     , "esac"
@@ -3812,6 +3863,13 @@ fakeRke2DockerScript =
     , "done"
     , "printf '\\n' >> \"$record_dir/docker.txt\""
     , "case \"${1:-}\" in"
+    , "  image)"
+    , "    if [[ \"${2:-}\" == 'inspect' ]]; then"
+    , "      printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+    , "      exit 0"
+    , "    fi"
+    , "    exit 1"
+    , "    ;;"
     , "  pull)"
     , "    ref=${2:-}"
     , "    if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
@@ -4016,10 +4074,6 @@ fakeRke2AwsScript =
     , "  *'s3api delete-object'*)"
     , "    exit 0"
     , "    ;;"
-    , "  *'route53 change-resource-record-sets'*)"
-    , "    printf '{\"ChangeInfo\":{\"Status\":\"INSYNC\"}}\\n'"
-    , "    exit 0"
-    , "    ;;"
     , "  # Sprint 8.8: prodbox nuke step 3 (operational IAM teardown) — the"
     , "  # SES lease role and operational `prodbox` user are absent in this"
     , "  # fixture, so the teardown is a no-op after observing both states."
@@ -4084,8 +4138,9 @@ fakeRke2BashScript =
 fakeAwsScript :: FilePath -> String
 fakeAwsScript stateDir =
   unlines
-    [ "#!/usr/bin/env bash"
+    [ "#!/bin/bash"
     , "set -euo pipefail"
+    , "export PATH=/usr/bin:/bin"
     , "STATE_DIR=\"" ++ stateDir ++ "\""
     , "/bin/mkdir -p \"$STATE_DIR\""
     , "user_exists_file() {"
@@ -4396,7 +4451,7 @@ findRecordLineIndex needle haystack =
 bootstrapBrokerConfig :: String
 bootstrapBrokerConfig =
   unlines
-    [ "{ schemaVersion = 1"
+    [ "{ schemaVersion = 2"
     , ", cluster_id = \"cluster-a\""
     , ", vault_address = \"http://127.0.0.1:8200\""
     , ", service_identity = \"gateway-service\""
@@ -4424,6 +4479,7 @@ bootstrapBrokerConfig =
     , "    , request_deadline_milliseconds = 30000"
     , "    , drain_deadline_milliseconds = 5000"
     , "    }"
+    , ", parent_registration = None { parent_cluster_id : Text, parent_authority_endpoint : Text }"
     , "}"
     ]
 
@@ -4466,6 +4522,7 @@ gatewayStartConfig vaultPort tokenPath ordersPath certPath keyPath caPath =
         ++ ", minio_secret_key : "
         ++ secretRefTypeDhall
         ++ " }"
+    , "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="
@@ -4523,6 +4580,7 @@ gatewayStatusConfig vaultPort tokenPath =
         ++ ", minio_secret_key : "
         ++ secretRefTypeDhall
         ++ " }"
+    , "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="
@@ -4568,7 +4626,7 @@ gatewayOrdersAtPorts restPort socketPort =
 validConfig :: String
 validConfig =
   configWithAwsAndAcme
-    gatewayAwsVaultPath
+    lifecycleProviderVaultPath
     "us-east-1"
     True
     "https://acme.zerossl.com/v2/DV90"
@@ -4578,7 +4636,7 @@ validConfig =
 validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-east-1" False
+    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-east-1" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -4603,7 +4661,7 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
 validConfigForNuke :: String
 validConfigForNuke =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-east-1" False
+    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-east-1" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"test.resolvefintech.com\", receive_subdomain = \"inbox.test.resolvefintech.com\", capture_bucket = \"prodbox-test-ses-capture\" }"
@@ -4624,7 +4682,7 @@ validConfigForNuke =
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: String
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall gatewayAwsVaultPath "us-west-2" False
+    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-west-2" False
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -4645,7 +4703,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
 zeroSslConfig :: String
 zeroSslConfig =
   configWithAwsAndAcme
-    gatewayAwsVaultPath
+    lifecycleProviderVaultPath
     "us-east-1"
     True
     "https://acme.zerossl.com/v2/DV90"
@@ -4747,6 +4805,14 @@ resourcePlanDhallFragment =
     , "  , "
         ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
     , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
+    , "  , " ++ guaranteedResourceProfileDhall "bootstrap-broker" "bootstrap-broker" (100, 128, 256, 0)
+    , "  , "
+        ++ guaranteedResourceProfileDhall "lifecycle-authority" "lifecycle-authority" (150, 128, 256, 1024)
+    , "  , " ++ guaranteedResourceProfileDhall "provider-worker" "provider-worker" (100, 112, 256, 0)
+    , "  , " ++ guaranteedResourceProfileDhall "authority-backup" "authority-backup" (60, 80, 256, 0)
+    , "  , " ++ guaranteedResourceProfileDhall "tls-retention" "tls-retention" (60, 80, 256, 0)
+    , "  , "
+        ++ guaranteedResourceProfileDhall "target-secret-agent" "target-secret-agent" (60, 80, 256, 0)
     , "  ]"
     , "}"
     ]
@@ -4772,8 +4838,35 @@ resourceProfileDhall profile namespace count req lim =
     ++ workloadDemandDhall profile req lim
     ++ " }"
 
+guaranteedResourceProfileDhall :: String -> String -> (Int, Int, Int, Int) -> String
+guaranteedResourceProfileDhall profile namespace demand =
+  "{ profile_id = "
+    ++ show profile
+    ++ ", profile_namespace = "
+    ++ show namespace
+    ++ ", replicas = 1"
+    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
+    ++ ", surge = 0"
+    ++ ", workload_qos = < Guaranteed | Burstable >.Guaranteed"
+    ++ ", workload_demand = "
+    ++ workloadDemandDhallWithQos "Guaranteed" profile demand demand
+    ++ " }"
+
 workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
 workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
+  workloadDemandDhallWithQos
+    "Burstable"
+    profile
+    (reqCpu, reqMemory, reqEphemeral, 0)
+    (limCpu, limMemory, limEphemeral, limDurable)
+
+workloadDemandDhallWithQos
+  :: String
+  -> String
+  -> (Int, Int, Int, Int)
+  -> (Int, Int, Int, Int)
+  -> String
+workloadDemandDhallWithQos qos profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
   "{ cpu_demand = { requests_per_second = "
     ++ show reqCpu
     ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
@@ -4790,7 +4883,9 @@ workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limC
     ++ show (limEphemeral - reqEphemeral)
     ++ " }, demanded_durable_storage_mib = "
     ++ show limDurable
-    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
+    ++ ", demand_qos = < Guaranteed | Burstable >."
+    ++ qos
+    ++ " }"
 
 clusterTopologyDhallFragment :: String
 clusterTopologyDhallFragment =
@@ -4850,6 +4945,6 @@ configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer eab
     , ", capacity = " ++ capacityDhallFragment
     , ", cluster_topology = " ++ clusterTopologyDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
+    , ", pulumi_state_backend = { bucket_name = \"prodbox-fixture-state\", region = \"us-east-1\", key_prefix = \"pulumi/\" }"
     , "}"
     ]

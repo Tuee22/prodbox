@@ -400,6 +400,13 @@ Guaranteed-QoS envelopes, queues, ServiceAccounts, and metrics. Background heart
 consume lifecycle admission capacity, and a slow provider worker cannot block constant-time health
 or target-secret read-back.
 
+The AWS projection preserves those lanes as distinct EKS Service transports for Broker, Gateway
+diagnostics, Target Secret Agent, and Provider Worker; retained Authority traffic remains on its
+independent home transport. The pre-mutation topology validator rejects a missing/duplicate role or
+shared Service. Fault evidence is therefore evaluated per lane: gateway saturation/loss cannot
+consume target or Authority admission, and EKS replacement must refresh the target/provider clients
+without changing the retained Authority envelope.
+
 The runtime observation is a flat exhaustive fold over:
 
 - restarts, termination reasons, OOM, and memory working set;
@@ -495,6 +502,13 @@ changes.
 **Recorder gate.** A profile artifact is written only by the recorder, and only from a healthy
 run: the run-wide absorbing failure fold of §2D–§2E clean, a steady window of at least thirty
 minutes, and at least 300 samples. An unhealthy run or a short window refuses to record.
+The supported live surface is
+`prodbox test integration gateway-pods --record-profile`. It samples cumulative cgroup-v2 CPU/CFS
+counters by interval (so sampling jitter cannot bias CPU), cgroup memory, GHC live-heap telemetry,
+and the gateway's bounded rolling p99 of real encrypted continuity-store operations. A timestamp
+regression, counter reset/Pod replacement, unavailable RTS telemetry, incomplete sample, or any
+absorbed runtime-stability failure refuses the write. The final Dhall file is written by same-directory
+temporary-file rename only after the complete gate succeeds.
 
 **Bootstrap rule.** The certification check activates for a profile id when the first profile for
 that id is committed. Until the first committed gateway profile lands, the interim authored

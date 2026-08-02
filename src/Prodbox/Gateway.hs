@@ -199,6 +199,11 @@ renderGatewayConfigTemplate settings nodeId =
     , indent 10 (renderVaultSecretRef "secret" ("gateway/gateway/" ++ nodeId ++ "/event-key") "key")
     , "      }"
     , "    ]"
+    , "  , lifecycle_authority ="
+    , "      Some"
+    , "        { authority_scope = \"replace-with-home-cluster-id\""
+    , "        , endpoint = \"http://lifecycle-authority.gateway.svc.cluster.local:8600\""
+    , "        }"
     , "  , dns_write_gate ="
     , "      Some"
     , "        { zone_id = " ++ show (Text.unpack (zone_id (route53 config)))
@@ -209,11 +214,11 @@ renderGatewayConfigTemplate settings nodeId =
     , "  , aws_creds ="
     , "      Some"
     , "        { access_key_id ="
-    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+    , indent 12 (renderVaultSecretRef "secret" "aws/gateway-dns" "access_key_id")
     , "        , secret_access_key ="
-    , indent 12 (renderVaultSecretRef "secret" "gateway/gateway/aws" "secret_access_key")
+    , indent 12 (renderVaultSecretRef "secret" "aws/gateway-dns" "secret_access_key")
     , "        , session_token ="
-    , indent 12 (renderOptionalVaultSecretRef "secret" "gateway/gateway/aws" "session_token")
+    , indent 12 (renderOptionalVaultSecretRef "secret" "aws/gateway-dns" "session_token")
     , "        , region = " ++ show (Text.unpack (awsCredentialRegion (aws config)))
     , "        }"
     , "  , minio_creds ="

@@ -32,6 +32,9 @@ module Prodbox.Bootstrap.Broker.Fake
   , fakeBrokerTransportCredentialHeaderValue
   , fakeBrokerActionRequestFor
   , fakeBrokerRequestBodyFor
+  , fakeFederationRegistrationCompletionFor
+  , fakeFederationRegistrationCompletionForReceipt
+  , fakeFederationRegistrationCompletionForReceiptWithAcknowledgement
   , fakeBrokerActionDigest
   , fakeBrokerActionBinding
   , fakeBrokerAuthenticator
@@ -52,6 +55,7 @@ import Control.Concurrent.STM
 import Control.Exception (Exception, throwIO)
 import Control.Monad (foldM)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as BS8
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
@@ -88,6 +92,8 @@ import Prodbox.Bootstrap.Broker.Engine
   , BrokerProgramEvidenceBoundary (..)
   , EngineBoundaryError (..)
   , EngineFenceUseObservation (..)
+  , SomeBrokerResponse
+  , encodeSomeBrokerResponse
   , mkBrokerEngine
   )
 import Prodbox.Bootstrap.Broker.EngineAdapter (runEngineBrokerRequest)
@@ -126,10 +132,12 @@ import Prodbox.Bootstrap.Broker.Protocol
   , brokerActionDigest
   , brokerActionStorageGeneration
   , brokerControllerRequestAction
+  , brokerControllerRequestFederationCompletion
   , brokerRouteOperationName
   , decodeBrokerControllerRequest
   , encodeBrokerControllerRequest
   , mkBrokerActionRequest
+  , mkBrokerChildCustodyFinalizeRequest
   , mkBrokerControllerRequest
   , mkBrokerPkiControllerRequest
   )
@@ -166,6 +174,7 @@ import Prodbox.Bootstrap.Broker.Types
   , BurnTokenCiphertext
   , ChildAttestation
   , ChildCustodyBinding (..)
+  , ChildEncryptedReceipt (..)
   , ChildRecoveryConsumptionStatus (..)
   , ChildRecoveryDelivery
   , CustodyGeneration
@@ -225,6 +234,23 @@ import Prodbox.Bootstrap.Broker.Types
   , renderArtifactDigest
   , requiredRootBaselineTargets
   )
+import Prodbox.Cluster.FederationRegistration
+  ( FederationRegistrationCompletion (federationRegistrationAcknowledgement)
+  , FederationWorkerBinding
+  , federationRegistrationCompletedIntent
+  , federationRegistrationOperationDigest
+  , mkChildBootstrapDeliveryIntent
+  , mkChildBootstrapDeliveryReceipt
+  , mkChildBootstrapRecipientAttestation
+  , mkChildCustodyExport
+  , mkChildKubernetesUid
+  , mkFederationRegistrationCompletion
+  , mkFederationRegistrationIntent
+  , mkFederationWorkerBinding
+  , mkFederationWorkerCleanup
+  , mkParentBootstrapCustodyReceipt
+  , mkParentBootstrapEnvelope
+  )
 import Prodbox.ControlPlane.AuthorityClock
   ( AuthorityClockObservation (..)
   , clockUncertaintyFromMicros
@@ -242,6 +268,7 @@ import Prodbox.ControlPlane.Deadline
   , deadlineAtOffset
   , monotonicInstantFromMicros
   )
+import Prodbox.ControlPlane.TargetSecretAgentExecution (mkTargetAgentIdentity)
 import Prodbox.Lifecycle.Lease
   ( authorityTimeFromMicros
   , mkOwnerNonce
@@ -394,25 +421,46 @@ fakeBrokerActionRequestFor
   :: FakeBroker -> BrokerRoute -> IO BrokerActionRequest
 fakeBrokerActionRequestFor (FakeBroker stateVariable) route = do
   record <- readTVarIO stateVariable
-  pure
-    ( mkBrokerActionRequest
-        (vaultSealStorageGeneration (recordVaultSeal record))
-        (fakeBrokerActionDigest route)
-    )
+  let generation = vaultSealStorageGeneration (recordVaultSeal record)
+  case route of
+    BrokerChildCustodyFinalize -> do
+      let completion = must (fakeFederationRegistrationCompletion record)
+      pure
+        ( mkBrokerActionRequest
+            generation
+            ( federationRegistrationOperationDigest
+                (federationRegistrationCompletedIntent completion)
+            )
+        )
+    _ -> pure (mkBrokerActionRequest generation (fakeBrokerActionDigest route))
 
 fakeBrokerRequestBodyFor :: FakeBroker -> BrokerRoute -> IO ByteString
-fakeBrokerRequestBodyFor broker route = do
+fakeBrokerRequestBodyFor broker@(FakeBroker stateVariable) route = do
   action <- fakeBrokerActionRequestFor broker route
+  record <- readTVarIO stateVariable
   pure $ case brokerRouteBodyRequirement route of
     BrokerBodyForbidden -> ""
     BrokerBodyRequired ->
-      encodeBrokerControllerRequest (fakeControllerRequest route action)
+      encodeBrokerControllerRequest (fakeControllerRequest record route action)
+
+fakeFederationRegistrationCompletionFor
+  :: FakeBroker -> IO FederationRegistrationCompletion
+fakeFederationRegistrationCompletionFor (FakeBroker stateVariable) = do
+  record <- readTVarIO stateVariable
+  pure (must (fakeFederationRegistrationCompletion record))
 
 fakeControllerRequest
-  :: BrokerRoute -> BrokerActionRequest -> BrokerControllerRequest
-fakeControllerRequest route action = case route of
+  :: FakeBrokerRecord
+  -> BrokerRoute
+  -> BrokerActionRequest
+  -> BrokerControllerRequest
+fakeControllerRequest record route action = case route of
   BrokerVaultPkiIssueTestCertificate ->
     mkBrokerPkiControllerRequest action fakePkiIssueRequest
+  BrokerChildCustodyFinalize ->
+    mkBrokerChildCustodyFinalizeRequest
+      action
+      (must (fakeFederationRegistrationCompletion record))
   _ ->
     case mkBrokerControllerRequest route action of
       Right request -> request
@@ -517,7 +565,7 @@ finishFakeRoute
   :: FakeBroker
   -> BrokerRoute
   -> FakeBrokerState
-  -> Either BrokerEngineError response
+  -> Either BrokerEngineError SomeBrokerResponse
   -> STM FakeDecision
 finishFakeRoute (FakeBroker stateVariable) route beforeState outcome = do
   record <- readTVar stateVariable
@@ -533,7 +581,7 @@ finishFakeRoute (FakeBroker stateVariable) route beforeState outcome = do
                 }
       writeTVar stateVariable refused
       pure (FakeReturn (failureReply failure))
-    Right _ -> do
+    Right response -> do
       let afterState = projectRecordState record
           afterPoint = FakeCrashPoint route FakeCrashAfterEffect
           replyStatus = fromMaybe BrokerReplyOk (recordLastReplyStatus record)
@@ -555,7 +603,10 @@ finishFakeRoute (FakeBroker stateVariable) route beforeState outcome = do
         else do
           let completed = appendAction (FakeActionCompleted route afterState) committed
           writeTVar stateVariable completed
-          pure (FakeReturn (stateReply replyStatus afterState))
+          pure
+            ( FakeReturn
+                (boundedReply replyStatus (encodeSomeBrokerResponse response))
+            )
 
 fakeFailureForEngine :: BrokerEngineError -> FakeBrokerFailure
 fakeFailureForEngine engineFailure = case engineFailure of
@@ -741,7 +792,7 @@ runFakeInMemoryCall
   -> IO (Either EngineBoundaryError result)
 runFakeInMemoryCall (FakeBroker stateVariable) call = atomically $ do
   record <- readTVar stateVariable
-  case applyFakeRoute (fakeInMemoryRoute call) record of
+  case applyFakeInMemoryCall call record of
     Left failure -> do
       writeTVar stateVariable record {recordHeldFence = Nothing}
       pure (Left (fakeBoundaryFailure failure))
@@ -769,7 +820,8 @@ fakeInMemoryRoute call = case call of
   InMemoryVaultPkiIssueTestCertificate {} -> BrokerVaultPkiIssueTestCertificate
   InMemoryVaultResetAmbiguousInitialization {} ->
     BrokerVaultResetAmbiguousInitialization
-  InMemoryChildCustodyCommit {} -> BrokerChildCustodyCommit
+  InMemoryChildCustodyPrepare {} -> BrokerChildCustodyPrepare
+  InMemoryChildCustodyFinalize {} -> BrokerChildCustodyFinalize
   InMemoryChildRecoveryDeliver {} -> BrokerChildRecoveryDeliver
   InMemoryChildRecoveryObserve {} -> BrokerChildRecoveryObserve
 
@@ -804,7 +856,13 @@ fakeInMemoryResult call record replyStatus = case call of
     Right (fakeMutationReceipt (vaultEffectPermitActionDigest permit) replyStatus)
   InMemoryVaultResetAmbiguousInitialization _ permit _ _ ->
     Right (fakeMutationReceipt (storeMutationPermitActionDigest permit) replyStatus)
-  InMemoryChildCustodyCommit {} -> fakeParentAcknowledgement record
+  InMemoryChildCustodyPrepare _ _ binding requestDigest actionDigest -> do
+    receipt <- fakePreparedChildReceipt record
+    if childEncryptedReceiptBinding receipt /= binding
+      then Left (EngineBoundaryRefused "fake child custody binding differs")
+      else Right (mkChildCustodyExport receipt requestDigest actionDigest)
+  InMemoryChildCustodyFinalize _ _ completion ->
+    Right (federationRegistrationAcknowledgement completion)
   InMemoryChildRecoveryDeliver {} -> fakeCurrentDelivery record
   InMemoryChildRecoveryObserve {} -> Just <$> fakeCurrentDelivery record
 
@@ -819,7 +877,9 @@ fakeMutationReceipt digest replyStatus =
 fakeBootstrapStatus :: FakeBrokerRecord -> BootstrapStatus
 fakeBootstrapStatus record =
   BootstrapStatus
-    { bootstrapStatusInitialized = rootInitIsComplete (recordRootInit record)
+    { bootstrapStatusStorageGeneration =
+        rootInitStorageGeneration (rootInitStateBinding (recordRootInit record))
+    , bootstrapStatusInitialized = rootInitIsComplete (recordRootInit record)
     , bootstrapStatusSealed = not (vaultSealIsUnsealed (recordVaultSeal record))
     , bootstrapStatusRecoveryCustodyDurable = rootInitIsComplete (recordRootInit record)
     , bootstrapStatusInitializationAmbiguous = rootInitIsAmbiguous (recordRootInit record)
@@ -854,14 +914,6 @@ fakeChildBindingForRecord :: FakeBrokerRecord -> ChildCustodyBinding
 fakeChildBindingForRecord record = case recordChildCustody record of
   Just custody -> childCustodyStateBinding custody
   Nothing -> fakeChildBinding (vaultSealStorageGeneration (recordVaultSeal record))
-
-fakeParentAcknowledgement
-  :: FakeBrokerRecord -> Either EngineBoundaryError ParentCustodyAcknowledgement
-fakeParentAcknowledgement record = case recordChildCustody record of
-  Just custody -> case childCustodyStatePhase custody of
-    ChildRecoveryCustodyDurable acknowledgement -> Right acknowledgement
-    _ -> Left (EngineBoundaryRefused "fake child custody is incomplete")
-  Nothing -> Left (fakeBoundaryFailure FakeChildCustodyUnavailable)
 
 fakeCurrentDelivery
   :: FakeBrokerRecord -> Either EngineBoundaryError ChildRecoveryDelivery
@@ -903,7 +955,13 @@ validateFakeRequestMetadata record route body =
       if brokerActionStorageGeneration action == expectedGeneration
         then Right ()
         else Left FakeStorageGenerationMismatch
-      if brokerActionDigest action == fakeBrokerActionDigest route
+      let expectedActionDigest = case brokerControllerRequestFederationCompletion metadata of
+            Just completion
+              | route == BrokerChildCustodyFinalize ->
+                  federationRegistrationOperationDigest
+                    (federationRegistrationCompletedIntent completion)
+            _ -> fakeBrokerActionDigest route
+      if brokerActionDigest action == expectedActionDigest
         then Right ()
         else Left FakeActionBindingMismatch
  where
@@ -952,7 +1010,9 @@ applyHealthyRoute route record = case route of
   BrokerVaultPkiStatus -> requireUnsealed record
   BrokerVaultPkiIssueTestCertificate -> requireUnsealed record
   BrokerVaultResetAmbiguousInitialization -> resetAmbiguousFakeVault record
-  BrokerChildCustodyCommit -> commitFakeChildCustody record
+  BrokerChildCustodyPrepare -> prepareFakeChildCustody record
+  BrokerChildCustodyFinalize ->
+    Left FakeMalformedRequestMetadata
   BrokerChildRecoveryDeliver -> deliverFakeChildRecovery record
   BrokerChildRecoveryObserve -> observeFakeChildRecovery record
 
@@ -1053,23 +1113,76 @@ requireUnsealed record = do
     then succeeded BrokerReplyOk initialized
     else Left FakeVaultMustBeUnsealed
 
-commitFakeChildCustody
+applyFakeInMemoryCall
+  :: BrokerInMemoryCall operation result
+  -> FakeBrokerRecord
+  -> Either FakeBrokerFailure (FakeBrokerRecord, BrokerReplyStatus)
+applyFakeInMemoryCall call record = case call of
+  InMemoryChildCustodyFinalize _ _ completion ->
+    finalizeFakeChildCustody
+      (federationRegistrationAcknowledgement completion)
+      record
+  _ -> applyFakeRoute (fakeInMemoryRoute call) record
+
+prepareFakeChildCustody
   :: FakeBrokerRecord
   -> Either FakeBrokerFailure (FakeBrokerRecord, BrokerReplyStatus)
-commitFakeChildCustody record = do
+prepareFakeChildCustody record = do
   (initialized, _) <- requireInitialized record
   case recordChildCustody initialized of
-    Just custody
-      | childCustodyIsComplete custody -> succeeded BrokerReplyOk initialized
-    _ -> do
+    Just custody -> case childCustodyStatePhase custody of
+      ChildParentGenerationCasPending _ -> succeeded BrokerReplyOk initialized
+      _ -> Left FakeChildCustodyUnavailable
+    Nothing -> do
       custody <-
         mapFoldError
-          ( completeChildCustody
+          ( prepareChildCustodyState
               (vaultSealStorageGeneration (recordVaultSeal initialized))
           )
       succeeded
         BrokerReplyAccepted
         initialized {recordChildCustody = Just custody}
+
+finalizeFakeChildCustody
+  :: ParentCustodyAcknowledgement
+  -> FakeBrokerRecord
+  -> Either FakeBrokerFailure (FakeBrokerRecord, BrokerReplyStatus)
+finalizeFakeChildCustody acknowledgement record = do
+  (initialized, _) <- requireInitialized record
+  custody <- case recordChildCustody initialized of
+    Nothing -> Left FakeChildCustodyUnavailable
+    Just current -> case childCustodyStatePhase current of
+      ChildRecoveryCustodyDurable existing
+        | existing == acknowledgement ->
+            Right current
+        | otherwise -> Left FakeActionBindingMismatch
+      ChildParentGenerationCasPending _ ->
+        mapFoldError
+          ( foldM
+              applyChildCustodyCommand
+              current
+              [ ConfirmParentCustodyReadBack acknowledgement
+              , ArmChildLocalReceiptDeletion
+              , RecordChildLocalReceiptDeletion
+              , ConfirmChildLocalReceiptAbsence
+              , ConfirmChildRecoveryCustodyDurable
+              ]
+          )
+      _ -> Left FakeChildCustodyUnavailable
+  let status =
+        if childCustodyStatePhase custody
+          == childCustodyStatePhase (fromMaybe custody (recordChildCustody initialized))
+          then BrokerReplyOk
+          else BrokerReplyAccepted
+  succeeded status initialized {recordChildCustody = Just custody}
+
+fakePreparedChildReceipt
+  :: FakeBrokerRecord -> Either EngineBoundaryError ChildEncryptedReceipt
+fakePreparedChildReceipt record = case recordChildCustody record of
+  Just custody -> case childCustodyStatePhase custody of
+    ChildParentGenerationCasPending receipt -> Right receipt
+    _ -> Left (EngineBoundaryRefused "fake child custody export is not prepared")
+  Nothing -> Left (fakeBoundaryFailure FakeChildCustodyUnavailable)
 
 deliverFakeChildRecovery
   :: FakeBrokerRecord
@@ -1192,12 +1305,6 @@ recordForState state =
     FakeUnsealed -> fakeUnsealedVaultSeal
     _ -> fakeSealedVaultSeal
 
-stateReply :: BrokerReplyStatus -> FakeBrokerState -> BrokerReply
-stateReply status state =
-  boundedReply
-    status
-    (BS8.pack ("{\"state\":\"" ++ fakeStateName state ++ "\"}"))
-
 failureReply :: FakeBrokerFailure -> BrokerReply
 failureReply failure =
   boundedReply
@@ -1217,15 +1324,6 @@ failureStatus failure = case failure of
   FakeWrongRouteMetadata -> BrokerReplyBadRequest
   FakeStorageGenerationMismatch -> BrokerReplyConflict
   FakeActionBindingMismatch -> BrokerReplyBadRequest
-
-fakeStateName :: FakeBrokerState -> String
-fakeStateName state = case state of
-  FakeEmpty -> "empty"
-  FakeInitializedSealed -> "initialized_sealed"
-  FakeUnsealed -> "unsealed"
-  FakeAmbiguousInitialization -> "ambiguous_initialization"
-  FakeCorruptBundle -> "corrupt_bundle"
-  FakeStoreUnavailable -> "store_unavailable"
 
 fakeFailureName :: FakeBrokerFailure -> String
 fakeFailureName failure = case failure of
@@ -1247,6 +1345,144 @@ boundedReply status body = case mkBrokerReply status body of
   Left _ -> error "deterministic fake reply exceeded the compiled server bound"
 
 -- Deterministic typed artifacts ------------------------------------------------
+
+fakeFederationRegistrationCompletion
+  :: FakeBrokerRecord -> Either String FederationRegistrationCompletion
+fakeFederationRegistrationCompletion record = do
+  encryptedReceipt <-
+    case fakePreparedChildReceipt record of
+      Left failure -> Left (show failure)
+      Right receipt -> Right receipt
+  fakeFederationRegistrationCompletionForReceipt encryptedReceipt
+
+fakeFederationRegistrationCompletionForReceipt
+  :: ChildEncryptedReceipt -> Either String FederationRegistrationCompletion
+fakeFederationRegistrationCompletionForReceipt encryptedReceipt =
+  fakeFederationRegistrationCompletionForReceiptWithAcknowledgement
+    encryptedReceipt
+    (mkParentCustodyAcknowledgement encryptedReceipt (fakeDigest 'c'))
+
+fakeFederationRegistrationCompletionForReceiptWithAcknowledgement
+  :: ChildEncryptedReceipt
+  -> ParentCustodyAcknowledgement
+  -> Either String FederationRegistrationCompletion
+fakeFederationRegistrationCompletionForReceiptWithAcknowledgement encryptedReceipt acknowledgement = do
+  childUid <-
+    either (Left . Text.unpack) Right (mkChildKubernetesUid "fake-child-kubernetes-uid")
+  targetAgent <-
+    either
+      (Left . Text.unpack)
+      Right
+      (mkTargetAgentIdentity ("fake-parent@sha256:" <> Text.replicate 64 "a"))
+  deliveryIntent <-
+    mapLeftShow
+      ( mkChildBootstrapDeliveryIntent
+          "fake-parent"
+          "fake-child-1"
+          childUid
+          targetAgent
+          "https://authority.fake-parent.invalid"
+          "https://vault.fake-parent.invalid"
+          "prodbox-child-seal-fake-child-1"
+          (fakeDigest 'a')
+          (fakeDigest 'b')
+          "prodbox-federation-parent-worker"
+          "prodbox-federation-child-worker"
+          1
+          1
+          60_000_000
+          (requestDigestForBytes "fake-federation-bootstrap-request")
+          (fakeDigest 'c')
+          (fakeDigest 'd')
+      )
+  childWorker <-
+    fakeFederationWorker
+      "fake-child-1"
+      (fakeDigest 'b')
+      "prodbox-federation-child-worker"
+      "child"
+  parentWorker <-
+    fakeFederationWorker
+      "fake-parent"
+      (fakeDigest 'a')
+      "prodbox-federation-parent-worker"
+      "parent"
+  recipient <-
+    mapLeftShow
+      ( mkChildBootstrapRecipientAttestation
+          deliveryIntent
+          childWorker
+          (ByteString.replicate 32 0x11)
+      )
+  envelope <-
+    mapLeftShow
+      ( mkParentBootstrapEnvelope
+          recipient
+          parentWorker
+          (ByteString.replicate 32 0x22)
+          "fake-encrypted-transit-credential"
+          (fakeDigest 'e')
+      )
+  let childCleanup =
+        mkFederationWorkerCleanup
+          childWorker
+          (fakeDigest '1')
+          (fakeDigest '2')
+          (fakeDigest '3')
+      parentCleanup =
+        mkFederationWorkerCleanup
+          parentWorker
+          (fakeDigest '4')
+          (fakeDigest '5')
+          (fakeDigest '6')
+  childDelivery <-
+    mapLeftShow
+      ( mkChildBootstrapDeliveryReceipt
+          envelope
+          childWorker
+          childUid
+          "1"
+          (fakeDigest '7')
+          "fake-parent-return-ciphertext"
+          childCleanup
+      )
+  bootstrapCustody <-
+    mapLeftShow
+      ( mkParentBootstrapCustodyReceipt
+          childDelivery
+          (fakeDigest '8')
+          (fakeDigest '9')
+          (fakeDigest 'a')
+          parentCleanup
+      )
+  let exported =
+        mkChildCustodyExport
+          encryptedReceipt
+          (requestDigestForBytes "fake-child-custody-export")
+          (fakeDigest 'b')
+  intent <- mapLeftShow (mkFederationRegistrationIntent bootstrapCustody exported)
+  mapLeftShow
+    ( mkFederationRegistrationCompletion
+        intent
+        acknowledgement
+    )
+
+fakeFederationWorker
+  :: Text.Text
+  -> ArtifactDigest
+  -> Text.Text
+  -> Text.Text
+  -> Either String FederationWorkerBinding
+fakeFederationWorker cluster rollout serviceAccount label =
+  mapLeftShow
+    ( mkFederationWorkerBinding
+        cluster
+        rollout
+        (label <> "-job-uid")
+        (label <> "-pod-uid")
+        serviceAccount
+        (label <> "-service-account-uid")
+    )
 
 fakeInitialRootProof :: PristineStorageProof
 fakeInitialRootProof = pristineProof "fake-root-init-1" "fake-vault-generation-1" '1'
@@ -1420,8 +1656,8 @@ fakeInitialStorageGeneration :: VaultStorageGeneration
 fakeInitialStorageGeneration =
   rootInitStorageGeneration (pristineStorageBinding fakeInitialRootProof)
 
-completeChildCustody :: VaultStorageGeneration -> Either String ChildCustodyState
-completeChildCustody generation =
+prepareChildCustodyState :: VaultStorageGeneration -> Either String ChildCustodyState
+prepareChildCustodyState generation =
   mapLeftShow
     ( foldM
         applyChildCustodyCommand
@@ -1430,11 +1666,6 @@ completeChildCustody generation =
         , RecordChildLocalReceiptWrite
         , ConfirmChildLocalReceiptReadBack receipt
         , ArmChildParentGenerationCas
-        , ConfirmParentCustodyReadBack acknowledgement
-        , ArmChildLocalReceiptDeletion
-        , RecordChildLocalReceiptDeletion
-        , ConfirmChildLocalReceiptAbsence
-        , ConfirmChildRecoveryCustodyDurable
         ]
     )
  where
@@ -1447,7 +1678,6 @@ completeChildCustody generation =
           fakeBurnToken
           (fakeDigest '6')
       )
-  acknowledgement = mkParentCustodyAcknowledgement receipt (fakeDigest '7')
 
 fakeChildBinding :: VaultStorageGeneration -> ChildCustodyBinding
 fakeChildBinding generation =

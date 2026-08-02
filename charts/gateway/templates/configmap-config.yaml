@@ -64,6 +64,11 @@ data:
           }
           {{- end }}
         ]
+      , lifecycle_authority =
+          Some
+            { authority_scope = {{ $.Values.lifecycleAuthority.scope | quote }}
+            , endpoint = {{ $.Values.lifecycleAuthority.endpoint | quote }}
+            }
       , dns_write_gate =
           {{- if $.Values.dnsWriteGate.enabled }}
           Some

@@ -43,6 +43,9 @@ data NativeValidation
   | ValidationGatewayDaemon
   | ValidationGatewayPods
   | ValidationGatewayPartition
+  | ValidationControlPlaneCounterexample
+  | ValidationCertificateScope
+  | ValidationCleanRoomHandoff
   | ValidationChartsPlatform
   | ValidationResourceGuardrails
   | ValidationDaemonBootstrap
@@ -124,6 +127,9 @@ testExecutionPlan substrate scope =
       nativeExecutionPlan
         "all"
         [ "test:prodbox-unit"
+        , "test:prodbox-authority-admission-unit"
+        , "test:prodbox-control-plane-authentication-unit"
+        , "test:prodbox-control-plane-authenticated-transport-unit"
         , "test:prodbox-integration"
         ]
         ( canonicalSuitePlan
@@ -151,7 +157,11 @@ testExecutionPlan substrate scope =
     TestUnit ->
       nativeExecutionPlan
         "unit"
-        ["test:prodbox-unit"]
+        [ "test:prodbox-unit"
+        , "test:prodbox-authority-admission-unit"
+        , "test:prodbox-control-plane-authentication-unit"
+        , "test:prodbox-control-plane-authenticated-transport-unit"
+        ]
         NativeSuitePlan
           { nativeSuiteId = "unit"
           , nativeValidations = []
@@ -225,6 +235,24 @@ testExecutionPlan substrate scope =
             "integration gateway-partition"
             "integration-gateway-partition"
             [ValidationGatewayPartition]
+            False
+        IntegrationControlPlaneCounterexample ->
+          nativeNamedSuite
+            "integration control-plane-counterexample"
+            "integration-control-plane-counterexample"
+            [ValidationControlPlaneCounterexample]
+            False
+        IntegrationCertificateScope ->
+          nativeNamedSuite
+            "integration certificate-scope"
+            "integration-certificate-scope"
+            [ValidationCertificateScope]
+            False
+        IntegrationCleanRoomHandoff ->
+          nativeNamedSuite
+            "integration clean-room-handoff"
+            "integration-clean-room-handoff"
+            [ValidationCleanRoomHandoff]
             False
         IntegrationHaRke2Aws ->
           nativeNamedSuite
@@ -399,6 +427,9 @@ canonicalNativeValidations =
   , ValidationHaRke2Aws
   , ValidationGatewayDaemon
   , ValidationGatewayPartition
+  , ValidationControlPlaneCounterexample
+  , ValidationCertificateScope
+  , ValidationCleanRoomHandoff
   , ValidationChartsPlatform
   , ValidationResourceGuardrails
   , ValidationDaemonBootstrap
@@ -446,6 +477,9 @@ validationInitialPrerequisites validation =
     ValidationGatewayPods -> clusterPrerequisites
     -- gateway-partition is fully in-process: no prerequisites.
     ValidationGatewayPartition -> []
+    ValidationControlPlaneCounterexample -> []
+    ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
+    ValidationCleanRoomHandoff -> []
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
@@ -482,6 +516,9 @@ validationDeferredPrerequisites validation =
     ValidationGatewayDaemon -> []
     ValidationGatewayPods -> []
     ValidationGatewayPartition -> []
+    ValidationControlPlaneCounterexample -> []
+    ValidationCertificateScope -> []
+    ValidationCleanRoomHandoff -> []
     ValidationChartsPlatform -> []
     ValidationResourceGuardrails -> []
     ValidationDaemonBootstrap -> []
@@ -597,6 +634,9 @@ nativeValidationId validation =
     ValidationGatewayDaemon -> "gateway-daemon"
     ValidationGatewayPods -> "gateway-pods"
     ValidationGatewayPartition -> "gateway-partition"
+    ValidationControlPlaneCounterexample -> "control-plane-counterexample"
+    ValidationCertificateScope -> "certificate-scope"
+    ValidationCleanRoomHandoff -> "clean-room-handoff"
     ValidationChartsPlatform -> "charts-platform"
     ValidationResourceGuardrails -> "resource-guardrails"
     ValidationDaemonBootstrap -> "daemon-bootstrap"

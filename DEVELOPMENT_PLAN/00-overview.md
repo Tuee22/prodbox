@@ -388,8 +388,8 @@ and `cluster status` / `edge status` surface the Vault seal state while `cluster
 AAD, `prodbox-state`, Vault-owned object-store HMAC key material, and the in-force-config read
 through the opaque key. Sprint `7.14` has landed the code-owned Pulumi decrypt-to-scratch wrapper
 for main per-run and `aws-ses` stack cycles, encrypted stack residue/output reads, first-touch raw
-checkpoint migration hooks, and Vault-only AWS provider credential resolution through
-`secret/gateway/gateway/aws`; the generated operational `aws.*` schema now uses a mandatory
+checkpoint migration hooks, and the historical Vault-only AWS provider credential resolution. The
+generated operational `aws.*` schema now points only at `secret/aws/lifecycle-provider` through a mandatory
 `SecretRef.Vault` reference and setup/teardown mints or clears that operational key in Vault KV
 instead of writing plaintext provider credentials to Tier-0 Dhall. The minting interaction happens after Vault is unsealed — the
 operator (or the harness simulating the prompt) supplies the ephemeral elevated credential, prodbox
@@ -485,11 +485,11 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
 | 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
 | 3 | Chart Platform and Public Workload Delivery | ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
-| 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 Sprint `4.50` Active; Foundation Epoch Sprint `4.51` and observed-host Sprint `4.52` are ✅ Done. `4.51` closes the durability-indexed host-direct retained adapter and generation-scoped SES operation crash/replay fold; live AWS response-loss remains Standard-O evidence. | Pure decide/evolve tables, CAS conflict/response-loss simulation, native MinIO/Vault integration, restart/resume, and cutover properties. |
-| 5 | Canonical Test Suite | 🔄 Sprint `5.24` ✅ Done (restore-time gateway observability wait — the stability sample waits out a fresh-Pod metrics-scrape gap instead of latching it fatal; live-proven on a clean cold `test all` where `RestoreChartGateway -> succeeded` and unblocked the whole downstream restore graph, zero stability failures); Sprint `5.21` Active (recorder gate landed; live profile collection + first committed profile remain); Foundation Epoch Sprint `5.20` ✅ Done; `5.18`–`5.19` follow `4.50`; certificate-scope serving Sprint `5.22` is 📋 Planned and unblocked. | Capability-bound restore plans, cleanup-DAG fault tables, installed-binary load/fault fixtures, temporal CPU/queue/deadline oracle, and the restore-time gateway observability wait. |
-| 6 | Final Clean-Room Rerun and Handoff | ⏸️ `6.4` blocked by `5.19`. | Home cutover/rollback plus two consecutive destructive aggregates with canonical restoration and zero residue. |
-| 7 | AWS Substrate Foundations | ⏸️ Sprint `7.33` blocked by `6.4`; Foundation Epoch Sprint `7.34` ✅ Done (harness postflight residue narrowed to per-run). | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
-| 8 | Invited Email Authentication | ⏸️ `8.11`–`8.12` follow `7.33`. | SES workflow decision tables, provider/target fault injection, and current-revision invite aggregates. |
+| 4 | Lifecycle Hardening and Pulumi Decoupling | ✅ Reclosed on Sprints `4.50`/`4.53` (2026-08-01). Retained Authority admission/checkpoints, authenticated five-role clients, Broker/Target/Provider execution, exact TLS retention, encrypted EKS client auth, Provider-native SES/Route53 reconciliation, crash-safe decommission, legacy transport deletion, and the authenticated S3 witness are independently validated; live qualification remains Standard O/P. | Warning-clean builds, 2972/2972 unit tests plus focused retained-admission/authenticated-transport suites, negative scans, and `dev check` exit 0. |
+| 5 | Canonical Test Suite | ✅ Reclosed on Sprint `5.22` (2026-08-02). Durable cleanup, the temporal/fault oracle, secret-safe qualification evidence, fail-closed calibration recording, and exact presented-certificate SAN validation are code-locally complete; deployment qualification remains Standards P/O. | Unit 3018/3018, installed-binary command proof, generated registries, cleanup/fault tables, and exact-SAN/retention-coordinate tests. |
+| 6 | Final Clean-Room Rerun and Handoff | ✅ Reclosed on Sprint `6.4` (2026-08-02): exact-prefix cutover/restore/cleanup, rollback refusal, installed-binary plan, and retired-transport absence are validated; destructive aggregates remain qualification. | Focused 8/8, installed command exit 0, unit 3028/3028, generated docs, and `dev check` exit 0. |
+| 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic ownership, target DNS01, public-A Provider intents, and fault dispositions are code-locally complete. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
+| 8 | Invited Email Authentication | ✅ Reclosed on Sprint `8.12` (2026-08-02): the durable SES workflow and non-partial invite fault/qualification artifact are code-locally complete; live qualification remains Standards O/P. | Invite 8/8, daemon lifecycle 27/27, unit 3067/3067, installed CLI/environment 55/55 twice, and `prodbox dev check` exit 0. |
 
 ## Alignment Status
 
@@ -498,7 +498,18 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-07-27 — Phase `2` reclosed on proof-carrying broker shutdown; redesign continues):**
+**Current head state (2026-08-02 — all code-owned phases are closed):**
+
+- The numerical completion pass validated and closed every sprint through `8.12` in order.
+- Sprint `8.12` is the final code-owned closure: its typed artifact fixes eight invite assertions,
+  23 exhaustive fault dispositions, both substrate commands, Authority epoch and exact backup
+  restoration, cleanup takeover, and retained SES/EAB/TLS constraints.
+- Deployment qualification remains pending for the two live current-revision substrate campaigns.
+  This is a non-blocking Standards O/P axis and the repository makes no deployment-ready,
+  seamless, or operational-cutover claim.
+
+Prior head state (2026-07-27 — Phase `2` reclosed on proof-carrying broker shutdown; redesign
+continues):
 
 - Sprint `2.36` closes the Bootstrap Broker forced-shutdown counterexample: replay waiters resolve
   before persistent cancellation children join, and only an exact-empty witness publishes
@@ -526,11 +537,10 @@ Sprint `2.32` has completed that emitter target on its independently validated c
 target and rollback topologies are mutually exclusive, and the production entrypoint remains
 `LegacyModelBEmitter` until current-revision deployment qualification permits cutover.
 
-Sprint `0.16` owns this doctrine/plan correction. Phase `1` has reclosed on Sprint `1.67` after
-Sprints `1.61`–`1.66` landed and the substrate-neutral Kubernetes prerequisite was corrected;
-Phases `2`–`8` remain open through Sprints `2.33`–`8.12`. Earlier completed sprints remain
-historical evidence for their stated surfaces, not evidence that the current topology is
-qualified. Deployment qualification status and evidence live only in
+Sprint `0.16` owns this doctrine/plan correction. Phases `1`–`8` have reclosed on their expanded
+code-owned surfaces. Earlier completed sprints remain historical evidence for their stated
+surfaces, not evidence that the current topology is qualified. Deployment qualification status
+and evidence live only in
 [DEVELOPMENT_PLAN/README.md](README.md#deployment-qualification).
 
 **Foundation Epoch (2026-07-12 — adopted by Sprint `0.17`):**
@@ -546,8 +556,7 @@ resource envelopes are certified against measured profiles, over-commitment of t
 host/cluster/workload nesting is made unrepresentable by an opaque compile-time proof (Sprint `1.68`),
 and drift fails the seconds-fast
 canonical quality gate rather than the multi-hour aggregate suite. Foundation Epoch Sprints
-`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, and `7.34` are Done; Sprint `5.21` retains its own
-Active status. Sprints `1.61`/`1.62` are also Done after their shrink-rescoped work landed
+`1.63`–`1.66`, `2.34`, `4.51`, `5.20`, `5.21`, and `7.34` are Done. Sprints `1.61`/`1.62` are also Done after their shrink-rescoped work landed
 (readiness evidence moved to Sprint `2.34`; the cached Vault session to Sprint `1.64`; the native
 S3 client to Sprint `1.66`). Standard P gains the interim
 escape-path guard (registry owned by Sprint `1.63`), Guaranteed QoS is retained with honesty coming
@@ -558,7 +567,7 @@ Sprint `0.18` (2026-07-12) adopts the operator-configurable certificate-scope po
 documentation surface: an unmanaged or uncovered served hostname is unrepresentable on the
 prodbox-managed side, the orphan dashboard-cert incident is dispositioned, and parent→child
 certificate-material handoff is rejected in favor of delivered `AcmeEabMaterial` self-issuance.
-Sprint `2.35` is now Done and its independent serving consumer Sprint `5.22` is Planned/unblocked;
+Sprint `2.35` and its independent serving consumer Sprint `5.22` are now Done;
 Phase `0` retains the governance addition without a second reclose, and the Deployment Qualification
 ledger is unchanged. The dated
 adoption entry and live status live in [README.md → Closure Status](README.md#closure-status).
@@ -584,7 +593,7 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 | Gateway-owned secret-derivation MinIO bucket — **retired** | Historical `s3://prodbox?endpoint=127.0.0.1:39000` / `prodbox/master-seed`; the master-seed derivation model is retired (Sprint `3.19`). The pre-cutover gateway generic-object route is also scheduled for deletion; the target Gateway has no MinIO principal. | No target authority; history is retained only in the cleanup ledger |
 | Bootstrap Broker | Same-binary dedicated pre-Vault daemon command and internal Service | Sole bounded Vault initialize/unseal/status/rotation boundary; no mesh, lifecycle, provider, or target-secret API |
 | Lifecycle Authority | Same-binary retained control-plane daemon and internal Service | Authority epoch/time, operation journal, fences, checkpoint references, provider revisions, credential generations, and delivery outbox |
-| Target Secret Agent | Same-binary per-substrate internal daemon and Service | Allowlisted generation-checked Vault KV seal/CAS/read-back for that substrate plus an exact Kubernetes TLS-Secret lane; only the retained home Agent owns TLS DEK Transit exchange |
+| Target Secret Agent | Same-binary per-substrate internal daemon and Service | Allowlisted generation-checked Vault KV seal/CAS/read-back for that substrate plus an exact Kubernetes TLS-Secret lane. The retained home Agent also binds the two schema-closed SES-SMTP/ACME-EAB custody rewrap endpoints; selected one-shot workers receive only destination-sealed openings. |
 | Authority Backup Adapter | Separate retained-home private Deployment and ServiceAccount | Closed mandatory independent-S3 backup/read-back/restore/GC programs; sole reader of the backup-store generation |
 | TLS Retention Adapter | Separate retained-home private Deployment and ServiceAccount | Closed ciphertext-only public-edge TLS retain/read-back/restore-receipt programs; never sees certificate/key plaintext |
 | Fenced Provider Worker | Separate retained-home private Deployment and ServiceAccount | Normal committed Pulumi/AWS provider intents only; sole reader of the Lifecycle-provider generation. Its SES inventory is sending identity/DKIM/MX/rules/capture only and has no IAM credential constructor. |
@@ -615,8 +624,9 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 The Haskell-only baseline remains implemented, but its gateway-backed lifecycle authority,
 nominal deep-readiness target, subprocess object-store path, synchronous retained SES bracket, and
 first-failure restore sequence are superseded. Phase `0` is reclosed on the corrected doctrine;
-Phase `1` is reclosed on Sprint `1.67`; Phases `2`–`8` remain open through the forward dependency
-chain in the Clean-Room Sequence.
+Phases `1`–`8` are reclosed on their expanded code-owned surfaces after the numerical completion
+pass through Sprint `8.12`. The live home/AWS aggregate and fault records remain pending only on
+the distinct deployment-qualification axis.
 
 Sprints `1.60`, `2.31`, `3.25`, `4.47`, `5.16`, `5.17`, and `8.10` remain complete historical work
 for their stated surfaces. They do not qualify the expanded process topology. The supported

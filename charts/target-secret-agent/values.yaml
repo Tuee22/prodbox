@@ -1,6 +1,9 @@
 global:
   namespace: target-secret-agent
   rootChart: target-secret-agent
+  clusterIdentity: ""
+  targetAgentIdentity: ""
+  targetAgentRolloutDigest: ""
 
 podAnnotations: {}
 

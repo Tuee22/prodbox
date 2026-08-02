@@ -16,9 +16,10 @@ where
 
 import Control.Applicative ((<|>))
 import Data.List (find)
+import Data.Text qualified as Text
+import Numeric.Natural (Natural)
 import Options.Applicative
-  ( Parser
-  , ReadM
+  ( ReadM
   , auto
   , command
   , eitherReader
@@ -39,8 +40,13 @@ import Options.Applicative
   , switch
   , value
   )
+import Options.Applicative.Types (Parser (BindP))
+import Prodbox.Bootstrap.Broker.KubernetesAttestation
+  ( parseSecretWorkerOperation
+  )
 import Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AdminActionCommand (..)
+  , AwsCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
@@ -50,6 +56,8 @@ import Prodbox.CLI.Command
   , ConfigCommand (..)
   , ControlPlaneLaunchOptions (..)
   , CoverageFlags (..)
+  , CredentialProvisionerCommand (..)
+  , CredentialProvisionerIngressSchema (..)
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
   , DnsCommand (..)
@@ -84,7 +92,52 @@ import Prodbox.CLI.Output
   , OutputFormat (..)
   , OutputOptions (..)
   )
+import Prodbox.ControlPlane.Client
+  ( controlPlaneEndpointText
+  , mkLifecycleAuthorityEndpoint
+  )
+import Prodbox.ControlPlane.Coordinate
+  ( authorityScopeText
+  , mkAuthorityScope
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( TargetSecretId
+  , allTargetSecretIds
+  , targetSecretIdToken
+  )
+import Prodbox.ControlPlane.TargetSecretAgentExecution
+  ( TargetAgentIdentity
+  , mkTargetAgentIdentity
+  )
+import Prodbox.ControlPlane.TargetSecretWorker
+  ( TargetWorkerImageDigest
+  , TargetWorkerIngressSchema (..)
+  , mkTargetWorkerImageDigest
+  , targetWorkerImageDigestText
+  )
+import Prodbox.ControlPlane.TargetSecretWorkerRuntime
+  ( TargetSecretWorkerOptions (..)
+  )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
+import Prodbox.Lifecycle.AdminAction.Runner
+  ( AdminActionRunnerOptions (..)
+  )
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( AdminAction (..)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
+  ( AwsAdminWorkerMode (..)
+  , AwsAdminWorkerOptions (..)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
+  ( ExternalMaterialWorkerOptions (..)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( mkOperatorMaterialOperationId
+  , mkOperatorMaterialPermitId
+  )
+import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.TargetCommitIntent (TargetValueDigest, mkTargetValueDigest)
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
   , runtimeConfigMountPath
@@ -147,8 +200,10 @@ commandRegistry =
     , summary = "Home Kubernetes operator"
     , description = "Typed command registry for the supported prodbox command surface."
     , children =
-        [ awsGroup
+        [ adminActionGroup
+        , awsGroup
         , bootstrapBrokerGroup
+        , credentialProvisionerGroup
         , controlPlaneRoleGroup LifecycleAuthorityRuntime
         , controlPlaneRoleGroup ProviderWorkerRuntime
         , controlPlaneRoleGroup AuthorityBackupRuntime
@@ -230,6 +285,8 @@ renderCommandRequestParser prefix spec =
 parserForPath :: [String] -> Maybe (Parser CommandRequest)
 parserForPath path =
   case path of
+    ["admin-action", "run"] ->
+      Just (RunNative . NativeAdminAction <$> adminActionRunParser)
     ["aws", "policy"] ->
       Just $
         fmap
@@ -263,6 +320,28 @@ parserForPath path =
         fmap
           (RunNative . NativeBootstrapBroker . BootstrapBrokerStart)
           brokerLaunchOptionsParser
+    ["bootstrap-broker", "secret-worker"] ->
+      Just
+        ( RunNative
+            . NativeBootstrapBroker
+            <$> ( BootstrapBrokerSecretWorker
+                    <$> option
+                      (eitherReader (either (Left . Text.unpack) Right . parseSecretWorkerOperation . Text.pack))
+                      ( long "operation"
+                          <> metavar "OPERATION"
+                          <> help "Closed Bootstrap secret-worker operation tag"
+                      )
+                    <*> strOption
+                      ( long "config"
+                          <> metavar "PATH"
+                          <> help "Mounted Bootstrap Broker Dhall config path"
+                      )
+                )
+        )
+    ["credential-provisioner", "run"] ->
+      Just (RunNative . NativeCredentialProvisioner <$> credentialProvisionerRunParser)
+    ["credential-provisioner", "target-worker"] ->
+      Just (RunNative . NativeCredentialProvisioner <$> targetSecretWorkerParser)
     [roleName, "start"]
       | Just role <- controlPlaneRoleByName roleName ->
           Just $
@@ -506,7 +585,7 @@ parserForPath path =
     ["test", "lint"] ->
       Just
         ( pure
-            (RunNative (NativeTest (TestCommand TestLint (CoverageFlags False Nothing) defaultSubstrate)))
+            (RunNative (NativeTest (TestCommand TestLint (CoverageFlags False Nothing) defaultSubstrate False)))
         )
     ["test", "unit"] -> Just (withCoverage TestUnit)
     ["test", "integration", "all"] -> Just (withCoverage (TestIntegration IntegrationAll))
@@ -516,8 +595,14 @@ parserForPath path =
     ["test", "integration", "aws-eks"] -> Just (withCoverage (TestIntegration IntegrationAwsEks))
     ["test", "integration", "env"] -> Just (withCoverage (TestIntegration IntegrationEnv))
     ["test", "integration", "gateway-daemon"] -> Just (withCoverage (TestIntegration IntegrationGatewayDaemon))
-    ["test", "integration", "gateway-pods"] -> Just (withCoverage (TestIntegration IntegrationGatewayPods))
+    ["test", "integration", "gateway-pods"] -> Just gatewayPodsTestParser
     ["test", "integration", "gateway-partition"] -> Just (withCoverage (TestIntegration IntegrationGatewayPartition))
+    ["test", "integration", "control-plane-counterexample"] ->
+      Just (withCoverage (TestIntegration IntegrationControlPlaneCounterexample))
+    ["test", "integration", "certificate-scope"] ->
+      Just (withCoverage (TestIntegration IntegrationCertificateScope))
+    ["test", "integration", "clean-room-handoff"] ->
+      Just (withCoverage (TestIntegration IntegrationCleanRoomHandoff))
     ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
     ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
     ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
@@ -545,6 +630,14 @@ parserForPath path =
                       ( long "plan-file"
                           <> metavar "PATH"
                           <> help "Write the rendered plan to a file"
+                      )
+                  )
+                <*> optional
+                  ( strOption
+                      ( long "receipt"
+                          <> metavar "ABSOLUTE_PATH"
+                          <> help
+                            "External durable receipt path (required for apply; optional for --dry-run)"
                       )
                   )
             )
@@ -613,6 +706,258 @@ planOptionsParser =
               <> help "Write the rendered plan to a file"
           )
       )
+
+adminActionRunParser :: Parser AdminActionCommand
+adminActionRunParser =
+  AdminActionRun
+    <$> ( AdminActionRunnerOptions
+            <$> option
+              (eitherReader parseAdminAction)
+              ( long "action"
+                  <> metavar "ACTION"
+                  <> help "Closed Admin Action permit family"
+              )
+            <*> strOption
+              (long "operation-id" <> metavar "ID" <> help "Authority operation identifier")
+            <*> option
+              positiveNaturalReader
+              (long "deadline-micros" <> metavar "MICROS" <> help "Absolute Authority deadline")
+            <*> strOption
+              (long "pod-name-file" <> metavar "PATH" <> help "Downward-API Pod name file")
+            <*> strOption
+              (long "pod-uid-file" <> metavar "PATH" <> help "Downward-API Pod UID file")
+            <*> strOption
+              ( long "service-account-token-file"
+                  <> metavar "PATH"
+                  <> help "Projected one-shot ServiceAccount token file"
+              )
+        )
+    <*> planOptionsParser
+ where
+  parseAdminAction raw = case raw of
+    "destroy-aws-ses" -> Right DestroyAwsSes
+    "migrate-legacy-backend" -> Right MigrateLegacyBackend
+    "reconcile-quota" -> Right ReconcileQuota
+    _ ->
+      Left
+        "--action must be exactly one of: destroy-aws-ses, migrate-legacy-backend, reconcile-quota"
+
+credentialProvisionerRunParser :: Parser CredentialProvisionerCommand
+credentialProvisionerRunParser =
+  BindP
+    (option (eitherReader parseIngressSchema) schemaOption)
+    parserForSchema
+ where
+  parserForSchema schema = case schema of
+    CredentialProvisionerExternalAcmeEab -> externalMaterialParser
+    CredentialProvisionerAwsAdmin -> awsAdminParser
+  externalMaterialParser =
+    CredentialProvisionerExternalAcmeEabRun
+      <$> ( ExternalMaterialWorkerOptions
+              <$> option
+                validatedPermitIdReader
+                (long "permit-id" <> metavar "ID" <> help "Authority permit identifier")
+              <*> option
+                validatedRequestDigestReader
+                (long "request-digest" <> metavar "SHA256" <> help "Authority request digest")
+              <*> option
+                positiveNaturalReader
+                (long "deadline-micros" <> metavar "MICROS" <> help "Absolute Authority deadline")
+              <*> strOption
+                (long "pod-uid-file" <> metavar "PATH" <> help "Downward-API Pod UID file")
+              <*> strOption
+                ( long "service-account-token-file"
+                    <> metavar "PATH"
+                    <> help "Projected one-shot ServiceAccount token file"
+                )
+          )
+      <*> planOptionsParser
+
+  awsAdminParser =
+    CredentialProvisionerAwsAdminRun
+      <$> ( AwsAdminWorkerOptions
+              <$> option
+                awsAdminWorkerModeReader
+                ( long "mode"
+                    <> metavar "MODE"
+                    <> help "Closed AWS-admin execution mode"
+                )
+              <*> option
+                validatedOperationIdReader
+                (long "operation-id" <> metavar "ID" <> help "Authority operation identifier")
+              <*> option
+                validatedPermitIdReader
+                (long "permit-id" <> metavar "ID" <> help "Authority permit identifier")
+              <*> option
+                validatedRequestDigestReader
+                (long "request-digest" <> metavar "SHA256" <> help "Authority request digest")
+              <*> option
+                positiveNaturalReader
+                (long "deadline-micros" <> metavar "MICROS" <> help "Absolute Authority deadline")
+              <*> ( targetWorkerImageDigestText
+                      <$> option
+                        targetWorkerImageDigestReader
+                        (long "image-digest" <> metavar "SHA256" <> help "Signed immutable worker image digest")
+                  )
+              <*> strOption
+                ( long "target-worker-image-repository"
+                    <> metavar "REPOSITORY"
+                    <> help "Immutable Target worker image repository"
+                )
+              <*> option
+                authorityScopeReader
+                (long "authority-scope" <> metavar "SCOPE" <> help "Signed Authority scope")
+              <*> option
+                lifecycleAuthorityEndpointReader
+                (long "authority-endpoint" <> metavar "URL" <> help "Signed Lifecycle Authority base URL")
+              <*> strOption
+                (long "pod-name-file" <> metavar "PATH" <> help "Downward-API Pod name file")
+              <*> strOption
+                (long "pod-uid-file" <> metavar "PATH" <> help "Downward-API Pod UID file")
+              <*> strOption
+                ( long "service-account-token-file"
+                    <> metavar "PATH"
+                    <> help "Projected one-shot ServiceAccount token file"
+                )
+          )
+      <*> planOptionsParser
+
+  schemaOption =
+    long "ingress-schema"
+      <> metavar "SCHEMA"
+      <> help "Closed one-shot ingress schema (aws-admin or external-acme-eab)"
+
+  parseIngressSchema raw = case raw of
+    "aws-admin" -> Right CredentialProvisionerAwsAdmin
+    "external-acme-eab" -> Right CredentialProvisionerExternalAcmeEab
+    _ -> Left "--ingress-schema must be exactly one of: aws-admin, external-acme-eab"
+
+targetSecretWorkerParser :: Parser CredentialProvisionerCommand
+targetSecretWorkerParser =
+  CredentialProvisionerTargetWorker
+    <$> ( TargetSecretWorkerOptions
+            <$> option
+              targetSecretIdReader
+              (long "target" <> metavar "TARGET" <> help "Exact registered Target identity")
+            <*> option
+              targetAgentIdentityReader
+              ( long "target-agent-identity"
+                  <> metavar "AGENT"
+                  <> help "Exact registered destination Target Agent identity"
+              )
+            <*> option
+              targetWorkerSchemaReader
+              (long "material-schema" <> metavar "SCHEMA" <> help "Closed Target worker material schema")
+            <*> option
+              targetWorkerImageDigestReader
+              (long "image-digest" <> metavar "SHA256" <> help "Attested immutable worker image digest")
+            <*> option
+              targetValueDigestReader
+              (long "request-digest" <> metavar "SHA256" <> help "Exact worker request digest")
+            <*> ( authorityTimeFromMicros
+                    <$> option
+                      positiveNaturalReader
+                      (long "deadline-micros" <> metavar "MICROS" <> help "Absolute Authority deadline")
+                )
+            <*> strOption
+              (long "pod-uid-file" <> metavar "PATH" <> help "Downward-API Pod UID file")
+            <*> strOption
+              (long "pod-name-file" <> metavar "PATH" <> help "Downward-API Pod name file")
+            <*> strOption
+              ( long "service-account-token-file"
+                  <> metavar "PATH"
+                  <> help "Projected one-shot ServiceAccount token file"
+              )
+        )
+    <*> planOptionsParser
+
+targetSecretIdReader :: ReadM TargetSecretId
+targetSecretIdReader = eitherReader readTargetSecretId
+ where
+  readTargetSecretId raw =
+    case find ((== Text.pack raw) . targetSecretIdToken) allTargetSecretIds of
+      Nothing -> Left "--target is not in the compiled Target registry"
+      Just target -> Right target
+
+targetAgentIdentityReader :: ReadM TargetAgentIdentity
+targetAgentIdentityReader = eitherReader readTargetAgentIdentity
+ where
+  readTargetAgentIdentity raw = case mkTargetAgentIdentity (Text.pack raw) of
+    Left detail -> Left (Text.unpack detail)
+    Right identity -> Right identity
+
+targetWorkerSchemaReader :: ReadM TargetWorkerIngressSchema
+targetWorkerSchemaReader = eitherReader readTargetWorkerSchema
+ where
+  readTargetWorkerSchema raw = case raw of
+    "direct-aws" -> Right TargetWorkerDirectAws
+    "rewrapped-ses-smtp" -> Right TargetWorkerRewrappedSesSmtp
+    "rewrapped-acme-eab" -> Right TargetWorkerRewrappedAcmeEab
+    _ -> Left "--material-schema must be direct-aws, rewrapped-ses-smtp, or rewrapped-acme-eab"
+
+targetWorkerImageDigestReader :: ReadM TargetWorkerImageDigest
+targetWorkerImageDigestReader = eitherReader $ \raw ->
+  either (Left . Text.unpack) Right (mkTargetWorkerImageDigest (Text.pack raw))
+
+targetValueDigestReader :: ReadM TargetValueDigest
+targetValueDigestReader = eitherReader $ \raw ->
+  either
+    (const (Left "value must be a valid lowercase SHA-256 digest"))
+    Right
+    (mkTargetValueDigest (Text.pack raw))
+
+validatedPermitIdReader :: ReadM Text.Text
+validatedPermitIdReader = eitherReader readValidatedPermitId
+ where
+  readValidatedPermitId raw = case mkOperatorMaterialPermitId (Text.pack raw) of
+    Left _ -> Left "--permit-id is invalid"
+    Right _ -> Right (Text.pack raw)
+
+validatedOperationIdReader :: ReadM Text.Text
+validatedOperationIdReader = eitherReader readValidatedOperationId
+ where
+  readValidatedOperationId raw = case mkOperatorMaterialOperationId (Text.pack raw) of
+    Left _ -> Left "--operation-id is invalid"
+    Right _ -> Right (Text.pack raw)
+
+awsAdminWorkerModeReader :: ReadM AwsAdminWorkerMode
+awsAdminWorkerModeReader = eitherReader readAwsAdminWorkerMode
+ where
+  readAwsAdminWorkerMode raw = case raw of
+    "normal" -> Right AwsAdminNormalMode
+    "genesis-backup" -> Right AwsAdminGenesisBackupMode
+    "backup-repair" -> Right AwsAdminBackupRepairMode
+    _ -> Left "--mode must be exactly one of: normal, genesis-backup, backup-repair"
+
+authorityScopeReader :: ReadM Text.Text
+authorityScopeReader = eitherReader readAuthorityScope
+ where
+  readAuthorityScope raw = case mkAuthorityScope (Text.pack raw) of
+    Left _ -> Left "--authority-scope is invalid"
+    Right scope -> Right (authorityScopeText scope)
+
+lifecycleAuthorityEndpointReader :: ReadM Text.Text
+lifecycleAuthorityEndpointReader = eitherReader readLifecycleAuthorityEndpoint
+ where
+  readLifecycleAuthorityEndpoint raw = case mkLifecycleAuthorityEndpoint (Text.pack raw) of
+    Left _ -> Left "--authority-endpoint is invalid"
+    Right endpoint -> Right (controlPlaneEndpointText endpoint)
+
+validatedRequestDigestReader :: ReadM Text.Text
+validatedRequestDigestReader = eitherReader readValidatedRequestDigest
+ where
+  readValidatedRequestDigest raw = case mkTargetValueDigest (Text.pack raw) of
+    Left _ -> Left "--request-digest must be a valid lowercase SHA-256 digest"
+    Right _ -> Right (Text.pack raw)
+
+positiveNaturalReader :: ReadM Natural
+positiveNaturalReader = eitherReader readPositiveNatural
+ where
+  readPositiveNatural raw = case reads raw of
+    [(parsed, "")]
+      | parsed > 0 -> Right parsed
+    _ ->
+      Left "--deadline-micros must be a positive integer"
 
 federationRegisterOptionsParser :: Parser FederationRegisterOptions
 federationRegisterOptionsParser =
@@ -732,7 +1077,7 @@ parseColorMode valueText =
 
 withCoverage :: TestScope -> Parser CommandRequest
 withCoverage scope =
-  (\coverage substrate -> RunNative (NativeTest (TestCommand scope coverage substrate)))
+  (\coverage substrate -> RunNative (NativeTest (TestCommand scope coverage substrate False)))
     <$> coverageFlagsParser
     <*> substrateOptionParser
 
@@ -740,7 +1085,7 @@ testInitParser :: Parser CommandRequest
 testInitParser =
   RunNative
     . NativeTest
-    . (\force -> TestCommand (TestInit force) (CoverageFlags False Nothing) defaultSubstrate)
+    . (\force -> TestCommand (TestInit force) (CoverageFlags False Nothing) defaultSubstrate False)
     <$> switch
       ( long "force"
           <> help "Overwrite an existing executable-sibling prodbox.test.dhall"
@@ -748,11 +1093,26 @@ testInitParser =
 
 testRunParser :: Parser CommandRequest
 testRunParser =
-  ( \suiteName coverage substrate -> RunNative (NativeTest (TestCommand (TestRun suiteName) coverage substrate))
+  ( \suiteName coverage substrate -> RunNative (NativeTest (TestCommand (TestRun suiteName) coverage substrate False))
   )
     <$> strArgument (metavar "SUITE")
     <*> coverageFlagsParser
     <*> substrateOptionParser
+
+gatewayPodsTestParser :: Parser CommandRequest
+gatewayPodsTestParser =
+  ( \coverage substrate recordProfile ->
+      RunNative
+        ( NativeTest
+            (TestCommand (TestIntegration IntegrationGatewayPods) coverage substrate recordProfile)
+        )
+  )
+    <$> coverageFlagsParser
+    <*> substrateOptionParser
+    <*> switch
+      ( long "record-profile"
+          <> help "After a healthy gateway-pods validation, record a 30-minute measured capacity profile"
+      )
 
 substrateOptionParser :: Parser Substrate
 substrateOptionParser =
@@ -1105,6 +1465,56 @@ configGroup =
     []
     [example ["config", "validate"] "Validate prodbox.dhall before running lifecycle commands."]
 
+adminActionGroup :: CommandSpec
+adminActionGroup =
+  group
+    "admin-action"
+    "Attested exceptional-action worker"
+    "Internal immutable-Job runtime; the signed permit and elevated credentials arrive only on bounded stdin."
+    [ leaf
+        "run"
+        "Run one signed Admin Action"
+        "Verify the exact Pod/action/operation/deadline binding, execute one closed action, read it back, revoke the Vault session, and emit one receipt."
+        [ requiredOption
+            "action"
+            Nothing
+            "ACTION"
+            "destroy-aws-ses, migrate-legacy-backend, or reconcile-quota"
+        , requiredOption "operation-id" Nothing "ID" "Authority operation identifier"
+        , requiredOption "deadline-micros" Nothing "MICROS" "Absolute Authority deadline"
+        , requiredOption "pod-name-file" Nothing "PATH" "Downward-API Pod name file"
+        , requiredOption "pod-uid-file" Nothing "PATH" "Downward-API Pod UID file"
+        , requiredOption
+            "service-account-token-file"
+            Nothing
+            "PATH"
+            "Projected one-shot ServiceAccount token file"
+        , flagOption "dry-run" Nothing Nothing "Render the one-shot runner plan"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan"
+        ]
+        [ example
+            [ "admin-action"
+            , "run"
+            , "--action"
+            , "destroy-aws-ses"
+            , "--operation-id"
+            , "admin-example"
+            , "--deadline-micros"
+            , "1"
+            , "--pod-name-file"
+            , "/var/run/prodbox/pod/name"
+            , "--pod-uid-file"
+            , "/var/run/prodbox/pod/uid"
+            , "--service-account-token-file"
+            , "/var/run/secrets/prodbox-vault/token"
+            , "--dry-run"
+            ]
+            "Render the closed Admin Action runner plan without reading stdin."
+        ]
+    ]
+    []
+    []
+
 awsGroup :: CommandSpec
 awsGroup =
   group
@@ -1312,6 +1722,31 @@ bootstrapBrokerGroup =
             ]
             "Validate config and render the broker-start plan."
         ]
+    , leaf
+        "secret-worker"
+        "Run one attested Bootstrap secret worker"
+        "Internal one-shot worker. The closed operation is bound to Pod annotations and one canonical stdin frame."
+        [ requiredOption
+            "operation"
+            Nothing
+            "OPERATION"
+            "Closed worker operation tag"
+        , requiredOption
+            "config"
+            Nothing
+            "PATH"
+            "Mounted Bootstrap Broker Dhall config path"
+        ]
+        [ example
+            [ "bootstrap-broker"
+            , "secret-worker"
+            , "--operation"
+            , "prepare-initialization"
+            , "--config"
+            , "/etc/bootstrap-broker/config/config.dhall"
+            ]
+            "Run the fixed prepare-initialization worker from its attested Pod."
+        ]
     ]
     []
     [ example
@@ -1322,6 +1757,153 @@ bootstrapBrokerGroup =
         ]
         "Start the dedicated Bootstrap Broker runtime."
     ]
+
+credentialProvisionerGroup :: CommandSpec
+credentialProvisionerGroup =
+  group
+    "credential-provisioner"
+    "Attested one-shot credential workers"
+    "Internal immutable-Job runtime; secret payloads are accepted only on bounded stdin."
+    [ leaf
+        "run"
+        "Run one closed Credential Provisioner worker"
+        "Verify one exact schema-indexed Authority permit and Pod binding; argv contains signed metadata only and cannot select a Vault path or generic material decoder."
+        [ requiredOption "ingress-schema" Nothing "SCHEMA" "Must be aws-admin or external-acme-eab"
+        , optionalOption
+            "mode"
+            Nothing
+            "MODE"
+            "Required for AWS-admin: normal, genesis-backup, or backup-repair"
+        , optionalOption
+            "operation-id"
+            Nothing
+            "ID"
+            "Required signed Authority operation identifier for AWS-admin"
+        , requiredOption "permit-id" Nothing "ID" "Authority permit identifier"
+        , requiredOption "request-digest" Nothing "SHA256" "Authority request digest"
+        , requiredOption "deadline-micros" Nothing "MICROS" "Absolute Authority deadline"
+        , optionalOption
+            "image-digest"
+            Nothing
+            "SHA256"
+            "Required signed immutable worker image digest for AWS-admin"
+        , optionalOption "authority-scope" Nothing "SCOPE" "Required signed Authority scope for AWS-admin"
+        , optionalOption
+            "authority-endpoint"
+            Nothing
+            "URL"
+            "Required signed Lifecycle Authority endpoint for AWS-admin"
+        , optionalOption "pod-name-file" Nothing "PATH" "Required downward-API Pod name file for AWS-admin"
+        , requiredOption "pod-uid-file" Nothing "PATH" "Downward-API Pod UID file"
+        , requiredOption
+            "service-account-token-file"
+            Nothing
+            "PATH"
+            "Projected one-shot ServiceAccount token file"
+        , flagOption "dry-run" Nothing Nothing "Render the one-shot worker plan"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan"
+        ]
+        [ example
+            [ "credential-provisioner"
+            , "run"
+            , "--ingress-schema"
+            , "external-acme-eab"
+            , "--permit-id"
+            , "permit-example"
+            , "--request-digest"
+            , replicate 64 'a'
+            , "--deadline-micros"
+            , "1"
+            , "--pod-uid-file"
+            , "/var/run/secrets/prodbox/pod-uid"
+            , "--service-account-token-file"
+            , "/var/run/secrets/prodbox/token"
+            , "--dry-run"
+            ]
+            "Render the closed worker plan without reading stdin or projected identity."
+        , example
+            [ "credential-provisioner"
+            , "run"
+            , "--ingress-schema"
+            , "aws-admin"
+            , "--mode"
+            , "normal"
+            , "--operation-id"
+            , "operation-example"
+            , "--permit-id"
+            , "permit-example"
+            , "--request-digest"
+            , replicate 64 'a'
+            , "--deadline-micros"
+            , "1"
+            , "--image-digest"
+            , "sha256:" <> replicate 64 'b'
+            , "--authority-scope"
+            , "home"
+            , "--authority-endpoint"
+            , "https://lifecycle-authority.example.invalid"
+            , "--pod-name-file"
+            , "/var/run/secrets/prodbox/pod-name"
+            , "--pod-uid-file"
+            , "/var/run/secrets/prodbox/pod-uid"
+            , "--service-account-token-file"
+            , "/var/run/secrets/prodbox/token"
+            , "--dry-run"
+            ]
+            "Render the exact AWS-admin normal-mode worker plan without reading stdin or projected identity."
+        ]
+    , leaf
+        "target-worker"
+        "Run one Target materializer worker"
+        "Verify the Authority intent and attested Pod binding, then perform one exact registered KV-v2 generation CAS."
+        [ requiredOption "target" Nothing "TARGET" "Exact registered Target identity"
+        , requiredOption
+            "target-agent-identity"
+            Nothing
+            "AGENT"
+            "Exact cluster and immutable Target Agent rollout identity"
+        , requiredOption "material-schema" Nothing "SCHEMA" "Closed direct/rewrapped material schema"
+        , requiredOption "image-digest" Nothing "SHA256" "Immutable attested image digest"
+        , requiredOption "request-digest" Nothing "SHA256" "Exact worker request digest"
+        , requiredOption "deadline-micros" Nothing "MICROS" "Absolute Authority deadline"
+        , requiredOption "pod-uid-file" Nothing "PATH" "Downward-API Pod UID file"
+        , requiredOption "pod-name-file" Nothing "PATH" "Downward-API Pod name file"
+        , requiredOption
+            "service-account-token-file"
+            Nothing
+            "PATH"
+            "Projected worker-only ServiceAccount token file"
+        , flagOption "dry-run" Nothing Nothing "Render the one-shot materializer plan"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan"
+        ]
+        [ example
+            [ "credential-provisioner"
+            , "target-worker"
+            , "--target"
+            , "acme-eab"
+            , "--target-agent-identity"
+            , "home@sha256:" ++ replicate 64 'c'
+            , "--material-schema"
+            , "rewrapped-acme-eab"
+            , "--image-digest"
+            , "sha256:" ++ replicate 64 'a'
+            , "--request-digest"
+            , replicate 64 'b'
+            , "--deadline-micros"
+            , "1"
+            , "--pod-uid-file"
+            , "/var/run/secrets/prodbox/pod-uid"
+            , "--pod-name-file"
+            , "/var/run/secrets/prodbox/pod-name"
+            , "--service-account-token-file"
+            , "/var/run/secrets/prodbox/token"
+            , "--dry-run"
+            ]
+            "Render the exact Target materializer plan without reading stdin or projected identity."
+        ]
+    ]
+    []
+    []
 
 controlPlaneRoleGroup :: RuntimeRole -> CommandSpec
 controlPlaneRoleGroup role =
@@ -1953,8 +2535,29 @@ testGroupSpec =
         , integrationLeaf "aws-eks" "Run EKS integration tests"
         , integrationLeaf "env" "Run environment integration tests"
         , integrationLeaf "gateway-daemon" "Run gateway-daemon integration tests"
-        , integrationLeaf "gateway-pods" "Run gateway pod integration tests"
+        , leaf
+            "gateway-pods"
+            "Run gateway pod integration tests"
+            "Run gateway pod integration tests; optionally record a qualifying measured profile."
+            ( coverageOptions
+                ++ [ flagOption
+                       "record-profile"
+                       Nothing
+                       Nothing
+                       "After a healthy validation, record a 30-minute measured capacity profile"
+                   ]
+            )
+            [ example ["test", "integration", "gateway-pods"] "Run gateway pod integration tests."
+            , example
+                ["test", "integration", "gateway-pods", "--record-profile"]
+                "Run the live measured-profile recorder after gateway validation."
+            ]
         , integrationLeaf "gateway-partition" "Run gateway partition integration tests"
+        , integrationLeaf "control-plane-counterexample" "Run the frozen control-plane counterexample"
+        , integrationLeaf "certificate-scope" "Verify live TLS serving and the exact presented SAN scope"
+        , integrationLeaf
+            "clean-room-handoff"
+            "Verify clean-room migration, rollback refusal, and legacy absence"
         , integrationLeaf "ha-rke2-aws" "Run HA RKE2 AWS integration tests"
         , integrationLeaf "lifecycle" "Run lifecycle integration tests"
         , integrationLeaf "pulumi" "Run Pulumi integration tests"
@@ -2004,17 +2607,26 @@ nukeLeaf =
   leaf
     "nuke"
     "Total teardown of every prodbox-owned AWS resource (operator-only)"
-    ( "The only sanctioned path to destroy long-lived shared "
-        ++ "infrastructure (`aws-ses`, the long-lived `pulumi_state_backend` "
-        ++ "bucket) transitively. TTY-only; refuses non-interactive contexts. "
-        ++ "Requires the typed confirmation literal `NUKE EVERYTHING`. No "
-        ++ "`--yes` shorthand by design. `--dry-run` renders the plan without "
-        ++ "mutating any state."
+    ( "The only sanctioned total-decommission path. It executes an "
+        ++ "Authority-authenticated manifest through the exact exported runner "
+        ++ "and an acknowledged external receipt; apply fails closed unless the "
+        ++ "complete production node registry is installed. TTY-only; refuses "
+        ++ "non-interactive contexts. Requires the typed confirmation literal "
+        ++ "`NUKE EVERYTHING`; no `--yes` shorthand. `--dry-run` renders the "
+        ++ "protocol without mutating any state."
     )
     [ flagOption "dry-run" Nothing Nothing "Render the teardown plan without mutating state"
     , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+    , optionalOption
+        "receipt"
+        Nothing
+        "ABSOLUTE_PATH"
+        "External durable receipt path (required for apply; optional for --dry-run)"
     ]
     [ example ["nuke", "--dry-run"] "Render the total-teardown plan."
+    , example
+        ["nuke", "--receipt", "/operator/decommission/prodbox.receipt"]
+        "Run with an operator-owned receipt outside every deletion root."
     ]
 
 -- | @prodbox dev ...@ — developer + CI tooling, regrouped (Phase 5):

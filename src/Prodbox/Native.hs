@@ -1,6 +1,9 @@
 module Prodbox.Native
   ( runNativeCommand
   , commandPrerequisites
+  , adminActionRunPlan
+  , credentialProvisionerRunPlan
+  , awsAdminCredentialProvisionerRunPlan
   , NativeRuntimeCommand
   , nativeRuntimeCommand
   , nativeRuntimeRole
@@ -16,15 +19,19 @@ import Prodbox.Aws
 import Prodbox.Bootstrap.Broker (runBootstrapBrokerCommand)
 import Prodbox.CLI.Charts (runChartsCommand)
 import Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AdminActionCommand (..)
+  , AwsCommand (..)
   , BootstrapBrokerCommand (..)
   , ConfigCommand (..)
   , ControlPlaneLaunchOptions
+  , CredentialProvisionerCommand (..)
   , EdgeCommand (..)
   , GatewayCommand (..)
   , HostFitMode (..)
   , NativeCommand (..)
   , VaultCommand (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Nuke (runNukeCommand)
 import Prodbox.CLI.Output
@@ -50,11 +57,24 @@ import Prodbox.Config.SchemaDhall
   )
 import Prodbox.Config.Tier0 (writeOperatorParametersToTier0)
 import Prodbox.ControlPlane.Runtime (runControlPlaneRole)
+import Prodbox.ControlPlane.TargetSecretWorkerRuntime (runTargetSecretWorker)
 import Prodbox.Dns (runDnsCommand)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
 import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
+import Prodbox.Lifecycle.AdminAction.Production
+  ( loadProductionAdminActionInterpreters
+  )
+import Prodbox.Lifecycle.AdminAction.Runner
+  ( runAdminActionRunnerWith
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
+  ( runAwsAdminWorker
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
+  ( runExternalMaterialWorker
+  )
 import Prodbox.Lifecycle.Preconditions (noLiveLongLivedPulumiStacksPreflight)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Repo (resolveTier0ConfigPath)
@@ -129,6 +149,8 @@ runNativeRuntimeCommand repoRoot runtimeCommand =
 runNonRuntimeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNonRuntimeCommand repoRoot command =
   case command of
+    NativeAdminAction adminCommand ->
+      runAdminActionCommand repoRoot adminCommand
     NativeAws awsCommand ->
       -- Sprint 4.26: inject the long-lived teardown preflight here (rather
       -- than inside 'Prodbox.Aws') because the precondition module imports
@@ -139,6 +161,8 @@ runNonRuntimeCommand repoRoot command =
       runAwsCommand repoRoot noLiveLongLivedPulumiStacksPreflight awsCommand
     NativeBootstrapBroker _ -> runtimeProjectionInvariantViolation
     NativeControlPlane _ _ -> runtimeProjectionInvariantViolation
+    NativeCredentialProvisioner credentialCommand ->
+      runCredentialProvisionerCommand credentialCommand
     NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
@@ -181,6 +205,7 @@ runtimeProjectionInvariantViolation =
 commandPrerequisites :: NativeCommand -> [PrerequisiteId]
 commandPrerequisites command =
   case command of
+    NativeAdminAction _ -> []
     NativeAws awsCommand ->
       case awsCommand of
         AwsPolicy _ -> []
@@ -192,7 +217,9 @@ commandPrerequisites command =
     NativeBootstrapBroker brokerCommand ->
       case brokerCommand of
         BootstrapBrokerStart _ -> []
+        BootstrapBrokerSecretWorker _ _ -> []
     NativeControlPlane _ _ -> []
+    NativeCredentialProvisioner _ -> []
     -- Chart reconcile/delete apply against the active cluster.
     NativeCharts _ -> [K8sClusterReachable]
     NativeCheckCode -> []
@@ -238,6 +265,79 @@ commandPrerequisites command =
         VaultPkiStatus -> [K8sClusterReachable]
         VaultPkiIssueTestCert -> [K8sClusterReachable]
     NativeWorkload _ -> []
+
+runAdminActionCommand :: FilePath -> AdminActionCommand -> IO ExitCode
+runAdminActionCommand repoRoot command = case command of
+  AdminActionRun options planOptions ->
+    runPlanWithOptions
+      planOptions
+      (buildPlan (const adminActionRunPlan) options)
+      (runAdminActionRunnerWith (loadProductionAdminActionInterpreters repoRoot))
+
+adminActionRunPlan :: String
+adminActionRunPlan =
+  unlines
+    [ "Admin Action one-shot plan"
+    , "  ingress: one bounded canonical stdin frame"
+    , "  binding: exact action/operation/deadline and downward-API Pod name+UID"
+    , "  authority: backup-receipted Transit-signed permit"
+    , "  execution: one closed action with authoritative read-back"
+    , "  cleanup: revoke the short Vault session before emitting a receipt"
+    ]
+
+runCredentialProvisionerCommand
+  :: CredentialProvisionerCommand -> IO ExitCode
+runCredentialProvisionerCommand command = case command of
+  CredentialProvisionerExternalAcmeEabRun options planOptions ->
+    runPlanWithOptions
+      planOptions
+      (buildPlan (const credentialProvisionerRunPlan) options)
+      runExternalMaterialWorker
+  CredentialProvisionerAwsAdminRun options planOptions ->
+    runPlanWithOptions
+      planOptions
+      (buildPlan (const awsAdminCredentialProvisionerRunPlan) options)
+      runAwsAdminWorker
+  CredentialProvisionerTargetWorker options planOptions ->
+    runPlanWithOptions
+      planOptions
+      (buildPlan (const targetSecretWorkerPlan) options)
+      runTargetSecretWorker
+
+credentialProvisionerRunPlan :: String
+credentialProvisionerRunPlan =
+  unlines
+    [ "Credential Provisioner one-shot plan"
+    , "  ingress-schema: external-acme-eab"
+    , "  ingress: bounded stdin"
+    , "  pod-binding: downward-api UID"
+    , "  identity: projected one-shot ServiceAccount token"
+    , "  cleanup: revoke session before receipt"
+    ]
+
+awsAdminCredentialProvisionerRunPlan :: String
+awsAdminCredentialProvisionerRunPlan =
+  unlines
+    [ "Credential Provisioner AWS-admin one-shot plan"
+    , "  ingress-schema: aws-admin"
+    , "  mode: exact signed normal, genesis-backup, or backup-repair"
+    , "  ingress: one bounded canonical stdin frame"
+    , "  binding: immutable image plus downward-api Pod name+UID and projected ServiceAccount identity"
+    , "  authority: signed scope/endpoint, permit, request digest, deadline, and Transit generation"
+    , "  execution: permit-scoped durable IAM journal and exact prepared Target"
+    , "  cleanup: stable-zero accessor proof before terminal Authority receipt"
+    ]
+
+targetSecretWorkerPlan :: String
+targetSecretWorkerPlan =
+  unlines
+    [ "Target Secret Agent one-shot materializer plan"
+    , "  ingress: bounded attached stdin"
+    , "  attestation: exact Pod UID/image/ServiceAccount/request"
+    , "  identity: worker-only projected Kubernetes Vault session"
+    , "  mutation: registered KV-v2 generation CAS + data/metadata readback"
+    , "  cleanup: revoke session before opaque receipt"
+    ]
 
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =

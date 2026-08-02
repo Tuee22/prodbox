@@ -5,6 +5,9 @@ config:
 variables:
   stackName: ${pulumi.stack}
   clusterName: ${stackName}-cluster
+  # Both the per-run stack identity and exact cluster identity are embedded so
+  # checkpoint-loss recovery can address roles without a broad IAM scan.
+  iamNamePrefix: prodbox-${stackName}-${clusterName}
   nodeGroupName: ${stackName}-node-group
   availabilityZones:
     fn::invoke:
@@ -109,6 +112,7 @@ resources:
   clusterRole:
     type: aws:iam:Role
     properties:
+      name: ${iamNamePrefix}-cluster-role
       assumeRolePolicy:
         fn::toJSON:
           Version: "2012-10-17"
@@ -129,6 +133,7 @@ resources:
   nodeRole:
     type: aws:iam:Role
     properties:
+      name: ${iamNamePrefix}-node-role
       assumeRolePolicy:
         fn::toJSON:
           Version: "2012-10-17"
@@ -241,7 +246,7 @@ resources:
   awsLbControllerRole:
     type: aws:iam:Role
     properties:
-      name: ${stackName}-aws-lb-controller
+      name: ${iamNamePrefix}-lbc-role
       assumeRolePolicy:
         fn::toJSON:
           Version: "2012-10-17"

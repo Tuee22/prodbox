@@ -1,5 +1,9 @@
 status: 200
 body:
+# TYPE prodbox_gateway_heap_live_bytes gauge
+prodbox_gateway_heap_live_bytes <number>
+# TYPE prodbox_gateway_object_store_op_p99_millis gauge
+prodbox_gateway_object_store_op_p99_millis <number>
 # TYPE prodbox_gateway_signed_replay_assertions gauge
 prodbox_gateway_signed_replay_assertions{daemon="gateway"} <number>
 # TYPE prodbox_gateway_semantic_members gauge

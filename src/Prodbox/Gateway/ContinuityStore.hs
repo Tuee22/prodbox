@@ -17,6 +17,8 @@ where
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
+import Numeric.Natural (Natural)
 import Prodbox.Crypto.Envelope (DekCipher)
 import Prodbox.Gateway.Continuity
   ( AuthorityCasResult (..)
@@ -49,6 +51,7 @@ data ContinuityStoreMaterial = ContinuityStoreMaterial
   , continuityStoreCipher :: DekCipher
   , continuityStoreHmacKey :: ByteString
   , continuityStoreClusterId :: Text
+  , continuityStoreObserveDurationMillis :: Natural -> IO ()
   }
 
 -- | Injected logical Model-B boundary.  Production closes these callbacks
@@ -80,24 +83,46 @@ productionBackend :: ContinuityStoreMaterial -> ContinuityStoreBackend IO
 productionBackend material =
   ContinuityStoreBackend
     { continuityBackendGet =
-        getLogicalVersioned
-          (continuityStoreObjectStore material)
-          (continuityStoreCipher material)
-          (continuityStoreHmacKey material)
-          (continuityStoreClusterId material)
+        timed $
+          getLogicalVersioned
+            (continuityStoreObjectStore material)
+            (continuityStoreCipher material)
+            (continuityStoreHmacKey material)
+            (continuityStoreClusterId material)
     , continuityBackendPutIfAbsent =
-        putLogicalIfAbsent
-          (continuityStoreObjectStore material)
-          (continuityStoreCipher material)
-          (continuityStoreHmacKey material)
-          (continuityStoreClusterId material)
+        timed2 $
+          putLogicalIfAbsent
+            (continuityStoreObjectStore material)
+            (continuityStoreCipher material)
+            (continuityStoreHmacKey material)
+            (continuityStoreClusterId material)
     , continuityBackendPutIfVersion =
-        putLogicalIfVersion
-          (continuityStoreObjectStore material)
-          (continuityStoreCipher material)
-          (continuityStoreHmacKey material)
-          (continuityStoreClusterId material)
+        timed3 $
+          putLogicalIfVersion
+            (continuityStoreObjectStore material)
+            (continuityStoreCipher material)
+            (continuityStoreHmacKey material)
+            (continuityStoreClusterId material)
     }
+ where
+  observeDuration started = do
+    finished <- getMonotonicTimeNSec
+    continuityStoreObserveDurationMillis material (fromIntegral ((finished - started) `div` 1000000))
+  timed operation first = do
+    started <- getMonotonicTimeNSec
+    result <- operation first
+    observeDuration started
+    pure result
+  timed2 operation first second = do
+    started <- getMonotonicTimeNSec
+    result <- operation first second
+    observeDuration started
+    pure result
+  timed3 operation first second third = do
+    started <- getMonotonicTimeNSec
+    result <- operation first second third
+    observeDuration started
+    pure result
 
 modelBContinuityAuthorityWithBackend
   :: (Monad m)

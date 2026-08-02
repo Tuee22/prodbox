@@ -315,7 +315,13 @@ ordered lifecycle.
    Soft delete or a new logical tombstone cannot satisfy this transition. The runner cannot create/rotate/remint
    credentials, run ordinary repair/provider work, or expose a generic export. Total `nuke` is not
    this runner; it uses the standalone Decommission Runner only after an external signed receipt
-   exists and Authority has stopped.
+   exists and Authority has stopped. Legacy migration reaches retained state only through the
+   runner-authenticated Authority execution route: Authority persists preparation and confirms the
+   registered checkpoint plus backup before the Runner deletes the exact legacy source. Quota
+   request intent is likewise Authority-CAS-persisted before the native Service Quotas call;
+   ambiguous recovery uses current quota and the complete paginated exact-tuple history, with two
+   stable absence observations before the one permitted retry. Because that AWS API has no client
+   token, no invented idempotency token is accepted as proof.
 6. **Postflight teardown.** On every suite exit, the always-run cleanup DAG first resolves recorded
    Lifecycle Authority operations to a clean or explicit recovery disposition, restores runtime,
    and attempts every credential-dependent per-run destroy. It deletes only Operational roles,
@@ -336,13 +342,10 @@ Physical capability identity and isolation are defined by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md). Implementation
 and deployment-qualification status live only in the Development Plan.
 
-> **Historical pre-cutover implementation record.** The old Vault clear is implemented by writing
-> empty-string values to `secret/gateway/gateway/aws`
-> (`clearOperationalAwsConfig` → `writeOperationalAwsVaultCredentials` with empty credentials in
-> `src/Prodbox/Aws.hs`), **not** by issuing a true Vault KV delete. The operational key material
-> is overwritten so it can no longer be resolved, but the KV path itself is left present with
-> blank fields. Sprint `4.50` removes this shared path after split-generation cutover; it is not a
-> target cleanup primitive and must not be described as a hard delete.
+> **Historical pre-cutover implementation record.** The former cleanup overwrote the shared Vault
+> object with empty fields rather than deleting it. Sprint `4.50` physically removes that writer;
+> current cleanup uses the generation-bound Target Agent tombstone/delete/read-back protocol. The
+> historical behavior is retained only in the cleanup ledger and is not a target primitive.
 
 The operational IAM mint/write/clear lifecycle is the credential boundary. Implementation status
 and fresh-account propagation evidence remain in
@@ -464,9 +467,9 @@ consumer. Raw SMTP AWS secret-access-key bytes never cross into retained custody
 Prompt-use-discard is the only handling for the ephemeral elevated credential: it is never written
 to `prodbox.dhall`, Vault, the Authority aggregate, a serializable capability program, logs, or
 disk. Explicit SES destroy, migration/retained-store compatibility, and quota request/status use the
-separate Admin Action Runner; `nuke` uses only the post-export Decommission Runner. The pre-cutover shared
-`secret/gateway/gateway/aws` path and `Prodbox.Infra.AwsProviderCredentials` fallback are deletion
-surfaces owned by Sprint `4.50`.
+separate Admin Action Runner; `nuke` uses only the post-export Decommission Runner. The pre-cutover
+shared Vault coordinate and `Prodbox.Infra.AwsProviderCredentials` fallback are deletion surfaces
+owned by Sprint `4.50` and have no place in the target credential topology.
 
 In-cluster consumers authenticate through distinct Vault Kubernetes-auth roles. Provider Worker,
 Backup Adapter, TLS Adapter, Gateway DNS writer, and each cert-manager instance receive only their

@@ -27,12 +27,15 @@ module Prodbox.Infra.StackOutputs
   , renderStackOutputsError
   , listStacks
   , listEncryptedStack
+  , listEncryptedStackWithAuthentication
   , observeEncryptedStackCheckpoint
+  , observeEncryptedStackCheckpointWithAuthentication
   , parseListStacksPayload
   , stackPresentInList
   , stackListFromCheckpointPresence
   , fetchOutputs
   , fetchEncryptedOutputs
+  , fetchEncryptedOutputsWithAuthentication
   , parseOutputsPayload
   )
 where
@@ -50,6 +53,12 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , LifecycleAuthorityAuthentication
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  )
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability
   , EncryptedBackendError
@@ -160,8 +169,17 @@ listEncryptedStack
   -- ^ Pulumi project name + stack id.
   -> IO (Either StackOutputsError [StackListEntry])
 listEncryptedStack repoRoot stackRef = do
+  withOperatorLifecycleAuthority repoRoot $ \authentication ->
+    listEncryptedStackWithAuthentication authentication repoRoot stackRef
+
+listEncryptedStackWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> PulumiStackRef
+  -> IO (Either StackOutputsError [StackListEntry])
+listEncryptedStackWithAuthentication authentication repoRoot stackRef = do
   result <-
-    withDecryptedStack repoRoot stackRef $ \scratch -> do
+    withDecryptedStack authentication repoRoot stackRef $ \scratch -> do
       checkpointExists <- doesFileExist (pulumiScratchCheckpointPath scratch)
       pure
         ( Right
@@ -190,7 +208,16 @@ observeEncryptedStackCheckpoint
   -- ^ Pulumi project name + stack id.
   -> IO (Either StackOutputsError CheckpointObservability)
 observeEncryptedStackCheckpoint repoRoot stackRef = do
-  result <- observeStackCheckpoint repoRoot stackRef
+  withOperatorLifecycleAuthority repoRoot $ \authentication ->
+    observeEncryptedStackCheckpointWithAuthentication authentication repoRoot stackRef
+
+observeEncryptedStackCheckpointWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> PulumiStackRef
+  -> IO (Either StackOutputsError CheckpointObservability)
+observeEncryptedStackCheckpointWithAuthentication authentication repoRoot stackRef = do
+  result <- observeStackCheckpoint authentication repoRoot stackRef
   pure $ case result of
     Left err -> Left (StackOutputsCommandFailed (renderEncryptedBackendError err))
     Right observability -> Right observability
@@ -297,8 +324,18 @@ fetchEncryptedOutputs
   -- ^ Pulumi project name + stack id.
   -> IO (Either StackOutputsError (Map Text Text))
 fetchEncryptedOutputs repoRoot projectDir stackRef = do
+  withOperatorLifecycleAuthority repoRoot $ \authentication ->
+    fetchEncryptedOutputsWithAuthentication authentication repoRoot projectDir stackRef
+
+fetchEncryptedOutputsWithAuthentication
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> FilePath
+  -> PulumiStackRef
+  -> IO (Either StackOutputsError (Map Text Text))
+fetchEncryptedOutputsWithAuthentication authentication repoRoot projectDir stackRef = do
   result <-
-    withDecryptedStack repoRoot stackRef $ \scratch -> do
+    withDecryptedStack authentication repoRoot stackRef $ \scratch -> do
       checkpointExists <- doesFileExist (pulumiScratchCheckpointPath scratch)
       if not checkpointExists
         then
@@ -325,6 +362,24 @@ fetchEncryptedOutputs repoRoot projectDir stackRef = do
     case mapEncryptedBackendResult result of
       Left err -> Left err
       Right outputs -> outputs
+
+withOperatorLifecycleAuthority
+  :: FilePath
+  -> (LifecycleAuthorityAuthentication -> IO (Either StackOutputsError value))
+  -> IO (Either StackOutputsError value)
+withOperatorLifecycleAuthority repoRoot action = do
+  result <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      action
+  pure $ case result of
+    Left err ->
+      Left
+        ( StackOutputsCommandFailed
+            (renderLifecycleAuthorityAuthenticationError err)
+        )
+    Right actionResult -> actionResult
 
 encryptedPulumiReadEnv :: PulumiScratch -> IO [(String, String)]
 encryptedPulumiReadEnv scratch = do

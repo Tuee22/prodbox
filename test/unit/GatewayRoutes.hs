@@ -20,10 +20,10 @@ gatewayRoutesSuite :: SuiteBuilder ()
 gatewayRoutesSuite =
   describe "Sprint 2.34 compiled gateway route registry" $ do
     it "enumerates every route via Enum/Bounded" $ do
-      length allGatewayRoutes `shouldBe` 13
+      length allGatewayRoutes `shouldBe` 4
       mapM_
         (\route -> (route `elem` allGatewayRoutes) `shouldBe` True)
-        [RouteHealthz, RouteReadyz, RouteState, RouteTargetSecretCas]
+        [RouteHealthz, RouteReadyz, RouteMetrics, RouteState]
 
     it "assigns a distinct path to every route (non-overlap)" $ do
       let paths = map routePattern allGatewayRoutes
@@ -36,7 +36,22 @@ gatewayRoutesSuite =
 
     it "returns Nothing for an unregistered path" $ do
       routeForPath "/v1/does-not-exist" `shouldBe` Nothing
-      routeForPath "/v1/secret/acme/eab" `shouldBe` Nothing
+      map
+        routeForPath
+        [ "/v1/bootstrap/vault/ensure"
+        , "/v1/federation/children"
+        , "/v1/federation/children/child-a/bootstrap"
+        , "/v1/object-store/pulumi/get"
+        , "/v1/object-store/pulumi/put"
+        , "/v1/object-store/pulumi/delete"
+        , "/v1/object-store/authority/get"
+        , "/v1/object-store/authority/cas"
+        , "/v1/object-store/authority/time"
+        , "/v1/target-secret/read"
+        , "/v1/target-secret/cas"
+        , "/v1/secret/acme/eab"
+        ]
+        `shouldBe` replicate 12 Nothing
 
     it "pins the kubelet-facing lifecycle paths" $ do
       routePattern RouteHealthz `shouldBe` "/healthz"
@@ -49,29 +64,18 @@ gatewayRoutesSuite =
         routeClass RouteReadyz `shouldBe` RouteReadiness
         routeClass RouteMetrics `shouldBe` RouteDiagnostic
         routeClass RouteState `shouldBe` RouteDiagnostic
-      it "classifies every authority route as RPC" $ do
-        let rpcRoutes =
-              [ r
-              | r <- allGatewayRoutes
-              , r `notElem` [RouteHealthz, RouteReadyz, RouteMetrics, RouteState]
-              ]
-        mapM_ (\r -> routeClass r `shouldBe` RouteRpc) rpcRoutes
+      it "contains no lifecycle RPC route" $
+        map routeClass allGatewayRoutes
+          `shouldBe` [RouteLiveness, RouteReadiness, RouteDiagnostic, RouteDiagnostic]
 
     describe "kubelet probe smart constructor" $ do
       it "admits only liveness and readiness routes" $ do
         let probeRoutes = mapMaybe kubeletProbeRoute allGatewayRoutes
         map kubeletProbeRoutePattern probeRoutes `shouldBe` ["/healthz", "/readyz"]
-      it "rejects diagnostic and RPC routes" $ do
+      it "rejects diagnostic routes" $ do
         isNothing (kubeletProbeRoute RouteState) `shouldBe` True
         isNothing (kubeletProbeRoute RouteMetrics) `shouldBe` True
-        isNothing (kubeletProbeRoute RoutePulumiObjectGet) `shouldBe` True
       it "exposes the two probe routes as total constants" $ do
         kubeletProbeRoutePattern healthzProbeRoute `shouldBe` "/healthz"
         kubeletProbeRoutePattern readyzProbeRoute `shouldBe` "/readyz"
         kubeletProbeGatewayRoute readyzProbeRoute `shouldBe` RouteReadyz
-
-    describe "variable-suffix pattern routes" $ do
-      it "names the pattern prefixes as constants (not fixed routes)" $ do
-        operatorSecretPathPrefix `shouldBe` "/v1/secret/"
-        federationChildPathPrefix `shouldBe` "/v1/federation/children/"
-        federationChildBootstrapSuffix `shouldBe` "/bootstrap"

@@ -5,9 +5,14 @@
 
 module Main (main) where
 
+import AdminActionLifecycle (adminActionLifecycleSuite)
+import AdminActionQuotaJournal (adminActionQuotaJournalSuite)
 import Allocation (allocationSuite)
 import AuthorityLogicalObjectTaxonomy (authorityLogicalObjectTaxonomySuite)
+import AuthorityObjectCoreCas (authorityObjectCoreCasSuite)
+import AwsControlPlaneIsolation (awsControlPlaneIsolationSuite)
 import AwsNativeClients (awsNativeClientsSuite)
+import AwsSesDecommission (awsSesDecommissionSuite)
 import AwsSesLeaseRole (awsSesLeaseRoleSuite)
 import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
@@ -18,6 +23,10 @@ import BootstrapBrokerEngine (bootstrapBrokerEngineSuite)
 import BootstrapBrokerEnginePhysical (enginePhysicalSuite)
 import BootstrapBrokerEngineSecretWorker (engineSecretWorkerSuite)
 import BootstrapBrokerFoundation (bootstrapBrokerFoundationSuite)
+import BootstrapBrokerProductionBoundary (bootstrapBrokerProductionBoundarySuite)
+import BootstrapBrokerProductionCapabilities
+  ( bootstrapBrokerProductionCapabilitiesSuite
+  )
 import BootstrapBrokerRequestJournal (bootstrapBrokerRequestJournalSuite)
 import BootstrapBrokerRuntime (bootstrapBrokerRuntimeSuite)
 import BootstrapBrokerSafety (bootstrapBrokerSafetySuite)
@@ -26,22 +35,49 @@ import BootstrapBrokerShutdownModel (bootstrapBrokerShutdownModelSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CertScopeSuite (certScopeSuite)
+import CertificateScopeServing (certificateScopeServingSuite)
+import CleanRoomHandoff (cleanRoomHandoffSuite)
+import CleanupRun (cleanupRunSuite)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (finally)
 import Control.Monad (forM_, unless, when)
+import ControlPlaneAdminActionAuthorityExecutionEndpoint
+  ( controlPlaneAdminActionAuthorityExecutionEndpointSuite
+  )
 import ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
+import ControlPlaneAuthorityObservation (controlPlaneAuthorityObservationSuite)
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
+import ControlPlaneClient (controlPlaneClientSuite)
+import ControlPlaneConfigEndpoint (controlPlaneConfigEndpointSuite)
 import ControlPlaneDeadline (controlPlaneDeadlineSuite)
+import ControlPlaneFederationBootstrap (controlPlaneFederationBootstrapSuite)
 import ControlPlaneMigrationEndpoint (controlPlaneMigrationEndpointSuite)
 import ControlPlaneOperationEndpoint (controlPlaneOperationEndpointSuite)
+import ControlPlaneProjectionImportRegistration
+  ( controlPlaneProjectionImportRegistrationSuite
+  )
 import ControlPlaneProviderWorkEndpoint (controlPlaneProviderWorkEndpointSuite)
+import ControlPlaneProviderWorkerAdapter (controlPlaneProviderWorkerAdapterSuite)
+import ControlPlanePulumiCheckpoint (controlPlanePulumiCheckpointSuite)
+import ControlPlanePulumiCheckpointRepository
+  ( controlPlanePulumiCheckpointRepositorySuite
+  )
+import ControlPlaneRetainedMaterialWorker
+  ( controlPlaneRetainedMaterialWorkerSuite
+  )
+import ControlPlaneRetainedSesLease (controlPlaneRetainedSesLeaseSuite)
 import ControlPlaneRoleInterpreters (controlPlaneRoleInterpretersSuite)
 import ControlPlaneRoute (controlPlaneRouteSuite)
 import ControlPlaneServer (controlPlaneServerSuite)
-import ControlPlaneTargetSecretEndpoint (controlPlaneTargetSecretEndpointSuite)
+import ControlPlaneTargetSecretWorker (controlPlaneTargetSecretWorkerSuite)
 import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
 import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
+import CredentialProvisioner (credentialProvisionerSuite)
+import CredentialProvisionerAwsAdminAuthority
+  ( credentialProvisionerAwsAdminAuthoritySuite
+  )
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -77,19 +113,28 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
+import DecommissionAuthorityExport (decommissionAuthorityExportSuite)
 import DecommissionCommit (decommissionCommitSuite)
+import DecommissionControlPlaneClient (decommissionControlPlaneClientSuite)
 import DecommissionFrame (decommissionFrameSuite)
 import DecommissionGraph (decommissionGraphSuite)
 import DecommissionJournal (decommissionJournalSuite)
 import DecommissionManifest (decommissionManifestSuite)
 import DecommissionNodeEffect (decommissionNodeEffectSuite)
 import DecommissionPermit (decommissionPermitSuite)
+import DecommissionProductionBoundaries (decommissionProductionBoundariesSuite)
 import DecommissionReceipt (decommissionReceiptSuite)
 import DecommissionRunner (decommissionRunnerSuite)
+import DecommissionTargetTombstone (decommissionTargetTombstoneSuite)
 import DecommissionVerifier (decommissionVerifierSuite)
 import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
+import DnsRecord (dnsRecordSuite)
+import EksClientAuthProjection (eksClientAuthProjectionSuite)
 import EscapeRegistry (escapeRegistrySuite)
+import ExternalMaterialIngressLifecycle
+  ( externalMaterialIngressLifecycleSuite
+  )
 import FencedCheckpoint (fencedCheckpointSuite)
 import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
@@ -107,20 +152,31 @@ import GatewayProbe (gatewayProbeSuite)
 import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
-import HostDirectAuthorityCas (hostDirectAuthorityCasSuite)
-import HostDirectModelBAdapter (hostDirectModelBAdapterSuite)
+import HelmRelease (helmReleaseSuite)
+import InviteQualification (inviteQualificationSuite)
 import LifecycleAuthorityAdminAction (lifecycleAuthorityAdminActionSuite)
 import LifecycleAuthorityBackupRepair (lifecycleAuthorityBackupRepairSuite)
+import LifecycleAuthorityBootstrapReconcile (lifecycleAuthorityBootstrapReconcileSuite)
+import LifecycleAuthorityClientRegistry (lifecycleAuthorityClientRegistrySuite)
 import LifecycleAuthorityConfig (lifecycleAuthorityConfigSuite)
+import LifecycleAuthorityCutover (lifecycleAuthorityCutoverSuite)
 import LifecycleAuthorityGenesis (lifecycleAuthorityGenesisSuite)
 import LifecycleAuthorityMigration (lifecycleAuthorityMigrationSuite)
 import LifecycleAuthorityOperation (lifecycleAuthorityOperationSuite)
 import LifecycleAuthorityOutboxSim (lifecycleAuthorityOutboxSimSuite)
+import LifecycleAuthorityProjectionImport (lifecycleAuthorityProjectionImportSuite)
+import LifecycleAuthorityPulumiCheckpointRegistry
+  ( lifecycleAuthorityPulumiCheckpointRegistrySuite
+  )
+import LifecycleAuthorityRetainedMaterial
+  ( lifecycleAuthorityRetainedMaterialSuite
+  )
 import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
 import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
 import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import LifecycleProviderWork (lifecycleProviderWorkSuite)
+import LongLivedDecommission (longLivedDecommissionSuite)
 import MeasuredProfile (measuredProfileSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
@@ -147,9 +203,11 @@ import Prodbox.Aws
   , SessionTokenPromptShape (..)
   , SpotPriceRequest (..)
   , VaultProbe (..)
+  , authorityBackupIamUserName
   , awsErrorCodeIsTransient
   , awsRegionQuotaPreflightFromStatuses
   , awsSpotPriceHistoryArgs
+  , buildDedicatedAdapterIamPolicyDocument
   , buildIamPolicyDocument
   , buildIamPolicyDocumentForAccountAndCaptureBucket
   , configFromSetupInput
@@ -175,32 +233,14 @@ import Prodbox.Aws
   , sessionTokenPromptShape
   , spotObservationFromAwsSpotPriceHistory
   , spotObservationFromAwsSpotPriceOutput
+  , tlsRetentionIamUserName
   )
 import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
   , overlayAwsCredentials
   , sealedAwsEnvironment
   )
-import Prodbox.Bootstrap.Broker.Client qualified
-import Prodbox.Bootstrap.Broker.LegacyAdapter
-  ( BootstrapVaultRequest (..)
-  , BootstrapVaultRequestError (..)
-  , BootstrapVaultRotateTransitKeyRequest (..)
-  , BootstrapVaultRotateUnlockBundleRequest (..)
-  , bootstrapVaultPath
-  , bootstrapVaultPkiIssueTestCertPath
-  , bootstrapVaultPkiStatusPath
-  , bootstrapVaultRequestMaxBytes
-  , bootstrapVaultRotateTransitKeyPath
-  , bootstrapVaultRotateUnlockBundlePath
-  , bootstrapVaultSealPath
-  , bootstrapVaultStatusPath
-  , decodeBootstrapVaultAuthenticatedRequest
-  , decodeBootstrapVaultRequest
-  , decodeBootstrapVaultRotateTransitKeyRequest
-  , decodeBootstrapVaultRotateUnlockBundleRequest
-  , renderBootstrapVaultRequestError
-  )
+import Prodbox.Bootstrap.Broker.Settings qualified as BrokerSettings
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
   , renderChartDeploymentPlan
@@ -275,9 +315,10 @@ import Prodbox.CLI.Pulumi
   , runPulumiCommandWithGate
   )
 import Prodbox.CLI.Rke2
-  ( GatewayObjectStoreProbe (..)
+  ( GatewayFullModeProbe (..)
   , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
+  , ReconcileStepId (..)
   , RedirectPolicy (..)
   , RegistryStorageBackend (..)
   , RegistryStorageEdgeReadiness (..)
@@ -288,7 +329,8 @@ import Prodbox.CLI.Rke2
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
   , cascadeOrderNarration
-  , classifyGatewayObjectStoreProbe
+  , classifyBrokerVaultUnsealedStatus
+  , classifyGatewayFullModeProbe
   , classifyRegistryStorageEdgeProbe
   , gatewayDaemonWorkloadRefs
   , harborRegistryStorageBackend
@@ -297,7 +339,6 @@ import Prodbox.CLI.Rke2
   , isMinioSecretKeyArgumentSafe
   , isRetryableHarborPublicationFailure
   , isRetryableHelmFailure
-  , isRetryableRoute53CredentialFailure
   , nativeComponentReadinessTarget
   , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
@@ -323,13 +364,8 @@ import Prodbox.CLI.Spec
   )
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CLI.Vault
-  ( HostVaultDirectSeam (..)
-  , VaultDaemonProbe (..)
-  , VaultLifecycleTransportDecision (..)
-  , gatewayAwsVaultFields
-  , gatewayProbeFromResult
-  , retryDaemonTransient
-  , vaultLifecycleTransportDecision
+  ( BrokerVaultSealStatus (..)
+  , lifecycleProviderAwsVaultFields
   )
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
@@ -367,20 +403,14 @@ import Prodbox.CheckCode qualified
 import Prodbox.Cluster.Federation
   ( ChildBootstrapCredential (..)
   , ChildIndex (..)
-  , ChildInitCustody (..)
   , ChildMetadata (..)
-  , FederationWriteAuthority (..)
-  , FederationWriteDecision (..)
   , childBootstrapKvLogicalPath
   , childBootstrapKvPath
   , childBootstrapVaultFields
   , childIndexVaultFields
-  , childInitKvLogicalPath
-  , childInitKvPath
   , childMetadataKvLogicalPath
   , childMetadataKvPath
   , childMetadataVaultFields
-  , childRegistrationInitPath
   , childRegistrationMetadataPath
   , childRegistrationPlan
   , childRegistrationTransitKey
@@ -390,18 +420,14 @@ import Prodbox.Cluster.Federation
   , childVaultNamespace
   , decodeChildBootstrapCredential
   , decodeChildIndex
-  , decodeChildInitCustody
   , decodeChildMetadata
   , decodePayloadJsonField
   , encodeChildBootstrapCredential
   , encodeChildIndex
-  , encodeChildInitCustody
   , encodeChildMetadata
   , federationChildrenIndexKvLogicalPath
   , federationChildrenIndexKvPath
-  , federationWriteDecision
   , renderChildRegistrationPlan
-  , renderFederationWriteBlock
   , upsertChildIndex
   )
 import Prodbox.Cluster.Placement qualified as ClusterPlacement
@@ -482,12 +508,21 @@ import Prodbox.Config.Tier0
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( controlPlaneSigningKeyInventory
+  , controlPlaneSigningKeyName
+  )
 import Prodbox.ControlPlane.CapabilityKind (CapabilityOp (..))
 import Prodbox.ControlPlane.CapabilityRequirement
   ( CapabilityProvisionSpec (..)
   , CapabilityRequirementSpec (..)
   , resolveProvision
   , resolveRequirement
+  )
+import Prodbox.ControlPlane.Client (controlPlaneEndpointText)
+import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
+import Prodbox.ControlPlane.TargetMaterialFixture
+  ( seedAcmeEabFromTestSecrets
   )
 import Prodbox.Crypto.Envelope
   ( DekCipher (..)
@@ -497,6 +532,7 @@ import Prodbox.Crypto.Envelope
   , sealEnvelope
   )
 import Prodbox.Daemon.Events qualified as DaemonEvents
+import Prodbox.Dns qualified as Dns
 import Prodbox.DockerConfig qualified as DockerConfig
 import Prodbox.Effect
   ( Effect (..)
@@ -509,8 +545,9 @@ import Prodbox.EffectDAG
   , transitiveClosureIds
   )
 import Prodbox.EffectInterpreter
-  ( InterpreterContext (..)
-  , runEffect
+  ( AwsCredentialValidationBoundary (..)
+  , InterpreterContext (..)
+  , runAwsCredentialValidationWithRetry
   , runEffectDAG
   )
 import Prodbox.Error
@@ -527,32 +564,12 @@ import Prodbox.Gateway
   )
 import Prodbox.Gateway.Client qualified
 import Prodbox.Gateway.Daemon
-  ( PulumiObjectRequestError (..)
-  , allowedOperatorSecretPaths
-  , daemonBootFieldsChanged
-  , decodeOperatorSecretFields
-  , decodePulumiObjectPutRequest
-  , decodePulumiObjectRequest
-  , operatorSecretJwtHeader
-  , operatorSecretLogicalPath
-  , operatorSecretRequestMethod
-  , operatorWriteRoleName
-  , renderPulumiObjectRequestError
-  , requestBodyBytes
+  ( daemonBootFieldsChanged
   )
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , severityFromLogLevel
   , shouldLogSeverity
-  )
-import Prodbox.Gateway.ObjectStore
-  ( PulumiObjectGetResponse (..)
-  , PulumiObjectPutRequest (..)
-  , PulumiObjectRequest (..)
-  , pulumiObjectGetPath
-  , pulumiObjectPutPath
-  , pulumiObjectRequestMaxBytes
-  , validatePulumiObjectStackName
   )
 import Prodbox.Gateway.PortForward qualified as GatewayPortForward
 import Prodbox.Gateway.Probe qualified as GatewayProbe
@@ -560,6 +577,7 @@ import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , DnsWriteGate (..)
+  , GatewayLifecycleAuthority (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
   , Orders (..)
@@ -610,8 +628,6 @@ import Prodbox.Host.Wsl2
   )
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
-import Prodbox.Infra.AwsProviderCredentials qualified as AwsProviderCredentials
-import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.LongLivedPulumiBackend
   ( LongLivedBackendError (..)
@@ -649,8 +665,6 @@ import Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
-  , PatroniAuthObservation (..)
-  , PatroniResetDecision (..)
   , PublicEdgePreserveOutcome (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
@@ -661,12 +675,9 @@ import Prodbox.Lib.ChartPlatform
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
   , deploymentConditionReportsTrue
-  , kubernetesSecretDecodedDataField
   , observePatroniOperatorAvailableWith
   , operatorAvailableTarget
   , operatorGateResult
-  , patroniSeedMismatchDecision
-  , renderPatroniResetDecision
   , renderPublicEdgePreserveOutcome
   , resolveChart
   , resolveChartSecrets
@@ -674,7 +685,9 @@ import Prodbox.Lib.ChartPlatform
   , retainedPublicEdgeTlsSecretManifest
   , supportedChartNames
   , validateOperatorGatesWith
+  , valuesForAuthorityBackup
   , valuesForBootstrapBroker
+  , valuesForTlsRetention
   )
 import Prodbox.Lib.EksContainerdMirror qualified
 import Prodbox.Lib.EksCustomImagePush qualified
@@ -688,6 +701,10 @@ import Prodbox.Lib.Storage
   , retainedStatefulSetPersistentVolumeName
   , storageBinding
   , testManualPvHostRootEnv
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.Execution
+  ( consumeExternalAcmeEabIngressFrame
+  , withExternalAcmeEabIngressFrame
   )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
@@ -784,7 +801,6 @@ import Prodbox.Pulumi.EncryptedBackend
   , observeStackCheckpointWith
   , renderCheckpointObservability
   , stackCheckpointPath
-  , withDaemonFirstFallback
   , withDecryptedStackWith
   )
 import Prodbox.Result qualified as Result
@@ -832,7 +848,6 @@ import Prodbox.Settings
   , decodeConfigDhallBytes
   , defaultConfigFile
   , defaultTestTopology
-  , inForceConfigObjectAbsent
   , loadConfigFileAtPath
   , loadConfigForSettingsWith
   , loadTestTopologyAtPath
@@ -867,6 +882,8 @@ import Prodbox.Substrate
   , Substrate (..)
   , fixedScalingPolicyBySubstrate
   )
+import Prodbox.Test.CleanupRun (CleanupDependencyKind (..))
+import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -885,7 +902,6 @@ import Prodbox.TestRestore
   , RestoreCycleStep (..)
   , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
-  , gatewayDaemonLivenessPrecondition
   , restoreStepResetsGatewayHealthyWindow
   )
 import Prodbox.TestRunner
@@ -894,6 +910,7 @@ import Prodbox.TestRunner
   , TestDeleteTarget (..)
   , TestGate (..)
   , TestRefusal (..)
+  , awsHarnessCleanupTopology
   , awsPostflightDestroyCommandArgs
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
@@ -927,6 +944,7 @@ import Prodbox.TestValidation
   , daemonBootstrapForbiddenPatterns
   , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
+  , demoOidcSessionValidationAgentManifest
   , gatewayPartitionValidationReport
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
@@ -938,7 +956,6 @@ import Prodbox.TestValidation
   , volumeRebindReport
   )
 import Prodbox.Tls.CertScope (impliedBy)
-import Prodbox.UsersAdmin qualified
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -947,11 +964,10 @@ import Prodbox.Vault.Client
   ( BootstrapAction (..)
   , EnableAuthMethodRequest (..)
   , EnableMountRequest (..)
-  , InitRequest (..)
-  , InitResponse (..)
   , KubernetesAuthConfigRequest (..)
   , KubernetesLoginRequest (..)
   , KubernetesLoginResponse (..)
+  , KubernetesRoleReadback (..)
   , KubernetesRoleRequest (..)
   , KvV2ReadResponse (..)
   , KvV2WriteRequest (..)
@@ -972,7 +988,6 @@ import Prodbox.Vault.Client
   , WritePolicyRequest (..)
   , bootstrapAction
   , defaultInitRequest
-  , initResponseToUnlockBundle
   )
 import Prodbox.Vault.Gate
   ( VaultGateDecision (..)
@@ -985,7 +1000,6 @@ import Prodbox.Vault.Host
   ( AcmeEabFixture (..)
   , TestSecrets (acme_eab)
   , defaultTestSecrets
-  , seedAcmeEabFromTestSecrets
   )
 import Prodbox.Vault.Orchestration
   ( UnsealOutcome (..)
@@ -998,6 +1012,7 @@ import Prodbox.Vault.Reconcile
   ( VaultAuthSpec (..)
   , VaultKubernetesAuthConfigSpec (..)
   , VaultKubernetesRoleSpec (..)
+  , VaultKubernetesTokenType (..)
   , VaultMountSpec (..)
   , VaultPolicySpec (..)
   , VaultReconcileAction (..)
@@ -1007,20 +1022,19 @@ import Prodbox.Vault.Reconcile
   , VaultReconcileStep (..)
   , VaultReconcileTarget (..)
   , VaultTransitKeySpec (..)
+  , bootstrapControlPlaneClientRole
+  , bootstrapPkiOperatorRole
+  , bootstrapProvisionerRole
+  , bootstrapSealRole
   , defaultVaultReconcilePlan
-  , operatorWritePolicy
   , runVaultReconcileWith
   )
 import Prodbox.Vault.RoleId
-  ( VaultRoleId (VaultRoleGatewayDaemon)
+  ( VaultRoleId (VaultRoleBootstrapBroker, VaultRoleGatewayDaemon)
   , vaultRoleIdText
   )
 import Prodbox.Vault.Seal
-  ( ChildSealCustody (..)
-  , VaultSealMode (..)
-  , childInitCustodyFromInitResponse
-  , childInitCustodyVaultFields
-  , childSealCustodyFromInitResponse
+  ( VaultSealMode (..)
   , defaultRootShamirSealConfig
   , defaultTransitSealConfig
   , initRequestForSealMode
@@ -1050,9 +1064,13 @@ import Prodbox.Workload
   , workloadLiveConfigFromDhallWith
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
+import QualificationEvidence (qualificationEvidenceSuite)
+import QualificationFrozenCounterexample (qualificationFrozenCounterexampleSuite)
+import QualificationSourceIdentity (qualificationSourceIdentitySuite)
 import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
+import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
 import StoreLifetimeWitness (storeLifetimeWitnessSuite)
@@ -1074,32 +1092,46 @@ import System.Environment
   , lookupEnv
   , setEnv
   , unsetEnv
+  , withArgs
   )
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
+import System.IO.Unsafe (unsafePerformIO)
 import TargetCommitSmtp (targetCommitSmtpSuite)
+import TemporalQualification (temporalQualificationSuite)
 import TestSupport
 import Tier0PlanAssert (tier0PlanAssertSuite)
 import VaultSession (vaultSessionSuite)
+import VaultSessionSafety (vaultSessionSafetySuite)
 
 withBinarySiblingTier0 :: String -> IO a -> IO a
-withBinarySiblingTier0 contents action = do
-  exePath <- getExecutablePath
-  let tier0Path = takeDirectory exePath </> "prodbox.dhall"
-  previousExists <- doesFileExist tier0Path
-  previousContents <-
-    case previousExists of
-      -- Strict read: `readFile` is lazy and leaves the read handle open until
-      -- the contents are forced, so the subsequent `writeFile` on the same
-      -- path trips GHC's RTS single-writer lock ("resource busy (file is
-      -- locked)") whenever a sibling file already exists (e.g. left present by
-      -- an earlier suite test). Forcing the contents closes the handle first.
-      True -> Just <$> readFile' tier0Path
-      False -> pure Nothing
-  writeFile tier0Path contents
-  action `finally` restoreBinarySiblingTier0 tier0Path previousContents
+withBinarySiblingTier0 contents action =
+  withMVar binarySiblingTier0Lock $ \_ -> do
+    exePath <- getExecutablePath
+    let tier0Path = takeDirectory exePath </> "prodbox.dhall"
+    previousExists <- doesFileExist tier0Path
+    previousContents <-
+      case previousExists of
+        -- Strict read: `readFile` is lazy and leaves the read handle open until
+        -- the contents are forced, so the subsequent `writeFile` on the same
+        -- path trips GHC's RTS single-writer lock ("resource busy (file is
+        -- locked)") whenever a sibling file already exists (e.g. left present by
+        -- an earlier suite test). Forcing the contents closes the handle first.
+        True -> Just <$> readFile' tier0Path
+        False -> pure Nothing
+    writeFile tier0Path contents
+    action `finally` restoreBinarySiblingTier0 tier0Path previousContents
+
+-- Tasty may execute otherwise-unrelated examples concurrently. All three tests
+-- that exercise binary-sibling Tier-0 resolution intentionally target the same
+-- path, so serialize that external fixture for the whole save/use/restore
+-- bracket rather than allowing one example's finalizer to delete another's
+-- active config.
+{-# NOINLINE binarySiblingTier0Lock #-}
+binarySiblingTier0Lock :: MVar ()
+binarySiblingTier0Lock = unsafePerformIO (newMVar ())
 
 restoreBinarySiblingTier0 :: FilePath -> Maybe String -> IO ()
 restoreBinarySiblingTier0 tier0Path previousContents =
@@ -1205,7 +1237,6 @@ sampleUnlockBundle =
     , unlockBundleCreatedAt = "2026-06-12T00:00:00Z"
     , unlockBundleUnsealKeys = ["unseal-share-1", "unseal-share-2", "unseal-share-3"]
     , unlockBundleRecoveryKeys = ["recovery-share-1", "recovery-share-2"]
-    , unlockBundleInitialRootToken = "s.rootsecrettoken"
     , unlockBundleFormatVersion = 1
     }
 
@@ -1218,6 +1249,7 @@ sampleParentRef =
     { parentRefClusterId = "prodbox-root"
     , parentRefVaultAddress = "http://10.0.0.1:8200"
     , parentRefTransitKey = "transit/prodbox-child-seal"
+    , parentRefAuthorityEndpoint = "https://authority.parent.example:8600"
     }
 
 -- | Sprint 7.21: build read-only-observability hooks for
@@ -1288,6 +1320,7 @@ sampleTier0Child =
                         { parent_cluster_id = "prodbox-root"
                         , parent_vault_address = "http://10.0.0.1:8200"
                         , parent_transit_key = "transit/prodbox-child-seal"
+                        , parent_authority_endpoint = "https://authority.parent.example:8600"
                         }
                 }
           }
@@ -1337,11 +1370,19 @@ main :: IO ()
 main = do
   arguments <- getArgs
   helperHandled <- runGatewayEmitterJournalHelper arguments
-  unless helperHandled (mainWithSuite "prodbox-unit" unitSuite)
+  unless
+    helperHandled
+    (withArgs ("--num-threads=1" : arguments) (mainWithSuite "prodbox-unit" unitSuite))
 
 unitSuite :: SuiteBuilder ()
 unitSuite = do
+  adminActionQuotaJournalSuite
+  adminActionLifecycleSuite
   parserSuite
+  qualificationFrozenCounterexampleSuite
+  qualificationEvidenceSuite
+  qualificationSourceIdentitySuite
+  temporalQualificationSuite
   awsSesLifecycleSuite
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
@@ -1352,6 +1393,8 @@ unitSuite = do
   enginePhysicalSuite
   engineSecretWorkerSuite
   bootstrapBrokerFoundationSuite
+  bootstrapBrokerProductionCapabilitiesSuite
+  bootstrapBrokerProductionBoundarySuite
   bootstrapBrokerRequestJournalSuite
   bootstrapBrokerRuntimeSuite
   bootstrapBrokerSafetySuite
@@ -1360,14 +1403,25 @@ unitSuite = do
   brokerChartStaticsSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
+  awsControlPlaneIsolationSuite
+  sesWorkflowSuite
+  inviteQualificationSuite
+  awsSesDecommissionSuite
+  longLivedDecommissionSuite
   allocationSuite
   capabilityReadinessBarrierSuite
   certScopeSuite
   controlPlaneAuthorityClockSuite
+  controlPlaneAdminActionAuthorityExecutionEndpointSuite
+  controlPlaneAuthorityObservationSuite
   controlPlaneCapabilitySuite
+  controlPlaneClientSuite
+  controlPlaneConfigEndpointSuite
+  controlPlaneFederationBootstrapSuite
   controlPlaneCapacitySuite
   controlPlaneDeadlineSuite
   desiredPresentReconciliationSuite
+  dnsRecordSuite
   escapeRegistrySuite
   fencedCheckpointSuite
   gatewayAuthoritySuite
@@ -1381,29 +1435,50 @@ unitSuite = do
   gatewayEmitterPersistenceSuite
   lifecycleAuthorityAdminActionSuite
   lifecycleAuthorityBackupRepairSuite
+  lifecycleAuthorityBootstrapReconcileSuite
+  lifecycleAuthorityClientRegistrySuite
   lifecycleAuthorityConfigSuite
+  lifecycleAuthorityCutoverSuite
   lifecycleAuthorityGenesisSuite
   lifecycleAuthorityMigrationSuite
+  lifecycleAuthorityProjectionImportSuite
+  lifecycleAuthorityPulumiCheckpointRegistrySuite
+  lifecycleAuthorityRetainedMaterialSuite
+  controlPlaneRetainedMaterialWorkerSuite
+  controlPlaneProjectionImportRegistrationSuite
+  controlPlanePulumiCheckpointSuite
+  controlPlanePulumiCheckpointRepositorySuite
+  controlPlaneRetainedSesLeaseSuite
   controlPlaneRouteSuite
   controlPlaneAuthorityBackupEndpointSuite
   controlPlaneMigrationEndpointSuite
   controlPlaneOperationEndpointSuite
   controlPlaneProviderWorkEndpointSuite
+  controlPlaneProviderWorkerAdapterSuite
   controlPlaneServerSuite
   controlPlaneRoleInterpretersSuite
-  controlPlaneTargetSecretEndpointSuite
+  controlPlaneTargetSecretWorkerSuite
   controlPlaneTlsRetentionEndpointSuite
   decommissionCommitSuite
+  decommissionAuthorityExportSuite
+  decommissionControlPlaneClientSuite
   decommissionFrameSuite
   decommissionGraphSuite
   decommissionJournalSuite
   decommissionManifestSuite
   decommissionNodeEffectSuite
   decommissionPermitSuite
+  decommissionProductionBoundariesSuite
   decommissionReceiptSuite
   decommissionRunnerSuite
+  decommissionTargetTombstoneSuite
   decommissionVerifierSuite
   controlPlaneVaultSessionSuite
+  credentialProvisionerSuite
+  credentialProvisionerAwsAdminAuthoritySuite
+  externalMaterialIngressLifecycleSuite
+  eksClientAuthProjectionSuite
+  vaultSessionSafetySuite
   lifecycleAuthorityOperationSuite
   lifecycleAuthorityOutboxSimSuite
   lifecycleProviderWorkSuite
@@ -1414,13 +1489,16 @@ unitSuite = do
   gatewayReadinessSuite
   gatewayRoutesSuite
   gatewayRuntimeStabilitySuite
-  hostDirectAuthorityCasSuite
-  hostDirectModelBAdapterSuite
+  certificateScopeServingSuite
+  cleanRoomHandoffSuite
+  authorityObjectCoreCasSuite
+  helmReleaseSuite
   lifecycleLeaseSuite
   measuredProfileSuite
   objectStoreNativeSuite
   sigV4Suite
   restoreGraphSuite
+  cleanupRunSuite
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
   smtpKeyRepairInterpreterSuite
@@ -1505,32 +1583,9 @@ unitSuite = do
     it "renders Vault seal status as the cluster/edge status line" $ do
       renderSealStatus (SealStatus True False 3 5 0)
         `shouldBe` "Vault: initialized=True, sealed=False, unseal-progress=0/3"
-    it "decodes a sys/init response and maps it into an unlock bundle" $ do
-      let decoded =
-            eitherDecode "{\"keys_base64\":[\"k1\",\"k2\"],\"root_token\":\"s.root\"}"
-              :: Either String InitResponse
-      case decoded of
-        Left err -> expectationFailure ("decode failed: " ++ err)
-        Right resp -> do
-          initResponseKeysBase64 resp `shouldBe` ["k1", "k2"]
-          let bundle =
-                initResponseToUnlockBundle
-                  "c1"
-                  (VaultAddress "http://127.0.0.1:8200")
-                  "2026-06-12T00:00:00Z"
-                  resp
-          unlockBundleUnsealKeys bundle `shouldBe` ["k1", "k2"]
-          unlockBundleInitialRootToken bundle `shouldBe` "s.root"
     it "encodes root Shamir init with unseal-key shares" $ do
       BL8.unpack (encode defaultInitRequest)
         `shouldBe` "{\"secret_shares\":5,\"secret_threshold\":3}"
-    it "decodes transit auto-unseal init responses with recovery keys only" $ do
-      let decoded =
-            eitherDecode
-              "{\"recovery_keys_base64\":[\"rk1\",\"rk2\"],\"root_token\":\"s.child-root\"}"
-              :: Either String InitResponse
-      fmap initResponseKeysBase64 decoded `shouldBe` Right []
-      fmap initResponseRecoveryKeysBase64 decoded `shouldBe` Right ["rk1", "rk2"]
     it "encodes a KV v2 write body under a top-level data key" $ do
       BL8.unpack (encode (KvV2WriteRequest (Map.fromList [("access_key_id", "AKIA")])))
         `shouldBe` "{\"data\":{\"access_key_id\":\"AKIA\"}}"
@@ -1589,13 +1644,17 @@ unitSuite = do
           )
       eitherDecode (encode (TransitKeyRequest "aes256-gcm96"))
         `shouldBe` Right (object ["type" .= ("aes256-gcm96" :: Text.Text)] :: Value)
-      eitherDecode (encode (KubernetesRoleRequest ["sa"] ["ns"] ["policy"] "1h"))
+      eitherDecode (encode (KubernetesRoleRequest ["sa"] ["ns"] ["policy"] (Just "vault") "1h" "service"))
         `shouldBe` Right
           ( object
               [ "bound_service_account_names" .= ["sa" :: Text.Text]
               , "bound_service_account_namespaces" .= ["ns" :: Text.Text]
               , "token_policies" .= ["policy" :: Text.Text]
               , "token_ttl" .= ("1h" :: Text.Text)
+              , "token_max_ttl" .= ("1h" :: Text.Text)
+              , "token_explicit_max_ttl" .= ("1h" :: Text.Text)
+              , "audience" .= ("vault" :: Text.Text)
+              , "token_type" .= ("service" :: Text.Text)
               ]
               :: Value
           )
@@ -1604,6 +1663,20 @@ unitSuite = do
           ( object
               ["kubernetes_host" .= ("https://kubernetes.default.svc:443" :: Text.Text)]
               :: Value
+          )
+      eitherDecode
+        "{\"data\":{\"bound_service_account_names\":[\"sa\"],\"bound_service_account_namespaces\":[\"ns\"],\"token_policies\":[\"policy\"],\"audience\":\"vault\",\"token_ttl\":600,\"token_max_ttl\":600,\"token_explicit_max_ttl\":600,\"token_type\":\"service\"}}"
+        `shouldBe` Right
+          ( KubernetesRoleReadback
+              ["sa"]
+              ["ns"]
+              ["policy"]
+              (Just "vault")
+              600
+              600
+              600
+              "service"
+              :: KubernetesRoleReadback
           )
       eitherDecode (encode (KubernetesLoginRequest "websocket-oidc" "jwt-token"))
         `shouldBe` Right
@@ -1617,6 +1690,13 @@ unitSuite = do
             eitherDecode "{\"auth\":{\"client_token\":\"s.websocket\"}}"
               :: Either String KubernetesLoginResponse
       fmap kubernetesLoginResponseClientToken decodedLogin `shouldBe` Right "s.websocket"
+      let decodedBatchLogin =
+            eitherDecode
+              "{\"auth\":{\"client_token\":\"b.fixture\",\"accessor\":\"\",\"lease_duration\":60,\"renewable\":false,\"token_type\":\"batch\"}}"
+              :: Either String KubernetesLoginResponse
+      fmap kubernetesLoginResponseTokenType decodedBatchLogin `shouldBe` Right "batch"
+      fmap kubernetesLoginResponseAccessor decodedBatchLogin `shouldBe` Right ""
+      fmap kubernetesLoginResponseRenewable decodedBatchLogin `shouldBe` Right False
     it "encodes and decodes a scoped token-create request" $ do
       eitherDecode
         (encode (TokenCreateRequest ["prodbox-child-seal-ns-abc"] "24h" True False))
@@ -1697,22 +1777,6 @@ unitSuite = do
       let sealMode = VaultSealRootShamir defaultRootShamirSealConfig
       initRequestForSealMode sealMode `shouldBe` defaultInitRequest
       renderVaultSealHcl sealMode `shouldBe` ""
-    it "maps a child transit seal to recovery-key init shares" $ do
-      let sealConfig =
-            defaultTransitSealConfig
-              (VaultAddress "https://vault.parent.example:8200")
-              "prodbox-child-abcdef"
-      encode (initRequestForSealMode (VaultSealChildTransit sealConfig))
-        `shouldBe` encode
-          ( InitRequest
-              { initRequestSecretShares = Nothing
-              , initRequestSecretThreshold = Nothing
-              , initRequestRecoveryShares = Just 5
-              , initRequestRecoveryThreshold = Just 3
-              , initRequestPgpKeys = []
-              , initRequestRootTokenPgpKey = Nothing
-              }
-          )
     it "renders a child transit seal stanza without embedding the transit token" $ do
       let sealConfig =
             defaultTransitSealConfig
@@ -1724,42 +1788,6 @@ unitSuite = do
       rendered `shouldContain` "key_name = \"prodbox-child-abcdef\""
       rendered `shouldContain` "mount_path = \"transit/\""
       rendered `shouldNotContain` "token"
-    it "stores child auto-unseal recovery material as parent-owned Vault KV fields" $ do
-      let response =
-            InitResponse
-              { initResponseKeysBase64 = []
-              , initResponseRecoveryKeysBase64 = ["rk1", "rk2", "rk3"]
-              , initResponseRootToken = "s.child-root"
-              }
-          custody =
-            childInitCustodyFromInitResponse
-              "child-prod"
-              "prodbox-child-abcdef"
-              response
-          fields = childInitCustodyVaultFields custody
-      childInitRecoveryKeysBase64 custody `shouldBe` ["rk1", "rk2", "rk3"]
-      childInitTransitKey custody `shouldBe` "prodbox-child-abcdef"
-      childInitRootToken custody `shouldBe` "s.child-root"
-      Map.keys fields `shouldBe` ["payload_json"]
-      Map.lookup "payload_json" fields `shouldSatisfy` maybe False (Text.isInfixOf "s.child-root")
-    it "assembles child metadata and init custody from one init response" $ do
-      let response =
-            InitResponse
-              { initResponseKeysBase64 = []
-              , initResponseRecoveryKeysBase64 = ["rk1"]
-              , initResponseRootToken = "s.child-root"
-              }
-          custody =
-            childSealCustodyFromInitResponse
-              "root"
-              "child-prod"
-              "https://vault.child-prod.example"
-              "ns-opaque"
-              "prodbox-child-abcdef"
-              response
-      childMetadataParentClusterId (childSealCustodyMetadata custody) `shouldBe` "root"
-      childMetadataVaultNamespace (childSealCustodyMetadata custody) `shouldBe` "ns-opaque"
-      childInitRecoveryKeysBase64 (childSealCustodyInit custody) `shouldBe` ["rk1"]
     it "renders a per-child Transit seal token policy scoped to one key" $ do
       let policy = Text.unpack (transitSealPolicyDocument "prodbox-child-abcdef")
       policy `shouldContain` "path \"transit/encrypt/prodbox-child-abcdef\""
@@ -1780,12 +1808,19 @@ unitSuite = do
         (vaultReconcileKubernetesAuthConfigs defaultVaultReconcilePlan)
         `shouldBe` [("kubernetes", "https://kubernetes.default.svc:443")]
       map vaultTransitKeySpecName (vaultReconcileTransitKeys defaultVaultReconcilePlan)
-        `shouldBe` [ "prodbox-active-config"
-                   , "prodbox-gateway-state"
-                   , "prodbox-pulumi-state"
-                   , "prodbox-minio-envelope"
-                   , "prodbox-downstream-cluster-config"
-                   ]
+        `shouldBe` ( [ "prodbox-active-config"
+                     , "prodbox-gateway-state"
+                     , "prodbox-pulumi-state"
+                     , "prodbox-minio-envelope"
+                     , "prodbox-downstream-cluster-config"
+                     , "prodbox-retained-material"
+                     , "prodbox-tls-retention-dek"
+                     , "prodbox-authority-genesis-signing"
+                     , "prodbox-target-secret-commitment"
+                     , "prodbox-retained-material-commitment"
+                     ]
+                       <> fmap controlPlaneSigningKeyName controlPlaneSigningKeyInventory
+                   )
     it "renders chart-secret Vault inventory as least-privilege KV v2 policy documents" $ do
       case VaultInventory.vaultSecretConsumerByName "keycloak-runtime" of
         Nothing -> expectationFailure "expected keycloak-runtime chart secret consumer"
@@ -1803,6 +1838,19 @@ unitSuite = do
             `shouldContain` "path \"secret/data/keycloak/admin\""
           Text.unpack (VaultInventory.vaultSecretConsumerPolicyDocument consumer)
             `shouldNotContain` "secret/metadata/"
+      case VaultInventory.vaultSecretConsumerByName "vscode-keycloak-runtime" of
+        Nothing -> expectationFailure "expected vscode-keycloak-runtime chart secret consumer"
+        Just consumer ->
+          VaultInventory.vaultSecretConsumerKvApiPaths consumer
+            `shouldSatisfy` elem "secret/data/vscode/keycloak-postgres/patroni/app"
+      case VaultInventory.vaultSecretConsumerByName "oidc-session-validation" of
+        Nothing -> expectationFailure "expected oidc-session-validation chart secret consumer"
+        Just consumer -> do
+          VaultInventory.vaultSecretConsumerKvApiPaths consumer
+            `shouldBe` ["secret/data/vscode/oidc/demo-user"]
+          VaultInventory.vaultSecretConsumerServiceAccounts consumer
+            `shouldBe` ["oidc-session-validation-agent"]
+          VaultInventory.vaultSecretConsumerNamespaces consumer `shouldBe` ["vscode"]
       case VaultInventory.vaultSecretConsumerByName "gateway-event-keys" of
         Nothing -> expectationFailure "expected gateway-event-keys chart secret consumer"
         Just consumer ->
@@ -1811,8 +1859,19 @@ unitSuite = do
               all
                 (`elem` paths)
                 [ "secret/data/gateway/gateway/node-a/event-key"
-                , "secret/data/gateway/gateway/aws"
+                , "secret/data/aws/gateway-dns"
                 , "secret/data/gateway/gateway/minio"
+                ]
+      case VaultInventory.vaultSecretConsumerByName "gateway-minio-bootstrap" of
+        Nothing -> expectationFailure "expected gateway-minio-bootstrap chart secret consumer"
+        Just consumer ->
+          VaultInventory.vaultSecretConsumerKvApiPaths consumer
+            `shouldSatisfy` \paths ->
+              all
+                (`elem` paths)
+                [ "secret/data/minio/root"
+                , "secret/data/gateway/gateway/minio"
+                , "secret/data/minio/lifecycle-authority"
                 ]
     it "covers every chart-secret consumer path with a seed object spec" $ do
       let objectPaths =
@@ -1844,9 +1903,44 @@ unitSuite = do
       managedPaths
         `shouldSatisfy` Set.member (VaultInventory.VaultSecretPath "secret" "gateway/gateway/minio")
       managedPaths
+        `shouldSatisfy` Set.member (VaultInventory.VaultSecretPath "secret" "minio/lifecycle-authority")
+      managedPaths
         `shouldSatisfy` (not . Set.member (VaultInventory.VaultSecretPath "secret" "keycloak/smtp"))
       managedPaths
-        `shouldSatisfy` (not . Set.member (VaultInventory.VaultSecretPath "secret" "gateway/gateway/aws"))
+        `shouldSatisfy` (not . Set.member (VaultInventory.VaultSecretPath "secret" "aws/lifecycle-provider"))
+      managedPaths
+        `shouldSatisfy` (not . Set.member (VaultInventory.VaultSecretPath "secret" "aws/authority-backup-store"))
+      managedPaths
+        `shouldSatisfy` (not . Set.member (VaultInventory.VaultSecretPath "secret" "aws/tls-retention-store"))
+    it "registers only external AWS credential fields at every closed Target-Agent AWS path" $ do
+      let dedicatedSpecs logicalPath =
+            filter
+              ( (== VaultInventory.VaultSecretPath "secret" logicalPath)
+                  . VaultInventory.vaultSecretObjectPath
+              )
+              VaultInventory.chartVaultSecretObjects
+          assertDedicatedSpec logicalPath = case dedicatedSpecs logicalPath of
+            [spec] -> do
+              VaultInventory.vaultSecretObjectFieldNames spec `shouldBe` expectedFields
+              map VaultInventory.vaultSecretFieldSource (VaultInventory.vaultSecretObjectFields spec)
+                `shouldBe` replicate 4 VaultInventory.VaultSecretExternal
+            other ->
+              expectationFailure
+                ( "expected one dedicated adapter Vault object for "
+                    ++ Text.unpack logicalPath
+                    ++ ", got "
+                    ++ show other
+                )
+          expectedFields = ["access_key_id", "secret_access_key", "session_token", "region"]
+      forM_
+        [ "aws/lifecycle-provider"
+        , "aws/authority-backup-store"
+        , "aws/tls-retention-store"
+        , "aws/gateway-dns"
+        , "aws/cert-manager/home/dns01"
+        , "aws/cert-manager/aws/dns01"
+        ]
+        assertDedicatedSpec
     it "mints a missing Vault KV object once from the seed inventory" $ do
       writesRef <- newIORef []
       let path = VaultInventory.VaultSecretPath "secret" "keycloak/admin"
@@ -2023,6 +2117,7 @@ unitSuite = do
             [ "keycloak"
             , "vscode-keycloak"
             , "keycloak-smtp"
+            , "oidc-session-validation"
             , "keycloak-keycloak-postgres-pg"
             , "vscode-keycloak-postgres-pg"
             , "vscode-oidc"
@@ -2073,6 +2168,59 @@ unitSuite = do
           vaultKubernetesRoleSpecNamespaces role `shouldBe` ["prodbox"]
           vaultKubernetesRoleSpecPolicies role `shouldBe` ["gateway-minio-bootstrap"]
         _ -> expectationFailure "expected one gateway-minio-bootstrap Vault Kubernetes role"
+    it
+      "uses service tokens only for the journaled provisioner and batch tokens for Broker one-shot roles"
+      $ do
+        let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+            roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+            roleNamed name = find ((== name) . vaultKubernetesRoleSpecName) roles
+            policyNamed name = find ((== name) . vaultPolicySpecName) policies
+        fmap vaultKubernetesRoleSpecTokenType (roleNamed bootstrapProvisionerRole)
+          `shouldBe` Just VaultKubernetesServiceToken
+        forM_
+          [ vaultRoleIdText VaultRoleBootstrapBroker
+          , bootstrapSealRole
+          , bootstrapPkiOperatorRole
+          , bootstrapControlPlaneClientRole
+          ]
+          $ \role ->
+            fmap vaultKubernetesRoleSpecTokenType (roleNamed role)
+              `shouldBe` Just VaultKubernetesBatchToken
+        case policyNamed bootstrapSealRole of
+          Just sealPolicy -> do
+            Text.unpack (vaultPolicySpecDocument sealPolicy)
+              `shouldContain` "path \"sys/seal\""
+          Nothing -> expectationFailure "missing dedicated Bootstrap seal policy"
+        case policyNamed bootstrapProvisionerRole of
+          Just provisionerPolicy ->
+            Text.unpack (vaultPolicySpecDocument provisionerPolicy)
+              `shouldNotContain` "path \"sys/seal\""
+          Nothing -> expectationFailure "missing Bootstrap provisioner policy"
+    it "keeps each adapter workload policy and Kubernetes identity on its exact credential path" $ do
+      let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+          policyNamed name = find ((== name) . vaultPolicySpecName) policies
+          roleNamed name = find ((== name) . vaultKubernetesRoleSpecName) roles
+      case (policyNamed "prodbox-authority-backup", policyNamed "prodbox-tls-retention") of
+        (Just backupPolicy, Just tlsPolicy) -> do
+          let backupDocument = Text.unpack (vaultPolicySpecDocument backupPolicy)
+              tlsDocument = Text.unpack (vaultPolicySpecDocument tlsPolicy)
+          backupDocument `shouldContain` "path \"secret/data/aws/authority-backup-store\""
+          backupDocument `shouldNotContain` "aws/tls-retention-store"
+          backupDocument `shouldContain` "capabilities = [\"read\"]"
+          tlsDocument `shouldContain` "path \"secret/data/aws/tls-retention-store\""
+          tlsDocument `shouldNotContain` "aws/authority-backup-store"
+          tlsDocument `shouldContain` "capabilities = [\"read\"]"
+        other -> expectationFailure ("expected both dedicated adapter Vault policies, got " ++ show other)
+      case (roleNamed "prodbox-authority-backup", roleNamed "prodbox-tls-retention") of
+        (Just backupRole, Just tlsRole) -> do
+          vaultKubernetesRoleSpecServiceAccounts backupRole `shouldBe` ["prodbox-authority-backup"]
+          vaultKubernetesRoleSpecNamespaces backupRole `shouldBe` ["gateway"]
+          vaultKubernetesRoleSpecPolicies backupRole `shouldBe` ["prodbox-authority-backup"]
+          vaultKubernetesRoleSpecServiceAccounts tlsRole `shouldBe` ["prodbox-tls-retention"]
+          vaultKubernetesRoleSpecNamespaces tlsRole `shouldBe` ["gateway"]
+          vaultKubernetesRoleSpecPolicies tlsRole `shouldBe` ["prodbox-tls-retention"]
+        other -> expectationFailure ("expected both dedicated adapter Vault roles, got " ++ show other)
     it "includes automatically managed chart-secret seed objects in the default Vault reconcile plan" $ do
       map VaultInventory.vaultSecretObjectPath (vaultReconcileSecretObjects defaultVaultReconcilePlan)
         `shouldSatisfy` \paths ->
@@ -2081,36 +2229,37 @@ unitSuite = do
             [ VaultInventory.VaultSecretPath "secret" "keycloak/admin"
             , VaultInventory.VaultSecretPath "secret" "keycloak/keycloak-postgres/patroni/app"
             , VaultInventory.VaultSecretPath "secret" "gateway/gateway/minio"
+            , VaultInventory.VaultSecretPath "secret" "minio/lifecycle-authority"
             , VaultInventory.VaultSecretPath "secret" "minio/root"
             ]
       map VaultInventory.vaultSecretObjectPath (vaultReconcileSecretObjects defaultVaultReconcilePlan)
         `shouldSatisfy` notElem (VaultInventory.VaultSecretPath "secret" "keycloak/smtp")
       map VaultInventory.vaultSecretObjectPath (vaultReconcileSecretObjects defaultVaultReconcilePlan)
-        `shouldSatisfy` notElem (VaultInventory.VaultSecretPath "secret" "gateway/gateway/aws")
-    it "accepts the canonical gateway AWS Vault SecretRef declaration" $ do
+        `shouldSatisfy` notElem (VaultInventory.VaultSecretPath "secret" "aws/lifecycle-provider")
+    it "accepts the canonical Lifecycle-provider AWS Vault SecretRef declaration" $ do
       let refs =
             AwsCredentialsRef
               { awsCredentialAccessKeyId =
-                  SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+                  SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
               , awsCredentialSecretAccessKey =
-                  SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "secret_access_key")
+                  SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
               , awsCredentialSessionToken = Nothing
               , awsCredentialRegion = "us-east-1"
               }
-      gatewayAwsVaultFields refs `shouldBe` Right ()
-    it "refuses non-canonical gateway AWS Vault SecretRef declarations" $ do
+      lifecycleProviderAwsVaultFields refs `shouldBe` Right ()
+    it "refuses non-canonical Lifecycle-provider AWS Vault SecretRef declarations" $ do
       let refs =
             AwsCredentialsRef
               { awsCredentialAccessKeyId =
-                  SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+                  SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
               , awsCredentialSecretAccessKey =
                   SecretRefVault (VaultSecretRef "secret" "wrong/path" "secret_access_key")
               , awsCredentialSessionToken = Nothing
               , awsCredentialRegion = "us-east-1"
               }
-      gatewayAwsVaultFields refs
+      lifecycleProviderAwsVaultFields refs
         `shouldBe` Left
-          "aws.secret_access_key must reference SecretRef.Vault secret/gateway/gateway/aws#secret_access_key"
+          "aws.secret_access_key must reference SecretRef.Vault secret/aws/lifecycle-provider#secret_access_key"
     it
       "creates absent mounts, auth methods, Transit keys, and secret objects, then writes policies and roles"
       $ do
@@ -2131,7 +2280,15 @@ unitSuite = do
                 , vaultReconcilePolicies =
                     [VaultPolicySpec "prodbox-gateway" "path \"secret/*\" { capabilities = [\"read\"] }"]
                 , vaultReconcileKubernetesRoles =
-                    [VaultKubernetesRoleSpec "prodbox-gateway-daemon" ["sa"] ["ns"] ["prodbox-gateway"] "1h"]
+                    [ VaultKubernetesRoleSpec
+                        "prodbox-gateway-daemon"
+                        ["sa"]
+                        ["ns"]
+                        ["prodbox-gateway"]
+                        Nothing
+                        "1h"
+                        VaultKubernetesServiceToken
+                    ]
                 , vaultReconcileSecretObjects =
                     [ VaultInventory.VaultSecretObjectSpec
                         secretPath
@@ -2167,6 +2324,22 @@ unitSuite = do
                 , vaultOpsWriteKubernetesRole = \spec -> do
                     record ("role:" <> vaultKubernetesRoleSpecName spec)
                     pure (Right ())
+                , vaultOpsReadKubernetesRole =
+                    const
+                      ( pure
+                          ( Right
+                              ( KubernetesRoleReadback
+                                  ["sa"]
+                                  ["ns"]
+                                  ["prodbox-gateway"]
+                                  Nothing
+                                  3600
+                                  3600
+                                  3600
+                                  "service"
+                              )
+                          )
+                      )
                 , vaultOpsSecretBootstrap =
                     VaultInventory.VaultSecretBootstrapOps
                       { VaultInventory.vaultSecretBootstrapRead =
@@ -2199,6 +2372,30 @@ unitSuite = do
                          , "role:prodbox-gateway-daemon"
                          , "secret:secret/keycloak/admin"
                          ]
+        runVaultReconcileWith
+          ops
+            { vaultOpsReadKubernetesRole =
+                const
+                  ( pure
+                      ( Right
+                          ( KubernetesRoleReadback
+                              ["sa"]
+                              ["ns"]
+                              ["prodbox-gateway"]
+                              Nothing
+                              3600
+                              7200
+                              3600
+                              "service"
+                          )
+                      )
+                  )
+            }
+          plan
+          `shouldReturn` Left
+            ( VaultReconcileKubernetesRoleReadbackMismatch
+                "prodbox-gateway-daemon"
+            )
     it "fails loud when an existing mount has the wrong type" $ do
       let plan =
             VaultReconcilePlan
@@ -2227,6 +2424,22 @@ unitSuite = do
               , vaultOpsCreateTransitKey = const (pure (Right ()))
               , vaultOpsWritePolicy = const (pure (Right ()))
               , vaultOpsWriteKubernetesRole = const (pure (Right ()))
+              , vaultOpsReadKubernetesRole =
+                  const
+                    ( pure
+                        ( Right
+                            ( KubernetesRoleReadback
+                                []
+                                []
+                                []
+                                Nothing
+                                1
+                                1
+                                1
+                                "service"
+                            )
+                        )
+                    )
               , vaultOpsSecretBootstrap =
                   VaultInventory.VaultSecretBootstrapOps
                     { VaultInventory.vaultSecretBootstrapRead = const (pure (Right Map.empty))
@@ -2340,28 +2553,6 @@ unitSuite = do
       lookup "PULUMI_CONFIG_PASSPHRASE" environment `shouldBe` Just ""
       lookup "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID" environment `shouldBe` Just "provider-key"
       lookup "PATH" environment `shouldBe` Just "/bin"
-    it "loads Vault-backed AWS provider credentials without a raw config fallback" $ do
-      let vaultCredentials =
-            Credentials
-              { access_key_id = "vault-access"
-              , secret_access_key = "vault-secret"
-              , session_token = Just "vault-session"
-              , region = "us-west-2"
-              }
-      result <-
-        AwsProviderCredentials.loadPulumiProviderCredentialsWith
-          (pure (Right vaultCredentials))
-      result `shouldBe` Right vaultCredentials
-    it "fails instead of falling back when the Vault provider secret is absent" $ do
-      result <-
-        AwsProviderCredentials.loadPulumiProviderCredentialsWith
-          (pure (Left "secret/gateway/gateway/aws is missing"))
-      result `shouldBe` Left "secret/gateway/gateway/aws is missing"
-    it "does not fall back when Vault provider credential resolution fails" $ do
-      result <-
-        AwsProviderCredentials.loadPulumiProviderCredentialsWith
-          (pure (Left "Vault provider secret is invalid"))
-      result `shouldBe` Left "Vault provider secret is invalid"
     it "uses the Pulumi project name in the scratch checkpoint path" $ do
       let expected =
             "/dev/shm/prodbox-pulumi-test"
@@ -2551,7 +2742,7 @@ unitSuite = do
               indexOf cid = length (takeWhile (/= cid) order)
           -- The registry's backend-write dependency on MinIO forces MinIO earlier.
           (indexOf ComponentMinio < indexOf ComponentRegistry) `shouldBe` True
-    it "models Vault and the gateway daemon as bounded two-phase nodes" $ do
+    it "cuts pre-Vault bootstrap to the Broker and starts Gateway only after Authority" $ do
       case validateComponentGraph defaultComponentGraph of
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
         Right dag -> do
@@ -2562,23 +2753,24 @@ unitSuite = do
           fmap componentDependencyIds (lookupComponentNode ComponentVaultUnsealed dag)
             `shouldBe` Just
               [ ComponentVaultWorkload
-              , ComponentGatewayDaemonPreVault
+              , ComponentChartBootstrapBroker
               ]
           fmap readiness (lookupComponentNode ComponentVaultUnsealed dag)
             `shouldBe` Just ProbeVaultUnsealed
-          fmap componentDependencyIds (lookupComponentNode ComponentGatewayDaemonPreVault dag)
+          lookupComponentNode ComponentGatewayDaemonPreVault dag `shouldBe` Nothing
+          fmap componentDependencyIds (lookupComponentNode ComponentChartBootstrapBroker dag)
             `shouldBe` Just
               [ ComponentMinio
-              , ComponentCertManager
               , ComponentVaultWorkload
               , ComponentRegistry
               ]
-          fmap readiness (lookupComponentNode ComponentGatewayDaemonPreVault dag)
+          fmap readiness (lookupComponentNode ComponentChartBootstrapBroker dag)
             `shouldBe` Just ProbeRolloutComplete
           fmap componentDependencyIds (lookupComponentNode ComponentGatewayDaemonFull dag)
             `shouldBe` Just
               [ ComponentVaultUnsealed
-              , ComponentGatewayDaemonPreVault
+              , ComponentChartLifecycleAuthority
+              , ComponentChartAuthorityBackup
               , ComponentMinio
               ]
           fmap readiness (lookupComponentNode ComponentGatewayDaemonFull dag)
@@ -2588,16 +2780,50 @@ unitSuite = do
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
         Right dag -> do
           fmap componentDependencyIds (lookupComponentNode ComponentCertManager dag)
-            `shouldBe` Just [ComponentClusterBase, ComponentRegistry]
+            `shouldBe` Just
+              [ ComponentClusterBase
+              , ComponentRegistry
+              , ComponentChartAuthorityBackup
+              ]
           fmap componentDependencyIds (lookupComponentNode ComponentMetalLB dag)
             `shouldBe` Just
-              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+              [ ComponentClusterBase
+              , ComponentRegistry
+              , ComponentVaultUnsealed
+              , ComponentChartAuthorityBackup
+              ]
           fmap componentDependencyIds (lookupComponentNode ComponentEnvoyGateway dag)
             `shouldBe` Just
-              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+              [ ComponentClusterBase
+              , ComponentRegistry
+              , ComponentVaultUnsealed
+              , ComponentChartAuthorityBackup
+              ]
           fmap componentDependencyIds (lookupComponentNode ComponentPerconaPostgresOperator dag)
             `shouldBe` Just
-              [ComponentClusterBase, ComponentRegistry, ComponentVaultUnsealed]
+              [ ComponentClusterBase
+              , ComponentRegistry
+              , ComponentVaultUnsealed
+              , ComponentChartAuthorityBackup
+              ]
+    it "orders every independent steady root behind the completed Authority Backup transition" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag ->
+          forM_
+            [ ComponentMetalLB
+            , ComponentEnvoyGateway
+            , ComponentCertManager
+            , ComponentPerconaPostgresOperator
+            , ComponentGatewayDaemonFull
+            , ComponentChartPulsar
+            , ComponentChartRedis
+            , ComponentChartApi
+            , ComponentChartTlsRetention
+            ]
+            $ \component ->
+              fmap componentDependencyIds (lookupComponentNode component dag)
+                `shouldSatisfy` maybe False (elem ComponentChartAuthorityBackup)
     it "uses the caller tie-break instead of rendered text for independent nodes" $ do
       let adjacency key = lookup key [(1 :: Int, []), (2, [])]
           reverseRender key = show (3 - key)
@@ -2679,6 +2905,17 @@ unitSuite = do
           [(ComponentChartApi, requireAt OpManagedObserve "svc" "sc" "e1")]
           `shouldSatisfy` isRight
   describe "component readiness observation seam (Sprint 1.59)" $ do
+    it "classifies an initialized unsealed Broker observation as ready" $
+      classifyBrokerVaultUnsealedStatus
+        (Right (BrokerVaultSealStatus True False False))
+        `shouldBe` Right ReadinessProbeReady
+    it "classifies a sealed Broker observation as pending" $
+      classifyBrokerVaultUnsealedStatus
+        (Right (BrokerVaultSealStatus True True False))
+        `shouldBe` Right (ReadinessProbePending "Bootstrap Broker reports Vault sealed")
+    it "classifies an unreachable authenticated Broker observation as unreachable" $
+      classifyBrokerVaultUnsealedStatus (Left "TokenRequest failed")
+        `shouldBe` Left "TokenRequest failed"
     it "opens the gate only for an affirmative readiness observation" $
       map
         readinessGateOpen
@@ -2876,14 +3113,28 @@ unitSuite = do
       componentIdForChartName "bootstrap-broker" `shouldBe` Just ComponentChartBootstrapBroker
       chartNameForComponent ComponentChartBootstrapBroker `shouldBe` Just "bootstrap-broker"
       componentIdText ComponentChartBootstrapBroker `shouldBe` "chart_bootstrap_broker"
-      -- Sprint 3.26: the five standing control-plane charts are likewise
-      -- graph-connected chart-only leaves that resolve to exactly themselves,
-      -- with a total name<->id bijection (semantic arms the -Werror build cannot
-      -- catch on its own).
-      order "lifecycle-authority" `shouldBe` Right ["lifecycle-authority"]
-      order "provider-worker" `shouldBe` Right ["provider-worker"]
-      order "authority-backup" `shouldBe` Right ["authority-backup"]
-      order "tls-retention" `shouldBe` Right ["tls-retention"]
+      -- Sprint 4.50: dependency expansion exposes the same standing-role order
+      -- that native reconcile consumes. The native driver installs only each
+      -- plan's root release, preserving one namespace and identity per role.
+      order "lifecycle-authority"
+        `shouldBe` Right ["target-secret-agent", "lifecycle-authority"]
+      order "provider-worker"
+        `shouldBe` Right
+          [ "target-secret-agent"
+          , "lifecycle-authority"
+          , "authority-backup"
+          , "provider-worker"
+          ]
+      order "authority-backup"
+        `shouldBe` Right
+          ["target-secret-agent", "lifecycle-authority", "authority-backup"]
+      order "tls-retention"
+        `shouldBe` Right
+          [ "target-secret-agent"
+          , "lifecycle-authority"
+          , "authority-backup"
+          , "tls-retention"
+          ]
       order "target-secret-agent" `shouldBe` Right ["target-secret-agent"]
       componentIdForChartName "lifecycle-authority" `shouldBe` Just ComponentChartLifecycleAuthority
       componentIdForChartName "provider-worker" `shouldBe` Just ComponentChartProviderWorker
@@ -3004,6 +3255,64 @@ unitSuite = do
           derived
             `shouldBe` concatMap stepsForComponent (componentReconcileOrder dag)
           nativeInstallStepOrderRespectsGraph dag derived `shouldBe` Right ()
+    it "installs the Broker and five standing roles as graph-owned reconcile components" $ do
+      stepsForComponent ComponentChartBootstrapBroker
+        `shouldBe` [StepBootstrapBrokerChartReady]
+      stepsForComponent ComponentChartTargetSecretAgent
+        `shouldBe` [StepTargetSecretAgentChartReady]
+      stepsForComponent ComponentChartLifecycleAuthority
+        `shouldBe` [StepLifecycleAuthorityChartReady]
+      stepsForComponent ComponentChartAuthorityBackup
+        `shouldBe` [ StepAuthorityBackupChartReady
+                   , StepEstablishAuthorityBackup
+                   , StepReconcileInForceConfig
+                   , StepLoadInForceSettings
+                   ]
+      stepsForComponent ComponentChartProviderWorker
+        `shouldBe` [StepProviderWorkerChartReady]
+      stepsForComponent ComponentChartTlsRetention
+        `shouldBe` [StepTlsRetentionChartReady]
+      stepsForComponent ComponentGatewayDaemonPreVault `shouldBe` []
+    it "derives the control-plane rollout order from exact production dependencies" $ do
+      case validateComponentGraph defaultComponentGraph of
+        Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
+        Right dag -> do
+          let order = nativeInstallStepOrder dag
+              indexOf step = elemIndex step order
+          indexOf StepBootstrapBrokerChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepFederatedVaultLifecycle)
+          indexOf StepTargetSecretAgentChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepLifecycleAuthorityChartReady)
+          indexOf StepLifecycleAuthorityChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepAuthorityBackupChartReady)
+          indexOf StepAuthorityBackupChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepEstablishAuthorityBackup)
+          indexOf StepEstablishAuthorityBackup
+            `shouldSatisfy` (`indexPrecedes` indexOf StepReconcileInForceConfig)
+          indexOf StepReconcileInForceConfig
+            `shouldSatisfy` (`indexPrecedes` indexOf StepLoadInForceSettings)
+          indexOf StepLoadInForceSettings
+            `shouldSatisfy` (`indexPrecedes` indexOf StepProviderWorkerChartReady)
+          indexOf StepLifecycleAuthorityChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepTlsRetentionChartReady)
+          indexOf StepLifecycleAuthorityChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepGatewayChartReady)
+          nativeInstallStepOrderRespectsGraph dag order `shouldBe` Right ()
+    it "binds every installed control-plane chart to an authoritative rollout target" $ do
+      let settings = testValidatedSettings "/tmp/prodbox/.data"
+          componentsToCheck =
+            [ ComponentChartBootstrapBroker
+            , ComponentChartTargetSecretAgent
+            , ComponentChartLifecycleAuthority
+            , ComponentChartAuthorityBackup
+            , ComponentChartProviderWorker
+            , ComponentChartTlsRetention
+            ]
+          assertReadinessTarget component =
+            case nativeComponentReadinessTarget "/tmp/prodbox" settings component of
+              Left reason -> expectationFailure (Text.unpack reason)
+              Right _ -> pure ()
+      forM_ componentsToCheck assertReadinessTarget
     it "builds the default execution plan only after its graph and readiness barriers validate" $ do
       case buildNativeInstallExecutionPlan
         "/tmp/prodbox"
@@ -3144,10 +3453,20 @@ unitSuite = do
       -- Sprint 7.18: there is no separate prodbox-basics.json. The floor is read
       -- straight off the Tier-0 prodbox.dhall's context; writing the default
       -- root record (prodbox-home, shamir, no parent) yields the root floor.
+      -- Sprint 7.18: there is no separate prodbox-basics.json. The floor is read
+      -- straight off the Tier-0 prodbox.dhall's context; writing the default
+      -- root record (prodbox-home, shamir, no parent) yields the root floor.
+      -- Sprint 7.18: there is no separate prodbox-basics.json. The floor is read
+      -- straight off the Tier-0 prodbox.dhall's context; writing the default
+      -- root record (prodbox-home, shamir, no parent) yields the root floor.
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
         writeTier0AtPath (tmpDir </> "prodbox.dhall") defaultProjectConfig `shouldReturn` Right ()
         loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall") `shouldReturn` Right sampleRootBasics
     it "fails the floor read when no prodbox.dhall is present" $
+      -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
+      -- fails (the seed/propose fallback then takes over upstream).
+      -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
+      -- fails (the seed/propose fallback then takes over upstream).
       -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
       -- fails (the seed/propose fallback then takes over upstream).
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
@@ -3193,6 +3512,14 @@ unitSuite = do
       -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
       -- The self-heal must write a coherent root (shamir, no parent) floor from
       -- the default identity, with the caller-supplied Vault address.
+      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
+      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
+      -- The self-heal must write a coherent root (shamir, no parent) floor from
+      -- the default identity, with the caller-supplied Vault address.
+      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
+      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
+      -- The self-heal must write a coherent root (shamir, no parent) floor from
+      -- the default identity, with the caller-supplied Vault address.
       withSystemTempDirectory "prodbox-floor-selfheal-default" $ \tmpDir -> do
         before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         before `shouldSatisfy` isLeft
@@ -3214,6 +3541,16 @@ unitSuite = do
       -- context (matching the operator's binary context), and ensureBasicsFloor
       -- is a no-op that leaves it byte-for-byte untouched — the supplied Vault
       -- address is ignored because the existing floor is already valid.
+      -- Sprint 7.18: prodbox.dhall is the SOLE floor source. When the
+      -- operator-authored prodbox.dhall exists, the floor loads straight off its
+      -- context (matching the operator's binary context), and ensureBasicsFloor
+      -- is a no-op that leaves it byte-for-byte untouched — the supplied Vault
+      -- address is ignored because the existing floor is already valid.
+      -- Sprint 7.18: prodbox.dhall is the SOLE floor source. When the
+      -- operator-authored prodbox.dhall exists, the floor loads straight off its
+      -- context (matching the operator's binary context), and ensureBasicsFloor
+      -- is a no-op that leaves it byte-for-byte untouched — the supplied Vault
+      -- address is ignored because the existing floor is already valid.
       withSystemTempDirectory "prodbox-floor-selfheal-tier0" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox.dhall") (Text.unpack (renderProjectConfigDhall sampleTier0Child))
         before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
@@ -3228,6 +3565,10 @@ unitSuite = do
     it "is a no-op when a valid floor already exists" $
       -- Idempotent: a present, valid prodbox.dhall floor is left byte-for-byte
       -- untouched.
+      -- Idempotent: a present, valid prodbox.dhall floor is left byte-for-byte
+      -- untouched.
+      -- Idempotent: a present, valid prodbox.dhall floor is left byte-for-byte
+      -- untouched.
       withSystemTempDirectory "prodbox-floor-selfheal-noop" $ \tmpDir -> do
         writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Child `shouldReturn` Right ()
         let tier0Path = tmpDir </> "prodbox.dhall"
@@ -3240,12 +3581,17 @@ unitSuite = do
     it "child self-heal reconstructs a coherent transit floor from the supplied identity" $
       -- The child analog: no floor, no prodbox.dhall → reconstruct a transit
       -- (child) floor carrying the supplied parent reference.
+      -- The child analog: no floor, no prodbox.dhall → reconstruct a transit
+      -- (child) floor carrying the supplied parent reference.
+      -- The child analog: no floor, no prodbox.dhall → reconstruct a transit
+      -- (child) floor carrying the supplied parent reference.
       withSystemTempDirectory "prodbox-floor-selfheal-child" $ \tmpDir -> do
         let parentRef =
               Tier0ParentRef
                 { parent_cluster_id = "prodbox-root"
                 , parent_vault_address = "http://10.0.0.1:8200"
                 , parent_transit_key = "transit/prodbox-child-seal"
+                , parent_authority_endpoint = "https://authority.parent.example:8600"
                 }
         ensureChildBasicsFloorAtPath
           (tmpDir </> "prodbox.dhall")
@@ -3264,6 +3610,12 @@ unitSuite = do
               , basicsFormatVersion = 1
               }
     it "fails LOUD (Left) when the floor write itself fails" $
+      -- P2 belt-and-suspenders: a floor write that cannot complete must surface
+      -- as a Left, never a silent Right. Force the write to fail by occupying
+      -- the prodbox.dhall path with a DIRECTORY so the file write errors.
+      -- P2 belt-and-suspenders: a floor write that cannot complete must surface
+      -- as a Left, never a silent Right. Force the write to fail by occupying
+      -- the prodbox.dhall path with a DIRECTORY so the file write errors.
       -- P2 belt-and-suspenders: a floor write that cannot complete must surface
       -- as a Left, never a silent Right. Force the write to fail by occupying
       -- the prodbox.dhall path with a DIRECTORY so the file write errors.
@@ -3308,19 +3660,6 @@ unitSuite = do
               }
           poisoned = defaultProjectConfig {parameters = poisonedParams}
       tier0CarriesNoSecretValues poisoned `shouldBe` False
-  describe "in-force config object-absent tolerance (Sprint 1.39 follow-up)" $ do
-    it "treats an 'in-force config object missing' error as object-absent (seed fallback)" $
-      inForceConfigObjectAbsent
-        "failed to fetch in-force config envelope: in-force config object missing at objects/abc.enc"
-        `shouldBe` True
-    it "keeps every other in-force error fail-closed (NOT object-absent)" $ do
-      inForceConfigObjectAbsent "Vault is sealed" `shouldBe` False
-      inForceConfigObjectAbsent
-        "failed to reach in-force config MinIO backend: connection refused"
-        `shouldBe` False
-      inForceConfigObjectAbsent
-        "failed to read secret/minio/root from Vault: 403"
-        `shouldBe` False
   describe "Tier 0 in-cluster daemon binary context (Sprint 1.40)" $ do
     it "the daemon default is the Daemon-frame variant of the host default" $ do
       -- The in-cluster default reuses the shared non-secret parameters but
@@ -3391,6 +3730,14 @@ unitSuite = do
         result <- loadDaemonBinaryContext configMapDir containerDefault
         result `shouldBe` Right (Tier0FromCompiledDefault, defaultDaemonProjectConfig)
     it "exposes the canonical in-cluster ConfigMap Tier-0 path" $
+      -- Sprint 1.49: the baked `/etc/prodbox/prodbox.dhall` container default is
+      -- gone (the image generates a binary-sibling default by running the
+      -- binary); only the `gateway-config-<nodeId>` ConfigMap override path
+      -- remains canonical.
+      -- Sprint 1.49: the baked `/etc/prodbox/prodbox.dhall` container default is
+      -- gone (the image generates a binary-sibling default by running the
+      -- binary); only the `gateway-config-<nodeId>` ConfigMap override path
+      -- remains canonical.
       -- Sprint 1.49: the baked `/etc/prodbox/prodbox.dhall` container default is
       -- gone (the image generates a binary-sibling default by running the
       -- binary); only the `gateway-config-<nodeId>` ConfigMap override path
@@ -3578,7 +3925,7 @@ unitSuite = do
                   , "    , aws = Config.default.aws // {"
                   , "        , access_key_id ="
                   , "            Config.SecretRef.Vault"
-                  , "              { mount = \"secret\", path = \"gateway/gateway/aws\", field = \"access_key_id\" }"
+                  , "              { mount = \"secret\", path = \"aws/lifecycle-provider\", field = \"access_key_id\" }"
                   , "        }"
                   , "    , route53 = { zone_id = \"Z1234567890ABC\" }"
                   , "    }"
@@ -3627,26 +3974,18 @@ unitSuite = do
       onDisk <- readFile (repoRoot </> "test-secrets-types.dhall")
       onDisk `shouldBe` Text.unpack renderTestSecretsTypesDhall
   describe "ACME EAB seeding from test-secrets.dhall (Sprint 7.18)" $ do
-    -- Regression guard for the ordering bug where the in-cluster EAB
-    -- materializer Job read an empty `secret/acme/eab#hmac_key` because the
-    -- harness seeded it too late. `seedAcmeEabFromTestSecrets` must populate the
-    -- Vault object whenever it is invoked (the edge/ACME reconcile now calls it
-    -- immediately before applying the materializer manifest), and must be a
-    -- no-op when no `test-secrets.dhall` is present.
-    let withSeededKvDir body =
+    -- The fixture must enter through the same closed Target Secret Agent
+    -- payload schema as interactive configuration, and must be a no-op when no
+    -- fixture material exists.
+    let withCapturedTarget body =
           withSystemTempDirectory "prodbox-acme-eab-seed" $ \tmpDir -> do
-            let kvDir = tmpDir </> "kv"
-            createDirectoryIfMissing True kvDir
-            originalKvDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
-            let restoreEnv key previous =
-                  case previous of
-                    Just value -> setEnv key value
-                    Nothing -> unsetEnv key
-            setEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR" kvDir
-            body tmpDir kvDir
-              `finally` restoreEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR" originalKvDir
-    it "seeds secret/acme/eab key_id + hmac_key from a populated acme_eab block" $
-      withSeededKvDir $ \tmpDir kvDir -> do
+            observed <- newIORef []
+            let writeTarget ingressFrame = do
+                  modifyIORef' observed (ingressFrame :)
+                  pure (Right ())
+            body tmpDir observed writeTarget
+    it "submits the registered ACME EAB payload from a populated fixture" $
+      withCapturedTarget $ \tmpDir observed writeTarget -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
         writeFile
           (tmpDir </> "test-secrets.dhall")
@@ -3658,211 +3997,33 @@ unitSuite = do
               , "    }"
               ]
           )
-        seedAcmeEabFromTestSecrets tmpDir
-        let objectDir = kvDir </> "secret" </> "acme" </> "eab"
-        readFile (objectDir </> "key_id") `shouldReturn` "seed-eab-key-id"
-        readFile (objectDir </> "hmac_key") `shouldReturn` "seed-eab-hmac-key"
-    it "is a no-op when test-secrets.dhall is absent (real operators seed via config setup)" $
-      withSeededKvDir $ \tmpDir kvDir -> do
-        seedAcmeEabFromTestSecrets tmpDir
-        doesFileExist (kvDir </> "secret" </> "acme" </> "eab" </> "hmac_key")
-          `shouldReturn` False
+        seedAcmeEabFromTestSecrets writeTarget tmpDir
+        actual <- readIORef observed
+        let decoded =
+              map
+                ( \bytes ->
+                    withExternalAcmeEabIngressFrame bytes $ \frame ->
+                      consumeExternalAcmeEabIngressFrame frame (,)
+                )
+                actual
+        unless
+          (decoded == [Right ("seed-eab-key-id", "seed-eab-hmac-key")])
+          (expectationFailure "expected the exact canonical ACME EAB ingress frame")
+    it "is a no-op when test-secrets.dhall is absent (operator ingress is a separate surface)" $
+      withCapturedTarget $ \tmpDir observed writeTarget -> do
+        seedAcmeEabFromTestSecrets writeTarget tmpDir
+        actual <- readIORef observed
+        unless (null actual) (expectationFailure "expected no seeded target material")
     it "is a no-op when the acme_eab block is absent (decodes to None)" $
-      withSeededKvDir $ \tmpDir kvDir -> do
+      withCapturedTarget $ \tmpDir observed writeTarget -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
         writeFile
           (tmpDir </> "test-secrets.dhall")
           (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
-        seedAcmeEabFromTestSecrets tmpDir
-        doesFileExist (kvDir </> "secret" </> "acme" </> "eab" </> "hmac_key")
-          `shouldReturn` False
-  describe "operator-write gateway daemon endpoint (Sprint 1.44)" $ do
-    it "routes only the two allowlisted KV logical paths" $ do
-      allowedOperatorSecretPaths `shouldBe` ["acme/eab", "gateway/gateway/aws"]
-      operatorSecretLogicalPath "/v1/secret/acme/eab" `shouldBe` Just "acme/eab"
-      operatorSecretLogicalPath "/v1/secret/gateway/gateway/aws"
-        `shouldBe` Just "gateway/gateway/aws"
-    it "rejects non-allowlisted or non-secret paths (handled by the read dispatch)" $ do
-      operatorSecretLogicalPath "/v1/secret/keycloak/smtp" `shouldBe` Nothing
-      operatorSecretLogicalPath "/v1/secret/" `shouldBe` Nothing
-      operatorSecretLogicalPath "/v1/state" `shouldBe` Nothing
-      operatorSecretLogicalPath "/healthz" `shouldBe` Nothing
-    it "extracts the request method verbatim (uppercase per RFC 7231)" $ do
-      operatorSecretRequestMethod (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\n\r\n")
-        `shouldBe` "POST"
-      operatorSecretRequestMethod (BS8.pack "GET /v1/state HTTP/1.1\r\n\r\n")
-        `shouldBe` "GET"
-      operatorSecretRequestMethod (BS8.pack "") `shouldBe` "GET"
-    it "extracts the operator JWT header case-insensitively, else Nothing" $ do
-      operatorSecretJwtHeader
-        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nX-Prodbox-Operator-Jwt: tok123\r\n\r\n")
-        `shouldBe` Just "tok123"
-      operatorSecretJwtHeader
-        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nx-prodbox-operator-jwt:   spaced \r\n\r\n")
-        `shouldBe` Just "spaced"
-      operatorSecretJwtHeader
-        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nContent-Type: application/json\r\n\r\n")
-        `shouldBe` Nothing
-    it "isolates the request body after the blank line" $ do
-      requestBodyBytes
-        (BS8.pack "POST /v1/secret/acme/eab HTTP/1.1\r\nContent-Length: 9\r\n\r\n{\"k\":\"v\"}")
-        `shouldBe` BS8.pack "{\"k\":\"v\"}"
-      requestBodyBytes (BS8.pack "POST /x HTTP/1.1\r\n\r\n") `shouldBe` BS.empty
-    it "decodes a flat JSON object of string fields, rejecting empty/invalid bodies" $ do
-      decodeOperatorSecretFields (BS8.pack "{\"key_id\":\"a\",\"hmac_key\":\"b\"}")
-        `shouldBe` Right (Map.fromList [("key_id", "a"), ("hmac_key", "b")])
-      decodeOperatorSecretFields (BS8.pack "") `shouldSatisfy` isLeft
-      decodeOperatorSecretFields (BS8.pack "not json") `shouldSatisfy` isLeft
-    it "names the dedicated operator-write Vault role" $
-      operatorWriteRoleName `shouldBe` "prodbox-operator-write"
-    it "scopes the operator-write Vault policy to exactly the two KV paths" $ do
-      let policy = Text.unpack operatorWritePolicy
-      policy `shouldContain` "path \"secret/data/acme/eab\""
-      policy `shouldContain` "path \"secret/data/gateway/gateway/aws\""
-      policy `shouldContain` "capabilities = [\"create\", \"update\"]"
-      policy `shouldNotContain` "transit/"
-      policy `shouldNotContain` "secret/data/clusters/"
-    it "grants the gateway daemon the Pulumi object-store HMAC and Transit capabilities" $ do
-      let gatewayPolicies =
-            [ Text.unpack (vaultPolicySpecDocument spec)
-            | spec <- vaultReconcilePolicies defaultVaultReconcilePlan
-            , vaultPolicySpecName spec == "prodbox-gateway"
-            ]
-      case gatewayPolicies of
-        [policy] -> do
-          policy `shouldContain` "path \"secret/data/object-store/hmac\""
-          policy `shouldContain` "path \"transit/encrypt/prodbox-pulumi-state\""
-          policy `shouldContain` "path \"transit/decrypt/prodbox-pulumi-state\""
-        other ->
-          expectationFailure ("expected exactly one prodbox-gateway policy, got " ++ show other)
-    it "binds the gateway daemon role to BOTH the object-store and event-key policies" $ do
-      -- Regression guard for 44e896f: the daemon logs in under role
-      -- prodbox-gateway-daemon (charts/gateway/values.yaml vault.role). That role
-      -- must carry prodbox-gateway (object-store HMAC read + prodbox-pulumi-state
-      -- Transit encrypt/decrypt) AND gateway-gateway (per-node event-key / gateway
-      -- aws|minio KV). Missing either 403s the AWS postflight object-store read.
-      case [ vaultKubernetesRoleSpecPolicies spec
-           | spec <- vaultReconcileKubernetesRoles defaultVaultReconcilePlan
-           , vaultKubernetesRoleSpecName spec == vaultRoleIdText VaultRoleGatewayDaemon
-           ] of
-        [policies] ->
-          sort policies `shouldBe` ["gateway-gateway", "prodbox-gateway"]
-        other ->
-          expectationFailure ("expected exactly one prodbox-gateway-daemon role, got " ++ show other)
-    it "builds the operator-secret URL on the loopback gateway endpoint" $ do
-      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
-      Prodbox.Gateway.Client.operatorSecretUrl endpoint "acme/eab"
-        `shouldBe` "http://127.0.0.1:30443/v1/secret/acme/eab"
-  describe "pre-Vault daemon bootstrap endpoint (Sprint 2.29)" $ do
-    let requestFor path method body =
-          BS8.pack
-            ( method
-                ++ " "
-                ++ path
-                ++ " HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: "
-                ++ show (length body)
-                ++ "\r\n\r\n"
-                ++ body
-            )
-        bootstrapRequest = requestFor bootstrapVaultPath "POST"
-    it "decodes a bounded password-bearing request only with loopback proof" $ do
-      decodeBootstrapVaultRequest
-        (bootstrapRequest "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}")
-        `shouldBe` Right (BootstrapVaultRequest "pw" True)
-      decodeBootstrapVaultRequest
-        (bootstrapRequest "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":false}")
-        `shouldBe` Left BootstrapVaultLoopbackUnverified
-    it "rejects unsupported methods, empty passwords, and oversized bodies before actions" $ do
-      decodeBootstrapVaultRequest
-        (BS8.pack ("GET " ++ bootstrapVaultPath ++ " HTTP/1.1\r\n\r\n"))
-        `shouldBe` Left (BootstrapVaultMethodNotAllowed "GET")
-      decodeBootstrapVaultRequest
-        (bootstrapRequest "{\"unlock_password\":\"   \",\"loopback_nodeport_verified\":true}")
-        `shouldBe` Left BootstrapVaultPasswordEmpty
-      decodeBootstrapVaultRequest
-        (bootstrapRequest (replicate (bootstrapVaultRequestMaxBytes + 1) 'x'))
-        `shouldBe` Left (BootstrapVaultRequestTooLarge (bootstrapVaultRequestMaxBytes + 1))
-    it "redacts the unlock password in Show and request error rendering" $ do
-      show (BootstrapVaultRequest "super-secret-password" True)
-        `shouldNotContain` "super-secret-password"
-      renderBootstrapVaultRequestError BootstrapVaultLoopbackUnverified
-        `shouldNotContain` "super-secret-password"
-    it "builds the bootstrap URL on the loopback gateway endpoint" $ do
-      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
-      Prodbox.Bootstrap.Broker.Client.legacyBootstrapVaultUrl endpoint
-        `shouldBe` "http://127.0.0.1:30443/v1/bootstrap/vault/ensure"
-    it "decodes authenticated daemon lifecycle actions with the same loopback proof" $ do
-      decodeBootstrapVaultAuthenticatedRequest
-        ( requestFor
-            bootstrapVaultSealPath
-            "POST"
-            "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}"
-        )
-        `shouldBe` Right (BootstrapVaultRequest "pw" True)
-      decodeBootstrapVaultAuthenticatedRequest
-        ( requestFor
-            bootstrapVaultPkiStatusPath
-            "GET"
-            "{\"unlock_password\":\"pw\",\"loopback_nodeport_verified\":true}"
-        )
-        `shouldBe` Left (BootstrapVaultMethodNotAllowed "GET")
-      bootstrapVaultStatusPath `shouldBe` "/v1/bootstrap/vault/status"
-      bootstrapVaultPkiIssueTestCertPath `shouldBe` "/v1/bootstrap/vault/pki/issue-test-cert"
-    it "decodes bundle and transit rotation requests without showing passwords" $ do
-      let rotateBundle =
-            decodeBootstrapVaultRotateUnlockBundleRequest
-              ( requestFor
-                  bootstrapVaultRotateUnlockBundlePath
-                  "POST"
-                  "{\"unlock_password\":\"old\",\"new_unlock_password\":\"new\",\"loopback_nodeport_verified\":true}"
-              )
-          rotateTransit =
-            decodeBootstrapVaultRotateTransitKeyRequest
-              ( requestFor
-                  bootstrapVaultRotateTransitKeyPath
-                  "POST"
-                  "{\"unlock_password\":\"pw\",\"key_name\":\"pulumi\",\"loopback_nodeport_verified\":true}"
-              )
-      rotateBundle `shouldBe` Right (BootstrapVaultRotateUnlockBundleRequest "old" "new" True)
-      rotateTransit `shouldBe` Right (BootstrapVaultRotateTransitKeyRequest "pw" "pulumi" True)
-      show (BootstrapVaultRotateUnlockBundleRequest "old-secret" "new-secret" True)
-        `shouldNotContain` "old-secret"
-      show (BootstrapVaultRotateUnlockBundleRequest "old-secret" "new-secret" True)
-        `shouldNotContain` "new-secret"
-      show (BootstrapVaultRotateTransitKeyRequest "pw-secret" "pulumi" True)
-        `shouldNotContain` "pw-secret"
-    it "routes host lifecycle through daemon unless only an explicit test seam is available" $ do
-      let refusesDirectHostFallback decision =
-            case decision of
-              RefuseDirectHostVaultFallback msg ->
-                "Refusing direct host Vault/MinIO fallback" `isInfixOf` msg
-              _ -> False
-      vaultLifecycleTransportDecision VaultDaemonReachable HostVaultDirectSeamAbsent
-        `shouldBe` UseDaemonVaultLifecycle
-      vaultLifecycleTransportDecision
-        (VaultDaemonUnavailable "connection refused")
-        HostVaultDirectSeamPresent
-        `shouldBe` UseDirectHostVaultTestSeam
-      vaultLifecycleTransportDecision
-        (VaultDaemonUnavailable "connection refused")
-        HostVaultDirectSeamAbsent
-        `shouldSatisfy` refusesDirectHostFallback
-      gatewayProbeFromResult (Right (object [] :: Value)) `shouldBe` VaultDaemonReachable
-      gatewayProbeFromResult
-        ( Left
-            ( Prodbox.Gateway.Client.GatewayTransport
-                (Prodbox.Http.Client.HttpConnectionFailure "connection refused")
-            )
-            :: Either Prodbox.Gateway.Client.GatewayError Value
-        )
-        `shouldBe` VaultDaemonUnavailable "connection refused"
-      gatewayProbeFromResult
-        ( Left
-            (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 503 "sealed"))
-            :: Either Prodbox.Gateway.Client.GatewayError Value
-        )
-        `shouldBe` VaultDaemonReachable
-  describe "daemon-mediated Vault retry (transient restart bridge)" $ do
+        seedAcmeEabFromTestSecrets writeTarget tmpDir
+        actual <- readIORef observed
+        unless (null actual) (expectationFailure "expected no seeded target material")
+  describe "Gateway retry (post-bootstrap transient restart bridge)" $ do
     let fastRetryPolicy =
           RetryPolicy
             { retryPolicyMaxAttempts = 4
@@ -3884,47 +4045,6 @@ unitSuite = do
         `shouldBe` False
       Prodbox.Gateway.Client.gatewayErrorIsTransient (Prodbox.Gateway.Client.GatewayPayload "bad json")
         `shouldBe` False
-    it "retryDaemonTransient: bridges a mid-restart NoResponseDataReceived then succeeds" $ do
-      callsRef <- newIORef (0 :: Int)
-      let action = do
-            modifyIORef' callsRef (+ 1)
-            n <- readIORef callsRef
-            pure $
-              if n < 3
-                then
-                  Left
-                    ( Prodbox.Gateway.Client.GatewayTransport
-                        (Prodbox.Http.Client.HttpConnectionFailure "NoResponseDataReceived")
-                    )
-                else Right ("ready" :: String)
-      result <- retryDaemonTransient fastRetryPolicy "test" action
-      result `shouldBe` Right "ready"
-      readIORef callsRef `shouldReturn` 3
-    it "retryDaemonTransient: fails fast on a non-transient gateway error (no retry)" $ do
-      callsRef <- newIORef (0 :: Int)
-      let action = do
-            modifyIORef' callsRef (+ 1)
-            pure
-              ( Left
-                  (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 400 "rejected"))
-                  :: Either Prodbox.Gateway.Client.GatewayError String
-              )
-      result <- retryDaemonTransient fastRetryPolicy "test" action
-      result
-        `shouldBe` Left
-          (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 400 "rejected"))
-      readIORef callsRef `shouldReturn` 1
-    it "retryDaemonTransient: exhausts the attempt budget on a persistent transient" $ do
-      callsRef <- newIORef (0 :: Int)
-      let action = do
-            modifyIORef' callsRef (+ 1)
-            pure
-              ( Left
-                  (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpConnectionFailure "down"))
-                  :: Either Prodbox.Gateway.Client.GatewayError String
-              )
-      _ <- retryDaemonTransient fastRetryPolicy "test" action
-      readIORef callsRef `shouldReturn` retryPolicyMaxAttempts fastRetryPolicy
     it "retryGatewayTransient (shared): bridges a Connection-refused restart window then succeeds" $ do
       okRef <- newIORef (0 :: Int)
       let okAction = do
@@ -3952,71 +4072,6 @@ unitSuite = do
               )
       _ <- Prodbox.Gateway.Client.retryGatewayTransient fastRetryPolicy hardAction
       readIORef hardRef `shouldReturn` 1
-  describe "daemon Pulumi object-store endpoint (Sprint 7.30)" $ do
-    let requestFor path method body =
-          BS8.pack
-            ( method
-                ++ " "
-                ++ path
-                ++ " HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: "
-                ++ show (length body)
-                ++ "\r\n\r\n"
-                ++ body
-            )
-        objectRequest = requestFor pulumiObjectGetPath "POST"
-    it "decodes bounded get/delete requests only with loopback proof and valid stack names" $ do
-      decodePulumiObjectRequest
-        (objectRequest "{\"stack\":\"aws-eks-test\",\"loopback_nodeport_verified\":true}")
-        `shouldBe` Right (PulumiObjectRequest "aws-eks-test" True)
-      decodePulumiObjectRequest
-        (objectRequest "{\"stack\":\"aws-eks-test\",\"loopback_nodeport_verified\":false}")
-        `shouldBe` Left PulumiObjectLoopbackUnverified
-      decodePulumiObjectRequest
-        (objectRequest "{\"stack\":\"../aws\",\"loopback_nodeport_verified\":true}")
-        `shouldBe` Left
-          ( PulumiObjectStackInvalid
-              "stack may contain only ASCII letters, digits, '.', '_', and '-'"
-          )
-      validatePulumiObjectStackName " aws-test "
-        `shouldBe` Right "aws-test"
-    it "rejects unsupported methods, empty bodies, malformed JSON, and oversized bodies" $ do
-      decodePulumiObjectRequest
-        (BS8.pack ("GET " ++ pulumiObjectGetPath ++ " HTTP/1.1\r\n\r\n"))
-        `shouldBe` Left (PulumiObjectMethodNotAllowed "GET")
-      decodePulumiObjectRequest
-        (objectRequest "")
-        `shouldBe` Left PulumiObjectRequestEmpty
-      decodePulumiObjectRequest
-        (objectRequest "not json")
-        `shouldSatisfy` isLeft
-      decodePulumiObjectRequest
-        (objectRequest (replicate (pulumiObjectRequestMaxBytes + 1) 'x'))
-        `shouldBe` Left (PulumiObjectRequestTooLarge (pulumiObjectRequestMaxBytes + 1))
-    it "round-trips put/get JSON while redacting checkpoint bytes from Show" $ do
-      let checkpoint = BS8.pack "checkpoint-secret"
-          putRequest = PulumiObjectPutRequest "aws-test" checkpoint True
-          putWire = requestFor pulumiObjectPutPath "POST" (BL8.unpack (encode putRequest))
-      decodePulumiObjectPutRequest putWire `shouldBe` Right putRequest
-      show putRequest `shouldNotContain` "checkpoint-secret"
-      (eitherDecode (encode PulumiObjectAbsent) :: Either String PulumiObjectGetResponse)
-        `shouldBe` Right PulumiObjectAbsent
-      ( eitherDecode (encode (PulumiObjectPresent checkpoint))
-          :: Either String PulumiObjectGetResponse
-        )
-        `shouldBe` Right (PulumiObjectPresent checkpoint)
-    it "renders request errors without checkpoint material" $ do
-      renderPulumiObjectRequestError PulumiObjectLoopbackUnverified
-        `shouldContain` "loopback NodePort"
-      renderPulumiObjectRequestError PulumiObjectLoopbackUnverified
-        `shouldNotContain` "checkpoint-secret"
-    it "builds daemon object-store URLs on the loopback gateway endpoint" $ do
-      let endpoint = Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 30443
-      Prodbox.Gateway.Client.pulumiObjectGetUrl endpoint
-        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/get"
-      Prodbox.Gateway.Client.pulumiObjectPutUrl endpoint
-        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/put"
-      Prodbox.Gateway.Client.pulumiObjectDeleteUrl endpoint
-        `shouldBe` "http://127.0.0.1:30443/v1/object-store/pulumi/delete"
   describe "Model B object store (Sprint 4.30)" $ do
     it "uses one generic bucket name for object-store and Pulumi backend paths" $ do
       defaultObjectStoreBucket `shouldBe` "prodbox-state"
@@ -4109,10 +4164,10 @@ unitSuite = do
           "cluster2"
           LogicalInForceConfig
       fetchResult `shouldBe` Left (EncryptedObjectOpenFailed EnvelopeAuthFailed)
-    it "round-trips a per-run Pulumi stack object across daemon-shape params (host-direct byte-compat)" $ do
-      -- The host-direct fallback GET must open an envelope a daemon PUT sealed:
-      -- same HMAC key, clusterId, and LogicalPulumiStack name (transit cipher is
-      -- fixed here). A clusterId mismatch (AAD) must fail closed.
+    it "round-trips a per-run Pulumi stack object through the canonical envelope parameters" $ do
+      -- The Authority repository must reopen an envelope it sealed with the
+      -- same HMAC key, clusterId, and LogicalPulumiStack name (the Transit
+      -- cipher is fixed here). A clusterId mismatch (AAD) must fail closed.
       storeRef <- newIORef Map.empty
       putResult <-
         putLogicalWith
@@ -4172,22 +4227,26 @@ unitSuite = do
         -- above; the binary-sibling resolution is proven by the integration suite.
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         result `shouldBe` Right roundTripConfigFile
-    it "uses the in-force config loader once the cluster is established" $
+    it "uses the Authority config loader whenever the Tier-0 floor is available" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
         -- The default Tier-0 record projects to the root floor (prodbox-home,
-        -- shamir, no parent) == sampleRootBasics. Sprint 1.42 Part B / Sprint
-        -- 7.25: the "established" signal is the presence of the non-secret
-        -- cluster-established marker (the bundle itself is now MinIO-only), which
-        -- flips the loader from the seed/propose Tier-0 `parameters` read to the
-        -- encrypted in-force SSoT.
+        -- shamir, no parent) == sampleRootBasics. The floor itself selects the
+        -- Authority-owned path; there is no object-absence, marker, or direct
+        -- MinIO fallback after Tier-0 exists.
         withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall defaultProjectConfig)) $ do
-          createDirectoryIfMissing True (takeDirectory (tmpDir </> clusterEstablishedMarkerRelPath))
-          writeFile (tmpDir </> clusterEstablishedMarkerRelPath) "established"
           result <-
             loadConfigForSettingsWith
               (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
               tmpDir
           result `shouldBe` Right roundTripConfigFile
+    it "propagates an unobservable Authority config without filesystem fallback" $
+      withSystemTempDirectory "prodbox-config-loader-fail-closed" $ \tmpDir -> do
+        withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall defaultProjectConfig)) $ do
+          result <-
+            loadConfigForSettingsWith
+              (\_ -> pure (Left "Authority config is unobservable"))
+              tmpDir
+          result `shouldBe` Left "Authority config is unobservable"
   describe "root-config write authority (Sprint 1.38)" $ do
     it "blocks a root-cluster config write with no root token" $ do
       rootConfigWriteDecision (RootWriteAuthority True False)
@@ -4202,33 +4261,23 @@ unitSuite = do
       rootConfigWriteDecision (RootWriteAuthority True True) `shouldBe` RootWriteAllow
     it "allows a child-cluster config write without a root token" $ do
       rootConfigWriteDecision (RootWriteAuthority False False) `shouldBe` RootWriteAllow
-  describe "cluster federation custody (Sprint 2.26)" $ do
-    it "derives parent-owned Vault KV paths for child metadata and init custody" $ do
+  describe "cluster federation inventory (Sprint 4.50 custody cutover)" $ do
+    it "derives only parent-owned metadata coordinates in the legacy inventory model" $ do
       childMetadataKvPath "Child A" `shouldBe` "secret/data/clusters/child-a/metadata"
-      childInitKvPath "Child A" `shouldBe` "secret/data/clusters/child-a/init"
       childMetadataKvLogicalPath "Child A" `shouldBe` "clusters/child-a/metadata"
-      childInitKvLogicalPath "Child A" `shouldBe` "clusters/child-a/init"
     it "derives opaque child namespace and Transit key names" $ do
       let plan = childRegistrationPlan "root-owned-federation-key" "child-prod"
           namespace = childRegistrationVaultNamespace plan
           transitKey = childRegistrationTransitKey plan
       childRegistrationMetadataPath plan `shouldBe` "secret/data/clusters/child-prod/metadata"
-      childRegistrationInitPath plan `shouldBe` "secret/data/clusters/child-prod/init"
       namespace `shouldSatisfy` Text.isPrefixOf "ns-"
       transitKey `shouldSatisfy` Text.isPrefixOf "prodbox-child-"
       Text.unpack namespace `shouldNotContain` "child-prod"
       Text.unpack transitKey `shouldNotContain` "child-prod"
       childVaultNamespace "root-owned-federation-key" "child-prod" `shouldBe` namespace
       childTransitKeyName "root-owned-federation-key" "child-prod" `shouldBe` transitKey
-    it "Sprint 4.33 redacts token-bearing federation Show instances" $ do
-      let initCustody =
-            ChildInitCustody
-              { childInitClusterId = "child-prod"
-              , childInitRecoveryKeysBase64 = ["recovery-a"]
-              , childInitRootToken = "s.child-root"
-              , childInitTransitKey = "prodbox-child-abcd"
-              }
-          bootstrapCredential =
+    it "Sprint 4.33 redacts the token-bearing Transit bootstrap credential" $ do
+      let bootstrapCredential =
             ChildBootstrapCredential
               { childBootstrapClusterId = "child-prod"
               , childBootstrapParentVaultAddress = "https://vault.parent.example"
@@ -4236,11 +4285,9 @@ unitSuite = do
               , childBootstrapVaultNamespace = "ns-abcd"
               , childBootstrapToken = "s.child-transit"
               }
-      show initCustody `shouldNotContain` "s.child-root"
-      show initCustody `shouldNotContain` "recovery-a"
       show bootstrapCredential `shouldNotContain` "s.child-transit"
       show (VaultToken "s.root") `shouldBe` "VaultToken <redacted>"
-    it "round-trips child metadata and init custody through Vault KV JSON payloads" $ do
+    it "round-trips child metadata without a reusable root-token custody shape" $ do
       let metadata =
             ChildMetadata
               { childMetadataClusterId = "child-prod"
@@ -4253,15 +4300,7 @@ unitSuite = do
               , childMetadataAccountId = Just "123456789012"
               , childMetadataPulumiStacks = Map.fromList [("aws-eks", "org/prodbox-child-prod/aws-eks")]
               }
-          initCustody =
-            ChildInitCustody
-              { childInitClusterId = "child-prod"
-              , childInitRecoveryKeysBase64 = ["recovery-a", "recovery-b"]
-              , childInitRootToken = "s.child-root"
-              , childInitTransitKey = "prodbox-child-abcd"
-              }
       decodeChildMetadata (encodeChildMetadata metadata) `shouldBe` Right metadata
-      decodeChildInitCustody (encodeChildInitCustody initCustody) `shouldBe` Right initCustody
       Map.lookup "payload_json" (childMetadataVaultFields metadata)
         `shouldSatisfy` maybe False (Text.isInfixOf "child-prod")
       Map.lookup "payload_json" (childMetadataVaultFields metadata)
@@ -4271,7 +4310,6 @@ unitSuite = do
       childMetadataPulumiStacks metadata
         `shouldBe` Map.fromList [("aws-eks", "org/prodbox-child-prod/aws-eks")]
       BS.isInfixOf "s.child-root" (encodeChildMetadata metadata) `shouldBe` False
-      BS.isInfixOf "s.child-root" (encodeChildInitCustody initCustody) `shouldBe` True
     it "stores child bootstrap credentials and child indexes as parent Vault KV payloads" $ do
       let credential =
             ChildBootstrapCredential
@@ -4305,28 +4343,16 @@ unitSuite = do
               (childRegistrationPlan "root-owned-federation-key" "child-prod")
       rendered `shouldContain` "CLUSTER_FEDERATION_REGISTER_PLAN"
       rendered `shouldContain` "metadata_kv_path=secret/data/clusters/child-prod/metadata"
-      rendered `shouldContain` "init_kv_path=secret/data/clusters/child-prod/init"
+      rendered `shouldNotContain` "init_kv_path="
       rendered `shouldContain` "bootstrap_kv_path=secret/data/clusters/child-prod/bootstrap"
       rendered `shouldContain` "children_index_kv_path=secret/data/clusters/index"
       rendered
         `shouldContain` "apply_status=ready_when_child_vault_address_and_child_kubeconfig_are_supplied"
-    it "renders a child seal token policy scoped to one Transit key and one init path" $ do
-      let policy = Text.unpack (childTransitSealPolicyDocument "Child A" "prodbox-child-opaque")
+    it "renders a child seal token policy scoped only to one Transit key" $ do
+      let policy = Text.unpack (childTransitSealPolicyDocument "prodbox-child-opaque")
       policy `shouldContain` "path \"transit/encrypt/prodbox-child-opaque\""
       policy `shouldContain` "path \"transit/decrypt/prodbox-child-opaque\""
-      policy `shouldContain` "path \"secret/data/clusters/child-a/init\""
-      policy `shouldNotContain` "clusters/*"
-    it "blocks root-cluster federation writes without the root token" $ do
-      federationWriteDecision (FederationWriteAuthority True False)
-        `shouldBe` FederationWriteBlockNoRootToken
-      case renderFederationWriteBlock (federationWriteDecision (FederationWriteAuthority True False)) of
-        Nothing -> expectationFailure "expected a fail-closed block message"
-        Just msg -> do
-          msg `shouldContain` "root Vault token"
-          msg `shouldContain` "No child metadata"
-    it "allows federation writes once root authority is present, and does not gate child-local reads" $ do
-      federationWriteDecision (FederationWriteAuthority True True) `shouldBe` FederationWriteAllow
-      federationWriteDecision (FederationWriteAuthority False False) `shouldBe` FederationWriteAllow
+      policy `shouldNotContain` "secret/data/"
   describe "vault envelope (Sprint 3.17)" $ do
     it "round-trips an envelope under the bound AAD" $ do
       sealed <- sealEnvelope insecureLocalDekCipher "cluster1|active-config" "the-secret-bytes"
@@ -4576,7 +4602,16 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
-              (RunNative (NativeNuke (NukeOptions {nukeDryRun = True, nukePlanFile = Nothing})))
+              ( RunNative
+                  ( NativeNuke
+                      ( NukeOptions
+                          { nukeDryRun = True
+                          , nukePlanFile = Nothing
+                          , nukeReceiptPath = Nothing
+                          }
+                      )
+                  )
+              )
           )
 
     it "routes plain nuke through the native Haskell runtime" $ do
@@ -4584,7 +4619,33 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
-              (RunNative (NativeNuke (NukeOptions {nukeDryRun = False, nukePlanFile = Nothing})))
+              ( RunNative
+                  ( NativeNuke
+                      ( NukeOptions
+                          { nukeDryRun = False
+                          , nukePlanFile = Nothing
+                          , nukeReceiptPath = Nothing
+                          }
+                      )
+                  )
+              )
+          )
+
+    it "routes nuke's required-on-apply external receipt coordinate" $ do
+      parseArgs ["nuke", "--receipt", "/operator/decommission/prodbox.receipt"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeNuke
+                      ( NukeOptions
+                          { nukeDryRun = False
+                          , nukePlanFile = Nothing
+                          , nukeReceiptPath = Just "/operator/decommission/prodbox.receipt"
+                          }
+                      )
+                  )
+              )
           )
 
     it "routes cluster commands through the native Haskell runtime" $ do
@@ -4711,6 +4772,7 @@ unitSuite = do
                           (TestIntegration IntegrationCli)
                           (CoverageFlags True (Just 90))
                           SubstrateHomeLocal
+                          False
                       )
                   )
               )
@@ -4725,6 +4787,7 @@ unitSuite = do
                           (TestIntegration IntegrationPulsarBroker)
                           (CoverageFlags False Nothing)
                           SubstrateHomeLocal
+                          False
                       )
                   )
               )
@@ -4739,6 +4802,7 @@ unitSuite = do
                           (TestIntegration IntegrationDaemonBootstrap)
                           (CoverageFlags False Nothing)
                           SubstrateHomeLocal
+                          False
                       )
                   )
               )
@@ -4796,6 +4860,44 @@ unitSuite = do
         "123456789012"
         (Just "Bad_Bucket")
         PolicyFull
+        `shouldSatisfy` isLeft
+
+    it "builds disjoint least-privilege adapter IAM policies" $ do
+      authorityBackupIamUserName `shouldBe` "prodbox-authority-backup-store"
+      tlsRetentionIamUserName `shouldBe` "prodbox-tls-retention-store"
+      let backup =
+            buildDedicatedAdapterIamPolicyDocument
+              "prodbox-retained"
+              ["authority-backup-store/home", "authority-backup-store/aws-eks-test"]
+          tls =
+            buildDedicatedAdapterIamPolicyDocument
+              "prodbox-retained"
+              [ "public-edge-tls/home-local/test.example.com"
+              , "public-edge-tls/aws/aws.test.example.com"
+              ]
+      case (backup, tls) of
+        (Right backupPolicy, Right tlsPolicy) -> do
+          let backupText = BL8.unpack (encode backupPolicy)
+              tlsText = BL8.unpack (encode tlsPolicy)
+          backupText `shouldContain` "arn:aws:s3:::prodbox-retained/authority-backup-store/home/*"
+          backupText `shouldContain` "s3:GetObject"
+          backupText `shouldContain` "s3:PutObject"
+          backupText `shouldContain` "s3:ListBucket"
+          backupText `shouldNotContain` "public-edge-tls"
+          backupText `shouldNotContain` "s3:DeleteObject"
+          backupText `shouldNotContain` "iam:"
+          tlsText
+            `shouldContain` "arn:aws:s3:::prodbox-retained/public-edge-tls/home-local/test.example.com/*"
+          tlsText `shouldNotContain` "authority-backup-store"
+          tlsText `shouldNotContain` "s3:DeleteObject"
+        other -> expectationFailure ("expected dedicated IAM policies, got " ++ show other)
+      buildDedicatedAdapterIamPolicyDocument
+        "prodbox-retained"
+        ["authority-backup-store/*"]
+        `shouldSatisfy` isLeft
+      buildDedicatedAdapterIamPolicyDocument
+        "prodbox-retained"
+        ["public-edge-tls/home-local/*"]
         `shouldSatisfy` isLeft
 
   describe "CLI generated output" $ do
@@ -5014,7 +5116,7 @@ unitSuite = do
           )
       )
 
-    it "orders root Vault bootstrap after the pre-Vault gateway daemon" $ do
+    it "orders root Vault bootstrap after the Broker and standing roles after Vault" $ do
       let steps =
             lines
               ( renderNativeInstallPlan
@@ -5027,23 +5129,23 @@ unitSuite = do
               )
           minioIndex = elemIndex "STEP=ensure_minio_runtime_bootstrap" steps
           vaultRuntimeIndex = elemIndex "STEP=ensure_vault_runtime" steps
-          certManagerIndex = elemIndex "STEP=ensure_cert_manager_runtime" steps
-          gatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready_pre_vault" steps
+          brokerIndex = elemIndex "STEP=ensure_bootstrap_broker_chart_ready" steps
           lifecycleIndex = elemIndex "STEP=ensure_federated_vault_lifecycle" steps
+          targetAgentIndex = elemIndex "STEP=ensure_target_secret_agent_chart_ready" steps
+          authorityIndex = elemIndex "STEP=ensure_lifecycle_authority_chart_ready" steps
           steadyGatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready" steps
       minioIndex `shouldSatisfy` (`indexPrecedes` vaultRuntimeIndex)
-      vaultRuntimeIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
-      -- The pre-Vault gateway daemon mounts cert-manager-issued (self-signed) TLS
-      -- secrets, so cert-manager must be stood up before it (147215f regression guard).
-      certManagerIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
-      gatewayIndex `shouldSatisfy` (`indexPrecedes` lifecycleIndex)
-      lifecycleIndex `shouldSatisfy` (`indexPrecedes` steadyGatewayIndex)
+      vaultRuntimeIndex `shouldSatisfy` (`indexPrecedes` brokerIndex)
+      brokerIndex `shouldSatisfy` (`indexPrecedes` lifecycleIndex)
+      lifecycleIndex `shouldSatisfy` (`indexPrecedes` targetAgentIndex)
+      targetAgentIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
+      authorityIndex `shouldSatisfy` (`indexPrecedes` steadyGatewayIndex)
 
     it "classifies absent operational AWS Vault credentials as a skippable public-edge gate" $ do
       operationalAwsCredentialGateFromResult
-        (Left "Vault KV object secret/gateway/gateway/aws missing: HTTP 404 response")
+        (Left "Target Agent object secret/aws/lifecycle-provider missing: HTTP 404 response")
         `shouldBe` OperationalAwsCredentialsAbsent
-          "Vault KV object secret/gateway/gateway/aws missing: HTTP 404 response"
+          "Target Agent object secret/aws/lifecycle-provider missing: HTTP 404 response"
       operationalAwsCredentialGateFromResult
         (Left "aws.access_key_id resolved from Vault as empty")
         `shouldBe` OperationalAwsCredentialsAbsent "aws.access_key_id resolved from Vault as empty"
@@ -5181,10 +5283,19 @@ unitSuite = do
     it "builds the single union runtime image under /opt/build" $ do
       repoRoot <- getCurrentDirectory
       dockerfile <- readFile (repoRoot </> "docker" </> "prodbox.Dockerfile")
+      providerProduction <-
+        readFile
+          ( repoRoot
+              </> "src"
+              </> "Prodbox"
+              </> "ControlPlane"
+              </> "ProviderProduction.hs"
+          )
 
       dockerfile `shouldContain` "FROM ubuntu:24.04"
       dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
+      dockerfile `shouldContain` "ARG PULUMI_VERSION=3.228.0"
       dockerfile `shouldContain` "WORKDIR /opt/build"
       dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
       dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
@@ -5195,6 +5306,12 @@ unitSuite = do
       -- and tini (PID 1 for the long-running daemon), keyed by native arch.
       dockerfile `shouldContain` "awscli.amazonaws.com"
       dockerfile `shouldContain` "dpkg --print-architecture"
+      dockerfile `shouldContain` "pulumi-v${PULUMI_VERSION}-linux-${pulumi_arch}.tar.gz"
+      dockerfile `shouldContain` "install -m 0755 /tmp/pulumi/pulumi /usr/local/bin/pulumi"
+      dockerfile `shouldContain` "COPY pulumi ./pulumi"
+      providerProduction `shouldContain` "providerBuildRoot = \"/opt/build\""
+      providerProduction `shouldContain` "subprocessPath = \"/usr/local/bin/pulumi\""
+      providerProduction `shouldContain` "\"pulumi\" </> subdirectory"
       dockerfile `shouldContain` "tini"
       -- Bare `prodbox` under tini; each chart supplies its own subcommand via
       -- the pod `args:` (`gateway start` vs `workload start`).
@@ -5280,7 +5397,7 @@ unitSuite = do
       configTemplate `shouldNotContain` "lookup \"v1\" \"Secret\""
       configTemplate `shouldNotContain` "Some /etc/gateway/secrets"
       valuesTemplate `shouldContain` "role: prodbox-gateway-daemon"
-      valuesTemplate `shouldContain` "aws: gateway/gateway/aws"
+      valuesTemplate `shouldContain` "aws: aws/gateway-dns"
       valuesTemplate `shouldContain` "minio: gateway/gateway/minio"
       awsSecretTemplateExists `shouldBe` False
 
@@ -5475,10 +5592,13 @@ unitSuite = do
       keycloakDeployment `shouldContain` "name: vault-secrets"
       keycloakDeployment `shouldContain` "vault write -field=token"
       keycloakDeployment `shouldContain` "secret/{{ .Values.vault.paths.admin }}"
-      keycloakDeployment `shouldContain` "secret/{{ .Values.vault.paths.db }}"
+      keycloakDeployment `shouldNotContain` "secret/{{ .Values.vault.paths.db }}"
       keycloakDeployment `shouldContain` "KEYCLOAK_ADMIN_PASSWORD"
       keycloakDeployment `shouldContain` "KC_DB_PASSWORD"
-      keycloakDeployment `shouldNotContain` "secretKeyRef:"
+      keycloakDeployment `shouldContain` "secretKeyRef:"
+      keycloakDeployment `shouldContain` "name: {{ .Values.postgres.passwordSecretName | quote }}"
+      keycloakDeployment `shouldContain` "mountPath: /run/prodbox-admin"
+      keycloakDeployment `shouldContain` "name: admin-runtime"
       keycloakConfig `shouldContain` "\"secret\": \"${PRODBOX_VSCODE_CLIENT_SECRET}\""
       keycloakConfig `shouldContain` "\"password\": \"${PRODBOX_SMTP_PASSWORD}\""
       keycloakConfig `shouldNotContain` "lookup \"v1\" \"Secret\""
@@ -5571,6 +5691,9 @@ unitSuite = do
       pulumiCli <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Pulumi.hs")
       awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
       awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
       doesFileExist (repoRoot </> "pulumi" </> "home" </> "Main.yaml") `shouldReturn` False
       pulumiCli `shouldNotContain` "PulumiUp"
@@ -5578,15 +5701,18 @@ unitSuite = do
       awsEksMain `shouldContain` "operatorCidr:"
       awsEksMain `shouldContain` "type: string"
       awsEksMain `shouldNotContain` "std:getenv"
-      awsEksInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsEksTestStackName"
+      awsEksInfra `shouldContain` "mkAwsEksProviderStackConfig"
       awsTestMain `shouldContain` "operatorCidr:"
       awsTestMain `shouldContain` "type: string"
       awsTestMain `shouldContain` "tls:PrivateKey"
       awsTestMain `shouldContain` "ssh_private_key:"
       awsTestMain `shouldNotContain` "std:getenv"
-      awsTestInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsTestStackName"
+      awsTestInfra `shouldContain` "mkAwsTestProviderStackConfig"
+      providerProduction `shouldContain` "[(\"operatorCidr\", Text.unpack operatorCidr)]"
+      providerProduction
+        `shouldContain` "[\"config\", \"set\", \"--stack\", stackName compiled, key, value, \"--non-interactive\"]"
 
-    it "keeps supported per-run AWS stacks on the daemon object-store API" $ do
+    it "keeps supported Pulumi stacks on caller-bound Lifecycle Authority clients" $ do
       repoRoot <- getCurrentDirectory
       encryptedBackend <-
         readFile (repoRoot </> "src" </> "Prodbox" </> "Pulumi" </> "EncryptedBackend.hs")
@@ -5601,13 +5727,19 @@ unitSuite = do
           , "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs"
           ]
 
-      encryptedBackend `shouldContain` "GatewayClient.getPulumiObject"
-      encryptedBackend `shouldContain` "GatewayClient.putPulumiObject"
-      encryptedBackend `shouldContain` "GatewayClient.deletePulumiObject"
+      encryptedBackend `shouldContain` "lifecycleAuthorityOperationClientAuthenticated"
+      encryptedBackend `shouldContain` "lifecycleAuthorityPulumiCheckpointAuthenticated"
+      encryptedBackend `shouldContain` "submitAuthorityOperation"
+      encryptedBackend `shouldContain` "publishPulumiCheckpoint"
+      encryptedBackend `shouldContain` "retirePulumiCheckpoint"
+      encryptedBackend `shouldNotContain` "GatewayClient."
+      encryptedBackend `shouldNotContain` "HostDirect"
       encryptedBackend `shouldNotContain` "withMinioPortForward"
       encryptedBackend `shouldNotContain` "127.0.0.1:39000"
       forM_ perRunStacks $ \(_, source) -> do
-        source `shouldContain` "withDecryptedStackEnvironment"
+        source `shouldContain` "dispatchAuthenticatedProviderIntentFresh"
+        source `shouldContain` "LifecycleAuthorityAuthentication"
+        source `shouldNotContain` "subprocessPath = \"pulumi\""
         source `shouldNotContain` "withMinioPortForward"
         source `shouldNotContain` "readMinioCredentials"
         source `shouldNotContain` "ensureMinioBackendBucket"
@@ -5615,26 +5747,35 @@ unitSuite = do
 
     it "treats IAM NoSuchEntity as successful absence during EKS destroy residue checks" $ do
       repoRoot <- getCurrentDirectory
-      awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
+      nativeIam <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Aws" </> "Native" </> "Iam.hs")
 
-      awsEksInfra `shouldContain` "\"nosuchentity\""
+      nativeIam `shouldContain` "awsFaultCode fault == \"NoSuchEntity\""
+      nativeIam `shouldContain` "runIdempotentVoidAllowNoSuchEntity"
 
-    it "treats terminated EC2 instances as absent during AWS test destroy residue checks" $ do
+    it "keeps AWS test destroy residue handling behind the fenced Provider worker" $ do
       repoRoot <- getCurrentDirectory
       awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
-      awsTestInfra `shouldContain` "instanceDescribeShowsActiveInstance"
-      awsTestInfra `shouldContain` "\"terminated\""
-      awsTestInfra `shouldContain` "Just _ -> finalizeDestroy repoRoot currentSnapshot"
+      awsTestInfra `shouldContain` "DestroyRegisteredStack"
+      awsTestInfra `shouldNotContain` "describe-instances"
+      providerProduction `shouldContain` "DesiredAbsent"
+      providerProduction `shouldContain` "[\"destroy\", \"--stack\""
 
-    it "retries AWS test stack destroy after a Pulumi refresh" $ do
+    it "runs Pulumi destroy only inside the Provider production interpreter" $ do
       repoRoot <- getCurrentDirectory
       awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
-      awsTestInfra `shouldContain` "pulumiRefreshEither"
-      awsTestInfra `shouldContain` "pulumi destroy failed after refresh"
-      awsTestInfra
-        `shouldContain` "Right () -> completeDestroy repoRoot projectDir environment currentSnapshot summary"
+      awsTestInfra `shouldNotContain` "pulumiRefreshEither"
+      awsTestInfra `shouldNotContain` "subprocessPath = \"pulumi\""
+      providerProduction `shouldContain` "runPulumiMutation"
+      providerProduction `shouldContain` "[\"destroy\", \"--stack\""
 
   describe "test planning" $ do
     it "maps aggregate all to the native ordered validation workflow" $ do
@@ -5642,7 +5783,12 @@ unitSuite = do
         testPlan -> do
           testPlanLabel testPlan `shouldBe` "all"
           testPlanHaskellSuites testPlan
-            `shouldBe` ["test:prodbox-unit", "test:prodbox-integration"]
+            `shouldBe` [ "test:prodbox-unit"
+                       , "test:prodbox-authority-admission-unit"
+                       , "test:prodbox-control-plane-authentication-unit"
+                       , "test:prodbox-control-plane-authenticated-transport-unit"
+                       , "test:prodbox-integration"
+                       ]
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "all"
@@ -5668,6 +5814,7 @@ unitSuite = do
                            , "aws_credentials_valid"
                            , "tool_pulumi"
                            , "tool_ssh"
+                           , "tool_openssl"
                            , "route53_accessible"
                            ]
               map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
@@ -5693,6 +5840,9 @@ unitSuite = do
                            , "ha-rke2-aws"
                            , "gateway-daemon"
                            , "gateway-partition"
+                           , "control-plane-counterexample"
+                           , "certificate-scope"
+                           , "clean-room-handoff"
                            , "charts-platform"
                            , "resource-guardrails"
                            , "daemon-bootstrap"
@@ -5730,6 +5880,7 @@ unitSuite = do
                            , "aws_credentials_valid"
                            , "tool_pulumi"
                            , "tool_ssh"
+                           , "tool_openssl"
                            , "route53_accessible"
                            ]
               map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
@@ -5805,88 +5956,6 @@ unitSuite = do
               smtpIndex `shouldSatisfy` (`indexPrecedes` vscodeIndex)
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
-    it "opens the gateway-daemon SMTP precondition only on a ready round trip" $ do
-      let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 1
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
-          precondition =
-            gatewayDaemonLivenessPrecondition
-              policy
-              "127.0.0.1:31234"
-              (pure (Right ReadinessProbeReady))
-              (pure (Right ReadinessProbeReady))
-      Preconditions.preconditionCheck precondition `shouldReturn` Right ()
-
-    it "returns a bounded structured SMTP refusal for pending or unreachable daemon observations" $ do
-      let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 1
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
-          observations =
-            [ Right (ReadinessProbePending "gateway returned 503")
-            , Left "Connection refused"
-            ]
-      forM_ observations $ \observation -> do
-        attemptsRef <- newIORef (0 :: Int)
-        let observeOnce = modifyIORef' attemptsRef (+ 1) >> pure observation
-            precondition =
-              gatewayDaemonLivenessPrecondition
-                policy
-                "127.0.0.1:31234"
-                (pure (Right ReadinessProbeReady))
-                observeOnce
-        result <- Preconditions.preconditionCheck precondition
-        readIORef attemptsRef `shouldReturn` 1
-        case result of
-          Right () -> expectationFailure "expected the daemon readiness precondition to fail closed"
-          Left err -> do
-            Preconditions.errorPreconditionLabel err `shouldBe` "gatewayDaemonObjectStoreReady"
-            Preconditions.errorSummaryLine err `shouldContain` "127.0.0.1:31234"
-            Preconditions.errorOffendingItems err
-              `shouldBe` [("127.0.0.1:31234", "prodbox charts reconcile gateway")]
-
-    it
-      "fails the gateway-daemon precondition closed on an unready /readyz precheck, without attempting the round trip"
-      $ do
-        let policy =
-              RetryPolicy
-                { retryPolicyMaxAttempts = 1
-                , retryPolicyBaseDelayMicros = 0
-                , retryPolicyMultiplier = 1
-                , retryPolicyMaxDelayMicros = 0
-                }
-            readyzObservations =
-              [ Right (ReadinessProbePending "gateway /readyz reported HTTP 503: starting")
-              , Left "Connection refused"
-              ]
-        forM_ readyzObservations $ \readyzObservation -> do
-          roundTripRef <- newIORef (0 :: Int)
-          let observeRoundTrip = modifyIORef' roundTripRef (+ 1) >> pure (Right ReadinessProbeReady)
-              precondition =
-                gatewayDaemonLivenessPrecondition
-                  policy
-                  "127.0.0.1:31234"
-                  (pure readyzObservation)
-                  observeRoundTrip
-          result <- Preconditions.preconditionCheck precondition
-          -- lifecycle-ready implies kubelet-ready: the object-store round trip is
-          -- never attempted while /readyz is unready.
-          readIORef roundTripRef `shouldReturn` 0
-          case result of
-            Right () -> expectationFailure "expected the /readyz precheck to fail closed"
-            Left err -> do
-              Preconditions.errorPreconditionLabel err `shouldBe` "gatewayDaemonObjectStoreReady"
-              Preconditions.errorSummaryLine err `shouldContain` "/readyz"
-              Preconditions.errorSummaryLine err `shouldContain` "127.0.0.1:31234"
-              Preconditions.errorNarrative err `shouldContain` "No Keycloak SMTP sync was started."
-
     it "bootstraps the AWS substrate by provisioning per-run stacks before deploying the AWS chart set" $ do
       case testExecutionPlan SubstrateAws TestAll of
         testPlan ->
@@ -5948,6 +6017,28 @@ unitSuite = do
                            , ["aws", "stack", "eks", "destroy", "--yes"]
                            , ["aws", "stack", "test", "destroy", "--yes"]
                            ]
+              awsHarnessCleanupTopology suitePlan
+                `shouldBe` (
+                             [ "aws-k8s-drain"
+                             , "aws-vault-unseal"
+                             , "aws-eks"
+                             , "aws-eks-subzone"
+                             , "aws-test"
+                             , "aws-test-ebs"
+                             , "aws-operational-teardown"
+                             ]
+                           ,
+                             [ ManagedCleanupEdge "aws-k8s-drain" CleanupRequiresAttempt "aws-vault-unseal"
+                             , ManagedCleanupEdge "aws-vault-unseal" CleanupRequiresAttempt "aws-eks"
+                             , ManagedCleanupEdge "aws-eks" CleanupRequiresAttempt "aws-eks-subzone"
+                             , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresAttempt "aws-test"
+                             , ManagedCleanupEdge "aws-test" CleanupRequiresAttempt "aws-test-ebs"
+                             , ManagedCleanupEdge "aws-eks" CleanupRequiresSuccess "aws-operational-teardown"
+                             , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresSuccess "aws-operational-teardown"
+                             , ManagedCleanupEdge "aws-test" CleanupRequiresSuccess "aws-operational-teardown"
+                             , ManagedCleanupEdge "aws-test-ebs" CleanupRequiresSuccess "aws-operational-teardown"
+                             ]
+                           )
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationPublicDns) of
@@ -5959,6 +6050,8 @@ unitSuite = do
               awsSubstrateBootstrapRestorePlan suitePlan
                 `shouldBe` buildRestoreCyclePlan SubstrateAws SesNotRequired
               awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
+              awsHarnessCleanupTopology suitePlan
+                `shouldBe` (["aws-operational-teardown"], [])
             DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
     it "does not repeat rke2 reconcile during supported runtime bootstrap after the runbook reconcile" $ do
@@ -6323,7 +6416,7 @@ unitSuite = do
         Right report -> do
           report `shouldContain` "DAEMON_BOOTSTRAP_VALIDATION"
           report `shouldContain` "DAEMON_AVAILABLE=true"
-          report `shouldContain` "/v1/bootstrap/vault/ensure"
+          report `shouldContain` "/v1/bootstrap/vault/init"
           report `shouldContain` "LEGACY_TRANSPORTS=0"
           report `shouldContain` "HOST_ROOT_TOKEN_FALLBACKS=0"
           report `shouldContain` "REDACTION=ok"
@@ -6349,7 +6442,7 @@ unitSuite = do
               }
       map
         (`elem` daemonBootstrapForbiddenPatterns)
-        ["kubectl port-forward", "127.0.0.1:31820", "host root-token"]
+        ["port-forward service/minio", "127.0.0.1:31820", "host root-token"]
         `shouldBe` [True, True, True]
       daemonBootstrapAuditReport minioTrace
         `shouldSatisfy` leftContains "legacy transport"
@@ -6922,6 +7015,9 @@ unitSuite = do
       testProgram <- readFile (repoRoot </> "pulumi" </> "aws-test" </> "Main.yaml")
       eksStackSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
       testStackSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
       eksProgram `shouldContain` "envVarMappings"
       eksProgram `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
@@ -6938,11 +7034,12 @@ unitSuite = do
       eksStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
       eksStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
       eksStackSource `shouldNotContain` "(True, \"awsSessionToken\""
-      testStackSource `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+      testStackSource `shouldNotContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
       testStackSource `shouldNotContain` "clearLegacyAwsProviderConfig"
       testStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
       testStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
       testStackSource `shouldNotContain` "(True, \"awsSessionToken\""
+      providerProduction `shouldContain` "pulumiAwsProviderEnv credentials"
 
     it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationCli) of
@@ -6993,6 +7090,7 @@ unitSuite = do
           , "tool_pulumi"
           , "tool_aws"
           , "tool_ssh"
+          , "tool_openssl"
           , "tool_rke2"
           , "tool_systemctl"
           , "settings_object"
@@ -7478,21 +7576,6 @@ unitSuite = do
         `shouldBe` replicate 7 True
       isRetryableHelmFailure (failed "401 unauthorized") `shouldBe` False
 
-    it "retains Route 53 credential-specific retry extensions" $ do
-      let failed detail = ProcessOutput (ExitFailure 1) "" detail
-      map
-        (isRetryableRoute53CredentialFailure . failed)
-        [ "InvalidClientTokenId"
-        , "The security token included in the request is invalid"
-        , "UnrecognizedClientException"
-        , "AccessDenied"
-        , "not authorized to perform: route53:ChangeResourceRecordSets"
-        , "lookup route53.amazonaws.com: no such host"
-        ]
-        `shouldBe` replicate 6 True
-      isRetryableRoute53CredentialFailure (failed "validation error: malformed zone id")
-        `shouldBe` False
-
     it "needs no retry-classifier lint allowance" $ do
       let inlineClassifier classifierName =
             unlines
@@ -7500,8 +7583,7 @@ unitSuite = do
               , "  any (`isInfixOf` detail) [\"connection refused\"]"
               ]
       forM_
-        [ "isRetryableRoute53CredentialFailure"
-        , "isRetryableHelmFailure"
+        [ "isRetryableHelmFailure"
         , "isRetryableHarborPublicationFailure"
         ]
         ( \classifierName ->
@@ -8157,7 +8239,11 @@ unitSuite = do
               , resolvedCustomImageTag = "broker-test-tag"
               , resolvedCustomImageRolloutToken = Nothing
               }
-      case valuesForBootstrapBroker "bootstrap-broker" "bootstrap-broker" (Just brokerImage) of
+      case valuesForBootstrapBroker
+        "prodbox-home"
+        "bootstrap-broker"
+        "bootstrap-broker"
+        (Just brokerImage) of
         Left err -> expectationFailure err
         Right (Object payload) -> do
           case KeyMap.lookup (Key.fromString "serviceAccount") payload of
@@ -8187,14 +8273,92 @@ unitSuite = do
               KeyMap.lookup (Key.fromString "repository") imagePayload
                 `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-runtime")
             _ -> expectationFailure "expected image object"
+          case KeyMap.lookup (Key.fromString "config") payload of
+            Just (Object configPayload) ->
+              case KeyMap.lookup (Key.fromString "brokerDhall") configPayload of
+                Just (String brokerDhall) -> do
+                  decoded <-
+                    Dhall.input Dhall.auto brokerDhall
+                      :: IO BrokerSettings.BootstrapBrokerConfigDhall
+                  BrokerSettings.cluster_id decoded `shouldBe` "prodbox-home"
+                  BrokerSettings.vault_address decoded
+                    `shouldBe` "http://vault.vault.svc.cluster.local:8200"
+                  BrokerSettings.store_endpoint (BrokerSettings.bootstrap_store decoded)
+                    `shouldBe` "http://minio.prodbox.svc.cluster.local:9000"
+                  BrokerSettings.store_bucket (BrokerSettings.bootstrap_store decoded)
+                    `shouldBe` "prodbox-state"
+                _ -> expectationFailure "expected config.brokerDhall"
+            _ -> expectationFailure "expected config object"
           -- The Guaranteed-QoS envelope is attached by attachResourcePlanValues,
           -- not by valuesForBootstrapBroker.
           KeyMap.lookup (Key.fromString "resources") payload `shouldBe` Nothing
         Right _ -> expectationFailure "expected bootstrap-broker values object"
 
     it "refuses Bootstrap Broker values without a resolved runtime image" $
-      valuesForBootstrapBroker "bootstrap-broker" "bootstrap-broker" Nothing
+      valuesForBootstrapBroker "prodbox-home" "bootstrap-broker" "bootstrap-broker" Nothing
         `shouldBe` Left "bootstrap-broker chart requires a resolved image reference"
+
+    it "renders schema-v7 role-specific durable stores without generic S3 fields or secrets" $ do
+      let settings = testValidatedSettings "/tmp/prodbox/.data"
+          image =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+              , resolvedCustomImageTag = "control-plane-test"
+              , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
+              }
+          extractRoleDhall value = case value of
+            Object payload -> case KeyMap.lookup (Key.fromString "config") payload of
+              Just (Object configPayload) -> case KeyMap.lookup (Key.fromString "roleDhall") configPayload of
+                Just (String dhall) -> Right dhall
+                _ -> Left "missing config.roleDhall"
+              _ -> Left "missing config object"
+            _ -> Left "control-plane values must be an object"
+          expectRight :: Either String value -> IO value
+          expectRight result = case result of
+            Left detail -> expectationFailure detail >> fail detail
+            Right value -> pure value
+      backupValues <-
+        expectRight $
+          valuesForAuthorityBackup
+            settings
+            "home"
+            "authority-backup"
+            "authority-backup"
+            (Just image)
+      tlsValues <-
+        expectRight $
+          valuesForTlsRetention
+            SubstrateAws
+            settings
+            "aws-eks-test"
+            "tls-retention"
+            "tls-retention"
+            (Just image)
+      backupDhall <- expectRight (extractRoleDhall backupValues)
+      tlsDhall <- expectRight (extractRoleDhall tlsValues)
+      Text.unpack backupDhall `shouldNotContain` "object_store_endpoint"
+      Text.unpack backupDhall `shouldNotContain` "access_key_id"
+      Text.unpack tlsDhall `shouldNotContain` "object_store_bucket"
+      Text.unpack tlsDhall `shouldNotContain` "secret_access_key"
+      backupConfig <- Dhall.input Dhall.auto backupDhall :: IO ControlPlaneRuntime.ControlPlaneConfig
+      tlsConfig <- Dhall.input Dhall.auto tlsDhall :: IO ControlPlaneRuntime.ControlPlaneConfig
+      ControlPlaneRuntime.schema_version backupConfig `shouldBe` 7
+      ControlPlaneRuntime.schema_version tlsConfig `shouldBe` 7
+      case ControlPlaneRuntime.role_store backupConfig of
+        ControlPlaneRuntime.RoleStoreAuthorityBackup wire -> do
+          ControlPlaneRuntime.authority_backup_endpoint wire
+            `shouldBe` "https://s3.ca-central-1.amazonaws.com"
+          ControlPlaneRuntime.authority_backup_region wire `shouldBe` "ca-central-1"
+          ControlPlaneRuntime.authority_backup_bucket wire `shouldBe` "prodbox-retained"
+          ControlPlaneRuntime.authority_backup_prefix wire `shouldBe` "authority-backup-store/home"
+        other -> expectationFailure ("expected Backup role store, got " ++ show other)
+      case ControlPlaneRuntime.role_store tlsConfig of
+        ControlPlaneRuntime.RoleStoreTlsRetention wire -> do
+          ControlPlaneRuntime.tls_retention_substrate wire `shouldBe` "aws"
+          ControlPlaneRuntime.tls_retention_scope_key wire `shouldBe` "aws.test.resolvefintech.com"
+          ControlPlaneRuntime.tls_retention_prefix wire
+            `shouldBe` "public-edge-tls/aws/aws.test.resolvefintech.com"
+        other -> expectationFailure ("expected TLS role store, got " ++ show other)
 
     it "resolves the internal bootstrap-broker chart definition off the public surface" $
       case resolveChart "/tmp/prodbox" "bootstrap-broker" of
@@ -8206,6 +8370,21 @@ unitSuite = do
           chartDefinitionRequiresPublicHost definition `shouldBe` False
           -- Internal control-plane chart: not on the public `prodbox charts` surface.
           ("bootstrap-broker" `elem` supportedChartNames) `shouldBe` False
+
+    it "pre-provisions the Lifecycle Authority journal through ChartPlatform" $
+      case resolveChart "/tmp/prodbox" "lifecycle-authority" of
+        Left err -> expectationFailure err
+        Right definition ->
+          chartDefinitionStorage definition
+            `shouldBe` [ ChartStorageSpec
+                           { chartStorageSpecStatefulSetName = "lifecycle-authority"
+                           , chartStorageSpecPersistentVolumeClaimName =
+                               "authority-journal-lifecycle-authority-0"
+                           , chartStorageSpecWorkloadProfileId = "lifecycle-authority"
+                           , chartStorageSpecOrdinal = 0
+                           , chartStorageSpecClaimSuffix = "authority-journal"
+                           }
+                       ]
 
     it "builds delete plans in reverse dependency order" $ do
       case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
@@ -8261,6 +8440,14 @@ unitSuite = do
                       KeyMap.lookup (Key.fromString "fqdn") dnsPayload
                         `shouldBe` Just (String "")
                     _ -> expectationFailure "expected gateway dnsWriteGate payload"
+                  case KeyMap.lookup (Key.fromString "lifecycleAuthority") payload of
+                    Just (Object authorityPayload) -> do
+                      KeyMap.lookup (Key.fromString "scope") authorityPayload
+                        `shouldBe` Just (String (Text.pack AwsEks.awsEksCanonicalClusterName))
+                      KeyMap.lookup (Key.fromString "endpoint") authorityPayload
+                        `shouldBe` Just
+                          (String "http://lifecycle-authority.gateway.svc.cluster.local:8600")
+                    _ -> expectationFailure "expected gateway Lifecycle Authority payload"
                   case KeyMap.lookup (Key.fromString "vault") payload of
                     Just (Object vaultPayload) ->
                       KeyMap.lookup (Key.fromString "role") vaultPayload
@@ -8505,31 +8692,6 @@ unitSuite = do
                   ]
               )
               `shouldBe` ["keycloak", "vscode"]
-
-    it
-      "kubernetesSecretDecodedDataField base64-decodes a present field and treats absent data/field as a benign no-op"
-      $ do
-        let secretJson =
-              object
-                [ "data"
-                    .= object
-                      [ "password" .= ("czNjcjN0LVB3IQ==" :: Text.Text)
-                      , "username" .= ("a2V5Y2xvYWs=" :: Text.Text)
-                      ]
-                ]
-        -- Present field: decoded to plain text (Percona's generated password is
-        -- read out of the operator Secret before being synced into Vault).
-        kubernetesSecretDecodedDataField "password" secretJson
-          `shouldBe` Right (Just "s3cr3t-Pw!")
-        kubernetesSecretDecodedDataField "username" secretJson
-          `shouldBe` Right (Just "keycloak")
-        -- Field absent from the data map: Nothing, not an error.
-        kubernetesSecretDecodedDataField "verifier" secretJson
-          `shouldBe` Right Nothing
-        -- No data map at all (Secret not yet populated): Nothing, not an error,
-        -- so the sync is a no-op on a not-yet-bootstrapped cluster.
-        kubernetesSecretDecodedDataField "password" (object ["metadata" .= object []])
-          `shouldBe` Right Nothing
 
     it "builds vscode deployment plans with dependency order and deterministic values" $ do
       result <-
@@ -8895,7 +9057,8 @@ unitSuite = do
                          ]
                       ++ gatewayAwsCredsNoneLines
                       ++ gatewayMinioCredsNoneLines
-                      ++ [ "  , minio_endpoint_url = None Text"
+                      ++ [ "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
+                         , "  , minio_endpoint_url = None Text"
                          , "  }"
                          , ", live ="
                          , "  { heartbeat_interval_seconds = 2.0"
@@ -8998,7 +9161,7 @@ unitSuite = do
       $ do
         -- Regression: on a fresh Vault during a bare `cluster reconcile` the
         -- operational `aws.*` block is unmaterialized, so
-        -- secret/gateway/gateway/aws does not exist yet and its Vault refs 404.
+        -- secret/aws/gateway-dns does not exist yet and its Vault refs 404.
         -- `resolveSecretRefFromVault` maps that 404 to
         -- 'SecretRefVaultFieldMissing'; the daemon must run WITHOUT aws creds
         -- rather than fail the whole config decode and boot degraded pre-Vault
@@ -9045,31 +9208,21 @@ unitSuite = do
                    , "statefulset/gateway-node-b"
                    ]
 
-    it "classifyGatewayObjectStoreProbe: a reachable object-store (present or absent) is healthy" $ do
-      classifyGatewayObjectStoreProbe (Right (Just "checkpoint")) `shouldBe` GatewayObjectStoreHealthy
-      classifyGatewayObjectStoreProbe (Right Nothing) `shouldBe` GatewayObjectStoreHealthy
+    it "classifyGatewayFullModeProbe: ready means continuity recovery completed" $
+      classifyGatewayFullModeProbe Prodbox.Gateway.Client.GatewayReadyzReady
+        `shouldBe` GatewayFullModeHealthy
 
-    it "classifyGatewayObjectStoreProbe: a 503 is degraded pre-Vault mode (needs restart)" $
-      case classifyGatewayObjectStoreProbe
-        ( Left
-            ( Prodbox.Gateway.Client.GatewayTransport
-                (Prodbox.Http.Client.HttpStatus 503 "daemon MinIO credentials are not configured\n")
-            )
-        ) of
-        GatewayObjectStoreDegraded503 body -> body `shouldContain` "MinIO credentials"
-        other -> expectationFailure ("expected GatewayObjectStoreDegraded503, got " ++ show other)
+    it "classifyGatewayFullModeProbe: not-ready is a definite restart/settling signal" $
+      classifyGatewayFullModeProbe
+        (Prodbox.Gateway.Client.GatewayReadyzNotReady 503 "continuity recovery is pending\n")
+        `shouldBe` GatewayFullModeNotReady "HTTP 503: continuity recovery is pending\n"
 
-    it "classifyGatewayObjectStoreProbe: other errors are transient (retry, don't restart)" $ do
-      case classifyGatewayObjectStoreProbe
-        (Left (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpConnectionFailure "refused"))) of
-        GatewayObjectStoreTransient _ -> pure ()
-        other -> expectationFailure ("expected GatewayObjectStoreTransient, got " ++ show other)
-      case classifyGatewayObjectStoreProbe
-        (Left (Prodbox.Gateway.Client.GatewayTransport (Prodbox.Http.Client.HttpStatus 500 "boom"))) of
-        GatewayObjectStoreTransient _ -> pure ()
-        other -> expectationFailure ("expected GatewayObjectStoreTransient, got " ++ show other)
+    it "classifyGatewayFullModeProbe: transport failures are transient" $
+      classifyGatewayFullModeProbe
+        (Prodbox.Gateway.Client.GatewayReadyzUnreachable "connection refused")
+        `shouldBe` GatewayFullModeTransient "connection refused"
 
-    it "daemonBootFieldsChanged: a changed daemonMinioCreds / daemonAwsCreds is a boot change" $ do
+    it "daemonBootFieldsChanged: changed authority or secret coordinates are boot changes" $ do
       decoded <-
         GatewaySettings.decodeDaemonConfigDhallWith
           (\_ -> pure (Right "resolved-secret"))
@@ -9078,6 +9231,7 @@ unitSuite = do
         Left err -> expectationFailure err
         Right config -> do
           daemonBootFieldsChanged config config `shouldBe` False
+          daemonBootFieldsChanged config (config {daemonLifecycleAuthority = Nothing}) `shouldBe` True
           daemonBootFieldsChanged config (config {daemonMinioCreds = Nothing}) `shouldBe` True
           daemonBootFieldsChanged config (config {daemonAwsCreds = Nothing}) `shouldBe` True
 
@@ -9217,7 +9371,11 @@ unitSuite = do
                        ]
                     ++ gatewayAwsCredsNoneLines
                     ++ gatewayMinioCredsNoneLines
-                    ++ [ "  , minio_endpoint_url = None Text"
+                    ++ [ "  , lifecycle_authority = Some"
+                       , "      { authority_scope = \"cluster-a\""
+                       , "      , endpoint = \"http://lifecycle-authority.gateway.svc.cluster.local:8600\""
+                       , "      }"
+                       , "  , minio_endpoint_url = None Text"
                        , "  }"
                        , ", live ="
                        , "  { heartbeat_interval_seconds = 1.0"
@@ -9249,6 +9407,26 @@ unitSuite = do
           daemonDrainDeadlineSeconds config `shouldBe` Just 30
           daemonConfigLogLevel config `shouldBe` Just "info"
           daemonEventKeys config `shouldBe` [("node-a", "abcdef0123456789")]
+          case daemonLifecycleAuthority config of
+            Nothing -> expectationFailure "expected Lifecycle Authority capability"
+            Just authority -> do
+              gatewayLifecycleAuthorityScope authority `shouldBe` "cluster-a"
+              controlPlaneEndpointText (gatewayLifecycleAuthorityEndpoint authority)
+                `shouldBe` "http://lifecycle-authority.gateway.svc.cluster.local:8600"
+
+    it "rejects malformed Lifecycle Authority scope and endpoint coordinates" $ do
+      badScope <-
+        GatewaySettings.decodeDaemonConfigDhall
+          (Text.replace "authority_scope = \"cluster-a\"" "authority_scope = \"bad scope\"" happyDhall)
+      badScope `shouldSatisfy` isLeft
+      badEndpoint <-
+        GatewaySettings.decodeDaemonConfigDhall
+          ( Text.replace
+              "endpoint = \"http://lifecycle-authority.gateway.svc.cluster.local:8600\""
+              "endpoint = \"http://lifecycle-authority.gateway.svc.cluster.local:8600/path\""
+              happyDhall
+          )
+      badEndpoint `shouldSatisfy` isLeft
 
     it "preserves the DnsWriteGate fields through the Dhall decoder" $ do
       result <- GatewaySettings.decodeDaemonConfigDhall happyDhall
@@ -9286,7 +9464,8 @@ unitSuite = do
                          ]
                       ++ gatewayAwsCredsNoneLines
                       ++ gatewayMinioCredsNoneLines
-                      ++ [ "  , minio_endpoint_url = None Text"
+                      ++ [ "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
+                         , "  , minio_endpoint_url = None Text"
                          , "  }"
                          , ", live ="
                          , "  { heartbeat_interval_seconds = 1.0"
@@ -9328,7 +9507,8 @@ unitSuite = do
                          ]
                       ++ gatewayAwsCredsNoneLines
                       ++ gatewayMinioCredsNoneLines
-                      ++ [ "  , minio_endpoint_url = None Text"
+                      ++ [ "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
+                         , "  , minio_endpoint_url = None Text"
                          , "  }"
                          , ", live ="
                          , "  { heartbeat_interval_seconds = 1.0"
@@ -9370,7 +9550,8 @@ unitSuite = do
                          ]
                       ++ gatewayAwsCredsNoneLines
                       ++ gatewayMinioCredsNoneLines
-                      ++ [ "  , minio_endpoint_url = None Text"
+                      ++ [ "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
+                         , "  , minio_endpoint_url = None Text"
                          , "  }"
                          , ", live ="
                          , "  { heartbeat_interval_seconds = 0.0"
@@ -9410,7 +9591,8 @@ unitSuite = do
                            ]
                         ++ gatewayAwsCredsNoneLines
                         ++ gatewayMinioCredsNoneLines
-                        ++ [ "  , minio_endpoint_url = None Text"
+                        ++ [ "  , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
+                           , "  , minio_endpoint_url = None Text"
                            , "  }"
                            , ", live ="
                            , "  { heartbeat_interval_seconds = 1.0"
@@ -9924,47 +10106,6 @@ unitSuite = do
       BL8.unpack (encode (InCluster.secretManifestStringData Map.empty))
         `shouldBe` "{}"
 
-  describe "Sprint 4.17 destroy-path credential fallback" $ do
-    it "AwsEks.credentialsConfigured rejects creds with an empty access_key_id" $
-      let empty =
-            Credentials
-              { access_key_id = ""
-              , secret_access_key = "S"
-              , session_token = Nothing
-              , region = "us-west-2"
-              }
-       in AwsEks.credentialsConfigured empty `shouldBe` False
-
-    it "AwsEks.credentialsConfigured rejects creds with an empty secret_access_key" $
-      let empty =
-            Credentials
-              { access_key_id = "A"
-              , secret_access_key = ""
-              , session_token = Nothing
-              , region = "us-west-2"
-              }
-       in AwsEks.credentialsConfigured empty `shouldBe` False
-
-    it "AwsEks.credentialsConfigured rejects creds with an empty region" $
-      let empty =
-            Credentials
-              { access_key_id = "A"
-              , secret_access_key = "S"
-              , session_token = Nothing
-              , region = ""
-              }
-       in AwsEks.credentialsConfigured empty `shouldBe` False
-
-    it "AwsEks.credentialsConfigured accepts a fully-populated triple" $
-      let full =
-            Credentials
-              { access_key_id = "A"
-              , secret_access_key = "S"
-              , session_token = Nothing
-              , region = "us-west-2"
-              }
-       in AwsEks.credentialsConfigured full `shouldBe` True
-
   describe "Sprint 4.16 ResidueStatus typed predicates" $ do
     it "residuePresentByFileExistence returns ResidueAbsent when the file is missing" $
       Residue.residuePresentByFileExistence "aws-eks" "/some/snapshot.json" False
@@ -10085,6 +10226,7 @@ unitSuite = do
               , ResourceRegistry.resourceEnsureCommand = Nothing
               , ResourceRegistry.resourceEnsurePresent = Nothing
               , ResourceRegistry.resourceDestroyCommand = "prodbox aws stack " ++ name ++ " destroy --yes"
+              , ResourceRegistry.resourceDestroyCapability = ResourceRegistry.managedDestroyCapability name
               , ResourceRegistry.resourceDestroy = \_ -> do
                   modifyIORef' destroyed (++ [name])
                   pure code
@@ -10171,11 +10313,11 @@ unitSuite = do
       written `shouldContain` "STEP=per_run_destroy aws-eks-subzone"
       readIORef applyCalled `shouldReturn` False
 
-    it "nuke --dry-run renders the plan with a fail-closed step-4 description and does not prompt" $ do
+    it "nuke --dry-run renders the authenticated receipt plan and does not prompt" $ do
       let plan = Nuke.renderNukePlan "/repo"
-      plan `shouldContain` "STEP=4"
-      plan `shouldContain` "fail-closed"
-      plan `shouldContain` "STEP=5"
+      plan `shouldContain` "PROTOCOL=signed-external-decommission-v1"
+      plan `shouldContain` "RECEIPT=durable intent before every effect"
+      plan `shouldContain` "NODE=shared-object-bucket (unique terminal)"
 
   -- Sprint 5.6: the three destructive `--dry-run` goldens (audit V80 found
   -- them missing). Each golden pins the exact planned step list a
@@ -10231,19 +10373,13 @@ unitSuite = do
         perRunNames
       perRunNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
 
-    it "the nuke golden names every registry-derived destroy target (drift guard)" $ do
+    it "the nuke golden pins the authenticated external protocol and closed node families" $ do
       nukeGolden <- readFile "test/golden/destructive/nuke.txt"
-      let perRunNames = map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
-          longLivedNames = map ResourceRegistry.resourceName ResourceRegistry.longLivedManagedResources
-      mapM_
-        (\name -> nukeGolden `shouldContain` ("STEP=2 per_run_destroy " ++ name))
-        perRunNames
-      -- aws-ses long-lived Pulumi destroy command is registry-derived.
-      nukeGolden
-        `shouldContain` ("STEP=1 " ++ ResourceRegistry.resourceDestroyCommand ResourceRegistry.awsSesPulumiResource)
-      mapM_
-        (\name -> nukeGolden `shouldContain` ("STEP=4 long_lived_destroy " ++ name))
-        longLivedNames
+      nukeGolden `shouldContain` "PROTOCOL=signed-external-decommission-v1"
+      nukeGolden `shouldContain` "NODE=ses-consumer-quiescence"
+      nukeGolden `shouldContain` "NODE=target-generation (one per signed manifest target)"
+      nukeGolden `shouldContain` "NODE=shared-object-bucket (unique terminal)"
+      nukeGolden `shouldNotContain` "STEP=1 prodbox aws stack aws-ses destroy"
 
   describe "Sprint 4.26 checkPlanOptionsHonored lint" $ do
     it "fires when Rke2Delete binds its PlanOptions to a _ wildcard" $ do
@@ -10277,6 +10413,12 @@ unitSuite = do
       -- abortOrContinue short-circuits on the first ExitFailure: when the
       -- step-4 tag-sweep returns ExitFailure, the bucket-destroy closure
       -- never runs and the failure is returned.
+      -- abortOrContinue short-circuits on the first ExitFailure: when the
+      -- step-4 tag-sweep returns ExitFailure, the bucket-destroy closure
+      -- never runs and the failure is returned.
+      -- abortOrContinue short-circuits on the first ExitFailure: when the
+      -- step-4 tag-sweep returns ExitFailure, the bucket-destroy closure
+      -- never runs and the failure is returned.
       Nuke.abortOrContinue (ExitFailure 7) (pure ExitSuccess)
         `shouldReturn` ExitFailure 7
 
@@ -10286,6 +10428,12 @@ unitSuite = do
 
   describe "Sprint 4.26 noLiveLongLivedPulumiStacks aws-teardown preflight composition" $ do
     it "the aws teardown default precondition set includes noLiveLongLivedPulumiStacks" $
+      -- The operator `aws teardown` default path refuses on a live long-lived
+      -- stack via this named precondition. (The per-run refuse-gate was
+      -- removed: `cluster delete` is now a pure local uninstall.)
+      -- The operator `aws teardown` default path refuses on a live long-lived
+      -- stack via this named precondition. (The per-run refuse-gate was
+      -- removed: `cluster delete` is now a pure local uninstall.)
       -- The operator `aws teardown` default path refuses on a live long-lived
       -- stack via this named precondition. (The per-run refuse-gate was
       -- removed: `cluster delete` is now a pure local uninstall.)
@@ -10982,7 +11130,7 @@ unitSuite = do
                 , residueLeakedKeys = []
                 , residueVaultPopulated = True
                 }
-       in ("secret/gateway/gateway/aws" `isInfixOf` rendered) `shouldBe` True
+       in ("secret/aws/lifecycle-provider" `isInfixOf` rendered) `shouldBe` True
 
   describe "Sprint 4.17.a canonical cascade phase order" $ do
     it "narration lists drain before per-run destroys (doctrine §5b)" $
@@ -11155,55 +11303,6 @@ unitSuite = do
 
     it "StackName preserves the wrapped Text identity" $
       StackOutputs.unStackName (StackOutputs.StackName "aws-ses") `shouldBe` "aws-ses"
-
-  describe "host-direct residue-read shared fallback (LiveResidue batching)" $ do
-    it "isRetryableReadFailure: a degraded-daemon read failure is retry-worthy" $
-      LiveResidue.isRetryableReadFailure
-        (StackOutputs.StackOutputsCommandFailed "HTTP 503 response: object-store unavailable")
-        `shouldBe` True
-
-    it "isRetryableReadFailure: an authoritative bucket-absent message is NOT retry-worthy" $
-      LiveResidue.isRetryableReadFailure
-        ( StackOutputs.StackOutputsCommandFailed
-            "could not list bucket: blob (code=NotFound): NoSuchBucket: The specified bucket does not exist"
-        )
-        `shouldBe` False
-
-    it "mergeSharedObservation: a non-candidate stack keeps its daemon result unchanged" $ do
-      let name = StackOutputs.StackName "aws-eks-test"
-          daemonResult = (name, Right CheckpointPresent)
-          merged = LiveResidue.mergeSharedObservation [] (Right []) daemonResult
-      merged `shouldBe` (name, Right CheckpointPresent)
-
-    it "mergeSharedObservation: a candidate adopts its successful host-direct observation" $ do
-      let name = StackOutputs.StackName "aws-eks-test"
-          candidates = [(name, "HTTP 503")]
-          shared = Right [(name, Right CheckpointPresent)]
-          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503"))
-      LiveResidue.mergeSharedObservation candidates shared daemonResult
-        `shouldBe` (name, Right CheckpointPresent)
-
-    it "mergeSharedObservation: a candidate whose host read also failed stays a combined failure" $ do
-      let name = StackOutputs.StackName "aws-eks-test"
-          candidates = [(name, "HTTP 503 daemon down")]
-          shared = Right [(name, Left "MinIO port-forward failed")]
-          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503 daemon down"))
-      case LiveResidue.mergeSharedObservation candidates shared daemonResult of
-        (n, Left (StackOutputs.StackOutputsCommandFailed detail)) -> do
-          n `shouldBe` name
-          detail `shouldContain` "HTTP 503 daemon down"
-          detail `shouldContain` "MinIO port-forward failed"
-        other -> expectationFailure ("expected combined StackOutputsCommandFailed, got " ++ show other)
-
-    it "mergeSharedObservation: an unavailable shared port-forward keeps every candidate fail-closed" $ do
-      let name = StackOutputs.StackName "aws-eks-test"
-          candidates = [(name, "HTTP 503")]
-          shared = Left "host-direct Pulumi fallback: vault sealed"
-          daemonResult = (name, Left (StackOutputs.StackOutputsCommandFailed "HTTP 503"))
-      case LiveResidue.mergeSharedObservation candidates shared daemonResult of
-        (_, Left (StackOutputs.StackOutputsCommandFailed detail)) ->
-          detail `shouldContain` "vault sealed"
-        other -> expectationFailure ("expected StackOutputsCommandFailed, got " ++ show other)
 
   describe "Sprint 4.16 LiveResidue error mapping + listing translation" $ do
     it "residueReasonFromMinioError maps subprocess failure to MinIO unreachable" $
@@ -11506,93 +11605,6 @@ unitSuite = do
       result <- observeStackCheckpointWith hooks stackRef
       result `shouldBe` Left (EncryptedBackendLoadFailed "connection refused")
 
-  describe "host-direct object-store fallback (daemon-first, host-direct on daemon failure)" $ do
-    let stackRef = PulumiStackRef "prodbox-aws-eks-test" "aws-eks-test"
-        validCheckpoint = "{\"version\":3,\"checkpoint\":{}}" :: BS.ByteString
-
-    it "withDaemonFirstFallback: daemon success short-circuits; host op is NOT called" $ do
-      hostCalled <- newIORef False
-      let daemonOp = pure (Right (Just validCheckpoint))
-          hostOp = writeIORef hostCalled True >> pure (Right (Just ("host-bytes" :: BS.ByteString)))
-      result <- withDaemonFirstFallback "load" daemonOp hostOp
-      result `shouldBe` Right (Just validCheckpoint)
-      readIORef hostCalled `shouldReturn` False
-
-    it "withDaemonFirstFallback: daemon Right Nothing (absent) is an ANSWER; host op is NOT called" $ do
-      hostCalled <- newIORef False
-      let daemonOp = pure (Right Nothing) :: IO (Either String (Maybe BS.ByteString))
-          hostOp = writeIORef hostCalled True >> pure (Right (Just "host-bytes"))
-      result <- withDaemonFirstFallback "load" daemonOp hostOp
-      result `shouldBe` Right Nothing
-      readIORef hostCalled `shouldReturn` False
-
-    it "withDaemonFirstFallback: daemon failure falls back to a successful host op" $ do
-      hostCalled <- newIORef False
-      let daemonOp = pure (Left "HTTP 503 response: object-store unavailable")
-          hostOp = writeIORef hostCalled True >> pure (Right (Just validCheckpoint))
-      result <- withDaemonFirstFallback "load" daemonOp hostOp
-      result `shouldBe` Right (Just validCheckpoint)
-      readIORef hostCalled `shouldReturn` True
-
-    it "withDaemonFirstFallback: both failing yields a combined error naming both" $ do
-      let daemonOp = pure (Left "HTTP 503 daemon down") :: IO (Either String (Maybe BS.ByteString))
-          hostOp = pure (Left "port-forward to MinIO failed")
-      result <- withDaemonFirstFallback "load" daemonOp hostOp
-      case result of
-        Left detail -> do
-          detail `shouldContain` "HTTP 503 daemon down"
-          detail `shouldContain` "port-forward to MinIO failed"
-        Right _ -> expectationFailure "expected Left when both daemon and host fail"
-
-    it "composite observe: daemon 503, host-direct present -> CheckpointPresent" $ do
-      let hooks =
-            observabilityHooks
-              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right (Just validCheckpoint))))
-      result <- observeStackCheckpointWith hooks stackRef
-      result `shouldBe` Right CheckpointPresent
-
-    it "composite observe: daemon 503, host-direct absent -> CheckpointAbsent" $ do
-      let hooks =
-            observabilityHooks
-              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right Nothing)))
-      result <- observeStackCheckpointWith hooks stackRef
-      result `shouldBe` Right CheckpointAbsent
-
-    it "composite observe: daemon 503, host-direct corrupt -> CheckpointCorrupt" $ do
-      let hooks =
-            observabilityHooks
-              (withDaemonFirstFallback "load" (pure (Left "HTTP 503")) (pure (Right (Just "garbage{"))))
-      result <- observeStackCheckpointWith hooks stackRef
-      case result of
-        Right (CheckpointCorrupt _) -> pure ()
-        other -> expectationFailure ("expected Right (CheckpointCorrupt _), got " ++ show other)
-
-    it "composite observe: daemon 503 + host failure -> EncryptedBackendLoadFailed naming both" $ do
-      let hooks =
-            observabilityHooks
-              ( withDaemonFirstFallback
-                  "load"
-                  (pure (Left "HTTP 503 daemon down"))
-                  (pure (Left "MinIO port-forward failed"))
-              )
-      result <- observeStackCheckpointWith hooks stackRef
-      case result of
-        Left (EncryptedBackendLoadFailed detail) -> do
-          detail `shouldContain` "HTTP 503 daemon down"
-          detail `shouldContain` "MinIO port-forward failed"
-        other -> expectationFailure ("expected EncryptedBackendLoadFailed, got " ++ show other)
-
-    it "composite observe: healthy daemon classifies present and never touches host-direct" $ do
-      let hooks =
-            observabilityHooks
-              ( withDaemonFirstFallback
-                  "load"
-                  (pure (Right (Just validCheckpoint)))
-                  (error "host-direct must not be called")
-              )
-      result <- observeStackCheckpointWith hooks stackRef
-      result `shouldBe` Right CheckpointPresent
-
   describe "Sprint 4.18 live-output parsers for per-run AWS stacks" $ do
     it "parseAwsTestNodesFromOutputs decodes the three-node Pulumi outputs" $ do
       let nodesJson =
@@ -11623,7 +11635,7 @@ unitSuite = do
 
     it "parseAwsTestNodesFromOutputs fails when the 'nodes' field is missing" $
       case AwsTest.parseAwsTestNodesFromOutputs Map.empty of
-        Left err -> err `shouldContain` "missing required field 'nodes'"
+        Left err -> err `shouldContain` "missing non-empty field 'nodes'"
         Right _ -> expectationFailure "expected Left for missing 'nodes' field"
 
     it "parseAwsTestNodesFromOutputs fails when the 'nodes' field is not JSON" $ do
@@ -11673,7 +11685,7 @@ unitSuite = do
     it "parseAwsEksTestStackFromOutputs fails when a required scalar is missing" $ do
       let outputs = Map.fromList [("cluster_name", "x")]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
-        Left err -> err `shouldContain` "missing required field"
+        Left err -> err `shouldContain` "missing non-empty field"
         Right _ -> expectationFailure "expected Left for missing required field"
 
     it "parseAwsEksTestStackFromOutputs fails when subnet_ids is not a JSON array" $ do
@@ -12106,36 +12118,6 @@ unitSuite = do
       EbsVolume.renderTestScopedEbsReaperReport report
         `shouldContain` "vol-a, vol-b"
 
-  describe "Sprint 3.19 Patroni Vault/pg_authid mismatch loud-failure decision" $ do
-    it "proceeds when the Vault-backed password authenticates against pg_authid" $
-      patroniSeedMismatchDecision "vscode" "keycloak" PatroniAuthMatches
-        `shouldBe` PatroniResetProceed
-
-    it "proceeds when pg_authid cannot be observed (fresh install / transient miss)" $
-      patroniSeedMismatchDecision
-        "vscode"
-        "keycloak"
-        (PatroniAuthUnobservable "no Patroni primary Pod found; nothing to probe")
-        `shouldBe` PatroniResetProceed
-
-    it "fails loudly on a proven rejection, naming the namespace/role pair and resolution options" $
-      case patroniSeedMismatchDecision "vscode" "keycloak" PatroniAuthRejected of
-        PatroniResetProceed ->
-          expectationFailure "a definite pg_authid rejection must fail loudly, not proceed"
-        PatroniResetLoudFailure message -> do
-          message `shouldContain` "namespace `vscode`"
-          message `shouldContain` "role `keycloak`"
-          message `shouldContain` "refuses to silently reset"
-          message `shouldContain` "restoring the Vault data / `.data/`"
-          message `shouldContain` "wiping"
-
-    it "renderPatroniResetDecision maps proceed to Right and loud failure to Left" $ do
-      renderPatroniResetDecision PatroniResetProceed
-        `shouldBe` Right ()
-      case renderPatroniResetDecision (PatroniResetLoudFailure "boom") of
-        Left message -> message `shouldBe` "boom"
-        Right () -> expectationFailure "a loud-failure decision must render as Left"
-
   describe "host NTP disposition" $ do
     it "treats `System clock synchronized: yes` as healthy" $ do
       parseTimedatectlNtpDisposition
@@ -12393,39 +12375,24 @@ unitSuite = do
       maybe (unsetEnv "PATH") (setEnv "PATH") originalPath
       maybe (unsetEnv "HOME") (setEnv "HOME") originalHome
 
-    it "retries transient AWS credential propagation failures before failing the prerequisite" $
-      withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        let binDir = tmpDir </> "bin"
-            fakeAwsPath = binDir </> "aws"
-            stateDir = tmpDir </> "fake-aws-state"
-            countPath = stateDir </> "sts-count"
-            restoreEnv key previous =
-              case previous of
-                Just value -> setEnv key value
-                Nothing -> unsetEnv key
-
-        createDirectoryIfMissing True binDir
-        writeFile fakeAwsPath (unlines (fakeAwsCredentialPropagationScript stateDir))
-        makeExecutable fakeAwsPath
-
-        withBinarySiblingTier0 (wrapTier0 validConfig) $ do
-          originalPath <- lookupEnv "PATH"
-          originalHostVaultKv <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
-          let configuredPath =
-                case originalPath of
-                  Just currentPath -> binDir ++ ":" ++ currentPath
-                  Nothing -> binDir
-
-          setEnv "PATH" configuredPath
-          setEnv "PRODBOX_TEST_HOST_VAULT_KV" "allow"
-          validationResult <-
-            runEffect (InterpreterContext tmpDir) (Validate RequireAwsCredentials)
-              `finally` do
-                restoreEnv "PATH" originalPath
-                restoreEnv "PRODBOX_TEST_HOST_VAULT_KV" originalHostVaultKv
-
-          validationResult `shouldBe` Result.Success ()
-          readFile countPath `shouldReturn` "3"
+    it "retries transient authenticated Provider credential propagation failures" $
+      do
+        attempts <- newIORef (0 :: Int)
+        let authenticatedProviderFixture =
+              AwsCredentialValidationBoundary
+                { validateAwsCredentialThroughProvider = do
+                    attempt <- (+ 1) <$> readIORef attempts
+                    writeIORef attempts attempt
+                    pure $
+                      if attempt < 3
+                        then Left "Provider STS identity is not propagated yet"
+                        else Right ()
+                , waitForAwsCredentialValidationRetry = pure ()
+                }
+        validationResult <-
+          runAwsCredentialValidationWithRetry 5 authenticatedProviderFixture
+        validationResult `shouldBe` Result.Success ()
+        readIORef attempts `shouldReturn` 3
 
   describe "native validation helpers" $ do
     it "retries AWS test-stack SSH validation until a node accepts connections" $
@@ -12539,18 +12506,6 @@ unitSuite = do
             , "user" .= ("AKIAEXAMPLE" :: Text.Text)
             , "password" .= ("smtp-pass" :: Text.Text)
             ]
-    it "decodes the keycloak/smtp Vault KV object into realm SMTP settings" $ do
-      let fields =
-            Map.fromList
-              [ ("host", "email-smtp.us-west-2.amazonaws.com")
-              , ("port", "587")
-              , ("from", "noreply@test.resolvefintech.com")
-              , ("from_display_name", "prodbox")
-              , ("reply_to", "noreply@test.resolvefintech.com")
-              , ("username", "AKIAEXAMPLE")
-              , ("password", "smtp-pass")
-              ]
-      Prodbox.UsersAdmin.smtpSettingsFromVaultFields fields `shouldBe` Right smtpSettings
     it "renders Keycloak's smtpServer representation from the Vault fields" $
       Prodbox.Keycloak.Admin.realmSmtpSettingsJson smtpSettings `shouldBe` expectedSmtpJson
     it "patches an existing realm representation without dropping existing fields" $
@@ -12601,29 +12556,16 @@ unitSuite = do
           p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
       p1 `shouldBe` p2
 
-  describe "Keycloak SMTP Vault sync" $ do
-    it "renders the externally-owned keycloak/smtp Vault fields" $ do
-      let fields =
-            AwsSesStack.keycloakSmtpVaultFields
-              "us-west-2"
-              "test.resolvefintech.com"
-              "email-smtp.us-west-2.amazonaws.com"
-              "AKIAEXAMPLE"
-              (Text.unpack sesSmtpPasswordExampleSecret)
-      Map.lookup "host" fields `shouldBe` Just "email-smtp.us-west-2.amazonaws.com"
-      Map.lookup "port" fields `shouldBe` Just "587"
-      Map.lookup "from" fields `shouldBe` Just "noreply@test.resolvefintech.com"
-      Map.lookup "from_display_name" fields `shouldBe` Just "prodbox"
-      Map.lookup "reply_to" fields `shouldBe` Just "noreply@test.resolvefintech.com"
-      Map.lookup "username" fields `shouldBe` Just "AKIAEXAMPLE"
-      Map.lookup "password" fields
-        `shouldBe` Just (Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret)
-
+  describe "retained SES integration statics" $ do
     it "lets aws-ses Route 53 records reconcile over retained records during state repair" $ do
       repoRoot <- getCurrentDirectory
       pulumiProgram <- readFile (repoRoot </> "pulumi" </> "aws-ses" </> "Main.yaml")
-      length (filter (== "      allowOverwrite: true") (lines pulumiProgram))
-        `shouldBe` 5
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
+      pulumiProgram `shouldNotContain` "allowOverwrite"
+      providerProduction
+        `shouldContain` "[(NativeRoute53.Upsert, record) | record <- desired]"
 
     it "allows Keycloak egress to the configured SES SMTP port" $ do
       repoRoot <- getCurrentDirectory
@@ -12804,19 +12746,29 @@ unitSuite = do
                      , "applyEksImageMirrorJob"
                      , "ensureRuntimeImageForSubstrate SubstrateAws"
                      , "observeAwsRegistryReady"
-                     , "ensureAwsSubstrateCertManagerRuntime"
-                     , "observeAwsCertManagerReady"
-                     , "ensureGatewayChartReady SubstrateAws"
-                     , "observeAwsGatewayPreVaultReady"
-                     , "runVaultBootstrapViaDaemonAt"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws bootstrap-broker"
+                     , "observeAwsBootstrapBrokerReady"
+                     , "runVaultBootstrapViaBroker"
                      , "observeAwsVaultUnsealedReady"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws target-secret-agent"
+                     , "observeAwsTargetSecretAgentReady"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority"
+                     , "observeAwsLifecycleAuthorityReady"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws authority-backup"
+                     , "observeAwsAuthorityBackupReady"
                      , "ensureAwsSubstrateEnvoyGatewayRuntime"
                      , "observeAwsEnvoyGatewayReady"
+                     , "ensureAwsSubstrateCertManagerRuntime"
+                     , "observeAwsCertManagerReady"
                      , "ensurePostgresOperatorRuntime"
                      , "observeAwsPostgresOperatorReady"
                      , "ensureGatewayMinioBootstrap"
                      , "ensureGatewayChartReadyPostVaultAt SubstrateAws"
                      , "observeAwsGatewayFullReady"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws provider-worker"
+                     , "observeAwsProviderWorkerReady"
+                     , "ensureInternalControlPlaneChartReady SubstrateAws tls-retention"
+                     , "observeAwsTlsRetentionReady"
                      , "ensureAwsSubstrateAcmeRuntime"
                      , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
@@ -12927,13 +12879,15 @@ unitSuite = do
         harborIndex `shouldSatisfy` (`indexPrecedes` mirrorJobIndex)
         mirrorJobIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
       it
-        "runs gateway pre-Vault, daemon Vault bootstrap, and full-mode convergence in graph phase order"
+        "runs Broker before Vault bootstrap and Gateway only after the Authority"
         $ do
-          let preIndex = elemIndex "ensureGatewayChartReady SubstrateAws" steps
-              vaultIndex = elemIndex "runVaultBootstrapViaDaemonAt" steps
+          let brokerIndex = elemIndex "ensureInternalControlPlaneChartReady SubstrateAws bootstrap-broker" steps
+              vaultIndex = elemIndex "runVaultBootstrapViaBroker" steps
+              authorityIndex = elemIndex "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority" steps
               fullIndex = elemIndex "ensureGatewayChartReadyPostVaultAt SubstrateAws" steps
-          preIndex `shouldSatisfy` (`indexPrecedes` vaultIndex)
-          vaultIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
+          brokerIndex `shouldSatisfy` (`indexPrecedes` vaultIndex)
+          vaultIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
+          authorityIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
       it "does not retain the redundant steady-state MinIO reinstall" $
         steps `shouldNotContain` ["ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"]
       it
@@ -12960,7 +12914,6 @@ unitSuite = do
                         SubstrateAws
                         "prodbox-test"
                         "prodbox-test"
-                        "client-secret"
                     )
                 )
         rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
@@ -12974,6 +12927,9 @@ unitSuite = do
           `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
         rendered
           `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
+        rendered `shouldContain` "minio-admin-oidc-materializer"
+        rendered `shouldContain` "secret/vscode/oidc/vscode"
+        rendered `shouldNotContain` "stringData"
       it
         "places the union runtime-image build after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
         $ do
@@ -13142,9 +13098,14 @@ unitSuite = do
       residue `shouldBe` [("aws-ses", "prodbox aws stack aws-ses destroy --yes")]
 
   describe "Sprint 4.20 managed-resource registry facts" $ do
-    it "the per-run class includes Pulumi stacks and dynamic Pulsar topics" $
+    it "the per-run class includes Pulumi stacks, dynamic Pulsar topics, and desired-absent Harbor" $
       ResourceClass.resourceNamesOfClass ResourceClass.PerRun
-        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test", "pulsar-topics-per-run"]
+        `shouldBe` [ "aws-eks"
+                   , "aws-eks-subzone"
+                   , "aws-test"
+                   , "pulsar-topics-per-run"
+                   , "legacy-harbor-helm-release"
+                   ]
 
     it
       "the long-lived class includes aws-ses, retained EBS volumes, public-edge cert, and dynamic Pulsar topics"
@@ -13245,13 +13206,87 @@ unitSuite = do
       rendered `shouldNotContain` "NoSuchKey"
       rendered `shouldNotContain` "public-edge-tls"
 
+  describe "Sprint 4.50 non-exporting DNS observation" $ do
+    let stateFor zone fqdn writable observedIp =
+          object
+            [ "dns_write_gate"
+                .= object
+                  [ "zone_id" .= (zone :: Text.Text)
+                  , "fqdn" .= (fqdn :: Text.Text)
+                  , "ttl" .= (60 :: Int)
+                  , "aws_region" .= ("us-east-1" :: Text.Text)
+                  ]
+            , "can_write_dns" .= writable
+            , "last_dns_write_ip" .= observedIp
+            ]
+
+    it "accepts only the exact Gateway-DNS zone/FQDN binding" $ do
+      Dns.decodeHomeGatewayDnsObservation
+        "ZHOME"
+        "home.example.test"
+        (stateFor "ZHOME" "HOME.EXAMPLE.TEST." True (Just ("203.0.113.8" :: Text.Text)))
+        `shouldBe` Right (Dns.HomeGatewayDnsObservation (Just "203.0.113.8") True)
+      Dns.decodeHomeGatewayDnsObservation
+        "ZHOME"
+        "home.example.test"
+        (stateFor "ZOTHER" "home.example.test" True (Nothing :: Maybe Text.Text))
+        `shouldBe` Left "Gateway-DNS observation is bound to a different hosted zone"
+      Dns.decodeHomeGatewayDnsObservation
+        "ZHOME"
+        "home.example.test"
+        (stateFor "ZHOME" "other.example.test" True (Nothing :: Maybe Text.Text))
+        `shouldBe` Left "Gateway-DNS observation is bound to a different FQDN"
+
+    it "routes AWS Route 53 observation and mutation through typed Authority Provider intents" $ do
+      source <- readFile "src/Prodbox/Dns.hs"
+      source `shouldContain` "ObservePublicARecord ref"
+      source `shouldContain` "ReconcilePublicARecord ref"
+      source `shouldContain` "dispatchHostProviderIntentFresh"
+      source `shouldNotContain` "awsRoute53ProviderOwnershipError"
+
+    it "contains no Target credential export in the DNS module" $ do
+      source <- readFile "src/Prodbox/Dns.hs"
+      source `shouldNotContain` "resolveRegisteredAwsCredentialTarget"
+      source `shouldNotContain` "AwsGatewayDns"
+      source `shouldNotContain` "awsCliSubprocessEnvironment"
+
+    it "removes the reusable host Target-material plaintext API and all migrated callers" $ do
+      settingsSource <- readFile "src/Prodbox/Settings.hs"
+      awsSource <- readFile "src/Prodbox/Aws.hs"
+      awsSubstrateSource <- readFile "src/Prodbox/Lib/AwsSubstratePlatform.hs"
+      validationSource <- readFile "src/Prodbox/TestValidation.hs"
+      cabalSource <- readFile "prodbox.cabal"
+      mapM_
+        (`shouldNotContain` "Prodbox.ControlPlane.TargetMaterialAccess")
+        [settingsSource, awsSource, awsSubstrateSource, validationSource, cabalSource]
+      mapM_
+        (`shouldNotContain` "readRegisteredTargetMaterial")
+        [settingsSource, awsSource, awsSubstrateSource, validationSource]
+      validationSource `shouldNotContain` "readKeycloakOidcClientField"
+      awsSubstrateSource `shouldNotContain` "resolveRegisteredAwsCredentialTarget"
+
+    it "renders direct OIDC login as an exact one-shot tmpfs Vault consumer" $ do
+      let rendered =
+            BL8.unpack
+              ( encode
+                  (demoOidcSessionValidationAgentManifest "https://home.example.test/ws")
+              )
+      rendered `shouldContain` "oidc-session-validation-agent"
+      rendered `shouldContain` "role=oidc-session-validation"
+      rendered `shouldContain` "secret/vscode/oidc/demo-user"
+      rendered `shouldContain` "password@/vault-materialized/demo-password"
+      rendered `shouldContain` "\"medium\":\"Memory\""
+      rendered `shouldContain` "\"backoffLimit\":0"
+      rendered `shouldContain` "\"restartPolicy\":\"Never\""
+      rendered `shouldNotContain` "stringData"
+
   describe "ZeroSSL ACME ClusterIssuer + cert retention key scheme" $ do
     let settings = testValidatedSettings "/tmp"
         zoneId = "ZHOSTEDZONE"
         baseConfig = validatedConfig settings
-        -- Sprint 7.15: EAB references are SecretRef.Vault into secret/acme/eab.
-        -- The resolved key ID is supplied separately (host-resolved from
-        -- Vault); the HMAC key is materialized in-cluster, never rendered.
+        -- EAB references are exact SecretRef.Vault values. Both fields are
+        -- projected and consumed inside the materializer Pod; neither is a
+        -- host renderer argument.
         eabSettings =
           settings
             { validatedConfig =
@@ -13276,52 +13311,60 @@ unitSuite = do
                         }
                   }
             }
-        resolvedKeyId = Just "test-eab-key-id"
 
     it "the issuer spec renders acme.server (ZeroSSL) and the ZeroSSL account key" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings resolvedKeyId zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
       rendered `shouldContain` "https://acme.zerossl.com/v2/DV90"
       rendered `shouldContain` "zerossl-account-key"
 
     it "the issuer spec references the DNS-01 Route 53 solver secret and hosted zone" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings resolvedKeyId zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
       rendered `shouldContain` "route53-credentials"
       rendered `shouldContain` "ZHOSTEDZONE"
 
-    it "the issuer spec includes the ZeroSSL external account binding when configured" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings resolvedKeyId zoneId))
-      rendered `shouldContain` "externalAccountBinding"
-      -- The EAB key ID is the host-resolved (Vault-sourced) value, inline.
-      rendered `shouldContain` "test-eab-key-id"
-      -- The HMAC key is materialized in-cluster; it never appears in the spec,
-      -- only the keySecretRef to the materialized Secret.
-      rendered `shouldContain` "acme-eab-credentials"
-
-    it "the issuer spec omits the external account binding when EAB is not configured" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec noEabSettings Nothing zoneId))
+    it "keeps both EAB fields out of the host-rendered issuer spec" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings zoneId))
       rendered `shouldNotContain` "externalAccountBinding"
-
-    it "the issuer spec omits the binding when EAB is configured but the key ID is unresolved" $ do
-      -- A sealed Vault yields an unresolved key ID; the binding is then omitted
-      -- (fail-closed) rather than rendered without its key ID.
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings Nothing zoneId))
-      rendered `shouldNotContain` "externalAccountBinding"
+      rendered `shouldNotContain` "keyID"
 
     it "acmeRuntimeManifestWith renders the EAB materializer Job and the single issuer" $ do
-      let manifests = acmeRuntimeManifestWith SubstrateHomeLocal eabSettings zoneId resolvedKeyId "pid" "lbl"
+      let manifests = acmeRuntimeManifestWith SubstrateHomeLocal eabSettings zoneId "pid" "lbl"
           rendered = BL8.unpack (encode manifests)
       clusterIssuerNamesIn manifests `shouldBe` [publicEdgeClusterIssuerName]
+      -- Home DNS01 credentials are projected by an exact Vault consumer in
+      -- cert-manager.  No AWS credential field is accepted at this host
+      -- rendering boundary.
+      rendered `shouldContain` "home-dns01-secret-materializer"
+      rendered `shouldContain` "secret/aws/cert-manager/home/dns01"
+      rendered `shouldContain` "access_key_id"
+      rendered `shouldContain` "secret_access_key"
+      rendered `shouldNotContain` "stringData"
       -- The EAB HMAC key is materialized by a Vault-login Job, not rendered
       -- as inline plaintext stringData.
       rendered `shouldContain` "acme-eab-secret-materializer"
       rendered `shouldContain` "vault-materialized"
+      rendered `shouldContain` "key_id"
+      rendered `shouldContain` "hmac_key"
+      rendered `shouldContain` "/apis/cert-manager.io/v1/clusterissuers/"
       rendered `shouldNotContain` "test-eab-hmac-key"
+      rendered `shouldNotContain` "test-eab-key-id"
 
     it "acmeRuntimeManifestWith omits the EAB materializer when EAB is not configured" $ do
       let rendered =
             BL8.unpack
-              (encode (acmeRuntimeManifestWith SubstrateHomeLocal noEabSettings zoneId Nothing "pid" "lbl"))
+              (encode (acmeRuntimeManifestWith SubstrateHomeLocal noEabSettings zoneId "pid" "lbl"))
       rendered `shouldNotContain` "acme-eab-secret-materializer"
+
+    it "projects only the run-scoped AWS DNS01 generation on the EKS target" $ do
+      let rendered =
+            BL8.unpack
+              (encode (acmeRuntimeManifestWith SubstrateAws noEabSettings zoneId "pid" "lbl"))
+      rendered `shouldContain` "aws-dns01-target-materializer"
+      rendered `shouldContain` "secret/aws/cert-manager/aws/dns01"
+      rendered `shouldContain` "aws-cert-manager-run"
+      rendered `shouldNotContain` "home-dns01-secret-materializer"
+      rendered `shouldNotContain` "secret/aws/cert-manager/home/dns01"
+      rendered `shouldNotContain` "stringData"
 
     it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
       publicEdgeClusterIssuerName `shouldBe` "zerossl-dns01"
@@ -13642,6 +13685,17 @@ unitSuite = do
         `shouldBe` []
       awsCreateSiteViolations "src/Prodbox/Minio/ObjectStore.hs" contentsWithCreateBucket
         `shouldBe` []
+      awsCreateSiteViolations "src/Prodbox/ControlPlane/ProviderProduction.hs" contentsWithCreateBucket
+        `shouldBe` []
+
+    it "keeps the Provider production owner exception narrow to create-bucket" $ do
+      let violations =
+            awsCreateSiteViolations
+              "src/Prodbox/ControlPlane/ProviderProduction.hs"
+              contentsWithCreateUser
+      assertExactlyOne violations $ \violation -> do
+        violation `shouldContain` "create-user"
+        violation `shouldContain` "src/Prodbox/Aws.hs"
 
     it "Sprint 4.27 the Route 53 capability probe (create-hosted-zone) is carved out, never flagged" $ do
       let contentsWithCreateHostedZone =
@@ -14273,19 +14327,6 @@ unitSuite = do
         )
         `shouldBe` "noLiveOperationalIamUser"
 
-    it "noLeftoverDnsBootstrapRecords exposes its label" $
-      Preconditions.preconditionLabel
-        ( Preconditions.noLeftoverDnsBootstrapRecords
-            "/tmp/repo"
-            Credentials
-              { access_key_id = "AKIA"
-              , secret_access_key = "secret"
-              , session_token = Nothing
-              , region = "us-west-2"
-              }
-        )
-        `shouldBe` "noLeftoverDnsBootstrapRecords"
-
   describe "Sprint 4.10 admin-credential predicate" $ do
     it "adminCredentialsConfigured accepts a fully populated credential block" $
       adminCredentialsConfigured
@@ -14352,16 +14393,38 @@ unitSuite = do
   describe "Sprint 4.13 prodbox nuke renderer + confirmation literal" $ do
     it "confirmation literal is `NUKE EVERYTHING` (case-sensitive, no shorthand)" $
       Nuke.confirmationLiteral `shouldBe` "NUKE EVERYTHING"
-    it "renderNukePlan lists the five-step orchestration in order" $ do
+    it "renderNukePlan lists the signed external decommission gates and nodes" $ do
       let plan = Nuke.renderNukePlan "/tmp/repo"
-      plan `shouldContain` "STEP=1 prodbox aws stack aws-ses destroy"
-      plan `shouldContain` "STEP=2 K8s drain"
-      plan `shouldContain` "STEP=3 prodbox aws teardown"
-      plan `shouldContain` "STEP=4 postflight tag sweep"
-      plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+      plan `shouldContain` "EXTERNAL_RECEIPT=<required-for-apply>"
+      plan `shouldContain` "PINNED_RUNNER=<derived-from-external-receipt>.runner"
+      plan `shouldContain` "GATE=freeze admission"
+      plan `shouldContain` "GATE=create/fsync/read-back external receipt"
+      plan `shouldContain` "NODE=ses-consumer-quiescence"
+      plan `shouldContain` "NODE=tls-retained-objects"
+      plan `shouldContain` "NODE=shared-object-bucket (unique terminal)"
       plan
-        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=ephemeral admin AWS credential from the interactive prompt (harness-simulated from test-secrets.dhall::aws_admin_for_test_simulation.*); never read from prodbox.dhall or Vault"
+        `shouldContain` "ADMIN_CREDENTIAL_SOURCE=one ephemeral admin AWS credential from the interactive prompt; never persisted"
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
+    it "pins non-empty compiled dependency and verifier metadata" $ do
+      Nuke.nukeRunnerDependencyMetadata `shouldSatisfy` (not . BS.null)
+      Nuke.nukeRunnerDependencyMetadata
+        `shouldSatisfy` BS8.isInfixOf "prodbox-decommission-runner-dependencies-v1"
+      Nuke.nukeRunnerDependencyMetadata
+        `shouldSatisfy` BS8.isInfixOf "serialise="
+      Nuke.nukeVerifierMetadata `shouldSatisfy` isRight
+    it "advertises apply only through the complete production composition" $
+      case Nuke.productionDecommissionAvailability of
+        Nuke.ProductionDecommissionReady _ -> pure ()
+    it "contains no reachable legacy five-command teardown adapters" $ do
+      source <- readFile "src/Prodbox/CLI/Nuke.hs"
+      mapM_
+        (source `shouldNotContain`)
+        [ "runNativeDeleteCascade"
+        , "runPulumiCommand"
+        , "applyAwsTeardown"
+        , "discoverClusterTaggedAwsResources"
+        , "destroyLongLivedPulumiStateBucket"
+        ]
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches the Pulumi stack descriptor SSoT" $
@@ -15132,7 +15195,7 @@ unitSuite = do
           Left err -> expectationFailure err
           Right settings -> do
             renderSettingsDisplay settings
-              `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
+              `shouldContain` "aws.access_key_id=Vault:secret/aws/lifecycle-provider#access_key_id"
             -- Sprint 1.61: sensitive fields are ALWAYS masked; the former
             -- --show-secrets unmasked reveal mode is removed.
             renderSettingsDisplay settings `shouldContain` "acme.email=****.com"
@@ -15231,6 +15294,12 @@ unitSuite = do
         `shouldBe` Right ["*.resolvefintech.com"]
 
     it "Sprint 2.35: certDnsNamesForServedHost keys on the AWS-subzone served host" $
+      -- On the AWS substrate the served host is the subzone, so the default
+      -- certificate covers exactly the subzone FQDN (behavior-identical to the
+      -- prior single `.Values.gateway.host` on that substrate).
+      -- On the AWS substrate the served host is the subzone, so the default
+      -- certificate covers exactly the subzone FQDN (behavior-identical to the
+      -- prior single `.Values.gateway.host` on that substrate).
       -- On the AWS substrate the served host is the subzone, so the default
       -- certificate covers exactly the subzone FQDN (behavior-identical to the
       -- prior single `.Values.gateway.host` on that substrate).
@@ -15368,6 +15437,12 @@ unitSuite = do
       Allocation.compileResourcePlanUncertified plan `shouldSatisfy` isRight
 
     it "decodes locally even when the ZeroSSL EAB binding is incomplete (AWS-tier check)" $
+      -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
+      -- local decode path ('validateAndLoadSettings') accepts it; only the
+      -- AWS tier ('validateAwsBootstrapConfig') enforces it.
+      -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
+      -- local decode path ('validateAndLoadSettings') accepts it; only the
+      -- AWS tier ('validateAwsBootstrapConfig') enforces it.
       -- The ACME / ZeroSSL binding is an AWS / public-edge concern, so the
       -- local decode path ('validateAndLoadSettings') accepts it; only the
       -- AWS tier ('validateAwsBootstrapConfig') enforces it.
@@ -15584,36 +15659,6 @@ fakeAwsTestSshScript =
   , "echo \"aws-test-node-0\""
   ]
 
-fakeAwsCredentialPropagationScript :: FilePath -> [String]
-fakeAwsCredentialPropagationScript stateDir =
-  [ "#!/usr/bin/env bash"
-  , "set -euo pipefail"
-  , "STATE_DIR=\"" ++ stateDir ++ "\""
-  , "COUNT_FILE=\"$STATE_DIR/sts-count\""
-  , "/bin/mkdir -p \"$STATE_DIR\""
-  , "if [[ \"${1:-}\" == \"--version\" ]]; then"
-  , "  printf 'aws-cli/2.17.0 Python/3.12.0 Linux/6.8.0 exe/x86_64\\n'"
-  , "  exit 0"
-  , "fi"
-  , "if [[ \"$*\" != 'sts get-caller-identity --output json' ]]; then"
-  , "  printf 'unsupported fake aws command: %s\\n' \"$*\" >&2"
-  , "  exit 1"
-  , "fi"
-  , "count=0"
-  , "if [[ -f \"$COUNT_FILE\" ]]; then"
-  , "  count=$(cat \"$COUNT_FILE\")"
-  , "fi"
-  , "count=$((count + 1))"
-  , "printf '%s' \"$count\" > \"$COUNT_FILE\""
-  , "if [[ $count -lt 3 ]]; then"
-  , "  printf 'An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid.\\n' >&2"
-  , "  exit 254"
-  , "fi"
-  , "cat <<'JSON'"
-  , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDAFake\"}"
-  , "JSON"
-  ]
-
 -- | Sprint 5.6: resolve a 'PrerequisiteId' by its stable display string
 -- ('prerequisiteIdText'). Lets the prerequisite-registry tests keep
 -- asserting the stable snake_case identifiers while the registry is keyed
@@ -15685,7 +15730,7 @@ hasCycle visited prerequisiteId
 validConfig :: String
 validConfig =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
+    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -15702,7 +15747,7 @@ validConfig =
 invalidZeroSslConfig :: String
 invalidZeroSslConfig =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
+    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -15726,7 +15771,7 @@ invalidZeroSslConfig =
 plaintextEabZeroSslConfig :: String
 plaintextEabZeroSslConfig =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1"
+    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
@@ -16334,11 +16379,11 @@ testValidatedSettings manualRoot =
           { aws =
               AwsCredentialsRef
                 { awsCredentialAccessKeyId =
-                    SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+                    SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
                 , awsCredentialSecretAccessKey =
-                    SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "secret_access_key")
+                    SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
                 , awsCredentialSessionToken =
-                    Just (SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "session_token"))
+                    Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
                 , awsCredentialRegion = "us-east-1"
                 }
           , route53 = Route53Section {zone_id = "Z1234567890ABC"}
@@ -16355,6 +16400,12 @@ testValidatedSettings manualRoot =
                 }
           , deployment = validDeploymentSection
           , storage = StorageSection {manual_pv_host_root = ".data"}
+          , pulumi_state_backend =
+              PulumiStateBackendSection
+                { psbBucketName = "prodbox-retained"
+                , psbRegion = "ca-central-1"
+                , psbKeyPrefix = "pulumi"
+                }
           }
     , resolvedManualPvHostRoot = manualRoot
     , validatedAllocatedPlan =
@@ -16393,8 +16444,6 @@ sampleConfigSetupInput =
     , configSetupDemoTtlInput = 60
     , configSetupAcmeEmailInput = "ops@resolvefintech.com"
     , configSetupAcmeServerInput = "https://acme.zerossl.com/v2/DV90"
-    , configSetupAcmeEabKeyIdInput = Just "test-eab-key-id"
-    , configSetupAcmeEabHmacKeyInput = Just "test-eab-hmac-key"
     , configSetupDevModeInput = True
     , configSetupBootstrapPublicIpOverrideInput = Just "203.0.113.10"
     , configSetupPulumiEnableDnsBootstrapInput = True
@@ -16423,11 +16472,11 @@ roundTripConfigFile =
     { aws =
         AwsCredentialsRef
           { awsCredentialAccessKeyId =
-              SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "access_key_id")
+              SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
           , awsCredentialSecretAccessKey =
-              SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "secret_access_key")
+              SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
           , awsCredentialSessionToken =
-              Just (SecretRefVault (VaultSecretRef "secret" "gateway/gateway/aws" "session_token"))
+              Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
           , awsCredentialRegion = "us-east-1"
           }
     , route53 = Route53Section {zone_id = "Z1234567890ABC"}

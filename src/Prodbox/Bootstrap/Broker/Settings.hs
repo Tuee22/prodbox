@@ -13,6 +13,7 @@ module Prodbox.Bootstrap.Broker.Settings
   , BrokerListenerDhall (..)
   , BootstrapStoreDhall (..)
   , BrokerLimitsDhall (..)
+  , ParentRegistrationDhall (..)
   , BootstrapBrokerSettings
   , brokerSchemaVersion
   , brokerClusterId
@@ -22,6 +23,10 @@ module Prodbox.Bootstrap.Broker.Settings
   , brokerBootstrapStore
   , brokerLimits
   , brokerBurnRecipient
+  , brokerParentRegistration
+  , ParentRegistrationCapability
+  , parentRegistrationClusterId
+  , parentRegistrationAuthorityEndpoint
   , BrokerListener
   , brokerListenAddress
   , brokerListenPort
@@ -93,6 +98,7 @@ data BootstrapBrokerConfigDhall = BootstrapBrokerConfigDhall
   , listener :: BrokerListenerDhall
   , bootstrap_store :: BootstrapStoreDhall
   , limits :: BrokerLimitsDhall
+  , parent_registration :: Maybe ParentRegistrationDhall
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -129,6 +135,15 @@ data BrokerLimitsDhall = BrokerLimitsDhall
   }
   deriving (Eq, Show, Generic, FromDhall)
 
+-- | Optional only because root clusters have no parent.  A transit-sealed
+-- child receives this non-secret cross-cluster capability from Tier-0; it is
+-- never inferred from the cluster-local Lifecycle Authority service DNS.
+data ParentRegistrationDhall = ParentRegistrationDhall
+  { parent_cluster_id :: Text
+  , parent_authority_endpoint :: Text
+  }
+  deriving (Eq, Show, Generic, FromDhall)
+
 data BootstrapBrokerSettings = BootstrapBrokerSettings
   { brokerSchemaVersion :: Natural
   , brokerClusterId :: Text
@@ -138,6 +153,13 @@ data BootstrapBrokerSettings = BootstrapBrokerSettings
   , brokerBootstrapStore :: BootstrapStore
   , brokerLimits :: BrokerLimits
   , brokerBurnRecipient :: CompiledBurnRecipient
+  , brokerParentRegistration :: Maybe ParentRegistrationCapability
+  }
+  deriving (Eq, Show)
+
+data ParentRegistrationCapability = ParentRegistrationCapability
+  { parentRegistrationClusterId :: !Text
+  , parentRegistrationAuthorityEndpoint :: !Text
   }
   deriving (Eq, Show)
 
@@ -248,6 +270,8 @@ data BrokerConfigField
   | ChildRecoveryJournalKeyField
   | PostUnsealHandoffKeyField
   | SecretWorkerCheckpointKeyField
+  | ParentRegistrationClusterIdField
+  | ParentRegistrationAuthorityEndpointField
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 data BrokerLimitName
@@ -265,6 +289,8 @@ data BootstrapBrokerSettingsError
   | BrokerListenerPortOutOfRange Natural
   | BrokerLimitOutOfRange BrokerLimitName Natural Natural
   | BrokerStorageKeysNotDistinct
+  | BrokerParentRegistrationSelfReference
+  | BrokerParentRegistrationEndpointNotExternal Text
   deriving (Eq, Show)
 
 renderBootstrapBrokerSettingsError :: BootstrapBrokerSettingsError -> String
@@ -293,6 +319,12 @@ renderBootstrapBrokerSettingsError err = case err of
       ++ show observed
   BrokerStorageKeysNotDistinct ->
     "bootstrap-broker storage keys must be pairwise distinct"
+  BrokerParentRegistrationSelfReference ->
+    "bootstrap-broker parent registration cluster must differ from the local cluster"
+  BrokerParentRegistrationEndpointNotExternal observed ->
+    "bootstrap-broker parent Authority endpoint must be an external HTTPS endpoint, got `"
+      ++ Text.unpack observed
+      ++ "`"
 
 brokerConfigFieldName :: BrokerConfigField -> String
 brokerConfigFieldName field = case field of
@@ -314,6 +346,9 @@ brokerConfigFieldName field = case field of
   ChildRecoveryJournalKeyField -> "bootstrap_store.child_recovery_journal_key"
   PostUnsealHandoffKeyField -> "bootstrap_store.post_unseal_handoff_key"
   SecretWorkerCheckpointKeyField -> "bootstrap_store.secret_worker_checkpoint_key"
+  ParentRegistrationClusterIdField -> "parent_registration.parent_cluster_id"
+  ParentRegistrationAuthorityEndpointField ->
+    "parent_registration.parent_authority_endpoint"
 
 brokerLimitName :: BrokerLimitName -> String
 brokerLimitName limitName = case limitName of
@@ -323,7 +358,7 @@ brokerLimitName limitName = case limitName of
   DrainDeadlineMillisecondsLimit -> "limits.drain_deadline_milliseconds"
 
 supportedBootstrapBrokerSchemaVersion :: Natural
-supportedBootstrapBrokerSchemaVersion = 1
+supportedBootstrapBrokerSchemaVersion = 2
 
 maximumBrokerQueueCapacity :: Natural
 maximumBrokerQueueCapacity = 256
@@ -348,6 +383,7 @@ validateBootstrapBrokerConfig config = do
   validatedListener <- validateListener (listener config)
   validatedStore <- validateStore (bootstrap_store config)
   validatedLimits <- validateLimits (limits config)
+  validatedParent <- validateParentRegistration clusterId (parent_registration config)
   Right
     BootstrapBrokerSettings
       { brokerSchemaVersion = supportedBootstrapBrokerSchemaVersion
@@ -358,7 +394,51 @@ validateBootstrapBrokerConfig config = do
       , brokerBootstrapStore = validatedStore
       , brokerLimits = validatedLimits
       , brokerBurnRecipient = compiledBurnRecipient
+      , brokerParentRegistration = validatedParent
       }
+
+validateParentRegistration
+  :: Text
+  -> Maybe ParentRegistrationDhall
+  -> Either BootstrapBrokerSettingsError (Maybe ParentRegistrationCapability)
+validateParentRegistration _ Nothing = Right Nothing
+validateParentRegistration localCluster (Just parent) = do
+  parentCluster <-
+    requireNonEmpty ParentRegistrationClusterIdField (parent_cluster_id parent)
+  endpoint <-
+    requireNonEmpty
+      ParentRegistrationAuthorityEndpointField
+      (parent_authority_endpoint parent)
+  if parentCluster == localCluster
+    then Left BrokerParentRegistrationSelfReference
+    else Right ()
+  if externalHttpsEndpoint endpoint
+    then
+      Right
+        ( Just
+            ParentRegistrationCapability
+              { parentRegistrationClusterId = parentCluster
+              , parentRegistrationAuthorityEndpoint = endpoint
+              }
+        )
+    else Left (BrokerParentRegistrationEndpointNotExternal endpoint)
+
+externalHttpsEndpoint :: Text -> Bool
+externalHttpsEndpoint endpoint =
+  "https://" `Text.isPrefixOf` endpoint
+    && not (Text.null authority)
+    && not (Text.any (== '@') authority)
+    && not localAuthority
+ where
+  authority = Text.takeWhile (/= '/') (Text.drop 8 endpoint)
+  lowered = Text.toLower authority
+  localAuthority =
+    lowered == "localhost"
+      || "localhost:" `Text.isPrefixOf` lowered
+      || "127." `Text.isPrefixOf` lowered
+      || "[::1]" `Text.isPrefixOf` lowered
+      || ".svc" `Text.isSuffixOf` lowered
+      || ".svc.cluster.local" `Text.isInfixOf` lowered
 
 validateSchemaVersion :: Natural -> Either BootstrapBrokerSettingsError ()
 validateSchemaVersion observed =

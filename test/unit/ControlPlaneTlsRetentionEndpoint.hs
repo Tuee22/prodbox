@@ -1,111 +1,300 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 module ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite) where
 
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid, ControlPlaneRequestTooLarge)
-  , decodeControlPlaneRequest
+  , decodeControlPlaneResponse
   , encodeControlPlaneRequest
   )
+import Prodbox.ControlPlane.DedicatedAdapterStore
+  ( AdapterObjectObservation (..)
+  , AdapterObjectVersion
+  , AdapterPutResult (..)
+  , DedicatedAdapterKind (TlsRetentionAdapter)
+  , DedicatedAdapterTransport (..)
+  , adapterObjectNameText
+  , awsS3EndpointForRegion
+  , mkAdapterObjectVersion
+  , mkTlsRetentionStoreConfig
+  , tlsRetentionEnvelopeObjectName
+  , tlsRetentionStorePrefix
+  , tlsRetentionStoreScopeKey
+  , tlsRetentionStoreSubstrate
+  )
+import Prodbox.ControlPlane.TlsRetentionAdapter
+  ( tlsRetentionRepositoryWithTransport
+  )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
+import Prodbox.ControlPlane.TlsTargetAgentEndpoint
+  ( TlsPublicEdgeSecret
+  , TlsSecretObservation (..)
+  , mkTlsPublicEdgeSecret
+  )
+import Prodbox.ControlPlane.TlsTargetAgentProduction
+  ( TlsSecretApplyDecision (..)
+  , decideTlsSecretApply
+  )
 import Prodbox.Lifecycle.Authority.TlsRetention
+  ( CertIdentity (..)
+  , RetainedTlsRef (..)
+  , RetentionVersion (..)
+  , SourceSecretRef (..)
+  )
 import TestSupport
 
 controlPlaneTlsRetentionEndpointSuite :: SuiteBuilder ()
 controlPlaneTlsRetentionEndpointSuite =
-  describe "Sprint 4.50 TLS Retention role endpoint" $ do
-    it "promotes and commits a first renewal store" $ do
-      (repository, stateRef) <- freshRepository
-      result <- serveTlsStore repository KeyRotationNotApproved goodEvidence ref1
-      result `shouldBe` TlsStoreDecided (TlsPromoted ref1)
-      tlsRetentionHttpStatus result `shouldBe` 200
-      tlsRetentionSummary result `shouldBe` "tls-promoted"
-      (currentRetainedRef <$> readIORef stateRef) `shouldReturn` Just ref1
-    it "refuses a store without source re-observation and does not commit" $ do
-      (repository, stateRef) <- freshRepository
-      result <- serveTlsStore repository KeyRotationNotApproved (PromotionEvidence False True) ref1
-      result `shouldBe` TlsStoreDecided (TlsPromotionRefused TlsSourceNotReobserved)
-      tlsRetentionHttpStatus result `shouldBe` 409
-      tlsRetentionSummary result `shouldBe` "tls-promotion-refused:source-not-reobserved"
-      readIORef stateRef `shouldReturn` initialTlsRetentionState
-    it "treats a re-store of the current reference as an idempotent no-op" $ do
-      (repository, _) <- freshRepository
-      _ <- serveTlsStore repository KeyRotationNotApproved goodEvidence ref1
-      result <- serveTlsStore repository KeyRotationNotApproved goodEvidence ref1
-      result `shouldBe` TlsStoreDecided (TlsPromotionNoop ref1)
-      tlsRetentionHttpStatus result `shouldBe` 200
-      tlsRetentionSummary result `shouldBe` "tls-promotion-noop"
-    it "reports a failed durable commit as a retryable write failure" $ do
-      stateRef <- newIORef initialTlsRetentionState
-      let repository = inMemoryRepository stateRef True
-      result <- serveTlsStore repository KeyRotationNotApproved goodEvidence ref1
-      tlsRetentionHttpStatus result `shouldBe` 503
-      tlsRetentionSummary result `shouldBe` "tls-store-write-failed"
-    it "applies, issues, or fails a restore against the committed reference" $ do
-      stateRef <- newIORef (TlsRetentionCurrent ref1)
-      let repository = inMemoryRepository stateRef False
-      apply <- serveTlsRestore repository (RestoreCommittedIntact ref1)
-      apply `shouldBe` TlsRestoreDecided (TlsRestoreApply ref1)
-      tlsRetentionSummary apply `shouldBe` "tls-restore-apply"
-      issue <- serveTlsRestore repository RestoreCommittedAbsent
-      tlsRetentionSummary issue `shouldBe` "tls-restore-issue"
-      mismatch <- serveTlsRestore repository (RestoreCommittedIntact ref2)
-      tlsRetentionHttpStatus mismatch `shouldBe` 409
-      corrupt <- serveTlsRestore repository RestoreCommittedCorrupt
-      tlsRetentionHttpStatus corrupt `shouldBe` 500
-      tlsRetentionSummary corrupt `shouldBe` "tls-restore-refused:corrupt"
-    it "round-trips a store payload and a restore observation through the request codec" $ do
-      let store = TlsStorePayload KeyRotationNotApproved goodEvidence ref1
-      decodeControlPlaneRequest 4096 (encodeControlPlaneRequest store) `shouldBe` Right store
-      decodeControlPlaneRequest 4096 (encodeControlPlaneRequest (RestoreCommittedIntact ref1))
-        `shouldBe` Right (RestoreCommittedIntact ref1)
-    it "serveTlsStoreRequest decodes a well-formed store body and promotes" $ do
-      (repository, stateRef) <- freshRepository
-      let body = encodeControlPlaneRequest (TlsStorePayload KeyRotationNotApproved goodEvidence ref1)
-      result <- serveTlsStoreRequest 4096 repository body
-      result `shouldBe` TlsStoreDecided (TlsPromoted ref1)
-      tlsRetentionHttpStatus result `shouldBe` 200
-      tlsRetentionSummary result `shouldBe` "tls-promoted"
-      (currentRetainedRef <$> readIORef stateRef) `shouldReturn` Just ref1
-    it "serveTlsStoreRequest refuses a malformed body before reading state" $ do
-      (repository, stateRef) <- freshRepository
-      result <- serveTlsStoreRequest 4096 repository "not-a-cbor-envelope"
-      result `shouldBe` TlsRequestBadRequest ControlPlaneRequestInvalid
-      tlsRetentionHttpStatus result `shouldBe` 400
-      tlsRetentionSummary result `shouldBe` "tls-bad-request:invalid"
-      readIORef stateRef `shouldReturn` initialTlsRetentionState
-    it "serveTlsRestoreRequest decodes a well-formed restore body and applies it" $ do
-      stateRef <- newIORef (TlsRetentionCurrent ref1)
-      let repository = inMemoryRepository stateRef False
-          body = encodeControlPlaneRequest (RestoreCommittedIntact ref1)
-      result <- serveTlsRestoreRequest 4096 repository body
-      result `shouldBe` TlsRestoreDecided (TlsRestoreApply ref1)
-      tlsRetentionSummary result `shouldBe` "tls-restore-apply"
-    it "serveTlsRestoreRequest refuses an oversized body before reading state" $ do
-      (repository, _) <- freshRepository
-      let body = encodeControlPlaneRequest (RestoreCommittedIntact ref1)
-      result <- serveTlsRestoreRequest 2 repository body
-      result `shouldBe` TlsRequestBadRequest ControlPlaneRequestTooLarge
-      tlsRetentionHttpStatus result `shouldBe` 400
-      tlsRetentionSummary result `shouldBe` "tls-bad-request:too-large"
- where
-  goodEvidence = PromotionEvidence True True
-  src = SourceSecretRef "uid-1" "rv-1"
-  ref1 = RetainedTlsRef (RetentionVersion 1) (CertIdentity "serial-1" "spki-A" 1000) "ct-1" src
-  ref2 = RetainedTlsRef (RetentionVersion 2) (CertIdentity "serial-2" "spki-A" 2000) "ct-2" src
-  freshRepository = do
-    stateRef <- newIORef initialTlsRetentionState
-    pure (inMemoryRepository stateRef False, stateRef)
+  describe "Sprint 4.50 TLS Retention opaque-envelope endpoint" $ do
+    it "accepts only the exact canonical substrate/scope prefix" $ do
+      let config =
+            mustRight
+              ( mkTlsRetentionStoreConfig
+                  "home"
+                  (awsS3EndpointForRegion "ca-central-1")
+                  "ca-central-1"
+                  "prodbox-retained"
+                  "home-local"
+                  "%2A.example.com%2Ctest.example.com"
+                  "public-edge-tls/home-local/%2A.example.com%2Ctest.example.com"
+              )
+      tlsRetentionStoreSubstrate config `shouldBe` "home-local"
+      tlsRetentionStoreScopeKey config `shouldBe` "%2A.example.com%2Ctest.example.com"
+      tlsRetentionStorePrefix config
+        `shouldBe` "public-edge-tls/home-local/%2A.example.com%2Ctest.example.com"
+      mkTlsRetentionStoreConfig
+        "home"
+        (awsS3EndpointForRegion "ca-central-1")
+        "ca-central-1"
+        "prodbox-retained"
+        "home-local"
+        "test.example"
+        "public-edge-tls/aws/test.example"
+        `shouldSatisfy` isLeft
+    it "creates only when the exact public-edge Secret is absent" $ do
+      let desired = samplePublicEdgeSecret "source-a" "1" "certificate"
+      decideTlsSecretApply desired (Right TlsSecretMissing)
+        `shouldBe` TlsSecretApplyCreate
+    it "treats exact retained content as idempotent despite a new Kubernetes identity" $ do
+      let desired = samplePublicEdgeSecret "retained-source" "7" "certificate"
+          existing = samplePublicEdgeSecret "restored-source" "12" "certificate"
+      decideTlsSecretApply desired (Right (TlsSecretPresent existing))
+        `shouldBe` TlsSecretApplyIdempotent existing
+    it "refuses different or corrupt existing public-edge Secret content" $ do
+      let desired = samplePublicEdgeSecret "source-a" "1" "certificate-a"
+          different = samplePublicEdgeSecret "source-b" "2" "certificate-b"
+      decideTlsSecretApply desired (Right (TlsSecretPresent different))
+        `shouldBe` TlsSecretApplyFailed "public-edge TLS Secret already exists with different retained content"
+      decideTlsSecretApply desired (Right (TlsSecretCorrupt "invalid certificate"))
+        `shouldBe` TlsSecretApplyFailed "public-edge TLS Secret already exists but is corrupt: invalid certificate"
+      mkTlsRetentionStoreConfig
+        "home"
+        (awsS3EndpointForRegion "ca-central-1")
+        "ca-central-1"
+        "prodbox-retained"
+        "other"
+        "test.example"
+        "public-edge-tls/other/test.example"
+        `shouldSatisfy` isLeft
+    it "stores a sealed envelope and returns a canonical binary receipt" $ do
+      (transport, _, _) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "certificate-ciphertext" "wrapped-dek"
+          reference = referenceFor 1 envelope
+          request = TlsStorePayload reference envelope
+      result <- serveTlsStoreRequest 4096 repository (encodeControlPlaneRequest request)
+      tlsStoreHttpStatus result `shouldBe` 200
+      tlsStoreSummary result `shouldBe` "tls-store:read-back-confirmed"
+      case result of
+        TlsStoreSucceeded receipt ->
+          decodeControlPlaneResponse
+            4096
+            (LazyByteString.fromStrict (tlsStoreResponseBody result))
+            `shouldBe` Right receipt
+        other -> expectationFailure ("expected TLS receipt, got " <> show other)
+    it "recovers an applied immutable PUT after its response is lost" $ do
+      (transport, _, putCount) <- freshMemoryTransport True
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "response-loss-certificate" "wrapped-dek"
+          reference = referenceFor 7 envelope
+      stored <- storeTlsEnvelope repository reference envelope
+      stored `shouldSatisfy` isRight
+      readIORef putCount `shouldReturn` 1
+      restored <- restoreTlsEnvelope repository reference
+      case restored of
+        Right (TlsEnvelopePresent readBack _) -> readBack `shouldBe` envelope
+        other -> expectationFailure ("expected exact TLS read-back, got " <> show other)
+    it "treats same-version same-envelope replay as idempotent" $ do
+      (transport, _, putCount) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "same-certificate" "same-wrapped-dek"
+          reference = referenceFor 2 envelope
+      first <- storeTlsEnvelope repository reference envelope
+      second <- storeTlsEnvelope repository reference envelope
+      first `shouldSatisfy` isRight
+      second `shouldSatisfy` isRight
+      readIORef putCount `shouldReturn` 2
+    it "rejects same-version substitution with different envelope bytes" $ do
+      (transport, _, _) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          firstEnvelope = sampleEnvelope "certificate-one" "wrapped-one"
+          secondEnvelope = sampleEnvelope "certificate-two" "wrapped-two"
+      first <- storeTlsEnvelope repository (referenceFor 3 firstEnvelope) firstEnvelope
+      first `shouldSatisfy` isRight
+      substituted <- storeTlsEnvelope repository (referenceFor 3 secondEnvelope) secondEnvelope
+      substituted `shouldBe` Left "TLS retention read-back bytes did not match"
+    it "distinguishes missing and corrupt immutable versions" $ do
+      (transport, objectsRef, _) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "expected-certificate" "expected-wrapped"
+          reference = referenceFor 4 envelope
+      restoreTlsEnvelope repository reference `shouldReturn` Right TlsEnvelopeMissing
+      let objectName = mustRight (tlsRetentionEnvelopeObjectName 4)
+          version = mustRight (mkAdapterObjectVersion "corrupt-etag")
+      writeIORef
+        objectsRef
+        (Map.singleton (adapterObjectNameText objectName) (version, "not-canonical-cbor"))
+      restored <- restoreTlsEnvelope repository reference
+      case restored of
+        Right (TlsEnvelopeCorrupt detail) ->
+          detail `shouldContainText` "encoded envelope is invalid"
+        other -> expectationFailure ("expected corrupt envelope, got " <> show other)
+    it "refuses malformed, oversized, invalid, and digest-mismatched requests" $ do
+      (transport, _, _) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "certificate" "wrapped-dek"
+          reference = referenceFor 1 envelope
+          request = TlsStorePayload reference envelope
+      serveTlsStoreRequest 4096 repository "not-cbor"
+        `shouldReturn` TlsStoreBadRequest ControlPlaneRequestInvalid
+      serveTlsStoreRequest 2 repository (encodeControlPlaneRequest request)
+        `shouldReturn` TlsStoreBadRequest ControlPlaneRequestTooLarge
+      mkTlsSealedEnvelope ByteString.empty "wrapped" `shouldSatisfy` isLeft
+      mkTlsSealedEnvelope
+        (ByteString.replicate (tlsMaximumCertificateCiphertextBytes + 1) 0)
+        "wrapped"
+        `shouldSatisfy` isLeft
+      let wrongReference = reference {retainedCiphertextDigest = Text.replicate 64 "0"}
+      serveTlsStoreRequest
+        4096
+        repository
+        (encodeControlPlaneRequest (TlsStorePayload wrongReference envelope))
+        `shouldReturn` TlsStoreDigestMismatch
+    it "returns the exact sealed envelope from the restore response codec" $ do
+      (transport, _, _) <- freshMemoryTransport False
+      let repository = tlsRetentionRepositoryWithTransport transport
+          envelope = sampleEnvelope "certificate-readback" "wrapped-readback"
+          reference = referenceFor 9 envelope
+      _ <- storeTlsEnvelope repository reference envelope
+      result <-
+        serveTlsRestoreRequest
+          4096
+          repository
+          (encodeControlPlaneRequest (TlsRestorePayload reference))
+      tlsRestoreHttpStatus result `shouldBe` 200
+      decodeControlPlaneResponse
+        (1024 * 1024)
+        (LazyByteString.fromStrict (tlsRestoreResponseBody result))
+        `shouldBe` Right (TlsEnvelopePresent envelope (receiptFromResult result))
+    it "redacts certificate ciphertext and wrapped DEK from Show" $ do
+      let envelope = sampleEnvelope "do-not-log-certificate" "do-not-log-dek"
+      show envelope `shouldNotContain` "do-not-log-certificate"
+      show envelope `shouldNotContain` "do-not-log-dek"
 
-inMemoryRepository :: IORef TlsRetentionState -> Bool -> TlsRetentionRepository IO
-inMemoryRepository stateRef failWrites =
-  TlsRetentionRepository
-    { readRetentionState = readIORef stateRef
-    , commitRetainedRef = \ref ->
-        if failWrites
-          then pure (Left "retained-store commit failed")
-          else do
-            writeIORef stateRef (TlsRetentionCurrent ref)
-            pure (Right ())
+sampleEnvelope :: ByteString -> ByteString -> TlsSealedEnvelope
+sampleEnvelope certificate wrapped = mustRight (mkTlsSealedEnvelope certificate wrapped)
+
+samplePublicEdgeSecret :: Text -> Text -> Text -> TlsPublicEdgeSecret
+samplePublicEdgeSecret uid resourceVersion certificate =
+  mustRight
+    ( mkTlsPublicEdgeSecret
+        (SourceSecretRef uid resourceVersion)
+        (CertIdentity certificate "spki-digest" 2000000000)
+        "kubernetes.io/tls"
+        ( Map.fromList
+            [ ("tls.crt", encodeBase64Text certificate)
+            , ("tls.key", encodeBase64Text "private-key")
+            ]
+        )
+        (Map.singleton "cert-manager.io/certificate-name" "public-edge-tls")
+    )
+ where
+  encodeBase64Text = TextEncoding.decodeUtf8 . Base64.encode . TextEncoding.encodeUtf8
+
+referenceFor :: Integer -> TlsSealedEnvelope -> RetainedTlsRef
+referenceFor version envelope =
+  RetainedTlsRef
+    { retainedVersion = RetentionVersion (fromInteger version)
+    , retainedCert = CertIdentity "serial" "spki-digest" 2000000000
+    , retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope
+    , retainedSourceSecret = SourceSecretRef "secret-uid" "resource-version"
     }
+
+receiptFromResult :: TlsRestoreResult -> TlsRetentionReceipt
+receiptFromResult result = case result of
+  TlsRestoreObserved (TlsEnvelopePresent _ receipt) -> receipt
+  _ -> error "expected present TLS envelope"
+
+freshMemoryTransport
+  :: Bool
+  -> IO
+       ( DedicatedAdapterTransport 'TlsRetentionAdapter IO
+       , IORef (Map Text (AdapterObjectVersion, ByteString))
+       , IORef Int
+       )
+freshMemoryTransport loseFirstResponse = do
+  objectsRef <- newIORef Map.empty
+  loseResponseRef <- newIORef loseFirstResponse
+  putCount <- newIORef 0
+  let transport =
+        DedicatedAdapterTransport
+          { observeAdapterObject = \objectName -> do
+              objects <- readIORef objectsRef
+              pure $ case Map.lookup (adapterObjectNameText objectName) objects of
+                Nothing -> Right AdapterObjectMissing
+                Just (version, bytes) -> Right (AdapterObjectObserved version bytes)
+          , putAdapterObjectIfAbsent = \objectName bytes -> do
+              modifyIORef' putCount (+ 1)
+              let key = adapterObjectNameText objectName
+              objects <- readIORef objectsRef
+              case Map.lookup key objects of
+                Just _ -> pure (Right AdapterPutConflict)
+                Nothing -> do
+                  let version =
+                        mustRight
+                          (mkAdapterObjectVersion ("etag-" <> Text.pack (show (ByteString.length bytes))))
+                  writeIORef objectsRef (Map.insert key (version, bytes) objects)
+                  lose <- atomicModifyIORef' loseResponseRef (False,)
+                  pure $ if lose then Left "PUT response lost" else Right AdapterPutApplied
+          , adapterObjectStoreReady = pure True
+          }
+  pure (transport, objectsRef, putCount)
+
+isLeft :: Either left right -> Bool
+isLeft value = case value of
+  Left _ -> True
+  Right _ -> False
+
+isRight :: Either left right -> Bool
+isRight value = case value of
+  Left _ -> False
+  Right _ -> True
+
+shouldContainText :: Text -> Text -> Expectation
+shouldContainText actual expected =
+  Text.unpack actual `shouldContain` Text.unpack expected
+
+mustRight :: (Show err) => Either err value -> value
+mustRight = either (error . show) id

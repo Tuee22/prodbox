@@ -6,6 +6,7 @@
 -- (@documents/engineering/secret_derivation_doctrine.md@).
 module Prodbox.Http.Client
   ( HttpError (..)
+  , HttpBoundedError (..)
   , HttpConfig (..)
   , sharedTlsManager
   , defaultHttpConfig
@@ -15,6 +16,8 @@ module Prodbox.Http.Client
   , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
   , httpPostJsonNoResponse
+  , httpRequestRaw
+  , httpRequestRawBounded
   , httpRequestNoBody
   , renderHttpError
   )
@@ -22,15 +25,18 @@ where
 
 import Control.Exception (Exception, SomeException, try)
 import Data.Aeson (FromJSON, ToJSON, eitherDecode, encode)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Network.HTTP.Client
-  ( HttpException (..)
+  ( BodyReader
+  , HttpException (..)
   , HttpExceptionContent (..)
   , Manager
   , Request
   , RequestBody (..)
   , Response
+  , brRead
   , httpLbs
   , method
   , newManager
@@ -41,6 +47,7 @@ import Network.HTTP.Client
   , responseStatus
   , responseTimeout
   , responseTimeoutMicro
+  , withResponse
   )
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (Header)
@@ -57,6 +64,14 @@ data HttpError
   deriving (Eq, Show)
 
 instance Exception HttpError
+
+-- | Error from a response whose body is consumed under an allocation bound.
+-- Transport failures retain the shared 'HttpError' taxonomy; crossing the
+-- bound is distinct and reports the first observed size beyond the ceiling.
+data HttpBoundedError
+  = HttpBoundedTransport !HttpError
+  | HttpBoundedResponseTooLarge !Int !Int
+  deriving (Eq, Show)
 
 -- | Per-call configuration. 'httpRequestTimeoutMicros' is enforced via
 -- 'responseTimeout' on the 'Request' before sending.
@@ -225,6 +240,87 @@ sendRequestRaw config httpMethod extraHeaders url maybeBody = do
         Left err -> Left err
         Right response ->
           Right (statusCode (responseStatus response), responseBody response)
+
+-- | Send one request through the shared manager and retain the exact status and
+-- response bytes.  This is the bounded-protocol substrate used by services
+-- whose wire format is not JSON (for example the canonical-CBOR lifecycle
+-- control-plane endpoints).  Status interpretation and response-size bounds
+-- remain with the typed service client; transport errors stay normalized here.
+httpRequestRaw
+  :: HttpConfig
+  -> Method
+  -> [Header]
+  -> String
+  -> Maybe BL.ByteString
+  -> IO (Either HttpError (Int, BL.ByteString))
+httpRequestRaw = sendRequestRaw
+
+-- | Send one request and stream its response body into memory only while the
+-- caller-supplied bound holds.  Unlike checking the size after 'httpLbs', this
+-- stops consuming as soon as a chunk crosses the ceiling, so an untrusted peer
+-- cannot force an unbounded lazy response allocation before the typed protocol
+-- client gets to validate it.
+httpRequestRawBounded
+  :: HttpConfig
+  -> Int
+  -> Method
+  -> [Header]
+  -> String
+  -> Maybe BL.ByteString
+  -> IO (Either HttpBoundedError (Int, BS.ByteString))
+httpRequestRawBounded config maximumBytes httpMethod extraHeaders url maybeBody
+  | maximumBytes < 0 = pure (Left (HttpBoundedResponseTooLarge 0 maximumBytes))
+  | otherwise = do
+      requestResult <- try (parseRequest url) :: IO (Either SomeException Request)
+      case requestResult of
+        Left ex ->
+          pure
+            (Left (HttpBoundedTransport (HttpConnectionFailure (show ex))))
+        Right baseRequest -> do
+          let requestWithoutTimeout =
+                baseRequest
+                  { method = httpMethod
+                  , requestHeaders = extraHeaders
+                  , requestBody = maybe (requestBody baseRequest) RequestBodyLBS maybeBody
+                  }
+              request =
+                requestWithoutTimeout
+                  { responseTimeout = responseTimeoutMicro (httpRequestTimeoutMicros config)
+                  }
+          result <-
+            try
+              ( withManager $ \manager ->
+                  withResponse request manager $ \response -> do
+                    boundedBody <- readBoundedBody maximumBytes (responseBody response)
+                    pure (statusCode (responseStatus response), boundedBody)
+              )
+          pure $ case result of
+            Left (HttpExceptionRequest _ content) ->
+              Left (HttpBoundedTransport (translateExceptionContent content))
+            Left (InvalidUrlException invalidUrl reason) ->
+              Left
+                ( HttpBoundedTransport
+                    (HttpConnectionFailure ("invalid URL " ++ invalidUrl ++ ": " ++ reason))
+                )
+            Right (_status, Left observedBytes) ->
+              Left (HttpBoundedResponseTooLarge observedBytes maximumBytes)
+            Right (status, Right body) -> Right (status, body)
+
+readBoundedBody
+  :: Int
+  -> BodyReader
+  -> IO (Either Int BS.ByteString)
+readBoundedBody maximumBytes = go 0 []
+ where
+  go observed chunks reader = do
+    chunk <- brRead reader
+    if BS.null chunk
+      then pure (Right (BS.concat (reverse chunks)))
+      else do
+        let nextObserved = observed + BS.length chunk
+        if nextObserved > maximumBytes
+          then pure (Left nextObserved)
+          else go nextObserved (chunk : chunks) reader
 
 -- | Decode a @(status, body)@ pair: any 2xx decodes the JSON body, anything
 -- else becomes an 'HttpStatus'.

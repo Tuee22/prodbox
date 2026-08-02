@@ -1,9 +1,12 @@
 module Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AdminActionCommand (..)
+  , AwsCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
   , ControlPlaneLaunchOptions (..)
+  , CredentialProvisionerCommand (..)
+  , CredentialProvisionerIngressSchema (..)
   , PulumiResiduePolicy (..)
   , ChartsCommand (..)
   , buildPlan
@@ -44,7 +47,20 @@ module Prodbox.CLI.Command
   )
 where
 
+import Prodbox.Bootstrap.Broker.SecretWorker (SecretWorkerOperation)
 import Prodbox.CLI.Output (writeOutput)
+import Prodbox.ControlPlane.TargetSecretWorkerRuntime
+  ( TargetSecretWorkerOptions
+  )
+import Prodbox.Lifecycle.AdminAction.Runner
+  ( AdminActionRunnerOptions
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
+  ( AwsAdminWorkerOptions
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
+  ( ExternalMaterialWorkerOptions
+  )
 import Prodbox.Runtime.Role (RuntimeRole)
 import Prodbox.Substrate (Substrate (..))
 import System.Exit
@@ -64,9 +80,11 @@ data CommandListingFormat
   deriving (Eq, Show)
 
 data NativeCommand
-  = NativeAws AwsCommand
+  = NativeAdminAction AdminActionCommand
+  | NativeAws AwsCommand
   | NativeBootstrapBroker BootstrapBrokerCommand
   | NativeControlPlane RuntimeRole ControlPlaneLaunchOptions
+  | NativeCredentialProvisioner CredentialProvisionerCommand
   | NativeCharts ChartsCommand
   | NativeCheckCode
   | NativeConfig ConfigCommand
@@ -90,13 +108,22 @@ data NativeCommand
   | NativeWorkload WorkloadCommand
   deriving (Eq, Show)
 
--- | Sprint 4.13: options for @prodbox nuke@. Duplicated here rather
+-- | Internal executable surface of the attested one-shot Admin Action Job.
+-- The action, operation identity, deadline, and downward-API/token paths are
+-- immutable metadata projected from the signed permit; credentials remain on
+-- bounded stdin and are not representable here.
+data AdminActionCommand
+  = AdminActionRun !AdminActionRunnerOptions !PlanOptions
+  deriving (Eq, Show)
+
+-- | Options for @prodbox nuke@. Duplicated here rather
 -- than imported from "Prodbox.CLI.Nuke" so the command record and
 -- the optparse-applicative parser surface live in the same module
 -- as every other command.
 data NukeOptions = NukeOptions
   { nukeDryRun :: Bool
   , nukePlanFile :: Maybe FilePath
+  , nukeReceiptPath :: Maybe FilePath
   }
   deriving (Eq, Show)
 
@@ -151,6 +178,7 @@ data VaultCommand
 -- repository-config or environment fallback.
 data BootstrapBrokerCommand
   = BootstrapBrokerStart BrokerLaunchOptions
+  | BootstrapBrokerSecretWorker SecretWorkerOperation FilePath
   deriving (Eq, Show)
 
 data BrokerLaunchOptions = BrokerLaunchOptions
@@ -163,6 +191,26 @@ data ControlPlaneLaunchOptions = ControlPlaneLaunchOptions
   { controlPlaneConfigPath :: FilePath
   , controlPlanePlanOptions :: PlanOptions
   }
+  deriving (Eq, Show)
+
+-- | Closed one-shot ingress inventory. Each constructor has a distinct
+-- command payload and parser branch; no argv value can select a Vault path or
+-- generic material decoder.
+data CredentialProvisionerIngressSchema
+  = CredentialProvisionerAwsAdmin
+  | CredentialProvisionerExternalAcmeEab
+  deriving (Eq, Show)
+
+data CredentialProvisionerCommand
+  = CredentialProvisionerExternalAcmeEabRun
+      !ExternalMaterialWorkerOptions
+      !PlanOptions
+  | CredentialProvisionerAwsAdminRun
+      !AwsAdminWorkerOptions
+      !PlanOptions
+  | CredentialProvisionerTargetWorker
+      !TargetSecretWorkerOptions
+      !PlanOptions
   deriving (Eq, Show)
 
 data DaemonLaunchOptions = DaemonLaunchOptions
@@ -424,6 +472,7 @@ data TestCommand = TestCommand
   { testScope :: TestScope
   , testCoverage :: CoverageFlags
   , testSubstrate :: Substrate
+  , testRecordProfile :: Bool
   }
   deriving (Eq, Show)
 
@@ -446,6 +495,9 @@ data IntegrationSuite
   | IntegrationGatewayDaemon
   | IntegrationGatewayPods
   | IntegrationGatewayPartition
+  | IntegrationControlPlaneCounterexample
+  | IntegrationCertificateScope
+  | IntegrationCleanRoomHandoff
   | IntegrationHaRke2Aws
   | IntegrationLifecycle
   | IntegrationPulumi

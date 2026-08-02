@@ -11,71 +11,20 @@ module Prodbox.Gateway.Client
   , daemonRestartBridgeRetryPolicy
   , gatewayErrorIsTransient
   , retryGatewayTransient
-  , compareAndSwapAuthorityObject
-  , compareAndSwapAuthorityObjectGuarded
-  , getAuthorityClock
-  , deletePulumiObject
-  , childBootstrapUrl
-  , childrenUrl
-  , getAuthorityObject
-  , getPulumiObject
-  , authorityObjectCasUrl
-  , authorityClockUrl
-  , authorityObjectGetUrl
-  , targetSecretCasUrl
-  , targetSecretReadUrl
-  , pulumiObjectDeleteUrl
-  , pulumiObjectGetUrl
-  , pulumiObjectPutUrl
-  , putPulumiObject
-  , queryChildBootstrap
-  , queryFederationChildren
   , queryState
   , statusUrl
   , renderGatewayError
+  , defaultGatewayNodePort
   , hostLoopbackGatewayEndpoint
-
-    -- * Bounded target-secret Vault adapter
-  , compareAndSwapTargetSecret
-  , getTargetSecret
-
-    -- * Sprint 1.44: operator-write secret endpoint
-  , operatorSecretUrl
-  , writeOperatorSecret
+  , hostLoopbackGatewayEndpointFromEnv
   )
 where
 
 import Control.Concurrent (threadDelay)
 import Data.Aeson (Value)
-import Data.ByteString (ByteString)
-import Data.Map.Strict (Map)
-import Data.Text (Text)
-import Data.Text.Encoding qualified as TextEncoding
-import Network.HTTP.Types.Header (Header)
-import Prodbox.Gateway.ObjectStore
-  ( AuthorityClockRequest (..)
-  , AuthorityClockResponse (..)
-  , AuthorityObjectCasRequest (..)
-  , AuthorityObjectCasResponse
-  , AuthorityObjectLeaseGuard
-  , AuthorityObjectObservation
-  , AuthorityObjectRequest (..)
-  , PulumiObjectGetResponse (..)
-  , PulumiObjectPutRequest (..)
-  , PulumiObjectRequest (..)
-  )
 import Prodbox.Gateway.Routes
   ( GatewayRoute (..)
-  , federationChildBootstrapSuffix
-  , federationChildPathPrefix
-  , operatorSecretPathPrefix
   , routePattern
-  )
-import Prodbox.Gateway.TargetSecret
-  ( TargetSecretCasRequest
-  , TargetSecretCasResponse
-  , TargetSecretObservation
-  , TargetSecretReadRequest
   )
 import Prodbox.Gateway.Types (PeerEndpoint (..), peerRestUrl)
 import Prodbox.Http.Client
@@ -84,11 +33,10 @@ import Prodbox.Http.Client
   , defaultHttpConfig
   , httpGetJson
   , httpGetText
-  , httpPostJsonNoResponse
-  , httpPostJsonResponseJson
   , renderHttpError
   )
 import Prodbox.Retry (RetryPolicy (..), retryDelayMicros)
+import System.Environment (lookupEnv)
 
 -- | Errors that surface from a gateway-client call.
 data GatewayError
@@ -105,8 +53,8 @@ renderGatewayError err = case err of
 -- was briefly unreachable (connection dropped / refused, e.g.
 -- @NoResponseDataReceived@ or @Connection refused@) or slow (timeout) while it
 -- rolls, as opposed to answering with a definite rejection. Host-side callers
--- that talk to a daemon which may be mid-restart (the readiness probe, the
--- encrypted object-store reads) use this with 'retryGatewayTransient' to wait
+-- that talk to a daemon which may be mid-restart use this with
+-- 'retryGatewayTransient' to wait
 -- the restart window out instead of failing the whole reconcile.
 gatewayErrorIsTransient :: GatewayError -> Bool
 gatewayErrorIsTransient err = case err of
@@ -148,11 +96,15 @@ daemonRestartBridgeRetryPolicy =
     , retryPolicyMaxDelayMicros = 8000000
     }
 
+-- | Single compiled NodePort used by the host firewall, chart, and typed
+-- loopback clients.
+defaultGatewayNodePort :: Int
+defaultGatewayNodePort = 30443
+
 -- | Host-side view of the in-cluster gateway daemon through the
 -- loopback-restricted NodePort. The @gatewayNodePort@ argument is the daemon
--- NodePort the host iptables rule restricts to loopback
--- (@Prodbox.Host.defaultGatewayNodePort@). Socket fields are populated for
--- type completeness.
+-- NodePort the host iptables rule restricts to loopback. Socket fields are
+-- populated for type completeness.
 hostLoopbackGatewayEndpoint :: Int -> PeerEndpoint
 hostLoopbackGatewayEndpoint gatewayNodePort =
   PeerEndpoint
@@ -163,6 +115,17 @@ hostLoopbackGatewayEndpoint gatewayNodePort =
     , peerSocketHost = "127.0.0.1"
     , peerSocketPort = gatewayNodePort
     }
+
+-- | Canonical host-loopback endpoint with the integration fixture's bounded
+-- NodePort override.  Invalid overrides fail closed to the compiled port.
+hostLoopbackGatewayEndpointFromEnv :: IO PeerEndpoint
+hostLoopbackGatewayEndpointFromEnv = do
+  override <- lookupEnv "PRODBOX_TEST_GATEWAY_NODEPORT"
+  pure (hostLoopbackGatewayEndpoint (maybe defaultGatewayNodePort parsePort override))
+ where
+  parsePort raw = case reads raw of
+    [(port, "")] | port > 0 && port <= 65535 -> port
+    _ -> defaultGatewayNodePort
 
 -- | Canonical URL for the gateway daemon's @/v1/state@ observability
 -- endpoint.
@@ -176,37 +139,6 @@ statusUrl endpoint = peerRestUrl endpoint ++ routePattern RouteState
 -- projected from the same compiled route registry the daemon dispatcher uses.
 readyzUrl :: PeerEndpoint -> String
 readyzUrl endpoint = peerRestUrl endpoint ++ routePattern RouteReadyz
-
-childrenUrl :: PeerEndpoint -> String
-childrenUrl endpoint = peerRestUrl endpoint ++ routePattern RouteFederationChildren
-
-childBootstrapUrl :: PeerEndpoint -> String -> String
-childBootstrapUrl endpoint childId =
-  peerRestUrl endpoint ++ federationChildPathPrefix ++ childId ++ federationChildBootstrapSuffix
-
-pulumiObjectGetUrl :: PeerEndpoint -> String
-pulumiObjectGetUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectGet
-
-pulumiObjectPutUrl :: PeerEndpoint -> String
-pulumiObjectPutUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectPut
-
-pulumiObjectDeleteUrl :: PeerEndpoint -> String
-pulumiObjectDeleteUrl endpoint = peerRestUrl endpoint ++ routePattern RoutePulumiObjectDelete
-
-authorityObjectGetUrl :: String -> String
-authorityObjectGetUrl endpoint = endpoint ++ routePattern RouteAuthorityObjectGet
-
-authorityObjectCasUrl :: String -> String
-authorityObjectCasUrl endpoint = endpoint ++ routePattern RouteAuthorityObjectCas
-
-authorityClockUrl :: String -> String
-authorityClockUrl endpoint = endpoint ++ routePattern RouteAuthorityClock
-
-targetSecretReadUrl :: String -> String
-targetSecretReadUrl endpoint = endpoint ++ routePattern RouteTargetSecretRead
-
-targetSecretCasUrl :: String -> String
-targetSecretCasUrl endpoint = endpoint ++ routePattern RouteTargetSecretCas
 
 -- | Sprint 2.34: the kubelet readiness a host-side observer sees when it GETs
 -- the daemon's @/readyz@ — a 200 (ready), a definite HTTP status such as 503
@@ -241,171 +173,3 @@ queryState endpoint = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right value -> Right value
-
-queryFederationChildren :: PeerEndpoint -> IO (Either GatewayError Value)
-queryFederationChildren endpoint = queryGatewayJson (childrenUrl endpoint)
-
-queryChildBootstrap :: PeerEndpoint -> String -> IO (Either GatewayError Value)
-queryChildBootstrap endpoint childId = queryGatewayJson (childBootstrapUrl endpoint childId)
-
-queryGatewayJson :: String -> IO (Either GatewayError Value)
-queryGatewayJson url = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
-  result <- httpGetJson config url
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right value -> Right value
-
-getPulumiObject :: PeerEndpoint -> Text -> IO (Either GatewayError (Maybe ByteString))
-getPulumiObject endpoint stackName = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload = PulumiObjectRequest stackName True
-  result <- httpPostJsonResponseJson config (pulumiObjectGetUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right PulumiObjectAbsent -> Right Nothing
-    Right (PulumiObjectPresent checkpoint) -> Right (Just checkpoint)
-
-putPulumiObject :: PeerEndpoint -> Text -> ByteString -> IO (Either GatewayError ())
-putPulumiObject endpoint stackName checkpoint = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload = PulumiObjectPutRequest stackName checkpoint True
-  result <- httpPostJsonNoResponse config [] (pulumiObjectPutUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right () -> Right ()
-
-deletePulumiObject :: PeerEndpoint -> Text -> IO (Either GatewayError ())
-deletePulumiObject endpoint stackName = do
-  let config =
-        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload = PulumiObjectRequest stackName True
-  result <- httpPostJsonNoResponse config [] (pulumiObjectDeleteUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right () -> Right ()
-
-getAuthorityObject
-  :: String
-  -> Text
-  -> IO (Either GatewayError AuthorityObjectObservation)
-getAuthorityObject endpoint logicalName = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload = AuthorityObjectRequest logicalName True
-  result <- httpPostJsonResponseJson config (authorityObjectGetUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right observation -> Right observation
-
-compareAndSwapAuthorityObject
-  :: String
-  -> Text
-  -> Maybe Text
-  -> ByteString
-  -> IO (Either GatewayError AuthorityObjectCasResponse)
-compareAndSwapAuthorityObject endpoint logicalName expectedVersion payloadBytes =
-  compareAndSwapAuthorityObjectWithGuard
-    endpoint
-    logicalName
-    expectedVersion
-    Nothing
-    payloadBytes
-
-compareAndSwapAuthorityObjectGuarded
-  :: String
-  -> Text
-  -> Maybe Text
-  -> AuthorityObjectLeaseGuard
-  -> ByteString
-  -> IO (Either GatewayError AuthorityObjectCasResponse)
-compareAndSwapAuthorityObjectGuarded endpoint logicalName expectedVersion guard payloadBytes =
-  compareAndSwapAuthorityObjectWithGuard
-    endpoint
-    logicalName
-    expectedVersion
-    (Just guard)
-    payloadBytes
-
-compareAndSwapAuthorityObjectWithGuard
-  :: String
-  -> Text
-  -> Maybe Text
-  -> Maybe AuthorityObjectLeaseGuard
-  -> ByteString
-  -> IO (Either GatewayError AuthorityObjectCasResponse)
-compareAndSwapAuthorityObjectWithGuard endpoint logicalName expectedVersion maybeGuard payloadBytes = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-      payload =
-        AuthorityObjectCasRequest
-          { authorityObjectCasLogicalName = logicalName
-          , authorityObjectCasExpectedVersion = expectedVersion
-          , authorityObjectCasLeaseGuard = maybeGuard
-          , authorityObjectCasPayload = payloadBytes
-          , authorityObjectCasLoopbackNodePortVerified = True
-          }
-  result <- httpPostJsonResponseJson config (authorityObjectCasUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right response -> Right response
-
-getAuthorityClock :: String -> IO (Either GatewayError AuthorityClockResponse)
-getAuthorityClock endpoint = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
-      payload = AuthorityClockRequest True
-  result <- httpPostJsonResponseJson config (authorityClockUrl endpoint) payload
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right response -> Right response
-
-getTargetSecret
-  :: String
-  -> TargetSecretReadRequest
-  -> IO (Either GatewayError TargetSecretObservation)
-getTargetSecret endpoint request = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-  result <- httpPostJsonResponseJson config (targetSecretReadUrl endpoint) request
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right observation -> Right observation
-
-compareAndSwapTargetSecret
-  :: String
-  -> TargetSecretCasRequest
-  -> IO (Either GatewayError TargetSecretCasResponse)
-compareAndSwapTargetSecret endpoint request = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-  result <- httpPostJsonResponseJson config (targetSecretCasUrl endpoint) request
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right response -> Right response
-
--- | Sprint 1.44: the gateway daemon's operator-write endpoint for a given KV
--- logical path (e.g. @acme/eab@ or @gateway/gateway/aws@).
-operatorSecretUrl :: PeerEndpoint -> String -> String
-operatorSecretUrl endpoint logical = peerRestUrl endpoint ++ operatorSecretPathPrefix ++ logical
-
--- | Write an operator-minted secret through the in-cluster gateway daemon,
--- presenting an operator-injected Kubernetes JWT (the daemon exchanges it for a
--- Vault token under the narrow @prodbox-operator-write@ role and persists the
--- KV object). Replaces the host root-token direct Vault write for the two
--- secrets that route through the daemon (Sprint 1.44).
-writeOperatorSecret
-  :: PeerEndpoint -> Text -> String -> Map Text Text -> IO (Either GatewayError ())
-writeOperatorSecret endpoint operatorJwt logical fields = do
-  let config = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
-  result <-
-    httpPostJsonNoResponse
-      config
-      [operatorJwtHeader operatorJwt]
-      (operatorSecretUrl endpoint logical)
-      fields
-  pure $ case result of
-    Left httpErr -> Left (GatewayTransport httpErr)
-    Right () -> Right ()
-
-operatorJwtHeader :: Text -> Header
-operatorJwtHeader operatorJwt =
-  ("X-Prodbox-Operator-Jwt", TextEncoding.encodeUtf8 operatorJwt)

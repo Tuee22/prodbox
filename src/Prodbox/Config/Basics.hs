@@ -69,6 +69,7 @@ data ParentRef = ParentRef
   { parentRefClusterId :: Text
   , parentRefVaultAddress :: Text
   , parentRefTransitKey :: Text
+  , parentRefAuthorityEndpoint :: Text
   }
   deriving (Eq, Show)
 
@@ -78,6 +79,7 @@ instance ToJSON ParentRef where
       [ "cluster_id" .= parentRefClusterId ref
       , "vault_address" .= parentRefVaultAddress ref
       , "transit_key" .= parentRefTransitKey ref
+      , "authority_endpoint" .= parentRefAuthorityEndpoint ref
       ]
 
 instance FromJSON ParentRef where
@@ -87,6 +89,7 @@ instance FromJSON ParentRef where
         <$> o .: "cluster_id"
         <*> o .: "vault_address"
         <*> o .: "transit_key"
+        <*> o .: "authority_endpoint"
 
 data UnencryptedBasics = UnencryptedBasics
   { basicsClusterId :: Text
@@ -159,7 +162,7 @@ validateBasics basics = do
     (SealModeShamir, Nothing) -> Right ()
     (SealModeShamir, Just _) ->
       Left (BasicsParentRefMismatch "a root (shamir) cluster must not carry a parent_ref")
-    (SealModeTransit, Just _) -> Right ()
+    (SealModeTransit, Just parent) -> validateParentRef basics parent
     (SealModeTransit, Nothing) ->
       Left (BasicsParentRefMismatch "a child (transit) cluster must carry a parent_ref")
 
@@ -167,6 +170,36 @@ requireNonEmpty :: Text -> Text -> Either BasicsError ()
 requireNonEmpty field value
   | Text.null (Text.strip value) = Left (BasicsFieldEmpty field)
   | otherwise = Right ()
+
+validateParentRef :: UnencryptedBasics -> ParentRef -> Either BasicsError ()
+validateParentRef basics parent = do
+  requireNonEmpty "parent_ref.cluster_id" (parentRefClusterId parent)
+  requireNonEmpty "parent_ref.vault_address" (parentRefVaultAddress parent)
+  requireNonEmpty "parent_ref.transit_key" (parentRefTransitKey parent)
+  requireNonEmpty "parent_ref.authority_endpoint" (parentRefAuthorityEndpoint parent)
+  if parentRefClusterId parent == basicsClusterId basics
+    then Left (BasicsParentRefMismatch "a child cluster cannot name itself as its parent")
+    else Right ()
+  let endpoint = Text.strip (parentRefAuthorityEndpoint parent)
+      authority = Text.takeWhile (/= '/') (Text.drop 8 endpoint)
+      lowered = Text.toLower authority
+      localAuthority =
+        lowered == "localhost"
+          || "localhost:" `Text.isPrefixOf` lowered
+          || "127." `Text.isPrefixOf` lowered
+          || "[::1]" `Text.isPrefixOf` lowered
+          || ".svc" `Text.isSuffixOf` lowered
+          || ".svc.cluster.local" `Text.isInfixOf` lowered
+  if "https://" `Text.isPrefixOf` endpoint
+    && not (Text.null authority)
+    && not (Text.any (== '@') authority)
+    && not localAuthority
+    then Right ()
+    else
+      Left
+        ( BasicsParentRefMismatch
+            "parent Authority endpoint must be an external HTTPS coordinate"
+        )
 
 -- | A root cluster unseals via Shamir and has no parent. Child clusters
 -- auto-unseal against a parent and are not the root of the trust tree.

@@ -25,6 +25,14 @@
 
 ## Ledger Status
 
+**2026-08-01 — typed three-valued readiness cleanup complete for Sprint `4.53`.** Sprint `5.25`
+**removed** the Sprint `5.24` observability-wait band-aid
+(`awaitGatewayRuntimeObservable`, `observeGatewayRuntimeScratch`, `gatewayStabilityUnreachableIsTransient`,
+and the two wait constants) as part of the type-split fix, so it needs **no** Pending Removal row — it
+is already gone. Sprint `4.53` lands the typed endpoint-unready distinction and the Phase-2
+authenticated S3 deep-probe witness. The shallow host-direct `waitForPort` readiness gate is deleted
+and its row below is completed.
+
 **2026-07-28 — Sprints `1.72`/`1.73` (Ring-1 Dhall over-commit shim + host-fitting `config generate`)
 add NO Pending Removal rows.** The change is additive: `renderProjectConfigDhall` now bakes an
 over-commit `assert` into the generated `prodbox.dhall`, and `config generate` derives a host-fitting
@@ -456,6 +464,7 @@ above nor changes what any sprint builds or proves.
 | The runtime `validateResourcePlan :: ResourcePlan -> Either String ()` inequality body as the resource-nesting enforcement. **Location**: `src/Prodbox/Capacity/Config.hs` `validateResourcePlan` (the allocatable / per-quota / concurrent-sum / workload-draw checks). **Why**: it rejects an over-committed plan *after* it is constructed as a value rather than making it unbuildable — the illegal state remains representable. | Sprint `1.68` (proof landed) / Sprint `1.69` (decode-gate cutover) | Sprint `1.68` landed (2026-07-25) the authoritative over-commit proof: the total `compileResourcePlan` producing the opaque `AllocatedResourcePlan`, with the slim `validateRawResourcePlanShape` extracted for decode-time shape and reused by the smart constructor. `validateResourcePlan`'s inequality body is **deliberately retained** on the config boundary (`validateLocalConfig` → `validateCapacitySection`) so operator-authored over-commit is still rejected at decode until Sprint `1.69` makes the proof the decode gate (a required field of `ValidatedSettings` built over the decoded plan) and retires the inequality body. Stays Pending Removal until `1.69` lands and no caller reaches the inequality body outside the smart constructor. |
 | The unwired `MilliCpu`/`MebiBytes` newtypes. **Location**: `src/Prodbox/Capacity/Config.hs` (`MilliCpu`, `MebiBytes`, `mkMilliCpu`, `mkMebiBytes`). **Why**: exported-but-unused smart-constructor pairs that make nothing unrepresentable — the 4-axis nesting proof, not per-axis newtypes, prevents over-commit. **NOTE**: the 3-axis `CapacityBudget`/`fitsWithin`/`storageFitsWithin` is explicitly **NOT** on this list — it is live (owned by `src/Prodbox/Capacity/Storage.hs` durable-byte totals and `src/Prodbox/Scaling/Autoscaler.hs` placement). | Sprint `1.69` | Deleted alongside the decode-gate work. Stays Pending Removal until `1.69` deletes the two newtypes. |
 | The exported-but-unwired `GuaranteedEnvelope`/`mkGuaranteedEnvelope` witness. **Location**: `src/Prodbox/Capacity/Allocation.hs` (`GuaranteedEnvelope`, `mkGuaranteedEnvelope`, `EnvelopeNotGuaranteed`), landed by Sprint `1.68` but consumed by nothing — a control-plane workload authored `request /= limit` still compiles. **Why**: a correctly-shaped hidden-ctor witness that currently makes nothing unrepresentable (the exported-but-unused anti-pattern). | Sprint `1.70` | Wired via a `WorkloadQoS (Guaranteed \| Burstable)` tag so `compileResourcePlan` runs `mkGuaranteedEnvelope` for the control-plane set and `EnvelopeNotGuaranteed` gates decode. Moves to Completed when `1.70` lands and the witness is load-bearing. |
+| Shallow host-direct object-store `waitForPort` readiness gate. **Former location**: `src/Prodbox/Infra/MinioBackend.hs` `waitForPort`. | Sprint `4.53` on 2026-08-01 | Removed. The port-forward bracket now performs a bounded authenticated S3 `list-buckets` round trip and constructs an opaque `HostDirectEndpointProven` witness only after success. Consumers receive that witness rather than a bare port; the `/dev/tcp` shell probe is absent. Warning-clean library compilation validates the integrated cutover. |
 
 ## Pending Removal Notes
 

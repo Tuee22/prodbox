@@ -10,9 +10,8 @@
 -- fails it too. This keeps escape-path drift a seconds-fast build failure
 -- rather than a surprise discovered in the multi-hour aggregate suite.
 --
--- The five doctrine categories (see @code_quality.md § 3@) map onto the six
--- seams below (host-direct is split into its object-store and Vault-KV
--- surfaces). Each surviving call site carries a machine-readable marker comment
+-- The surviving doctrine categories (see @code_quality.md § 3@) map onto the
+-- seams below. Each surviving call site carries a machine-readable marker comment
 -- of the exact form @LEGACY-ESCAPE[<marker>]@; this module is the sole SSoT for
 -- the marker set, the owning source file, and the removal-owner sprint. When a
 -- seam's cutover sprint lands, the marked call site and its registry entry are
@@ -39,40 +38,15 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import System.FilePath (normalise)
 
--- | The five governed escape categories, with host-direct split into its two
--- physically distinct seams. Closed and exhaustive: a new escape kind must add
+-- | The governed escape categories. Closed and exhaustive: a new escape kind must add
 -- a constructor here (and a registry entry) rather than slip in untyped.
 data EscapeCategory
-  = -- | Lifecycle-authority / target-secret / object-store / bootstrap
-    -- operations hosted on the gateway daemon's HTTP surface. Removed when the
-    -- Bootstrap Broker, Lifecycle Authority, and Target Secret Agents take over
-    -- these routes (Sprints @2.33@/@4.50@).
-    GatewayHostedAuthorityRoutes
-  | -- | The single shared operational @aws.*@ identity the suite-level IAM
-    -- harness mints, projected into every AWS subprocess environment. Replaced
-    -- by per-role Lifecycle-provider / Authority-backup / TLS-retention /
-    -- Gateway-DNS / cert-manager-DNS01 / SES-SMTP generations (Sprints
-    -- @3.26@/@4.49@/@4.50@/@7.33@/@8.11@).
-    SharedOperationalAwsCredential
-  | -- | The host CLI talking directly to the Model-B object store instead of
-    -- through the Lifecycle Authority / Target Secret Agent (Sprint @4.50@).
-    HostDirectObjectStore
-  | -- | The host CLI reading Vault KV directly to resolve credentials instead
-    -- of through the Lifecycle Authority's role-scoped projection
-    -- (Sprint @4.49@).
-    HostDirectVaultKv
-  | -- | The @aws@ CLI subprocess (and its per-operation temp-file bodies) under
+  = -- | The @aws@ CLI subprocess (and its per-operation temp-file bodies) under
     -- every Model-B object-store operation. Sprint @1.66@ landed the native SigV4
     -- replacement ("Prodbox.Minio.ObjectStoreNative"); the subprocess path
     -- remains the default config-selectable rollback until native live-MinIO
     -- parity is proven, then it is deleted through the ledger.
     AwsCliObjectStoreSubprocess
-  | -- | A fresh Vault Kubernetes-auth login performed per gateway request rather
-    -- than a cached renewable session. The daemon's own service-account login
-    -- was folded onto the cached "Prodbox.Vault.Session" by Sprint @1.64@; the
-    -- surviving seam is the operator-secret handler's per-request operator-JWT
-    -- exchange, removed with the authority route (Sprints @2.33@/@4.50@).
-    PerRequestVaultLogin
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | A single registered legacy-escape seam.
@@ -91,12 +65,7 @@ data LegacyEscapeSite = LegacyEscapeSite
 escapeCategoryLabel :: EscapeCategory -> String
 escapeCategoryLabel category =
   case category of
-    GatewayHostedAuthorityRoutes -> "gateway-hosted authority routes"
-    SharedOperationalAwsCredential -> "shared operational AWS credential"
-    HostDirectObjectStore -> "host-direct object-store seam"
-    HostDirectVaultKv -> "host-direct Vault-KV seam"
     AwsCliObjectStoreSubprocess -> "aws CLI subprocess object-store site"
-    PerRequestVaultLogin -> "per-request Vault login"
 
 -- | The authoritative registry. Exactly one surviving marked call site per
 -- entry; the bijection check ('escapeRegistryViolations') enforces both
@@ -104,57 +73,6 @@ escapeCategoryLabel category =
 registeredLegacyEscapeSites :: [LegacyEscapeSite]
 registeredLegacyEscapeSites =
   [ LegacyEscapeSite
-      { escapeSiteMarker = "gateway-hosted-authority-routes"
-      , escapeSiteCategory = GatewayHostedAuthorityRoutes
-      , escapeSiteFile = "src/Prodbox/Gateway/Daemon.hs"
-      , escapeSiteDescription =
-          "handleParsedRequest hosts the bootstrap-Vault, Pulumi/authority "
-            ++ "object-store, lifecycle authority CAS/clock, target-secret, and "
-            ++ "operator-secret authority routes on the gateway daemon."
-      , escapeSiteRemovalOwner = "2.33/4.50"
-      }
-  , LegacyEscapeSite
-      { escapeSiteMarker = "shared-operational-aws-credential"
-      , escapeSiteCategory = SharedOperationalAwsCredential
-      , escapeSiteFile = "src/Prodbox/Aws.hs"
-      , escapeSiteDescription =
-          "operationalAwsEnvironment projects the single shared operational "
-            ++ "aws.* identity into every AWS subprocess environment; every "
-            ++ "operational AWS action funnels through this seam."
-      , escapeSiteRemovalOwner = "3.26/4.49/8.11"
-      }
-  , LegacyEscapeSite
-      { escapeSiteMarker = "host-direct-object-store"
-      , escapeSiteCategory = HostDirectObjectStore
-      , escapeSiteFile = "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
-      , escapeSiteDescription =
-          "Sprint 4.51 sanctions this seam only for bootstrap access to "
-            ++ "durability-indexed retained Model-B state before the Lifecycle "
-            ++ "Authority Pod exists; Sprint 4.50 removes every broader host "
-            ++ "CLI object-store escape after dedicated-service admission."
-      , escapeSiteRemovalOwner = "4.50"
-      }
-  , LegacyEscapeSite
-      { escapeSiteMarker = "host-direct-vault-kv"
-      , escapeSiteCategory = HostDirectVaultKv
-      , escapeSiteFile = "src/Prodbox/Vault/Host.hs"
-      , escapeSiteDescription =
-          "readHostVaultKvField reads Vault KV directly from the host CLI to "
-            ++ "resolve credentials instead of through an Authority role-scoped "
-            ++ "projection."
-      , escapeSiteRemovalOwner = "4.49"
-      }
-  , LegacyEscapeSite
-      { escapeSiteMarker = "host-direct-vault-root-token"
-      , escapeSiteCategory = HostDirectVaultKv
-      , escapeSiteFile = "src/Prodbox/Vault/Host.hs"
-      , escapeSiteDescription =
-          "loadReadyVaultRootToken loads the Vault root token directly from the "
-            ++ "host CLI (to build AWS provider credentials and drive host-side "
-            ++ "Vault lifecycle) instead of an Authority role-scoped projection."
-      , escapeSiteRemovalOwner = "4.49/4.50"
-      }
-  , LegacyEscapeSite
       { escapeSiteMarker = "aws-cli-object-store-subprocess"
       , escapeSiteCategory = AwsCliObjectStoreSubprocess
       , escapeSiteFile = "src/Prodbox/Minio/ObjectStore.hs"
@@ -163,18 +81,6 @@ registeredLegacyEscapeSites =
             ++ "delete operations shell out to the aws CLI s3api verbs with "
             ++ "per-operation temp-file bodies."
       , escapeSiteRemovalOwner = "1.66"
-      }
-  , LegacyEscapeSite
-      { escapeSiteMarker = "per-request-operator-secret-vault-login"
-      , escapeSiteCategory = PerRequestVaultLogin
-      , escapeSiteFile = "src/Prodbox/Gateway/Daemon.hs"
-      , escapeSiteDescription =
-          "writeOperatorSecret exchanges the operator's per-request JWT for a "
-            ++ "Vault token under the operator-write role. Unlike the daemon's "
-            ++ "own service-account login (folded onto the cached session by "
-            ++ "Sprint 1.64), this login is inherently per-request; it leaves "
-            ++ "the gateway when the operator-secret authority route does."
-      , escapeSiteRemovalOwner = "2.33/4.50"
       }
   ]
 

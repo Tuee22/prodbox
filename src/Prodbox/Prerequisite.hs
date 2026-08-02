@@ -40,6 +40,7 @@ allPrerequisites =
   , machineIdentity
   , toolCurl
   , toolDig
+  , toolOpenSsl
   , toolKubectl
   , toolDocker
   , toolCtr
@@ -131,6 +132,9 @@ toolCurl = toolNode ToolCurl "Validate curl is installed" "curl" ["--version"] [
 
 toolDig :: EffectNode
 toolDig = toolNode ToolDig "Validate dig is installed" "dig" ["-v"] []
+
+toolOpenSsl :: EffectNode
+toolOpenSsl = toolNode ToolOpenSsl "Validate OpenSSL is installed" "openssl" ["version"] []
 
 toolDocker :: EffectNode
 toolDocker = toolNode ToolDocker "Validate docker is installed" "docker" ["--version"] []

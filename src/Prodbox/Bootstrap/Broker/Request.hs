@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Secret-safe request values shared by the Bootstrap Broker router and
 -- admission lane.  The wire decoder lives at the HTTP boundary; this module
@@ -32,6 +35,7 @@ module Prodbox.Bootstrap.Broker.Request
   )
 where
 
+import Codec.Serialise (Serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -39,6 +43,7 @@ import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Request.Internal
@@ -68,7 +73,8 @@ data BrokerOperationTag
   | ReconcileVaultBaseline
   | ObserveVaultPki
   | IssueVaultPkiTestCertificate
-  | CommitChildInitCustody
+  | PrepareChildInitCustody
+  | FinalizeChildInitCustody
   | DeliverChildRecovery
   | ObserveChildRecoveryDelivery
   deriving stock (Eq, Ord, Show, Enum, Bounded)
@@ -169,6 +175,9 @@ data BrokerRequest = BrokerRequest
   , brokerRequestSecret :: !(Maybe SecretPayload)
   }
   deriving stock (Eq, Show)
+
+deriving stock instance Generic RequestDigest
+deriving anyclass instance Serialise RequestDigest
 
 requestAbsoluteDeadline :: BrokerRequest -> Deadline
 requestAbsoluteDeadline request =

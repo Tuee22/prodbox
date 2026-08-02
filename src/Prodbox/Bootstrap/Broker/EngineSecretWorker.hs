@@ -52,13 +52,14 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , SecretWorkerDurableResult
   , SecretWorkerEffectPermit
   , SecretWorkerEffectRefusal (..)
+  , SecretWorkerIntent
   , SecretWorkerInterruption (..)
   , SecretWorkerLifecycleObservation
   , SecretWorkerOperation
   , SecretWorkerReceipt
   , SecretWorkerReceiptRefusal
   , SecretWorkerRecoveryDecision (..)
-  , SecretWorkerRecoveryRefusal
+  , SecretWorkerRecoveryRefusal (..)
   , advanceSecretWorkerCleanupCheckpoint
   , attestSecretWorker
   , authoritativelyRecoveredWorkerCheckpoint
@@ -68,14 +69,24 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , executeAuthorizedSecretWorker
   , noSecretWorkerReceipt
   , receiptCapturedCheckpoint
+  , secretWorkerCheckpointIntent
   , secretWorkerCheckpointReceipt
   , secretWorkerCheckpointRequest
   , secretWorkerCheckpointResult
   , secretWorkerCleanupBinding
   , secretWorkerDurableResultOperation
+  , secretWorkerIntentActionDigest
+  , secretWorkerIntentCheckpoint
+  , secretWorkerIntentFenceGeneration
+  , secretWorkerIntentOperation
+  , secretWorkerIntentOperationDeadline
+  , secretWorkerIntentOwnerNonce
+  , secretWorkerIntentRequestDigest
+  , secretWorkerIntentStorageGeneration
   , secretWorkerRequestActionDigest
   , secretWorkerRequestDigest
   , secretWorkerRequestFenceGeneration
+  , secretWorkerRequestIntent
   , secretWorkerRequestOperation
   , secretWorkerRequestOperationDeadline
   , secretWorkerRequestOwnerNonce
@@ -98,13 +109,13 @@ import Prodbox.ControlPlane.Deadline
 data EngineSecretWorkerBoundary m boundaryError = EngineSecretWorkerBoundary
   { observeSecretWorkerMonotonicNow
       :: m (Either boundaryError MonotonicInstant)
-  , allocateSecretWorkerRequest
+  , allocateSecretWorkerIntent
       :: SecretWorkerOperation
       -> BootstrapSessionFence
-      -> m (Either boundaryError SecretFreeWorkerRequest)
+      -> m (Either boundaryError SecretWorkerIntent)
   , createSecretWorkerWorkload
-      :: SecretFreeWorkerRequest
-      -> m (Either boundaryError ())
+      :: SecretWorkerIntent
+      -> m (Either boundaryError SecretFreeWorkerRequest)
   , observeSecretWorkerAttestation
       :: SecretFreeWorkerRequest
       -> m (Either boundaryError SecretWorkerAttestationObservation)
@@ -351,6 +362,20 @@ recoverStoredWorker
        )
 recoverStoredWorker boundary interruption operation fence refreshVaultPermit persisted runOperation encodeResult recoverResult =
   case secretWorkerCheckpointRequest (persistedCheckpoint persisted) of
+    Left SecretWorkerRecoveryPodUidUnbound ->
+      case secretWorkerCheckpointIntent (persistedCheckpoint persisted) of
+        Left refusal -> pure (Left (EngineSecretWorkerRecoveryRefused refusal))
+        Right intent ->
+          resumeWorkerIntent
+            boundary
+            interruption
+            operation
+            fence
+            refreshVaultPermit
+            persisted
+            intent
+            runOperation
+            encodeResult
     Left refusal -> pure (Left (EngineSecretWorkerRecoveryRefused refusal))
     Right storedRequest ->
       let decision =
@@ -476,14 +501,14 @@ beginFreshWorker
            (SecretWorkerReceipt, result)
        )
 beginFreshWorker boundary interruption operation fence refreshVaultPermit previousVersion forbiddenRequest runOperation encodeResult = do
-  allocated <- allocateSecretWorkerRequest boundary operation fence
+  allocated <- allocateSecretWorkerIntent boundary operation fence
   case allocated of
     Left boundaryError ->
       pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
-    Right request
-      | Just request == forbiddenRequest ->
+    Right intent
+      | Just intent == fmap secretWorkerRequestIntent forbiddenRequest ->
           pure (Left EngineSecretWorkerRepromptWasNotFresh)
-      | not (requestMatchesInvocation operation fence request) ->
+      | not (intentMatchesInvocation operation fence intent) ->
           pure (Left EngineSecretWorkerStoredRequestBindingMismatch)
       | otherwise -> do
           journaled <- case previousVersion of
@@ -491,25 +516,82 @@ beginFreshWorker boundary interruption operation fence refreshVaultPermit previo
               persistCheckpointCreate
                 boundary
                 fence
-                (noSecretWorkerReceipt request)
+                (secretWorkerIntentCheckpoint intent)
             Just version ->
               persistCheckpointCas
                 boundary
                 fence
                 version
-                (noSecretWorkerReceipt request)
+                (secretWorkerIntentCheckpoint intent)
           case journaled of
             Left failure -> pure (Left failure)
             Right persisted ->
-              runFreshWorker
+              resumeWorkerIntent
                 boundary
                 interruption
+                operation
                 fence
                 refreshVaultPermit
-                request
                 persisted
+                intent
                 runOperation
                 encodeResult
+
+resumeWorkerIntent
+  :: (Monad m)
+  => EngineSecretWorkerBoundary m boundaryError
+  -> SecretWorkerInterruption
+  -> SecretWorkerOperation
+  -> BootstrapSessionFence
+  -> m (Either boundaryError BootstrapVaultEffectPermit)
+  -> PersistedCheckpoint
+  -> SecretWorkerIntent
+  -> ( forall scope
+        . BootstrapVaultEffectPermit
+       -> SecretWorkerEffectPermit
+       -> RunningSecretWorker scope
+       %1 -> m
+               ( Either
+                   boundaryError
+                   (ExecutedSecretWorker, RawSecretWorkerReceipt, result)
+               )
+     )
+  -> (result -> Either boundaryError SecretWorkerDurableResult)
+  -> m
+       ( Either
+           (EngineSecretWorkerError boundaryError)
+           (SecretWorkerReceipt, result)
+       )
+resumeWorkerIntent boundary interruption operation fence refreshVaultPermit persisted intent runOperation encodeResult
+  | not (intentMatchesInvocation operation fence intent) =
+      pure (Left EngineSecretWorkerStoredRequestBindingMismatch)
+  | otherwise = do
+      created <- createSecretWorkerWorkload boundary intent
+      case created of
+        Left boundaryError ->
+          pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
+        Right request
+          | secretWorkerRequestIntent request /= intent ->
+              pure (Left EngineSecretWorkerStoredRequestBindingMismatch)
+          | otherwise -> do
+              boundCheckpoint <-
+                persistCheckpointCas
+                  boundary
+                  fence
+                  (persistedVersion persisted)
+                  (noSecretWorkerReceipt request)
+              case boundCheckpoint of
+                Left failure -> pure (Left failure)
+                Right boundPersisted ->
+                  runFreshWorker
+                    boundary
+                    interruption
+                    fence
+                    refreshVaultPermit
+                    request
+                    boundPersisted
+                    runOperation
+                    encodeResult
 
 runFreshWorker
   :: (Monad m)
@@ -536,115 +618,110 @@ runFreshWorker
            (SecretWorkerReceipt, result)
        )
 runFreshWorker boundary interruption fence refreshVaultPermit request persisted runOperation encodeResult = do
-  created <- createSecretWorkerWorkload boundary request
-  case created of
+  observed <- observeSecretWorkerAttestation boundary request
+  case observed of
     Left boundaryError ->
-      pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
-    Right () -> do
-      observed <- observeSecretWorkerAttestation boundary request
-      case observed of
-        Left boundaryError ->
+      refuseBeforeReceipt
+        boundary
+        request
+        SecretWorkerAttestationInvalidated
+        (EngineSecretWorkerBoundaryRefused boundaryError)
+    Right attestation ->
+      case attestSecretWorker request attestation of
+        Left refusal ->
           refuseBeforeReceipt
             boundary
             request
             SecretWorkerAttestationInvalidated
-            (EngineSecretWorkerBoundaryRefused boundaryError)
-        Right attestation ->
-          case attestSecretWorker request attestation of
-            Left refusal ->
+            (EngineSecretWorkerAttestationRefused refusal)
+        Right attested -> do
+          refreshed <- refreshVaultPermit
+          case refreshed of
+            Left boundaryError ->
               refuseBeforeReceipt
                 boundary
                 request
-                SecretWorkerAttestationInvalidated
-                (EngineSecretWorkerAttestationRefused refusal)
-            Right attested -> do
-              refreshed <- refreshVaultPermit
-              case refreshed of
+                SecretWorkerFenceLost
+                (EngineSecretWorkerBoundaryRefused boundaryError)
+            Right physicalPermit -> do
+              observedNow <- observeSecretWorkerMonotonicNow boundary
+              case observedNow of
                 Left boundaryError ->
                   refuseBeforeReceipt
                     boundary
                     request
                     SecretWorkerFenceLost
                     (EngineSecretWorkerBoundaryRefused boundaryError)
-                Right physicalPermit -> do
-                  observedNow <- observeSecretWorkerMonotonicNow boundary
-                  case observedNow of
-                    Left boundaryError ->
+                Right now ->
+                  case authorizeSecretWorkerEffect now attested physicalPermit of
+                    Left refusal ->
                       refuseBeforeReceipt
                         boundary
                         request
-                        SecretWorkerFenceLost
-                        (EngineSecretWorkerBoundaryRefused boundaryError)
-                    Right now ->
-                      case authorizeSecretWorkerEffect now attested physicalPermit of
-                        Left refusal ->
+                        (effectRefusalInterruption refusal)
+                        (EngineSecretWorkerEffectRefused refusal)
+                    Right effectPermit -> do
+                      ran <-
+                        executeAuthorizedSecretWorker
+                          effectPermit
+                          (runOperation physicalPermit effectPermit)
+                      let
+                        executed = case ran of
+                          Left boundaryError ->
+                            Left
+                              (EngineSecretWorkerBoundaryRefused boundaryError)
+                          Right (completed, rawReceipt, result) ->
+                            case encodeResult result of
+                              Left boundaryError ->
+                                Left
+                                  ( EngineSecretWorkerBoundaryRefused
+                                      boundaryError
+                                  )
+                              Right durableResult ->
+                                case captureSecretWorkerReceipt
+                                  completed
+                                  rawReceipt
+                                  durableResult of
+                                  Left refusal ->
+                                    Left
+                                      ( EngineSecretWorkerReceiptRefused
+                                          refusal
+                                      )
+                                  Right captured -> Right (captured, result)
+                      case executed of
+                        Left failure ->
                           refuseBeforeReceipt
                             boundary
                             request
-                            (effectRefusalInterruption refusal)
-                            (EngineSecretWorkerEffectRefused refusal)
-                        Right effectPermit -> do
-                          ran <-
-                            executeAuthorizedSecretWorker
-                              effectPermit
-                              (runOperation physicalPermit effectPermit)
-                          let
-                            executed = case ran of
-                              Left boundaryError ->
-                                Left
-                                  (EngineSecretWorkerBoundaryRefused boundaryError)
-                              Right (completed, rawReceipt, result) ->
-                                case encodeResult result of
-                                  Left boundaryError ->
-                                    Left
-                                      ( EngineSecretWorkerBoundaryRefused
-                                          boundaryError
-                                      )
-                                  Right durableResult ->
-                                    case captureSecretWorkerReceipt
-                                      completed
-                                      rawReceipt
-                                      durableResult of
-                                      Left refusal ->
-                                        Left
-                                          ( EngineSecretWorkerReceiptRefused
-                                              refusal
-                                          )
-                                      Right captured -> Right (captured, result)
-                          case executed of
-                            Left failure ->
-                              refuseBeforeReceipt
-                                boundary
-                                request
-                                interruption
-                                failure
-                            Right (captured, result) -> do
-                              receiptPersisted <-
-                                persistCheckpointCas
+                            interruption
+                            failure
+                        Right (captured, result) -> do
+                          receiptPersisted <-
+                            persistCheckpointCas
+                              boundary
+                              fence
+                              (persistedVersion persisted)
+                              (receiptCapturedCheckpoint captured)
+                          case receiptPersisted of
+                            Left failure -> pure (Left failure)
+                            Right checkpoint -> do
+                              cleaned <-
+                                completeWorkerCleanup
                                   boundary
+                                  interruption
                                   fence
-                                  (persistedVersion persisted)
-                                  (receiptCapturedCheckpoint captured)
-                              case receiptPersisted of
-                                Left failure -> pure (Left failure)
-                                Right checkpoint -> do
-                                  cleaned <-
-                                    completeWorkerCleanup
-                                      boundary
-                                      interruption
-                                      fence
+                                  request
+                                  checkpoint
+                                  ( decideSecretWorkerRecovery
                                       request
-                                      checkpoint
-                                      ( decideSecretWorkerRecovery
-                                          request
-                                          interruption
-                                          (persistedCheckpoint checkpoint)
-                                      )
-                                  pure
-                                    ( fmap
-                                        (\(_, receipt) -> (receipt, result))
-                                        cleaned
-                                    )
+                                      interruption
+                                      (persistedCheckpoint checkpoint)
+                                  )
+                              pure
+                                ( fmap
+                                    (\(_, receipt) -> (receipt, result))
+                                    cleaned
+                                )
 
 completeWorkerCleanup
   :: (Monad m)
@@ -744,6 +821,24 @@ requestMatchesInvocation operation fence request =
     && secretWorkerRequestStorageGeneration request
       == bootstrapFenceStorageGeneration fence
     && secretWorkerRequestOperationDeadline request
+      == bootstrapFenceOperationDeadline fence
+
+intentMatchesInvocation
+  :: SecretWorkerOperation
+  -> BootstrapSessionFence
+  -> SecretWorkerIntent
+  -> Bool
+intentMatchesInvocation operation fence intent =
+  secretWorkerIntentOperation intent == operation
+    && secretWorkerIntentFenceGeneration intent
+      == bootstrapFenceGeneration fence
+    && secretWorkerIntentOwnerNonce intent == bootstrapFenceOwnerNonce fence
+    && secretWorkerIntentActionDigest intent
+      == bootstrapFenceActionDigest fence
+    && secretWorkerIntentRequestDigest intent == bootstrapFenceRequestDigest fence
+    && secretWorkerIntentStorageGeneration intent
+      == bootstrapFenceStorageGeneration fence
+    && secretWorkerIntentOperationDeadline intent
       == bootstrapFenceOperationDeadline fence
 
 loadCheckpoint

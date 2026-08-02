@@ -1,0 +1,9 @@
+apiVersion: v2
+name: credential-provisioner
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+description: >-
+  Permit-created one-shot Credential Provisioner or External Material Ingress.
+  The chart is inert unless a reconciler supplies one exact signed permit
+  binding; it has no steady Service, PVC, or reusable queue.

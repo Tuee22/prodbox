@@ -305,6 +305,7 @@ loadProjection observation = case observation of
   ModelBObserved version committed ->
     Right (LoadedSmtpProjectionObserved version committed)
   ModelBCorrupt detail -> Left (SmtpKeyRepairProjectionCorrupt detail)
+  ModelBEndpointUnready detail -> Left (SmtpKeyRepairProjectionUnobservable detail)
   ModelBUnobservable detail -> Left (SmtpKeyRepairProjectionUnobservable detail)
 
 loadedCommittedProjection
@@ -505,6 +506,7 @@ resumeOrCreate interpreter request loaded permit action = do
               _ -> operationFailure "armed operation postcondition failed"
           ModelBCasConflict _ -> operationFailure "operation arm conflict"
           ModelBCasRefusedCorrupt detail -> operationFailure detail
+          ModelBCasEndpointUnready detail -> operationFailure detail
           ModelBCasUnobservable detail -> operationFailure detail
       ModelBObserved _ record
         | operationBinding record /= binding ->
@@ -523,6 +525,8 @@ resumeOrCreate interpreter request loaded permit action = do
                   pure (interpretCreatedCommitResult result Nothing)
       ModelBCorrupt detail ->
         operationFailure ("corrupt operation record: " <> detail)
+      ModelBEndpointUnready detail ->
+        operationFailure ("unobservable operation record: " <> detail)
       ModelBUnobservable detail ->
         operationFailure ("unobservable operation record: " <> detail)
 
@@ -616,6 +620,7 @@ releaseCreatedKey interpreter request action acquired exitCase = case acquired o
               -- compensation; recovery will reconcile the bounded inventory.
               ModelBMissing -> deleteCreatedKey interpreter keyId
               ModelBCorrupt _ -> pure Nothing
+              ModelBEndpointUnready _ -> pure Nothing
               ModelBUnobservable _ -> pure Nothing
       else pure Nothing
 
@@ -732,6 +737,8 @@ completeSmtpOperation interpreter request permit action armed encoded =
                 ModelBCasConflict _ -> pure (Left SmtpKeyCommitConflict)
                 ModelBCasRefusedCorrupt detail ->
                   pure (Left (SmtpKeyCommitRefusedCorrupt detail))
+                ModelBCasEndpointUnready detail ->
+                  pure (Left (SmtpKeyCommitUnobservable detail))
                 ModelBCasUnobservable detail ->
                   pure (Left (SmtpKeyCommitUnobservable detail))
         _ ->
@@ -773,6 +780,11 @@ commitProjection interpreter request loaded permit committed = do
       pure
         ( CreatedCommitNotApplied
             (SmtpKeyCommitRefusedCorrupt detail)
+        )
+    ModelBCasEndpointUnready detail ->
+      pure
+        ( CreatedCommitNotApplied
+            (SmtpKeyCommitUnobservable detail)
         )
     ModelBCasUnobservable detail ->
       pure
@@ -820,6 +832,8 @@ confirmCommittedProjection interpreter request expectedVersion expectedProjectio
           CreatedCommitSucceeded (SmtpKeyRepairCreated expectedProjection)
     ModelBCorrupt detail ->
       CreatedCommitUnconfirmed (SmtpKeyCommitPostconditionCorrupt detail)
+    ModelBEndpointUnready detail ->
+      CreatedCommitUnconfirmed (SmtpKeyCommitPostconditionUnobservable detail)
     ModelBUnobservable detail ->
       CreatedCommitUnconfirmed (SmtpKeyCommitPostconditionUnobservable detail)
 

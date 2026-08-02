@@ -11,6 +11,9 @@ kind: Deployment
 metadata:
   name: target-secret-agent
   namespace: {{ .Values.global.namespace }}
+  annotations:
+    prodbox.io/target-agent-identity: {{ required "global.targetAgentIdentity is required" .Values.global.targetAgentIdentity | quote }}
+    prodbox.io/target-agent-rollout-digest: {{ required "global.targetAgentRolloutDigest is required" .Values.global.targetAgentRolloutDigest | quote }}
   labels:
     {{- include "target-secret-agent.labels" . | nindent 4 }}
 spec:
@@ -22,9 +25,13 @@ spec:
       {{- include "target-secret-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
-        {{- toYaml . | nindent 8 }}
+        prodbox.io/target-agent-identity: {{ required "global.targetAgentIdentity is required" .Values.global.targetAgentIdentity | quote }}
+        prodbox.io/target-agent-rollout-digest: {{ required "global.targetAgentRolloutDigest is required" .Values.global.targetAgentRolloutDigest | quote }}
+      {{- with .Values.podAnnotations }}
+      {{- range $key, $value := . }}
+        {{ $key }}: {{ $value | quote }}
+      {{- end }}
       {{- end }}
       labels:
         {{- include "target-secret-agent.labels" . | nindent 8 }}
@@ -55,6 +62,9 @@ spec:
               # agent's file-watch reload loop.
               mountPath: /etc/target-secret-agent/config
               readOnly: true
+            - name: controller-auditor-identity
+              mountPath: /var/run/secrets/prodbox-target-controller
+              readOnly: true
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness | quote }}
@@ -79,3 +89,10 @@ spec:
         - name: config
           configMap:
             name: target-secret-agent-config
+        - name: controller-auditor-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: prodbox-control-plane
+                  expirationSeconds: 600

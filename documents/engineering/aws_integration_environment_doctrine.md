@@ -298,8 +298,8 @@ Generated provider/DNS AWS keys live only at the role-specific Vault generations
 Authority-backup/TLS-retention/home Gateway-DNS/home-DNS01 are `LongLived`. Authority-backup
 genesis/repair uses its dedicated frozen protocol; each normal material generation is delivered by
 the Target Secret Agent after a durable backup-receipted `OperatorMaterialPermit`. The config-split and SecretRef model are owned by
-[vault_doctrine.md §3, §4](./vault_doctrine.md). The pre-cutover root `aws.*` fields and
-`secret/gateway/gateway/aws` path have no target consumer.
+[vault_doctrine.md §3, §4](./vault_doctrine.md). The pre-cutover root `aws.*` aggregate and
+shared Vault coordinate have no target consumer.
 
 Each IAM access-key create is a journaled non-idempotent Credential Provisioner action. Lifecycle
 Authority records the finite inventory and create intent first. If AWS applies the create but its
@@ -551,8 +551,8 @@ revoke lifecycle is canonicalized in
 [aws_admin_credentials.md §4.2](./aws_admin_credentials.md). This document defers to that SSoT for
 the lifecycle; the items below state the credential-boundary invariants the lifecycle obeys.
 
-1. runtime identity is split by operation; shared `aws.*` and `secret/gateway/gateway/aws` are
-   pre-cutover legacy
+1. runtime identity is split by operation; the shared `aws.*` aggregate and shared Vault
+   coordinate are pre-cutover legacy
 2. `aws_admin_for_test_simulation.*` is the test-harness-only fixture in `test-secrets.dhall`
    (`TestPlaintext`-class) that simulates the ephemeral temporary-admin prompt the real flows
    answer interactively — driving `prodbox test integration aws-iam`,
@@ -1065,6 +1065,14 @@ Target Secret Agent capability are admissible; a missing stack is not an operato
 prerequisite. The corresponding read-only prerequisites validate tools, configuration, and the
 exact operation-indexed capability references—not nominal endpoints or separately injected probes.
 
+AWS public-edge and cert-manager ownership is role-separated. The retained Authority signs a
+registered `public-edge:a:<zone>:<fqdn>` Provider intent; only the Provider Worker's sealed narrow
+session performs native Route 53 observation, UPSERT, wait, and authoritative read-back. The EKS
+Gateway remains diagnostics-only. Separately, the EKS target materializer authenticates with the
+`aws-cert-manager-run` Vault role and reads only `secret/aws/cert-manager/aws/dns01`; it cannot read
+the long-lived home DNS01 generation. Explicit EKS IAM role names contain both stack/run and cluster
+identity, allowing checkpoint-loss recovery by exact name without an account-wide IAM scan.
+
 In the target implementation Lifecycle Authority's pure `decide`/`evolve` aggregate commits the
 provider revision, semantic-readiness result, SMTP credential-family generation, retained-home
 source-custody receipt, and per-target delivery outbox. Its interpreters remain disjoint:
@@ -1112,3 +1120,19 @@ registered non-credential capture bucket, SES identity/rules, and DNS records. A
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+## Revision-Bound SES on Both Targets
+
+Home and AWS runs submit the same retained SES aggregate. Provider mutation covers only the closed
+SES, Route 53, and S3 inventory; Pulumi has no SMTP IAM resource or credential output. SMTP IAM is
+owned exclusively by the Credential Provisioner after the frozen, evidence-bound legacy cutover.
+The retained-home Agent owns `SesSmtpSource` custody, while the selected home or AWS Target Agent
+owns only its generation-bound materialization and read-back. EKS replacement therefore resumes
+the AWS outbox from retained custody without a Gateway dependency, admin prompt, or key rotation.
+## Live AWS Invite Evidence
+
+Final AWS qualification runs exactly `prodbox test all --substrate aws` against AWS-owned
+Kubernetes, DNS, TLS, ingress, Vault/EBS, and Target-Agent coordinates. It cannot reuse a home
+endpoint, credential, or result. The artifact includes fresh-AWS-Vault restoration of the same
+retained SES-SMTP, ACME-EAB, and TLS generations, the full invite fault inventory, aggregate
+success, cleanup takeover, and authoritative per-run absence. Until that governed artifact and the
+independent home artifact exist, deployment qualification remains pending.

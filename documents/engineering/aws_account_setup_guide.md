@@ -42,7 +42,7 @@ Secret Agent. The Lifecycle Authority records only target-sealed ciphertext dige
 Agent/Vault keyed-HMAC commitment reference, generation, and outbox state—never a raw
 plaintext/credential hash. The selected Target Secret Agent performs the allowlisted generation
 CAS and read-back. The shared
-`aws.*` credential and `secret/gateway/gateway/aws` path are pre-cutover legacy, not the target
+root `aws.*` credential shape and the removed shared Vault path are pre-cutover legacy, not the target
 setup result.
 
 Access-key creation is never blindly retried. The setup operation commits an intent and finite

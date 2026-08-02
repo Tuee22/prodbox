@@ -198,8 +198,10 @@ secretManifestStringData stringData =
 -- * 'secretOpsGet' returns @Right Nothing@ for an absent Secret
 --   (HTTP 404), @Right (Just value)@ for an existing one, and @Left@
 --   for any other error (network, auth, malformed body).
--- * 'secretOpsPut' is create-or-replace: it submits the full manifest
---   and the API server decides whether to insert or update.
+-- * 'secretOpsPut' is non-forcing exact-name server-side apply: PATCH names
+--   the object in the request URL, so Kubernetes RBAC @resourceNames@
+--   constrains first creation without a namespace-wide @create@ grant. The
+--   caller must observe and reject mismatched existing content before apply.
 data K8sSecretOps = K8sSecretOps
   { secretOpsGet :: Text -> Text -> IO (Either String (Maybe Value))
   , secretOpsPut :: Text -> Text -> Value -> IO (Either String ())
@@ -276,58 +278,47 @@ httpGetSecret manager token namespace name = do
                     ("K8s API GET returned " ++ show code ++ ": " ++ truncateBody (responseBody resp))
                 )
 
--- | Sprint 3.13 fourth chunk + chunk 23 (2026-05-31 fix): create-or-update
---   a namespaced @v1.Secret@ via the k8s API. The earlier prose claimed
---   "the API server handles create-vs-update server-side" but that is
---   only true for @PATCH@ (with @application/apply-patch+yaml@, server-side
---   apply) or for the legacy three-way merge — plain @PUT@ to
---   @/api/v1/namespaces/<ns>/secrets/<name>@ returns 404 NotFound when
---   the named Secret doesn't yet exist (PUT replaces; it doesn't insert).
---   This function therefore tries @POST /api/v1/namespaces/<ns>/secrets@
---   first (create); on 409 Conflict it falls back to
---   @PUT /api/v1/namespaces/<ns>/secrets/<name>@ (update). Returns
---   @Right ()@ on a 200/201 from either path, @Left@ on any other
---   non-success status with the response body for diagnostics.
+-- | Exact-name create via non-forcing Kubernetes server-side apply. A PATCH
+-- request always carries the Secret name in its URL, including on first
+-- creation, which permits an exact @resourceNames@ RBAC rule.  The body is
+-- JSON (valid YAML) with the apply-patch content type.
 httpPutSecret
   :: Manager -> Text -> Text -> Text -> Value -> IO (Either String ())
 httpPutSecret manager token namespace name manifest = do
-  createResult <- httpRequestSecret manager token "POST" collectionUrl manifest
-  case createResult of
-    Right () -> pure (Right ())
-    Left (code, body)
-      | code == 409 -> do
-          updateResult <-
-            httpRequestSecret manager token "PUT" objectUrl manifest
-          pure $ case updateResult of
-            Right () -> Right ()
-            Left (updateCode, updateBody) ->
-              Left
-                ( "K8s API PUT (fallback after 409) returned "
-                    ++ show updateCode
-                    ++ ": "
-                    ++ truncateBody updateBody
-                )
-      | otherwise ->
-          pure
-            ( Left
-                ("K8s API POST returned " ++ show code ++ ": " ++ truncateBody body)
-            )
+  applied <-
+    httpRequestSecret
+      manager
+      token
+      "PATCH"
+      "application/apply-patch+yaml"
+      objectUrl
+      manifest
+  pure $ case applied of
+    Right () -> Right ()
+    Left (code, body) ->
+      Left
+        ( "K8s API exact Secret apply returned "
+            ++ show code
+            ++ ": "
+            ++ truncateBody body
+        )
  where
-  collectionUrl =
-    secretApiBaseUrl ++ "/api/v1/namespaces/" ++ Text.unpack namespace ++ "/secrets"
-  objectUrl = secretApiBaseUrl ++ secretApiPath namespace name
+  objectUrl =
+    secretApiBaseUrl
+      ++ secretApiPath namespace name
+      ++ "?fieldManager=prodbox-target-secret-agent&force=false&fieldValidation=Strict"
 
--- | Submit a JSON request to the k8s API. Returns @Right ()@ on
--- 200/201; @Left (statusCode, body)@ on any other status so the caller
--- can branch on specific codes (e.g. 409 Conflict → PUT fallback).
+-- | Submit a bounded JSON/YAML-compatible request to the Kubernetes API.
+-- Returns @Right ()@ on 200/201 and the status/body otherwise.
 httpRequestSecret
   :: Manager
   -> Text
   -> BS.ByteString
+  -> BS.ByteString
   -> String
   -> Value
   -> IO (Either (Int, BL.ByteString) ())
-httpRequestSecret manager token verb url manifest = do
+httpRequestSecret manager token verb contentType url manifest = do
   reqResult <-
     try (parseRequest url) :: IO (Either SomeException Request)
   case reqResult of
@@ -338,7 +329,7 @@ httpRequestSecret manager token verb url manifest = do
               { method = verb
               , requestHeaders =
                   [ ("Authorization", TE.encodeUtf8 ("Bearer " <> token))
-                  , ("Content-Type", "application/json")
+                  , ("Content-Type", contentType)
                   , ("Accept", "application/json")
                   ]
               , requestBody = RequestBodyLBS (encode manifest)

@@ -29,13 +29,13 @@ module Prodbox.Aws
   , buildIamPolicyDocument
   , buildIamPolicyDocumentForAccount
   , buildIamPolicyDocumentForAccountAndCaptureBucket
+  , buildDedicatedAdapterIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
   , residuePolicyBypassesLongLivedProtection
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
-  , operationalBootstrapDnsRecordExists
   , operationalCredentialsClearedDecision
   , operationalIamUserExists
   , operationalIamUserResidueFromExists
@@ -50,6 +50,12 @@ module Prodbox.Aws
   , residueFromProbe
   , promptAdminCredentialsWithRegionChoice
   , prodboxIamUserName
+  , authorityBackupIamUserName
+  , authorityBackupIamPolicyName
+  , tlsRetentionIamUserName
+  , tlsRetentionIamPolicyName
+  , DedicatedAdapterIamSpec (..)
+  , dedicatedAdapterIamSpecs
   , pulumiDestroyPlanForResidue
   , quotaStatusRegionObservation
   , renderAwsSetupPlan
@@ -73,7 +79,6 @@ import Control.Exception
   ( Exception
   , IOException
   , SomeException
-  , bracket_
   , displayException
   , fromException
   , throwIO
@@ -85,7 +90,6 @@ import Data.Aeson
   , Object
   , Value (..)
   , eitherDecode
-  , encode
   , object
   , (.=)
   )
@@ -101,7 +105,7 @@ import Data.List
   , partition
   , transpose
   )
-import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
@@ -147,26 +151,45 @@ import Prodbox.Capacity.Storage
   , regionQuotaPreflight
   )
 import Prodbox.Config.Tier0 qualified as Tier0
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchHostProviderIntentFresh
+  , renderProviderCallerError
+  )
 import Prodbox.Error (fatalError)
-import Prodbox.Gateway.Client qualified as GatewayClient
-import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
   )
 import Prodbox.Infra.AwsSesLeaseRole qualified as AwsSesLeaseRole
+import Prodbox.Infra.DedicatedAdapterIam
+  ( DedicatedAdapterIamSpec (..)
+  , authorityBackupIamPolicyName
+  , authorityBackupIamUserName
+  , dedicatedAdapterIamSpecs
+  , tlsRetentionIamPolicyName
+  , tlsRetentionIamUserName
+  , validateDedicatedBucket
+  , validateDedicatedPrefix
+  )
 import Prodbox.Infra.StackDescriptor
   ( perRunStackDescriptorNames
   )
-import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryAwsSesResidueStatus
   , queryPerRunResidueStatuses
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (..)
+  , mkProviderSpotPriceQuery
+  )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , managedDestroyCapability
   , pairAwsSesResidue
   , pairPerRunResidue
   , reconcileAbsent
@@ -197,7 +220,6 @@ import Prodbox.Settings
   , StorageSection (..)
   , defaultConfigFile
   , loadConfigFile
-  , resolveAwsCredentialsRefFromHostVault
   , supportedPublicHostname
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
@@ -214,25 +236,18 @@ import Prodbox.Substrate
   , fixedScalingPolicyBySubstrate
   )
 import Prodbox.Vault.Host
-  ( AcmeEabFixture (hmac_key, key_id)
-  , TestSecrets
-    ( acme_eab
-    , pulumi_state_backend_bucket_name
-    , pulumi_state_backend_region
-    , route53_zone_id
-    , ses_capture_bucket
-    , ses_receive_subdomain
-    , ses_sender_domain
-    )
+  ( TestSecrets
+      ( pulumi_state_backend_bucket_name
+      , pulumi_state_backend_region
+      , route53_zone_id
+      , ses_capture_bucket
+      , ses_receive_subdomain
+      , ses_sender_domain
+      )
   , loadTestSecrets
-  , seedAcmeEabFromTestSecrets
-  , writeHostVaultKvObject
   )
 import System.Directory
   ( doesFileExist
-  )
-import System.Environment
-  ( lookupEnv
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -243,10 +258,6 @@ import System.FilePath
   )
 import System.IO
   ( hFlush
-  , hGetEcho
-  , hIsTerminalDevice
-  , hSetEcho
-  , stdin
   , stdout
   )
 import System.IO.Error (isEOFError)
@@ -345,15 +356,11 @@ data IamProbe = IamProbe
   }
   deriving (Eq, Show)
 
--- | Sprint 7.20: the observed Vault-side state of the operational
--- @secret/gateway/gateway/aws@ credential AFTER teardown. "Cleared" means
--- the credential block reads back empty — NOT that the KV path was hard
--- deleted; the harness clears by writing empty values
--- ('writeOperationalAwsVaultCredentials' over empties), and the guard
--- asserts CLEARED, not DELETED. A true KV delete is an optional future
--- refinement (see 'assertOperationalTeardownComplete'). Populated by the
--- effectful wrapper from the existing 'operationalCredentialsCleared'
--- probe. No IO; pure value.
+-- | Observed Target-Agent state of the lifecycle-provider credential after
+-- teardown. "Cleared" means the exact generation was tombstoned, metadata was
+-- deleted, and the Agent read back physical absence; empty-field surrogates are
+-- not accepted. Populated by the effectful wrapper from
+-- 'operationalCredentialsCleared'. No IO; pure value.
 data VaultProbe
   = VaultCredsCleared
   | VaultCredsPopulated
@@ -371,8 +378,7 @@ data ResidueError = ResidueError
   , residueLeakedKeys :: [Text]
   -- ^ Access-key IDs still attached to the operational IAM user.
   , residueVaultPopulated :: Bool
-  -- ^ The Vault operational credential at @secret/gateway/gateway/aws@
-  -- still reads back populated.
+  -- ^ The distinct lifecycle-provider Target-Agent credential still exists.
   }
   deriving (Eq, Show)
 
@@ -389,8 +395,6 @@ data ConfigSetupResult = ConfigSetupResult
   , configSetupRoute53ZoneId :: Text
   , configSetupDemoFqdn :: Text
   , configSetupPolicyTier :: PolicyTier
-  , configSetupAccessKeyId :: Text
-  , configSetupQuotaStatuses :: [QuotaStatus]
   , configSetupDhallPath :: FilePath
   }
   deriving (Eq, Show)
@@ -509,8 +513,6 @@ data ConfigSetupInput = ConfigSetupInput
   , configSetupDemoTtlInput :: Natural
   , configSetupAcmeEmailInput :: Text
   , configSetupAcmeServerInput :: Text
-  , configSetupAcmeEabKeyIdInput :: Maybe Text
-  , configSetupAcmeEabHmacKeyInput :: Maybe Text
   , configSetupDevModeInput :: Bool
   , configSetupBootstrapPublicIpOverrideInput :: Maybe Text
   , configSetupPulumiEnableDnsBootstrapInput :: Bool
@@ -545,21 +547,6 @@ awsEksFixedIamRoleNames =
   [ "aws-eks-test-aws-lb-controller"
   , "aws-eks-test-ebs-csi-driver"
   ]
-
-operationalCredentialReadyAttempts :: Int
-operationalCredentialReadyAttempts = 30
-
-operationalCredentialRetryDelayMicros :: Int
-operationalCredentialRetryDelayMicros = 2000000
-
-route53CredentialReadyAttempts :: Int
-route53CredentialReadyAttempts = 90
-
-route53CredentialReadyConsecutiveSuccesses :: Int
-route53CredentialReadyConsecutiveSuccesses = 3
-
-route53CredentialRetryDelayMicros :: Int
-route53CredentialRetryDelayMicros = 10000000
 
 baselineQuotaSpecs :: [QuotaSpec]
 baselineQuotaSpecs =
@@ -663,24 +650,47 @@ buildIamPolicyJson :: PolicyTier -> String
 buildIamPolicyJson policyTier =
   BL8.unpack (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument policyTier)) ++ "\n"
 
-buildFederatedSessionPolicyDocument :: PolicyTier -> Value
-buildFederatedSessionPolicyDocument policyTier =
-  object
-    [ "Version" .= ("2012-10-17" :: String)
-    , "Statement" .= [statement "FederatedValidationSession" actions "*"]
-    ]
- where
-  actions =
-    case policyTier of
-      PolicyCore -> ["sts:GetCallerIdentity", "route53:*"]
-      PolicyFull ->
-        [ "sts:GetCallerIdentity"
-        , "sts:AssumeRole"
-        , "route53:*"
-        , "ec2:*"
-        , "eks:*"
-        , "iam:*"
+-- | Build the entire IAM policy for one dedicated adapter identity.  Only
+-- registered durable namespaces are accepted, and the result grants exactly:
+-- bucket location/list constrained to those prefixes, plus immutable-protocol
+-- GetObject/PutObject beneath them.  It deliberately has no delete, wildcard
+-- bucket, IAM, STS-assume-role, or cross-adapter capability.
+buildDedicatedAdapterIamPolicyDocument
+  :: Text
+  -> [Text]
+  -> Either String Value
+buildDedicatedAdapterIamPolicyDocument rawBucket rawPrefixes = do
+  bucket <- validateDedicatedBucket rawBucket
+  prefixes <-
+    traverse validateDedicatedPrefix (Set.toAscList (Set.fromList rawPrefixes))
+  when (null prefixes) (Left "dedicated adapter IAM policy requires at least one prefix")
+  let bucketArn = "arn:aws:s3:::" <> bucket
+      objectArns = [bucketArn <> "/" <> prefix <> "/*" | prefix <- prefixes]
+      listPrefixes = concat [[prefix <> "/", prefix <> "/*"] | prefix <- prefixes]
+  Right
+    ( object
+        [ "Version" .= ("2012-10-17" :: String)
+        , "Statement"
+            .= [ object
+                   [ "Sid" .= ("ObserveRegisteredPrefixes" :: String)
+                   , "Effect" .= ("Allow" :: String)
+                   , "Action" .= (["s3:GetBucketLocation", "s3:ListBucket"] :: [String])
+                   , "Resource" .= bucketArn
+                   , "Condition"
+                       .= object
+                         [ "StringLike"
+                             .= object ["s3:prefix" .= listPrefixes]
+                         ]
+                   ]
+               , object
+                   [ "Sid" .= ("ReadWriteRegisteredObjects" :: String)
+                   , "Effect" .= ("Allow" :: String)
+                   , "Action" .= (["s3:GetObject", "s3:PutObject"] :: [String])
+                   , "Resource" .= objectArns
+                   ]
+               ]
         ]
+    )
 
 -- | Sprint 4.26: the operator @prodbox aws teardown@ preflight refuses on
 -- a live long-lived Pulumi stack ('aws-ses' / retained 'public-edge-tls')
@@ -781,41 +791,22 @@ executeAwsCommand repoRoot longLivedPreflight command =
 
 runAwsReapTestEbs :: FilePath -> IO ExitCode
 runAwsReapTestEbs repoRoot = do
-  config <- loadConfigForWrite repoRoot
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-  case credentialsResult of
+  result <-
+    dispatchHostProviderIntentFresh
+      LifecycleAuthorityOperator
+      repoRoot
+      "operator-ebs-reap-test"
+      (ReapTestEbsVolumes (Text.pack awsEksCanonicalClusterName))
+  case result of
     Left err -> do
       writeError
         ( fatalError
-            ( Text.pack
-                ( "Test-scoped EBS reaper requires populated operational aws.* credentials in Vault: "
-                    ++ err
-                )
-            )
+            (Text.pack ("Test-scoped EBS Provider dispatch failed: " ++ renderProviderCallerError err))
         )
       pure (ExitFailure 1)
-    Right credentials ->
-      if not (operationalCredentialsConfigured credentials)
-        then do
-          writeError
-            (fatalError "Test-scoped EBS reaper requires populated operational aws.* credentials.")
-          pure (ExitFailure 1)
-        else do
-          environment <- operationalAwsEnvironment credentials
-          result <-
-            EbsVolume.runTestScopedEbsReaper
-              EbsVolume.TestEbsReaperInput
-                { EbsVolume.testEbsReaperEnvironment = environment
-                , EbsVolume.testEbsReaperWorkingDirectory = Just repoRoot
-                , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
-                }
-          case result of
-            Left err -> do
-              writeError (fatalError (Text.pack ("Test-scoped EBS reaper failed: " ++ err)))
-              pure (ExitFailure 1)
-            Right report -> do
-              writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
-              pure ExitSuccess
+    Right evidence -> do
+      writeOutputLine ("Test-scoped EBS reaper receipt: " ++ Text.unpack evidence)
+      pure ExitSuccess
 
 executeConfigSetup :: FilePath -> PlanOptions -> IO ExitCode
 executeConfigSetup repoRoot planOptions = do
@@ -1031,9 +1022,8 @@ throwAws = throwIO . AwsError
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
   requireInteractiveTty configSetupGuard
-  writeOutputLine "Config setup writes `prodbox.dhall`, creates the operational IAM user,"
-  writeOutputLine
-    "and validates the result. The temporary admin credential entered below is not persisted."
+  writeOutputLine "Config setup discovers non-secret AWS coordinates, writes `prodbox.dhall`,"
+  writeOutputLine "and validates the Tier-0 result. It does not create identities or ingest secrets."
   writeOutputLine ""
   accountReady <- promptConfirm "Do you already have an AWS account?" True
   unless accountReady showAwsAccountGuidance
@@ -1044,8 +1034,6 @@ interactiveConfigSetupInput repoRoot = do
   demoTtl <- promptInt "Demo DNS TTL seconds" 60
   showAcmeProviderGuidance
   acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
-  eabKeyIdRaw <- promptText "ZeroSSL EAB key ID (from ZeroSSL Developer settings)" Nothing
-  eabHmacKeyRaw <- promptSecret "ZeroSSL EAB HMAC key (hidden input)"
   let acmeServerValue = zeroSslAcmeServer
   showPolicyTierGuidance
   policyIndex <-
@@ -1079,8 +1067,6 @@ interactiveConfigSetupInput repoRoot = do
     demoTtl
     acmeEmailRaw
     acmeServerValue
-    eabKeyIdRaw
-    eabHmacKeyRaw
     devMode
     bootstrapOverrideRaw
     pulumiEnableDnsBootstrap
@@ -1270,8 +1256,9 @@ showHostedZoneChoiceGuidance = do
 showAcmeProviderGuidance :: IO ()
 showAcmeProviderGuidance = do
   writeOutputLine "ACME provider guidance (ZeroSSL):"
-  writeOutputLine "Open https://app.zerossl.com -> Developer -> EAB Credentials, then copy the"
-  writeOutputLine "EAB Key ID and HMAC key. Both are required for ZeroSSL ACME issuance."
+  writeOutputLine "ZeroSSL EAB material is required for issuance, but config setup never reads it."
+  writeOutputLine "After Authority admission opens, submit it through the separate attested"
+  writeOutputLine "external-material ingress operation."
   writeOutputLine ""
 
 showPolicyTierGuidance :: IO ()
@@ -1357,21 +1344,6 @@ runAwsIamHarnessSetup repoRoot policyTier = do
         { awsSetupAdminCredentials = credentials
         , awsSetupPolicyTierInput = policyTier
         }
-  -- Sprint 7.18: after operational @aws.*@ is materialized, seed the ZeroSSL
-  -- ACME external-account-binding into Vault (@secret/acme/eab@) from the
-  -- optional @acme_eab@ block of @test-secrets.dhall@, mirroring the @aws.*@
-  -- materialization above. This is the non-interactive analog of the
-  -- interactive @prodbox config setup@ EAB prompt, so the canonical suite's
-  -- public edge (real ZeroSSL certs -> cert-manager DNS01) can come up without
-  -- a TTY. The harness preflight runs on the home @test all@ path too — the
-  -- canonical validation set includes @aws-iam@ and @keycloak-invite@, which
-  -- always engage the harness regardless of substrate
-  -- ('Prodbox.TestPlan.derivedTier'). Absent or empty fixture EAB is a no-op.
-  -- 'seedAcmeEabFromTestSecrets' (Prodbox.Vault.Host) is also invoked from the
-  -- edge/ACME reconcile immediately before the in-cluster EAB materializer Job
-  -- is applied (the load-bearing call); this harness-preflight invocation is
-  -- belt-and-suspenders for the non-substrate harness path.
-  seedAcmeEabFromTestSecrets repoRoot
   pure
     ( renderAwsIamHarnessSetupReport
         existingIdentity
@@ -1384,50 +1356,37 @@ runAwsIamHarnessSetup repoRoot policyTier = do
 
 runAwsIamHarnessInspect :: FilePath -> IO String
 runAwsIamHarnessInspect repoRoot = do
-  config <- loadConfigForWrite repoRoot
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-  case credentialsResult of
-    Left err ->
+  identity <- probeConfiguredOperationalIdentity repoRoot
+  case identity of
+    OperationalCredentialsMissing ->
+      throwAws "AWS IAM harness inspection did not find a ready Provider Worker identity."
+    OperationalIdentityProbeFailed err ->
       throwAws
-        ( "AWS IAM harness inspection requires populated operational aws.* \
-          \credentials in Vault: "
+        ( "AWS IAM harness inspection failed through Lifecycle Authority Provider dispatch: "
             ++ err
         )
-    Right credentials ->
-      if not (operationalCredentialsConfigured credentials)
-        then throwAws "AWS IAM harness inspection requires populated operational aws.* credentials."
-        else do
-          identity <- probeOperationalIdentity repoRoot credentials
-          case identity of
-            OperationalCredentialsMissing ->
-              throwAws "AWS IAM harness inspection did not find populated operational aws.* credentials."
-            OperationalIdentityProbeFailed err ->
-              throwAws
-                ( "AWS IAM harness inspection failed to validate operational aws.* credentials via `aws sts get-caller-identity`: "
-                    ++ err
-                )
-            OperationalIdentityNonUserArn arn ->
-              throwAws
-                ( "AWS IAM harness inspection expected an IAM user identity for operational aws.* credentials but received ARN `"
-                    ++ Text.unpack arn
-                    ++ "`."
-                )
-            OperationalIdentityIamUser userName ->
-              pure
-                ( unlines
-                    [ "IAM_USER=" ++ Text.unpack userName
-                    , "IAM_PRINCIPAL=iam-user"
-                    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
-                    ]
-                )
-            OperationalIdentityFederatedUser userName ->
-              pure
-                ( unlines
-                    [ "IAM_USER=" ++ Text.unpack userName
-                    , "IAM_PRINCIPAL=federated-user"
-                    , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
-                    ]
-                )
+    OperationalIdentityNonUserArn arn ->
+      throwAws
+        ( "AWS IAM harness inspection expected an IAM user identity for the Provider Worker but received ARN `"
+            ++ Text.unpack arn
+            ++ "`."
+        )
+    OperationalIdentityIamUser userName ->
+      pure
+        ( unlines
+            [ "IAM_USER=" ++ Text.unpack userName
+            , "IAM_PRINCIPAL=iam-user"
+            , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
+            ]
+        )
+    OperationalIdentityFederatedUser userName ->
+      pure
+        ( unlines
+            [ "IAM_USER=" ++ Text.unpack userName
+            , "IAM_PRINCIPAL=federated-user"
+            , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
+            ]
+        )
 
 runAwsIamHarnessTeardown :: FilePath -> IO String
 runAwsIamHarnessTeardown repoRoot = do
@@ -1485,8 +1444,8 @@ runAwsIamHarnessTeardown repoRoot = do
   -- residue behind: the operational `prodbox` IAM user + its access keys
   -- are GONE from AWS (queried via the admin credentials through the same
   -- 'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes the
-  -- destroy used), AND the Vault credential at `secret/gateway/gateway/aws`
-  -- reads back CLEARED (via 'operationalCredentialsCleared'). The decision
+  -- destroy used), AND the lifecycle-provider Target-Agent credential reads
+  -- back absent (via 'operationalCredentialsCleared'). The decision
   -- core is the pure 'residueFromProbe' classifier; a residual user, a
   -- residual key, or a still-populated Vault cred aborts LOUD with
   -- 'renderResidueError' naming exactly what leaked. This EXTENDS (does not
@@ -1602,19 +1561,6 @@ promptText message maybeDefault = do
  where
   defaultSuffix = maybe "" (\defaultValue -> " [" ++ defaultValue ++ "]")
 
-promptSecret :: String -> IO String
-promptSecret message = do
-  terminal <- hIsTerminalDevice stdin
-  writeOutput (message ++ ": ")
-  hFlush stdout
-  if terminal
-    then do
-      originalEcho <- hGetEcho stdin
-      value <- bracket_ (hSetEcho stdin False) (hSetEcho stdin originalEcho) (readPromptLine message)
-      writeOutputLine ""
-      pure (trim value)
-    else trim <$> readPromptLine message
-
 promptInt :: String -> Int -> IO Int
 promptInt message defaultValue = do
   rawValue <- promptText message (Just (show defaultValue))
@@ -1690,8 +1636,6 @@ validateConfigSetupInput
   -> Int
   -> String
   -> Text
-  -> String
-  -> String
   -> Bool
   -> String
   -> Bool
@@ -1704,13 +1648,11 @@ validateConfigSetupInput
   -> String
   -> PolicyTier
   -> IO ConfigSetupInput
-validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
+validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl acmeEmailRaw acmeServer devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
   normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
   let normalizedZoneId = Text.strip zoneId
       normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
       normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
-      normalizedEabKeyId = normalizeOptionalText (Text.pack eabKeyIdRaw)
-      normalizedEabHmacKey = normalizeOptionalText (Text.pack eabHmacKeyRaw)
       normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
       normalizedAdvertisementMode = normalizeOptionalText (Text.toLower (Text.strip (Text.pack advertisementModeRaw)))
       normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
@@ -1742,8 +1684,6 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
   unless
     ("https://" `Text.isPrefixOf` Text.toLower acmeServer)
     (throwAws "acme_server must be an https:// URL")
-  when ((normalizedEabKeyId == Nothing) /= (normalizedEabHmacKey == Nothing)) $
-    throwAws "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
   case normalizedAdvertisementMode of
     Nothing -> throwAws "public_edge_advertisement_mode must be l2 or bgp"
     Just _ -> either throwAws pure (validatePublicEdgeDeployment normalizedDeployment)
@@ -1755,8 +1695,6 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       , configSetupDemoTtlInput = fromIntegral demoTtl
       , configSetupAcmeEmailInput = normalizedAcmeEmail
       , configSetupAcmeServerInput = Text.strip acmeServer
-      , configSetupAcmeEabKeyIdInput = normalizedEabKeyId
-      , configSetupAcmeEabHmacKeyInput = normalizedEabHmacKey
       , configSetupDevModeInput = devMode
       , configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride
       , configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap
@@ -1779,52 +1717,9 @@ applyAwsSetupWithFederatedFallback :: FilePath -> AwsSetupInput -> IO IamSetupRe
 applyAwsSetupWithFederatedFallback = applyAwsSetupWithFallbackMode True
 
 applyAwsSetupWithFallbackMode :: Bool -> FilePath -> AwsSetupInput -> IO IamSetupResult
-applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
-  (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
-    ensureOperationalIamUser repoRoot (awsSetupAdminCredentials input) (awsSetupPolicyTierInput input)
-  currentConfig <- loadConfigForWrite repoRoot
-  ensureConfiguredAwsSesLeaseRole
-    repoRoot
-    (awsSetupAdminCredentials input)
-    (awsSetupPolicyTierInput input)
-    currentConfig
-  (operationalCredentials, credentialSource) <-
-    operationalCredentialsAfterReadiness
-      allowFederatedFallback
-      repoRoot
-      (awsSetupAdminCredentials input)
-      (awsSetupPolicyTierInput input)
-      (nonEmptyText (zone_id (route53 currentConfig)))
-      newAccessKeyId
-      newSecretAccessKey
-  writeOperationalAwsVaultCredentials repoRoot operationalCredentials
-  let updatedConfig =
-        currentConfig
-          { aws =
-              (aws currentConfig)
-                { awsCredentialRegion = region operationalCredentials
-                }
-          }
-  writeProjectConfigParameters repoRoot updatedConfig
-  validationResult <- validateAndLoadSettings repoRoot
-  case validationResult of
-    Left err ->
-      throwAws
-        ( "Operational IAM user was created, but the updated config did not validate. "
-            ++ "Complete the remaining config fields with `prodbox config setup` and rerun. "
-            ++ "Detail: "
-            ++ err
-        )
-    Right _ ->
-      pure
-        IamSetupResult
-          { iamSetupUserName = prodboxIamUserName
-          , iamSetupPolicyTier = awsSetupPolicyTierInput input
-          , iamSetupAccessKeyId = access_key_id operationalCredentials
-          , iamSetupCredentialSource = credentialSource
-          , iamSetupQuotaStatuses = quotaStatuses
-          , iamSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
-          }
+applyAwsSetupWithFallbackMode _allowFederatedFallback _repoRoot _input =
+  throwAws
+    "AWS setup requires the executable authenticated Credential Provisioner; refusing IAM mutation while its Authority coordinator is unavailable"
 
 applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO (Either String IamTeardownResult)
 applyAwsTeardown repoRoot input = do
@@ -1989,6 +1884,7 @@ operationalManagedResources adminCreds =
       , resourceEnsureCommand = Just "prodbox aws setup"
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws teardown"
+      , resourceDestroyCapability = managedDestroyCapability "operational-aws-ses-lease-role"
       , resourceDestroy = \repoRoot ->
           deleteAwsSesLeaseRoleForTeardown repoRoot adminCreds
       }
@@ -1998,6 +1894,7 @@ operationalManagedResources adminCreds =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws teardown"
+      , resourceDestroyCapability = managedDestroyCapability "operational-iam-user"
       , resourceDestroy = \repoRoot -> do
           _ <- deleteExistingOperationalKeys repoRoot adminCreds
           deleteUserPolicyIfPresent repoRoot adminCreds
@@ -2010,6 +1907,7 @@ operationalManagedResources adminCreds =
       , resourceEnsureCommand = Nothing
       , resourceEnsurePresent = Nothing
       , resourceDestroyCommand = "prodbox aws teardown"
+      , resourceDestroyCapability = managedDestroyCapability "operational-aws-config"
       , resourceDestroy = \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
       }
   ]
@@ -2088,29 +1986,9 @@ awsSesLeaseRoleResidueFromObservation observation = case observation of
 -- back to the admin credential's region when the config region is blank.
 -- Returns 'ExitSuccess'.
 clearOperationalAwsConfig :: FilePath -> Credentials -> IO ExitCode
-clearOperationalAwsConfig repoRoot adminCreds = do
-  currentConfig <- loadConfigForWrite repoRoot
-  let currentRegion =
-        if Text.null (Text.strip (awsCredentialRegion (aws currentConfig)))
-          then region adminCreds
-          else awsCredentialRegion (aws currentConfig)
-      emptyOperationalCredentials =
-        Credentials
-          { access_key_id = ""
-          , secret_access_key = ""
-          , session_token = Nothing
-          , region = currentRegion
-          }
-      updatedConfig =
-        currentConfig
-          { aws =
-              (aws currentConfig)
-                { awsCredentialRegion = currentRegion
-                }
-          }
-  writeOperationalAwsVaultCredentials repoRoot emptyOperationalCredentials
-  writeProjectConfigParameters repoRoot updatedConfig
-  pure ExitSuccess
+clearOperationalAwsConfig _repoRoot _adminCreds =
+  throwAws
+    "Lifecycle-provider credential revocation requires the authenticated Credential Provisioner; host Target-material deletion is disabled"
 
 -- | Discover the live 'ResidueStatus' of all three
 -- 'operationalManagedResources', paired in dependency/registry order. The
@@ -2131,13 +2009,9 @@ discoverOperationalResidue repoRoot adminCreds = do
   let roleStatus = awsSesLeaseRoleResidueFromObservation roleObservation
   iamUserExists <- operationalIamUserExists repoRoot adminCreds
   let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
-  configResult <- loadConfigFile repoRoot
-  rawAwsConfigStatus <-
-    case configResult of
-      Left err -> pure (ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err))
-      Right config -> do
-        credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-        pure (operationalAwsConfigResidueFromCredentialsResult credentialsResult)
+  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
+  let rawAwsConfigStatus =
+        operationalAwsConfigResidueFromCredentialsResult credentialsResult
   -- Sprint 7.24: the operational @aws.*@ block is a @SecretRef.Vault@ (Sprint
   -- 7.14), so observing it resolves the reference from host Vault. At harness
   -- \*preflight* the cluster is not up yet, so Vault is unreachable and the
@@ -2259,8 +2133,8 @@ renderResidueError residue =
             ++ " (expected: all deleted)"
         | not (null (residueLeakedKeys residue))
         ]
-      , [ "the operational Vault credential at `secret/gateway/gateway/aws` "
-            ++ "still reads back POPULATED (expected: cleared)"
+      , [ "the lifecycle-provider credential at `secret/aws/lifecycle-provider` "
+            ++ "still reads back POPULATED (expected: physically absent)"
         | residueVaultPopulated residue
         ]
       ]
@@ -2275,8 +2149,8 @@ renderResidueError residue =
 --       from AWS — queried with the admin credentials through the same
 --       'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes
 --       the destroy path used; and
---   (c) the Vault operational credential at @secret/gateway/gateway/aws@
---       is cleared, reusing 'operationalCredentialsCleared'.
+--   (c) the lifecycle-provider Target-Agent credential is physically absent,
+--       reusing 'operationalCredentialsCleared'.
 --
 -- The two observations are unified into one 'IamProbe' / 'VaultProbe'
 -- pair and handed to the pure 'residueFromProbe' classifier; a 'Left'
@@ -2284,11 +2158,8 @@ renderResidueError residue =
 -- probe is fail-closed — if AWS IAM cannot be observed, the underlying
 -- 'throwAws' surfaces the error rather than presuming the user is gone.
 --
--- Note (Vault clear semantics): "cleared" means the credential block
--- reads back empty, NOT a true KV delete. The harness clears by writing
--- empty values, so the guard checks CLEARED rather than DELETED. A true
--- KV delete of @secret/gateway/gateway/aws@ is an optional future
--- refinement and is intentionally NOT performed here.
+-- Target-Agent deletion is generation-bound: it CAS-writes and reads back the
+-- tombstone marker, metadata-deletes the object, then requires exact 404.
 assertOperationalTeardownComplete :: FilePath -> Credentials -> IO ()
 assertOperationalTeardownComplete repoRoot adminCreds = do
   assertAwsSesLeaseRoleAbsent repoRoot adminCreds
@@ -2514,28 +2385,36 @@ applyAwsRegionQuotaPreflight repoRoot input =
   awsRegionQuotaPreflightFromStatuses <$> applyAwsCheckQuotas repoRoot input
 
 observeAwsSpotPrice :: FilePath -> Credentials -> SpotPriceRequest -> IO SpotObservation
-observeAwsSpotPrice repoRoot credentials request = do
-  result <-
-    try
-      ( do
-          environment <- operationalAwsEnvironment credentials
-          captureSubprocessResult
-            Subprocess
-              { subprocessPath = "aws"
-              , subprocessArguments = awsSpotPriceHistoryArgs request
-              , subprocessEnvironment = Just environment
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-      )
-      :: IO (Either SomeException (Result ProcessOutput))
-  pure $ case result of
+observeAwsSpotPrice repoRoot _credentials request =
+  case mkProviderSpotPriceQuery
+    (spotPriceInstanceType request)
+    (spotPriceProductDescription request) of
     Left err ->
-      SpotUnobservable
-        (UnobservableReason (Text.pack ("aws spot price observation failed: " ++ displayException err)))
-    Right (Failure err) ->
-      SpotUnobservable (UnobservableReason (Text.pack ("aws spot price observation failed: " ++ err)))
-    Right (Success output) ->
-      spotObservationFromAwsSpotPriceOutput output
+      pure
+        ( SpotUnobservable
+            (UnobservableReason (Text.pack ("invalid Provider spot-price query: " ++ show err)))
+        )
+    Right query -> do
+      result <-
+        dispatchHostProviderIntentFresh
+          LifecycleAuthorityOperator
+          repoRoot
+          "operator-spot-price"
+          (ObserveSpotPrice query)
+      pure $ case result of
+        Left err ->
+          SpotUnobservable
+            ( UnobservableReason
+                (Text.pack ("Provider spot-price dispatch failed: " ++ renderProviderCallerError err))
+            )
+        Right evidence -> case Text.stripPrefix "spot-price:" evidence of
+          Nothing ->
+            SpotUnobservable
+              (UnobservableReason "Provider spot-price evidence has an invalid shape")
+          Just price ->
+            case parseUsdPerHour price of
+              Left reason -> SpotUnobservable reason
+              Right value -> SpotObserved value
 
 awsSpotPriceHistoryArgs :: SpotPriceRequest -> [String]
 awsSpotPriceHistoryArgs request =
@@ -2610,7 +2489,7 @@ applyAwsRequestQuotas repoRoot input =
 -- updated non-secret 'ConfigFile' — the @demoInit@ analog (Sprint 1.50). Both
 -- production @config setup@ ('applyConfigSetup') and the test harness
 -- ('Prodbox.TestRunner', Sprint 5.10) construct config through this ONE
--- function, so the harness drives the same reconcile / IAM flows against a
+-- function, so the harness drives the same Tier-0 authoring flow against a
 -- config it generated, not a fixture it carries (config_doctrine.md §0, "The
 -- test harness generates its run config"). Sensitive fields are never written
 -- here — they remain @SecretRef.Vault@ pointers in @currentConfig@; the region
@@ -2659,9 +2538,8 @@ harnessAcmeEmail = "matthewnowak@gmail.com"
 
 -- | Assemble a 'ConfigSetupInput' non-interactively for the test harness — the
 -- no-prompt analog of 'interactiveConfigSetupInput' (Sprint 5.10, the
--- @demoTestConfig@ idiom). The cleartext @route53.zone_id@ and the ACME EAB come
--- from @test-secrets.dhall@ (the one file where cleartext operator ids are
--- allowed); @acme.email@ is the baked operator default; every other knob is
+-- @demoTestConfig@ idiom). The cleartext @route53.zone_id@ comes from
+-- @test-secrets.dhall@; @acme.email@ is the baked operator default; every other knob is
 -- carried over from the current (generated-skeleton) config, whose defaults
 -- already match @config setup@.
 harnessConfigSetupInput
@@ -2687,8 +2565,6 @@ harnessConfigSetupInput repoRoot currentConfig policyTier = do
               , configSetupDemoTtlInput = demo_ttl (domain currentConfig)
               , configSetupAcmeEmailInput = harnessAcmeEmail
               , configSetupAcmeServerInput = zeroSslAcmeServer
-              , configSetupAcmeEabKeyIdInput = key_id <$> acme_eab secrets
-              , configSetupAcmeEabHmacKeyInput = hmac_key <$> acme_eab secrets
               , configSetupDevModeInput = dev_mode (deployment currentConfig)
               , configSetupBootstrapPublicIpOverrideInput =
                   bootstrap_public_ip_override (deployment currentConfig)
@@ -2781,43 +2657,8 @@ regenerateConfigFromTestSecrets repoRoot policyTier = do
 
 applyConfigSetup :: FilePath -> ConfigSetupInput -> IO ConfigSetupResult
 applyConfigSetup repoRoot input = do
-  let adminCredentials = configSetupAdminCredentialsInput input
-  (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
-    ensureOperationalIamUser repoRoot adminCredentials (configSetupPolicyTierInput input)
-  waitForOperationalCredentialsReady
-    repoRoot
-    adminCredentials
-    (Just (configSetupRoute53ZoneIdInput input))
-    newAccessKeyId
-    newSecretAccessKey
   currentConfig <- loadConfigForWrite repoRoot
-  let operationalCredentials =
-        Credentials
-          { access_key_id = newAccessKeyId
-          , secret_access_key = newSecretAccessKey
-          , session_token = Nothing
-          , region = region adminCredentials
-          }
-  writeOperationalAwsVaultCredentials repoRoot operationalCredentials
-  -- Sprint 7.15: the prompted ZeroSSL EAB key ID + HMAC key are written to
-  -- Vault (@secret/acme/eab@, fields @key_id@ / @hmac_key@), mirroring the
-  -- operational AWS credentials above. They are never persisted into
-  -- @prodbox.dhall@; the config keeps the @SecretRef.Vault@ references.
-  writeAcmeEabVaultCredentials
-    repoRoot
-    (configSetupAcmeEabKeyIdInput input)
-    (configSetupAcmeEabHmacKeyInput input)
   let updatedConfig = configFromSetupInput currentConfig input
-  installOperationalIamPolicyForConfig
-    repoRoot
-    adminCredentials
-    (configSetupPolicyTierInput input)
-    updatedConfig
-  ensureConfiguredAwsSesLeaseRole
-    repoRoot
-    adminCredentials
-    (configSetupPolicyTierInput input)
-    updatedConfig
   writeProjectConfigParameters repoRoot updatedConfig
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
@@ -2825,44 +2666,15 @@ applyConfigSetup repoRoot input = do
     Right _ ->
       pure
         ConfigSetupResult
-          { configSetupRegion = region adminCredentials
+          { configSetupRegion = region (configSetupAdminCredentialsInput input)
           , configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input
           , configSetupDemoFqdn = configSetupDemoFqdnInput input
           , configSetupPolicyTier = configSetupPolicyTierInput input
-          , configSetupAccessKeyId = newAccessKeyId
-          , configSetupQuotaStatuses = quotaStatuses
-          , configSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
+          , -- Config setup authors non-secret Tier-0 only. Identity creation,
+            -- EAB ingress, quota requests, and target delivery are separately
+            -- receipt-backed operations after Authority admission opens.
+            configSetupDhallPath = canonicalTier0ConfigDisplayPath repoRoot
           }
-
--- | Ensure the fixed SES lease role only when its public resource scope is
--- fully available. A freshly generated operator config intentionally starts
--- with an empty hosted zone and SES capture bucket, so initial @aws setup@
--- must remain usable and defer this role until @config setup@ (or a later
--- idempotent @aws setup@) has supplied both identifiers.
-ensureConfiguredAwsSesLeaseRole
-  :: FilePath -> Credentials -> PolicyTier -> ConfigFile -> IO ()
-ensureConfiguredAwsSesLeaseRole repoRoot adminCredentials policyTier config =
-  case policyTier of
-    PolicyCore -> pure ()
-    PolicyFull -> do
-      accountId <- awsCallerAccountId repoRoot adminCredentials
-      maybeScope <-
-        either throwAws pure (configuredAwsSesLeaseRoleScope accountId config)
-      case maybeScope of
-        Nothing -> pure ()
-        Just scope -> do
-          result <-
-            AwsSesLeaseRole.ensureAwsSesLeaseRole
-              repoRoot
-              adminCredentials
-              scope
-          case result of
-            Left err ->
-              throwAws
-                ( "Failed to ensure the operational AWS SES lease role: "
-                    ++ show err
-                )
-            Right () -> pure ()
 
 configuredAwsSesLeaseRoleScope
   :: Text
@@ -2885,246 +2697,6 @@ configuredAwsSesLeaseRoleScope accountId config =
                   ++ show err
               )
           Right scope -> Right (Just scope)
-
-ensureOperationalIamUser :: FilePath -> Credentials -> PolicyTier -> IO (Text, Text, [QuotaStatus])
-ensureOperationalIamUser repoRoot adminCredentials policyTier = do
-  createUserOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "create-user"
-      , "--user-name"
-      , Text.unpack prodboxIamUserName
-      ]
-  when
-    ( processExitCode createUserOutput /= ExitSuccess
-        && awsErrorCode (errorDetail createUserOutput) /= Just "EntityAlreadyExists"
-    )
-    $ throwAws ("aws iam create-user failed: " ++ errorDetail createUserOutput)
-
-  currentConfig <- loadConfigForWrite repoRoot
-  installOperationalIamPolicyForConfig
-    repoRoot
-    adminCredentials
-    policyTier
-    currentConfig
-
-  accessKeys <- listOperationalAccessKeys repoRoot adminCredentials
-  mapM_ (deleteOperationalAccessKey repoRoot adminCredentials) accessKeys
-
-  createAccessKeyOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "create-access-key"
-      , "--user-name"
-      , Text.unpack prodboxIamUserName
-      ]
-  accessKeyPayloadText <-
-    liftAwsEither (requireCommandSuccess "aws iam create-access-key" createAccessKeyOutput)
-  accessKeyValue <- liftAwsEither (decodeJsonPayload "aws iam create-access-key" accessKeyPayloadText)
-  accessKeyObject <- liftAwsEither (requireObject "create-access-key" accessKeyValue)
-  nestedAccessKey <-
-    liftAwsEither (requireObjectField "create-access-key" "AccessKey" accessKeyObject)
-  newAccessKeyId <- liftAwsEither (requireTextField "AccessKey" "AccessKeyId" nestedAccessKey)
-  newSecretKey <- liftAwsEither (requireTextField "AccessKey" "SecretAccessKey" nestedAccessKey)
-  quotaStatuses <-
-    mapM (\spec -> ensureServiceQuota repoRoot adminCredentials spec True) baselineQuotaSpecs
-  pure (newAccessKeyId, newSecretKey, quotaStatuses)
-
--- | Idempotently install the account/config-qualified operational policy
--- without rotating access keys. @config setup@ calls this again after
--- constructing its updated config so a newly supplied capture bucket is in
--- force before the SES lease role becomes usable.
-installOperationalIamPolicyForConfig
-  :: FilePath -> Credentials -> PolicyTier -> ConfigFile -> IO ()
-installOperationalIamPolicyForConfig repoRoot adminCredentials policyTier config = do
-  accountId <- awsCallerAccountId repoRoot adminCredentials
-  let configuredCaptureBucket = nonEmptyText (capture_bucket (ses config))
-  installedPolicy <-
-    case buildIamPolicyDocumentForAccountAndCaptureBucket
-      accountId
-      configuredCaptureBucket
-      policyTier of
-      Left err ->
-        throwAws
-          ( "Cannot build the account-scoped operational IAM policy: "
-              ++ show err
-          )
-      Right policy -> pure policy
-  putUserPolicyOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "put-user-policy"
-      , "--user-name"
-      , Text.unpack prodboxIamUserName
-      , "--policy-name"
-      , Text.unpack prodboxIamInlinePolicyName
-      , "--policy-document"
-      , -- AWS inline user-policy documents are capped at 2,048 bytes.
-        BL8.unpack (encode installedPolicy)
-      ]
-  _ <-
-    liftAwsEither
-      (requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput)
-  pure ()
-
-waitForOperationalCredentialsReady :: FilePath -> Credentials -> Maybe Text -> Text -> Text -> IO ()
-waitForOperationalCredentialsReady repoRoot adminCredentials maybeRoute53ZoneId newAccessKeyId newSecretAccessKey =
-  waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
- where
-  operationalCredentials =
-    Credentials
-      { access_key_id = newAccessKeyId
-      , secret_access_key = newSecretAccessKey
-      , session_token = Nothing
-      , region = region adminCredentials
-      }
-
-operationalCredentialsAfterReadiness
-  :: Bool
-  -> FilePath
-  -> Credentials
-  -> PolicyTier
-  -> Maybe Text
-  -> Text
-  -> Text
-  -> IO (Credentials, Text)
-operationalCredentialsAfterReadiness
-  allowFederatedFallback
-  repoRoot
-  adminCredentials
-  policyTier
-  maybeRoute53ZoneId
-  newAccessKeyId
-  newSecretAccessKey =
-    if allowFederatedFallback
-      then do
-        federatedCredentials <- createFederatedOperationalCredentials repoRoot adminCredentials policyTier
-        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId federatedCredentials
-        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
-        pure (operationalCredentials, "iam-user")
-      else do
-        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
-        pure (operationalCredentials, "iam-user")
-   where
-    operationalCredentials =
-      Credentials
-        { access_key_id = newAccessKeyId
-        , secret_access_key = newSecretAccessKey
-        , session_token = Nothing
-        , region = region adminCredentials
-        }
-
-waitForOperationalCredentialsValueReady :: FilePath -> Maybe Text -> Credentials -> IO ()
-waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials = do
-  environment <- operationalAwsEnvironment operationalCredentials
-  waitForOperationalAwsProbe
-    repoRoot
-    environment
-    "STS validation"
-    ["sts", "get-caller-identity"]
-  case maybeRoute53ZoneId of
-    Nothing -> pure ()
-    Just route53ZoneId ->
-      waitForOperationalAwsProbeWithStability
-        route53CredentialReadyAttempts
-        route53CredentialReadyConsecutiveSuccesses
-        route53CredentialRetryDelayMicros
-        repoRoot
-        environment
-        "Route 53 hosted-zone validation"
-        ["route53", "get-hosted-zone", "--id", Text.unpack route53ZoneId]
-
-createFederatedOperationalCredentials :: FilePath -> Credentials -> PolicyTier -> IO Credentials
-createFederatedOperationalCredentials repoRoot adminCredentials policyTier = do
-  federatedOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "sts"
-      , "get-federation-token"
-      , "--name"
-      , Text.unpack prodboxIamUserName
-      , "--duration-seconds"
-      , "3600"
-      , "--policy"
-      , BL8.unpack (encode (buildFederatedSessionPolicyDocument policyTier))
-      ]
-  federatedPayloadText <-
-    liftAwsEither (requireCommandSuccess "aws sts get-federation-token" federatedOutput)
-  federatedValue <-
-    liftAwsEither (decodeJsonPayload "aws sts get-federation-token" federatedPayloadText)
-  federatedObject <- liftAwsEither (requireObject "get-federation-token" federatedValue)
-  credentialsObject <-
-    liftAwsEither (requireObjectField "get-federation-token" "Credentials" federatedObject)
-  newAccessKeyId <- liftAwsEither (requireTextField "Credentials" "AccessKeyId" credentialsObject)
-  newSecretKey <- liftAwsEither (requireTextField "Credentials" "SecretAccessKey" credentialsObject)
-  newSessionToken <- liftAwsEither (requireTextField "Credentials" "SessionToken" credentialsObject)
-  pure
-    Credentials
-      { access_key_id = newAccessKeyId
-      , secret_access_key = newSecretKey
-      , session_token = Just newSessionToken
-      , region = region adminCredentials
-      }
-
-waitForOperationalAwsProbe :: FilePath -> [(String, String)] -> String -> [String] -> IO ()
-waitForOperationalAwsProbe repoRoot environment label arguments =
-  waitForOperationalAwsProbeWithStability
-    operationalCredentialReadyAttempts
-    1
-    operationalCredentialRetryDelayMicros
-    repoRoot
-    environment
-    label
-    arguments
-
-waitForOperationalAwsProbeWithStability
-  :: Int -> Int -> Int -> FilePath -> [(String, String)] -> String -> [String] -> IO ()
-waitForOperationalAwsProbeWithStability maxAttempts requiredSuccesses retryDelay repoRoot environment label arguments =
-  go maxAttempts 0 (label ++ " did not return a result")
- where
-  go attemptsRemaining consecutiveSuccesses lastError = do
-    output <-
-      runAwsCliCompletedWithEnvironment
-        repoRoot
-        environment
-        arguments
-    case processExitCode output of
-      ExitSuccess
-        | consecutiveSuccesses + 1 >= max 1 requiredSuccesses -> pure ()
-        | attemptsRemaining <= 1 ->
-            throwAws
-              ( "Generated operational AWS credentials did not remain stable via "
-                  ++ "`aws "
-                  ++ unwords arguments
-                  ++ "`."
-              )
-        | otherwise -> do
-            threadDelay retryDelay
-            go (attemptsRemaining - 1) (consecutiveSuccesses + 1) lastError
-      ExitFailure _ ->
-        let nextError =
-              if errorDetail output == "command failed"
-                then lastError
-                else errorDetail output
-         in if attemptsRemaining <= 1
-              then
-                throwAws
-                  ( "Generated operational AWS credentials failed validation via "
-                      ++ "`aws "
-                      ++ unwords arguments
-                      ++ "`: "
-                      ++ nextError
-                  )
-              else do
-                threadDelay retryDelay
-                go (attemptsRemaining - 1) 0 nextError
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText value =
@@ -3535,30 +3107,6 @@ deleteRolePolicyIfPresent repoRoot adminCredentials roleName policyName = do
     )
     $ throwAws ("aws iam delete-role-policy failed: " ++ errorDetail output)
 
-listOperationalAccessKeys :: FilePath -> Credentials -> IO [Text]
-listOperationalAccessKeys repoRoot adminCredentials =
-  listUserAccessKeys repoRoot adminCredentials prodboxIamUserName
-
-listUserAccessKeys :: FilePath -> Credentials -> Text -> IO [Text]
-listUserAccessKeys repoRoot adminCredentials userName = do
-  listKeysOutput <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "list-access-keys"
-      , "--user-name"
-      , Text.unpack userName
-      ]
-  listPayloadText <- liftAwsEither (requireCommandSuccess "aws iam list-access-keys" listKeysOutput)
-  listPayloadValue <- liftAwsEither (decodeJsonPayload "list-access-keys" listPayloadText)
-  listPayloadObject <- liftAwsEither (requireObject "list-access-keys" listPayloadValue)
-  accessKeysArray <-
-    liftAwsEither (requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject)
-  forM (Vector.toList accessKeysArray) $ \item -> do
-    metadataObject <- liftAwsEither (requireObject "AccessKeyMetadata" item)
-    liftAwsEither (requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject)
-
 deleteExistingOperationalKeys :: FilePath -> Credentials -> IO [Text]
 deleteExistingOperationalKeys repoRoot adminCredentials =
   deleteExistingUserKeys repoRoot adminCredentials prodboxIamUserName
@@ -3590,10 +3138,6 @@ deleteExistingUserKeys repoRoot adminCredentials userName = do
     else case awsErrorCode (errorDetail listKeysOutput) of
       Just "NoSuchEntity" -> pure []
       _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
-
-deleteOperationalAccessKey :: FilePath -> Credentials -> Text -> IO ()
-deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue =
-  deleteUserAccessKey repoRoot adminCredentials prodboxIamUserName accessKeyIdValue
 
 deleteUserAccessKey :: FilePath -> Credentials -> Text -> Text -> IO ()
 deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue = do
@@ -3664,54 +3208,6 @@ operationalIamUserExists repoRoot adminCredentials = do
         Just "NoSuchEntity" -> Right False
         _ -> Left ("aws iam get-user failed: " ++ errorDetail result)
 
--- | Sprint 4.11: predicate-library probe for the bootstrap DNS
--- record that @prodbox cluster reconcile@ writes to the operator's
--- Route 53 hosted zone. Returns 'Right True' when the record set
--- exists, 'Right False' when no matching record set is present, and
--- 'Left' on any other AWS error.
---
--- The bootstrap record name is the configured public FQDN
--- (e.g. @test.resolvefintech.com@) on the configured parent hosted
--- zone. The function reads the parent zone id from the supplied
--- repo-root config.
-operationalBootstrapDnsRecordExists
-  :: FilePath -> Credentials -> IO (Either String Bool)
-operationalBootstrapDnsRecordExists repoRoot adminCredentials = do
-  configResult <- loadConfigFile repoRoot
-  case configResult of
-    Left err -> pure (Left err)
-    Right config -> do
-      let zoneIdValue = Text.strip (zone_id (route53 config))
-          fqdnValue = Text.unpack supportedPublicHostname
-      if Text.null zoneIdValue
-        then pure (Right False)
-        else do
-          result <-
-            runAwsCliCompleted
-              repoRoot
-              adminCredentials
-              [ "route53"
-              , "list-resource-record-sets"
-              , "--hosted-zone-id"
-              , Text.unpack zoneIdValue
-              , "--query"
-              , "ResourceRecordSets[?Name == '" ++ fqdnValue ++ ".' && Type == 'A']"
-              , "--output"
-              , "json"
-              ]
-          pure $ case processExitCode result of
-            ExitFailure _ ->
-              Left ("aws route53 list-resource-record-sets failed: " ++ errorDetail result)
-            ExitSuccess ->
-              let payload = trimWhitespace (processStdout result)
-               in Right (not (null payload) && payload /= "[]" && payload /= "null")
- where
-  trimWhitespace =
-    dropWhile (`elem` (" \t\r\n" :: String))
-      . reverse
-      . dropWhile (`elem` (" \t\r\n" :: String))
-      . reverse
-
 deleteUserIfPresent :: FilePath -> Credentials -> Text -> IO Bool
 deleteUserIfPresent repoRoot adminCredentials userName = do
   deleteUserOutput <-
@@ -3744,36 +3240,21 @@ cleanupIamUserResidue repoRoot adminCredentials userName = do
 
 probeConfiguredOperationalIdentity :: FilePath -> IO OperationalIdentityProbe
 probeConfiguredOperationalIdentity repoRoot = do
-  config <- loadConfigForWrite repoRoot
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
-  case credentialsResult of
-    Left err
-      | operationalCredentialsAbsentError err -> pure OperationalCredentialsMissing
-      | otherwise -> pure (OperationalIdentityProbeFailed err)
-    Right credentials -> probeOperationalIdentity repoRoot credentials
-
-probeOperationalIdentity :: FilePath -> Credentials -> IO OperationalIdentityProbe
-probeOperationalIdentity repoRoot credentials =
-  if not (operationalCredentialsConfigured credentials)
-    then pure OperationalCredentialsMissing
-    else do
-      environment <- operationalAwsEnvironment credentials
-      stsOutput <-
-        runAwsCliCompletedWithEnvironment
-          repoRoot
-          environment
-          ["sts", "get-caller-identity"]
-      case processExitCode stsOutput of
-        ExitFailure _ ->
-          pure (OperationalIdentityProbeFailed (errorDetail stsOutput))
-        ExitSuccess -> do
-          payload <- liftAwsEither (decodeJsonPayload "aws sts get-caller-identity" (processStdout stsOutput))
-          payloadObject <- liftAwsEither (requireObject "aws sts get-caller-identity" payload)
-          arn <- liftAwsEither (requireTextField "aws sts get-caller-identity" "Arn" payloadObject)
-          pure $
-            case operationalIdentityFromArn arn of
-              Just identity -> identity
-              Nothing -> OperationalIdentityNonUserArn arn
+  result <-
+    dispatchHostProviderIntentFresh
+      LifecycleAuthorityOperator
+      repoRoot
+      "operator-operational-identity"
+      ObserveOperationalIdentity
+  pure $ case result of
+    Left err -> OperationalIdentityProbeFailed (renderProviderCallerError err)
+    Right evidence ->
+      case Text.stripPrefix "sts-identity:" evidence of
+        Nothing -> OperationalIdentityProbeFailed "Provider identity evidence has an invalid shape"
+        Just arn ->
+          case operationalIdentityFromArn arn of
+            Just identity -> identity
+            Nothing -> OperationalIdentityNonUserArn arn
 
 operationalCredentialsConfigured :: Credentials -> Bool
 operationalCredentialsConfigured credentials =
@@ -3783,8 +3264,7 @@ operationalCredentialsConfigured credentials =
 
 operationalCredentialsCleared :: FilePath -> IO Bool
 operationalCredentialsCleared repoRoot = do
-  config <- loadConfigForWrite repoRoot
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   pure $
     case credentialsResult of
       Left err -> operationalCredentialsAbsentError err
@@ -3804,8 +3284,7 @@ operationalCredentialsCleared repoRoot = do
 -- strict check, since they run after the cluster lifecycle (Vault up).
 operationalCredentialsClearedAtPreflight :: FilePath -> Credentials -> IO Bool
 operationalCredentialsClearedAtPreflight repoRoot adminCreds = do
-  config <- loadConfigForWrite repoRoot
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   iamUserExists <- operationalIamUserExists repoRoot adminCreds
   pure (operationalCredentialsClearedDecision credentialsResult iamUserExists)
 
@@ -3826,8 +3305,8 @@ operationalCredentialsClearedDecision credentialsResult iamUserExistsResult =
       | otherwise -> iamUserExistsResult == Right False
 
 operationalCredentialsConfiguredFromVault :: FilePath -> ConfigFile -> IO (Either String Bool)
-operationalCredentialsConfiguredFromVault repoRoot config = do
-  credentialsResult <- resolveAwsCredentialsRefFromHostVault repoRoot "aws" (aws config)
+operationalCredentialsConfiguredFromVault repoRoot _config = do
+  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   pure $ operationalCredentialsConfiguredResult credentialsResult
 
 operationalCredentialsConfiguredResult :: Either String Credentials -> Either String Bool
@@ -3880,140 +3359,12 @@ operationalCredentialsAbsentError err =
  where
   rendered = Text.toLower (Text.pack err)
 
-writeOperationalAwsVaultCredentials :: FilePath -> Credentials -> IO ()
-writeOperationalAwsVaultCredentials repoRoot credentials = do
-  result <-
-    writeOperatorSecretViaDaemonOrHost
-      repoRoot
-      "gateway/gateway/aws"
-      (operationalAwsVaultFields credentials)
-  case result of
-    Left err -> throwAws err
-    Right () -> pure ()
-
--- | Sprint 1.44: persist an operator-minted secret, preferring the in-cluster
--- gateway daemon over a host root-token direct Vault write.
---
--- The canonical path is @POST /v1/secret/<logical>@ on the daemon's
--- loopback-restricted NodePort, authenticated by an operator-injected
--- Kubernetes JWT that the daemon exchanges for a Vault token under the narrow
--- @prodbox-operator-write@ role (operator decision 2026-06-19). The host falls
--- back to its own root-token Vault write only when no operator service-account
--- token can be minted yet, or when the unit/integration host-vault seam is
--- active. Once the operator JWT exists, a daemon rejection or transport failure
--- is authoritative and does not bypass to a host root-token write. Scope is
--- exactly the two host-minted operator secrets: the ACME EAB
--- (@secret/acme/eab@) and the minted operational @aws.*@
--- (@secret/gateway/gateway/aws@).
-writeOperatorSecretViaDaemonOrHost
-  :: FilePath -> Text -> Map.Map Text Text -> IO (Either String ())
-writeOperatorSecretViaDaemonOrHost repoRoot logical fields = do
-  daemonAttempt <- attemptOperatorDaemonWrite repoRoot logical fields
-  case daemonAttempt of
-    Just result -> pure result
-    Nothing -> writeHostVaultKvObject repoRoot "secret" logical fields
-
--- | Try the daemon-mediated operator write. Returns @Nothing@ to signal "fall
--- back to the host write" only when the explicit host-Vault test seam is active
--- or no operator JWT can be minted yet; @Just@ when the daemon definitively
--- accepted or rejected the write.
-attemptOperatorDaemonWrite
-  :: FilePath -> Text -> Map.Map Text Text -> IO (Maybe (Either String ()))
-attemptOperatorDaemonWrite repoRoot logical fields = do
-  testSeamDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
-  testSeam <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
-  if any seamActive [testSeamDir, testSeam]
-    then pure Nothing
-    else do
-      jwtResult <- mintOperatorWriteJwt repoRoot
-      case jwtResult of
-        Nothing -> pure Nothing
-        Just jwt -> do
-          let endpoint = GatewayClient.hostLoopbackGatewayEndpoint defaultGatewayNodePort
-          writeResult <-
-            GatewayClient.writeOperatorSecret endpoint jwt (Text.unpack logical) fields
-          case writeResult of
-            Right () -> do
-              writeDiagnosticLine
-                ( "operator secret secret/"
-                    ++ Text.unpack logical
-                    ++ " written via the gateway daemon (prodbox-operator-write role)."
-                )
-              pure (Just (Right ()))
-            Left err ->
-              pure
-                ( Just
-                    ( Left
-                        ( "gateway-daemon operator write for secret/"
-                            ++ Text.unpack logical
-                            ++ " failed: "
-                            ++ GatewayClient.renderGatewayError err
-                        )
-                    )
-                )
- where
-  seamActive = maybe False (not . null)
-
--- | Mint a short-lived Kubernetes service-account token for the
--- @prodbox-operator-write@ SA in the @gateway@ namespace (the operator-injected
--- JWT the daemon exchanges for a Vault write token). Returns @Nothing@ when
--- @kubectl@ or the SA is unavailable, so the caller falls back to the host
--- write.
-mintOperatorWriteJwt :: FilePath -> IO (Maybe Text)
-mintOperatorWriteJwt repoRoot = do
-  outputResult <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "kubectl"
-        , subprocessArguments =
-            [ "create"
-            , "token"
-            , "prodbox-operator-write"
-            , "--namespace"
-            , "gateway"
-            , "--duration"
-            , "5m"
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  pure $ case outputResult of
-    Success output
-      | processExitCode output == ExitSuccess ->
-          let token = Text.strip (Text.pack (processStdout output))
-           in if Text.null token then Nothing else Just token
-    _ -> Nothing
-
-operationalAwsVaultFields :: Credentials -> Map.Map Text Text
-operationalAwsVaultFields credentials =
-  Map.fromList
-    [ ("access_key_id", access_key_id credentials)
-    , ("secret_access_key", secret_access_key credentials)
-    , ("session_token", maybe "" id (session_token credentials))
-    , ("region", region credentials)
-    ]
-
--- | Sprint 7.15: write the ZeroSSL external-account-binding material to Vault
--- at @secret/acme/eab@ so the config can reference it through
--- @SecretRef.Vault@ rather than persisting plaintext. When both fields are
--- absent (a non-ZeroSSL server with no EAB), nothing is written.
-writeAcmeEabVaultCredentials :: FilePath -> Maybe Text -> Maybe Text -> IO ()
-writeAcmeEabVaultCredentials repoRoot maybeKeyId maybeHmacKey =
-  case (maybeKeyId, maybeHmacKey) of
-    (Nothing, Nothing) -> pure ()
-    _ -> do
-      result <-
-        writeOperatorSecretViaDaemonOrHost
-          repoRoot
-          "acme/eab"
-          ( Map.fromList
-              [ ("key_id", maybe "" id maybeKeyId)
-              , ("hmac_key", maybe "" id maybeHmacKey)
-              ]
-          )
-      case result of
-        Left err -> throwAws err
-        Right () -> pure ()
+readLifecycleProviderTargetCredentials :: FilePath -> IO (Either String Credentials)
+readLifecycleProviderTargetCredentials _repoRoot =
+  pure
+    ( Left
+        "Lifecycle-provider credentials are consumer-owned; host plaintext Target-material reads are disabled"
+    )
 
 operationalIdentityFromArn :: Text -> Maybe OperationalIdentityProbe
 operationalIdentityFromArn arn = do
@@ -4146,11 +3497,9 @@ renderConfigSetupResult result =
     , "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result)
     , "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result)
     , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result)
-    , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
     , "CONFIG_PATH=" ++ configSetupDhallPath result
-    , "QUOTA_REQUESTS_SUBMITTED="
-        ++ show (length (filter quotaRequested (configSetupQuotaStatuses result)))
-    , "POST_SETUP_GUIDANCE=Delete the temporary admin access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
+    , "TIER0_ONLY=true"
+    , "POST_SETUP_GUIDANCE=Run the separately receipt-backed AWS setup and external-material ingress operations after Lifecycle Authority admission opens."
     ]
 
 validateHostedZoneAlignment :: Text -> Text -> Either String ()
@@ -4235,14 +3584,6 @@ writeProjectConfigParameters repoRoot config = do
 -- exactly one AWS-CLI environment builder and everything else calls it.
 adminAwsEnvironment :: Credentials -> IO [(String, String)]
 adminAwsEnvironment = awsCliSubprocessEnvironment
-
--- LEGACY-ESCAPE[shared-operational-aws-credential]: the single shared
--- operational aws.* identity minted by the suite-level IAM harness is projected
--- into every AWS subprocess environment through this seam. Registered in
--- Prodbox.Legacy.EscapeRegistry; replaced by per-role IAM/Vault generations
--- (Sprints 3.26/4.49/8.11).
-operationalAwsEnvironment :: Credentials -> IO [(String, String)]
-operationalAwsEnvironment = adminAwsEnvironment
 
 runAwsCliCompleted :: FilePath -> Credentials -> [String] -> IO ProcessOutput
 runAwsCliCompleted repoRoot adminCredentials arguments = do

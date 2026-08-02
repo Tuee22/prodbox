@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Pure, durable fencing for Bootstrap Broker mutations.
 --
@@ -105,8 +108,10 @@ module Prodbox.Bootstrap.Broker.Fence
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
@@ -614,12 +619,15 @@ data BootstrapVaultEffect
   | BootstrapVaultStartGenerateRoot
   | BootstrapVaultSubmitGenerateRootShare
   | BootstrapVaultObserveGeneratedRootAccessor
+  | BootstrapVaultInventoryProvisionerAccessors
   | BootstrapVaultLoginProvisioner
   | BootstrapVaultApplyBaseline
   | BootstrapVaultReadBackBaseline
+  | BootstrapVaultRevokeProvisionerAccessor
   | BootstrapVaultObservePki
   | BootstrapVaultIssueTestCertificate
-  | BootstrapVaultCommitChildCustody
+  | BootstrapVaultPrepareChildCustody
+  | BootstrapVaultFinalizeChildCustody
   | BootstrapVaultConsumeChildRecovery
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
@@ -714,16 +722,17 @@ authorizeBootstrapVaultEffect monotonicNow requestDeadline clockObservation expe
 -- attempt and contains no generic key or payload constructor.
 data BootstrapStoreMutation
   = BootstrapStoreReleaseSessionFence
+  | BootstrapStoreAdvanceVaultStorageGeneration
   | BootstrapStoreCreateRootInitJournal
   | BootstrapStoreCasRootInitJournal
   | BootstrapStoreCreatePreparedInitEnvelope
   | BootstrapStoreDeletePreparedInitEnvelope
   | BootstrapStoreCreateEncryptedInitResponse
   | BootstrapStorePromoteFinalUnlockBundle
+  | BootstrapStoreCasFinalUnlockBundle
   | BootstrapStoreCreateRootSessionJournal
   | BootstrapStoreCasRootSessionJournal
   | BootstrapStoreCreateChildEncryptedReceipt
-  | BootstrapStoreCommitParentCustody
   | BootstrapStoreDeleteChildEncryptedReceipt
   | BootstrapStoreCreateChildCustodyJournal
   | BootstrapStoreCasChildCustodyJournal
@@ -735,6 +744,9 @@ data BootstrapStoreMutation
   | BootstrapStoreCasPostUnsealHandoff
   | BootstrapStoreCreateSecretWorkerCheckpoint
   | BootstrapStoreCasSecretWorkerCheckpoint
+  | BootstrapStorePlanTransitRotation
+  | BootstrapStoreCompleteTransitRotation
+  | BootstrapStorePublishSecretWorkerResult
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 data BootstrapStoreMutationPermit = BootstrapStoreMutationPermit
@@ -748,6 +760,13 @@ data BootstrapStoreMutationPermit = BootstrapStoreMutationPermit
   , internalStorePermitOperationDeadline :: !OperationDeadline
   }
   deriving stock (Eq, Show)
+
+deriving stock instance Generic BootstrapFenceGeneration
+deriving anyclass instance Serialise BootstrapFenceGeneration
+deriving stock instance Generic BootstrapSessionFence
+deriving anyclass instance Serialise BootstrapSessionFence
+deriving stock instance Generic BootstrapFenceStoreObservation
+deriving anyclass instance Serialise BootstrapFenceStoreObservation
 
 storeMutationPermitMutation :: BootstrapStoreMutationPermit -> BootstrapStoreMutation
 storeMutationPermitMutation = internalStorePermitMutation

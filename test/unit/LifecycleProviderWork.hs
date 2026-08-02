@@ -26,10 +26,16 @@ lifecycleProviderWorkSuite =
     it "refuses an intent naming an unregistered resource before any effect" $ do
       decide
         ProviderIdle
-        (SubmitProviderIntent (ReconcileRegisteredStack (stackRef "staging") (revision 2)))
+        ( SubmitProviderIntent
+            (ReconcileRegisteredStack (stackRef "staging") (revision 2) awsEksConfig)
+        )
         `shouldBe` ProviderWorkRefused (ProviderWorkUnregisteredResource "stack:staging")
     it "refuses a stack reconcile requesting a revision older than the bound revision" $ do
-      decide ProviderIdle (SubmitProviderIntent (ReconcileRegisteredStack (stackRef "prod") (revision 1)))
+      decide
+        ProviderIdle
+        ( SubmitProviderIntent
+            (ReconcileRegisteredStack (stackRef "aws-eks") (revision 1) awsEksConfig)
+        )
         `shouldBe` ProviderWorkRefused (ProviderWorkRevisionStale 1 2)
     it "refuses any submit once the session deadline has passed" $ do
       decideAt (authorityTimeFromMicros 6000) ProviderIdle (SubmitProviderIntent reconcileProd)
@@ -37,6 +43,16 @@ lifecycleProviderWorkSuite =
     it "admits a fenced aws-ses sending-identity reconcile" $ do
       decide ProviderIdle (SubmitProviderIntent reconcileSesIdentity)
         `shouldBe` ProviderWorkAdmitted coordSesIdentity
+    it "binds the SES DNS intent to its exact zone and public names" $ do
+      providerIntentResourceKey reconcileSesDns
+        `shouldBe` "ses:dns:Z123EXAMPLE:example.test:inbox.example.test"
+      providerIntentCoordinateText (providerIntentCoordinate reconcileSesDns)
+        `shouldBe` "reconcile-ses-dns:Z123EXAMPLE:example.test:inbox.example.test"
+    it "admits only colon-delimited coordinates beneath a registered typed family" $ do
+      let families = mkRegisteredProviderResources ["ses:dns"]
+      isProviderResourceRegistered (providerIntentResourceKey reconcileSesDns) families
+        `shouldBe` True
+      isProviderResourceRegistered "ses:dns-escape" families `shouldBe` False
     it "cleanly closes the in-flight intent back to idle" $ do
       let (decision, next) =
             step (ProviderInFlight coordReconcileProd) (CloseProviderWork coordReconcileProd)
@@ -70,9 +86,12 @@ lifecycleProviderWorkSuite =
       decide ProviderIdle (ResolveProviderRecovery coordReconcileProd)
         `shouldBe` ProviderWorkRefused ProviderWorkNotInRecovery
  where
-  reconcileProd = ReconcileRegisteredStack (stackRef "prod") (revision 3)
-  observeProd = ObserveRegisteredStack (stackRef "prod")
+  reconcileProd = ReconcileRegisteredStack (stackRef "aws-eks") (revision 3) awsEksConfig
+  observeProd = ObserveRegisteredStack (stackRef "aws-eks")
   reconcileSesIdentity = ReconcileSesSendingIdentity (sesIdentity "mail")
+  reconcileSesDns =
+    ReconcileSesDns
+      (either (error . show) id (mkSesDnsRef "Z123EXAMPLE" "example.test" "inbox.example.test"))
   coordReconcileProd = providerIntentCoordinate reconcileProd
   coordObserveProd = providerIntentCoordinate observeProd
   coordSesIdentity = providerIntentCoordinate reconcileSesIdentity
@@ -89,7 +108,12 @@ lifecycleProviderWorkSuite =
       command
   registered =
     mkRegisteredProviderResources
-      ["stack:prod", "ses-identity:mail", "ses-rules:inbound", "checkpoint:scratch1"]
+      [ "stack:aws-eks"
+      , providerIntentResourceKey reconcileSesIdentity
+      , "ses:receipt-rules:rules:mail@example.test:capture"
+      , "checkpoint:pulumi-scratch:checkpoint"
+      ]
+  awsEksConfig = either (error . show) id (mkAwsEksProviderStackConfig "127.0.0.1/32")
 
 stackRef :: Text -> ProviderStackRef
 stackRef = either (error . show) id . mkProviderStackRef

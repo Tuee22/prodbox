@@ -16,7 +16,7 @@ import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isSuffixOf)
 import Prodbox.Aws.CredentialHandle
   ( BaseCredentialHandle
   , CredentialHandle
@@ -28,11 +28,28 @@ import Prodbox.Aws.CredentialHandle
   , toSigV4Credentials
   )
 import Prodbox.Aws.Native.Iam
-  ( CreateAccessKeyResult (..)
+  ( AccessKeyMetadata (..)
+  , AccessKeyStatus (..)
+  , CreateAccessKeyResult (..)
   , CreateUserResult (..)
   , IamClient (..)
+  , IamRoleObservation (..)
+  , IamRolePolicyObservation (..)
+  , IamTag (..)
+  , IamUserObservation (..)
+  , IamUserPolicyObservation (..)
   , encodeCreateAccessKeyForm
+  , encodeCreateRoleForm
+  , encodeDeleteAccessKeyForm
+  , encodeListAccessKeysForm
+  , encodePutRolePolicyForm
+  , encodeTagUserForm
   , newIamClient
+  , parseGetRolePolicyResponse
+  , parseGetRoleResponse
+  , parseGetUserPolicyResponse
+  , parseListAccessKeysResponse
+  , parseListUserTagsResponse
   )
 import Prodbox.Aws.Native.Route53
   ( ChangeAction (..)
@@ -42,10 +59,29 @@ import Prodbox.Aws.Native.Route53
   , ResourceRecordSet (..)
   , Route53Client (..)
   , changeRecordSetsPath
+  , listRecordSetsQuery
   , newRoute53Client
   , parseChangeInfoResponse
   , parseGetChangeResponse
+  , parseListResourceRecordSetsResponse
   , renderChangeBatchXml
+  )
+import Prodbox.Aws.Native.S3
+  ( S3BucketObservation (..)
+  , S3Client (..)
+  , expectedLongLivedBucketHardening
+  , newS3Client
+  , parseBucketEncryption
+  , parseBucketLifecycle
+  , parseBucketTagging
+  , parseBucketVersioning
+  , parsePublicAccessBlock
+  , renderBucketEncryptionXml
+  , renderBucketLifecycleXml
+  , renderBucketTaggingXml
+  , renderBucketVersioningXml
+  , renderCreateBucketXml
+  , renderPublicAccessBlockXml
   )
 import Prodbox.Aws.Native.ServiceQuotas
   ( QuotaIncreaseRequest (..)
@@ -60,9 +96,12 @@ import Prodbox.Aws.Native.ServiceQuotas
 import Prodbox.Aws.Native.Sts
   ( AssumeRoleCredentials (..)
   , AssumeRoleRequest (..)
+  , CallerIdentity (..)
   , StsClient (..)
+  , encodeGetCallerIdentityForm
   , newStsClient
   , parseAssumeRoleResponse
+  , parseGetCallerIdentityResponse
   )
 import Prodbox.Aws.Native.Wire
   ( AmbiguityCause (..)
@@ -77,7 +116,7 @@ import Prodbox.Aws.Native.Wire
   , Idempotency (..)
   , NativeAwsResponseByteLimit
   , NativeAwsSender
-  , SignedHttpRequest (shrHeaders)
+  , SignedHttpRequest (shrBody, shrHeaders, shrMethod, shrUrl)
   , TransportFailure (TransportFailure)
   , buildSignedRequest
   , classifyOutcome
@@ -152,12 +191,55 @@ createUserFullBody =
     <> "<Arn>arn:aws:iam::123456789012:user/prodbox</Arn>"
     <> "</User></CreateUserResult></CreateUserResponse>"
 
+getUserFullBody :: ByteString
+getUserFullBody =
+  "<GetUserResponse><GetUserResult><User>"
+    <> "<UserName>prodbox</UserName><UserId>AIDFAKE</UserId>"
+    <> "<Arn>arn:aws:iam::123456789012:user/prodbox</Arn>"
+    <> "</User></GetUserResult></GetUserResponse>"
+
+getRoleFullBody :: ByteString
+getRoleFullBody =
+  "<GetRoleResponse><GetRoleResult><Role>"
+    <> "<RoleName>prodbox-lifecycle-provider</RoleName>"
+    <> "<Arn>arn:aws:iam::123456789012:role/prodbox-lifecycle-provider</Arn>"
+    <> "<AssumeRolePolicyDocument>%7B%22Version%22%3A%222012-10-17%22%7D</AssumeRolePolicyDocument>"
+    <> "</Role></GetRoleResult></GetRoleResponse>"
+
+getRolePolicyBody :: ByteString
+getRolePolicyBody =
+  "<GetRolePolicyResponse><GetRolePolicyResult>"
+    <> "<RoleName>prodbox-lifecycle-provider</RoleName><PolicyName>runtime</PolicyName>"
+    <> "<PolicyDocument>%7B%22Version%22%3A%222012-10-17%22%7D</PolicyDocument>"
+    <> "</GetRolePolicyResult></GetRolePolicyResponse>"
+
+listAccessKeysBody :: ByteString
+listAccessKeysBody =
+  "<ListAccessKeysResponse><ListAccessKeysResult>"
+    <> "<AccessKeyMetadata>"
+    <> "<member><UserName>prodbox</UserName><AccessKeyId>AKIAONE</AccessKeyId><Status>Active</Status></member>"
+    <> "<member><UserName>prodbox</UserName><AccessKeyId>AKIATWO</AccessKeyId><Status>Inactive</Status></member>"
+    <> "</AccessKeyMetadata><IsTruncated>false</IsTruncated>"
+    <> "</ListAccessKeysResult></ListAccessKeysResponse>"
+
+noSuchEntityBody :: ByteString
+noSuchEntityBody =
+  "<ErrorResponse><Error><Type>Sender</Type><Code>NoSuchEntity</Code>"
+    <> "<Message>missing</Message></Error><RequestId>request-1</RequestId></ErrorResponse>"
+
 assumeRoleBody :: ByteString
 assumeRoleBody =
   "<AssumeRoleResponse><AssumeRoleResult><Credentials>"
     <> "<AccessKeyId>ASIAFAKE</AccessKeyId><SecretAccessKey>tmpSecret</SecretAccessKey>"
     <> "<SessionToken>tmpToken</SessionToken><Expiration>2026-07-18T00:00:00Z</Expiration>"
     <> "</Credentials></AssumeRoleResult></AssumeRoleResponse>"
+
+callerIdentityBody :: ByteString
+callerIdentityBody =
+  "<GetCallerIdentityResponse><GetCallerIdentityResult>"
+    <> "<Arn>arn:aws:iam::123456789012:user/prodbox</Arn>"
+    <> "<UserId>AIDFAKE</UserId><Account>123456789012</Account>"
+    <> "</GetCallerIdentityResult></GetCallerIdentityResponse>"
 
 -- Route 53 expected request bodies ------------------------------------------
 
@@ -191,6 +273,24 @@ txtExpected =
     <> "</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch>"
     <> "</ChangeResourceRecordSetsRequest>"
 
+listExactAResponse :: ByteString
+listExactAResponse =
+  "<ListResourceRecordSetsResponse xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
+    <> "<ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>Demo.ResolveFintech.com.</Name><Type>A</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>1.2.3.4</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>false</IsTruncated><MaxItems>1</MaxItems>"
+    <> "</ListResourceRecordSetsResponse>"
+
+listSubsequentResponse :: ByteString
+listSubsequentResponse =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>next.resolvefintech.com.</Name><Type>A</Type><AliasTarget>"
+    <> "<HostedZoneId>ZALIAS</HostedZoneId><DNSName>target.example.com.</DNSName>"
+    <> "</AliasTarget></ResourceRecordSet></ResourceRecordSets>"
+    <> "</ListResourceRecordSetsResponse>"
+
 -- No-seams source scan -------------------------------------------------------
 
 nativeModulePaths :: [FilePath]
@@ -201,6 +301,7 @@ nativeModulePaths =
   , "src/Prodbox/Aws/Native/Sts.hs"
   , "src/Prodbox/Aws/Native/Iam.hs"
   , "src/Prodbox/Aws/Native/Route53.hs"
+  , "src/Prodbox/Aws/Native/S3.hs"
   , "src/Prodbox/Aws/Native/ServiceQuotas.hs"
   ]
 
@@ -331,6 +432,107 @@ awsNativeClientsSuite =
           `shouldBe` Right
             (CreateUserResult "prodbox" "arn:aws:iam::123456789012:user/prodbox" "AIDFAKE")
 
+    describe "IAM bounded inventory and exact absence read-back" $ do
+      it "parses both active and inactive access-key metadata without secret material" $
+        parseListAccessKeysResponse listAccessKeysBody
+          `shouldBe` Right
+            [ AccessKeyMetadata "AKIAONE" AccessKeyActive
+            , AccessKeyMetadata "AKIATWO" AccessKeyInactive
+            ]
+      it "refuses a truncated finite inventory" $
+        parseListAccessKeysResponse
+          "<ListAccessKeysResponse><ListAccessKeysResult><AccessKeyMetadata></AccessKeyMetadata><IsTruncated>true</IsTruncated></ListAccessKeysResult></ListAccessKeysResponse>"
+          `shouldBe` Left "ListAccessKeys: bounded inventory was truncated"
+      it "observes a present user through GetUser" $ do
+        let iam = newIamClient baseHandle (respond 200 getUserFullBody)
+        observeUser iam "prodbox"
+          `shouldReturn` Right
+            ( IamUserPresent
+                (CreateUserResult "prodbox" "arn:aws:iam::123456789012:user/prodbox" "AIDFAKE")
+            )
+      it "maps NoSuchEntity to positive user absence and idempotent key deletion" $ do
+        let iam = newIamClient baseHandle (respond 404 noSuchEntityBody)
+        observeUser iam "prodbox" `shouldReturn` Right IamUserAbsent
+        deleteAccessKey iam "prodbox" "AKIAMISSING" `shouldReturn` Right ()
+      it "dispatches bounded ListAccessKeys and exact DeleteAccessKey forms" $ do
+        encodeListAccessKeysForm "prodbox"
+          `shouldBe` [ ("Action", "ListAccessKeys")
+                     , ("Version", "2010-05-08")
+                     , ("UserName", "prodbox")
+                     , ("MaxItems", "3")
+                     ]
+        encodeDeleteAccessKeyForm "prodbox" "AKIAONE"
+          `shouldBe` [ ("Action", "DeleteAccessKey")
+                     , ("Version", "2010-05-08")
+                     , ("UserName", "prodbox")
+                     , ("AccessKeyId", "AKIAONE")
+                     ]
+      it "decodes and observes the exact URL-encoded inline policy document" $ do
+        let body =
+              "<GetUserPolicyResponse><GetUserPolicyResult><UserName>prodbox</UserName>"
+                <> "<PolicyName>prodbox</PolicyName>"
+                <> "<PolicyDocument>%7B%22Version%22%3A%222012-10-17%22%7D</PolicyDocument>"
+                <> "</GetUserPolicyResult></GetUserPolicyResponse>"
+            iam = newIamClient baseHandle (respond 200 body)
+        parseGetUserPolicyResponse body
+          `shouldBe` Right "{\"Version\":\"2012-10-17\"}"
+        observeUserInlinePolicy iam "prodbox" "prodbox"
+          `shouldReturn` Right
+            (IamUserPolicyPresent "{\"Version\":\"2012-10-17\"}")
+      it "encodes and reads back the bounded ownership-tag inventory" $ do
+        encodeTagUserForm
+          "prodbox"
+          [IamTag "prodbox.io/managed-by" "prodbox", IamTag "prodbox.io/class" "gateway-dns"]
+          `shouldBe` [ ("Action", "TagUser")
+                     , ("Version", "2010-05-08")
+                     , ("UserName", "prodbox")
+                     , ("Tags.member.1.Key", "prodbox.io/managed-by")
+                     , ("Tags.member.1.Value", "prodbox")
+                     , ("Tags.member.2.Key", "prodbox.io/class")
+                     , ("Tags.member.2.Value", "gateway-dns")
+                     ]
+        parseListUserTagsResponse
+          "<ListUserTagsResponse><ListUserTagsResult><Tags><member><Key>prodbox.io/class</Key><Value>gateway-dns</Value></member></Tags><IsTruncated>false</IsTruncated></ListUserTagsResult></ListUserTagsResponse>"
+          `shouldBe` Right [IamTag "prodbox.io/class" "gateway-dns"]
+      it "encodes and reads back the exact Lifecycle-provider role policies" $ do
+        encodeCreateRoleForm "prodbox-lifecycle-provider" "{\"trust\":true}"
+          `shouldBe` [ ("Action", "CreateRole")
+                     , ("Version", "2010-05-08")
+                     , ("RoleName", "prodbox-lifecycle-provider")
+                     , ("AssumeRolePolicyDocument", "{\"trust\":true}")
+                     ]
+        encodePutRolePolicyForm
+          "prodbox-lifecycle-provider"
+          "runtime"
+          "{\"Version\":\"2012-10-17\"}"
+          `shouldBe` [ ("Action", "PutRolePolicy")
+                     , ("Version", "2010-05-08")
+                     , ("RoleName", "prodbox-lifecycle-provider")
+                     , ("PolicyName", "runtime")
+                     , ("PolicyDocument", "{\"Version\":\"2012-10-17\"}")
+                     ]
+        parseGetRoleResponse getRoleFullBody
+          `shouldBe` Right
+            IamRolePresent
+              { iamRoleName = "prodbox-lifecycle-provider"
+              , iamRoleArn = "arn:aws:iam::123456789012:role/prodbox-lifecycle-provider"
+              , iamRoleAssumePolicyDocument = "{\"Version\":\"2012-10-17\"}"
+              }
+        parseGetRolePolicyResponse getRolePolicyBody
+          `shouldBe` Right "{\"Version\":\"2012-10-17\"}"
+        let roleClient = newIamClient baseHandle (respond 200 getRoleFullBody)
+            policyClient = newIamClient baseHandle (respond 200 getRolePolicyBody)
+        observeRole roleClient "prodbox-lifecycle-provider"
+          `shouldReturn` Right
+            IamRolePresent
+              { iamRoleName = "prodbox-lifecycle-provider"
+              , iamRoleArn = "arn:aws:iam::123456789012:role/prodbox-lifecycle-provider"
+              , iamRoleAssumePolicyDocument = "{\"Version\":\"2012-10-17\"}"
+              }
+        observeRoleInlinePolicy policyClient "prodbox-lifecycle-provider" "runtime"
+          `shouldReturn` Right
+            (IamRolePolicyPresent "{\"Version\":\"2012-10-17\"}")
+
     describe "STS AssumeRole yields a distinct session handle with the temporary creds" $ do
       it "parses the temporary credentials block" $ do
         let parsed = parseAssumeRoleResponse assumeRoleBody
@@ -351,6 +553,23 @@ awsNativeClientsSuite =
           Right session -> do
             probeSign session `shouldBe` probeSign reference
             elem ("x-amz-security-token", "tmpToken") (shrHeaders (probeSign session)) `shouldBe` True
+      it "parses and dispatches GetCallerIdentity without inventing the account coordinate" $ do
+        parseGetCallerIdentityResponse callerIdentityBody
+          `shouldBe` Right
+            (CallerIdentity "123456789012" "arn:aws:iam::123456789012:user/prodbox" "AIDFAKE")
+        encodeGetCallerIdentityForm
+          `shouldBe` [("Action", "GetCallerIdentity"), ("Version", "2011-06-15")]
+        captured <- newIORef Nothing
+        let sender request = do
+              writeIORef captured (Just request)
+              pure (Right (HttpOutcome 200 [] callerIdentityBody))
+            sts = newStsClient baseHandle sender
+        result <- getCallerIdentity sts
+        fmap callerIdentityAccount result `shouldBe` Right "123456789012"
+        request <- readIORef captured
+        fmap shrMethod request `shouldBe` Just "POST"
+        fmap shrBody request
+          `shouldBe` Just "Action=GetCallerIdentity&Version=2011-06-15"
 
     describe "Route 53 change-batch XML is a deterministic function of the desired records" $ do
       it "renders a single A UPSERT with a trailing dot" $
@@ -364,6 +583,23 @@ awsNativeClientsSuite =
         renderChangeBatchXml
           [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordTXT 300 ["\"v=spf1 -all\""])]
           `shouldBe` txtExpected
+      it "renders the exact regional SES MX value" $ do
+        let rendered =
+              renderChangeBatchXml
+                [
+                  ( Upsert
+                  , ResourceRecordSet
+                      "inbox.example.test"
+                      RecordMX
+                      300
+                      ["10 inbound-smtp.us-west-2.amazonaws.com."]
+                  )
+                ]
+        rendered `shouldSatisfy` (BS8.isInfixOf "<Type>MX</Type>")
+        rendered
+          `shouldSatisfy` ( BS8.isInfixOf
+                              "<Value>10 inbound-smtp.us-west-2.amazonaws.com.</Value>"
+                          )
       it "normalizes a hosted-zone path with or without the /hostedzone/ prefix" $ do
         changeRecordSetsPath "/hostedzone/Z123" `shouldBe` "/2013-04-01/hostedzone/Z123/rrset/"
         changeRecordSetsPath "Z123" `shouldBe` "/2013-04-01/hostedzone/Z123/rrset/"
@@ -375,10 +611,97 @@ awsNativeClientsSuite =
         parseGetChangeResponse
           "<GetChangeResponse><ChangeInfo><Id>/change/C123</Id><Status>INSYNC</Status></ChangeInfo></GetChangeResponse>"
           `shouldBe` Right ChangeInsync
+      it "builds a one-record authoritative lookup query" $
+        listRecordSetsQuery "demo.resolvefintech.com" RecordA
+          `shouldBe` [("name", "demo.resolvefintech.com."), ("type", "A"), ("maxitems", "1")]
+      it "uses the MX selector for an SES receive lookup" $
+        listRecordSetsQuery "inbox.example.test" RecordMX
+          `shouldBe` [("name", "inbox.example.test."), ("type", "MX"), ("maxitems", "1")]
+      it "parses only an exact name/type record with TTL and values" $
+        parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listExactAResponse
+          `shouldBe` Right (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4"]))
+      it "reports a lexicographically subsequent first record as exact absence" $
+        parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listSubsequentResponse
+          `shouldBe` Right Nothing
+      it "fails closed on an exact alias record" $
+        parseListResourceRecordSetsResponse
+          "next.resolvefintech.com"
+          RecordA
+          listSubsequentResponse
+          `shouldBe` Left "Route53: exact record uses an unsupported alias or routing policy"
+      it "dispatches ListResourceRecordSets with the canonical bounded query" $ do
+        captured <- newIORef Nothing
+        let sender request = do
+              writeIORef captured (Just request)
+              pure (Right (HttpOutcome 200 [] listExactAResponse))
+            r53 = newRoute53Client baseHandle sender
+        result <- listExactResourceRecordSet r53 "Z123" "demo.resolvefintech.com" RecordA
+        result
+          `shouldBe` Right
+            (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4"]))
+        request <- readIORef captured
+        fmap shrMethod request `shouldBe` Just "GET"
+        fmap shrUrl request
+          `shouldBe` Just
+            "https://route53.amazonaws.com/2013-04-01/hostedzone/Z123/rrset/?maxitems=1&name=demo.resolvefintech.com.&type=A"
       it "refuses an empty change set before signing" $ do
         let r53 = newRoute53Client baseHandle (respond 200 "")
         result <- changeResourceRecordSets r53 "Z123" []
         result `shouldBe` Left (AwsSigningError "refusing to write empty Route 53 change set")
+
+    describe "S3 long-lived bucket hardening is exact and read back" $ do
+      it "renders region-correct create bodies and the five fixed hardening documents" $ do
+        renderCreateBucketXml "us-east-1" `shouldBe` ""
+        renderCreateBucketXml "ca-central-1"
+          `shouldBe` "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>ca-central-1</LocationConstraint></CreateBucketConfiguration>"
+        renderBucketVersioningXml `shouldSatisfy` BS8.isInfixOf "<Status>Enabled</Status>"
+        renderBucketEncryptionXml `shouldSatisfy` BS8.isInfixOf "<SSEAlgorithm>AES256</SSEAlgorithm>"
+        renderPublicAccessBlockXml
+          `shouldSatisfy` BS8.isInfixOf "<RestrictPublicBuckets>true</RestrictPublicBuckets>"
+        renderBucketTaggingXml `shouldSatisfy` BS8.isInfixOf "<Key>prodbox.io/managed-by</Key>"
+        renderBucketLifecycleXml `shouldSatisfy` BS8.isInfixOf "<NoncurrentDays>90</NoncurrentDays>"
+      it "parses each authoritative hardening projection" $ do
+        parseBucketVersioning renderBucketVersioningXml `shouldBe` Right True
+        parseBucketEncryption renderBucketEncryptionXml `shouldBe` Right True
+        parsePublicAccessBlock renderPublicAccessBlockXml `shouldBe` Right True
+        parseBucketTagging renderBucketTaggingXml
+          `shouldBe` Right
+            [ ("prodbox.io/managed-by", "prodbox")
+            , ("prodbox.io/role", "long-lived-pulumi-state")
+            ]
+        parseBucketLifecycle renderBucketLifecycleXml `shouldBe` Right (Just 90)
+      it "maps a HEAD 404 to positive absence" $ do
+        let s3 = newS3Client baseHandle (respond 404 "")
+        observeBucket s3 "prodbox-long-lived" `shouldReturn` Right S3BucketAbsent
+      it "reads the complete expected hardening state from five bounded GETs" $ do
+        let sender request
+              | "?versioning=" `isSuffixOf` shrUrl request =
+                  pure (Right (HttpOutcome 200 [] renderBucketVersioningXml))
+              | "?encryption=" `isSuffixOf` shrUrl request =
+                  pure (Right (HttpOutcome 200 [] renderBucketEncryptionXml))
+              | "?publicAccessBlock=" `isSuffixOf` shrUrl request =
+                  pure (Right (HttpOutcome 200 [] renderPublicAccessBlockXml))
+              | "?tagging=" `isSuffixOf` shrUrl request =
+                  pure (Right (HttpOutcome 200 [] renderBucketTaggingXml))
+              | "?lifecycle=" `isSuffixOf` shrUrl request =
+                  pure (Right (HttpOutcome 200 [] renderBucketLifecycleXml))
+              | otherwise = pure (Left (TransportFailure "unexpected S3 request" DefinitelyNotSent))
+            s3 = newS3Client baseHandle sender
+        observeBucketHardening s3 "prodbox-long-lived"
+          `shouldReturn` Right expectedLongLivedBucketHardening
+      it "PUTs every hardening document with a signed content MD5" $ do
+        requests <- newIORef []
+        let sender request = do
+              existing <- readIORef requests
+              writeIORef requests (existing ++ [request])
+              pure (Right (HttpOutcome 200 [] ""))
+            s3 = newS3Client baseHandle sender
+        putBucketHardening s3 "prodbox-long-lived" `shouldReturn` Right ()
+        captured <- readIORef requests
+        length captured `shouldBe` 5
+        all ((== "PUT") . shrMethod) captured `shouldBe` True
+        all (maybe False (not . BS8.null) . lookup "content-md5" . shrHeaders) captured
+          `shouldBe` True
 
     describe "Service Quotas request / status read-back" $ do
       it "renders a deterministic request body and target" $ do
@@ -433,7 +756,7 @@ awsNativeClientsSuite =
         ("SignedHeaders=content-type;host;x-amz-date" `isInfixOf` authorization) `shouldBe` True
 
     describe "no native module carries a credential seam" $
-      it "none of the seven native modules contains an env/profile/temp-file/subprocess reference" $ do
+      it "none of the native modules contains an env/profile/temp-file/subprocess reference" $ do
         repoRoot <- getCurrentDirectory
         scanned <- forM nativeModulePaths $ \path -> do
           contents <- readFile (repoRoot </> path)

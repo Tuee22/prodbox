@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 1.62 deliverable 3 (Route 53): native @ChangeResourceRecordSets@ /
--- @GetChange@ (REST-XML protocol). The request body 'renderChangeBatchXml' is a
+-- | Native Route 53 @ChangeResourceRecordSets@, @GetChange@, and authoritative
+-- exact-record observation through @ListResourceRecordSets@ (REST-XML). The
+-- request body 'renderChangeBatchXml' is a
 -- pure, total, byte-identical function of the desired record set — the "exact
 -- records" property — with no map, no timestamp, and list order preserved.
 --
@@ -20,9 +21,11 @@ module Prodbox.Aws.Native.Route53
   , route53Scope
   , changeRecordSetsPath
   , getChangePath
+  , listRecordSetsQuery
   , renderChangeBatchXml
   , parseChangeInfoResponse
   , parseGetChangeResponse
+  , parseListResourceRecordSetsResponse
   )
 where
 
@@ -51,9 +54,10 @@ import Prodbox.Aws.Native.Wire
   , buildSignedRequest
   , performAwsRequest
   )
-import Prodbox.Aws.Native.Xml (extractFirst, xmlEscape)
+import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
+import Text.Read (readMaybe)
 
-data RecordType = RecordA | RecordAAAA | RecordCNAME | RecordTXT
+data RecordType = RecordA | RecordAAAA | RecordCNAME | RecordTXT | RecordMX
   deriving (Eq, Show)
 
 data ChangeAction = Upsert | CreateRecord | DeleteRecord
@@ -79,6 +83,11 @@ data Route53Client = Route53Client
       -> [(ChangeAction, ResourceRecordSet)]
       -> IO (Either AwsClientError (ChangeId, ChangeStatus))
   , getChange :: ChangeId -> IO (Either AwsClientError ChangeStatus)
+  , listExactResourceRecordSet
+      :: Text
+      -> Text
+      -> RecordType
+      -> IO (Either AwsClientError (Maybe ResourceRecordSet))
   }
 
 newRoute53Client :: CredentialHandle origin -> NativeAwsSender -> Route53Client
@@ -86,6 +95,7 @@ newRoute53Client handle sender =
   Route53Client
     { changeResourceRecordSets = runChangeRecordSets handle sender
     , getChange = runGetChange handle sender
+    , listExactResourceRecordSet = runListExactResourceRecordSet handle sender
     }
 
 route53Endpoint :: AwsEndpoint
@@ -102,6 +112,16 @@ changeRecordSetsPath zoneId =
 getChangePath :: ChangeId -> ByteString
 getChangePath (ChangeId changeId) =
   encodeUtf8 ("/2013-04-01/change/" <> bareChangeId changeId)
+
+-- | The bounded authoritative lookup query. Route 53 returns the first record
+-- at or after this name/type; the response parser therefore checks that the
+-- returned record is the exact requested coordinate before exposing it.
+listRecordSetsQuery :: Text -> RecordType -> [(ByteString, ByteString)]
+listRecordSetsQuery recordName recordType =
+  [ ("name", ensureTrailingDot (encodeUtf8 recordName))
+  , ("type", renderRecordType recordType)
+  , ("maxitems", "1")
+  ]
 
 bareZoneId :: Text -> Text
 bareZoneId raw =
@@ -130,7 +150,7 @@ renderChangeBatchXml changes =
       <> xmlEscape (ensureTrailingDot (encodeUtf8 (rrsName rrs)))
       <> "</Name>"
       <> "<Type>"
-      <> renderType (rrsType rrs)
+      <> renderRecordType (rrsType rrs)
       <> "</Type>"
       <> "<TTL>"
       <> BS8.pack (show (rrsTtl rrs))
@@ -144,10 +164,14 @@ renderChangeBatchXml changes =
   renderAction Upsert = "UPSERT"
   renderAction CreateRecord = "CREATE"
   renderAction DeleteRecord = "DELETE"
-  renderType RecordA = "A"
-  renderType RecordAAAA = "AAAA"
-  renderType RecordCNAME = "CNAME"
-  renderType RecordTXT = "TXT"
+
+renderRecordType :: RecordType -> ByteString
+renderRecordType recordType = case recordType of
+  RecordA -> "A"
+  RecordAAAA -> "AAAA"
+  RecordCNAME -> "CNAME"
+  RecordTXT -> "TXT"
+  RecordMX -> "MX"
 
 ensureTrailingDot :: ByteString -> ByteString
 ensureTrailingDot name
@@ -169,6 +193,80 @@ parseGetChangeResponse body = do
   status <- note "Route53: missing <Status>" (extractFirst "<Status>" "</Status>" info)
   parseChangeStatus status
 
+-- | Parse the bounded list response as an exact lookup. An empty collection or
+-- a lexicographically subsequent first record means the requested record is
+-- absent. An exact alias/routing-policy record, malformed TTL, or empty value
+-- set is unrepresentable and fails closed instead of being reported missing.
+parseListResourceRecordSetsResponse
+  :: Text
+  -> RecordType
+  -> ByteString
+  -> Either String (Maybe ResourceRecordSet)
+parseListResourceRecordSetsResponse requestedName requestedType body = do
+  if "<ListResourceRecordSetsResponse" `BS.isInfixOf` body
+    then Right ()
+    else Left "Route53: missing <ListResourceRecordSetsResponse>"
+  let records = extractAll "<ResourceRecordSet>" "</ResourceRecordSet>" body
+      hasEmptyCollection = "<ResourceRecordSets/>" `BS.isInfixOf` body
+      hasCollection = "<ResourceRecordSets>" `BS.isInfixOf` body
+  if hasEmptyCollection || hasCollection
+    then Right ()
+    else Left "Route53: missing <ResourceRecordSets>"
+  case records of
+    [] -> Right Nothing
+    [record] -> parseExact record
+    _ -> Left "Route53: bounded exact-record response returned multiple record sets"
+ where
+  parseExact record = do
+    returnedName <- decodeUtf8 <$> element "Name" record
+    returnedType <- element "Type" record >>= parseRecordType
+    if normalizeRecordName returnedName /= normalizeRecordName requestedName
+      || returnedType /= requestedType
+      then Right Nothing
+      else do
+        if "<AliasTarget>" `BS.isInfixOf` record || "<SetIdentifier>" `BS.isInfixOf` record
+          then Left "Route53: exact record uses an unsupported alias or routing policy"
+          else Right ()
+        ttlBytes <- element "TTL" record
+        ttl <-
+          case readMaybe (BS8.unpack ttlBytes) of
+            Just value | value > (0 :: Int) -> Right value
+            _ -> Left "Route53: exact record has an invalid TTL"
+        valuesContainer <-
+          note
+            "Route53: exact record is missing <ResourceRecords>"
+            (extractFirst "<ResourceRecords>" "</ResourceRecords>" record)
+        let values = map decodeUtf8 (extractAll "<Value>" "</Value>" valuesContainer)
+        if null values
+          then Left "Route53: exact record has no resource-record values"
+          else
+            Right
+              ( Just
+                  ResourceRecordSet
+                    { rrsName = normalizeRecordName returnedName
+                    , rrsType = returnedType
+                    , rrsTtl = ttl
+                    , rrsRecords = values
+                    }
+              )
+
+  element name hay =
+    note
+      ("Route53: exact record is missing <" ++ name ++ ">")
+      (extractFirst (BS8.pack ("<" ++ name ++ ">")) (BS8.pack ("</" ++ name ++ ">")) hay)
+
+normalizeRecordName :: Text -> Text
+normalizeRecordName = Text.toLower . Text.dropWhileEnd (== '.') . Text.strip
+
+parseRecordType :: ByteString -> Either String RecordType
+parseRecordType value
+  | value == "A" = Right RecordA
+  | value == "AAAA" = Right RecordAAAA
+  | value == "CNAME" = Right RecordCNAME
+  | value == "TXT" = Right RecordTXT
+  | value == "MX" = Right RecordMX
+  | otherwise = Left ("Route53: unknown record type " ++ BS8.unpack value)
+
 parseChangeStatus :: ByteString -> Either String ChangeStatus
 parseChangeStatus status
   | status == "PENDING" = Right ChangePending
@@ -187,7 +285,15 @@ runChangeRecordSets handle sender zoneId changes
       raw <-
         performAwsRequest
           sender
-          (\ts -> signRoute53 handle ts "POST" (changeRecordSetsPath zoneId) (renderChangeBatchXml changes))
+          ( \ts ->
+              signRoute53
+                handle
+                ts
+                "POST"
+                (changeRecordSetsPath zoneId)
+                []
+                (renderChangeBatchXml changes)
+          )
           "route53:ChangeResourceRecordSets"
           Idempotent
           XmlErrorFormat
@@ -202,20 +308,50 @@ runGetChange handle sender changeId = do
   raw <-
     performAwsRequest
       sender
-      (\ts -> signRoute53 handle ts "GET" (getChangePath changeId) "")
+      (\ts -> signRoute53 handle ts "GET" (getChangePath changeId) [] "")
       "route53:GetChange"
       Idempotent
       XmlErrorFormat
   pure (raw >>= first AwsResponseParseFailure . parseGetChangeResponse)
+
+runListExactResourceRecordSet
+  :: CredentialHandle origin
+  -> NativeAwsSender
+  -> Text
+  -> Text
+  -> RecordType
+  -> IO (Either AwsClientError (Maybe ResourceRecordSet))
+runListExactResourceRecordSet handle sender zoneId recordName recordType = do
+  raw <-
+    performAwsRequest
+      sender
+      ( \ts ->
+          signRoute53
+            handle
+            ts
+            "GET"
+            (changeRecordSetsPath zoneId)
+            (listRecordSetsQuery recordName recordType)
+            ""
+      )
+      "route53:ListResourceRecordSets"
+      Idempotent
+      XmlErrorFormat
+  pure
+    ( raw
+        >>= first AwsResponseParseFailure
+          . parseListResourceRecordSetsResponse recordName recordType
+    )
 
 signRoute53
   :: CredentialHandle origin
   -> AwsTimestamp
   -> ByteString
   -> ByteString
+  -> [(ByteString, ByteString)]
   -> ByteString
   -> SignedHttpRequest
-signRoute53 handle ts method path body =
+signRoute53 handle ts method path query body =
   buildSignedRequest
     (toSigV4Credentials handle)
     (credentialHandleSecurityToken handle)
@@ -224,7 +360,7 @@ signRoute53 handle ts method path body =
     ts
     method
     path
-    []
+    query
     body
     []
 

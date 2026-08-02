@@ -11,7 +11,7 @@ where
 
 import Control.Monad (forM_)
 import Crypto.Hash.SHA1 qualified as SHA1
-import Data.Aeson (eitherDecode, encode, object, toJSON, (.=))
+import Data.Aeson (eitherDecode, encode)
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as StrictByteString
@@ -53,7 +53,6 @@ import Prodbox.Vault.Client
   , TokenAccessorListing (..)
   , VaultAddress
   , defaultInitRequest
-  , initRequestWithPgpRecipientsLegacy
   , vaultInitEncrypted
   )
 import TestSupport
@@ -77,23 +76,6 @@ targetVaultInitAcceptsPreparedRecipients = vaultInitEncrypted
 brokerProtocolBoundarySuite :: SuiteBuilder ()
 brokerProtocolBoundarySuite =
   describe "Sprint 2.33 typed Vault/PGP protocol boundary" $ do
-    it "keeps the Standard-P raw recipient builder explicitly legacy" $ do
-      let recipients = ["share-a", "share-b", "share-c", "share-d", "share-e"]
-      case initRequestWithPgpRecipientsLegacy recipients "burn-public" defaultInitRequest of
-        Left err -> expectationFailure err
-        Right request ->
-          toJSON request
-            `shouldBe` object
-              [ "secret_shares" .= (5 :: Natural)
-              , "secret_threshold" .= (3 :: Natural)
-              , "pgp_keys" .= recipients
-              , "root_token_pgp_key" .= ("burn-public" :: Text)
-              ]
-    it "refuses a PGP share-recipient count mismatch or empty burn recipient" $ do
-      initRequestWithPgpRecipientsLegacy ["only-one"] "burn" defaultInitRequest
-        `shouldSatisfy` isLeft
-      initRequestWithPgpRecipientsLegacy (replicate 5 "share") " " defaultInitRequest
-        `shouldSatisfy` isLeft
     it "types the target Vault-init path by prepared recipient evidence" $
       targetVaultInitAcceptsPreparedRecipients `seq`
         pure ()
@@ -296,7 +278,7 @@ brokerProtocolBoundarySuite =
 brokerIsolationLintSuite :: SuiteBuilder ()
 brokerIsolationLintSuite =
   describe "Sprint 2.33 broker/gateway isolation lint" $ do
-    it "accepts isolated target registries plus the registered rollback adapter" $
+    it "accepts isolated target registries after rollback-adapter removal" $
       bootstrapBrokerIsolationViolations isolatedSources `shouldBe` []
     it "rejects a bootstrap route reintroduced into the Gateway registry" $
       bootstrapBrokerIsolationViolations
@@ -306,21 +288,48 @@ brokerIsolationLintSuite =
       bootstrapBrokerIsolationViolations
         (replaceSource brokerRoutesPath "escape = \"/v1/object-store/get\"")
         `shouldSatisfy` (not . null)
-    it "rejects secret-bearing target-client metadata before the rollback boundary" $
+    it "rejects secret-bearing target-client metadata anywhere in the Broker client" $
       bootstrapBrokerIsolationViolations
         ( replaceSource
             brokerClientPath
             ( "x-prodbox-service-identity x-prodbox-transport-credential idempotency-key "
-                ++ "x-prodbox-request-sha256 requestDigestForBytes unlock_password "
-                ++ "-- Standard-P rollback adapter"
+                ++ "x-prodbox-request-sha256 requestDigestForBytes unlock_password"
             )
         )
         `shouldSatisfy` (not . null)
-    it "rejects a marker-only daemon bridge without topology-gated dispatch" $
+    it "rejects a removed legacy-adapter identifier in the Gateway daemon" $
       bootstrapBrokerIsolationViolations
         ( replaceSource
             gatewayDaemonPath
-            "LEGACY-ESCAPE[gateway-hosted-authority-routes] legacyGatewayBootstrapRouteForPath"
+            "legacyGatewayBootstrapRouteForPath"
+        )
+        `shouldSatisfy` (not . null)
+    it "rejects a removed lifecycle authority route reintroduced into Gateway" $
+      bootstrapBrokerIsolationViolations
+        (replaceSource gatewayRoutesPath "RouteAuthorityObjectCas = \"/v1/object-store/authority/cas\"")
+        `shouldSatisfy` (not . null)
+    it "rejects a removed Gateway operator-write client" $
+      bootstrapBrokerIsolationViolations
+        (replaceSource gatewayDaemonPath "writeOperatorSecret endpoint payload")
+        `shouldSatisfy` (not . null)
+    it "rejects restoration of the removed Gateway object-store module" $
+      bootstrapBrokerIsolationViolations
+        (("src/Prodbox/Gateway/ObjectStore.hs", "module Prodbox.Gateway.ObjectStore where") : isolatedSources)
+        `shouldSatisfy` (not . null)
+    it "rejects restoration of a generic host-direct Pulumi checkpoint operation" $
+      bootstrapBrokerIsolationViolations
+        ( ( hostDirectObjectStorePath
+          , "module Prodbox.Pulumi.HostDirectObjectStore where; hostDirectPutPulumiObject handle stack payload"
+          )
+            : isolatedSources
+        )
+        `shouldSatisfy` (not . null)
+    it "rejects restoration of the removed long-lived Target secret store" $
+      bootstrapBrokerIsolationViolations
+        ( ( "src/Prodbox/Lifecycle/TargetSecretStore.hs"
+          , "module Prodbox.Lifecycle.TargetSecretStore where"
+          )
+            : isolatedSources
         )
         `shouldSatisfy` (not . null)
     it "rejects a pre-Vault credential literal in any Gateway module" $
@@ -338,22 +347,19 @@ brokerIsolationLintSuite =
   gatewayDaemonPath = "src/Prodbox/Gateway/Daemon.hs"
   brokerClientPath = "src/Prodbox/Bootstrap/Broker/Client.hs"
   brokerRoutesPath = "src/Prodbox/Bootstrap/Broker/Routes.hs"
+  hostDirectObjectStorePath = "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
   isolatedSources =
     [ (gatewayRoutesPath, "data GatewayRoute = RouteHealthz")
     , ("src/Prodbox/Gateway/Client.hs", "statusUrl = \"/v1/state\"")
     ,
       ( gatewayDaemonPath
-      , "handleParsedRequest rawRequest LegacyModelBEmitter legacyGatewayBootstrapRouteForPath runLegacyGatewayBootstrapRequest JournalLeaseEmitter dispatchPatternRoute"
+      , "handleParsedRequest rawRequest dispatchPatternRoute"
       )
     ,
       ( brokerClientPath
-      , "x-prodbox-service-identity x-prodbox-transport-credential idempotency-key x-prodbox-request-sha256 requestDigestForBytes -- Standard-P rollback adapter"
+      , "x-prodbox-service-identity x-prodbox-transport-credential idempotency-key x-prodbox-request-sha256 requestDigestForBytes"
       )
     , (brokerRoutesPath, "status = \"/v1/bootstrap/vault/status\"")
-    ,
-      ( "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
-      , "data LegacyGatewayBootstrapRoute = LegacyGatewayVaultEnsure; runLegacyGatewayBootstrapRequest = bootstrapObjectStoreConfigWithEndpoint unlockBundleInitialRootToken; old = \"unlock_password\"; new = \"new_unlock_password\""
-      )
     ]
   replaceSource path replacement =
     [ if candidatePath == path then (candidatePath, replacement) else source
@@ -463,8 +469,8 @@ runtimeRoleSuite =
 brokerRouteSuite :: SuiteBuilder ()
 brokerRouteSuite =
   describe "Sprint 2.33 closed Bootstrap Broker route registry" $ do
-    it "enumerates all fifteen routes exactly once" $ do
-      length Routes.allBrokerRoutes `shouldBe` 15
+    it "enumerates all sixteen routes exactly once" $ do
+      length Routes.allBrokerRoutes `shouldBe` 16
       Routes.allBrokerRoutes
         `shouldBe` [minBound .. maxBound]
       length (nub Routes.allBrokerRoutes)
@@ -640,8 +646,8 @@ brokerSettingsSuite =
           `shouldBe` Left (BrokerConfigFieldEmpty field)
 
     it "rejects schema, port, bound, and storage-key violations" $ do
-      validateBootstrapBrokerConfig validBrokerConfig {schemaVersion = 2}
-        `shouldBe` Left (BrokerSchemaVersionMismatch 1 2)
+      validateBootstrapBrokerConfig validBrokerConfig {schemaVersion = 1}
+        `shouldBe` Left (BrokerSchemaVersionMismatch 2 1)
       forM_ [0, 65536] $ \port ->
         validateBootstrapBrokerConfig
           validBrokerConfig {listener = (listener validBrokerConfig) {listen_port = port}}
@@ -672,7 +678,8 @@ brokerSettingsSuite =
       rendered `shouldContain` "BOOTSTRAP_BROKER_START_PLAN"
       rendered `shouldContain` "RUNTIME_ROLE=bootstrap-broker"
       rendered `shouldContain` "LISTENER=127.0.0.1:8443"
-      rendered `shouldContain` "BOUNDARY_ADAPTERS=fail-closed"
+      rendered `shouldContain` "AUTHENTICATOR=kubernetes-tokenreview"
+      rendered `shouldContain` "MUTATION_ENGINE=production"
       forM_ ["password", "root_token", "private_key", "recovery_share"] $ \secretField ->
         Text.unpack (Text.toLower (Text.pack rendered)) `shouldNotContain` secretField
 
@@ -852,7 +859,7 @@ brokerAdmissionSuite =
                     { Request.requestDigest = responseDigest
                     }
               }
-          changedOperation = request {Request.brokerRequestOperation = Request.CommitChildInitCustody}
+          changedOperation = request {Request.brokerRequestOperation = Request.PrepareChildInitCustody}
       snd (Admission.admitRequest testNow testServiceIdentity testLimits queuedLane changedDigest)
         `shouldBe` Admission.AdmissionRefused Admission.RefuseIdempotencyConflict
       snd (Admission.admitRequest testNow testServiceIdentity testLimits queuedLane changedOperation)
@@ -963,7 +970,8 @@ operationContracts =
   , (Request.ReconcileVaultBaseline, Request.HttpPost, ExpectBody)
   , (Request.ObserveVaultPki, Request.HttpGet, ExpectNoBody)
   , (Request.IssueVaultPkiTestCertificate, Request.HttpPost, ExpectBody)
-  , (Request.CommitChildInitCustody, Request.HttpPost, ExpectBody)
+  , (Request.PrepareChildInitCustody, Request.HttpPost, ExpectBody)
+  , (Request.FinalizeChildInitCustody, Request.HttpPost, ExpectBody)
   , (Request.DeliverChildRecovery, Request.HttpPost, ExpectBody)
   , (Request.ObserveChildRecoveryDelivery, Request.HttpPost, ExpectBody)
   ]
@@ -1092,10 +1100,11 @@ otherBrokerMethod method =
 validBrokerConfig :: BootstrapBrokerConfigDhall
 validBrokerConfig =
   BootstrapBrokerConfigDhall
-    { schemaVersion = 1
+    { schemaVersion = 2
     , cluster_id = "cluster-a"
     , vault_address = "http://127.0.0.1:8200"
     , service_identity = "gateway-service"
+    , parent_registration = Nothing
     , listener =
         BrokerListenerDhall
           { listen_host = "127.0.0.1"
@@ -1215,10 +1224,11 @@ mapLimits update config = config {limits = update (limits config)}
 validBrokerConfigDhall :: Text
 validBrokerConfigDhall =
   Text.unlines
-    [ "{ schemaVersion = 1"
+    [ "{ schemaVersion = 2"
     , ", cluster_id = \"cluster-a\""
     , ", vault_address = \"http://127.0.0.1:8200\""
     , ", service_identity = \"gateway-service\""
+    , ", parent_registration = None { parent_cluster_id : Text, parent_authority_endpoint : Text }"
     , ", listener = { listen_host = \"127.0.0.1\", listen_port = 8443 }"
     , ", bootstrap_store ="
     , "    { store_endpoint = \"http://127.0.0.1:9000\""

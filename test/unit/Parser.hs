@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Parser
   ( parserSuite
   )
@@ -13,13 +15,16 @@ import Options.Applicative
   )
 import Prodbox.App (canRunWithoutRepoRoot)
 import Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AdminActionCommand (..)
+  , AwsCommand (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
   , ChartsCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
+  , CoverageFlags (..)
+  , CredentialProvisionerCommand (..)
   , DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
   , DnsCommand (..)
@@ -53,6 +58,12 @@ import Prodbox.CLI.Spec
   , commandRegistry
   , leafCommandPaths
   )
+import Prodbox.Lifecycle.AdminAction.Runner
+  ( AdminActionRunnerOptions (..)
+  )
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( AdminAction (..)
+  )
 import Prodbox.Native
   ( commandPrerequisites
   , nativeRuntimeCommand
@@ -60,6 +71,7 @@ import Prodbox.Native
   , nativeRuntimeRole
   )
 import Prodbox.Runtime.Role qualified as RuntimeRole
+import Prodbox.Substrate (Substrate (..))
 import TestSupport
 
 parserSuite :: SuiteBuilder ()
@@ -72,6 +84,24 @@ parserSuite =
     mapM_ happyCase (collectLeafExamples commandRegistry)
     mapM_ unhappyCase (collectLeafExamples commandRegistry)
     mapM_ forbiddenCase forbiddenArgvCases
+    it "limits --record-profile to the gateway-pods validation" $ do
+      parseArgs ["test", "integration", "gateway-pods", "--record-profile"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeTest
+                      TestCommand
+                        { testScope = TestIntegration IntegrationGatewayPods
+                        , testCoverage = CoverageFlags False Nothing
+                        , testSubstrate = SubstrateHomeLocal
+                        , testRecordProfile = True
+                        }
+                  )
+              )
+          )
+      parseArgs ["test", "integration", "env", "--record-profile"]
+        `shouldSatisfy` isLeft
     it "parses the typed Bootstrap Broker launch and Plan/Apply options" $
       parseArgs
         [ "bootstrap-broker"
@@ -133,6 +163,13 @@ parserSuite =
       fmap nativeRuntimeConfigIdentity (nativeRuntimeCommand gatewayStart)
         `shouldBe` Just RuntimeRole.GatewayRuntimeConfig
       nativeRuntimeCommand gatewayStatus `shouldSatisfy` isNothing
+    it "parses every closed Admin Action runner action and its exact immutable metadata" $ do
+      mapM_
+        (\(token, expected) -> parsedAdminAction token `shouldBe` Right expected)
+        [ ("destroy-aws-ses", DestroyAwsSes)
+        , ("migrate-legacy-backend", MigrateLegacyBackend)
+        , ("reconcile-quota", ReconcileQuota)
+        ]
 
 happyCase :: ([String], Example) -> SuiteBuilder ()
 happyCase (commandPath, exampleSpec) =
@@ -210,6 +247,50 @@ parseArgs argv =
         Failure failure -> Left (fst (renderFailure failure "prodbox"))
         CompletionInvoked _ -> Left "shell completion requested"
 
+parsedAdminAction :: String -> Either String AdminAction
+parsedAdminAction token = do
+  parsed <-
+    parseArgs
+      [ "admin-action"
+      , "run"
+      , "--action"
+      , token
+      , "--operation-id"
+      , "admin-operation-1"
+      , "--deadline-micros"
+      , "123456"
+      , "--pod-name-file"
+      , "/var/run/prodbox/pod/name"
+      , "--pod-uid-file"
+      , "/var/run/prodbox/pod/uid"
+      , "--service-account-token-file"
+      , "/var/run/secrets/prodbox-vault/token"
+      , "--dry-run"
+      ]
+  case optRequest parsed of
+    RunNative
+      ( NativeAdminAction
+          ( AdminActionRun
+              AdminActionRunnerOptions
+                { adminActionRunnerExpectedAction = action
+                , adminActionRunnerOperationId = operationId
+                , adminActionRunnerDeadlineMicros = deadline
+                , adminActionRunnerPodNameFile = podNameFile
+                , adminActionRunnerPodUidFile = podUidFile
+                , adminActionRunnerServiceAccountTokenFile = tokenFile
+                }
+              (PlanOptions dryRun Nothing)
+            )
+        )
+        | operationId == "admin-operation-1"
+            && deadline == 123456
+            && podNameFile == "/var/run/prodbox/pod/name"
+            && podUidFile == "/var/run/prodbox/pod/uid"
+            && tokenFile == "/var/run/secrets/prodbox-vault/token"
+            && dryRun ->
+            Right action
+    _ -> Left "admin-action parser did not preserve its immutable metadata"
+
 isLeft :: Either left right -> Bool
 isLeft eitherValue =
   case eitherValue of
@@ -233,6 +314,7 @@ commandPathOfRequest request =
     ShowHelp _ -> ["help"]
     RunNative nativeCommand ->
       case nativeCommand of
+        NativeAdminAction _ -> ["admin-action", "run"]
         NativeAws awsCommand ->
           "aws"
             : case awsCommand of
@@ -246,7 +328,14 @@ commandPathOfRequest request =
           "bootstrap-broker"
             : case brokerCommand of
               BootstrapBrokerStart _ -> ["start"]
+              BootstrapBrokerSecretWorker {} -> ["secret-worker"]
         NativeControlPlane role _ -> [RuntimeRole.runtimeRoleName role, "start"]
+        NativeCredentialProvisioner credentialCommand ->
+          "credential-provisioner"
+            : case credentialCommand of
+              CredentialProvisionerExternalAcmeEabRun {} -> ["run"]
+              CredentialProvisionerAwsAdminRun {} -> ["run"]
+              CredentialProvisionerTargetWorker {} -> ["target-worker"]
         NativeCharts chartsCommand ->
           "charts"
             : case chartsCommand of
@@ -356,6 +445,9 @@ commandPathOfRequest request =
                     IntegrationGatewayDaemon -> ["gateway-daemon"]
                     IntegrationGatewayPods -> ["gateway-pods"]
                     IntegrationGatewayPartition -> ["gateway-partition"]
+                    IntegrationControlPlaneCounterexample -> ["control-plane-counterexample"]
+                    IntegrationCertificateScope -> ["certificate-scope"]
+                    IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]
                     IntegrationLifecycle -> ["lifecycle"]
                     IntegrationPulumi -> ["pulumi"]

@@ -31,7 +31,6 @@ module Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObservation (..)
   , TargetClusterSecretSink
   , checkpointAuthorityClusterId
-  , checkpointAuthorityGatewayEndpoint
   , checkpointAuthorityObjectBucket
   , checkpointAuthorityObjectNamespace
   , checkpointAuthorityVaultKeyspace
@@ -44,7 +43,6 @@ module Prodbox.Lifecycle.CheckpointAuthority
   , modelBObjectAuthority
   , modelBObjectLogicalName
   , modelBObjectVersionText
-  , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
   , targetSecretSinkKvPath
   , targetSecretSinkVaultMount
@@ -72,7 +70,6 @@ data AuthorityCoordinateError
 -- there is no ambient gateway or kube-context fallback.
 data LongLivedCheckpointAuthority = LongLivedCheckpointAuthority
   { internalCheckpointAuthorityClusterId :: !Text
-  , internalCheckpointAuthorityGatewayEndpoint :: !Text
   , internalCheckpointAuthorityObjectBucket :: !Text
   , internalCheckpointAuthorityObjectNamespace :: !Text
   , internalCheckpointAuthorityVaultKeyspace :: !Text
@@ -84,7 +81,6 @@ data LongLivedCheckpointAuthority = LongLivedCheckpointAuthority
 -- has no conversion to 'LongLivedCheckpointAuthority'.
 data TargetClusterSecretSink = TargetClusterSecretSink
   { internalTargetSecretSinkIdentity :: !Text
-  , internalTargetSecretSinkGatewayEndpoint :: !Text
   , internalTargetSecretSinkVaultMount :: !Text
   , internalTargetSecretSinkKvPath :: !Text
   }
@@ -95,12 +91,10 @@ mkLongLivedCheckpointAuthority
   -> Text
   -> Text
   -> Text
-  -> Text
   -> Either AuthorityCoordinateError LongLivedCheckpointAuthority
-mkLongLivedCheckpointAuthority clusterId endpoint bucket objectNamespace vaultKeyspace =
+mkLongLivedCheckpointAuthority clusterId bucket objectNamespace vaultKeyspace =
   LongLivedCheckpointAuthority
     <$> validateCoordinate "cluster_id" 128 clusterId
-    <*> validateCoordinate "gateway_endpoint" 2048 endpoint
     <*> validateCoordinate "object_bucket" 255 bucket
     <*> validateCoordinate "object_namespace" 512 objectNamespace
     <*> validateCoordinate "vault_keyspace" 512 vaultKeyspace
@@ -109,20 +103,15 @@ mkTargetClusterSecretSink
   :: Text
   -> Text
   -> Text
-  -> Text
   -> Either AuthorityCoordinateError TargetClusterSecretSink
-mkTargetClusterSecretSink identity endpoint vaultMount kvPath =
+mkTargetClusterSecretSink identity vaultMount kvPath =
   TargetClusterSecretSink
     <$> validateCoordinate "target_identity" 128 identity
-    <*> validateCoordinate "target_gateway_endpoint" 2048 endpoint
     <*> validateCoordinate "target_vault_mount" 128 vaultMount
     <*> validateCoordinate "target_kv_path" 512 kvPath
 
 checkpointAuthorityClusterId :: LongLivedCheckpointAuthority -> Text
 checkpointAuthorityClusterId = internalCheckpointAuthorityClusterId
-
-checkpointAuthorityGatewayEndpoint :: LongLivedCheckpointAuthority -> Text
-checkpointAuthorityGatewayEndpoint = internalCheckpointAuthorityGatewayEndpoint
 
 checkpointAuthorityObjectBucket :: LongLivedCheckpointAuthority -> Text
 checkpointAuthorityObjectBucket = internalCheckpointAuthorityObjectBucket
@@ -135,9 +124,6 @@ checkpointAuthorityVaultKeyspace = internalCheckpointAuthorityVaultKeyspace
 
 targetSecretSinkIdentity :: TargetClusterSecretSink -> Text
 targetSecretSinkIdentity = internalTargetSecretSinkIdentity
-
-targetSecretSinkGatewayEndpoint :: TargetClusterSecretSink -> Text
-targetSecretSinkGatewayEndpoint = internalTargetSecretSinkGatewayEndpoint
 
 targetSecretSinkVaultMount :: TargetClusterSecretSink -> Text
 targetSecretSinkVaultMount = internalTargetSecretSinkVaultMount
@@ -223,6 +209,13 @@ data ModelBObservation value
   = ModelBMissing
   | ModelBObserved !ModelBObjectVersion !value
   | ModelBCorrupt !Text
+  | -- | The object-store endpoint was not reachable (a transient transport
+    -- failure — e.g. a not-yet-routable port-forward / NodePort), distinct from a
+    -- persistent 'ModelBUnobservable'.  This is the "not-yet-ready" third value:
+    -- a retryable, gate-closed state that must never be collapsed into a terminal
+    -- authority-loss.  Bootstrap Readiness Doctrine §2.4 (typed three-valued
+    -- readiness); classified at the 'ModelBCasTransport' seam only.
+    ModelBEndpointUnready !Text
   | ModelBUnobservable !Text
   deriving (Eq, Functor, Show)
 
@@ -269,6 +262,12 @@ data ModelBCasResult value
   = ModelBCasApplied !ModelBObjectVersion !value
   | ModelBCasConflict !(ModelBObservation value)
   | ModelBCasRefusedCorrupt !Text
+  | -- | The object-store endpoint was transiently unreachable during the write —
+    -- the "not-yet-ready" third value on the CAS path, distinct from a terminal
+    -- 'ModelBCasUnobservable'.  A conditional CAS is safe to retry (it re-observes
+    -- the expected version first), so the acquire/release loops retry this within
+    -- the lease budget rather than failing closed.
+    ModelBCasEndpointUnready !Text
   | ModelBCasUnobservable !Text
   deriving (Eq, Functor, Show)
 
@@ -288,10 +287,9 @@ data ModelBCasAdapter (l :: StoreLifetime) m value = ModelBCasAdapter
   }
 
 -- | Payload codec supplied by the state-machine owner.  Decode failures are
--- corruption evidence; transport/CAS failures remain unobservable.  Lifted from
--- 'Prodbox.Lifecycle.CheckpointAuthorityStore' in Sprint 4.51 so the
--- gateway-backed and (future) host-direct adapters share it without a module
--- cycle.  It is payload-only and carries no storage-lifetime index.
+-- corruption evidence; transport/CAS failures remain unobservable. It is shared
+-- by the admitted Authority store and bounded pre-Authority bootstrap transport,
+-- and carries no storage-lifetime index.
 data ModelBCodec value = ModelBCodec
   { encodeModelBValue :: value -> Either String ByteString
   , decodeModelBValue :: ByteString -> Either String value

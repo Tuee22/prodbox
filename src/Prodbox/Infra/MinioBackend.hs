@@ -8,6 +8,8 @@ module Prodbox.Infra.MinioBackend
   , minioNamespace
   , minioSecretName
   , minioServiceName
+  , HostDirectEndpointProven
+  , hostDirectEndpointPort
   , withMinioPortForward
   , withCurrentMinioPortForward
   , readMinioCredentials
@@ -176,7 +178,12 @@ baseEnvironment = do
 upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
 upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
-withMinioPortForward :: (Int -> IO a) -> IO (Either String a)
+data HostDirectEndpointProven = HostDirectEndpointProven !Int
+
+hostDirectEndpointPort :: HostDirectEndpointProven -> Int
+hostDirectEndpointPort (HostDirectEndpointProven port) = port
+
+withMinioPortForward :: (HostDirectEndpointProven -> IO a) -> IO (Either String a)
 withMinioPortForward action = do
   envResult <- kubectlEnv
   case envResult of
@@ -196,14 +203,14 @@ withMinioPortForward action = do
 -- tests temporarily switch kubeconfig contexts. Chart bootstrap paths need the
 -- opposite behavior: they read active-cluster credentials and write
 -- substrate-local object-store data into that same cluster's MinIO.
-withCurrentMinioPortForward :: (Int -> IO a) -> IO (Either String a)
+withCurrentMinioPortForward :: (HostDirectEndpointProven -> IO a) -> IO (Either String a)
 withCurrentMinioPortForward =
   withMinioPortForwardEnv Nothing minioBackendLocalPort
 
 withMinioPortForwardEnv
   :: Maybe [(String, String)]
   -> Int
-  -> (Int -> IO a)
+  -> (HostDirectEndpointProven -> IO a)
   -> IO (Either String a)
 withMinioPortForwardEnv environment localPort action =
   bracket
@@ -225,15 +232,42 @@ withMinioPortForwardEnv environment localPort action =
     (handlePortForwardResult localPort action)
 
 handlePortForwardResult
-  :: Int -> (Int -> IO value) -> Either AppError BackgroundProcess -> IO (Either String value)
+  :: Int
+  -> (HostDirectEndpointProven -> IO value)
+  -> Either AppError BackgroundProcess
+  -> IO (Either String value)
 handlePortForwardResult localPort action result =
   case result of
     Left err -> pure (Left (showBackgroundProcessError err))
     Right _ -> do
-      ready <- waitForPort localPort 60
-      if ready
-        then Right <$> action localPort
-        else pure (Left "timed out waiting for MinIO port-forward readiness")
+      proof <- proveHostDirectEndpoint localPort 60
+      case proof of
+        Left err -> pure (Left err)
+        Right witness -> Right <$> action witness
+
+proveHostDirectEndpoint :: Int -> Int -> IO (Either String HostDirectEndpointProven)
+proveHostDirectEndpoint localPort attemptsLeft
+  | attemptsLeft <= 0 =
+      pure (Left "timed out waiting for authenticated MinIO S3 readiness")
+  | otherwise = do
+      let environment = minioAwsEnv minioRootUser minioRootPassword
+      result <-
+        runMinIOWithEnv
+          (Just environment)
+          [ "--endpoint-url"
+          , minioEndpointUrl localPort
+          , "s3api"
+          , "list-buckets"
+          , "--max-items"
+          , "1"
+          ]
+      case result of
+        Right output
+          | processExitCode output == ExitSuccess ->
+              pure (Right (HostDirectEndpointProven localPort))
+        _ -> do
+          threadDelay 250000
+          proveHostDirectEndpoint localPort (attemptsLeft - 1)
 
 cleanupBackgroundProcess :: Either a BackgroundProcess -> IO ()
 cleanupBackgroundProcess result =
@@ -417,33 +451,6 @@ renderCommandFailure :: String -> ProcessOutput -> String
 renderCommandFailure label output =
   let rendered = trim (processStderr output ++ "\n" ++ processStdout output)
    in if null rendered then label ++ " exited unsuccessfully" else rendered
-
-waitForPort :: Int -> Int -> IO Bool
-waitForPort port attemptsLeft
-  | attemptsLeft <= 0 = pure False
-  | otherwise = do
-      open <- isPortOpen port
-      if open
-        then pure True
-        else do
-          threadDelay 250000
-          waitForPort port (attemptsLeft - 1)
-
-isPortOpen :: Int -> IO Bool
-isPortOpen port = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "bash"
-        , subprocessArguments =
-            ["-c", "echo > /dev/tcp/127.0.0.1/" ++ show port]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Nothing
-        }
-  pure $
-    case result of
-      Failure _ -> False
-      Success output -> processExitCode output == ExitSuccess
 
 -- | Sprint 7.25: the in-cluster MinIO root credential is a STATIC constant
 -- ('Prodbox.Minio.RootCredential'), injected into the chart via

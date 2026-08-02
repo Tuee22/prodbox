@@ -155,31 +155,40 @@ closes the operation after re-observing the child seal state. A lost response is
 `OperationId`; it is never retried as an untracked second registration. Scoped registration and
 break-glass credentials are held by the owning boundary session manager, not Gateway Runtime.
 
-#### Historical gateway-mediated implementation record (legacy cutover surface)
+#### Historical gateway-mediated implementation record (removed custody and transport surface)
 
-Sprint `1.36`'s base `vault reconcile` plan creates the parent-side Transit foundation
+The following paragraph records the pre-cutover implementation only. As of the Sprint `4.50`
+custody and transport cutover on 2026-07-31, `ChildInitCustody`, its `root_token` field and init-KV
+coordinate, the federation root-token write gate, every later child-root-token read, and both
+Gateway federation read routes have been deleted from the supported source. They are not an
+available rollback path.
+
+Sprint `1.36`'s base `vault reconcile` plan created the parent-side Transit foundation
 (`prodbox-downstream-cluster-config`) and federation-custody policy. The child registration
-surface's typed foundation is in `Prodbox.Cluster.Federation`: it pins the KV v2 API paths above,
+surface's typed foundation was in `Prodbox.Cluster.Federation`: it pinned the KV v2 API paths above,
 the child metadata/init JSON payloads, the opaque child namespace / Transit-key derivation, the
 root-token write gate, and the `prodbox cluster federation register <child>` plan/apply surface.
-Sprint `4.32` adds the direct parent-side live registration writer: the parent loads its root Vault
+Sprint `4.32` added the direct parent-side live registration writer: the parent loaded its root Vault
 token, reads the Vault-owned federation HMAC key, ensures the per-child Transit key, writes a scoped
 child token policy, creates the child transit-seal token, writes child metadata/bootstrap/index KV
 objects to parent Vault, and applies the child-side `vault/vault-transit-seal-token` Secret without
-printing that token. Sprint `2.26` closes the gateway-mediated read path: the gateway daemon keeps
+printing that token. Sprint `2.26` closed the then-current gateway-mediated read path: the gateway daemon kept
 its non-secret Vault Kubernetes-auth coordinates from `/etc/gateway/config/config.dhall`, logs in through
 Vault on demand, serves `/v1/federation/children` from `secret/data/clusters/index` plus each
 metadata object, and serves `/v1/federation/children/<child>/bootstrap` from the child bootstrap KV
 object. The listing response never returns the transit-seal token; token-bearing custody values have
 redacted `Show` instances so incidental debug rendering does not print the child bootstrap token,
 the child root token, or recovery keys (Sprint `4.33`). The bootstrap response is
-available only through the unsealed parent Vault-backed path. The
+was available only through the unsealed parent Vault-backed path. Sprint `4.50` removed both routes;
+current inventory/bootstrap observations are operation-bound Target Secret Agent read-backs, never
+Gateway Runtime reads. The
 per-cluster seal model is in `Prodbox.Vault.Seal`: root Shamir init uses unseal-key shares, child
 Transit init uses recovery-key shares, the Vault chart renders `seal "transit"` only for child mode,
-and child init material maps to a parent-owned Vault KV field set. The child `cluster reconcile`
-interpreter initializes an empty child Vault once, writes the resulting recovery keys and initial
-root token directly to the parent KV, and reuses that parent-custodied root token for later child
-Vault reconcile and in-force-config reads.
+and child init material mapped to a parent-owned Vault KV field set. The historical child
+`cluster reconcile` interpreter initialized an empty child Vault once, wrote the resulting recovery
+keys and initial root token directly to the parent KV, and reused that parent-custodied token.
+Sprint `4.50` removed that record shape and all of those readers; the current path is the
+encrypted-share receipt plus separately generated, accessor-audited root session described above.
 
 All downstream kubeconfig and identity material is custodied **only** under
 `secret/data/clusters/<child-id>/*` in the parent's Vault KV (KV v2 API path; the logical mount path
@@ -366,9 +375,10 @@ work. It requires the parent-provisioned transit-seal credential, renders the Va
 `seal "transit"`, and refuses—with no local unseal fallback—when the parent is sealed or
 unobservable.
 
-**Historical implementation record:** Sprint `4.32` implements the earlier direct parent-readiness
+**Historical implementation record:** Sprint `4.32` implemented the earlier direct parent-readiness
 and `cluster reconcile` binding. That pre-redesign implementation wrote recovery shares and an
-initial root token to parent KV; this is a deletion surface, not the target custody contract above.
+initial root token to parent KV. Sprint `4.50` deleted that shape, its write gate, and its later
+reads; this paragraph is retained only as historical provenance.
 Init-once / unseal-on-rebuild still holds per cluster: a child's Vault is initialized exactly once
 against an empty PV and every subsequent reconcile only auto-unseals it against the parent (see
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
@@ -406,7 +416,7 @@ Plan owns both.
 | `1.38` | Config SSoT inversion: the Vault-Transit-enveloped MinIO object is the in-force config; filesystem Dhall is seed/propose only; the unencrypted-basics local surface; root-token-gated root-config writes (§5, §6). |
 | `2.26` | Cluster federation trust topology and downstream-cluster custody, including the historical CLI/gateway registration, child-listing, and bootstrap-reference routes retained only as legacy cutover surfaces (§2–§4). The target replaces those routes with Lifecycle Authority and Target Secret Agent capabilities. |
 | `3.20` | Vault transit-seal hierarchy and per-cluster seal custody: root Shamir + password-AEAD (Argon2id + ChaCha20-Poly1305) unlock bundle; child `seal "transit"` chart rendering against the parent; child recovery-key init request shape; child init keys mapped to parent-owned Vault KV; per-domain Transit keys + policies (§2, §3). |
-| `4.32` | Federated lifecycle reconcile and fail-closed unseal cascade: direct parent-side live child registration; child `cluster reconcile` auto-unseals from its parent; init-once/unseal-on-rebuild; the brick cascade when a parent is sealed/unreachable; lifecycle settings reload after Vault/MinIO uses the child root token custodied in the parent KV (§6, §7). |
+| `4.32` | Historical federated lifecycle reconcile and fail-closed unseal cascade: direct parent-side live child registration; child `cluster reconcile` auto-unseal from its parent; init-once/unseal-on-rebuild; the brick cascade when a parent is sealed/unreachable; and the now-removed child-root-token settings reload. Sprint `4.50` replaces the custody portion with encrypted-share receipts and audited short-lived root sessions (§3, §6, §7). |
 | `5.8` | Canonical sealed-Vault validation: `prodbox test integration sealed-vault` proves the deployed parent/child fail-closed cascade and cross-surface no-child-info invariant during the live red-team closure (§7). |
 
 ## Cross-References

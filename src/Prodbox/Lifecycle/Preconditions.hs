@@ -18,7 +18,6 @@ module Prodbox.Lifecycle.Preconditions
   ( StructuredError (..)
   , Precondition (..)
   , checkAll
-  , noLeftoverDnsBootstrapRecords
   , noLiveClusterTaggedAws
   , noLiveOperationalIamUser
   , noLiveLongLivedPulumiStacks
@@ -31,8 +30,7 @@ where
 import Data.List (intercalate)
 import Data.Text qualified as Text
 import Prodbox.Aws
-  ( operationalBootstrapDnsRecordExists
-  , operationalIamUserExists
+  ( operationalIamUserExists
   , prodboxIamUserName
   )
 import Prodbox.Lifecycle.K8sDrain
@@ -278,61 +276,6 @@ noLiveOperationalIamUser repoRoot adminCredentials =
                           , ""
                           , "Run `prodbox aws teardown` to delete the user and its"
                           , "access keys before proceeding."
-                          ]
-                    }
-              )
-    }
-
--- | Sprint 4.11: the bootstrap DNS record `prodbox cluster reconcile`
--- writes to the operator's Route 53 hosted zone still exists.
--- A non-empty result is a hard refusal for any operator action that
--- assumes a clean DNS surface.
-noLeftoverDnsBootstrapRecords :: FilePath -> Credentials -> Precondition
-noLeftoverDnsBootstrapRecords repoRoot adminCredentials =
-  Precondition
-    { preconditionLabel = "noLeftoverDnsBootstrapRecords"
-    , preconditionCheck = do
-        result <- operationalBootstrapDnsRecordExists repoRoot adminCredentials
-        case result of
-          Left err ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLeftoverDnsBootstrapRecords"
-                    , errorSummaryLine =
-                        "Route 53 list-resource-record-sets probe failed: " ++ err
-                    , errorOffendingItems = []
-                    , errorNarrative =
-                        "Could not query Route 53 for the bootstrap A record: "
-                          ++ err
-                          ++ "\n"
-                    }
-              )
-          Right False -> pure (Right ())
-          Right True ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLeftoverDnsBootstrapRecords"
-                    , errorSummaryLine =
-                        "Bootstrap DNS A record still exists in the operator's Route 53 zone."
-                    , errorOffendingItems =
-                        [
-                          ( "test.resolvefintech.com"
-                          , "aws route53 change-resource-record-sets --change-batch DELETE …"
-                          )
-                        ]
-                    , errorNarrative =
-                        unlines
-                          [ "Refused: the bootstrap A record `test.resolvefintech.com` still"
-                          , "exists in the operator's Route 53 hosted zone."
-                          , ""
-                          , "Run `prodbox cluster delete --cascade` (which removes it) before"
-                          , "the next reprovision, or delete it manually via:"
-                          , ""
-                          , "  aws route53 change-resource-record-sets \\"
-                          , "    --hosted-zone-id <ZONE_ID> \\"
-                          , "    --change-batch <DELETE-A-record JSON>"
                           ]
                     }
               )

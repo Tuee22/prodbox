@@ -1,0 +1,59 @@
+{{- /*
+The standing metadata-only Agent may create/observe and UID-precondition-delete
+only namespaced one-shot Jobs/Pods and attach stdin to their sole container.
+It receives no Secret or ConfigMap verbs.  Target plaintext therefore crosses
+Kubernetes only on the already-attested pods/attach stream.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prodbox-target-secret-worker-controller
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["prodbox-target-secret-worker"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create", "get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["target-secret-agent"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prodbox-target-secret-worker-controller
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.global.namespace }}
+  # The two secret-bearing ingress Jobs attach their payload directly to this
+  # namespace's independently attested worker; neither calls a standing
+  # plaintext Target HTTP route.
+  - kind: ServiceAccount
+    name: prodbox-credential-provisioner
+    namespace: credential-provisioner
+  - kind: ServiceAccount
+    name: prodbox-external-material-ingress
+    namespace: credential-provisioner
+  - kind: ServiceAccount
+    name: prodbox-lifecycle-authority
+    namespace: lifecycle-authority
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prodbox-target-secret-worker-controller

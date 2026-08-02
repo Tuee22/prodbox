@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Secret-safe values shared by the pure Bootstrap Broker custody models.
 --
@@ -58,18 +61,23 @@ module Prodbox.Bootstrap.Broker.Types
   , SealedRecoveryRecipientPrivateKey
   , mkSealedRecoveryRecipientPrivateKey
   , sealedRecoveryRecipientPrivateKeyBytes
+  , sealedRecoveryRecipientPrivateKeyCiphertext
   , PgpEncryptedShare
   , mkPgpEncryptedShare
   , pgpEncryptedShareBytes
+  , pgpEncryptedShareCiphertext
   , BurnTokenCiphertext
   , mkBurnTokenCiphertext
   , burnTokenCiphertextBytes
+  , burnTokenCiphertextValue
   , RecoveredUnsealShare
   , mkRecoveredUnsealShare
   , recoveredUnsealShareBytes
+  , withRecoveredUnsealShareBytes
   , PasswordAeadCiphertext
   , mkPasswordAeadCiphertext
   , passwordAeadCiphertextBytes
+  , passwordAeadCiphertextValue
   , EncryptedChildRecoveryPayload
   , mkEncryptedChildRecoveryPayload
   , encryptedChildRecoveryPayloadBytes
@@ -142,6 +150,7 @@ module Prodbox.Bootstrap.Broker.Types
   , PristineResetProof
   , mkPristineResetProof
   , resetAmbiguousBinding
+  , resetAmbiguity
   , resetReplacementPristine
 
     -- * Baseline and handoff evidence
@@ -166,6 +175,14 @@ module Prodbox.Bootstrap.Broker.Types
   , provisionerLoginStorageGeneration
   , provisionerLoginAccessor
   , provisionerLoginLeaseSeconds
+  , ProvisionerAccessorInventory
+  , mkProvisionerAccessorInventory
+  , provisionerAccessorInventoryGeneration
+  , provisionerAccessorInventoryAccessors
+  , ProvisionerAccessorAbsenceAttestation
+  , mkProvisionerAccessorAbsenceAttestation
+  , provisionerAccessorAbsenceInventory
+  , provisionerAccessorAbsenceObservationDigest
   , PostUnsealConsumer (..)
   , PostUnsealHandoffReceipt
   , mkPostUnsealHandoffReceipt
@@ -196,6 +213,7 @@ module Prodbox.Bootstrap.Broker.Types
   )
 where
 
+import Codec.Serialise (Serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -205,6 +223,7 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 
@@ -234,6 +253,7 @@ data BootstrapValueError
   | BootstrapCustodyGenerationMustBePositive
   | BootstrapAccessorInventoryTooLarge !Natural !Natural
   | BootstrapAccessorInventoryDuplicate !RootPolicyAccessor
+  | BootstrapProvisionerAccessorInventoryDuplicate !ProvisionerAccessor
   | BootstrapBaselineTargetsIncomplete ![BaselineTarget]
   | BootstrapProvisionerLeaseMustBePositive
   | BootstrapProvisionerLeaseTooLong !Natural !Natural
@@ -429,6 +449,11 @@ sealedRecoveryRecipientPrivateKeyBytes
 sealedRecoveryRecipientPrivateKeyBytes (SealedRecoveryRecipientPrivateKey secret) =
   opaqueSecretLength secret
 
+sealedRecoveryRecipientPrivateKeyCiphertext
+  :: SealedRecoveryRecipientPrivateKey -> ByteString
+sealedRecoveryRecipientPrivateKeyCiphertext
+  (SealedRecoveryRecipientPrivateKey (OpaqueSecret bytes)) = bytes
+
 newtype PgpEncryptedShare = PgpEncryptedShare OpaqueSecret
   deriving stock (Eq)
 
@@ -442,6 +467,9 @@ mkPgpEncryptedShare bytes =
 
 pgpEncryptedShareBytes :: PgpEncryptedShare -> Natural
 pgpEncryptedShareBytes (PgpEncryptedShare secret) = opaqueSecretLength secret
+
+pgpEncryptedShareCiphertext :: PgpEncryptedShare -> ByteString
+pgpEncryptedShareCiphertext (PgpEncryptedShare (OpaqueSecret bytes)) = bytes
 
 newtype BurnTokenCiphertext = BurnTokenCiphertext OpaqueSecret
   deriving stock (Eq)
@@ -458,6 +486,9 @@ mkBurnTokenCiphertext bytes =
 burnTokenCiphertextBytes :: BurnTokenCiphertext -> Natural
 burnTokenCiphertextBytes (BurnTokenCiphertext secret) = opaqueSecretLength secret
 
+burnTokenCiphertextValue :: BurnTokenCiphertext -> ByteString
+burnTokenCiphertextValue (BurnTokenCiphertext (OpaqueSecret bytes)) = bytes
+
 newtype RecoveredUnsealShare = RecoveredUnsealShare OpaqueSecret
   deriving stock (Eq)
 
@@ -473,6 +504,14 @@ mkRecoveredUnsealShare bytes =
 recoveredUnsealShareBytes :: RecoveredUnsealShare -> Natural
 recoveredUnsealShareBytes (RecoveredUnsealShare secret) = opaqueSecretLength secret
 
+-- | Trusted one-shot crypto interpreters may inspect a recovered share only
+-- under a callback; no plaintext projection can be retained in a Broker
+-- model value.
+withRecoveredUnsealShareBytes
+  :: RecoveredUnsealShare -> (ByteString -> result) -> result
+withRecoveredUnsealShareBytes (RecoveredUnsealShare (OpaqueSecret bytes)) use =
+  use bytes
+
 newtype PasswordAeadCiphertext = PasswordAeadCiphertext OpaqueSecret
   deriving stock (Eq)
 
@@ -487,6 +526,9 @@ mkPasswordAeadCiphertext bytes =
 
 passwordAeadCiphertextBytes :: PasswordAeadCiphertext -> Natural
 passwordAeadCiphertextBytes (PasswordAeadCiphertext secret) = opaqueSecretLength secret
+
+passwordAeadCiphertextValue :: PasswordAeadCiphertext -> ByteString
+passwordAeadCiphertextValue (PasswordAeadCiphertext (OpaqueSecret bytes)) = bytes
 
 newtype EncryptedChildRecoveryPayload
   = EncryptedChildRecoveryPayload OpaqueSecret
@@ -957,7 +999,7 @@ mkBaselineStateAbsence = BaselineStateAbsence
 -- command from being represented.
 data PristineResetProof
   = PristineResetProof
-      !RootInitBinding
+      !InitAmbiguity
       !PristineStorageProof
       !EstablishedStateAbsence
       !DurableInitResponseAbsence
@@ -981,7 +1023,7 @@ mkPristineResetProof ambiguity replacement establishedAbsence responseAbsence ba
       requireResetAbsenceBinding "baseline state" ambiguousBinding baselineBinding
       Right
         ( PristineResetProof
-            ambiguousBinding
+            ambiguity
             replacement
             establishedAbsence
             responseAbsence
@@ -994,7 +1036,11 @@ mkPristineResetProof ambiguity replacement establishedAbsence responseAbsence ba
   BaselineStateAbsence baselineBinding _ = baselineAbsence
 
 resetAmbiguousBinding :: PristineResetProof -> RootInitBinding
-resetAmbiguousBinding (PristineResetProof binding _ _ _ _) = binding
+resetAmbiguousBinding (PristineResetProof ambiguity _ _ _ _) =
+  ambiguousInitBinding ambiguity
+
+resetAmbiguity :: PristineResetProof -> InitAmbiguity
+resetAmbiguity (PristineResetProof ambiguity _ _ _ _) = ambiguity
 
 resetReplacementPristine :: PristineResetProof -> PristineStorageProof
 resetReplacementPristine (PristineResetProof _ replacement _ _ _) = replacement
@@ -1008,6 +1054,8 @@ data BaselineTarget
   | BaselineKubernetesAuthMethod
   | BaselineBootstrapProvisionerPolicy
   | BaselineBootstrapProvisionerRole
+  | BaselineBootstrapPkiOperatorPolicy
+  | BaselineBootstrapPkiOperatorRole
   | BaselineTokenAccessorAuditorPolicy
   | BaselineTokenAccessorAuditorRole
   | BaselineAuthorityGenesisSigningKey
@@ -1138,6 +1186,61 @@ provisionerLoginAccessor (ProvisionerLoginReceipt _ accessor _) = accessor
 
 provisionerLoginLeaseSeconds :: ProvisionerLoginReceipt -> Natural
 provisionerLoginLeaseSeconds (ProvisionerLoginReceipt _ _ leaseSeconds) = leaseSeconds
+
+-- | Canonical server-issued accessors belonging to the narrow bootstrap
+-- provisioner policy.  The inventory is secret-free and safe to journal.
+data ProvisionerAccessorInventory
+  = ProvisionerAccessorInventory
+      !VaultStorageGeneration
+      ![ProvisionerAccessor]
+  deriving stock (Eq, Show)
+
+mkProvisionerAccessorInventory
+  :: VaultStorageGeneration
+  -> [ProvisionerAccessor]
+  -> Either BootstrapValueError ProvisionerAccessorInventory
+mkProvisionerAccessorInventory generation accessors
+  | actual > maximumAccessors =
+      Left (BootstrapAccessorInventoryTooLarge actual maximumAccessors)
+  | otherwise =
+      case firstDuplicate accessors of
+        Just duplicate ->
+          Left (BootstrapProvisionerAccessorInventoryDuplicate duplicate)
+        Nothing -> Right (ProvisionerAccessorInventory generation (sort accessors))
+ where
+  actual = fromIntegral (length accessors)
+  maximumAccessors = 64
+
+provisionerAccessorInventoryGeneration
+  :: ProvisionerAccessorInventory -> VaultStorageGeneration
+provisionerAccessorInventoryGeneration (ProvisionerAccessorInventory generation _) = generation
+
+provisionerAccessorInventoryAccessors
+  :: ProvisionerAccessorInventory -> [ProvisionerAccessor]
+provisionerAccessorInventoryAccessors (ProvisionerAccessorInventory _ accessors) = accessors
+
+-- | Batch-auditor evidence that every provisioner accessor in the exact
+-- target inventory is absent and that a policy-wide re-inventory observed no
+-- remaining provisioner sessions.
+data ProvisionerAccessorAbsenceAttestation
+  = ProvisionerAccessorAbsenceAttestation
+      !ProvisionerAccessorInventory
+      !ArtifactDigest
+  deriving stock (Eq, Show)
+
+mkProvisionerAccessorAbsenceAttestation
+  :: ProvisionerAccessorInventory
+  -> ArtifactDigest
+  -> ProvisionerAccessorAbsenceAttestation
+mkProvisionerAccessorAbsenceAttestation = ProvisionerAccessorAbsenceAttestation
+
+provisionerAccessorAbsenceInventory
+  :: ProvisionerAccessorAbsenceAttestation -> ProvisionerAccessorInventory
+provisionerAccessorAbsenceInventory (ProvisionerAccessorAbsenceAttestation inventory _) = inventory
+
+provisionerAccessorAbsenceObservationDigest
+  :: ProvisionerAccessorAbsenceAttestation -> ArtifactDigest
+provisionerAccessorAbsenceObservationDigest (ProvisionerAccessorAbsenceAttestation _ digest) = digest
 
 -- | The broker may observe this consumer accepting the handoff; it never
 -- receives an authority-writer constructor or permit.
@@ -1367,6 +1470,110 @@ data ChildRecoveryRepairReceipt = ChildRecoveryRepairReceipt
   , childRecoveryRepairReadBackDigest :: !ArtifactDigest
   }
   deriving stock (Eq, Show)
+
+-- Durable Broker values use one canonical CBOR representation at the fixed
+-- bootstrap-store boundary.  These instances deliberately stop at durable
+-- values: permits and executable capability GADTs are not serializable.
+deriving stock instance Generic BootstrapTransactionId
+deriving anyclass instance Serialise BootstrapTransactionId
+deriving stock instance Generic VaultStorageGeneration
+deriving anyclass instance Serialise VaultStorageGeneration
+deriving stock instance Generic StoreVersion
+deriving anyclass instance Serialise StoreVersion
+deriving stock instance Generic BootstrapSchemaVersion
+deriving anyclass instance Serialise BootstrapSchemaVersion
+deriving stock instance Generic ArtifactDigest
+deriving anyclass instance Serialise ArtifactDigest
+deriving stock instance Generic RecoveryRecipientFingerprint
+deriving anyclass instance Serialise RecoveryRecipientFingerprint
+deriving stock instance Generic BurnRecipientFingerprint
+deriving anyclass instance Serialise BurnRecipientFingerprint
+deriving stock instance Generic RootSessionId
+deriving anyclass instance Serialise RootSessionId
+deriving stock instance Generic RootPolicyAccessor
+deriving anyclass instance Serialise RootPolicyAccessor
+deriving stock instance Generic ProvisionerAccessor
+deriving anyclass instance Serialise ProvisionerAccessor
+deriving stock instance Generic ChildId
+deriving anyclass instance Serialise ChildId
+deriving stock instance Generic CustodyGeneration
+deriving anyclass instance Serialise CustodyGeneration
+deriving stock instance Generic DeliveryNonce
+deriving anyclass instance Serialise DeliveryNonce
+deriving stock instance Generic ChildAttestation
+deriving anyclass instance Serialise ChildAttestation
+deriving stock instance Generic OpaqueSecret
+deriving anyclass instance Serialise OpaqueSecret
+deriving stock instance Generic SealedRecoveryRecipientPrivateKey
+deriving anyclass instance Serialise SealedRecoveryRecipientPrivateKey
+deriving stock instance Generic PgpEncryptedShare
+deriving anyclass instance Serialise PgpEncryptedShare
+deriving stock instance Generic BurnTokenCiphertext
+deriving anyclass instance Serialise BurnTokenCiphertext
+deriving stock instance Generic RecoveredUnsealShare
+deriving anyclass instance Serialise RecoveredUnsealShare
+deriving stock instance Generic PasswordAeadCiphertext
+deriving anyclass instance Serialise PasswordAeadCiphertext
+deriving stock instance Generic EncryptedChildRecoveryPayload
+deriving anyclass instance Serialise EncryptedChildRecoveryPayload
+deriving stock instance Generic RootInitBinding
+deriving anyclass instance Serialise RootInitBinding
+deriving stock instance Generic PristineStorageProof
+deriving anyclass instance Serialise PristineStorageProof
+deriving stock instance Generic InitRecipientCommitment
+deriving anyclass instance Serialise InitRecipientCommitment
+deriving stock instance Generic PreparedInitEnvelope
+deriving anyclass instance Serialise PreparedInitEnvelope
+deriving stock instance Generic EncryptedInitResponseReceipt
+deriving anyclass instance Serialise EncryptedInitResponseReceipt
+deriving stock instance Generic FinalUnlockBundlePayload
+deriving anyclass instance Serialise FinalUnlockBundlePayload
+deriving stock instance Generic FinalUnlockBundle
+deriving anyclass instance Serialise FinalUnlockBundle
+deriving stock instance Generic RecoveryCustodyReceipt
+deriving anyclass instance Serialise RecoveryCustodyReceipt
+deriving stock instance Generic InitAmbiguity
+deriving anyclass instance Serialise InitAmbiguity
+deriving stock instance Generic EstablishedStateAbsence
+deriving anyclass instance Serialise EstablishedStateAbsence
+deriving stock instance Generic DurableInitResponseAbsence
+deriving anyclass instance Serialise DurableInitResponseAbsence
+deriving stock instance Generic BaselineStateAbsence
+deriving anyclass instance Serialise BaselineStateAbsence
+deriving stock instance Generic PristineResetProof
+deriving anyclass instance Serialise PristineResetProof
+deriving stock instance Generic BaselineTarget
+deriving anyclass instance Serialise BaselineTarget
+deriving stock instance Generic RootAccessorInventory
+deriving anyclass instance Serialise RootAccessorInventory
+deriving stock instance Generic AccessorAbsenceAttestation
+deriving anyclass instance Serialise AccessorAbsenceAttestation
+deriving stock instance Generic BaselineReadBackReceipt
+deriving anyclass instance Serialise BaselineReadBackReceipt
+deriving stock instance Generic ProvisionerLoginReceipt
+deriving anyclass instance Serialise ProvisionerLoginReceipt
+deriving stock instance Generic ProvisionerAccessorInventory
+deriving anyclass instance Serialise ProvisionerAccessorInventory
+deriving stock instance Generic ProvisionerAccessorAbsenceAttestation
+deriving anyclass instance Serialise ProvisionerAccessorAbsenceAttestation
+deriving stock instance Generic PostUnsealConsumer
+deriving anyclass instance Serialise PostUnsealConsumer
+deriving stock instance Generic PostUnsealHandoffReceipt
+deriving anyclass instance Serialise PostUnsealHandoffReceipt
+deriving stock instance Generic ChildCustodyBinding
+deriving anyclass instance Serialise ChildCustodyBinding
+deriving stock instance Generic ChildEncryptedReceipt
+deriving anyclass instance Serialise ChildEncryptedReceipt
+deriving stock instance Generic ParentCustodyAcknowledgement
+deriving anyclass instance Serialise ParentCustodyAcknowledgement
+deriving stock instance Generic ChildRecoveryDelivery
+deriving anyclass instance Serialise ChildRecoveryDelivery
+deriving stock instance Generic ChildRecoveryConsumptionStatus
+deriving anyclass instance Serialise ChildRecoveryConsumptionStatus
+deriving stock instance Generic ChildRecoveryConsumptionObservation
+deriving anyclass instance Serialise ChildRecoveryConsumptionObservation
+deriving stock instance Generic ChildRecoveryRepairReceipt
+deriving anyclass instance Serialise ChildRecoveryRepairReceipt
 
 mkChildRecoveryRepairReceipt
   :: ChildRecoveryDelivery

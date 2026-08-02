@@ -49,6 +49,8 @@ module Prodbox.Capacity.MeasuredProfile
   , recordMeasuredProfile
   , renderMeasuredProfileRecorderRefusal
   , renderMeasuredResourceProfileDhall
+  , MeasuredProfileSample (..)
+  , aggregateMeasuredProfileSamples
   )
 where
 
@@ -56,7 +58,7 @@ import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (toLower)
-import Data.List (find, sort)
+import Data.List (find, sort, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Dhall qualified
@@ -335,7 +337,109 @@ data MeasuredProfileRecorderRefusal
     RecorderWindowTooShort Natural Natural
   | -- | Too few samples were collected over the window (actual, required).
     RecorderTooFewSamples Natural Natural
+  | RecorderSamplesNotMonotonic
+  | RecorderCounterRegressed
   deriving (Eq, Show)
+
+-- | One cumulative live observation. The interpreter reads the counters from
+-- the gateway Pod's cgroup and metrics endpoint. There are deliberately no
+-- authored request or limit values on this evidence surface.
+data MeasuredProfileSample = MeasuredProfileSample
+  { sampleObservedAtNanoseconds :: Natural
+  , sampleCpuUsageNanoseconds :: Natural
+  , sampleCfsPeriods :: Natural
+  , sampleCfsThrottledPeriods :: Natural
+  , sampleRssBytes :: Natural
+  , sampleHeapBytes :: Natural
+  , sampleObjectStoreOpMillis :: Natural
+  }
+  deriving stock (Eq, Show)
+
+data SampleInterval = SampleInterval
+  { intervalCpuMillicores :: Natural
+  , intervalCfsPeriods :: Natural
+  , intervalCfsThrottledPeriods :: Natural
+  }
+
+-- | Aggregate ordered cumulative observations. Counter regression is a
+-- fail-closed Pod-replacement/incomplete-observation signal, never a value to
+-- smooth into a profile.
+aggregateMeasuredProfileSamples
+  :: Text
+  -> Natural
+  -> Text
+  -> Bool
+  -> [MeasuredProfileSample]
+  -> Either MeasuredProfileRecorderRefusal MeasuredResourceProfile
+aggregateMeasuredProfileSamples profileId recordedAt digest healthy samples = do
+  ordered <- orderedSamples samples
+  intervals <- traverse toInterval (adjacent ordered)
+  (firstSample, lastSample) <- case (ordered, reverse ordered) of
+    (first : _, lastObserved : _) -> Right (first, lastObserved)
+    _ -> Left (RecorderTooFewSamples 0 recorderMinimumSampleCount)
+  let
+    windowSeconds =
+      (sampleObservedAtNanoseconds lastSample - sampleObservedAtNanoseconds firstSample)
+        `div` 1000000000
+    cpuMillis = sort (map intervalCpuMillicores intervals)
+    totalPeriods = sum (map intervalCfsPeriods intervals)
+    totalThrottled = sum (map intervalCfsThrottledPeriods intervals)
+    throttlePpm =
+      if totalPeriods == 0
+        then 0
+        else (totalThrottled * 1000000) `div` totalPeriods
+    bytesToMib bytes = ceilDiv bytes (1024 * 1024)
+  recordMeasuredProfile
+    MeasuredProfileRecorderInput
+      { recorderProfileId = profileId
+      , recorderRecordedAt = recordedAt
+      , recorderHotPathDigest = digest
+      , recorderRunHealthy = healthy
+      , recorderSampleWindowSeconds = windowSeconds
+      , recorderSampleCount = fromIntegral (length samples)
+      , recorderCpuP95Milli = percentile 95 cpuMillis
+      , recorderCpuP99Milli = percentile 99 cpuMillis
+      , recorderThrottledPeriodsPpm = throttlePpm
+      , recorderRssHighWaterMib = maximum (map (bytesToMib . sampleRssBytes) ordered)
+      , recorderHeapHighWaterBytes = maximum (map sampleHeapBytes ordered)
+      , recorderObjectStoreOpP99Millis =
+          percentile 99 (sort (map sampleObjectStoreOpMillis ordered))
+      }
+ where
+  toInterval (before, after)
+    | sampleCpuUsageNanoseconds after < sampleCpuUsageNanoseconds before = Left RecorderCounterRegressed
+    | sampleCfsPeriods after < sampleCfsPeriods before = Left RecorderCounterRegressed
+    | sampleCfsThrottledPeriods after < sampleCfsThrottledPeriods before = Left RecorderCounterRegressed
+    | otherwise =
+        let elapsed = sampleObservedAtNanoseconds after - sampleObservedAtNanoseconds before
+         in Right
+              SampleInterval
+                { intervalCpuMillicores =
+                    ((sampleCpuUsageNanoseconds after - sampleCpuUsageNanoseconds before) * 1000)
+                      `div` elapsed
+                , intervalCfsPeriods = sampleCfsPeriods after - sampleCfsPeriods before
+                , intervalCfsThrottledPeriods =
+                    sampleCfsThrottledPeriods after - sampleCfsThrottledPeriods before
+                }
+
+orderedSamples
+  :: [MeasuredProfileSample]
+  -> Either MeasuredProfileRecorderRefusal [MeasuredProfileSample]
+orderedSamples samples
+  | length samples < 2 =
+      Left (RecorderTooFewSamples (fromIntegral (length samples)) recorderMinimumSampleCount)
+  | samples /= sortOn sampleObservedAtNanoseconds samples = Left RecorderSamplesNotMonotonic
+  | any (uncurry (>=)) (adjacent (map sampleObservedAtNanoseconds samples)) =
+      Left RecorderSamplesNotMonotonic
+  | otherwise = Right samples
+
+adjacent :: [a] -> [(a, a)]
+adjacent values = zip values (drop 1 values)
+
+percentile :: Natural -> [Natural] -> Natural
+percentile _ [] = 0
+percentile rank values =
+  values !! fromIntegral (ceilDiv (rank * fromIntegral (length values)) 100 - 1)
 
 -- | Sprint 5.21: the pure recorder gate. A profile is committed ONLY from a
 -- healthy run with at least a 'recorderMinimumWindowSeconds' steady window; an
@@ -392,6 +496,10 @@ renderMeasuredProfileRecorderRefusal refusal = case refusal of
       ++ " samples were collected, fewer than the required "
       ++ show required
       ++ " minimum."
+  RecorderSamplesNotMonotonic ->
+    "measured-profile recorder refused: sample timestamps are not strictly increasing."
+  RecorderCounterRegressed ->
+    "measured-profile recorder refused: a cumulative runtime counter regressed; the Pod was replaced or the observation is incomplete."
 
 -- | Sprint 5.21: render a committed profile as the Dhall record literal the
 -- @dhall/capacity/measured/@ artifact home holds. It round-trips through the

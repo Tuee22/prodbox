@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 
@@ -58,7 +60,9 @@ module Prodbox.ControlPlane.AuthorityClock
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Text (Text)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Deadline
   ( Deadline
@@ -181,7 +185,8 @@ recordTrustedInstant hw = \case
 -- restart: reload is the identity, and downtime is charged against the same
 -- absolute instant. Constructor unexported.
 newtype OperationDeadline = OperationDeadline AuthorityInstant
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | Derive the operation deadline once, when the operation is accepted:
 -- @acceptedAt + budget@.

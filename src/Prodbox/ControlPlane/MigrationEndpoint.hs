@@ -17,6 +17,7 @@
 module Prodbox.ControlPlane.MigrationEndpoint
   ( MigrationEndpointResult (..)
   , serveMigrationApply
+  , serveAuthorityMigrationApply
   , migrationEndpointHttpStatus
   , migrationEndpointSummary
   )
@@ -24,6 +25,19 @@ where
 
 import Data.ByteString.Lazy (ByteString)
 import Data.Text (Text)
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+  ( AuthorityAdmissionRepository (..)
+  , AuthorityAdmissionSnapshot (authorityAdmissionSnapshotState)
+  , AuthorityTransitionResult (..)
+  , serveAuthorityTransition
+  )
+import Prodbox.Lifecycle.Authority.Admission
+  ( AuthorityAdmissionCommand (ApplyAuthorityMigration)
+  , AuthorityAdmissionCommandRefusal
+  , AuthorityAdmissionDecision (..)
+  , AuthorityMigrationMode (..)
+  , authorityAggregateMigration
+  )
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationCodecError (..)
   , MigrationDecision (..)
@@ -60,6 +74,12 @@ data MigrationEndpointResult
   | -- | A concurrent writer won the compare-and-swap; the caller must re-observe
     -- and retry.
     MigrationEndpointConcurrentWrite
+  | -- | The aggregate-level genesis, repair, or migration gate refused this
+    -- otherwise well-formed command.
+    MigrationEndpointAdmissionRefused !AuthorityAdmissionCommandRefusal
+  | -- | The aggregate transition could not be projected onto a
+    -- migration-controlled retained state.
+    MigrationEndpointAggregateMismatch
   deriving stock (Eq, Show)
 
 -- | Serve one migration-apply request against an injected retained repository.
@@ -83,6 +103,44 @@ serveMigrationApply maximumBytes repository body =
         Left (MigrationWriteFailed detail) -> MigrationEndpointWriteFailed detail
         Left MigrationConcurrentWrite -> MigrationEndpointConcurrentWrite
 
+-- | Apply through the same exact-revision aggregate that gates and appends
+-- submissions.  Successful transitions are re-observed and projected back to
+-- the legacy endpoint result; a clean-install or unrelated decision at that
+-- point is an Authority invariant failure.
+serveAuthorityMigrationApply
+  :: (Monad m)
+  => Int
+  -> AuthorityAdmissionRepository m revision
+  -> ByteString
+  -> m MigrationEndpointResult
+serveAuthorityMigrationApply maximumBytes repository body =
+  case decodeMigrationCommand maximumBytes body of
+    Left err -> pure (MigrationEndpointBadRequest err)
+    Right command -> do
+      transitioned <-
+        serveAuthorityTransition repository (ApplyAuthorityMigration command)
+      case transitioned of
+        AuthorityTransitionBadRequest _ -> pure MigrationEndpointAggregateMismatch
+        AuthorityTransitionReadFailed detail -> pure (MigrationEndpointReadFailed detail)
+        AuthorityTransitionWriteFailed detail -> pure (MigrationEndpointWriteFailed detail)
+        AuthorityTransitionDecided decision -> case decision of
+          AuthorityAdmissionCommandRefused refusal ->
+            pure (MigrationEndpointAdmissionRefused refusal)
+          AuthorityMigrationDecided migrationDecision -> do
+            observed <- readAuthorityAdmission repository
+            pure $ case observed of
+              Left detail -> MigrationEndpointReadFailed detail
+              Right snapshot ->
+                case authorityAggregateMigration (authorityAdmissionSnapshotState snapshot) of
+                  AuthorityMigrationControlled state ->
+                    MigrationEndpointApplied
+                      MigrationApplyResult
+                        { appliedMigrationState = state
+                        , appliedMigrationDecision = migrationDecision
+                        }
+                  AuthorityCleanInstall -> MigrationEndpointAggregateMismatch
+          _ -> pure MigrationEndpointAggregateMismatch
+
 -- | Total projection onto an HTTP status code.  A refused-but-well-formed
 -- command and a lost CAS race are both @409 Conflict@ (retry after re-observing);
 -- an unobservable read or a failed write is @503@ (transient, no state change); a
@@ -99,6 +157,8 @@ migrationEndpointHttpStatus result = case result of
   MigrationEndpointDecodeFailed _ -> 500
   MigrationEndpointWriteFailed _ -> 503
   MigrationEndpointConcurrentWrite -> 409
+  MigrationEndpointAdmissionRefused _ -> 409
+  MigrationEndpointAggregateMismatch -> 500
 
 -- | Stable single-line diagnostic body.  Kebab-case tokens keep the response
 -- machine-greppable without serialising the hidden migration events.
@@ -113,6 +173,8 @@ migrationEndpointSummary result = case result of
   MigrationEndpointDecodeFailed err -> "migration-state-corrupt:" <> codecToken err
   MigrationEndpointWriteFailed _ -> "migration-write-failed"
   MigrationEndpointConcurrentWrite -> "migration-concurrent-write"
+  MigrationEndpointAdmissionRefused _ -> "migration-admission-refused"
+  MigrationEndpointAggregateMismatch -> "migration-aggregate-mismatch"
 
 codecToken :: MigrationCodecError -> Text
 codecToken err = case err of

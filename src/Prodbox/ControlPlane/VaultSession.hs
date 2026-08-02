@@ -13,6 +13,8 @@ module Prodbox.ControlPlane.VaultSession
   , controlPlaneVaultAuthPath
   , controlPlaneVaultRole
   , controlPlaneVaultTokenFile
+  , readControlPlaneProjectedJwt
+  , readProjectedServiceAccountJwt
   , newControlPlaneVaultSession
   )
 where
@@ -119,6 +121,18 @@ controlPlaneVaultRole = internalControlPlaneVaultRole
 
 controlPlaneVaultTokenFile :: ControlPlaneVaultConfig -> FilePath
 controlPlaneVaultTokenFile = internalControlPlaneVaultTokenFile
+
+readControlPlaneProjectedJwt
+  :: ControlPlaneVaultConfig -> IO (Either Text Text)
+readControlPlaneProjectedJwt config =
+  readProjectedServiceAccountJwt (controlPlaneVaultTokenFile config)
+
+-- | Read one explicitly selected projected identity.  Callers that need a
+-- second, narrower Vault role must not accidentally reuse the standing
+-- runtime token named by 'ControlPlaneVaultConfig'.
+readProjectedServiceAccountJwt :: FilePath -> IO (Either Text Text)
+readProjectedServiceAccountJwt tokenFile =
+  fmap (either (Left . Text.pack) Right) (readProjectedJwt tokenFile)
 
 newControlPlaneVaultSession
   :: ControlPlaneVaultConfig -> IO VaultSession

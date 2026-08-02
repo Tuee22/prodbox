@@ -182,6 +182,16 @@ chartVaultSecretConsumers =
   , keycloakRuntimeConsumer "keycloak-runtime" "keycloak" "keycloak"
   , keycloakRuntimeConsumer "vscode-keycloak-runtime" "vscode-keycloak" "vscode"
   , VaultSecretConsumer
+      { vaultSecretConsumerName = "oidc-session-validation"
+      , vaultSecretConsumerPolicyName = "oidc-session-validation"
+      , vaultSecretConsumerRoleName = "oidc-session-validation"
+      , vaultSecretConsumerNamespaces = ["vscode"]
+      , vaultSecretConsumerServiceAccounts = ["oidc-session-validation-agent"]
+      , vaultSecretConsumerKvPaths =
+          [VaultSecretPath "secret" "vscode/oidc/demo-user"]
+      , vaultSecretConsumerTtl = "15m"
+      }
+  , VaultSecretConsumer
       { vaultSecretConsumerName = "vscode-oidc"
       , vaultSecretConsumerPolicyName = "vscode-oidc"
       , vaultSecretConsumerRoleName = "vscode-oidc"
@@ -190,6 +200,16 @@ chartVaultSecretConsumers =
       , vaultSecretConsumerKvPaths =
           [VaultSecretPath "secret" "vscode/oidc/vscode"]
       , vaultSecretConsumerTtl = "1h"
+      }
+  , VaultSecretConsumer
+      { vaultSecretConsumerName = "minio-admin-oidc"
+      , vaultSecretConsumerPolicyName = "minio-admin-oidc"
+      , vaultSecretConsumerRoleName = "minio-admin-oidc"
+      , vaultSecretConsumerNamespaces = ["prodbox"]
+      , vaultSecretConsumerServiceAccounts = ["minio-admin-oidc-materializer"]
+      , vaultSecretConsumerKvPaths =
+          [VaultSecretPath "secret" "vscode/oidc/vscode"]
+      , vaultSecretConsumerTtl = "15m"
       }
   , VaultSecretConsumer
       { vaultSecretConsumerName = "api-oidc"
@@ -230,7 +250,7 @@ chartVaultSecretConsumers =
           [ VaultSecretPath "secret" "gateway/gateway/node-a/event-key"
           , VaultSecretPath "secret" "gateway/gateway/node-b/event-key"
           , VaultSecretPath "secret" "gateway/gateway/node-c/event-key"
-          , VaultSecretPath "secret" "gateway/gateway/aws"
+          , VaultSecretPath "secret" "aws/gateway-dns"
           , VaultSecretPath "secret" "gateway/gateway/minio"
           ]
       , vaultSecretConsumerTtl = "1h"
@@ -244,6 +264,7 @@ chartVaultSecretConsumers =
       , vaultSecretConsumerKvPaths =
           [ VaultSecretPath "secret" "minio/root"
           , VaultSecretPath "secret" "gateway/gateway/minio"
+          , VaultSecretPath "secret" "minio/lifecycle-authority"
           ]
       , vaultSecretConsumerTtl = "1h"
       }
@@ -269,6 +290,29 @@ chartVaultSecretConsumers =
       , vaultSecretConsumerNamespaces = ["cert-manager"]
       , vaultSecretConsumerServiceAccounts = ["acme-eab-secret-materializer"]
       , vaultSecretConsumerKvPaths = [VaultSecretPath "secret" "acme/eab"]
+      , vaultSecretConsumerTtl = "1h"
+      }
+  , -- Home cert-manager has a distinct LongLived Route 53 identity. The AWS
+    -- run-scoped counterpart below is bound to a different target ServiceAccount.
+    VaultSecretConsumer
+      { vaultSecretConsumerName = "cert-manager-home-dns01"
+      , vaultSecretConsumerPolicyName = "aws-cert-manager-home"
+      , vaultSecretConsumerRoleName = "aws-cert-manager-home"
+      , vaultSecretConsumerNamespaces = ["cert-manager"]
+      , vaultSecretConsumerServiceAccounts = ["home-dns01-secret-materializer"]
+      , vaultSecretConsumerKvPaths =
+          [VaultSecretPath "secret" "aws/cert-manager/home/dns01"]
+      , vaultSecretConsumerTtl = "1h"
+      }
+  , -- EKS-only target projection. The role cannot read the home DNS identity.
+    VaultSecretConsumer
+      { vaultSecretConsumerName = "cert-manager-aws-dns01"
+      , vaultSecretConsumerPolicyName = "aws-cert-manager-run"
+      , vaultSecretConsumerRoleName = "aws-cert-manager-run"
+      , vaultSecretConsumerNamespaces = ["cert-manager"]
+      , vaultSecretConsumerServiceAccounts = ["aws-dns01-target-materializer"]
+      , vaultSecretConsumerKvPaths =
+          [VaultSecretPath "secret" "aws/cert-manager/aws/dns01"]
       , vaultSecretConsumerTtl = "1h"
       }
   ]
@@ -306,19 +350,52 @@ chartVaultSecretObjects =
           "secret"
           "gateway/gateway/node-c/event-key"
           [generatedField "key" "gateway-event-key"]
+      , -- The Credential Provisioner and Target Secret Agent own these
+        -- external fields.  Bootstrap declares their closed schemas but never
+        -- generates or substitutes credential bytes.
+        kvObject
+          "secret"
+          "aws/lifecycle-provider"
+          awsCredentialFields
       , kvObject
           "secret"
-          "gateway/gateway/aws"
-          [ externalField "access_key_id"
-          , externalField "secret_access_key"
-          , externalField "session_token"
-          , externalField "region"
-          ]
+          "aws/gateway-dns"
+          awsCredentialFields
+      , kvObject
+          "secret"
+          "aws/cert-manager/home/dns01"
+          awsCredentialFields
+      , -- Registered for the AWS-target projection. It is absent from the
+        -- home first-reconcile plan and from every home DNS01 read grant.
+        kvObject
+          "secret"
+          "aws/cert-manager/aws/dns01"
+          awsCredentialFields
+      , -- Sprint 4.50: long-lived IAM credentials scoped only to the
+        -- Authority Backup Adapter's compiled S3 prefixes. The AWS harness
+        -- authors these fields; bootstrap never synthesizes them.
+        kvObject
+          "secret"
+          "aws/authority-backup-store"
+          awsCredentialFields
+      , -- Sprint 4.50: a distinct long-lived IAM credential for the exact
+        -- canonical public-edge TLS retention prefixes. It is intentionally
+        -- not substitutable for the Authority Backup credential above.
+        kvObject
+          "secret"
+          "aws/tls-retention-store"
+          awsCredentialFields
       , kvObject
           "secret"
           "gateway/gateway/minio"
           [ staticField "minio_access_key" "prodbox-gateway"
           , generatedField "minio_secret_key" "gateway-minio-secret-key"
+          ]
+      , kvObject
+          "secret"
+          "minio/lifecycle-authority"
+          [ staticField "minio_access_key" "prodbox-lifecycle-authority"
+          , generatedField "minio_secret_key" "lifecycle-authority-minio-secret-key"
           ]
       , kvObject
           "secret"
@@ -343,6 +420,13 @@ chartVaultSecretObjects =
           "acme/eab"
           [externalField "key_id", externalField "hmac_key"]
       ]
+    ]
+ where
+  awsCredentialFields =
+    [ externalField "access_key_id"
+    , externalField "secret_access_key"
+    , externalField "session_token"
+    , externalField "region"
     ]
 
 chartVaultManagedSecretObjects :: [VaultSecretObjectSpec]
@@ -381,7 +465,9 @@ keycloakRuntimeConsumer name policyName namespace =
     , vaultSecretConsumerServiceAccounts = ["keycloak"]
     , vaultSecretConsumerKvPaths =
         [ VaultSecretPath "secret" (keycloakAdminPath namespace)
-        , VaultSecretPath "secret" (keycloakPostgresAppPath namespace "keycloak-postgres")
+        , VaultSecretPath
+            "secret"
+            (keycloakPostgresAppPath namespace "keycloak-postgres")
         , VaultSecretPath "secret" (namespace <> "/oidc/vscode")
         , VaultSecretPath "secret" (namespace <> "/oidc/prodbox-api")
         , VaultSecretPath "secret" (namespace <> "/oidc/prodbox-websocket")

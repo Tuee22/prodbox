@@ -37,12 +37,22 @@ lifecycleAuthorityGenesisSuite =
           authorityEpochGenesis
       admitsNormalOperations s3 `shouldBe` True
       establishedEpoch s3 `shouldBe` Just authorityEpochGenesis
+      s3
+        `shouldBe` BackupEstablished
+          authorityEpochGenesis
+          (TargetAgentGenerationReceipt "t1")
+          (BackupReceipt "b1")
 
     it "is order-independent: target-agent-then-backup also opens admission" $ do
       let (_, s1) = stepGenesis GenesisFrozen (BeginGenesisEstablishment samplePlan)
           (_, s2) = stepGenesis s1 (ObserveTargetAgentGeneration (TargetAgentGenerationReceipt "t1"))
           (_, s3) = stepGenesis s2 (ObserveBackupReceipt (BackupReceipt "b1"))
       admitsNormalOperations s3 `shouldBe` True
+      s3
+        `shouldBe` BackupEstablished
+          authorityEpochGenesis
+          (TargetAgentGenerationReceipt "t1")
+          (BackupReceipt "b1")
 
     it "refuses re-establishment with a different plan and is idempotent on the same plan" $ do
       let (_, s1) = stepGenesis GenesisFrozen (BeginGenesisEstablishment samplePlan)
@@ -52,7 +62,11 @@ lifecycleAuthorityGenesisSuite =
         `shouldBe` GenesisRefused GenesisPlanMismatch
 
     it "refuses every genesis command once admission is open" $ do
-      let established = BackupEstablished authorityEpochGenesis
+      let established =
+            BackupEstablished
+              authorityEpochGenesis
+              (TargetAgentGenerationReceipt "t1")
+              (BackupReceipt "b1")
       decideGenesis established (BeginGenesisEstablishment samplePlan)
         `shouldBe` GenesisRefused GenesisAlreadyEstablished
       decideGenesis established (ObserveBackupReceipt (BackupReceipt "b1"))

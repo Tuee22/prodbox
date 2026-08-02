@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -20,23 +21,28 @@
 -- mutation. The outcome projects onto a total HTTP status and a stable kebab-case
 -- diagnostic summary.
 --
--- It is pure over the injected repository, so an in-memory fixture exercises every
--- request/response arm without a live cluster, Vault, or object store. Binding the
--- production retained compare-and-swap repository and dispatching the raw socket
--- request on 'Prodbox.ControlPlane.Route.LifecycleOperationSubmit' /
--- 'Prodbox.ControlPlane.Route.LifecycleOperationObserve' to these handlers in
--- @runControlPlaneRole@ are the live-coupled follow-ons (Standard O), exactly as for
--- the migration, backup, TLS-retention, and target-secret endpoints.
+-- It is pure over the injected exact-revision repository, so fixtures exercise
+-- every request/response arm without a live cluster, while
+-- 'modelBOperationSubmissionRepository' supplies the production
+-- @'ClusterRetained'@ binding used by @runControlPlaneRole@.
 module Prodbox.ControlPlane.OperationEndpoint
   ( -- * Wire payloads
     OperationSubmitPayload (..)
   , OperationObservePayload (..)
 
     -- * Repository
+  , OperationSubmissionState (..)
+  , OperationSubmissionSnapshot (..)
   , OperationSubmissionRepository (..)
+  , OperationSubmissionStateCodecError (..)
+  , operationSubmissionMaximumEncodedBytes
+  , initialOperationSubmissionState
+  , operationSubmissionStateCodec
+  , modelBOperationSubmissionRepository
 
     -- * Serving
   , OperationSubmitResult (..)
+  , OperationObserveResult (..)
   , serveOperationSubmit
   , serveOperationSubmitRequest
   , serveOperationObserve
@@ -47,12 +53,18 @@ module Prodbox.ControlPlane.OperationEndpoint
   , operationSubmitSummary
   , operationObserveHttpStatus
   , operationObserveSummary
+  , operationObserveResultHttpStatus
+  , operationObserveResultSummary
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Data.ByteString qualified as StrictByteString
 import Data.ByteString.Lazy (ByteString)
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Either (fromLeft)
 import Data.Text (Text)
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Codec
@@ -60,7 +72,10 @@ import Prodbox.ControlPlane.Codec
   , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   )
-import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.Authority.Genesis
+  ( AuthorityEpoch
+  , authorityEpochValue
+  )
 import Prodbox.Lifecycle.Authority.Submission
   ( ClientId (ClientId)
   , ClientSequence (ClientSequence)
@@ -80,8 +95,21 @@ import Prodbox.Lifecycle.Authority.Submission
     , SubmissionRefusedSequenceReused
     )
   , TerminalOutcome (OperationCancelledOutcome, OperationCompletedOutcome)
+  , emptySubmissionLedger
+  , liveSubmissionCount
   , stepSubmit
+  , submissionCapacity
   , submissionStatus
+  )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( ModelBCasAdapter (..)
+  , ModelBCasRequest (..)
+  , ModelBCasResult (..)
+  , ModelBCodec (..)
+  , ModelBObjectCoordinate
+  , ModelBObjectVersion
+  , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
   )
 
 -- | The bounded, canonical wire body of an @operations/submit@ request: the
@@ -105,12 +133,234 @@ data OperationObservePayload = OperationObservePayload
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
--- | The retained submission store: read the admitting epoch plus the current
--- ledger, and compare-and-swap an evolved ledger.
-data OperationSubmissionRepository m = OperationSubmissionRepository
-  { readSubmissionState :: m (AuthorityEpoch, SubmissionLedger)
-  , commitSubmissionLedger :: SubmissionLedger -> m (Either Text ())
+-- | The single retained operation-submission object.  Epoch and capacity are
+-- durable, rather than process defaults silently substituted after restart.
+data OperationSubmissionState = OperationSubmissionState
+  { operationSubmissionEpoch :: !AuthorityEpoch
+  , operationSubmissionLedger :: !SubmissionLedger
   }
+  deriving stock (Eq, Show)
+
+-- | One authoritative read plus the opaque exact revision that read observed.
+-- The repository's revision type stays abstract to the endpoint; the production
+-- binding uses @Maybe ModelBObjectVersion@ so missing initializes and observed
+-- state replaces only its exact S3 version.
+data OperationSubmissionSnapshot revision = OperationSubmissionSnapshot
+  { operationSubmissionRevision :: !revision
+  , operationSubmissionSnapshotState :: !OperationSubmissionState
+  }
+  deriving stock (Eq, Show)
+
+-- | Exact-revision retained repository.  A CAS result is provisional: callers
+-- must always perform a fresh 'readSubmissionState' and confirm the logical
+-- operation identity, allowing applied-but-response-lost writes to converge.
+data OperationSubmissionRepository m revision = OperationSubmissionRepository
+  { readSubmissionState :: m (Either Text (OperationSubmissionSnapshot revision))
+  , compareAndSwapSubmissionState
+      :: revision
+      -> OperationSubmissionState
+      -> m (Either Text ())
+  }
+
+-- | Physical codec refusal for the one retained submission object.
+data OperationSubmissionStateCodecError
+  = OperationSubmissionStateTooLarge !Int !Int
+  | OperationSubmissionStateInvalid
+  | OperationSubmissionStateUnsupportedVersion !Word16
+  | OperationSubmissionStateNonCanonical
+  | OperationSubmissionStateEpochMismatch !Natural !Natural
+  | OperationSubmissionStateCapacityMismatch !Natural !Natural
+  | OperationSubmissionStateLiveOverCapacity !Natural !Natural
+  deriving stock (Eq, Show)
+
+data OperationSubmissionEnvelope = OperationSubmissionEnvelope
+  { operationSubmissionEnvelopeVersion :: !Word16
+  , operationSubmissionEnvelopeEpoch :: !Natural
+  , operationSubmissionEnvelopeLedger :: !SubmissionLedger
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+operationSubmissionMaximumEncodedBytes :: Int
+operationSubmissionMaximumEncodedBytes = 256 * 1024
+
+operationSubmissionCodecVersion :: Word16
+operationSubmissionCodecVersion = 1
+
+initialOperationSubmissionState
+  :: AuthorityEpoch
+  -> Natural
+  -> OperationSubmissionState
+initialOperationSubmissionState epoch capacity =
+  OperationSubmissionState
+    { operationSubmissionEpoch = epoch
+    , operationSubmissionLedger = emptySubmissionLedger capacity
+    }
+
+-- | Bounded, versioned, canonical codec fixed to the runtime's initialized
+-- authority epoch and capacity.  A retained object from another authority
+-- configuration is corruption evidence, never silently adopted with new
+-- process defaults.
+operationSubmissionStateCodec
+  :: Int
+  -> AuthorityEpoch
+  -> Natural
+  -> ModelBCodec OperationSubmissionState
+operationSubmissionStateCodec maximumBytes expectedEpoch expectedCapacity =
+  ModelBCodec
+    { encodeModelBValue =
+        either (Left . show) Right
+          . encodeOperationSubmissionState
+            maximumBytes
+            expectedEpoch
+            expectedCapacity
+    , decodeModelBValue =
+        either (Left . show) Right
+          . decodeOperationSubmissionState
+            maximumBytes
+            expectedEpoch
+            expectedCapacity
+    }
+
+encodeOperationSubmissionState
+  :: Int
+  -> AuthorityEpoch
+  -> Natural
+  -> OperationSubmissionState
+  -> Either OperationSubmissionStateCodecError StrictByteString.ByteString
+encodeOperationSubmissionState maximumBytes expectedEpoch expectedCapacity state = do
+  validateOperationSubmissionState expectedEpoch expectedCapacity state
+  let bytes =
+        LazyByteString.toStrict
+          ( serialise
+              OperationSubmissionEnvelope
+                { operationSubmissionEnvelopeVersion = operationSubmissionCodecVersion
+                , operationSubmissionEnvelopeEpoch = authorityEpochValue expectedEpoch
+                , operationSubmissionEnvelopeLedger = operationSubmissionLedger state
+                }
+          )
+  if maximumBytes < 0 || StrictByteString.length bytes > maximumBytes
+    then
+      Left
+        ( OperationSubmissionStateTooLarge
+            (StrictByteString.length bytes)
+            maximumBytes
+        )
+    else Right bytes
+
+decodeOperationSubmissionState
+  :: Int
+  -> AuthorityEpoch
+  -> Natural
+  -> StrictByteString.ByteString
+  -> Either OperationSubmissionStateCodecError OperationSubmissionState
+decodeOperationSubmissionState maximumBytes expectedEpoch expectedCapacity bytes
+  | maximumBytes < 0 || StrictByteString.length bytes > maximumBytes =
+      Left
+        ( OperationSubmissionStateTooLarge
+            (StrictByteString.length bytes)
+            maximumBytes
+        )
+  | otherwise = do
+      envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+        Left _ -> Left OperationSubmissionStateInvalid
+        Right decoded -> Right decoded
+      if operationSubmissionEnvelopeVersion envelope /= operationSubmissionCodecVersion
+        then
+          Left
+            ( OperationSubmissionStateUnsupportedVersion
+                (operationSubmissionEnvelopeVersion envelope)
+            )
+        else Right ()
+      let observedEpoch = operationSubmissionEnvelopeEpoch envelope
+          requiredEpoch = authorityEpochValue expectedEpoch
+      if observedEpoch /= requiredEpoch
+        then Left (OperationSubmissionStateEpochMismatch requiredEpoch observedEpoch)
+        else Right ()
+      let state =
+            OperationSubmissionState
+              { operationSubmissionEpoch = expectedEpoch
+              , operationSubmissionLedger = operationSubmissionEnvelopeLedger envelope
+              }
+      validateOperationSubmissionState expectedEpoch expectedCapacity state
+      if LazyByteString.toStrict (serialise envelope) /= bytes
+        then Left OperationSubmissionStateNonCanonical
+        else Right state
+
+validateOperationSubmissionState
+  :: AuthorityEpoch
+  -> Natural
+  -> OperationSubmissionState
+  -> Either OperationSubmissionStateCodecError ()
+validateOperationSubmissionState expectedEpoch expectedCapacity state
+  | operationSubmissionEpoch state /= expectedEpoch =
+      Left
+        ( OperationSubmissionStateEpochMismatch
+            (authorityEpochValue expectedEpoch)
+            (authorityEpochValue (operationSubmissionEpoch state))
+        )
+  | submissionCapacity ledger /= expectedCapacity =
+      Left
+        ( OperationSubmissionStateCapacityMismatch
+            expectedCapacity
+            (submissionCapacity ledger)
+        )
+  | liveSubmissionCount ledger > expectedCapacity =
+      Left
+        ( OperationSubmissionStateLiveOverCapacity
+            (liveSubmissionCount ledger)
+            expectedCapacity
+        )
+  | otherwise = Right ()
+ where
+  ledger = operationSubmissionLedger state
+
+-- | Bind the exact-revision repository to one retained Model-B coordinate.
+-- Missing state is the explicit initialized epoch/capacity snapshot; observed,
+-- corrupt, endpoint-unready, and unobservable remain distinct from absence.
+modelBOperationSubmissionRepository
+  :: (Monad m)
+  => OperationSubmissionState
+  -> ModelBCasAdapter 'ClusterRetained m OperationSubmissionState
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> OperationSubmissionRepository m (Maybe ModelBObjectVersion)
+modelBOperationSubmissionRepository initialState adapter coordinate =
+  OperationSubmissionRepository
+    { readSubmissionState = do
+        observation <- modelBObserve adapter coordinate
+        pure $ case observation of
+          ModelBMissing ->
+            Right
+              OperationSubmissionSnapshot
+                { operationSubmissionRevision = Nothing
+                , operationSubmissionSnapshotState = initialState
+                }
+          ModelBObserved revision state ->
+            Right
+              OperationSubmissionSnapshot
+                { operationSubmissionRevision = Just revision
+                , operationSubmissionSnapshotState = state
+                }
+          ModelBCorrupt detail -> Left ("operation submission state is corrupt: " <> detail)
+          ModelBEndpointUnready detail ->
+            Left ("operation submission state is not ready: " <> detail)
+          ModelBUnobservable detail ->
+            Left ("operation submission state is unobservable: " <> detail)
+    , compareAndSwapSubmissionState = \expected state -> do
+        result <-
+          modelBCompareAndSwap adapter $ case expected of
+            Nothing -> ModelBInitialize coordinate state
+            Just revision -> ModelBReplace coordinate revision state
+        pure $ case result of
+          ModelBCasApplied _ _ -> Right ()
+          ModelBCasConflict _ -> Left "operation submission CAS conflict"
+          ModelBCasRefusedCorrupt detail ->
+            Left ("operation submission CAS refused corrupt: " <> detail)
+          ModelBCasEndpointUnready detail ->
+            Left ("operation submission CAS is not ready: " <> detail)
+          ModelBCasUnobservable detail ->
+            Left ("operation submission CAS is unobservable: " <> detail)
+    }
 
 -- | The closed outcome of serving one @operations/submit@ request. A malformed
 -- request body ('OperationSubmitBadRequest') is distinct from a well-formed
@@ -121,11 +371,19 @@ data OperationSubmitResult
     -- 'SubmissionAccepted' the evolved ledger was durably committed; a duplicate or
     -- refusal never mutates the ledger, so no commit was attempted.
     OperationSubmitDecided !SubmitDecision
+  | -- | The retained state could not be authoritatively observed.
+    OperationSubmitReadFailed !Text
   | -- | An accepted submission was decided but its durable commit failed (retry).
     OperationSubmitWriteFailed !Text
   | -- | The request body was not a bounded, canonical, supported-version submit
     -- payload; no state was read or written.
     OperationSubmitBadRequest !ControlPlaneRequestCodecError
+  deriving stock (Eq, Show)
+
+data OperationObserveResult
+  = OperationObserveFound !SubmissionStatus
+  | OperationObserveReadFailed !Text
+  | OperationObserveBadRequest !ControlPlaneRequestCodecError
   deriving stock (Eq, Show)
 
 -- | Serve a submission against an injected repository: read the admitting epoch and
@@ -134,21 +392,69 @@ data OperationSubmitResult
 -- no compare-and-swap is attempted.
 serveOperationSubmit
   :: (Monad m)
-  => OperationSubmissionRepository m
+  => OperationSubmissionRepository m revision
   -> ClientId
   -> ClientSequence
   -> RequestDigest
   -> m OperationSubmitResult
 serveOperationSubmit repository client seqNo digest = do
-  (epoch, ledger) <- readSubmissionState repository
-  let (decision, next) = stepSubmit epoch ledger client seqNo digest
-  if next == ledger
-    then pure (OperationSubmitDecided decision)
-    else do
-      committed <- commitSubmissionLedger repository next
-      pure $ case committed of
-        Left detail -> OperationSubmitWriteFailed detail
-        Right () -> OperationSubmitDecided decision
+  observed <- readSubmissionState repository
+  case observed of
+    Left detail -> pure (OperationSubmitReadFailed detail)
+    Right snapshot -> do
+      let state = operationSubmissionSnapshotState snapshot
+          epoch = operationSubmissionEpoch state
+          ledger = operationSubmissionLedger state
+          (decision, nextLedger) = stepSubmit epoch ledger client seqNo digest
+      if nextLedger == ledger
+        then pure (OperationSubmitDecided decision)
+        else do
+          attempted <-
+            compareAndSwapSubmissionState
+              repository
+              (operationSubmissionRevision snapshot)
+              state {operationSubmissionLedger = nextLedger}
+          confirmAcceptedSubmission repository attempted decision client seqNo digest
+
+confirmAcceptedSubmission
+  :: (Monad m)
+  => OperationSubmissionRepository m revision
+  -> Either Text ()
+  -> SubmitDecision
+  -> ClientId
+  -> ClientSequence
+  -> RequestDigest
+  -> m OperationSubmitResult
+confirmAcceptedSubmission repository attempted decision client seqNo digest =
+  case decision of
+    SubmissionAccepted accepted -> do
+      readback <- readSubmissionState repository
+      pure $ case readback of
+        Left detail ->
+          OperationSubmitWriteFailed
+            ("operation submission readback failed: " <> detail)
+        Right snapshot ->
+          let state = operationSubmissionSnapshotState snapshot
+              confirmed =
+                decideConfirmed
+                  (operationSubmissionEpoch state)
+                  (operationSubmissionLedger state)
+           in if confirmed
+                then OperationSubmitDecided decision
+                else
+                  OperationSubmitWriteFailed
+                    ( fromLeft
+                        "operation submission CAS was not confirmed by readback"
+                        attempted
+                    )
+     where
+      decideConfirmed epoch ledger =
+        case fst (stepSubmit epoch ledger client seqNo digest) of
+          SubmissionDuplicate duplicate -> duplicate == accepted
+          _ -> False
+    _ ->
+      pure
+        (OperationSubmitWriteFailed "operation submission changed without an accepted decision")
 
 -- | Serve an @operations/submit@ request from a raw body: decode the bounded,
 -- canonical 'OperationSubmitPayload' and, only for a well-formed body, run
@@ -159,7 +465,7 @@ serveOperationSubmit repository client seqNo digest = do
 serveOperationSubmitRequest
   :: (Monad m)
   => Int
-  -> OperationSubmissionRepository m
+  -> OperationSubmissionRepository m revision
   -> ByteString
   -> m OperationSubmitResult
 serveOperationSubmitRequest maximumBytes repository body =
@@ -176,13 +482,21 @@ serveOperationSubmitRequest maximumBytes repository body =
 -- submission, no mutation.
 serveOperationObserve
   :: (Monad m)
-  => OperationSubmissionRepository m
+  => OperationSubmissionRepository m revision
   -> ClientId
   -> ClientSequence
-  -> m SubmissionStatus
+  -> m OperationObserveResult
 serveOperationObserve repository client seqNo = do
-  (_, ledger) <- readSubmissionState repository
-  pure (submissionStatus client seqNo ledger)
+  observed <- readSubmissionState repository
+  pure $ case observed of
+    Left detail -> OperationObserveReadFailed detail
+    Right snapshot ->
+      OperationObserveFound
+        ( submissionStatus
+            client
+            seqNo
+            (operationSubmissionLedger (operationSubmissionSnapshotState snapshot))
+        )
 
 -- | Serve an @operations/observe@ request from a raw body: decode the bounded,
 -- canonical 'OperationObservePayload' and, only for a well-formed body, look the
@@ -190,18 +504,17 @@ serveOperationObserve repository client seqNo = do
 serveOperationObserveRequest
   :: (Monad m)
   => Int
-  -> OperationSubmissionRepository m
+  -> OperationSubmissionRepository m revision
   -> ByteString
-  -> m (Either ControlPlaneRequestCodecError SubmissionStatus)
+  -> m OperationObserveResult
 serveOperationObserveRequest maximumBytes repository body =
   case decodeControlPlaneRequest maximumBytes body of
-    Left err -> pure (Left err)
+    Left err -> pure (OperationObserveBadRequest err)
     Right payload ->
-      Right
-        <$> serveOperationObserve
-          repository
-          (ClientId (operationObserveClient payload))
-          (ClientSequence (operationObserveSequence payload))
+      serveOperationObserve
+        repository
+        (ClientId (operationObserveClient payload))
+        (ClientSequence (operationObserveSequence payload))
 
 -- | Total HTTP status projection for @operations/submit@. A fresh acceptance and an
 -- idempotent duplicate are both @200@ (the caller re-observes for the operation's
@@ -211,6 +524,7 @@ serveOperationObserveRequest maximumBytes repository body =
 operationSubmitHttpStatus :: OperationSubmitResult -> Int
 operationSubmitHttpStatus result = case result of
   OperationSubmitBadRequest _ -> 400
+  OperationSubmitReadFailed _ -> 503
   OperationSubmitWriteFailed _ -> 503
   OperationSubmitDecided decision -> case decision of
     SubmissionAccepted _ -> 200
@@ -226,6 +540,7 @@ operationSubmitSummary result = case result of
   OperationSubmitBadRequest err ->
     "operation-submit-bad-request:" <> controlPlaneRequestCodecToken err
   OperationSubmitWriteFailed _ -> "operation-submit-write-failed"
+  OperationSubmitReadFailed _ -> "operation-submit-read-failed"
   OperationSubmitDecided decision -> case decision of
     SubmissionAccepted _ -> "operation-accepted"
     SubmissionDuplicate _ -> "operation-duplicate"
@@ -251,3 +566,16 @@ operationObserveSummary status = case status of
   StatusSettled OperationCancelledOutcome -> "operation-settled-cancelled"
   StatusExpired -> "operation-expired"
   StatusUnknown -> "operation-unknown"
+
+operationObserveResultHttpStatus :: OperationObserveResult -> Int
+operationObserveResultHttpStatus result = case result of
+  OperationObserveFound status -> operationObserveHttpStatus status
+  OperationObserveReadFailed _ -> 503
+  OperationObserveBadRequest _ -> 400
+
+operationObserveResultSummary :: OperationObserveResult -> Text
+operationObserveResultSummary result = case result of
+  OperationObserveFound status -> operationObserveSummary status
+  OperationObserveReadFailed _ -> "operation-observe-read-failed"
+  OperationObserveBadRequest err ->
+    "operation-observe-bad-request:" <> controlPlaneRequestCodecToken err

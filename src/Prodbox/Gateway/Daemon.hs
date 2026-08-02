@@ -11,25 +11,6 @@ module Prodbox.Gateway.Daemon
   , productionEmitterRuntimeDependencies
   , runGatewayDaemonWithRuntimeDependencies
   , daemonBootFieldsChanged
-
-    -- * Sprint 1.44: operator-write REST endpoint (pure routing helpers)
-  , allowedOperatorSecretPaths
-  , operatorWriteRoleName
-  , operatorSecretLogicalPath
-  , operatorSecretRequestMethod
-  , operatorSecretJwtHeader
-  , requestBodyBytes
-  , decodeOperatorSecretFields
-
-    -- * Sprint 7.30: daemon object-store API for Pulumi backends
-  , PulumiObjectRequestError (..)
-  , decodePulumiObjectPutRequest
-  , decodePulumiObjectRequest
-  , renderPulumiObjectRequestError
-
-    -- * Sprint 4.47: bounded target-secret Vault route
-  , decodeTargetSecretCasRequest
-  , decodeTargetSecretReadRequest
   )
 where
 
@@ -80,9 +61,7 @@ import Control.Exception
 import Control.Monad (forever, replicateM_, unless, void, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
-  ( FromJSON
-  , Value (..)
-  , eitherDecodeStrict'
+  ( Value (..)
   , encode
   , object
   , toJSON
@@ -98,10 +77,12 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isSpace, toLower)
 import Data.Foldable (for_)
-import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sortOn, stripPrefix)
+import Data.List (intercalate, isPrefixOf, sortOn)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
@@ -110,6 +91,7 @@ import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word64)
 import GHC.Conc (threadWaitRead)
+import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats, getRTSStatsEnabled)
 import Network.Socket
   ( AddrInfo (..)
   , AddrInfoFlag (AI_PASSIVE)
@@ -136,26 +118,13 @@ import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
-import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
-import Prodbox.Bootstrap.Broker.LegacyAdapter
-  ( LegacyGatewayBootstrapResponse (..)
-  , LegacyGatewayBootstrapRoute
-  , legacyGatewayBootstrapRouteForPath
-  , runLegacyGatewayBootstrapRequest
+import Prodbox.Aws.Native.Sts qualified as NativeSts
+import Prodbox.Aws.Native.Wire
+  ( AwsClientError (..)
+  , AwsServiceFault (awsFaultHttpStatus)
+  , httpSend
   )
 import Prodbox.Capacity.Config qualified as Capacity
-import Prodbox.Cluster.Federation
-  ( ChildBootstrapCredential
-  , ChildIndex (..)
-  , ChildMetadata
-  , childBootstrapKvLogicalPath
-  , childMetadataKvLogicalPath
-  , decodeChildBootstrapCredential
-  , decodeChildIndex
-  , decodeChildMetadata
-  , decodePayloadJsonField
-  , federationChildrenIndexKvLogicalPath
-  )
 import Prodbox.Config.Tier0
   ( ContextKind (..)
   , ProdboxContext (..)
@@ -164,12 +133,18 @@ import Prodbox.Config.Tier0
   , Tier0Source (..)
   , loadDaemonBinaryContext
   )
+import Prodbox.ControlPlane.AuthorityObservationClient
+  ( activeLifecycleAuthorityEpoch
+  , authorityObservationMaximumResponseBytes
+  , observeActiveLifecycleAuthority
+  )
 import Prodbox.ControlPlane.Capacity
   ( RawServiceCapacityPlan (..)
   , ServiceCapacityPlan
   , mkServiceCapacityPlan
   , serviceCapacityServiceTimeMicros
   )
+import Prodbox.ControlPlane.Client (newControlPlaneClient)
 import Prodbox.ControlPlane.Deadline
   ( Deadline
   , DeadlineAdmission (..)
@@ -328,24 +303,6 @@ import Prodbox.Gateway.Logging
   , logStructuredAt
   , severityFromLogLevel
   )
-import Prodbox.Gateway.ObjectStore
-  ( AuthorityClockRequest (..)
-  , AuthorityClockResponse (..)
-  , AuthorityObjectCasRequest (..)
-  , AuthorityObjectCasResponse (..)
-  , AuthorityObjectLeaseGuard (..)
-  , AuthorityObjectObservation (..)
-  , AuthorityObjectPayloadError (..)
-  , AuthorityObjectRequest (..)
-  , PulumiObjectGetResponse (..)
-  , PulumiObjectPutRequest (..)
-  , PulumiObjectRequest (..)
-  , authorityObjectRequestMaxBytes
-  , pulumiObjectRequestMaxBytes
-  , validateAuthorityObjectLogicalName
-  , validateAuthorityObjectPayloadSize
-  , validatePulumiObjectStackName
-  )
 import Prodbox.Gateway.Peer
   ( EventKey
   , PeerError (..)
@@ -400,19 +357,16 @@ import Prodbox.Gateway.Readiness
   )
 import Prodbox.Gateway.Routes
   ( GatewayRoute (..)
-  , federationChildBootstrapSuffix
-  , federationChildPathPrefix
-  , operatorSecretPathPrefix
   , routeForPath
   )
 import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.State qualified as BoundedState
-import Prodbox.Gateway.TargetSecret qualified as TargetSecret
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , Disposition (..)
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
+  , GatewayLifecycleAuthority (..)
   , GatewayMinioCreds (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
@@ -430,27 +384,11 @@ import Prodbox.Http.Client
   , renderHttpError
   )
 import Prodbox.K8s.InCluster (loadInClusterCredentials)
-import Prodbox.Lifecycle.AuthorityObjectCore
-  ( AuthorityCore (..)
-  , compareAndSwapAuthorityObjectCore
-  , readAuthorityObjectCore
-  )
-import Prodbox.Minio.EncryptedObject
-  ( EncryptedObjectError (..)
-  , LogicalObject (LogicalPulumiStack)
-  , getLogical
-  , getLogicalVersioned
-  , objectKeyForOpaqueId
-  , opaqueObjectId
-  , putLogical
-  , putLogicalIfAbsent
-  , putLogicalIfVersion
-  , renderEncryptedObjectError
-  )
+import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.DnsRecord qualified as DnsRecord
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , defaultObjectStoreBucket
-  , deleteObject
   )
 import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
@@ -464,16 +402,11 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Vault.Client
-  ( KvV2Cas (..)
-  , KvV2VersionedSecret (..)
-  , VaultAddress (..)
+  ( VaultAddress (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
-  , vaultKubernetesLogin
   , vaultKubernetesLoginWithLease
-  , vaultKvCasWriteV2
   , vaultKvReadV2
-  , vaultKvReadVersionedV2
   , vaultKvWriteV2
   )
 import Prodbox.Vault.Session
@@ -488,7 +421,6 @@ import Prodbox.Vault.Session
   , resolveSharedSession
   , sessionAddress
   , sessionToken
-  , withSessionToken
   )
 import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory (doesFileExist, findExecutable)
@@ -557,8 +489,8 @@ defaultConnectionReadTimeoutSeconds = 30.0
 
 data MetricsRegistry = MetricsRegistry
   { metricsDaemonName :: String
+  , metricsObjectStoreDurationsMillis :: TVar [Natural]
   }
-  deriving (Eq, Show)
 
 data DaemonHooks = DaemonHooks
   { envAfterPeerEventCommit :: Int -> IO ()
@@ -663,17 +595,7 @@ data EmitterRuntimeEvent
 -- waiting behind unrelated work. The rollback topology never consults these
 -- lanes and retains its exact process-global 'CapacityOneChildScheduler'.
 data TargetOperation
-  = TargetFederationChildrenRead
-  | TargetFederationChildBootstrapRead
-  | TargetPulumiObjectGet
-  | TargetPulumiObjectPut
-  | TargetPulumiObjectDelete
-  | TargetAuthorityObjectGet
-  | TargetAuthorityObjectCas
-  | TargetSecretRead
-  | TargetSecretCas
-  | TargetOperatorSecretWrite
-  | TargetRoute53Write
+  = TargetRoute53Write
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 -- | Explicit, process-construction dependencies for the actor-backed target.
@@ -685,6 +607,7 @@ data TargetOperation
 data EmitterRuntimeDependencies = EmitterRuntimeDependencies
   { emitterDependencyJournalRoot :: !FilePath
   , emitterDependencyLoadLeaseRuntime :: IO (Either String EmitterLeaseRuntime)
+  , emitterDependencyObserveAuthorityEpoch :: IO (Either String AuthorityEpoch)
   , emitterDependencyObserveAdmission
       :: DaemonConfig
       -> BoundedState.NodeId
@@ -709,13 +632,14 @@ data EmitterRuntimeDependencies = EmitterRuntimeDependencies
   , emitterDependencyLegacyChildSlotInitiallyOccupied :: !Bool
   }
 
-productionEmitterRuntimeDependencies :: EmitterRuntimeDependencies
-productionEmitterRuntimeDependencies =
+productionEmitterRuntimeDependencies :: DaemonConfig -> EmitterRuntimeDependencies
+productionEmitterRuntimeDependencies config =
   EmitterRuntimeDependencies
     { emitterDependencyJournalRoot = "/var/lib/prodbox/gateway-emitter"
     , emitterDependencyLoadLeaseRuntime = loadProductionEmitterLeaseRuntime
-    , emitterDependencyObserveAdmission = \config localNode _identity -> do
-        observed <- observeContinuityAdmission config localNode
+    , emitterDependencyObserveAuthorityEpoch = observeConfiguredLifecycleAuthority config
+    , emitterDependencyObserveAdmission = \daemonConfig localNode _identity -> do
+        observed <- observeContinuityAdmission daemonConfig localNode
         pure $ case observed of
           Left err -> Left err
           Right ContinuityFirstAdmission -> Right EmitterAdmissionMarkerMissing
@@ -780,10 +704,36 @@ runGatewayDaemonWithTopology
   -> Maybe FilePath
   -> DaemonConfig
   -> IO ExitCode
-runGatewayDaemonWithTopology emitterTopology =
+runGatewayDaemonWithTopology emitterTopology maybeConfigPath config =
   runGatewayDaemonWithRuntimeDependencies
     emitterTopology
-    productionEmitterRuntimeDependencies
+    (productionEmitterRuntimeDependencies config)
+    maybeConfigPath
+    config
+
+observeConfiguredLifecycleAuthority :: DaemonConfig -> IO (Either String AuthorityEpoch)
+observeConfiguredLifecycleAuthority config =
+  case daemonLifecycleAuthority config of
+    Nothing ->
+      pure
+        ( Left
+            "Lifecycle Authority observation capability is absent; refusing Gateway DNS mutation"
+        )
+    Just capability ->
+      case newControlPlaneClient
+        defaultHttpConfig
+        authorityObservationMaximumResponseBytes
+        (gatewayLifecycleAuthorityEndpoint capability) of
+        Left err ->
+          pure (Left ("Lifecycle Authority client construction failed: " ++ show err))
+        Right client -> do
+          observed <-
+            observeActiveLifecycleAuthority
+              client
+              (Text.pack (gatewayLifecycleAuthorityScope capability))
+          pure $ case observed of
+            Left err -> Left ("Lifecycle Authority observation failed: " ++ show err)
+            Right active -> Right (activeLifecycleAuthorityEpoch active)
 
 runGatewayDaemonWithRuntimeDependencies
   :: EmitterTopology
@@ -895,6 +845,7 @@ runGatewayDaemonWithRuntimeDependencies
                         emitterLeasePermit <- newTMVarIO ()
                         emitterRecoveryRequestedVar <- newTVarIO False
                         signalCount <- newTVarIO (0 :: Int)
+                        objectStoreDurations <- newTVarIO []
                         let env =
                               DaemonEnv
                                 { envConfigPath = maybeConfigPath
@@ -919,7 +870,7 @@ runGatewayDaemonWithRuntimeDependencies
                                 , envWorkersStatus = workersStatusVar
                                 , envLiveConfig = liveConfigVar
                                 , envLiveConfigReloads = reloadBroadcast
-                                , envMetrics = MetricsRegistry "gateway"
+                                , envMetrics = MetricsRegistry "gateway" objectStoreDurations
                                 , envDrainSignals = drainSignals
                                 , envReloadSignals = reloadSignals
                                 , envHooks = noopDaemonHooks
@@ -1141,6 +1092,8 @@ bootstrapContinuity env = do
                                 , continuityStoreCipher = daemonPulumiCipher material
                                 , continuityStoreHmacKey = daemonPulumiHmacKey material
                                 , continuityStoreClusterId = daemonPulumiClusterId material
+                                , continuityStoreObserveDurationMillis =
+                                    recordObjectStoreDuration (envMetrics env)
                                 }
                               scope
                           admission =
@@ -3758,6 +3711,7 @@ daemonBootFieldsChanged old new =
     || daemonOrdersFile old /= daemonOrdersFile new
     || daemonEventKeys old /= daemonEventKeys new
     || daemonVaultAuth old /= daemonVaultAuth new
+    || daemonLifecycleAuthority old /= daemonLifecycleAuthority new
     || daemonDnsWriteGate old /= daemonDnsWriteGate new
     -- Vault-resolved boot secrets: a daemon that booted pre-Vault carries these
     -- as Nothing; once a reload can resolve them (Vault ready) that is a boot
@@ -4155,7 +4109,10 @@ writeDnsWithCurrentAuthority deadline env awsCreds gate currentIp = do
             LegacyModelBEmitter -> writeLegacyDnsRecord action
             JournalLeaseEmitter ->
               withTargetOperationAtDeadline env TargetRoute53Write deadline $ \acceptedDeadline ->
-                writeNativeDnsRecord acceptedDeadline action
+                writeNativeDnsRecord
+                  acceptedDeadline
+                  (emitterDependencyObserveAuthorityEpoch (envEmitterDependencies env))
+                  action
 
 textPackEither :: Either String value -> Either Text.Text value
 textPackEither = either (Left . Text.pack) Right
@@ -4268,52 +4225,6 @@ targetOperationDeadlineError :: TargetOperation -> String
 targetOperationDeadlineError operation =
   "target operation absolute deadline cannot be met: " ++ show operation
 
--- | REST admission is target-only. Legacy executes the pre-existing handler
--- directly, including all of its original nested 'withGatewayChild' calls.
-dispatchBoundedTargetOperation
-  :: Socket
-  -> DaemonEnv
-  -> TargetOperation
-  -> IO ()
-  -> IO ()
-dispatchBoundedTargetOperation sock env operation action =
-  case envEmitterTopology env of
-    LegacyModelBEmitter -> action
-    JournalLeaseEmitter -> do
-      (_, deadline) <- mintEmitterTicket env
-      actionStarted <- newTVarIO False
-      result <-
-        withTargetOperationAtDeadline env operation deadline $ \_acceptedDeadline -> do
-          atomically (writeTVar actionStarted True)
-          action
-          pure (Right ())
-      case result of
-        Left err -> do
-          started <- readTVarIO actionStarted
-          -- Once the handler owns the socket it is the sole response owner.
-          -- A late deadline or partial send closes with the handler; it must
-          -- never be followed by a contradictory second HTTP response.
-          unless started $
-            sendHttpResponse
-              sock
-              503
-              "text/plain"
-              ("target operation unavailable: " ++ err ++ "\n")
-        Right () -> pure ()
-
--- | A target REST request already owns its operation-specific deadline lane,
--- so nested object-store work runs directly under that outer cancellation
--- scope. The rollback branch preserves its historical child scheduler.
-withGatewayChildForBoundedRest
-  :: DaemonEnv
-  -> Text.Text
-  -> IO (Either String value)
-  -> IO (Either String value)
-withGatewayChildForBoundedRest env childName action =
-  case envEmitterTopology env of
-    LegacyModelBEmitter -> withGatewayChild env childName action
-    JournalLeaseEmitter -> action
-
 withGatewayChild
   :: DaemonEnv
   -> Text.Text
@@ -4373,6 +4284,11 @@ restServerLoop localPeer env = do
       env
       (`handleRestClient` env)
 
+-- | Bound the diagnostic HTTP request head. Gateway Runtime exposes only GET
+-- probes and diagnostics; lifecycle RPC bodies are owned by dedicated roles.
+gatewayRestRequestMaxBytes :: Int
+gatewayRestRequestMaxBytes = 64 * 1024
+
 -- | Preserve the listeners' benign handling of connection-local failures,
 -- while allowing structured-concurrency cancellation to leave a fixed worker
 -- immediately instead of being swallowed by a broad request boundary.
@@ -4391,36 +4307,23 @@ handleRestClient sock env =
   ignoreSynchronousConnectionFailure handleRequest
  where
   handleRequest = do
-    maybeRaw <- receiveAllWithin env pulumiObjectRequestMaxBytes sock
+    maybeRaw <- receiveAllWithin env gatewayRestRequestMaxBytes sock
     for_ maybeRaw handleParsedRequest
 
   handleParsedRequest rawRequest = do
     now <- getCurrentTime
     let path = requestPath rawRequest
     case routeForPath path of
-      Just route -> dispatchGatewayRoute sock env now rawRequest route
-      Nothing ->
-        case envEmitterTopology env of
-          LegacyModelBEmitter ->
-            case legacyGatewayBootstrapRouteForPath path of
-              Just route -> dispatchLegacyGatewayBootstrapRoute sock env rawRequest route
-              Nothing -> dispatchPatternRoute sock env rawRequest path
-          JournalLeaseEmitter -> dispatchPatternRoute sock env rawRequest path
+      Just route -> dispatchGatewayRoute sock env now route
+      Nothing -> sendHttpResponse sock 404 "text/plain" "not found\n"
 
 -- | Sprint 2.34: the daemon request dispatcher as one total @case@ over the
 -- compiled 'GatewayRoute' registry ("Prodbox.Gateway.Routes"). Every path string
 -- is a projection of @routePattern@; a registered route with no arm here is a
 -- @-Werror@ compile error, so the daemon, the client, and the chart probe
 -- rendering cannot drift.
---
--- LEGACY-ESCAPE[gateway-hosted-authority-routes]: the gateway daemon hosts the
--- bootstrap-Vault, Pulumi/authority object-store, lifecycle authority CAS/clock,
--- and target-secret authority routes below (plus the operator-secret route in
--- 'dispatchPatternRoute'). Registered in Prodbox.Legacy.EscapeRegistry; these
--- routes leave the gateway for the Bootstrap Broker / Lifecycle Authority /
--- Target Secret Agent under Sprints 2.33/4.50.
-dispatchGatewayRoute :: Socket -> DaemonEnv -> UTCTime -> BS.ByteString -> GatewayRoute -> IO ()
-dispatchGatewayRoute sock env now rawRequest route = case route of
+dispatchGatewayRoute :: Socket -> DaemonEnv -> UTCTime -> GatewayRoute -> IO ()
+dispatchGatewayRoute sock env now route = case route of
   RouteHealthz ->
     sendHttpResponse sock 200 "text/plain" "ok\n"
   RouteReadyz -> do
@@ -4441,7 +4344,13 @@ dispatchGatewayRoute sock env now rawRequest route = case route of
       Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
   RouteMetrics -> do
     state <- readTVarIO (envState env)
-    sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
+    heapLiveBytes <- currentHeapLiveBytes
+    objectStoreDurations <- readTVarIO (metricsObjectStoreDurationsMillis (envMetrics env))
+    sendHttpResponse
+      sock
+      200
+      "text/plain"
+      (renderMetricsText now heapLiveBytes objectStoreDurations env state)
   RouteState -> do
     state <- readTVarIO (envState env)
     dnsReady <- gatewayDnsWriteReady env state
@@ -4451,62 +4360,6 @@ dispatchGatewayRoute sock env now rawRequest route = case route of
       200
       "application/json"
       (renderStateJson now env dnsReady continuityDiagnostic state)
-  RouteFederationChildren -> do
-    dispatchBoundedTargetOperation sock env TargetFederationChildrenRead $ do
-      childrenResult <- readFederationChildren (envBootConfig env)
-      case childrenResult of
-        Left err -> sendHttpResponse sock 503 "text/plain" (err ++ "\n")
-        Right children ->
-          sendLazyHttpResponse
-            sock
-            200
-            "application/json"
-            (encode (object ["children" .= children]))
-  RoutePulumiObjectGet ->
-    dispatchBoundedTargetOperation sock env TargetPulumiObjectGet $
-      handlePulumiObjectGet sock env rawRequest
-  RoutePulumiObjectPut ->
-    dispatchBoundedTargetOperation sock env TargetPulumiObjectPut $
-      handlePulumiObjectPut sock env rawRequest
-  RoutePulumiObjectDelete ->
-    dispatchBoundedTargetOperation sock env TargetPulumiObjectDelete $
-      handlePulumiObjectDelete sock env rawRequest
-  RouteAuthorityObjectGet ->
-    dispatchBoundedTargetOperation sock env TargetAuthorityObjectGet $
-      handleAuthorityObjectGet sock env rawRequest
-  RouteAuthorityObjectCas ->
-    dispatchBoundedTargetOperation sock env TargetAuthorityObjectCas $
-      handleAuthorityObjectCas sock env rawRequest
-  RouteAuthorityClock -> handleAuthorityClock sock rawRequest
-  RouteTargetSecretRead ->
-    dispatchBoundedTargetOperation sock env TargetSecretRead $
-      handleTargetSecretRead sock env rawRequest
-  RouteTargetSecretCas ->
-    dispatchBoundedTargetOperation sock env TargetSecretCas $
-      handleTargetSecretCas sock env rawRequest
-
--- | Explicit Standard-P rollback adapter. Bootstrap routes are absent from
--- the Gateway registry/client and actor-backed target dispatch. The combined
--- production wrapper reaches the isolated interpreter only while it selects
--- 'LegacyModelBEmitter'; current-revision qualification owns later cutover.
-dispatchLegacyGatewayBootstrapRoute
-  :: Socket
-  -> DaemonEnv
-  -> BS.ByteString
-  -> LegacyGatewayBootstrapRoute
-  -> IO ()
-dispatchLegacyGatewayBootstrapRoute sock env rawRequest route = do
-  response <-
-    runLegacyGatewayBootstrapRequest
-      (envBootConfig env)
-      (withGatewayChild env)
-      route
-      rawRequest
-  sendLazyHttpResponse
-    sock
-    (legacyGatewayBootstrapStatus response)
-    (legacyGatewayBootstrapContentType response)
-    (legacyGatewayBootstrapBody response)
 
 currentEmitterReadinessAuthority
   :: DaemonEnv
@@ -4533,39 +4386,6 @@ currentEmitterReadinessAuthority env now =
                   witness ->
                   EmitterAuthorityReady
             _ -> EmitterAuthorityUnavailable
-
--- | The two variable-suffix pattern routes (operator-secret write, federation
--- child bootstrap) and the 404 fallthrough — the paths that are prefixes, not
--- fixed 'GatewayRoute' strings. Reached only when 'routeForPath' finds no fixed
--- route, preserving the pre-Sprint-2.34 precedence (fixed routes first).
-dispatchPatternRoute :: Socket -> DaemonEnv -> BS.ByteString -> String -> IO ()
-dispatchPatternRoute sock env rawRequest path =
-  case operatorSecretLogicalPath path of
-    Just logical
-      | operatorSecretRequestMethod rawRequest == "POST" ->
-          dispatchBoundedTargetOperation sock env TargetOperatorSecretWrite $
-            handleOperatorSecretWrite sock env rawRequest logical
-      | otherwise ->
-          -- The write endpoint exists only for POST; a GET/PUT/etc. against
-          -- it is a client error, never a Vault read (the secrets it owns are
-          -- read in-cluster via Vault Kubernetes auth, never echoed back).
-          sendHttpResponse sock 405 "text/plain" "method not allowed\n"
-    Nothing ->
-      case federationBootstrapChildId path of
-        Just childId -> do
-          dispatchBoundedTargetOperation sock env TargetFederationChildBootstrapRead $ do
-            bootstrapResult <- readFederationChildBootstrap (envBootConfig env) (Text.pack childId)
-            case bootstrapResult of
-              Left err ->
-                case err of
-                  FederationChildBootstrapMissing ->
-                    sendHttpResponse sock 404 "text/plain" "not found\n"
-                  FederationVaultUnavailable detail ->
-                    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
-              Right credential ->
-                sendLazyHttpResponse sock 200 "application/json" (encode credential)
-        Nothing ->
-          sendHttpResponse sock 404 "text/plain" "not found\n"
 
 sendHttpResponse :: Socket -> Int -> String -> String -> IO ()
 sendHttpResponse sock statusCode contentType responseBody =
@@ -4608,652 +4428,6 @@ requestPath rawRequest =
     _method : path : _ -> path
     _ -> "/v1/state"
 
--- Sprint 1.44: the operator-write REST endpoint (@POST /v1/secret/<logical>@).
---
--- The host CLI (a real operator, or the test harness simulating one) routes the
--- two host-minted operator secrets through the in-cluster daemon over the
--- loopback NodePort instead of writing them to Vault with the host root token:
---
---   * @secret/acme/eab@ — the ZeroSSL external-account-binding material.
---   * @secret/gateway/gateway/aws@ — the minted operational @aws.*@ credential.
---
--- The request carries an operator-injected Kubernetes JWT (header
--- @X-Prodbox-Operator-Jwt@); the daemon exchanges it for a Vault token under the
--- narrow @prodbox-operator-write@ role and writes the KV object. The daemon's
--- own read-only @prodbox-gateway-daemon@ identity is never used for the write.
-
--- | The exact KV logical paths the operator-write endpoint accepts. Anything
--- else is a 404 — the endpoint is a deliberately tiny allowlist, not a generic
--- Vault proxy.
-allowedOperatorSecretPaths :: [String]
-allowedOperatorSecretPaths = ["acme/eab", "gateway/gateway/aws"]
-
--- | The Vault Kubernetes-auth role the daemon logs into for operator writes.
-operatorWriteRoleName :: Text.Text
-operatorWriteRoleName = "prodbox-operator-write"
-
--- | The request header carrying the operator-injected Kubernetes JWT.
-operatorJwtHeaderName :: String
-operatorJwtHeaderName = "x-prodbox-operator-jwt"
-
--- | Map a request path to an allowlisted operator-secret logical path. Returns
--- @Nothing@ for any non-@/v1/secret/@ path or any path outside the allowlist,
--- so the read dispatch handles everything else unchanged.
-operatorSecretLogicalPath :: String -> Maybe String
-operatorSecretLogicalPath path = do
-  logical <- stripPrefix operatorSecretPathPrefix path
-  if logical `elem` allowedOperatorSecretPaths
-    then Just logical
-    else Nothing
-
--- | The HTTP method of a raw request: the first whitespace-delimited token of
--- the request line, verbatim (HTTP methods are case-sensitive and uppercase per
--- RFC 7231). Defaults to @GET@ for a malformed request line.
-operatorSecretRequestMethod :: BS.ByteString -> String
-operatorSecretRequestMethod rawRequest =
-  case words (takeWhile (/= '\r') (takeWhile (/= '\n') (BS8.unpack rawRequest))) of
-    method : _ -> method
-    _ -> "GET"
-
--- | Extract the operator JWT header value (case-insensitive name match), if
--- present and non-empty.
-operatorSecretJwtHeader :: BS.ByteString -> Maybe String
-operatorSecretJwtHeader rawRequest =
-  case [ trimHeader (drop 1 value)
-       | line <- drop 1 (splitCrlfLines (BS8.unpack rawRequest))
-       , let (name, value) = break (== ':') line
-       , map toLower (trimHeader name) == operatorJwtHeaderName
-       , not (null value)
-       ] of
-    (jwt : _) | not (null jwt) -> Just jwt
-    _ -> Nothing
-
--- | The request body: everything after the first blank (CRLF CRLF) line.
-requestBodyBytes :: BS.ByteString -> BS.ByteString
-requestBodyBytes rawRequest =
-  case BS.breakSubstring crlfCrlf rawRequest of
-    (_, rest)
-      | BS.null rest -> BS.empty
-      | otherwise -> BS.drop (BS.length crlfCrlf) rest
- where
-  crlfCrlf = BS8.pack "\r\n\r\n"
-
--- | Decode the operator-secret request body as a flat @{ field: value }@ JSON
--- object of string fields — exactly the Vault KV v2 field-map shape.
-decodeOperatorSecretFields :: BS.ByteString -> Either String (Map Text.Text Text.Text)
-decodeOperatorSecretFields body
-  | BS.null (BS8.dropWhile isSpace body) =
-      Left "empty request body; expected a JSON object of secret fields"
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left ("invalid secret JSON body: " ++ err)
-        Right fields -> Right fields
-
-splitCrlfLines :: String -> [String]
-splitCrlfLines = foldr step [""] . filter (/= '\r')
- where
-  step '\n' acc = "" : acc
-  step c (cur : rest) = (c : cur) : rest
-  step c [] = [[c]]
-
-trimHeader :: String -> String
-trimHeader = f . f where f = reverse . dropWhile isSpace
-
-data PulumiObjectRequestError
-  = PulumiObjectMethodNotAllowed String
-  | PulumiObjectRequestTooLarge Int
-  | AuthorityObjectRequestTooLarge Int
-  | PulumiObjectRequestEmpty
-  | PulumiObjectRequestMalformed String
-  | PulumiObjectStackInvalid String
-  | AuthorityObjectLogicalNameInvalid String
-  | AuthorityObjectExpectedVersionInvalid String
-  | AuthorityObjectLeaseGuardInvalid String
-  | AuthorityObjectPayloadInvalid AuthorityObjectPayloadError
-  | PulumiObjectLoopbackUnverified
-  deriving (Eq, Show)
-
-decodePulumiObjectRequest
-  :: BS.ByteString -> Either PulumiObjectRequestError PulumiObjectRequest
-decodePulumiObjectRequest rawRequest = do
-  request <- decodePulumiObjectJson rawRequest
-  case validatePulumiObjectStackName (pulumiObjectStackName request) of
-    Left err -> Left (PulumiObjectStackInvalid err)
-    Right stackName
-      | not (pulumiObjectLoopbackNodePortVerified request) ->
-          Left PulumiObjectLoopbackUnverified
-      | otherwise ->
-          Right request {pulumiObjectStackName = stackName}
-
-decodePulumiObjectPutRequest
-  :: BS.ByteString -> Either PulumiObjectRequestError PulumiObjectPutRequest
-decodePulumiObjectPutRequest rawRequest = do
-  request <- decodePulumiObjectJson rawRequest
-  case validatePulumiObjectStackName (pulumiObjectPutStackName request) of
-    Left err -> Left (PulumiObjectStackInvalid err)
-    Right stackName
-      | not (pulumiObjectPutLoopbackNodePortVerified request) ->
-          Left PulumiObjectLoopbackUnverified
-      | otherwise ->
-          Right request {pulumiObjectPutStackName = stackName}
-
-decodePulumiObjectJson
-  :: (FromJSON a) => BS.ByteString -> Either PulumiObjectRequestError a
-decodePulumiObjectJson rawRequest
-  | method /= "POST" = Left (PulumiObjectMethodNotAllowed method)
-  | BS.length body > pulumiObjectRequestMaxBytes =
-      Left (PulumiObjectRequestTooLarge (BS.length body))
-  | BS.null (BS8.dropWhile isSpace body) = Left PulumiObjectRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (PulumiObjectRequestMalformed err)
-        Right request -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-decodeAuthorityObjectRequest
-  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityObjectRequest
-decodeAuthorityObjectRequest rawRequest = do
-  request <- decodeAuthorityObjectJson rawRequest
-  logicalName <-
-    case validateAuthorityObjectLogicalName (authorityObjectLogicalName request) of
-      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
-      Right validated -> Right validated
-  if authorityObjectLoopbackNodePortVerified request
-    then Right request {authorityObjectLogicalName = logicalName}
-    else Left PulumiObjectLoopbackUnverified
-
-decodeAuthorityObjectCasRequest
-  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityObjectCasRequest
-decodeAuthorityObjectCasRequest rawRequest = do
-  request <- decodeAuthorityObjectJson rawRequest
-  logicalName <-
-    case validateAuthorityObjectLogicalName (authorityObjectCasLogicalName request) of
-      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
-      Right validated -> Right validated
-  expectedVersion <- traverse validateExpectedVersion (authorityObjectCasExpectedVersion request)
-  leaseGuard <- traverse validateAuthorityLeaseGuard (authorityObjectCasLeaseGuard request)
-  case ("leases/" `Text.isPrefixOf` logicalName, leaseGuard) of
-    (True, Nothing) -> Right ()
-    (True, Just _) ->
-      Left
-        ( AuthorityObjectLeaseGuardInvalid
-            "lease projection acquire/release CAS must not carry a second lease guard"
-        )
-    (False, Nothing) ->
-      Left
-        ( AuthorityObjectLeaseGuardInvalid
-            "checkpoint, SMTP, and global-intent CAS requires a current lease guard"
-        )
-    (False, Just _) -> Right ()
-  case validateAuthorityObjectPayloadSize
-    logicalName
-    (authorityObjectCasPayload request) of
-    Left err -> Left (AuthorityObjectPayloadInvalid err)
-    Right () -> Right ()
-  if authorityObjectCasLoopbackNodePortVerified request
-    then
-      Right
-        request
-          { authorityObjectCasLogicalName = logicalName
-          , authorityObjectCasExpectedVersion = expectedVersion
-          , authorityObjectCasLeaseGuard = leaseGuard
-          }
-    else Left PulumiObjectLoopbackUnverified
-
-validateExpectedVersion
-  :: Text.Text -> Either PulumiObjectRequestError Text.Text
-validateExpectedVersion version
-  | Text.null stripped =
-      Left (AuthorityObjectExpectedVersionInvalid "expected_version must not be empty")
-  | Text.length stripped > 512 =
-      Left (AuthorityObjectExpectedVersionInvalid "expected_version must be 512 characters or fewer")
-  | otherwise = Right stripped
- where
-  stripped = Text.strip version
-
-validateAuthorityLeaseGuard
-  :: AuthorityObjectLeaseGuard
-  -> Either PulumiObjectRequestError AuthorityObjectLeaseGuard
-validateAuthorityLeaseGuard guard = do
-  logicalName <-
-    case validateAuthorityObjectLogicalName (authorityLeaseGuardLogicalName guard) of
-      Left err -> Left (AuthorityObjectLogicalNameInvalid err)
-      Right validated
-        | "leases/" `Text.isPrefixOf` validated -> Right validated
-        | otherwise ->
-            Left
-              ( AuthorityObjectLogicalNameInvalid
-                  "lease_guard.logical_name must use the leases/ namespace"
-              )
-  expectedVersion <- validateExpectedVersion (authorityLeaseGuardExpectedVersion guard)
-  if Text.null (Text.strip (authorityLeaseGuardOwnerNonce guard))
-    then
-      Left
-        ( AuthorityObjectLeaseGuardInvalid
-            "lease_guard.owner_nonce must not be empty"
-        )
-    else
-      if authorityLeaseGuardFencingToken guard == 0
-        then
-          Left
-            ( AuthorityObjectLeaseGuardInvalid
-                "lease_guard.fencing_token must be positive"
-            )
-        else
-          Right
-            guard
-              { authorityLeaseGuardLogicalName = logicalName
-              , authorityLeaseGuardExpectedVersion = expectedVersion
-              , authorityLeaseGuardOwnerNonce =
-                  Text.strip (authorityLeaseGuardOwnerNonce guard)
-              }
-
-decodeAuthorityClockRequest
-  :: BS.ByteString -> Either PulumiObjectRequestError AuthorityClockRequest
-decodeAuthorityClockRequest rawRequest = do
-  request <- decodeAuthorityObjectJson rawRequest
-  if authorityClockLoopbackNodePortVerified request
-    then Right request
-    else Left PulumiObjectLoopbackUnverified
-
-decodeTargetSecretReadRequest
-  :: BS.ByteString
-  -> Either TargetSecret.TargetSecretRequestError TargetSecret.TargetSecretReadRequest
-decodeTargetSecretReadRequest rawRequest = do
-  request <- decodeTargetSecretJson rawRequest
-  TargetSecret.validateTargetSecretReadRequest request
-
-decodeTargetSecretCasRequest
-  :: BS.ByteString
-  -> Either TargetSecret.TargetSecretRequestError TargetSecret.TargetSecretCasRequest
-decodeTargetSecretCasRequest rawRequest = do
-  request <- decodeTargetSecretJson rawRequest
-  TargetSecret.validateTargetSecretCasRequest request
-
-decodeTargetSecretJson
-  :: (FromJSON value)
-  => BS.ByteString
-  -> Either TargetSecret.TargetSecretRequestError value
-decodeTargetSecretJson rawRequest
-  | method /= "POST" = Left (TargetSecret.TargetSecretMethodNotAllowed method)
-  | BS.length body > TargetSecret.targetSecretRequestMaxBytes =
-      Left
-        ( TargetSecret.TargetSecretRequestTooLarge
-            (BS.length body)
-            TargetSecret.targetSecretRequestMaxBytes
-        )
-  | BS.null (BS8.dropWhile isSpace body) = Left TargetSecret.TargetSecretRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (TargetSecret.TargetSecretRequestMalformed err)
-        Right request -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-decodeAuthorityObjectJson
-  :: (FromJSON a) => BS.ByteString -> Either PulumiObjectRequestError a
-decodeAuthorityObjectJson rawRequest
-  | method /= "POST" = Left (PulumiObjectMethodNotAllowed method)
-  | BS.length body > authorityObjectRequestMaxBytes =
-      Left (AuthorityObjectRequestTooLarge (BS.length body))
-  | BS.null (BS8.dropWhile isSpace body) = Left PulumiObjectRequestEmpty
-  | otherwise =
-      case eitherDecodeStrict' body of
-        Left err -> Left (PulumiObjectRequestMalformed err)
-        Right request -> Right request
- where
-  method = operatorSecretRequestMethod rawRequest
-  body = requestBodyBytes rawRequest
-
-renderPulumiObjectRequestError :: PulumiObjectRequestError -> String
-renderPulumiObjectRequestError err = case err of
-  PulumiObjectMethodNotAllowed method ->
-    "method " ++ method ++ " is not supported for daemon Pulumi object-store routes"
-  PulumiObjectRequestTooLarge size ->
-    "Pulumi object-store request body is too large: "
-      ++ show size
-      ++ " bytes; maximum is "
-      ++ show pulumiObjectRequestMaxBytes
-  AuthorityObjectRequestTooLarge size ->
-    "authority object-store request body is too large: "
-      ++ show size
-      ++ " bytes; maximum is "
-      ++ show authorityObjectRequestMaxBytes
-  PulumiObjectRequestEmpty ->
-    "empty request body; expected JSON object with stack and loopback_nodeport_verified"
-  PulumiObjectRequestMalformed detail ->
-    "invalid Pulumi object-store JSON body: " ++ detail
-  PulumiObjectStackInvalid detail ->
-    "invalid Pulumi stack name: " ++ detail
-  AuthorityObjectLogicalNameInvalid detail ->
-    "invalid authority logical name: " ++ detail
-  AuthorityObjectExpectedVersionInvalid detail ->
-    "invalid authority expected version: " ++ detail
-  AuthorityObjectLeaseGuardInvalid detail ->
-    "invalid authority lease guard: " ++ detail
-  AuthorityObjectPayloadInvalid payloadError ->
-    "authority object payload for `"
-      ++ Text.unpack (authorityPayloadLogicalName payloadError)
-      ++ "` is too large: "
-      ++ show (authorityPayloadObservedBytes payloadError)
-      ++ " bytes; maximum is "
-      ++ show (authorityPayloadMaximumBytes payloadError)
-  PulumiObjectLoopbackUnverified ->
-    "loopback NodePort restriction is not verified; refusing daemon Pulumi object-store route"
-
-handlePulumiObjectGet :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handlePulumiObjectGet sock env rawRequest =
-  case decodePulumiObjectRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right request -> do
-      result <- readDaemonPulumiObject env (pulumiObjectStackName request)
-      case result of
-        Left err -> sendPulumiObjectActionError sock err
-        Right Nothing ->
-          sendLazyHttpResponse sock 200 "application/json" (encode PulumiObjectAbsent)
-        Right (Just checkpoint) ->
-          sendLazyHttpResponse sock 200 "application/json" (encode (PulumiObjectPresent checkpoint))
-
-handlePulumiObjectPut :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handlePulumiObjectPut sock env rawRequest =
-  case decodePulumiObjectPutRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right request -> do
-      result <-
-        writeDaemonPulumiObject
-          env
-          (pulumiObjectPutStackName request)
-          (pulumiObjectPutCheckpoint request)
-      case result of
-        Left err -> sendPulumiObjectActionError sock err
-        Right () ->
-          sendLazyHttpResponse sock 200 "application/json" (encode (object ["stored" .= True]))
-
-handlePulumiObjectDelete :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handlePulumiObjectDelete sock env rawRequest =
-  case decodePulumiObjectRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right request -> do
-      result <- deleteDaemonPulumiObject env (pulumiObjectStackName request)
-      case result of
-        Left err -> sendPulumiObjectActionError sock err
-        Right () ->
-          sendLazyHttpResponse sock 200 "application/json" (encode (object ["deleted" .= True]))
-
-handleAuthorityObjectGet :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleAuthorityObjectGet sock env rawRequest =
-  case decodeAuthorityObjectRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right request -> do
-      result <- readDaemonAuthorityObject env (authorityObjectLogicalName request)
-      case result of
-        Left err -> sendAuthorityObjectActionError sock err
-        Right observation ->
-          sendLazyHttpResponse sock 200 "application/json" (encode observation)
-
-handleAuthorityObjectCas :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleAuthorityObjectCas sock env rawRequest =
-  case decodeAuthorityObjectCasRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right request -> do
-      result <- compareAndSwapDaemonAuthorityObject env request
-      case result of
-        Left err -> sendAuthorityObjectActionError sock err
-        Right response ->
-          sendLazyHttpResponse sock 200 "application/json" (encode response)
-
-handleAuthorityClock :: Socket -> BS.ByteString -> IO ()
-handleAuthorityClock sock rawRequest =
-  case decodeAuthorityClockRequest rawRequest of
-    Left (PulumiObjectMethodNotAllowed _) ->
-      sendPulumiObjectRequestError
-        sock
-        405
-        (PulumiObjectMethodNotAllowed (operatorSecretRequestMethod rawRequest))
-    Left err -> sendPulumiObjectRequestError sock 400 err
-    Right _ -> do
-      now <- getCurrentTime
-      sendLazyHttpResponse
-        sock
-        200
-        "application/json"
-        (encode (AuthorityClockResponse (authorityMicrosFromUtc now)))
-
-authorityMicrosFromUtc :: UTCTime -> Natural
-authorityMicrosFromUtc now =
-  fromInteger
-    ( max
-        0
-        (floor (utcTimeToPOSIXSeconds now * 1000000) :: Integer)
-    )
-
-handleTargetSecretRead :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleTargetSecretRead sock env rawRequest =
-  case decodeTargetSecretReadRequest rawRequest of
-    Left (TargetSecret.TargetSecretMethodNotAllowed _) ->
-      sendTargetSecretRequestError sock 405 (TargetSecret.TargetSecretMethodNotAllowed method)
-    Left err -> sendTargetSecretRequestError sock 400 err
-    Right request -> do
-      result <-
-        readTargetSecret
-          env
-          (TargetSecret.targetSecretReadCoordinate request)
-      case result of
-        Left err -> sendTargetSecretActionError sock err
-        Right observation ->
-          sendLazyHttpResponse sock 200 "application/json" (encode observation)
- where
-  method = operatorSecretRequestMethod rawRequest
-
-handleTargetSecretCas :: Socket -> DaemonEnv -> BS.ByteString -> IO ()
-handleTargetSecretCas sock env rawRequest =
-  case decodeTargetSecretCasRequest rawRequest of
-    Left (TargetSecret.TargetSecretMethodNotAllowed _) ->
-      sendTargetSecretRequestError sock 405 (TargetSecret.TargetSecretMethodNotAllowed method)
-    Left err -> sendTargetSecretRequestError sock 400 err
-    Right request -> do
-      result <- compareAndSwapTargetSecretVault env request
-      case result of
-        Left err -> sendTargetSecretActionError sock err
-        Right response ->
-          sendLazyHttpResponse sock 200 "application/json" (encode response)
- where
-  method = operatorSecretRequestMethod rawRequest
-
-data TargetSecretActionError
-  = TargetSecretAuthUnavailable !String
-  | TargetSecretIdentityRefused !TargetSecret.TargetSecretRequestError
-  | TargetSecretVaultUnavailable !String
-  | TargetSecretStoredPayloadInvalid !TargetSecret.TargetSecretRequestError
-  deriving (Eq, Show)
-
-sendTargetSecretRequestError
-  :: Socket -> Int -> TargetSecret.TargetSecretRequestError -> IO ()
-sendTargetSecretRequestError sock status err =
-  sendHttpResponse sock status "text/plain" (show err ++ "\n")
-
-sendTargetSecretActionError :: Socket -> TargetSecretActionError -> IO ()
-sendTargetSecretActionError sock err = case err of
-  TargetSecretAuthUnavailable detail ->
-    sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
-  TargetSecretIdentityRefused detail ->
-    sendHttpResponse sock 409 "text/plain" (show detail ++ "\n")
-  TargetSecretVaultUnavailable detail ->
-    sendHttpResponse sock 502 "text/plain" (detail ++ "\n")
-  TargetSecretStoredPayloadInvalid detail ->
-    sendHttpResponse
-      sock
-      502
-      "text/plain"
-      ("target-secret Vault payload is invalid: " ++ show detail ++ "\n")
-
-readTargetSecret
-  :: DaemonEnv
-  -> TargetSecret.TargetSecretCoordinate
-  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretObservation)
-readTargetSecret env coordinate = do
-  identityResult <- attestTargetSecretCoordinate env coordinate
-  case identityResult of
-    Left err -> pure (Left err)
-    Right () -> do
-      sessionResult <- resolveTargetSecretVaultSession (envBootConfig env)
-      case sessionResult of
-        Left err -> pure (Left (TargetSecretAuthUnavailable err))
-        Right session -> do
-          -- Sprint 1.64: route the read through the cached session so a stale
-          -- cached token that draws a 403 triggers exactly one
-          -- invalidate-and-relogin before the read is reinterpreted.
-          result <-
-            withSessionToken session $ \token ->
-              rawTargetSecretVersionedRead (sessionAddress session) token coordinate
-          pure (interpretTargetSecretRead result)
-
--- | The raw versioned read, surfacing the 'HttpError' so a caller (via
--- 'withSessionToken') can react to a 403.
-rawTargetSecretVersionedRead
-  :: VaultAddress
-  -> VaultToken
-  -> TargetSecret.TargetSecretCoordinate
-  -> IO (Either HttpError KvV2VersionedSecret)
-rawTargetSecretVersionedRead address token coordinate =
-  vaultKvReadVersionedV2
-    address
-    token
-    (TargetSecret.targetSecretCoordinateVaultMount coordinate)
-    (TargetSecret.targetSecretCoordinateKvPath coordinate)
-
--- | Pure interpretation of a versioned target-secret read.
-interpretTargetSecretRead
-  :: Either HttpError KvV2VersionedSecret
-  -> Either TargetSecretActionError TargetSecret.TargetSecretObservation
-interpretTargetSecretRead result = case result of
-  Left (HttpStatus 404 _) -> Right TargetSecret.TargetSecretMissing
-  Left err ->
-    Left
-      ( TargetSecretVaultUnavailable
-          ("target-secret Vault read failed: " ++ renderHttpError err)
-      )
-  Right versioned ->
-    case TargetSecret.targetSecretRecordFromVaultFields
-      (kvV2VersionedSecretData versioned) of
-      Left err -> Left (TargetSecretStoredPayloadInvalid err)
-      Right record ->
-        Right
-          ( TargetSecret.TargetSecretObserved
-              (kvV2VersionedSecretVersion versioned)
-              record
-          )
-
--- | Post-write re-read used by 'compareAndSwapTargetSecretVault', which already
--- holds the token from its guarded write.
-readTargetSecretWithToken
-  :: VaultAddress
-  -> VaultToken
-  -> TargetSecret.TargetSecretCoordinate
-  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretObservation)
-readTargetSecretWithToken address token coordinate =
-  interpretTargetSecretRead <$> rawTargetSecretVersionedRead address token coordinate
-
-compareAndSwapTargetSecretVault
-  :: DaemonEnv
-  -> TargetSecret.TargetSecretCasRequest
-  -> IO (Either TargetSecretActionError TargetSecret.TargetSecretCasResponse)
-compareAndSwapTargetSecretVault env request = do
-  let coordinate = TargetSecret.targetSecretCasCoordinate request
-  identityResult <- attestTargetSecretCoordinate env coordinate
-  case identityResult of
-    Left err -> pure (Left err)
-    Right () -> do
-      tokenResult <- resolveTargetSecretVaultToken (envBootConfig env)
-      case tokenResult of
-        Left err -> pure (Left (TargetSecretAuthUnavailable err))
-        Right (address, token) ->
-          case TargetSecret.targetSecretRecordToVaultFields (TargetSecret.targetSecretCasRecord request) of
-            Left err -> pure (Left (TargetSecretStoredPayloadInvalid err))
-            Right fields -> do
-              result <-
-                vaultKvCasWriteV2
-                  address
-                  token
-                  (TargetSecret.targetSecretCoordinateVaultMount coordinate)
-                  (TargetSecret.targetSecretCoordinateKvPath coordinate)
-                  (KvV2Cas (TargetSecret.targetSecretCasExpectedVersion request))
-                  fields
-              case result of
-                Right version ->
-                  pure (Right (TargetSecret.TargetSecretCasApplied version))
-                Left err
-                  | vaultKvCasMismatch err -> do
-                      observed <- readTargetSecretWithToken address token coordinate
-                      pure (TargetSecret.TargetSecretCasConflict <$> observed)
-                  | otherwise ->
-                      pure
-                        ( Left
-                            ( TargetSecretVaultUnavailable
-                                ("target-secret Vault CAS failed: " ++ renderHttpError err)
-                            )
-                        )
-
-attestTargetSecretCoordinate
-  :: DaemonEnv
-  -> TargetSecret.TargetSecretCoordinate
-  -> IO (Either TargetSecretActionError ())
-attestTargetSecretCoordinate env coordinate = do
-  clusterResult <- loadDaemonClusterId (envConfigPath env)
-  pure $ case clusterResult of
-    Left err -> Left (TargetSecretAuthUnavailable err)
-    Right clusterId ->
-      case TargetSecret.validateTargetSecretIdentity clusterId coordinate of
-        Left refusal -> Left (TargetSecretIdentityRefused refusal)
-        Right () -> Right ()
-
-vaultKvCasMismatch :: HttpError -> Bool
-vaultKvCasMismatch err = case err of
-  HttpStatus 400 body ->
-    let normalized = map toLower body
-     in "check-and-set parameter did not match" `isInfixOf` normalized
-  _ -> False
-
-sendPulumiObjectRequestError :: Socket -> Int -> PulumiObjectRequestError -> IO ()
-sendPulumiObjectRequestError sock status err =
-  sendHttpResponse sock status "text/plain" (renderPulumiObjectRequestError err ++ "\n")
-
-sendPulumiObjectActionError :: Socket -> String -> IO ()
-sendPulumiObjectActionError sock detail =
-  sendHttpResponse sock 503 "text/plain" ("Pulumi object-store unavailable: " ++ detail ++ "\n")
-
-sendAuthorityObjectActionError :: Socket -> String -> IO ()
-sendAuthorityObjectActionError sock detail =
-  sendHttpResponse sock 503 "text/plain" ("authority object-store unavailable: " ++ detail ++ "\n")
-
 data DaemonPulumiObjectMaterial = DaemonPulumiObjectMaterial
   { daemonPulumiObjectStore :: ObjectStoreConfig
   , daemonPulumiCipher :: DekCipher
@@ -5261,105 +4435,14 @@ data DaemonPulumiObjectMaterial = DaemonPulumiObjectMaterial
   , daemonPulumiClusterId :: Text.Text
   }
 
-readDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String (Maybe ByteString))
-readDaemonPulumiObject env stackName = do
-  materialResult <- resolveDaemonPulumiObjectMaterial env
-  case materialResult of
-    Left err -> pure (Left err)
-    Right material ->
-      withGatewayChildForBoundedRest env "pulumi-object-get" $ do
-        result <-
-          getLogical
-            (daemonPulumiObjectStore material)
-            (daemonPulumiCipher material)
-            (daemonPulumiHmacKey material)
-            (daemonPulumiClusterId material)
-            (LogicalPulumiStack stackName)
-        pure $ case result of
-          Left (EncryptedObjectMissing _) -> Right Nothing
-          Left err -> Left (renderEncryptedObjectError err)
-          Right checkpoint -> Right (Just checkpoint)
-
-writeDaemonPulumiObject :: DaemonEnv -> Text.Text -> ByteString -> IO (Either String ())
-writeDaemonPulumiObject env stackName checkpoint = do
-  materialResult <- resolveDaemonPulumiObjectMaterial env
-  case materialResult of
-    Left err -> pure (Left err)
-    Right material ->
-      withGatewayChildForBoundedRest env "pulumi-object-put" $ do
-        result <-
-          putLogical
-            (daemonPulumiObjectStore material)
-            (daemonPulumiCipher material)
-            (daemonPulumiHmacKey material)
-            (daemonPulumiClusterId material)
-            (LogicalPulumiStack stackName)
-            checkpoint
-        pure $ case result of
-          Left err -> Left (renderEncryptedObjectError err)
-          Right () -> Right ()
-
--- | The daemon's authority-object I/O seam: partial applications of the shared
--- encrypted-object primitives over the daemon's resolved Pulumi material. The
--- host-direct CLI builds the identical seam over its own handle, so the
--- envelopes are byte-identical (see "Prodbox.Lifecycle.AuthorityObjectCore").
-daemonAuthorityCore :: DaemonPulumiObjectMaterial -> AuthorityCore IO
-daemonAuthorityCore material =
-  AuthorityCore
-    { authGetVersioned = getLogicalVersioned store cipher hmacKey clusterId
-    , authPutIfAbsent = putLogicalIfAbsent store cipher hmacKey clusterId
-    , authPutIfVersion = putLogicalIfVersion store cipher hmacKey clusterId
-    , authNow = getCurrentTime
-    }
- where
-  store = daemonPulumiObjectStore material
-  cipher = daemonPulumiCipher material
-  hmacKey = daemonPulumiHmacKey material
-  clusterId = daemonPulumiClusterId material
-
-readDaemonAuthorityObject
-  :: DaemonEnv -> Text.Text -> IO (Either String AuthorityObjectObservation)
-readDaemonAuthorityObject env logicalName = do
-  materialResult <- resolveDaemonPulumiObjectMaterial env
-  case materialResult of
-    Left err -> pure (Left err)
-    Right material ->
-      withGatewayChildForBoundedRest env "authority-object-get" $
-        readAuthorityObjectCore (daemonAuthorityCore material) logicalName
-
-compareAndSwapDaemonAuthorityObject
-  :: DaemonEnv
-  -> AuthorityObjectCasRequest
-  -> IO (Either String AuthorityObjectCasResponse)
-compareAndSwapDaemonAuthorityObject env request = do
-  materialResult <- resolveDaemonPulumiObjectMaterial env
-  case materialResult of
-    Left err -> pure (Left err)
-    Right material ->
-      withGatewayChildForBoundedRest env "authority-object-cas" $
-        compareAndSwapAuthorityObjectCore (daemonAuthorityCore material) request
-
-deleteDaemonPulumiObject :: DaemonEnv -> Text.Text -> IO (Either String ())
-deleteDaemonPulumiObject env stackName = do
-  materialResult <- resolveDaemonPulumiObjectMaterial env
-  case materialResult of
-    Left err -> pure (Left err)
-    Right material ->
-      withGatewayChildForBoundedRest env "pulumi-object-delete" $ do
-        let key =
-              objectKeyForOpaqueId
-                (opaqueObjectId (daemonPulumiHmacKey material) (LogicalPulumiStack stackName))
-        deleteObject (daemonPulumiObjectStore material) key
-
 resolveDaemonPulumiObjectMaterial :: DaemonEnv -> IO (Either String DaemonPulumiObjectMaterial)
 resolveDaemonPulumiObjectMaterial env = go 0
  where
-  -- Each call does a fresh Vault k8s-auth login + object-store HMAC read. Right
-  -- after a fresh `vault reconcile` (the post-teardown AWS postflight) or a daemon
-  -- restart, the login can succeed before the role's policy has fully propagated,
-  -- yielding a transient 403. Retry with a fresh re-login (daemonWorkerRetryPolicy:
-  -- 5 attempts, exp backoff) so a transient failure self-heals instead of failing
-  -- the postflight object-store read (readiness hardening).
+  -- Each attempt resolves the renewable Gateway session and re-reads the
+  -- continuity-store HMAC. Right after a fresh `vault reconcile` or daemon
+  -- restart, the role policy can still be propagating and yield a transient
+  -- 403. Retry within the compiled worker policy so startup continuity recovery
+  -- self-heals without exposing a generic object-store HTTP route.
   go attemptIndex = do
     result <- resolveDaemonPulumiObjectMaterialOnce env
     case result of
@@ -5432,162 +4515,15 @@ daemonPulumiObjectStoreConfig config =
           , objectStoreSecretKey = gatewayMinioSecretKey creds
           }
 
--- | Errors from the operator-secret write path, mapped to HTTP status codes.
-data OperatorWriteError
-  = OperatorWriteAuthUnconfigured String
-  | OperatorWriteAuthFailed String
-  | OperatorWriteVaultFailed String
-  deriving (Eq, Show)
-
--- | Handle @POST /v1/secret/<logical>@: require the operator JWT, decode the
--- body, exchange the JWT for a Vault token under the operator-write role, and
--- write the KV object. Never echoes the written secret back.
-handleOperatorSecretWrite :: Socket -> DaemonEnv -> BS.ByteString -> String -> IO ()
-handleOperatorSecretWrite sock env rawRequest logical =
-  case operatorSecretJwtHeader rawRequest of
-    Nothing ->
-      sendHttpResponse sock 401 "text/plain" ("missing " ++ operatorJwtHeaderName ++ " header\n")
-    Just jwt ->
-      case decodeOperatorSecretFields (requestBodyBytes rawRequest) of
-        Left err -> sendHttpResponse sock 400 "text/plain" (err ++ "\n")
-        Right fields -> do
-          writeResult <-
-            writeOperatorSecret (envBootConfig env) (Text.pack jwt) (Text.pack logical) fields
-          case writeResult of
-            Left (OperatorWriteAuthUnconfigured detail) ->
-              sendHttpResponse sock 503 "text/plain" (detail ++ "\n")
-            Left (OperatorWriteAuthFailed detail) ->
-              sendHttpResponse sock 403 "text/plain" (detail ++ "\n")
-            Left (OperatorWriteVaultFailed detail) ->
-              sendHttpResponse sock 502 "text/plain" (detail ++ "\n")
-            Right () ->
-              sendLazyHttpResponse sock 200 "application/json" (encode (object ["written" .= True]))
-
--- | Exchange the operator JWT for a Vault token under the operator-write role
--- and write the KV v2 object at @secret/<logical>@.
---
--- LEGACY-ESCAPE[per-request-operator-secret-vault-login]: a second gateway
--- fresh Vault Kubernetes-auth login, distinct from resolveGatewayVaultTokenFor,
--- performed on every operator-secret write. Registered in
--- Prodbox.Legacy.EscapeRegistry; folded onto the cached session in Sprint 1.64.
-writeOperatorSecret
-  :: DaemonConfig
-  -> Text.Text
-  -> Text.Text
-  -> Map Text.Text Text.Text
-  -> IO (Either OperatorWriteError ())
-writeOperatorSecret config jwt logical fields =
-  case daemonVaultAuth config of
-    Nothing ->
-      pure
-        ( Left
-            (OperatorWriteAuthUnconfigured "operator-write unavailable: gateway Vault auth is not configured")
-        )
-    Just auth -> do
-      let address = VaultAddress (Text.pack (gatewayVaultAddress auth))
-      loginResult <-
-        vaultKubernetesLogin
-          address
-          (Text.pack (gatewayVaultAuthPath auth))
-          operatorWriteRoleName
-          jwt
-      case loginResult of
-        Left err ->
-          pure
-            ( Left
-                (OperatorWriteAuthFailed ("operator-write Vault Kubernetes auth failed: " ++ renderHttpError err))
-            )
-        Right token -> do
-          writeResult <- vaultKvWriteV2 address token "secret" logical fields
-          pure $ case writeResult of
-            Left err ->
-              Left (OperatorWriteVaultFailed ("operator-write Vault KV write failed: " ++ renderHttpError err))
-            Right () -> Right ()
-
-data FederationChildBootstrapError
-  = FederationVaultUnavailable String
-  | FederationChildBootstrapMissing
-  deriving (Eq, Show)
-
-federationBootstrapChildId :: String -> Maybe String
-federationBootstrapChildId path = do
-  rest <- stripPrefix federationChildPathPrefix path
-  let suffix = federationChildBootstrapSuffix
-  if suffix `isSuffixOf` rest
-    then
-      let childId = take (length rest - length suffix) rest
-       in if null childId then Nothing else Just childId
-    else Nothing
-
-readFederationChildren :: DaemonConfig -> IO (Either String [ChildMetadata])
-readFederationChildren config = do
-  vaultResult <- resolveGatewayVaultToken config
-  case vaultResult of
-    Left err -> pure (Left err)
-    Right (address, token) -> do
-      indexResult <- vaultKvReadV2 address token "secret" federationChildrenIndexKvLogicalPath
-      case indexResult of
-        Left (HttpStatus 404 _) -> pure (Right [])
-        Left err -> pure (Left ("federation inventory unavailable: " ++ renderHttpError err))
-        Right fields ->
-          case decodePayloadJsonField decodeChildIndex fields of
-            Left err -> pure (Left ("federation inventory index invalid: " ++ err))
-            Right (ChildIndex childIds) -> readFederationChildMetadataList address token childIds
-
-readFederationChildMetadata
-  :: VaultAddress -> VaultToken -> Text.Text -> IO (Either String ChildMetadata)
-readFederationChildMetadata address token childId = do
-  readResult <- vaultKvReadV2 address token "secret" (childMetadataKvLogicalPath childId)
-  pure $ case readResult of
-    Left err -> Left ("federation child metadata unavailable: " ++ renderHttpError err)
-    Right fields -> decodePayloadJsonField decodeChildMetadata fields
-
-readFederationChildMetadataList
-  :: VaultAddress -> VaultToken -> [Text.Text] -> IO (Either String [ChildMetadata])
-readFederationChildMetadataList _ _ [] = pure (Right [])
-readFederationChildMetadataList address token (childId : rest) = do
-  current <- readFederationChildMetadata address token childId
-  case current of
-    Left err -> pure (Left err)
-    Right metadata -> do
-      remaining <- readFederationChildMetadataList address token rest
-      pure ((metadata :) <$> remaining)
-
-readFederationChildBootstrap
-  :: DaemonConfig -> Text.Text -> IO (Either FederationChildBootstrapError ChildBootstrapCredential)
-readFederationChildBootstrap config childId = do
-  vaultResult <- resolveGatewayVaultToken config
-  case vaultResult of
-    Left err -> pure (Left (FederationVaultUnavailable err))
-    Right (address, token) -> do
-      readResult <- vaultKvReadV2 address token "secret" (childBootstrapKvLogicalPath childId)
-      pure $ case readResult of
-        Left (HttpStatus 404 _) -> Left FederationChildBootstrapMissing
-        Left err -> Left (FederationVaultUnavailable ("federation bootstrap unavailable: " ++ renderHttpError err))
-        Right fields ->
-          case decodePayloadJsonField decodeChildBootstrapCredential fields of
-            Left err -> Left (FederationVaultUnavailable ("federation bootstrap payload invalid: " ++ err))
-            Right credential -> Right credential
-
 resolveGatewayVaultToken :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
 resolveGatewayVaultToken =
-  resolveGatewayVaultTokenFor "federation inventory unavailable"
-
-resolveTargetSecretVaultToken
-  :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
-resolveTargetSecretVaultToken =
-  resolveGatewayVaultTokenFor "target-secret unavailable"
-
-resolveTargetSecretVaultSession :: DaemonConfig -> IO (Either String VaultSession)
-resolveTargetSecretVaultSession =
-  resolveGatewayVaultSessionFor "target-secret unavailable"
+  resolveGatewayVaultTokenFor "gateway continuity authority unavailable"
 
 -- | Sprint 1.64: the gateway daemon's own service-account Vault token is now
 -- served from the shared cached renewable session in "Prodbox.Vault.Session"
 -- rather than a fresh Kubernetes login on every request (counterexample
 -- @LCPC-2026-07-11@'s gateway hot-path CPU driver). The session caches the
--- token, renews it single-flight at two-thirds of the lease, and — through
--- 'withSessionToken' — reacts to a @403@ with one invalidate-and-relogin.
+-- token and renews it single-flight at two-thirds of the lease.
 resolveGatewayVaultTokenFor
   :: String
   -> DaemonConfig
@@ -5664,10 +4600,37 @@ readGatewayServiceAccountTokenFor label path = do
             then Left (label ++ ": gateway service-account token is empty")
             else Right token
 
-renderMetricsText :: UTCTime -> DaemonEnv -> DaemonState -> String
-renderMetricsText now env state =
+recordObjectStoreDuration :: MetricsRegistry -> Natural -> IO ()
+recordObjectStoreDuration registry duration =
+  atomically $
+    modifyTVar'
+      (metricsObjectStoreDurationsMillis registry)
+      (take 1024 . (duration :))
+
+currentHeapLiveBytes :: IO Natural
+currentHeapLiveBytes = do
+  enabled <- getRTSStatsEnabled
+  if enabled
+    then fromIntegral . gcdetails_live_bytes . gc <$> getRTSStats
+    else pure 0
+
+objectStoreP99Millis :: [Natural] -> Natural
+objectStoreP99Millis [] = 0
+objectStoreP99Millis durations =
+  let ordered = sortOn id durations
+      rank = ((99 * length ordered) + 99) `div` 100
+   in case drop (rank - 1) ordered of
+        value : _ -> value
+        [] -> 0
+
+renderMetricsText :: UTCTime -> Natural -> [Natural] -> DaemonEnv -> DaemonState -> String
+renderMetricsText now heapLiveBytes objectStoreDurations env state =
   unlines
-    [ "# TYPE prodbox_gateway_signed_replay_assertions gauge"
+    [ "# TYPE prodbox_gateway_heap_live_bytes gauge"
+    , "prodbox_gateway_heap_live_bytes " ++ show heapLiveBytes
+    , "# TYPE prodbox_gateway_object_store_op_p99_millis gauge"
+    , "prodbox_gateway_object_store_op_p99_millis " ++ show (objectStoreP99Millis objectStoreDurations)
+    , "# TYPE prodbox_gateway_signed_replay_assertions gauge"
     , "prodbox_gateway_signed_replay_assertions{daemon=\""
         ++ metricsDaemonName (envMetrics env)
         ++ "\"} "
@@ -6782,38 +5745,227 @@ fetchPublicIp = do
             then pure (Right ip)
             else pure (Left ("unexpected public IP: " ++ ip))
 
--- | Interpret a Route 53 write only from the opaque credential/continuity/
--- claim authority witness. The native client consumes the typed in-memory
--- credential handle directly, and the initial mutation plus every GetChange
--- read-back share the caller's one absolute monotonic deadline.
+-- | Interpret a home Route 53 write only from the opaque credential/
+-- continuity/claim authority witness. The account coordinate is observed from
+-- STS under the same credential handle, and the ownership epoch must be
+-- observed from the activated Lifecycle Authority. A successful GetChange is
+-- only a propagation hint: success is returned solely after the exact record
+-- set is authoritatively listed and read back through 'EnsureDnsRecord'.
 writeNativeDnsRecord
   :: Deadline
+  -> IO (Either String AuthorityEpoch)
   -> DnsAuthority.DnsWriteAction
   -> IO (Either String ())
-writeNativeDnsRecord deadline action =
-  case DnsAuthority.dnsWriteActionCredentialHandle action of
-    Left err -> pure (Left ("Route 53 credential handle refused: " ++ show err))
-    Right credentialHandle -> do
-      let client = NativeRoute53.newRoute53Client credentialHandle httpSend
-          recordSet =
-            NativeRoute53.ResourceRecordSet
-              { NativeRoute53.rrsName = DnsAuthority.dnsWriteActionFqdn action
-              , NativeRoute53.rrsType = NativeRoute53.RecordA
-              , NativeRoute53.rrsTtl =
-                  fromIntegral (DnsAuthority.dnsWriteActionTtl action)
-              , NativeRoute53.rrsRecords =
-                  [DnsAuthority.dnsWriteActionIpv4 action]
-              }
-      changed <-
-        runNativeAwsWithinDeadline deadline $
-          NativeRoute53.changeResourceRecordSets
+writeNativeDnsRecord deadline observeAuthorityEpoch action = do
+  epochResult <- observeAuthorityEpochWithinDeadline deadline observeAuthorityEpoch
+  case epochResult of
+    Left err -> pure (Left err)
+    Right authorityEpoch ->
+      case DnsAuthority.dnsWriteActionCredentialHandle action of
+        Left err -> pure (Left ("Route 53 credential handle refused: " ++ show err))
+        Right credentialHandle -> do
+          identity <-
+            runNativeAwsWithinDeadline deadline $
+              NativeSts.getCallerIdentity
+                (NativeSts.newStsClient credentialHandle httpSend)
+          case identity of
+            Left err -> pure (Left err)
+            Right callerIdentity ->
+              case homeDnsProgramInputs
+                authorityEpoch
+                action
+                (NativeSts.callerIdentityAccount callerIdentity) of
+                Left err -> pure (Left err)
+                Right (coordinate, desired) -> do
+                  let client = NativeRoute53.newRoute53Client credentialHandle httpSend
+                      boundary = nativeHomeDnsBoundary deadline client coordinate
+                  result <-
+                    DnsRecord.runDnsRecordProgram
+                      boundary
+                      coordinate
+                      (DnsRecord.EnsureDnsRecord desired)
+                  pure $ case result of
+                    DnsRecord.DnsEnsureAlreadyConverged -> Right ()
+                    DnsRecord.DnsEnsureAppliedAndReadBack -> Right ()
+                    refused -> Left ("Route 53 exact DNS ensure refused: " ++ show refused)
+
+observeAuthorityEpochWithinDeadline
+  :: Deadline
+  -> IO (Either String AuthorityEpoch)
+  -> IO (Either String AuthorityEpoch)
+observeAuthorityEpochWithinDeadline deadline observe = do
+  completed <- runWithinEmitterDeadline deadline (textPackEither <$> observe)
+  pure (either (Left . Text.unpack) Right completed)
+
+homeDnsProgramInputs
+  :: AuthorityEpoch
+  -> DnsAuthority.DnsWriteAction
+  -> Text.Text
+  -> Either String (DnsRecord.DnsRecordCoordinate, DnsRecord.DnsRecordSet)
+homeDnsProgramInputs authorityEpoch action callerAccount = do
+  account <- dnsCoordinateEither (DnsRecord.mkAwsAccountId callerAccount)
+  zone <- dnsCoordinateEither (DnsRecord.mkHostedZoneId (DnsAuthority.dnsWriteActionZoneId action))
+  let epoch = DnsRecord.mkOwnershipEpoch authorityEpoch
+  coordinate <-
+    dnsCoordinateEither
+      ( DnsRecord.mkPublicARecordCoordinate
+          account
+          zone
+          (DnsAuthority.dnsWriteActionFqdn action)
+          DnsRecord.HomeGatewayDnsOwner
+          epoch
+      )
+  value <-
+    dnsCoordinateEither
+      (DnsRecord.mkDnsRecordValue DnsRecord.DnsRecordA (DnsAuthority.dnsWriteActionIpv4 action))
+  desired <-
+    dnsCoordinateEither
+      ( DnsRecord.mkDnsRecordSet
+          (DnsAuthority.dnsWriteActionTtl action)
+          (value NonEmpty.:| [])
+      )
+  pure (coordinate, desired)
+ where
+  dnsCoordinateEither = either (Left . show) Right
+
+nativeHomeDnsBoundary
+  :: Deadline
+  -> NativeRoute53.Route53Client
+  -> DnsRecord.DnsRecordCoordinate
+  -> DnsRecord.DnsRecordBoundary IO
+nativeHomeDnsBoundary deadline client coordinate =
+  DnsRecord.DnsRecordBoundary
+    { DnsRecord.dnsBoundaryCoordinate = coordinate
+    , DnsRecord.dnsBoundaryObserve = observeNativeDnsRecord deadline client coordinate
+    , DnsRecord.dnsBoundaryEnsure = \desired ->
+        Text.pack
+          `mapLeftIO` applyNativeDnsRecordChange
+            deadline
             client
-            (DnsAuthority.dnsWriteActionZoneId action)
-            [(NativeRoute53.Upsert, recordSet)]
-      case changed of
-        Left err -> pure (Left err)
-        Right (changeId, initialStatus) ->
-          awaitRoute53Change deadline client changeId initialStatus
+            NativeRoute53.Upsert
+            coordinate
+            desired
+    , DnsRecord.dnsBoundaryDestroy = \observed ->
+        Text.pack
+          `mapLeftIO` applyNativeDnsRecordChange
+            deadline
+            client
+            NativeRoute53.DeleteRecord
+            coordinate
+            observed
+    }
+
+mapLeftIO
+  :: (left -> mapped)
+  -> IO (Either left value)
+  -> IO (Either mapped value)
+mapLeftIO f action = either (Left . f) Right <$> action
+
+observeNativeDnsRecord
+  :: Deadline
+  -> NativeRoute53.Route53Client
+  -> DnsRecord.DnsRecordCoordinate
+  -> IO DnsRecord.DnsRecordObservation
+observeNativeDnsRecord deadline client coordinate = do
+  completed <-
+    runWithinEmitterDeadline deadline $
+      Right
+        <$> NativeRoute53.listExactResourceRecordSet
+          client
+          (DnsRecord.hostedZoneIdText (DnsRecord.dnsCoordinateZone coordinate))
+          (DnsRecord.dnsCoordinateName coordinate)
+          (nativeDnsRecordType (DnsRecord.dnsCoordinateType coordinate))
+  pure $ case completed of
+    Left detail -> DnsRecord.DnsRecordEndpointUnready detail
+    Right (Left err) -> dnsObservationFailure err
+    Right (Right Nothing) -> DnsRecord.DnsRecordMissing
+    Right (Right (Just observed)) ->
+      case dnsRecordSetFromNative coordinate observed of
+        Left detail -> DnsRecord.DnsRecordUnobservable (Text.pack detail)
+        Right exact -> DnsRecord.DnsRecordObserved exact
+
+dnsObservationFailure :: AwsClientError -> DnsRecord.DnsRecordObservation
+dnsObservationFailure err = case err of
+  AwsTransportError detail -> DnsRecord.DnsRecordEndpointUnready (Text.pack detail)
+  AwsServiceError fault
+    | awsFaultHttpStatus fault == 429 || awsFaultHttpStatus fault >= 500 ->
+        DnsRecord.DnsRecordEndpointUnready (Text.pack (show err))
+  _ -> DnsRecord.DnsRecordUnobservable (Text.pack (show err))
+
+dnsRecordSetFromNative
+  :: DnsRecord.DnsRecordCoordinate
+  -> NativeRoute53.ResourceRecordSet
+  -> Either String DnsRecord.DnsRecordSet
+dnsRecordSetFromNative coordinate observed = do
+  let expectedName = canonicalDnsName (DnsRecord.dnsCoordinateName coordinate)
+      observedName = canonicalDnsName (NativeRoute53.rrsName observed)
+      expectedType = nativeDnsRecordType (DnsRecord.dnsCoordinateType coordinate)
+      rawValues = NativeRoute53.rrsRecords observed
+  if observedName == expectedName && NativeRoute53.rrsType observed == expectedType
+    then Right ()
+    else Left "Route 53 exact-record response escaped its requested name/type coordinate"
+  if NativeRoute53.rrsTtl observed > 0
+    then Right ()
+    else Left "Route 53 exact-record response carried a non-positive TTL"
+  values <-
+    traverse
+      (dnsCoordinateEither . DnsRecord.mkDnsRecordValue (DnsRecord.dnsCoordinateType coordinate))
+      rawValues
+  nonEmptyValues <-
+    maybe
+      (Left "Route 53 exact-record response carried no values")
+      Right
+      (NonEmpty.nonEmpty values)
+  exact <-
+    dnsCoordinateEither
+      (DnsRecord.mkDnsRecordSet (fromIntegral (NativeRoute53.rrsTtl observed)) nonEmptyValues)
+  if Set.size (DnsRecord.dnsRecordSetValues exact) == length rawValues
+    then Right exact
+    else Left "Route 53 exact-record response carried duplicate values"
+ where
+  dnsCoordinateEither = either (Left . show) Right
+
+canonicalDnsName :: Text.Text -> Text.Text
+canonicalDnsName = Text.toLower . Text.dropWhileEnd (== '.') . Text.strip
+
+nativeDnsRecordType :: DnsRecord.DnsRecordType -> NativeRoute53.RecordType
+nativeDnsRecordType recordType = case recordType of
+  DnsRecord.DnsRecordA -> NativeRoute53.RecordA
+  DnsRecord.DnsRecordTxt -> NativeRoute53.RecordTXT
+
+nativeDnsRecordSet
+  :: DnsRecord.DnsRecordCoordinate
+  -> DnsRecord.DnsRecordSet
+  -> NativeRoute53.ResourceRecordSet
+nativeDnsRecordSet coordinate recordSet =
+  NativeRoute53.ResourceRecordSet
+    { NativeRoute53.rrsName = DnsRecord.dnsCoordinateName coordinate
+    , NativeRoute53.rrsType = nativeDnsRecordType (DnsRecord.dnsCoordinateType coordinate)
+    , NativeRoute53.rrsTtl = fromIntegral (DnsRecord.dnsRecordSetTtl recordSet)
+    , NativeRoute53.rrsRecords =
+        map
+          DnsRecord.dnsRecordValueText
+          (Set.toAscList (DnsRecord.dnsRecordSetValues recordSet))
+    }
+
+applyNativeDnsRecordChange
+  :: Deadline
+  -> NativeRoute53.Route53Client
+  -> NativeRoute53.ChangeAction
+  -> DnsRecord.DnsRecordCoordinate
+  -> DnsRecord.DnsRecordSet
+  -> IO (Either String ())
+applyNativeDnsRecordChange deadline client changeAction coordinate recordSet = do
+  changed <-
+    runNativeAwsWithinDeadline deadline $
+      NativeRoute53.changeResourceRecordSets
+        client
+        (DnsRecord.hostedZoneIdText (DnsRecord.dnsCoordinateZone coordinate))
+        [(changeAction, nativeDnsRecordSet coordinate recordSet)]
+  case changed of
+    Left err -> pure (Left err)
+    Right (changeId, initialStatus) ->
+      awaitRoute53Change deadline client changeId initialStatus
 
 runNativeAwsWithinDeadline
   :: Deadline

@@ -25,6 +25,7 @@ module Prodbox.Lifecycle.Authority.Genesis
     AuthorityEpoch
   , authorityEpochGenesis
   , authorityEpochValue
+  , authorityEpochFromValue
   , nextAuthorityEpoch
 
     -- * Genesis identities
@@ -65,7 +66,8 @@ import Numeric.Natural (Natural)
 -- 'authorityEpochGenesis'; a later BackupRepair reopens under a strictly greater
 -- epoch (owned by a subsequent Sprint 4.48 increment).
 newtype AuthorityEpoch = AuthorityEpoch Natural
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The epoch under which genesis first opens normal admission.
 authorityEpochGenesis :: AuthorityEpoch
@@ -73,6 +75,11 @@ authorityEpochGenesis = AuthorityEpoch 1
 
 authorityEpochValue :: AuthorityEpoch -> Natural
 authorityEpochValue (AuthorityEpoch n) = n
+
+authorityEpochFromValue :: Natural -> Maybe AuthorityEpoch
+authorityEpochFromValue value
+  | value == 0 = Nothing
+  | otherwise = Just (AuthorityEpoch value)
 
 -- | The next strictly-greater epoch (used by post-genesis repair reopen).
 nextAuthorityEpoch :: AuthorityEpoch -> AuthorityEpoch
@@ -88,7 +95,8 @@ data GenesisPlan = GenesisPlan
   , genesisPlanBackupStoreCoordinate :: !Text
   -- ^ the registered backup-store coordinate (S3 prefix) the adapter owns
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The home Target Agent's sealed initial generation receipt, read back before
 -- normal admission opens.
@@ -109,7 +117,8 @@ data GenesisProgress = GenesisProgress
   , genesisProgressTargetAgentReceipt :: !(Maybe TargetAgentGenerationReceipt)
   , genesisProgressBackupReceipt :: !(Maybe BackupReceipt)
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | A deterministic, signed one-time backup-repair permit. Like 'GenesisPlan' it
 -- carries a stable digest over the exact ordered deterministic
@@ -123,6 +132,9 @@ data BackupRepairPermit = BackupRepairPermit
   -- ^ stable digest over the ordered deterministic repair intent
   , backupRepairPermitBackupStoreCoordinate :: !Text
   -- ^ the registered backup-store coordinate the adapter re-copies and reads back
+  , backupRepairPermitAuthorityEpoch :: !AuthorityEpoch
+  , backupRepairPermitLostGeneration :: !TargetAgentGenerationReceipt
+  , backupRepairPermitPreviousBackup :: !BackupReceipt
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -134,15 +146,20 @@ data BackupRepairPermit = BackupRepairPermit
 -- first new backup receipt must read back before admission reopens under a
 -- strictly greater epoch.
 data BackupRepairProgress = BackupRepairProgress
-  { backupRepairPermit :: !(Maybe BackupRepairPermit)
+  { backupRepairPreviousGeneration :: !TargetAgentGenerationReceipt
+  , backupRepairPreviousReceipt :: !BackupReceipt
+  , backupRepairPermit :: !(Maybe BackupRepairPermit)
   , backupRepairGeneration :: !(Maybe TargetAgentGenerationReceipt)
   , backupRepairNewReceipt :: !(Maybe BackupReceipt)
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 -- | The frozen-and-waiting progress with no repair permit minted yet.
-initialBackupRepairProgress :: BackupRepairProgress
-initialBackupRepairProgress = BackupRepairProgress Nothing Nothing Nothing
+initialBackupRepairProgress
+  :: TargetAgentGenerationReceipt -> BackupReceipt -> BackupRepairProgress
+initialBackupRepairProgress generation receipt =
+  BackupRepairProgress generation receipt Nothing Nothing Nothing
 
 -- | The pre-normal-admission genesis lifecycle plus the post-genesis backup
 -- repair freeze. Normal lifecycle operations are admitted ONLY in
@@ -151,13 +168,14 @@ initialBackupRepairProgress = BackupRepairProgress Nothing Nothing Nothing
 data AuthorityAdmissionState
   = GenesisFrozen
   | EstablishingBackup !GenesisProgress
-  | BackupEstablished !AuthorityEpoch
+  | BackupEstablished !AuthorityEpoch !TargetAgentGenerationReceipt !BackupReceipt
   | -- | Post-genesis backup repair: admission is FROZEN (no normal operation is
     -- admitted) while the primary-only repair runs. The epoch is the one being
     -- superseded; reopen is always under 'nextAuthorityEpoch'. Owned by
     -- @Prodbox.Lifecycle.Authority.BackupRepair@.
     BackupRepairFrozen !AuthorityEpoch !BackupRepairProgress
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 initialGenesisState :: AuthorityAdmissionState
 initialGenesisState = GenesisFrozen
@@ -167,7 +185,7 @@ admitsNormalOperations :: AuthorityAdmissionState -> Bool
 admitsNormalOperations state = case state of
   GenesisFrozen -> False
   EstablishingBackup _ -> False
-  BackupEstablished _ -> True
+  BackupEstablished {} -> True
   BackupRepairFrozen _ _ -> False
 
 -- | The epoch under which normal admission is open, or @Nothing@ before genesis
@@ -176,7 +194,7 @@ establishedEpoch :: AuthorityAdmissionState -> Maybe AuthorityEpoch
 establishedEpoch state = case state of
   GenesisFrozen -> Nothing
   EstablishingBackup _ -> Nothing
-  BackupEstablished epoch -> Just epoch
+  BackupEstablished epoch _ _ -> Just epoch
   BackupRepairFrozen _ _ -> Nothing
 
 data AuthorityGenesisCommand
@@ -186,7 +204,8 @@ data AuthorityGenesisCommand
     ObserveTargetAgentGeneration !TargetAgentGenerationReceipt
   | -- | Feed back the Authority Backup Adapter's receipt.
     ObserveBackupReceipt !BackupReceipt
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data GenesisRefusal
   = -- | 'BeginGenesisEstablishment' when establishment with the same plan is underway.
@@ -243,7 +262,7 @@ decideGenesis state command = case state of
       resolveReceipt
         (progress {genesisProgressBackupReceipt = Just receipt})
         (BackupReceiptRecorded receipt)
-  BackupEstablished _ -> GenesisRefused GenesisAlreadyEstablished
+  BackupEstablished {} -> GenesisRefused GenesisAlreadyEstablished
   BackupRepairFrozen _ _ -> GenesisRefused GenesisAlreadyEstablished
  where
   resolveReceipt updated event
@@ -273,7 +292,12 @@ evolveGenesis state event = case event of
       EstablishingBackup (progress {genesisProgressBackupReceipt = Just receipt})
     _ -> state
   NormalAdmissionOpened epoch -> case state of
-    EstablishingBackup _ -> BackupEstablished epoch
+    EstablishingBackup progress ->
+      case ( genesisProgressTargetAgentReceipt progress
+           , genesisProgressBackupReceipt progress
+           ) of
+        (Just generation, Just receipt) -> BackupEstablished epoch generation receipt
+        _ -> state
     _ -> state
 
 -- | 'decideGenesis' then apply the resulting event(s) in one step, returning the

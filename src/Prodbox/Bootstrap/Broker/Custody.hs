@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Pure crash-safe custody folds for root and child Vault initialization.
 --
@@ -74,9 +77,11 @@ module Prodbox.Bootstrap.Broker.Custody
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Types
 
@@ -112,6 +117,10 @@ instance Show CustodyDisposition where
 
 data RootInitPhase
   = RootInitPristine !PristineStorageProof
+  | -- | A pristine replacement that retains the exact reset proof.  Keeping
+    -- the provenance in the durable phase closes the response-loss window
+    -- between the storage-generation CAS and the controller reply.
+    RootResetPristine !PristineResetProof
   | RootPreparedWritePending !PreparedInitEnvelope
   | RootPreparedWritten !PreparedInitEnvelope
   | RootPreparedReadBack !PreparedInitEnvelope
@@ -353,6 +362,8 @@ planRootInit state
   | otherwise =
       case rootInitStatePhase state of
         RootInitPristine proof -> RootPlanGenerateAndSealPreparedEnvelope proof
+        RootResetPristine proof ->
+          RootPlanGenerateAndSealPreparedEnvelope (resetReplacementPristine proof)
         RootPreparedWritePending prepared -> RootPlanWritePreparedEnvelope prepared
         RootPreparedWritten prepared -> RootPlanReadBackPreparedEnvelope prepared
         RootPreparedReadBack prepared -> RootPlanArmVaultInitCall prepared
@@ -458,6 +469,11 @@ evolveRootInitPhase state event =
     (RootInitPristine proof, RootInitEnvelopePrepared prepared) -> do
       requireSameRootBinding (pristineStorageBinding proof) (preparedInitBinding prepared)
       withPhase state (RootPreparedWritePending prepared)
+    (RootResetPristine proof, RootInitEnvelopePrepared prepared) -> do
+      requireSameRootBinding
+        (pristineStorageBinding (resetReplacementPristine proof))
+        (preparedInitBinding prepared)
+      withPhase state (RootPreparedWritePending prepared)
     (RootPreparedWritePending prepared, RootPreparedInitWriteRecorded) ->
       withPhase state (RootPreparedWritten prepared)
     (RootPreparedWritten prepared, RootPreparedInitReadBackConfirmed observed)
@@ -510,7 +526,12 @@ evolveRootInitPhase state event =
             then Left RootInitResetDidNotAdvanceBinding
             else
               Right
-                (newRootInitState (resetReplacementPristine proof))
+                RootInitState
+                  { rootInitStateBinding =
+                      pristineStorageBinding (resetReplacementPristine proof)
+                  , rootInitStateDisposition = CustodyRunning
+                  , rootInitStatePhase = RootResetPristine proof
+                  }
     (RootRecoveryCustodyDurable _ _, RootInitializationResetToPristine _) ->
       Left RootInitEstablishedGenerationResetRefused
     (_, RootInitializationResetToPristine _) -> Left RootInitResetOnlyFromAmbiguity
@@ -563,6 +584,7 @@ cancellationStopsNewInit state =
     CustodyCancellationRequested _ ->
       case rootInitStatePhase state of
         RootInitPristine _ -> True
+        RootResetPristine _ -> True
         RootPreparedWritePending _ -> True
         RootPreparedWritten _ -> True
         RootPreparedReadBack _ -> True
@@ -697,6 +719,8 @@ rootPhaseBinding :: RootInitPhase -> RootInitBinding
 rootPhaseBinding phase =
   case phase of
     RootInitPristine proof -> pristineStorageBinding proof
+    RootResetPristine proof ->
+      pristineStorageBinding (resetReplacementPristine proof)
     RootPreparedWritePending prepared -> preparedInitBinding prepared
     RootPreparedWritten prepared -> preparedInitBinding prepared
     RootPreparedReadBack prepared -> preparedInitBinding prepared
@@ -719,6 +743,7 @@ rootCommittedRank :: RootInitPhase -> Natural
 rootCommittedRank phase =
   case phase of
     RootInitPristine _ -> 0
+    RootResetPristine _ -> 0
     RootPreparedWritePending _ -> 0
     RootPreparedWritten _ -> 0
     RootPreparedReadBack _ -> 1
@@ -778,6 +803,7 @@ rootInitPhaseName :: RootInitPhase -> String
 rootInitPhaseName phase =
   case phase of
     RootInitPristine _ -> "RootInitPristine"
+    RootResetPristine _ -> "RootResetPristine"
     RootPreparedWritePending _ -> "RootPreparedWritePending"
     RootPreparedWritten _ -> "RootPreparedWritten"
     RootPreparedReadBack _ -> "RootPreparedReadBack"
@@ -1679,6 +1705,23 @@ data ChildRecoveryInvariantViolation
   | ChildRecoveryRepairReceiptDiffers
   | ChildRecoveryAccessorAbsenceDiffers !RootPolicyAccessor
   deriving stock (Eq, Show)
+
+deriving stock instance Generic CancellationReason
+deriving anyclass instance Serialise CancellationReason
+deriving stock instance Generic CustodyDisposition
+deriving anyclass instance Serialise CustodyDisposition
+deriving stock instance Generic RootInitPhase
+deriving anyclass instance Serialise RootInitPhase
+deriving stock instance Generic RootInitState
+deriving anyclass instance Serialise RootInitState
+deriving stock instance Generic ChildCustodyPhase
+deriving anyclass instance Serialise ChildCustodyPhase
+deriving stock instance Generic ChildCustodyState
+deriving anyclass instance Serialise ChildCustodyState
+deriving stock instance Generic ChildRecoveryPhase
+deriving anyclass instance Serialise ChildRecoveryPhase
+deriving stock instance Generic ChildRecoveryState
+deriving anyclass instance Serialise ChildRecoveryState
 
 newChildRecoveryState :: ChildCustodyBinding -> ChildRecoveryState
 newChildRecoveryState binding =

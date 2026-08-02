@@ -1717,3 +1717,13 @@ post-failover replay, or duplicates re-corrupt the derived total.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — dedicated
   control-plane components, operation-indexed capabilities, gateway local-journal actor, and
   failure-domain isolation.
+## Mandatory Invite Fault Campaign
+
+The governed invite campaign covers Gateway saturation and death; Authority restart around CAS and
+response loss; Target Agent, Authority Backup, TLS Retention, and Provider Worker restart; every
+Credential Provisioner prompt/effect/read-back boundary; Admin Runner interruption; delayed
+Vault/MinIO/S3/AWS; unavailable and permanently lost backup; primary Authority loss; fresh AWS
+Vault/EBS; cleanup-owner loss and takeover; client cancellation; and cleanup failure. Each point
+must leave the operation queryable and either converged or explicitly refused, with cleanup
+attempted. Recovery may not prompt, rotate SMTP, reset EAB, use generic export, or expose plaintext
+to the Authority.

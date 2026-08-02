@@ -9,12 +9,10 @@
 --
 -- 'GatewayRoute' is a closed 'Enum'/'Bounded' ADT of the fixed-string routes;
 -- 'routePattern' is the one function that maps a route to its path, and
--- 'routeClass' classifies it as liveness, readiness, diagnostic, or RPC. The
+-- 'routeClass' classifies it as liveness, readiness, or diagnostic. The
 -- daemon dispatcher is a total @case@ over the registry (a registered route with
 -- no handler is a @-Werror@ compile error), and 'routeForPath' is the exact
--- reverse lookup. The two variable-suffix routes (operator-secret and federation
--- child bootstrap) are not fixed strings, so their prefixes/suffix live here as
--- named constants rather than as 'GatewayRoute' constructors. A kubelet probe can
+-- reverse lookup. A kubelet probe can
 -- only be built from a liveness or readiness route ('kubeletProbeRoute').
 module Prodbox.Gateway.Routes
   ( GatewayRoute (..)
@@ -29,9 +27,6 @@ module Prodbox.Gateway.Routes
   , kubeletProbeGatewayRoute
   , healthzProbeRoute
   , readyzProbeRoute
-  , operatorSecretPathPrefix
-  , federationChildPathPrefix
-  , federationChildBootstrapSuffix
   )
 where
 
@@ -45,18 +40,6 @@ data GatewayRoute
   | -- Operator diagnostics (never a kubelet probe).
     RouteMetrics
   | RouteState
-  | -- Federation inventory read.
-    RouteFederationChildren
-  | -- Object-store authority (legacy pending Lifecycle Authority cutover).
-    RoutePulumiObjectGet
-  | RoutePulumiObjectPut
-  | RoutePulumiObjectDelete
-  | RouteAuthorityObjectGet
-  | RouteAuthorityObjectCas
-  | RouteAuthorityClock
-  | -- Target-secret authority.
-    RouteTargetSecretRead
-  | RouteTargetSecretCas
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | The kubelet/operator role of a route.
@@ -64,7 +47,6 @@ data RouteClass
   = RouteLiveness
   | RouteReadiness
   | RouteDiagnostic
-  | RouteRpc
   deriving (Eq, Show)
 
 -- | Every registered route.
@@ -78,15 +60,6 @@ routePattern route = case route of
   RouteReadyz -> "/readyz"
   RouteMetrics -> "/metrics"
   RouteState -> "/v1/state"
-  RouteFederationChildren -> "/v1/federation/children"
-  RoutePulumiObjectGet -> "/v1/object-store/pulumi/get"
-  RoutePulumiObjectPut -> "/v1/object-store/pulumi/put"
-  RoutePulumiObjectDelete -> "/v1/object-store/pulumi/delete"
-  RouteAuthorityObjectGet -> "/v1/object-store/authority/get"
-  RouteAuthorityObjectCas -> "/v1/object-store/authority/cas"
-  RouteAuthorityClock -> "/v1/object-store/authority/time"
-  RouteTargetSecretRead -> "/v1/target-secret/read"
-  RouteTargetSecretCas -> "/v1/target-secret/cas"
 
 -- | The kubelet/operator role of a route.
 routeClass :: GatewayRoute -> RouteClass
@@ -95,28 +68,19 @@ routeClass route = case route of
   RouteReadyz -> RouteReadiness
   RouteMetrics -> RouteDiagnostic
   RouteState -> RouteDiagnostic
-  RouteFederationChildren -> RouteRpc
-  RoutePulumiObjectGet -> RouteRpc
-  RoutePulumiObjectPut -> RouteRpc
-  RoutePulumiObjectDelete -> RouteRpc
-  RouteAuthorityObjectGet -> RouteRpc
-  RouteAuthorityObjectCas -> RouteRpc
-  RouteAuthorityClock -> RouteRpc
-  RouteTargetSecretRead -> RouteRpc
-  RouteTargetSecretCas -> RouteRpc
 
 -- | Exact reverse lookup of a fixed-string path to its route. Total: an
--- unregistered path is 'Nothing' (the caller then tries the two variable-suffix
--- pattern routes before returning 404).
+-- unregistered path is 'Nothing' and the caller returns 404.
 routeForPath :: String -> Maybe GatewayRoute
 routeForPath path = find ((== path) . routePattern) allGatewayRoutes
 
 -- | A route proven to be a kubelet probe (liveness or readiness). A probe cannot
--- be built from a diagnostic or RPC route.
+-- be built from a diagnostic route.
 newtype KubeletProbeRoute = KubeletProbeRoute GatewayRoute
   deriving (Eq, Show)
 
--- | Smart constructor: only a liveness or readiness route yields a probe route.
+-- | Smart constructor: only a liveness or readiness route yields a probe route;
+-- diagnostics cannot become kubelet probes.
 kubeletProbeRoute :: GatewayRoute -> Maybe KubeletProbeRoute
 kubeletProbeRoute route = case routeClass route of
   RouteLiveness -> Just (KubeletProbeRoute route)
@@ -138,15 +102,3 @@ kubeletProbeRoutePattern (KubeletProbeRoute route) = routePattern route
 -- | The underlying 'GatewayRoute' of a kubelet probe route.
 kubeletProbeGatewayRoute :: KubeletProbeRoute -> GatewayRoute
 kubeletProbeGatewayRoute (KubeletProbeRoute route) = route
-
--- | The prefix of the operator-secret write route @POST \/v1\/secret\/<logical>@.
-operatorSecretPathPrefix :: String
-operatorSecretPathPrefix = "/v1/secret/"
-
--- | The prefix of the federation child bootstrap route
--- @GET \/v1\/federation\/children\/<id>\/bootstrap@.
-federationChildPathPrefix :: String
-federationChildPathPrefix = "/v1/federation/children/"
-
-federationChildBootstrapSuffix :: String
-federationChildBootstrapSuffix = "/bootstrap"

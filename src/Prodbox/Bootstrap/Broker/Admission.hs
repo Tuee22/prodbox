@@ -317,7 +317,8 @@ operationContract operation =
     ReconcileVaultBaseline -> (HttpPost, BodyRequired)
     ObserveVaultPki -> (HttpGet, BodyForbidden)
     IssueVaultPkiTestCertificate -> (HttpPost, BodyRequired)
-    CommitChildInitCustody -> (HttpPost, BodyRequired)
+    PrepareChildInitCustody -> (HttpPost, BodyRequired)
+    FinalizeChildInitCustody -> (HttpPost, BodyRequired)
     DeliverChildRecovery -> (HttpPost, BodyRequired)
     ObserveChildRecoveryDelivery -> (HttpPost, BodyRequired)
 

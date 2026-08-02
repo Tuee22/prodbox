@@ -57,11 +57,12 @@ import Prodbox.CLI.Output
 import Prodbox.Dns
   ( changeRoute53ARecordSetInZone
   , fetchPublicIp
-  , queryRoute53ARecordValuesInZone
+  , queryPublicEdgeDnsRecordValues
   )
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Infra.SubstrateKubectl (withSubstrateKubectlEnvironment)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
@@ -215,7 +216,13 @@ runHostPublicEdge repoRoot substrate = do
     case publicIpResult of
       Left err -> failWith err
       Right publicIp -> do
-        route53Result <- queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId publicHost
+        route53Result <-
+          queryPublicEdgeDnsRecordValues
+            repoRoot
+            settings
+            substrate
+            hostedZoneId
+            publicHost
         case firstFailure [toUnit route53Result] of
           Just err -> failWith err
           Nothing -> do
@@ -584,7 +591,12 @@ reconcileAwsPublicEdgeDns repoRoot settings hostedZoneId publicHost substrate ex
           case writeResult of
             Left err -> pure (Left err)
             Right () ->
-              queryRoute53ARecordValuesInZone repoRoot settings hostedZoneId publicHost
+              queryPublicEdgeDnsRecordValues
+                repoRoot
+                settings
+                substrate
+                hostedZoneId
+                publicHost
 
 resolveHostIpv4Addresses :: String -> IO [String]
 resolveHostIpv4Addresses hostname = do
@@ -1405,7 +1417,7 @@ gatewayNodePortFirewallRuleComment = "prodbox-gateway-nodeport-loopback-only"
 -- (Sprint 2.19 reconcile/delete wiring) reach the rule installer through
 -- this constant so the three call sites stay in sync.
 defaultGatewayNodePort :: Int
-defaultGatewayNodePort = 30443
+defaultGatewayNodePort = GatewayClient.defaultGatewayNodePort
 
 -- | Sprint 2.19 lifecycle hook: best-effort install of the gateway
 -- NodePort restriction. Unlike the operator-facing

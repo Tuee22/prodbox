@@ -1,3 +1,20 @@
+## prodbox admin-action run
+prodbox admin-action run - Run one signed Admin Action
+
+Verify the exact Pod/action/operation/deadline binding, execute one closed action, read it back, revoke the Vault session, and emit one receipt.
+Options:
+- --action <ACTION> - destroy-aws-ses, migrate-legacy-backend, or reconcile-quota
+- --operation-id <ID> - Authority operation identifier
+- --deadline-micros <MICROS> - Absolute Authority deadline
+- --pod-name-file <PATH> - Downward-API Pod name file
+- --pod-uid-file <PATH> - Downward-API Pod UID file
+- --service-account-token-file <PATH> - Projected one-shot ServiceAccount token file
+- --dry-run - Render the one-shot runner plan
+- --plan-file <PATH> - Write the rendered plan
+
+Examples:
+- prodbox admin-action run --action destroy-aws-ses --operation-id admin-example --deadline-micros 1 --pod-name-file /var/run/prodbox/pod/name --pod-uid-file /var/run/prodbox/pod/uid --service-account-token-file /var/run/secrets/prodbox-vault/token --dry-run  # Render the closed Admin Action runner plan without reading stdin.
+
 ## prodbox aws policy
 prodbox aws policy - Render IAM policy JSON
 
@@ -206,6 +223,61 @@ Options:
 Examples:
 - prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall  # Start the dedicated Bootstrap Broker runtime.
 - prodbox bootstrap-broker start --config /etc/bootstrap-broker/config/config.dhall --dry-run  # Validate config and render the broker-start plan.
+
+## prodbox bootstrap-broker secret-worker
+prodbox bootstrap-broker secret-worker - Run one attested Bootstrap secret worker
+
+Internal one-shot worker. The closed operation is bound to Pod annotations and one canonical stdin frame.
+Options:
+- --operation <OPERATION> - Closed worker operation tag
+- --config <PATH> - Mounted Bootstrap Broker Dhall config path
+
+Examples:
+- prodbox bootstrap-broker secret-worker --operation prepare-initialization --config /etc/bootstrap-broker/config/config.dhall  # Run the fixed prepare-initialization worker from its attested Pod.
+
+## prodbox credential-provisioner run
+prodbox credential-provisioner run - Run one closed Credential Provisioner worker
+
+Verify one exact schema-indexed Authority permit and Pod binding; argv contains signed metadata only and cannot select a Vault path or generic material decoder.
+Options:
+- --ingress-schema <SCHEMA> - Must be aws-admin or external-acme-eab
+- --mode <MODE> - Required for AWS-admin: normal, genesis-backup, or backup-repair
+- --operation-id <ID> - Required signed Authority operation identifier for AWS-admin
+- --permit-id <ID> - Authority permit identifier
+- --request-digest <SHA256> - Authority request digest
+- --deadline-micros <MICROS> - Absolute Authority deadline
+- --image-digest <SHA256> - Required signed immutable worker image digest for AWS-admin
+- --authority-scope <SCOPE> - Required signed Authority scope for AWS-admin
+- --authority-endpoint <URL> - Required signed Lifecycle Authority endpoint for AWS-admin
+- --pod-name-file <PATH> - Required downward-API Pod name file for AWS-admin
+- --pod-uid-file <PATH> - Downward-API Pod UID file
+- --service-account-token-file <PATH> - Projected one-shot ServiceAccount token file
+- --dry-run - Render the one-shot worker plan
+- --plan-file <PATH> - Write the rendered plan
+
+Examples:
+- prodbox credential-provisioner run --ingress-schema external-acme-eab --permit-id permit-example --request-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --deadline-micros 1 --pod-uid-file /var/run/secrets/prodbox/pod-uid --service-account-token-file /var/run/secrets/prodbox/token --dry-run  # Render the closed worker plan without reading stdin or projected identity.
+- prodbox credential-provisioner run --ingress-schema aws-admin --mode normal --operation-id operation-example --permit-id permit-example --request-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --deadline-micros 1 --image-digest sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --authority-scope home --authority-endpoint https://lifecycle-authority.example.invalid --pod-name-file /var/run/secrets/prodbox/pod-name --pod-uid-file /var/run/secrets/prodbox/pod-uid --service-account-token-file /var/run/secrets/prodbox/token --dry-run  # Render the exact AWS-admin normal-mode worker plan without reading stdin or projected identity.
+
+## prodbox credential-provisioner target-worker
+prodbox credential-provisioner target-worker - Run one Target materializer worker
+
+Verify the Authority intent and attested Pod binding, then perform one exact registered KV-v2 generation CAS.
+Options:
+- --target <TARGET> - Exact registered Target identity
+- --target-agent-identity <AGENT> - Exact cluster and immutable Target Agent rollout identity
+- --material-schema <SCHEMA> - Closed direct/rewrapped material schema
+- --image-digest <SHA256> - Immutable attested image digest
+- --request-digest <SHA256> - Exact worker request digest
+- --deadline-micros <MICROS> - Absolute Authority deadline
+- --pod-uid-file <PATH> - Downward-API Pod UID file
+- --pod-name-file <PATH> - Downward-API Pod name file
+- --service-account-token-file <PATH> - Projected worker-only ServiceAccount token file
+- --dry-run - Render the one-shot materializer plan
+- --plan-file <PATH> - Write the rendered plan
+
+Examples:
+- prodbox credential-provisioner target-worker --target acme-eab --target-agent-identity home@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --material-schema rewrapped-acme-eab --image-digest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --request-digest bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --deadline-micros 1 --pod-uid-file /var/run/secrets/prodbox/pod-uid --pod-name-file /var/run/secrets/prodbox/pod-name --service-account-token-file /var/run/secrets/prodbox/token --dry-run  # Render the exact Target materializer plan without reading stdin or projected identity.
 
 ## prodbox lifecycle-authority start
 prodbox lifecycle-authority start - Start lifecycle-authority
@@ -667,13 +739,15 @@ Examples:
 ## prodbox nuke
 prodbox nuke - Total teardown of every prodbox-owned AWS resource (operator-only)
 
-The only sanctioned path to destroy long-lived shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend` bucket) transitively. TTY-only; refuses non-interactive contexts. Requires the typed confirmation literal `NUKE EVERYTHING`. No `--yes` shorthand by design. `--dry-run` renders the plan without mutating any state.
+The only sanctioned total-decommission path. It executes an Authority-authenticated manifest through the exact exported runner and an acknowledged external receipt; apply fails closed unless the complete production node registry is installed. TTY-only; refuses non-interactive contexts. Requires the typed confirmation literal `NUKE EVERYTHING`; no `--yes` shorthand. `--dry-run` renders the protocol without mutating any state.
 Options:
 - --dry-run - Render the teardown plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
+- --receipt <ABSOLUTE_PATH> - External durable receipt path (required for apply; optional for --dry-run)
 
 Examples:
 - prodbox nuke --dry-run  # Render the total-teardown plan.
+- prodbox nuke --receipt /operator/decommission/prodbox.receipt  # Run with an operator-owned receipt outside every deletion root.
 
 ## prodbox test init
 prodbox test init - Create prodbox.test.dhall
@@ -815,14 +889,16 @@ Examples:
 ## prodbox test integration gateway-pods
 prodbox test integration gateway-pods - Run gateway pod integration tests
 
-Run gateway pod integration tests
+Run gateway pod integration tests; optionally record a qualifying measured profile.
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
 - --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+- --record-profile - After a healthy validation, record a 30-minute measured capacity profile
 
 Examples:
-- prodbox test integration gateway-pods  # Run the `gateway-pods` integration suite.
+- prodbox test integration gateway-pods  # Run gateway pod integration tests.
+- prodbox test integration gateway-pods --record-profile  # Run the live measured-profile recorder after gateway validation.
 
 ## prodbox test integration gateway-partition
 prodbox test integration gateway-partition - Run gateway partition integration tests
@@ -835,6 +911,42 @@ Options:
 
 Examples:
 - prodbox test integration gateway-partition  # Run the `gateway-partition` integration suite.
+
+## prodbox test integration control-plane-counterexample
+prodbox test integration control-plane-counterexample - Run the frozen control-plane counterexample
+
+Run the frozen control-plane counterexample
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration control-plane-counterexample  # Run the `control-plane-counterexample` integration suite.
+
+## prodbox test integration certificate-scope
+prodbox test integration certificate-scope - Verify live TLS serving and the exact presented SAN scope
+
+Verify live TLS serving and the exact presented SAN scope
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration certificate-scope  # Run the `certificate-scope` integration suite.
+
+## prodbox test integration clean-room-handoff
+prodbox test integration clean-room-handoff - Verify clean-room migration, rollback refusal, and legacy absence
+
+Verify clean-room migration, rollback refusal, and legacy absence
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration clean-room-handoff  # Run the `clean-room-handoff` integration suite.
 
 ## prodbox test integration ha-rke2-aws
 prodbox test integration ha-rke2-aws - Run HA RKE2 AWS integration tests

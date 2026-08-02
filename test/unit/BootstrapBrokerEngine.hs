@@ -18,6 +18,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Bootstrap.Broker.Engine
+import Prodbox.Bootstrap.Broker.Fake qualified as Fake
 import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceStoreObservation (..)
   , BootstrapLeaseObservation (..)
@@ -34,6 +35,7 @@ import Prodbox.Bootstrap.Broker.Protocol
   , brokerActionStorageGeneration
   , encodeBrokerControllerRequest
   , mkBrokerActionRequest
+  , mkBrokerChildCustodyFinalizeRequest
   , mkBrokerControllerRequest
   , mkBrokerPkiControllerRequest
   )
@@ -52,6 +54,10 @@ import Prodbox.Bootstrap.Broker.StoreBoundary
   , unavailableBootstrapStoreBoundary
   )
 import Prodbox.Bootstrap.Broker.Types
+import Prodbox.Cluster.FederationRegistration
+  ( FederationRegistrationCompletion (..)
+  , FederationRegistrationIntent (..)
+  )
 import Prodbox.ControlPlane.AuthorityClock
   ( AuthorityClockObservation (..)
   , clockUncertaintyFromMicros
@@ -100,7 +106,7 @@ bootstrapBrokerEngineSuite =
           `shouldSatisfy` (isBodyForbidden BrokerHealth)
         decodeBrokerCall BrokerPost (brokerRoutePath BrokerVaultSeal) ByteString.empty
           `shouldSatisfy` (isBodyRequired BrokerVaultSeal)
-    it "prepares all fifteen actual programs under their exact capability" $
+    it "prepares all sixteen actual programs under their exact capability" $
       withFixture $ \fixture -> do
         admissionLog <- newIORef []
         engine <- fixtureEngine fixture admissionLog failClosedExecutionBoundary
@@ -163,6 +169,7 @@ data Fixture = Fixture
   , fixtureResetProof :: !PristineResetProof
   , fixtureSessionId :: !RootSessionId
   , fixtureChildBinding :: !ChildCustodyBinding
+  , fixtureChildReceipt :: !ChildEncryptedReceipt
   , fixtureNonce :: !DeliveryNonce
   , fixtureAttestation :: !ChildAttestation
   , fixtureCapabilityRefs :: !BrokerCapabilityRefs
@@ -254,6 +261,14 @@ buildFixture = do
           , childCustodyTransactionId = transaction
           }
       action = mkBrokerActionRequest generation actionDigest
+  childReceipt <-
+    bootstrap
+      ( mkChildEncryptedReceipt
+          childBinding
+          [encryptedShare]
+          burnCiphertext
+          responseDigest
+      )
   pure
     Fixture
       { fixtureAction = action
@@ -263,6 +278,7 @@ buildFixture = do
       , fixtureResetProof = resetProof
       , fixtureSessionId = sessionId
       , fixtureChildBinding = childBinding
+      , fixtureChildReceipt = childReceipt
       , fixtureNonce = nonce
       , fixtureAttestation = attestation
       , fixtureCapabilityRefs = capabilityRefs
@@ -295,6 +311,19 @@ requestBody fixture route = case brokerRouteBodyRequirement route of
               (fixtureAction fixture)
               (expectRight (mkPkiIssueRequest "engine.test" 300))
           )
+    | route == BrokerChildCustodyFinalize ->
+        let completion =
+              expectRight
+                ( Fake.fakeFederationRegistrationCompletionForReceipt
+                    (fixtureChildReceipt fixture)
+                )
+            intent = federationRegistrationCompletedIntent completion
+            action =
+              mkBrokerActionRequest
+                (childCustodyStorageGeneration (fixtureChildBinding fixture))
+                (federationRegistrationOperationDigest intent)
+         in encodeBrokerControllerRequest
+              (mkBrokerChildCustodyFinalizeRequest action completion)
     | otherwise ->
         encodeBrokerControllerRequest
           (expectRight (mkBrokerControllerRequest route (fixtureAction fixture)))

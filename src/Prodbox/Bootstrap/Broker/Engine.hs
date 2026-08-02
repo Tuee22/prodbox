@@ -74,15 +74,18 @@ module Prodbox.Bootstrap.Broker.Engine
   )
 where
 
+import Codec.Serialise (serialise)
 import Control.Monad (unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Custody
   ( ChildCustodyCommand (..)
@@ -153,7 +156,9 @@ import Prodbox.Bootstrap.Broker.Model
   , planPostUnsealHandoff
   , planProvisionerSession
   , planRootSession
+  , restartProvisionerSession
   , restartRootSession
+  , rootSessionStorageGeneration
   )
 import Prodbox.Bootstrap.Broker.PgpBoundary
   ( GeneratedChildRecoveryCiphertext
@@ -190,6 +195,7 @@ import Prodbox.Bootstrap.Broker.Protocol
   , brokerActionDigest
   , brokerActionStorageGeneration
   , brokerControllerRequestAction
+  , brokerControllerRequestFederationCompletion
   , brokerControllerRequestPkiIssue
   , decodeBrokerControllerRequest
   )
@@ -218,6 +224,7 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , ambiguousInitializationWorkerResult
   , durableEncryptedInitialization
   , durableFinalizedInitialization
+  , durableGeneratedRootCiphertext
   , durableInitializationIsAmbiguous
   , durablePreparedInitialization
   , durableResumedInitialization
@@ -227,6 +234,7 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , encryptedInitializationWorkerResult
   , finalizedInitializationWorkerResult
   , finishSecretWorkerExecution
+  , generatedRootCiphertextWorkerResult
   , preparedInitializationWorkerResult
   , resumedInitializationWorkerResult
   , secretWorkerReceiptOperation
@@ -264,6 +272,7 @@ import Prodbox.Bootstrap.Broker.Types
   , PreparedInitEnvelope
   , PristineResetProof
   , PristineStorageProof
+  , ProvisionerAccessorAbsenceAttestation
   , ProvisionerLoginReceipt
   , RecoveryCustodyReceipt
   , RootAccessorInventory
@@ -272,6 +281,7 @@ import Prodbox.Bootstrap.Broker.Types
   , RootSessionId
   , VaultStorageGeneration
   , ambiguousInitBinding
+  , ambiguousPreparedEnvelopeDigest
   , baselineReadBackDigest
   , baselineReadBackSessionId
   , baselineReadBackStorageGeneration
@@ -304,6 +314,16 @@ import Prodbox.Bootstrap.Broker.Types
   , renderRootSessionId
   , renderVaultStorageGeneration
   , resetAmbiguousBinding
+  , resetReplacementPristine
+  )
+import Prodbox.Cluster.FederationRegistration
+  ( ChildCustodyExport
+  , FederationRegistrationCompletion (..)
+  , FederationRegistrationIntent (..)
+  , childCustodyExportCommitment
+  , childCustodyExportReceipt
+  , mkChildCustodyExport
+  , validateFederationRegistrationCompletion
   )
 import Prodbox.ControlPlane.AuthorityClock (AuthorityClockObservation)
 import Prodbox.ControlPlane.CapabilityKind
@@ -407,9 +427,14 @@ data DecodedBrokerCall (operation :: CapabilityKind) result where
     :: !RequestDigest
     -> !BrokerActionRequest
     -> DecodedBrokerCall 'VaultBootstrapMutate BootstrapMutationReceipt
-  DecodedChildCustodyCommit
+  DecodedChildCustodyPrepare
     :: !RequestDigest
     -> !BrokerActionRequest
+    -> DecodedBrokerCall 'VaultBootstrapMutate ChildCustodyExport
+  DecodedChildCustodyFinalize
+    :: !RequestDigest
+    -> !BrokerActionRequest
+    -> !FederationRegistrationCompletion
     -> DecodedBrokerCall 'VaultBootstrapMutate ParentCustodyAcknowledgement
   DecodedChildRecoveryDeliver
     :: !RequestDigest
@@ -519,11 +544,23 @@ decodedCallForRoute route requestDigest controllerRequest =
                 (brokerControllerRequestAction request)
             )
         )
-    (BrokerChildCustodyCommit, Just request) ->
+    (BrokerChildCustodyPrepare, Just request) ->
       Right
         ( SomeDecodedBrokerCall
-            (DecodedChildCustodyCommit requestDigest (brokerControllerRequestAction request))
+            (DecodedChildCustodyPrepare requestDigest (brokerControllerRequestAction request))
         )
+    (BrokerChildCustodyFinalize, Just request) ->
+      case brokerControllerRequestFederationCompletion request of
+        Just completion ->
+          Right
+            ( SomeDecodedBrokerCall
+                ( DecodedChildCustodyFinalize
+                    requestDigest
+                    (brokerControllerRequestAction request)
+                    completion
+                )
+            )
+        Nothing -> Left (EngineProtocolRefused BrokerProtocolFederationCompletionRequired)
     (BrokerChildRecoveryDeliver, Just request) ->
       Right
         ( SomeDecodedBrokerCall
@@ -552,7 +589,8 @@ decodedRoute call = case call of
   DecodedVaultPkiIssueTestCertificate {} -> BrokerVaultPkiIssueTestCertificate
   DecodedVaultResetAmbiguousInitialization _ _ ->
     BrokerVaultResetAmbiguousInitialization
-  DecodedChildCustodyCommit _ _ -> BrokerChildCustodyCommit
+  DecodedChildCustodyPrepare _ _ -> BrokerChildCustodyPrepare
+  DecodedChildCustodyFinalize {} -> BrokerChildCustodyFinalize
   DecodedChildRecoveryDeliver _ _ -> BrokerChildRecoveryDeliver
   DecodedChildRecoveryObserve _ _ -> BrokerChildRecoveryObserve
 
@@ -570,7 +608,8 @@ decodedRequestDigest call = case call of
   DecodedVaultPkiStatus digest -> digest
   DecodedVaultPkiIssueTestCertificate digest _ _ -> digest
   DecodedVaultResetAmbiguousInitialization digest _ -> digest
-  DecodedChildCustodyCommit digest _ -> digest
+  DecodedChildCustodyPrepare digest _ -> digest
+  DecodedChildCustodyFinalize digest _ _ -> digest
   DecodedChildRecoveryDeliver digest _ -> digest
   DecodedChildRecoveryObserve digest _ -> digest
 
@@ -589,7 +628,8 @@ decodedAction call = case call of
   DecodedVaultPkiStatus _ -> Nothing
   DecodedVaultPkiIssueTestCertificate _ action _ -> Just action
   DecodedVaultResetAmbiguousInitialization _ action -> Just action
-  DecodedChildCustodyCommit _ action -> Just action
+  DecodedChildCustodyPrepare _ action -> Just action
+  DecodedChildCustodyFinalize _ action _ -> Just action
   DecodedChildRecoveryDeliver _ action -> Just action
   DecodedChildRecoveryObserve _ action -> Just action
 
@@ -659,8 +699,13 @@ data PreparedExecution (operation :: CapabilityKind) result where
     :: !InitAmbiguity
     -> !PristineResetProof
     -> PreparedExecution 'VaultBootstrapMutate BootstrapMutationReceipt
-  ExecuteChildCustodyCommit
+  ExecuteChildCustodyPrepare
     :: !ChildCustodyBinding
+    -> !RequestDigest
+    -> !ArtifactDigest
+    -> PreparedExecution 'VaultBootstrapMutate ChildCustodyExport
+  ExecuteChildCustodyFinalize
+    :: !FederationRegistrationCompletion
     -> PreparedExecution 'VaultBootstrapMutate ParentCustodyAcknowledgement
   ExecuteChildRecoveryDeliver
     :: !ChildCustodyBinding
@@ -781,7 +826,7 @@ prepareDecodedCall engine decoded = case decoded of
             (ResetAmbiguousInitialization ambiguity resetProof)
             (ExecuteVaultResetAmbiguousInitialization ambiguity resetProof)
         )
-  DecodedChildCustodyCommit _ action -> do
+  DecodedChildCustodyPrepare requestDigest action -> do
     evidence <- resolve (resolveChildCustodyBinding evidenceBoundary action)
     pure $ do
       binding <- evidence
@@ -790,8 +835,39 @@ prepareDecodedCall engine decoded = case decoded of
         ( makePrepared
             engine
             decoded
-            (CommitChildCustody binding)
-            (ExecuteChildCustodyCommit binding)
+            (PrepareChildCustody binding requestDigest (brokerActionDigest action))
+            ( ExecuteChildCustodyPrepare
+                binding
+                requestDigest
+                (brokerActionDigest action)
+            )
+        )
+  DecodedChildCustodyFinalize _ action completion ->
+    pure $ do
+      validCompletion <-
+        either
+          (const (Left (EngineResponseEvidenceMismatch route)))
+          Right
+          (validateFederationRegistrationCompletion completion)
+      let receipt =
+            childCustodyExportReceipt
+              ( federationRegistrationExport
+                  (federationRegistrationCompletedIntent validCompletion)
+              )
+          binding = childEncryptedReceiptBinding receipt
+      requireChildGeneration route action binding
+      when
+        ( brokerActionDigest action
+            /= federationRegistrationOperationDigest
+              (federationRegistrationCompletedIntent validCompletion)
+        )
+        (Left (EngineResponseEvidenceMismatch route))
+      Right
+        ( makePrepared
+            engine
+            decoded
+            (FinalizeChildCustody validCompletion)
+            (ExecuteChildCustodyFinalize validCompletion)
         )
   DecodedChildRecoveryDeliver _ action -> do
     evidence <- resolve (resolveChildRecoveryDeliveryEvidence evidenceBoundary action)
@@ -1015,6 +1091,11 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
     -> BootstrapVaultEffectPermit
     -> RootSessionBinding
     -> BrokerPhysicalCall 'VaultBaselineReconcile GeneratedRootCiphertext
+  PhysicalCleanupProvisionerSessions
+    :: CapabilityRef 'VaultBaselineReconcile
+    -> BootstrapVaultEffectPermit
+    -> VaultStorageGeneration
+    -> BrokerPhysicalCall 'VaultBaselineReconcile ProvisionerAccessorAbsenceAttestation
   PhysicalLoginProvisioner
     :: CapabilityRef 'VaultBaselineReconcile
     -> BootstrapVaultEffectPermit
@@ -1029,7 +1110,18 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
     :: CapabilityRef 'VaultBaselineReconcile
     -> BootstrapVaultEffectPermit
     -> ProvisionerLoginReceipt
+    -> BaselineReadBackReceipt
     -> BrokerPhysicalCall 'VaultBaselineReconcile BaselineReadBackReceipt
+  PhysicalRevokeProvisionerSession
+    :: CapabilityRef 'VaultBaselineReconcile
+    -> BootstrapVaultEffectPermit
+    -> ProvisionerLoginReceipt
+    -> BrokerPhysicalCall 'VaultBaselineReconcile ()
+  PhysicalProveProvisionerSessionAbsent
+    :: CapabilityRef 'VaultBaselineReconcile
+    -> BootstrapVaultEffectPermit
+    -> ProvisionerLoginReceipt
+    -> BrokerPhysicalCall 'VaultBaselineReconcile ProvisionerAccessorAbsenceAttestation
   PhysicalObservePostUnsealConsumer
     :: CapabilityRef 'VaultBootstrapMutate
     -> RootInitBinding
@@ -1043,11 +1135,6 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
     -> BootstrapVaultEffectPermit
     -> PkiIssueRequest
     -> BrokerPhysicalCall 'VaultPkiOperate BootstrapMutationReceipt
-  PhysicalCommitParentCustody
-    :: CapabilityRef 'VaultBootstrapMutate
-    -> BootstrapVaultEffectPermit
-    -> ChildEncryptedReceipt
-    -> BrokerPhysicalCall 'VaultBootstrapMutate ParentCustodyAcknowledgement
   PhysicalObserveChildRecoveryConsumption
     :: CapabilityRef 'VaultBootstrapMutate
     -> BootstrapVaultEffectPermit
@@ -1111,13 +1198,15 @@ physicalCallCapabilityOp call = case call of
   PhysicalProveRootAccessorsAbsent reference _ _ -> refCapabilityOp reference
   PhysicalStartGenerateRoot reference _ _ _ -> refCapabilityOp reference
   PhysicalAwaitGeneratedRootCiphertext reference _ _ -> refCapabilityOp reference
+  PhysicalCleanupProvisionerSessions reference _ _ -> refCapabilityOp reference
   PhysicalLoginProvisioner reference _ _ -> refCapabilityOp reference
   PhysicalApplyProvisionerBaseline reference _ _ -> refCapabilityOp reference
-  PhysicalReadBackProvisionerBaseline reference _ _ -> refCapabilityOp reference
+  PhysicalReadBackProvisionerBaseline reference _ _ _ -> refCapabilityOp reference
+  PhysicalRevokeProvisionerSession reference _ _ -> refCapabilityOp reference
+  PhysicalProveProvisionerSessionAbsent reference _ _ -> refCapabilityOp reference
   PhysicalObservePostUnsealConsumer reference _ _ -> refCapabilityOp reference
   PhysicalObserveVaultPkiStatus reference -> refCapabilityOp reference
   PhysicalIssueVaultPkiTestCertificate reference _ _ -> refCapabilityOp reference
-  PhysicalCommitParentCustody reference _ _ -> refCapabilityOp reference
   PhysicalObserveChildRecoveryConsumption reference _ _ -> refCapabilityOp reference
   PhysicalConsumeChildRecovery reference _ _ -> refCapabilityOp reference
   PhysicalCancelChildIncompleteGenerateRoot reference _ _ -> refCapabilityOp reference
@@ -1149,13 +1238,17 @@ physicalCallVaultEffect call = case call of
   PhysicalProveRootAccessorsAbsent {} -> Just BootstrapVaultInventoryRootAccessors
   PhysicalStartGenerateRoot {} -> Just BootstrapVaultStartGenerateRoot
   PhysicalAwaitGeneratedRootCiphertext {} -> Just BootstrapVaultSubmitGenerateRootShare
+  PhysicalCleanupProvisionerSessions {} ->
+    Just BootstrapVaultInventoryProvisionerAccessors
   PhysicalLoginProvisioner {} -> Just BootstrapVaultLoginProvisioner
   PhysicalApplyProvisionerBaseline {} -> Just BootstrapVaultApplyBaseline
   PhysicalReadBackProvisionerBaseline {} -> Just BootstrapVaultReadBackBaseline
+  PhysicalRevokeProvisionerSession {} -> Just BootstrapVaultRevokeProvisionerAccessor
+  PhysicalProveProvisionerSessionAbsent {} ->
+    Just BootstrapVaultInventoryProvisionerAccessors
   PhysicalObservePostUnsealConsumer {} -> Nothing
   PhysicalObserveVaultPkiStatus _ -> Nothing
   PhysicalIssueVaultPkiTestCertificate {} -> Just BootstrapVaultIssueTestCertificate
-  PhysicalCommitParentCustody {} -> Just BootstrapVaultCommitChildCustody
   PhysicalObserveChildRecoveryConsumption {} ->
     Just BootstrapVaultConsumeChildRecovery
   PhysicalConsumeChildRecovery {} -> Just BootstrapVaultConsumeChildRecovery
@@ -1176,6 +1269,8 @@ physicalCallSecretWorkerOperation call = case call of
   PhysicalUnsealVault {} -> Just SecretWorkerUnseal
   PhysicalRotateUnlockBundle {} -> Just SecretWorkerRotateUnlockBundle
   PhysicalRotateTransitKey {} -> Just SecretWorkerRotateTransitKey
+  PhysicalAwaitGeneratedRootCiphertext {} -> Just SecretWorkerCompleteGeneratedRoot
+  PhysicalAwaitChildGeneratedRootCiphertext {} -> Just SecretWorkerCompleteGeneratedRoot
   _ -> Nothing
 
 -- | Non-Vault exact boundary operations.  These constructors contain only
@@ -1258,10 +1353,17 @@ data BrokerInMemoryCall (operation :: CapabilityKind) result where
     -> InitAmbiguity
     -> PristineResetProof
     -> BrokerInMemoryCall 'VaultBootstrapMutate BootstrapMutationReceipt
-  InMemoryChildCustodyCommit
+  InMemoryChildCustodyPrepare
     :: CapabilityRef 'VaultBootstrapMutate
     -> BootstrapVaultEffectPermit
     -> ChildCustodyBinding
+    -> RequestDigest
+    -> ArtifactDigest
+    -> BrokerInMemoryCall 'VaultBootstrapMutate ChildCustodyExport
+  InMemoryChildCustodyFinalize
+    :: CapabilityRef 'VaultBootstrapMutate
+    -> BootstrapVaultEffectPermit
+    -> FederationRegistrationCompletion
     -> BrokerInMemoryCall 'VaultBootstrapMutate ParentCustodyAcknowledgement
   InMemoryChildRecoveryDeliver
     :: CapabilityRef 'VaultBootstrapMutate
@@ -1435,7 +1537,10 @@ data BrokerResponse result where
     :: !BootstrapMutationReceipt -> BrokerResponse BootstrapMutationReceipt
   BrokerVaultResetAmbiguityResponse
     :: !BootstrapMutationReceipt -> BrokerResponse BootstrapMutationReceipt
-  BrokerChildCustodyResponse
+  BrokerChildCustodyPrepareResponse
+    :: !ChildCustodyExport
+    -> BrokerResponse ChildCustodyExport
+  BrokerChildCustodyFinalizeResponse
     :: !ParentCustodyAcknowledgement
     -> BrokerResponse ParentCustodyAcknowledgement
   BrokerChildRecoveryDeliverResponse
@@ -1461,7 +1566,8 @@ brokerResponseRoute response = case response of
   BrokerVaultPkiStatusResponse _ -> BrokerVaultPkiStatus
   BrokerVaultPkiIssueResponse _ -> BrokerVaultPkiIssueTestCertificate
   BrokerVaultResetAmbiguityResponse _ -> BrokerVaultResetAmbiguousInitialization
-  BrokerChildCustodyResponse _ -> BrokerChildCustodyCommit
+  BrokerChildCustodyPrepareResponse _ -> BrokerChildCustodyPrepare
+  BrokerChildCustodyFinalizeResponse _ -> BrokerChildCustodyFinalize
   BrokerChildRecoveryDeliverResponse _ -> BrokerChildRecoveryDeliver
   BrokerChildRecoveryObserveResponse _ -> BrokerChildRecoveryObserve
 
@@ -1480,6 +1586,8 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
     BrokerVaultStatusResponse status ->
       object
         [ "operation" .= ("vault_status" :: Text)
+        , "storage_generation"
+            .= renderVaultStorageGeneration (bootstrapStatusStorageGeneration status)
         , "initialized" .= bootstrapStatusInitialized status
         , "sealed" .= bootstrapStatusSealed status
         , "recovery_custody_durable"
@@ -1523,9 +1631,27 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
       mutationObject "vault_pki_issue_test_certificate" receipt
     BrokerVaultResetAmbiguityResponse receipt ->
       mutationObject "vault_reset_ambiguous_initialization" receipt
-    BrokerChildCustodyResponse acknowledgement ->
+    BrokerChildCustodyPrepareResponse exported ->
       object
-        [ "operation" .= ("child_custody_commit" :: Text)
+        [ "operation" .= ("child_custody_prepare" :: Text)
+        , "storage_generation"
+            .= renderVaultStorageGeneration
+              ( childCustodyStorageGeneration
+                  ( childEncryptedReceiptBinding
+                      (childCustodyExportReceipt exported)
+                  )
+              )
+        , "custody_export_commitment"
+            .= renderArtifactDigest (childCustodyExportCommitment exported)
+        , "custody_export_cbor_base64"
+            .= TextEncoding.decodeUtf8
+              ( Base64.encode
+                  (LazyByteString.toStrict (serialise exported))
+              )
+        ]
+    BrokerChildCustodyFinalizeResponse acknowledgement ->
+      object
+        [ "operation" .= ("child_custody_finalize" :: Text)
         , "storage_generation"
             .= renderVaultStorageGeneration
               ( childCustodyStorageGeneration
@@ -1654,11 +1780,22 @@ observePreparedStorage engine prepared action = do
       (engineStoreBoundary (brokerEngineBoundary engine))
   pure $ do
     binding <- either (Left . EngineStoreRefused) Right observed
-    when
-      (rootInitStorageGeneration binding /= brokerActionStorageGeneration action)
+    unless
+      (storageGenerationAccepted binding (preparedExecution prepared))
       (Left (EngineEvidenceGenerationMismatch (preparedRoute prepared)))
     validateExactBinding binding (preparedExecution prepared)
  where
+  storageGenerationAccepted
+    :: RootInitBinding
+    -> PreparedExecution preparedOperation preparedResult
+    -> Bool
+  storageGenerationAccepted observed execution =
+    rootInitStorageGeneration observed == brokerActionStorageGeneration action
+      || case execution of
+        ExecuteVaultResetAmbiguousInitialization _ proof ->
+          observed == pristineStorageBinding (resetReplacementPristine proof)
+        _ -> False
+
   validateExactBinding
     :: RootInitBinding
     -> PreparedExecution preparedOperation preparedResult
@@ -1672,8 +1809,10 @@ observePreparedStorage engine prepared action = do
       requireBinding observed (recoveryCustodyBinding custody)
     ExecuteVaultBaselineReconcile _ custody ->
       requireBinding observed (recoveryCustodyBinding custody)
-    ExecuteVaultResetAmbiguousInitialization ambiguity _ ->
-      requireBinding observed (ambiguousInitBinding ambiguity)
+    ExecuteVaultResetAmbiguousInitialization ambiguity proof ->
+      if observed == pristineStorageBinding (resetReplacementPristine proof)
+        then Right ()
+        else requireBinding observed (ambiguousInitBinding ambiguity)
     _ -> Right ()
 
   requireBinding observed expected =
@@ -1889,21 +2028,48 @@ executeInMemoryPreparedPlan engine boundary attempt prepared =
           receipt <- result
           validateMutationReceipt prepared receipt
           Right (BrokerVaultResetAmbiguityResponse receipt)
-    ExecuteChildCustodyCommit binding ->
+    ExecuteChildCustodyPrepare binding requestDigest actionDigest ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <-
           runAuthorizedInMemoryVault
             engine
             boundary
             mutationAttempt
-            BootstrapVaultCommitChildCustody
-            (\permit -> InMemoryChildCustodyCommit reference permit binding)
+            BootstrapVaultPrepareChildCustody
+            ( \permit ->
+                InMemoryChildCustodyPrepare
+                  reference
+                  permit
+                  binding
+                  requestDigest
+                  actionDigest
+            )
+        pure $ do
+          exported <- result
+          when
+            ( childEncryptedReceiptBinding
+                (childCustodyExportReceipt exported)
+                /= binding
+            )
+            (Left (EngineResponseEvidenceMismatch BrokerChildCustodyPrepare))
+          Right (BrokerChildCustodyPrepareResponse exported)
+    ExecuteChildCustodyFinalize completion ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <-
+          runAuthorizedInMemoryVault
+            engine
+            boundary
+            mutationAttempt
+            BootstrapVaultFinalizeChildCustody
+            (\permit -> InMemoryChildCustodyFinalize reference permit completion)
         pure $ do
           acknowledgement <- result
           when
-            (parentCustodyAcknowledgedBinding acknowledgement /= binding)
-            (Left (EngineResponseEvidenceMismatch BrokerChildCustodyCommit))
-          Right (BrokerChildCustodyResponse acknowledgement)
+            ( acknowledgement
+                /= federationRegistrationAcknowledgement completion
+            )
+            (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+          Right (BrokerChildCustodyFinalizeResponse acknowledgement)
     ExecuteChildRecoveryDeliver binding nonce attestation ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <-
@@ -2128,10 +2294,21 @@ executePhysicalPreparedPlan engine attempt prepared =
                 resetProof
                 actionDigest
             pure (BrokerVaultResetAmbiguityResponse <$> result)
-    ExecuteChildCustodyCommit binding ->
+    ExecuteChildCustodyPrepare binding requestDigest actionDigest ->
       withMutationAttempt attempt $ \mutationAttempt -> do
-        result <- driveChildCustody engine mutationAttempt reference binding
-        pure (BrokerChildCustodyResponse <$> result)
+        result <-
+          driveChildCustodyPrepare
+            engine
+            mutationAttempt
+            binding
+            requestDigest
+            actionDigest
+        pure (BrokerChildCustodyPrepareResponse <$> result)
+    ExecuteChildCustodyFinalize completion ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <-
+          driveChildCustodyFinalize engine mutationAttempt completion
+        pure (BrokerChildCustodyFinalizeResponse <$> result)
     ExecuteChildRecoveryDeliver binding nonce attestation ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <-
@@ -2327,6 +2504,8 @@ encodeSecretWorkerPhysicalResult call result = case call of
   PhysicalRotateTransitKey _ permit -> do
     requireMutationResult permit result
     Right (transitRotationWorkerResult result)
+  PhysicalAwaitGeneratedRootCiphertext {} ->
+    Right (generatedRootCiphertextWorkerResult result)
   _ -> resultMismatch
  where
   resultMismatch =
@@ -2375,6 +2554,8 @@ decodeSecretWorkerPhysicalResult call receipt durableResult = do
       requireProjection (durableUnlockRotationResult durableResult)
     PhysicalRotateTransitKey {} ->
       requireProjection (durableTransitRotationResult durableResult)
+    PhysicalAwaitGeneratedRootCiphertext {} ->
+      requireProjection (durableGeneratedRootCiphertext durableResult)
     _ -> resultMismatch
   encoded <- encodeSecretWorkerPhysicalResult call decoded
   requireResult (encoded == durableResult)
@@ -3238,6 +3419,12 @@ driveRootSession engine attempt reference sessionId custody = do
             BootstrapVaultCancelGenerateRoot
             (\permit -> PhysicalCancelIncompleteGenerateRoot reference permit binding)
             (const ConfirmIncompleteGenerateRootCancelled)
+        RootSessionPlanGeneratePreAuditorRoot binding ->
+          runGeneratedRootScope steps version state binding
+        RootSessionPlanAwaitPreAuditorRootAccessor _ ->
+          pure (Left EngineGeneratedRootScopeLost)
+        RootSessionPlanJournalPreAuditorAccessor _ _ ->
+          pure (Left EngineGeneratedRootScopeLost)
         RootSessionPlanInventoryStaleAccessors generation ->
           runAndAdvance
             steps
@@ -3263,22 +3450,7 @@ driveRootSession engine attempt reference sessionId custody = do
             (\permit -> PhysicalProveRootAccessorsAbsent reference permit inventory)
             ConfirmStableRootAccessorAbsence
         RootSessionPlanGenerateShortLivedRoot binding ->
-          case enginePgpBoundary (brokerEngineBoundary engine) of
-            Nothing -> pure (Left EnginePgpBoundaryUnavailable)
-            Just pgpBoundary -> do
-              scoped <-
-                driveGeneratedRootScope
-                  engine
-                  attempt
-                  reference
-                  pgpBoundary
-                  binding
-                  version
-                  state
-              case scoped of
-                Left failure -> pure (Left failure)
-                Right (nextVersion, nextState) ->
-                  sessionLoop (steps + 8) nextVersion nextState
+          runGeneratedRootScope steps version state binding
         RootSessionPlanAwaitGeneratedRootAccessor _ ->
           pure (Left EngineGeneratedRootScopeLost)
         RootSessionPlanJournalGeneratedAccessor _ _ ->
@@ -3319,6 +3491,30 @@ driveRootSession engine attempt reference sessionId custody = do
                       proofTarget
                 )
                 ConfirmCurrentRootAccessorAbsent
+        RootSessionPlanInventoryPostBaselineAccessors generation ->
+          runAndAdvance
+            steps
+            version
+            state
+            BootstrapVaultInventoryRootAccessors
+            (\permit -> PhysicalInventoryRootAccessors reference permit generation)
+            ConfirmRootAccessorInventory
+        RootSessionPlanRevokePostBaselineAccessor accessor ->
+          runAndAdvance
+            steps
+            version
+            state
+            BootstrapVaultRevokeRootAccessor
+            (\permit -> PhysicalRevokeRootAccessor reference permit accessor)
+            (const (ConfirmStaleRootAccessorRevoked accessor))
+        RootSessionPlanProvePostBaselineZero inventory ->
+          runAndAdvance
+            steps
+            version
+            state
+            BootstrapVaultInventoryRootAccessors
+            (\permit -> PhysicalProveRootAccessorsAbsent reference permit inventory)
+            ConfirmStableRootAccessorAbsence
         RootSessionPlanFinishCancellation attestation ->
           advanceSession
             steps
@@ -3333,6 +3529,8 @@ driveRootSession engine attempt reference sessionId custody = do
                 engine
                 attempt
                 reference
+                version
+                state
                 completion
             case reconciled of
               Left failure -> pure (Left failure)
@@ -3354,6 +3552,30 @@ driveRootSession engine attempt reference sessionId custody = do
   runAndAdvance steps version state effect buildCall commandFor = do
     result <- runAuthorizedPhysical engine attempt effect buildCall
     advanceSession steps version state result commandFor
+
+  runGeneratedRootScope
+    :: Natural
+    -> StoreVersion
+    -> RootSessionState
+    -> RootSessionBinding
+    -> m (Either BrokerEngineError BaselineReadBackReceipt)
+  runGeneratedRootScope steps version state binding =
+    case enginePgpBoundary (brokerEngineBoundary engine) of
+      Nothing -> pure (Left EnginePgpBoundaryUnavailable)
+      Just pgpBoundary -> do
+        scoped <-
+          driveGeneratedRootScope
+            engine
+            attempt
+            reference
+            pgpBoundary
+            binding
+            version
+            state
+        case scoped of
+          Left failure -> pure (Left failure)
+          Right (nextVersion, nextState) ->
+            sessionLoop (steps + 8) nextVersion nextState
 
   advanceSession
     :: forall value
@@ -3390,18 +3612,41 @@ driveProvisionerSession
   => BrokerEngine m
   -> MutationAttempt
   -> CapabilityRef 'VaultBaselineReconcile
+  -> StoreVersion
+  -> RootSessionState
   -> RootSessionCompletion
   -> m (Either BrokerEngineError BaselineReadBackReceipt)
-driveProvisionerSession engine attempt reference completion =
-  provisionerLoop 0 (newProvisionerSessionState completion)
+driveProvisionerSession engine attempt reference initialVersion rootState completion =
+  case rootSessionStateProvisioner rootState of
+    Just state -> provisionerLoop 0 initialVersion rootState state
+    Nothing ->
+      persistAndContinue
+        0
+        initialVersion
+        rootState
+        (newProvisionerSessionState completion)
  where
   limit = brokerEnginePlanLimit engine
 
-  provisionerLoop steps state
+  provisionerLoop steps version durableRoot state
     | steps >= limit = pure (Left EngineCustodyPlanLimitExceeded)
     | otherwise = case planProvisionerSession state of
+        ProvisionerPlanCleanupPolicyAccessors generation -> do
+          cleaned <-
+            runAuthorizedPhysical
+              engine
+              attempt
+              BootstrapVaultInventoryProvisionerAccessors
+              (\permit -> PhysicalCleanupProvisionerSessions reference permit generation)
+          advance
+            steps
+            version
+            durableRoot
+            state
+            cleaned
+            ConfirmProvisionerPolicyAccessorsAbsent
         ProvisionerPlanArmLogin _ ->
-          advance steps state ArmProvisionerLogin
+          advanceValue steps version durableRoot state ArmProvisionerLogin
         ProvisionerPlanLogin generation -> do
           loggedIn <-
             runAuthorizedPhysical
@@ -3409,10 +3654,16 @@ driveProvisionerSession engine attempt reference completion =
               attempt
               BootstrapVaultLoginProvisioner
               (\permit -> PhysicalLoginProvisioner reference permit generation)
-          case loggedIn of
-            Left failure -> pure (Left failure)
-            Right receipt -> advance steps state (ConfirmProvisionerLogin receipt)
-        ProvisionerPlanReady receipt -> do
+          advance
+            steps
+            version
+            durableRoot
+            state
+            loggedIn
+            ConfirmProvisionerLogin
+        ProvisionerPlanArmBaselineApply _ ->
+          advanceValue steps version durableRoot state ArmProvisionerBaselineApply
+        ProvisionerPlanApplyBaseline receipt -> do
           applied <-
             runAuthorizedPhysical
               engine
@@ -3421,44 +3672,158 @@ driveProvisionerSession engine attempt reference completion =
               ( \permit ->
                   PhysicalApplyProvisionerBaseline reference permit receipt
               )
-          case applied of
-            Left failure -> pure (Left failure)
-            Right () -> do
-              readBack <-
-                runAuthorizedPhysical
-                  engine
-                  attempt
-                  BootstrapVaultReadBackBaseline
-                  ( \permit ->
-                      PhysicalReadBackProvisionerBaseline
-                        reference
-                        permit
-                        receipt
-                  )
-              pure $ do
-                observed <- readBack
-                when
-                  (observed /= completedRootBaselineReadBack completion)
-                  ( Left
-                      ( EngineResponseEvidenceMismatch
-                          BrokerVaultBaselineReconcile
-                      )
-                  )
-                Right observed
+          advance
+            steps
+            version
+            durableRoot
+            state
+            applied
+            (const ConfirmProvisionerBaselineApplied)
+        ProvisionerPlanArmBaselineReadBack _ ->
+          advanceValue steps version durableRoot state ArmProvisionerBaselineReadBack
+        ProvisionerPlanReadBackBaseline receipt -> do
+          readBack <-
+            runAuthorizedPhysical
+              engine
+              attempt
+              BootstrapVaultReadBackBaseline
+              ( \permit ->
+                  PhysicalReadBackProvisionerBaseline
+                    reference
+                    permit
+                    receipt
+                    (completedRootBaselineReadBack completion)
+              )
+          advance
+            steps
+            version
+            durableRoot
+            state
+            readBack
+            ConfirmProvisionerBaselineReadBack
+        ProvisionerPlanArmRevocation _ _ ->
+          advanceValue steps version durableRoot state ArmProvisionerRevocation
+        ProvisionerPlanRevoke receipt _ -> do
+          revoked <-
+            runAuthorizedPhysical
+              engine
+              attempt
+              BootstrapVaultRevokeProvisionerAccessor
+              (\permit -> PhysicalRevokeProvisionerSession reference permit receipt)
+          advance
+            steps
+            version
+            durableRoot
+            state
+            revoked
+            (const ConfirmProvisionerRevoked)
+        ProvisionerPlanArmAccessorAbsence _ _ ->
+          advanceValue
+            steps
+            version
+            durableRoot
+            state
+            ArmProvisionerAccessorAbsenceCheck
+        ProvisionerPlanProveAccessorAbsent receipt _ -> do
+          absence <-
+            runAuthorizedPhysical
+              engine
+              attempt
+              BootstrapVaultInventoryProvisionerAccessors
+              (\permit -> PhysicalProveProvisionerSessionAbsent reference permit receipt)
+          advance
+            steps
+            version
+            durableRoot
+            state
+            absence
+            ConfirmProvisionerAccessorAbsent
+        ProvisionerPlanComplete _ observed _
+          | observed == completedRootBaselineReadBack completion -> pure (Right observed)
+          | otherwise ->
+              pure
+                ( Left
+                    ( EngineResponseEvidenceMismatch
+                        BrokerVaultBaselineReconcile
+                    )
+                )
 
   advance
+    :: forall value
+     . Natural
+    -> StoreVersion
+    -> RootSessionState
+    -> ProvisionerSessionState
+    -> Either BrokerEngineError value
+    -> (value -> ProvisionerSessionCommand)
+    -> m (Either BrokerEngineError BaselineReadBackReceipt)
+  advance steps version durableRoot state result commandFor =
+    case result of
+      Left failure -> pure (Left failure)
+      Right value ->
+        advanceValue steps version durableRoot state (commandFor value)
+
+  advanceValue
     :: Natural
+    -> StoreVersion
+    -> RootSessionState
     -> ProvisionerSessionState
     -> ProvisionerSessionCommand
     -> m (Either BrokerEngineError BaselineReadBackReceipt)
-  advance steps state command =
+  advanceValue steps version durableRoot state command =
     case applyProvisionerSessionCommand state command of
       Left failure ->
         pure
           ( Left
               (EngineCustodyTransitionRefused (Text.pack (show failure)))
           )
-      Right nextState -> provisionerLoop (steps + 1) nextState
+      Right nextState ->
+        persistAndContinue steps version durableRoot nextState
+
+  persistAndContinue steps version durableRoot nextState = do
+    persisted <-
+      persistProvisionerRootSession
+        engine
+        attempt
+        version
+        durableRoot
+        nextState
+    case persisted of
+      Left failure -> pure (Left failure)
+      Right (nextVersion, nextRoot) ->
+        provisionerLoop (steps + 1) nextVersion nextRoot nextState
+
+-- | Persist every provisioner transition inside the already-CAS-fenced root
+-- session journal.  A physical login, baseline mutation, revocation, or
+-- absence proof is therefore never followed by another effect until the exact
+-- secret-free state and server-issued accessor have been read back durably.
+persistProvisionerRootSession
+  :: (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> StoreVersion
+  -> RootSessionState
+  -> ProvisionerSessionState
+  -> m (Either BrokerEngineError (StoreVersion, RootSessionState))
+persistProvisionerRootSession engine attempt version rootState provisioner = do
+  let store = engineStoreBoundary (brokerEngineBoundary engine)
+      nextRoot = rootState {rootSessionStateProvisioner = Just provisioner}
+      generation = rootSessionStorageGeneration (rootSessionStateBinding rootState)
+  persisted <-
+    withStorePermit
+      engine
+      attempt
+      BootstrapStoreCasRootSessionJournal
+      (\permit -> casRootSessionJournal store permit version nextRoot)
+  case persisted >>= writeResultVersion nextRoot of
+    Left failure -> pure (Left failure)
+    Right nextVersion -> do
+      readBack <- readRootSessionJournal store generation
+      pure $ case storeReadResult readBack of
+        Right (StoreObjectPresent observedVersion _ observedState)
+          | observedVersion == nextVersion && observedState == nextRoot ->
+              Right (nextVersion, nextRoot)
+        _ -> Left EngineStoreReadBackMismatch
 
 driveGeneratedRootScope
   :: forall m
@@ -3603,7 +3968,8 @@ loadOrCreateRootSessionJournal engine attempt sessionId custody = do
           pure (Left EngineStoreReadBackMismatch)
       | otherwise ->
           case planRootSession observed of
-            RootSessionPlanComplete _ -> pure (Right (version, observed))
+            RootSessionPlanComplete _ ->
+              resumeCompletedRootSession version observed
             RootSessionPlanCancelledClean _ -> pure (Right (version, observed))
             _
               | rootSessionBindingId (rootSessionStateBinding observed) == sessionId ->
@@ -3622,6 +3988,19 @@ loadOrCreateRootSessionJournal engine attempt sessionId custody = do
         Right (version, state)
  where
   store = engineStoreBoundary (brokerEngineBoundary engine)
+
+  resumeCompletedRootSession version observed =
+    case rootSessionStateProvisioner observed of
+      Nothing -> pure (Right (version, observed))
+      Just provisioner -> case planProvisionerSession provisioner of
+        ProvisionerPlanComplete {} -> pure (Right (version, observed))
+        _ ->
+          persistProvisionerRootSession
+            engine
+            attempt
+            version
+            observed
+            (restartProvisionerSession provisioner)
 
   restartLoadedRootSession generation version observed =
     case restartRootSession sessionId observed of
@@ -3681,30 +4060,31 @@ transitionAndPersistRootSession engine attempt version state command =
 
 -- Child custody -----------------------------------------------------------
 
-driveChildCustody
+driveChildCustodyPrepare
   :: forall m
    . (Monad m)
   => BrokerEngine m
   -> MutationAttempt
-  -> CapabilityRef 'VaultBootstrapMutate
   -> ChildCustodyBinding
-  -> m (Either BrokerEngineError ParentCustodyAcknowledgement)
-driveChildCustody engine attempt reference binding = do
+  -> RequestDigest
+  -> ArtifactDigest
+  -> m (Either BrokerEngineError ChildCustodyExport)
+driveChildCustodyPrepare engine attempt binding requestDigest actionDigest = do
   loaded <- loadOrCreateChildCustodyJournal engine attempt binding
   case loaded of
     Left failure -> pure (Left failure)
-    Right (version, state) -> childLoop 0 version state
+    Right (version, state) -> prepareLoop 0 version state
  where
   store = engineStoreBoundary (brokerEngineBoundary engine)
   limit = brokerEnginePlanLimit engine
 
-  childLoop steps version state
+  prepareLoop steps version state
     | steps >= limit = pure (Left EngineCustodyPlanLimitExceeded)
     | otherwise = case planChildCustody state of
         ChildPlanAwaitEncryptedInitResponse expectedBinding -> do
           captured <-
             runLocal engine (LocalCaptureChildEncryptedReceipt expectedBinding)
-          advanceChild
+          advancePrepare
             steps
             version
             state
@@ -3715,7 +4095,7 @@ driveChildCustody engine attempt reference binding = do
           case stored of
             Left failure -> pure (Left failure)
             Right () ->
-              advanceChild
+              advancePrepare
                 steps
                 version
                 state
@@ -3727,7 +4107,7 @@ driveChildCustody engine attempt reference binding = do
             Left failure -> pure (Left failure)
             Right (StoreObjectPresent _ _ actual)
               | actual == expected ->
-                  advanceChild
+                  advancePrepare
                     steps
                     version
                     state
@@ -3736,100 +4116,41 @@ driveChildCustody engine attempt reference binding = do
               | otherwise -> pure (Left EngineStoreReadBackMismatch)
             Right StoreObjectAbsent -> pure (Left EngineStoreReadBackMismatch)
         ChildPlanArmParentGenerationCas _ ->
-          advanceChild
+          advancePrepare
             steps
             version
             state
             (Right ())
             (const ArmChildParentGenerationCas)
-        ChildPlanParentGenerationCas receipt -> do
-          physicalAcknowledgement <-
-            runAuthorizedPhysical
-              engine
-              attempt
-              BootstrapVaultCommitChildCustody
-              (\permit -> PhysicalCommitParentCustody reference permit receipt)
-          case physicalAcknowledgement of
-            Left failure -> pure (Left failure)
-            Right expectedAcknowledgement -> do
-              durableAcknowledgement <-
-                commitParentCustody engine attempt receipt
-              case durableAcknowledgement of
-                Left failure -> pure (Left failure)
-                Right acknowledgement
-                  | acknowledgement == expectedAcknowledgement ->
-                      advanceChild
-                        steps
-                        version
-                        state
-                        (Right acknowledgement)
-                        ConfirmParentCustodyReadBack
-                  | otherwise -> pure (Left EngineStoreReadBackMismatch)
-        ChildPlanDeleteLocalEncryptedReceipt acknowledgement ->
-          case childCustodyStatePhase state of
-            ChildParentCustodyReadBack {} ->
-              advanceChild
-                steps
-                version
-                state
-                (Right ())
-                (const ArmChildLocalReceiptDeletion)
-            ChildLocalReceiptDeletionPending {} -> do
-              deleted <- deleteChildReceipt engine attempt binding
-              case deleted of
-                Left failure -> pure (Left failure)
-                Right () ->
-                  advanceChild
-                    steps
-                    version
-                    state
-                    (Right ())
-                    (const RecordChildLocalReceiptDeletion)
-            _ ->
-              pure
-                ( Left
-                    ( EngineCustodyTransitionRefused
-                        ( "unexpected child receipt deletion phase for "
-                            <> Text.pack (show acknowledgement)
-                        )
-                    )
-                )
-        ChildPlanReadBackLocalReceiptAbsence _ -> do
-          observed <- readChildEncryptedReceipt store binding
-          case storeReadResult observed of
-            Left failure -> pure (Left failure)
-            Right StoreObjectAbsent ->
-              advanceChild
-                steps
-                version
-                state
-                (Right ())
-                (const ConfirmChildLocalReceiptAbsence)
-            Right StoreObjectPresent {} -> pure (Left EngineStoreReadBackMismatch)
-        ChildPlanMarkCustodyDurable _ ->
-          advanceChild
-            steps
-            version
-            state
-            (Right ())
-            (const ConfirmChildRecoveryCustodyDurable)
+        ChildPlanParentGenerationCas receipt ->
+          pure
+            ( Right
+                (mkChildCustodyExport receipt requestDigest actionDigest)
+            )
+        ChildPlanDeleteLocalEncryptedReceipt _ -> finalizedAlready
+        ChildPlanReadBackLocalReceiptAbsence _ -> finalizedAlready
+        ChildPlanMarkCustodyDurable _ -> finalizedAlready
         ChildPlanCancellationLatched _ ->
           pure (Left (EngineCustodyTransitionRefused "child custody cancellation is latched"))
-        ChildPlanCustodyComplete acknowledgement
-          | parentCustodyAcknowledgedBinding acknowledgement == binding ->
-              pure (Right acknowledgement)
-          | otherwise ->
-              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyCommit))
+        ChildPlanCustodyComplete _ -> finalizedAlready
 
-  advanceChild
+  finalizedAlready =
+    pure
+      ( Left
+          ( EngineCustodyTransitionRefused
+              "child custody was already finalized; replay the original prepare request"
+          )
+      )
+
+  advancePrepare
     :: forall value
      . Natural
     -> StoreVersion
     -> ChildCustodyState
     -> Either BrokerEngineError value
     -> (value -> ChildCustodyCommand)
-    -> m (Either BrokerEngineError ParentCustodyAcknowledgement)
-  advanceChild steps version state result commandFor = case result of
+    -> m (Either BrokerEngineError ChildCustodyExport)
+  advancePrepare steps version state result commandFor = case result of
     Left failure -> pure (Left failure)
     Right value -> do
       advanced <-
@@ -3842,7 +4163,163 @@ driveChildCustody engine attempt reference binding = do
       case advanced of
         Left failure -> pure (Left failure)
         Right (nextVersion, nextState) ->
-          childLoop (steps + 1) nextVersion nextState
+          prepareLoop (steps + 1) nextVersion nextState
+
+driveChildCustodyFinalize
+  :: forall m
+   . (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> FederationRegistrationCompletion
+  -> m (Either BrokerEngineError ParentCustodyAcknowledgement)
+driveChildCustodyFinalize engine attempt suppliedCompletion =
+  case validateFederationRegistrationCompletion suppliedCompletion of
+    Left _ ->
+      pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+    Right completion -> do
+      let exported =
+            federationRegistrationExport
+              (federationRegistrationCompletedIntent completion)
+          expectedReceipt = childCustodyExportReceipt exported
+          binding = childEncryptedReceiptBinding expectedReceipt
+          expectedAcknowledgement =
+            federationRegistrationAcknowledgement completion
+      loaded <- readChildCustodyJournal store binding
+      case storeReadResult loaded of
+        Left failure -> pure (Left failure)
+        Right StoreObjectAbsent -> pure (Left EngineStoreReadBackMismatch)
+        Right (StoreObjectPresent version _ state)
+          | childCustodyStateBinding state /= binding ->
+              pure (Left EngineStoreReadBackMismatch)
+          | otherwise ->
+              finalizeLoop
+                binding
+                expectedReceipt
+                expectedAcknowledgement
+                0
+                version
+                state
+ where
+  limit = brokerEnginePlanLimit engine
+  store = engineStoreBoundary (brokerEngineBoundary engine)
+
+  finalizeLoop binding expectedReceipt expectedAcknowledgement steps version state
+    | steps >= limit = pure (Left EngineCustodyPlanLimitExceeded)
+    | otherwise = case planChildCustody state of
+        ChildPlanParentGenerationCas actualReceipt
+          | actualReceipt /= expectedReceipt ->
+              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+          | otherwise ->
+              advanceFinalize
+                binding
+                expectedReceipt
+                expectedAcknowledgement
+                steps
+                version
+                state
+                (ConfirmParentCustodyReadBack expectedAcknowledgement)
+        ChildPlanDeleteLocalEncryptedReceipt acknowledgement
+          | acknowledgement /= expectedAcknowledgement ->
+              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+          | otherwise -> case childCustodyStatePhase state of
+              ChildParentCustodyReadBack {} ->
+                advanceFinalize
+                  binding
+                  expectedReceipt
+                  expectedAcknowledgement
+                  steps
+                  version
+                  state
+                  ArmChildLocalReceiptDeletion
+              ChildLocalReceiptDeletionPending {} -> do
+                deleted <- deleteChildReceipt engine attempt binding
+                case deleted of
+                  Left failure -> pure (Left failure)
+                  Right () ->
+                    advanceFinalize
+                      binding
+                      expectedReceipt
+                      expectedAcknowledgement
+                      steps
+                      version
+                      state
+                      RecordChildLocalReceiptDeletion
+              _ -> pure (Left EngineStoreReadBackMismatch)
+        ChildPlanReadBackLocalReceiptAbsence acknowledgement
+          | acknowledgement /= expectedAcknowledgement ->
+              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+          | otherwise -> do
+              observed <- readChildEncryptedReceipt store binding
+              case storeReadResult observed of
+                Left failure -> pure (Left failure)
+                Right StoreObjectAbsent ->
+                  advanceFinalize
+                    binding
+                    expectedReceipt
+                    expectedAcknowledgement
+                    steps
+                    version
+                    state
+                    ConfirmChildLocalReceiptAbsence
+                Right StoreObjectPresent {} -> pure (Left EngineStoreReadBackMismatch)
+        ChildPlanMarkCustodyDurable acknowledgement
+          | acknowledgement /= expectedAcknowledgement ->
+              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+          | otherwise ->
+              advanceFinalize
+                binding
+                expectedReceipt
+                expectedAcknowledgement
+                steps
+                version
+                state
+                ConfirmChildRecoveryCustodyDurable
+        ChildPlanCustodyComplete acknowledgement
+          | acknowledgement == expectedAcknowledgement -> pure (Right acknowledgement)
+          | otherwise ->
+              pure (Left (EngineResponseEvidenceMismatch BrokerChildCustodyFinalize))
+        ChildPlanCancellationLatched _ ->
+          pure (Left (EngineCustodyTransitionRefused "child custody cancellation is latched"))
+        ChildPlanAwaitEncryptedInitResponse _ -> premature
+        ChildPlanWriteLocalEncryptedReceipt _ -> premature
+        ChildPlanReadBackLocalEncryptedReceipt _ -> premature
+        ChildPlanArmParentGenerationCas _ -> premature
+   where
+    premature =
+      pure
+        ( Left
+            ( EngineCustodyTransitionRefused
+                "child custody finalize arrived before the durable export was prepared"
+            )
+        )
+
+  advanceFinalize
+    :: ChildCustodyBinding
+    -> ChildEncryptedReceipt
+    -> ParentCustodyAcknowledgement
+    -> Natural
+    -> StoreVersion
+    -> ChildCustodyState
+    -> ChildCustodyCommand
+    -> m (Either BrokerEngineError ParentCustodyAcknowledgement)
+  advanceFinalize binding expectedReceipt expectedAcknowledgement steps version state command = do
+    advanced <-
+      transitionAndPersistChildCustody
+        engine
+        attempt
+        version
+        state
+        command
+    case advanced of
+      Left failure -> pure (Left failure)
+      Right (nextVersion, nextState) ->
+        finalizeLoop
+          binding
+          expectedReceipt
+          expectedAcknowledgement
+          (steps + 1)
+          nextVersion
+          nextState
 
 loadOrCreateChildCustodyJournal
   :: (Monad m)
@@ -3914,27 +4391,6 @@ createChildReceipt engine attempt receipt = do
       BootstrapStoreCreateChildEncryptedReceipt
       (\permit -> createChildEncryptedReceipt store permit receipt)
   pure (void (written >>= writeResultVersion receipt))
-
-commitParentCustody
-  :: (Monad m)
-  => BrokerEngine m
-  -> MutationAttempt
-  -> ChildEncryptedReceipt
-  -> m (Either BrokerEngineError ParentCustodyAcknowledgement)
-commitParentCustody engine attempt receipt = do
-  let store = engineStoreBoundary (brokerEngineBoundary engine)
-  committed <-
-    withStorePermit
-      engine
-      attempt
-      BootstrapStoreCommitParentCustody
-      (\permit -> parentCustodyGenerationCas store permit receipt)
-  pure $ do
-    result <- committed
-    case result of
-      StoreWriteApplied _ _ acknowledgement -> Right acknowledgement
-      StoreWriteConflict (StoreObjectPresent _ _ acknowledgement) -> Right acknowledgement
-      StoreWriteConflict StoreObjectAbsent -> Left EngineStoreVersionConflict
 
 deleteChildReceipt
   :: (Monad m)
@@ -4555,6 +5011,23 @@ resetAmbiguousInitialization engine attempt reference ambiguity resetProof actio
     Right StoreObjectAbsent -> pure (Left EngineStoreReadBackMismatch)
     Right (StoreObjectPresent version _ state) ->
       case rootInitStatePhase state of
+        RootResetPristine observedProof
+          | observedProof == resetProof -> do
+              advanced <- advanceResetGeneration engine attempt resetProof
+              pure $ do
+                _ <- advanced
+                Right
+                  BootstrapMutationReceipt
+                    { bootstrapMutationDigest = actionDigest
+                    , bootstrapMutationChanged = False
+                    }
+          | otherwise ->
+              pure
+                ( Left
+                    ( EngineResponseEvidenceMismatch
+                        BrokerVaultResetAmbiguousInitialization
+                    )
+                )
         RootInitializationAmbiguous observed
           | observed == ambiguity -> do
               audited <-
@@ -4580,21 +5053,35 @@ resetAmbiguousInitialization engine attempt reference ambiguity resetProof actio
                             )
                         )
                   | otherwise -> do
-                      advanced <-
-                        transitionAndPersistRoot
+                      advancedGeneration <-
+                        advanceResetGeneration engine attempt confirmedProof
+                      preparedRemoved <-
+                        removeAmbiguousPreparedEnvelope
                           engine
                           attempt
-                          version
-                          state
-                          (ResetAmbiguousRootInitialization confirmedProof)
-                      pure $ case advanced of
-                        Left failure -> Left failure
-                        Right _ ->
-                          Right
-                            BootstrapMutationReceipt
-                              { bootstrapMutationDigest = actionDigest
-                              , bootstrapMutationChanged = True
-                              }
+                          ambiguity
+                      case (advancedGeneration, preparedRemoved) of
+                        (Left failure, _) -> pure (Left failure)
+                        (_, Left failure) -> pure (Left failure)
+                        (Right (), Right ()) -> do
+                          advanced <-
+                            transitionAndPersistRoot
+                              engine
+                              attempt
+                              version
+                              state
+                              (ResetAmbiguousRootInitialization confirmedProof)
+                          pure $ case advanced of
+                            Left failure -> Left failure
+                            Right (_, nextState) -> case rootInitStatePhase nextState of
+                              RootResetPristine persistedProof
+                                | persistedProof == confirmedProof ->
+                                    Right
+                                      BootstrapMutationReceipt
+                                        { bootstrapMutationDigest = actionDigest
+                                        , bootstrapMutationChanged = True
+                                        }
+                              _ -> Left EngineStoreReadBackMismatch
           | otherwise ->
               pure (Left (EngineResponseEvidenceMismatch BrokerVaultResetAmbiguousInitialization))
         _ ->
@@ -4602,3 +5089,58 @@ resetAmbiguousInitialization engine attempt reference ambiguity resetProof actio
             ( Left
                 (EngineCustodyTransitionRefused "reset requested outside ambiguous initialization")
             )
+
+advanceResetGeneration
+  :: (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> PristineResetProof
+  -> m (Either BrokerEngineError ())
+advanceResetGeneration engine attempt proof = do
+  let store = engineStoreBoundary (brokerEngineBoundary engine)
+      expected = resetAmbiguousBinding proof
+      replacement = pristineStorageBinding (resetReplacementPristine proof)
+  advanced <-
+    withStorePermit
+      engine
+      attempt
+      BootstrapStoreAdvanceVaultStorageGeneration
+      (\permit -> advanceVaultStorageGeneration store permit expected replacement)
+  pure $ do
+    observed <- advanced
+    if observed == replacement
+      then Right ()
+      else Left EngineStoreReadBackMismatch
+
+removeAmbiguousPreparedEnvelope
+  :: (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> InitAmbiguity
+  -> m (Either BrokerEngineError ())
+removeAmbiguousPreparedEnvelope engine attempt ambiguity = do
+  let store = engineStoreBoundary (brokerEngineBoundary engine)
+      binding = ambiguousInitBinding ambiguity
+  observed <- readPreparedInitEnvelope store binding
+  case storeReadResult observed of
+    Left failure -> pure (Left failure)
+    Right StoreObjectAbsent -> pure (Right ())
+    Right (StoreObjectPresent version _ prepared)
+      | preparedInitEnvelopeDigest prepared
+          /= ambiguousPreparedEnvelopeDigest ambiguity ->
+          pure (Left EngineStoreReadBackMismatch)
+      | otherwise -> do
+          deleted <-
+            withStorePermit
+              engine
+              attempt
+              BootstrapStoreDeletePreparedInitEnvelope
+              (\permit -> deletePreparedInitEnvelope store permit binding version)
+          case deleted of
+            Left failure -> pure (Left failure)
+            Right () -> do
+              readBack <- readPreparedInitEnvelope store binding
+              pure $ case storeReadResult readBack of
+                Right StoreObjectAbsent -> Right ()
+                Left failure -> Left failure
+                Right StoreObjectPresent {} -> Left EngineStoreReadBackMismatch

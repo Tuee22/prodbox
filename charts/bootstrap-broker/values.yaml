@@ -32,6 +32,12 @@ runtime:
 # prodbox:bootstrap-broker-chart-statics.values:start
 serviceAccount:
   name: prodbox-bootstrap-broker
+  workerName: prodbox-bootstrap-secret-worker
+client:
+  serviceAccountName: prodbox-bootstrap-broker-client
+  tokenAudience: prodbox-bootstrap-broker
+worker:
+  imageRepository: 127.0.0.1:30080/prodbox/prodbox-runtime
 vault:
   role: prodbox-bootstrap-broker
 probes:
@@ -44,6 +50,15 @@ probes:
 # observations execute through the broker's own client, never in a kubelet
 # probe.
 probeTiming:
+  # The broker establishes its MinIO-backed durable boundary before opening
+  # the listener. A startup probe prevents liveness from killing that bounded
+  # initialization on a freshly reconciled cluster.
+  startup:
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 60
+    successThreshold: 1
   liveness:
     initialDelaySeconds: 5
     periodSeconds: 15

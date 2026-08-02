@@ -1,0 +1,150 @@
+{{- if .Values.enabled }}
+{{- if not .Values.image.digest }}{{ fail "image.digest is required" }}{{ end }}
+{{- if not .Values.permit.id }}{{ fail "permit.id is required" }}{{ end }}
+{{- if not .Values.permit.requestDigest }}{{ fail "permit.requestDigest is required" }}{{ end }}
+{{- if not .Values.permit.deadlineMicros }}{{ fail "permit.deadlineMicros is required" }}{{ end }}
+{{- if not .Values.attestation.heartbeatMicros }}{{ fail "attestation.heartbeatMicros is required" }}{{ end }}
+{{- if eq .Values.ingressSchema "aws-admin" }}
+{{- if not .Values.permit.operationId }}{{ fail "permit.operationId is required for aws-admin" }}{{ end }}
+{{- if not .Values.awsAdmin.mode }}{{ fail "awsAdmin.mode is required for aws-admin" }}{{ end }}
+{{- if not (or (eq .Values.awsAdmin.mode "normal") (or (eq .Values.awsAdmin.mode "genesis-backup") (eq .Values.awsAdmin.mode "backup-repair"))) }}{{ fail "awsAdmin.mode must be normal, genesis-backup, or backup-repair" }}{{ end }}
+{{- if not .Values.awsAdmin.authorityScope }}{{ fail "awsAdmin.authorityScope is required for aws-admin" }}{{ end }}
+{{- if not .Values.awsAdmin.authorityEndpoint }}{{ fail "awsAdmin.authorityEndpoint is required for aws-admin" }}{{ end }}
+{{- else if ne .Values.ingressSchema "external-acme-eab" }}
+{{- fail "ingressSchema must be aws-admin or external-acme-eab" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "credential-provisioner.jobName" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "credential-provisioner.labels" . | nindent 4 }}
+  annotations:
+    prodbox.io/request-digest: {{ .Values.permit.requestDigest | quote }}
+    prodbox.io/plan-digest: {{ .Values.permit.planDigest | quote }}
+    prodbox.io/plan-member-index: {{ .Values.permit.memberIndex | quote }}
+    prodbox.io/prior-receipt-digest: {{ .Values.permit.priorReceiptDigest | quote }}
+    prodbox.io/deadline-micros: {{ .Values.permit.deadlineMicros | quote }}
+    prodbox.io/host-heartbeat-micros: {{ .Values.attestation.heartbeatMicros | quote }}
+    prodbox.io/image-digest: {{ .Values.image.digest | quote }}
+{{ if eq .Values.ingressSchema "aws-admin" }}
+    prodbox.io/operation-id: {{ .Values.permit.operationId | quote }}
+    prodbox.io/aws-admin-mode: {{ .Values.awsAdmin.mode | quote }}
+    prodbox.io/authority-scope: {{ .Values.awsAdmin.authorityScope | quote }}
+    prodbox.io/authority-endpoint: {{ .Values.awsAdmin.authorityEndpoint | quote }}
+{{ end }}
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "credential-provisioner.labels" . | nindent 8 }}
+      annotations:
+        prodbox.io/request-digest: {{ .Values.permit.requestDigest | quote }}
+        prodbox.io/plan-digest: {{ .Values.permit.planDigest | quote }}
+        prodbox.io/plan-member-index: {{ .Values.permit.memberIndex | quote }}
+        prodbox.io/prior-receipt-digest: {{ .Values.permit.priorReceiptDigest | quote }}
+        prodbox.io/deadline-micros: {{ .Values.permit.deadlineMicros | quote }}
+        prodbox.io/host-heartbeat-micros: {{ .Values.attestation.heartbeatMicros | quote }}
+        prodbox.io/image-digest: {{ .Values.image.digest | quote }}
+{{ if eq .Values.ingressSchema "aws-admin" }}
+        prodbox.io/operation-id: {{ .Values.permit.operationId | quote }}
+        prodbox.io/aws-admin-mode: {{ .Values.awsAdmin.mode | quote }}
+        prodbox.io/authority-scope: {{ .Values.awsAdmin.authorityScope | quote }}
+        prodbox.io/authority-endpoint: {{ .Values.awsAdmin.authorityEndpoint | quote }}
+{{ end }}
+    spec:
+      serviceAccountName: {{ include "credential-provisioner.serviceAccount" . }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ include "credential-provisioner.name" . }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          stdin: true
+          stdinOnce: true
+          tty: false
+          args:
+            - credential-provisioner
+            - run
+            - --ingress-schema
+            - {{ .Values.ingressSchema | quote }}
+{{ if eq .Values.ingressSchema "aws-admin" }}
+            - --mode
+            - {{ .Values.awsAdmin.mode | quote }}
+            - --operation-id
+            - {{ .Values.permit.operationId | quote }}
+            - --permit-id
+            - {{ .Values.permit.id | quote }}
+            - --request-digest
+            - {{ .Values.permit.requestDigest | quote }}
+            - --deadline-micros
+            - {{ .Values.permit.deadlineMicros | quote }}
+            - --image-digest
+            - {{ .Values.image.digest | quote }}
+            - --target-worker-image-repository
+            - {{ .Values.image.repository | quote }}
+            - --authority-scope
+            - {{ .Values.awsAdmin.authorityScope | quote }}
+            - --authority-endpoint
+            - {{ .Values.awsAdmin.authorityEndpoint | quote }}
+            - --pod-name-file
+            - /var/run/secrets/prodbox/pod-name
+            - --pod-uid-file
+            - /var/run/secrets/prodbox/pod-uid
+            - --service-account-token-file
+            - /var/run/secrets/prodbox/token
+{{ else }}
+            - --permit-id
+            - {{ .Values.permit.id | quote }}
+            - --request-digest
+            - {{ .Values.permit.requestDigest | quote }}
+            - --deadline-micros
+            - {{ .Values.permit.deadlineMicros | quote }}
+            - --pod-uid-file
+            - /var/run/secrets/prodbox/pod-uid
+            - --service-account-token-file
+            - /var/run/secrets/prodbox/token
+{{ end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /run/prodbox
+            - name: identity-token
+              mountPath: /var/run/secrets/prodbox
+              readOnly: true
+      volumes:
+        - name: runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: identity-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: prodbox-control-plane
+                  expirationSeconds: 600
+              - downwardAPI:
+                  items:
+                    - path: pod-name
+                      fieldRef:
+                        fieldPath: metadata.name
+                    - path: pod-uid
+                      fieldRef:
+                        fieldPath: metadata.uid
+{{- end }}

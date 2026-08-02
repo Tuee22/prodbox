@@ -111,10 +111,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , StoreLifetime (ClusterRetained)
   , TargetClusterSecretSink
   , mkClusterRetainedCoordinate
-  , targetSecretSinkGatewayEndpoint
   , targetSecretSinkIdentity
-  , targetSecretSinkKvPath
-  , targetSecretSinkVaultMount
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
@@ -224,7 +221,6 @@ data TargetRegistrationError
   | TargetRegistrationCapacityExceedsHardMaximum !Natural !Natural
   | TargetRegistrationOverBound !Natural !Natural
   | TargetRegistrationDuplicateIdentity !Text
-  | TargetRegistrationDuplicateSinkCoordinate !Text !Text
   deriving (Eq, Show)
 
 data RegisteredTargetSet = RegisteredTargetSet
@@ -248,7 +244,6 @@ mkRegisteredTargetSet capacity sinks = do
   let actual = fromIntegral (length sinks)
   when (actual > capacity) (Left (TargetRegistrationOverBound actual capacity))
   targets <- foldl' insertUnique (Right Map.empty) sinks
-  _ <- foldl' insertUniqueCoordinate (Right Map.empty) sinks
   pure
     RegisteredTargetSet
       { internalRegisteredTargetCapacity = fromIntegral capacity
@@ -261,19 +256,6 @@ mkRegisteredTargetSet capacity sinks = do
     if Map.member identity targets
       then Left (TargetRegistrationDuplicateIdentity identity)
       else Right (Map.insert identity sink targets)
-
-  insertUniqueCoordinate result sink = do
-    coordinates <- result
-    let coordinate =
-          ( targetSecretSinkGatewayEndpoint sink
-          , targetSecretSinkVaultMount sink
-          , targetSecretSinkKvPath sink
-          )
-        identity = targetSecretSinkIdentity sink
-    case Map.lookup coordinate coordinates of
-      Just existing ->
-        Left (TargetRegistrationDuplicateSinkCoordinate existing identity)
-      Nothing -> Right (Map.insert coordinate identity coordinates)
 
 hardMaximumRegisteredTargets :: Natural
 hardMaximumRegisteredTargets = 64
@@ -707,6 +689,8 @@ decidePrepareTargetCommit registered coordinate now deadline permit sink generat
       case observation of
         ModelBCorrupt detail ->
           TargetCommitPrepareRefused (TargetCommitGlobalCorrupt detail)
+        ModelBEndpointUnready detail ->
+          TargetCommitPrepareRefused (TargetCommitGlobalUnobservable detail)
         ModelBUnobservable detail ->
           TargetCommitPrepareRefused (TargetCommitGlobalUnobservable detail)
         ModelBMissing -> planAgainst Nothing (emptyTargetIntentProjection registered)
@@ -1158,6 +1142,7 @@ decideResolveOutstandingTargets registered coordinate successorPermit witnesses 
   case observation of
     ModelBMissing -> TargetRecoveryRefused TargetCommitGlobalMissingAfterPrepare
     ModelBCorrupt detail -> TargetRecoveryRefused (TargetCommitGlobalCorrupt detail)
+    ModelBEndpointUnready detail -> TargetRecoveryRefused (TargetCommitGlobalUnobservable detail)
     ModelBUnobservable detail -> TargetRecoveryRefused (TargetCommitGlobalUnobservable detail)
     ModelBObserved version projection ->
       case validateProjection registered projection of
@@ -1209,6 +1194,8 @@ compactTargetIntent registered coordinate permit identity observation
   | otherwise = case observation of
       ModelBMissing -> TargetIntentCompactAlreadyApplied
       ModelBCorrupt detail -> TargetIntentCompactRefused (TargetCommitGlobalCorrupt detail)
+      ModelBEndpointUnready detail ->
+        TargetIntentCompactRefused (TargetCommitGlobalUnobservable detail)
       ModelBUnobservable detail ->
         TargetIntentCompactRefused (TargetCommitGlobalUnobservable detail)
       ModelBObserved version projection ->
@@ -1368,6 +1355,7 @@ observedProjection
 observedProjection observation = case observation of
   ModelBMissing -> Left TargetCommitGlobalMissingAfterPrepare
   ModelBCorrupt detail -> Left (TargetCommitGlobalCorrupt detail)
+  ModelBEndpointUnready detail -> Left (TargetCommitGlobalUnobservable detail)
   ModelBUnobservable detail -> Left (TargetCommitGlobalUnobservable detail)
   ModelBObserved _ projection -> Right projection
 

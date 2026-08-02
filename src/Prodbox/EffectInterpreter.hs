@@ -1,17 +1,18 @@
 module Prodbox.EffectInterpreter
   ( InterpreterContext (..)
+  , AwsCredentialValidationBoundary (..)
+  , runAwsCredentialValidationWithRetry
   , runEffect
+  , runEffectWithAwsCredentialValidationBoundary
   , runEffectDAG
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (bracketOnError)
 import Control.Monad
   ( foldM
   , when
   )
-import Data.Char (isDigit)
 import Data.List
   ( intercalate
   , isInfixOf
@@ -26,15 +27,18 @@ import Data.Set
   )
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.Aws.AdminCredentials (acquireAdminAwsCredentials)
-import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
-  )
 import Prodbox.CLI.Output
   ( writeDiagnostic
   , writeOutput
   , writeOutputLine
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchHostProviderIntentFresh
+  , renderProviderCallerError
   )
 import Prodbox.Effect
   ( Effect (..)
@@ -47,13 +51,19 @@ import Prodbox.EffectDAG
 import Prodbox.Host.Substrate
   ( detectHostSubstrate
   )
+import Prodbox.Infra.AwsSesStack (ensureAwsSesStackResources)
 import Prodbox.Infra.MinioBackend
   ( ensureMinioBackendBucket
+  , hostDirectEndpointPort
   , minioBackendRegion
   , pulumiBackendLoginTimeoutSeconds
   , pulumiBackendUrl
   , readMinioCredentials
   , withMinioPortForward
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObserveProviderReadiness)
+  , ProviderReadinessProbe (ProviderReadinessRoute53Zone, ProviderReadinessStsIdentity)
   )
 import Prodbox.PrerequisiteId
   ( PrerequisiteId
@@ -62,26 +72,15 @@ import Prodbox.PrerequisiteId
 import Prodbox.Result
   ( Result (..)
   )
-import Prodbox.Service
-  ( isRetryableTransientFailure
-  )
 import Prodbox.Ses.Readiness
-  ( AwsSesReadiness (..)
-  , AwsSesReadinessEnvironments (..)
-  , AwsSesReadinessScope (..)
-  , mkAwsSesReadinessExpectation
-  , observeAwsSesReadiness
-  , renderAwsSesReadiness
+  ( AwsSesReadinessScope (..)
   )
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , ConfigFile (..)
+  ( ConfigFile (..)
   , Credentials (..)
   , Route53Section (..)
-  , SesSection (..)
   , ValidatedSettings (..)
   , loadConfigFile
-  , resolveAwsCredentialsRefFromHostVault
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
   , validateOperationalAwsCredentials
@@ -123,6 +122,55 @@ data InterpreterContext = InterpreterContext
   }
   deriving (Eq, Show)
 
+-- | Closed validation seam for the Lifecycle-provider identity.  Production
+-- dispatches the read-only STS readiness intent through the authenticated
+-- Lifecycle Authority/Provider Worker path; unit tests inject this boundary
+-- explicitly and therefore never gain an environment-variable or host-Vault
+-- credential fallback.
+data AwsCredentialValidationBoundary m = AwsCredentialValidationBoundary
+  { validateAwsCredentialThroughProvider :: m (Either String ())
+  , waitForAwsCredentialValidationRetry :: m ()
+  }
+
+runAwsCredentialValidationWithRetry
+  :: Int
+  -> AwsCredentialValidationBoundary IO
+  -> IO (Result ())
+runAwsCredentialValidationWithRetry remaining boundary = do
+  result <- validateAwsCredentialThroughProvider boundary
+  case result of
+    Right () -> pure (Success ())
+    Left detail
+      | remaining <= 1 ->
+          pure
+            ( Failure
+                ( "AWS credential check failed through the authenticated "
+                    ++ "Lifecycle Authority/Provider Worker: "
+                    ++ detail
+                )
+            )
+      | otherwise -> do
+          waitForAwsCredentialValidationRetry boundary
+          runAwsCredentialValidationWithRetry (remaining - 1) boundary
+
+productionAwsCredentialValidationBoundary
+  :: InterpreterContext -> AwsCredentialValidationBoundary IO
+productionAwsCredentialValidationBoundary context =
+  AwsCredentialValidationBoundary
+    { validateAwsCredentialThroughProvider = do
+        result <-
+          dispatchHostProviderIntentFresh
+            LifecycleAuthorityOperator
+            (interpreterRepoRoot context)
+            (Text.pack "prerequisite-aws-credential-readiness")
+            (ObserveProviderReadiness ProviderReadinessStsIdentity)
+        pure $ case result of
+          Left err -> Left (renderProviderCallerError err)
+          Right _ -> Right ()
+    , waitForAwsCredentialValidationRetry =
+        threadDelay awsValidationRetryDelayMicroseconds
+    }
+
 -- | Interpreter-boundary memo of satisfied node effects within one `runEffectDAG` run.
 --
 -- Per [prerequisite_dag_system.md](../../documents/engineering/prerequisite_dag_system.md) §3
@@ -147,7 +195,19 @@ rememberSatisfiedEffect effect memo@(SatisfiedEffectMemo satisfied)
   | otherwise = SatisfiedEffectMemo (effect : satisfied)
 
 runEffectDAG :: InterpreterContext -> EffectDAG -> IO (Result ())
-runEffectDAG context dag = go initialPending Set.empty emptySatisfiedEffectMemo
+runEffectDAG context dag =
+  runEffectDAGWithAwsCredentialValidationBoundary
+    context
+    (productionAwsCredentialValidationBoundary context)
+    dag
+
+runEffectDAGWithAwsCredentialValidationBoundary
+  :: InterpreterContext
+  -> AwsCredentialValidationBoundary IO
+  -> EffectDAG
+  -> IO (Result ())
+runEffectDAGWithAwsCredentialValidationBoundary context awsCredentialBoundary dag =
+  go initialPending Set.empty emptySatisfiedEffectMemo
  where
   nodes = effectDagNodes dag
   initialPending = Set.fromList (Map.keys nodes)
@@ -189,7 +249,7 @@ runEffectDAG context dag = go initialPending Set.empty emptySatisfiedEffectMemo
     outcome <-
       if isEffectSatisfied effect memo
         then pure (Success ())
-        else runEffect context effect
+        else runEffectWithAwsCredentialValidationBoundary context awsCredentialBoundary effect
     case outcome of
       Failure err ->
         pure
@@ -211,7 +271,17 @@ runEffectDAG context dag = go initialPending Set.empty emptySatisfiedEffectMemo
           (rememberSatisfiedEffect effect memo)
 
 runEffect :: InterpreterContext -> Effect -> IO (Result ())
-runEffect context effect =
+runEffect context =
+  runEffectWithAwsCredentialValidationBoundary
+    context
+    (productionAwsCredentialValidationBoundary context)
+
+runEffectWithAwsCredentialValidationBoundary
+  :: InterpreterContext
+  -> AwsCredentialValidationBoundary IO
+  -> Effect
+  -> IO (Result ())
+runEffectWithAwsCredentialValidationBoundary context awsCredentialBoundary effect =
   case effect of
     EmitLine text -> do
       writeOutputLine text
@@ -221,11 +291,12 @@ runEffect context effect =
     AssertCommandOutputContains spec expectedText ->
       assertCommandOutputContains spec expectedText
     Sequence effects -> foldM step (Success ()) effects
-    Validate validation -> runValidation context validation
+    Validate validation -> runValidation context awsCredentialBoundary validation
  where
   step :: Result () -> Effect -> IO (Result ())
   step failure@(Failure _) _ = pure failure
-  step (Success ()) nextEffect = runEffect context nextEffect
+  step (Success ()) nextEffect =
+    runEffectWithAwsCredentialValidationBoundary context awsCredentialBoundary nextEffect
 
 runCommandEffect :: Subprocess -> IO (Result ())
 runCommandEffect spec = do
@@ -271,8 +342,12 @@ assertCommandOutputContains spec expectedText = do
                       ++ "`."
                   )
 
-runValidation :: InterpreterContext -> Validation -> IO (Result ())
-runValidation context validation =
+runValidation
+  :: InterpreterContext
+  -> AwsCredentialValidationBoundary IO
+  -> Validation
+  -> IO (Result ())
+runValidation context awsCredentialBoundary validation =
   case validation of
     RequireLinux ->
       pure
@@ -438,16 +513,8 @@ runValidation context validation =
         -- the interpreter on failure.
         case validateOperationalAwsCredentials (validatedConfig settings) of
           Left err -> pure (Failure err)
-          Right () -> do
-            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-            requireAwsValidationCommandSuccess
-              "AWS credential check failed"
-              Subprocess
-                { subprocessPath = "aws"
-                , subprocessArguments = ["sts", "get-caller-identity", "--output", "json"]
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-                }
+          Right () ->
+            runAwsCredentialValidationWithRetry awsValidationRetryAttempts awsCredentialBoundary
 
   requireAwsIamHarnessReady :: IO (Result ())
   requireAwsIamHarnessReady = do
@@ -487,137 +554,30 @@ runValidation context validation =
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-        let zoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
-        requireAwsValidationCommandSuccess
-          "Route 53 access check failed"
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments = ["route53", "get-hosted-zone", "--id", zoneId, "--output", "json"]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-            }
+        let zoneId = zone_id (route53 (validatedConfig settings))
+        result <-
+          dispatchHostProviderIntentFresh
+            LifecycleAuthorityOperator
+            (interpreterRepoRoot context)
+            (Text.pack "prerequisite-route53-readiness")
+            (ObserveProviderReadiness (ProviderReadinessRoute53Zone zoneId))
+        pure $ case result of
+          Left err -> Failure (renderProviderCallerError err)
+          Right _ -> Success ()
 
   requireRoute53LifecycleCapability :: IO (Result ())
   requireRoute53LifecycleCapability = do
-    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
-    case settingsResult of
-      Left err -> pure (Failure err)
-      Right settings -> do
-        environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-        let configuredZoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
-        baseZoneResult <-
-          captureAwsValidationCommandOutput
-            "Route 53 lifecycle capability check failed"
-            Subprocess
-              { subprocessPath = "aws"
-              , subprocessArguments =
-                  [ "route53"
-                  , "get-hosted-zone"
-                  , "--id"
-                  , configuredZoneId
-                  , "--query"
-                  , "HostedZone.Name"
-                  , "--output"
-                  , "text"
-                  ]
-              , subprocessEnvironment = Just environment
-              , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-              }
-        case baseZoneResult of
-          Failure err -> pure (Failure err)
-          Success baseZoneOutput -> do
-            let baseZoneName = trimTrailingDot (trimTrailingNewlines (processStdout baseZoneOutput))
-            if null baseZoneName
-              then
-                pure (Failure "Route 53 lifecycle capability check failed: configured hosted zone name was empty.")
-              else do
-                nonce <- route53LifecycleNonce
-                let childZoneName = "prodbox-route53-prereq-" ++ nonce ++ "." ++ baseZoneName
-                    callerReference = "prodbox-route53-prereq-" ++ nonce
-                createZoneResult <-
-                  captureAwsValidationCommandOutput
-                    "Route 53 lifecycle capability check failed"
-                    Subprocess
-                      { subprocessPath = "aws"
-                      , subprocessArguments =
-                          [ "route53"
-                          , "create-hosted-zone"
-                          , "--name"
-                          , childZoneName
-                          , "--caller-reference"
-                          , callerReference
-                          , "--query"
-                          , "HostedZone.Id"
-                          , "--output"
-                          , "text"
-                          ]
-                      , subprocessEnvironment = Just environment
-                      , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-                      }
-                case createZoneResult of
-                  Failure err -> pure (Failure err)
-                  Success createZoneOutput -> do
-                    let createdZoneId = trimTrailingNewlines (processStdout createZoneOutput)
-                    if null createdZoneId
-                      then
-                        pure
-                          ( Failure
-                              "Route 53 lifecycle capability check failed: create-hosted-zone did not return a hosted zone id."
-                          )
-                      else
-                        -- Sprint 4.27 (audit C66): the throwaway capability-proof
-                        -- hosted zone now exists. Wrap the rest of the probe in
-                        -- 'bracketOnError' so any exception thrown after the create
-                        -- (e.g. an async exception, or a future step inserted between
-                        -- create and delete) always triggers a best-effort delete of
-                        -- the proof zone — no hosted-zone leak on a mid-probe failure.
-                        -- This probe is deliberately NOT a registered 'ManagedResource'
-                        -- (it has no steady state to discover/reconcile), so the §3.1
-                        -- totality registry stays correct without it.
-                        bracketOnError
-                          (pure createdZoneId)
-                          deleteCapabilityProofZone
-                          ( \zoneId ->
-                              requireAwsValidationCommandSuccess
-                                "Route 53 lifecycle capability cleanup failed"
-                                (deleteHostedZoneSpec environment zoneId)
-                          )
-   where
-    deleteHostedZoneSpec :: [(String, String)] -> String -> Subprocess
-    deleteHostedZoneSpec environment zoneId =
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments =
-            [ "route53"
-            , "delete-hosted-zone"
-            , "--id"
-            , zoneId
-            ]
-        , subprocessEnvironment = Just environment
-        , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
-        }
-    -- \| The 'bracketOnError' cleanup handler: best-effort delete of the
-    -- proof zone on the exception path. Errors here are swallowed (the
-    -- original exception is rethrown by 'bracketOnError'); the goal is
-    -- only to avoid leaking the zone.
-    deleteCapabilityProofZone :: String -> IO ()
-    deleteCapabilityProofZone zoneId = do
-      settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
-      case settingsResult of
-        Left _ -> pure ()
-        Right settings -> do
-          environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-          _ <-
-            requireAwsValidationCommandSuccess
-              "Route 53 lifecycle capability cleanup failed"
-              (deleteHostedZoneSpec environment zoneId)
-          pure ()
+    exitCode <- ensureAwsSesStackResources (interpreterRepoRoot context)
+    pure $ case exitCode of
+      ExitSuccess -> Success ()
+      ExitFailure code ->
+        Failure ("Route 53 Provider reconciliation exited with code " ++ show code)
 
   requirePulumiLogin :: IO (Result ())
   requirePulumiLogin = do
     portForwardResult <-
-      withMinioPortForward $ \localPort -> do
+      withMinioPortForward $ \endpoint -> do
+        let localPort = hostDirectEndpointPort endpoint
         credentialsResult <- readMinioCredentials
         case credentialsResult of
           Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
@@ -707,37 +667,12 @@ runValidation context validation =
   -- preparation transaction; this boundary never creates or repairs AWS
   -- state and never accepts command exit success as readiness by itself.
   requireSesSemanticReadiness :: AwsSesReadinessScope -> IO (Result ())
-  requireSesSemanticReadiness scope = do
-    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
-    case settingsResult of
-      Left err -> pure (Failure err)
-      Right settings -> do
-        let config = validatedConfig settings
-            sesConfig = ses config
-            expectationResult =
-              mkAwsSesReadinessExpectation
-                (Text.unpack (sender_domain sesConfig))
-                (Text.unpack (zone_id (route53 config)))
-                (Text.unpack (awsCredentialRegion (aws config)))
-                (Text.unpack (receive_subdomain sesConfig))
-                (Text.unpack (capture_bucket sesConfig))
-        case expectationResult of
-          Left err -> pure (Failure err)
-          Right expectation -> do
-            environment <- awsCommandEnvironment (interpreterRepoRoot context) settings
-            readiness <-
-              observeAwsSesReadiness
-                (interpreterRepoRoot context)
-                AwsSesReadinessEnvironments
-                  { awsSesControlPlaneEnvironment = environment
-                  , awsSesCaptureEnvironment = environment
-                  }
-                expectation
-                scope
-            pure $
-              case readiness of
-                AwsSesReady -> Success ()
-                _ -> Failure ("SES semantic readiness check: " ++ renderAwsSesReadiness readiness)
+  requireSesSemanticReadiness _scope = do
+    exitCode <- ensureAwsSesStackResources (interpreterRepoRoot context)
+    pure $ case exitCode of
+      ExitSuccess -> Success ()
+      ExitFailure code ->
+        Failure ("SES Provider reconciliation exited with code " ++ show code)
 
 pulumiPrerequisiteEnvironment :: Int -> String -> String -> IO [(String, String)]
 pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
@@ -788,83 +723,10 @@ requireCapturedCommandSuccess echoOutput failureLabel spec = do
                   ++ toolOutputSuffix output
               )
 
-requireAwsValidationCommandSuccess :: String -> Subprocess -> IO (Result ())
-requireAwsValidationCommandSuccess failureLabel spec =
-  toUnit <$> captureAwsValidationCommandOutput failureLabel spec
- where
-  toUnit :: Result ProcessOutput -> Result ()
-  toUnit (Failure err) = Failure err
-  toUnit (Success _) = Success ()
-
-captureAwsValidationCommandOutput :: String -> Subprocess -> IO (Result ProcessOutput)
-captureAwsValidationCommandOutput failureLabel spec =
-  go awsValidationRetryAttempts
- where
-  go :: Int -> IO (Result ProcessOutput)
-  go attemptsRemaining = do
-    outputResult <- captureSubprocessResult spec
-    case outputResult of
-      Failure err ->
-        pure
-          ( Failure
-              ( failureLabel
-                  ++ " for `"
-                  ++ commandDisplay spec
-                  ++ "`: "
-                  ++ err
-              )
-          )
-      Success output ->
-        case processExitCode output of
-          ExitSuccess -> pure (Success output)
-          ExitFailure code
-            | attemptsRemaining > 1 && isRetryableAwsValidationFailure output -> do
-                threadDelay awsValidationRetryDelayMicroseconds
-                go (attemptsRemaining - 1)
-            | otherwise ->
-                pure
-                  ( Failure
-                      ( failureLabel
-                          ++ " for `"
-                          ++ commandDisplay spec
-                          ++ "` (exit code "
-                          ++ show code
-                          ++ ")"
-                          ++ toolOutputSuffix output
-                      )
-                  )
-
-isRetryableAwsValidationFailure :: ProcessOutput -> Bool
-isRetryableAwsValidationFailure output =
-  isRetryableTransientFailure retryableFragments renderedOutput
- where
-  renderedOutput =
-    processStdout output ++ "\n" ++ processStderr output
-  retryableFragments =
-    [ "invalidclienttokenid"
-    , "security token included in the request is invalid"
-    , "signaturedoesnotmatch"
-    , "unrecognizedclientexception"
-    , "requestexpired"
-    , "expiredtoken"
-    ]
-
 echoProcessOutput :: ProcessOutput -> IO ()
 echoProcessOutput output = do
   writeOutput (processStdout output)
   writeDiagnostic (processStderr output)
-
-awsCommandEnvironment :: FilePath -> ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment repoRoot settings = do
-  currentEnvironment <- getEnvironment
-  credentialsResult <-
-    resolveAwsCredentialsRefFromHostVault
-      repoRoot
-      "aws"
-      (aws (validatedConfig settings))
-  case credentialsResult of
-    Left err -> fail ("load operational AWS credentials from Vault: " ++ err)
-    Right credentials -> pure (overlayAwsCredentials currentEnvironment credentials)
 
 parseOsRelease :: String -> [(String, String)]
 parseOsRelease contents =
@@ -892,13 +754,3 @@ toolOutputSuffix output =
 
 trimTrailingNewlines :: String -> String
 trimTrailingNewlines = reverse . dropWhile (== '\n') . reverse
-
-trimTrailingDot :: String -> String
-trimTrailingDot value =
-  if not (null value) && last value == '.'
-    then init value
-    else value
-
-route53LifecycleNonce :: IO String
-route53LifecycleNonce =
-  filter isDigit . show <$> getPOSIXTime

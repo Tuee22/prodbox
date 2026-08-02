@@ -1,0 +1,43 @@
+global:
+  namespace: credential-provisioner
+  rootChart: credential-provisioner
+
+# The committed chart is inert. The Lifecycle Authority reconciler enables one
+# exact permit-bound Job and deletes/read-backs all three objects afterward.
+enabled: false
+
+ingressSchema: aws-admin
+
+image:
+  repository: 127.0.0.1:30080/prodbox/prodbox-runtime
+  # The permit-created render must supply the immutable sha256 digest. Tags are
+  # deliberately not accepted by the Job template.
+  digest: ""
+  pullPolicy: Always
+
+permit:
+  # AWS-admin permits bind the exact operation as well as the permit. The EAB
+  # schema leaves this empty because its operation is encoded in its permit.
+  operationId: ""
+  id: ""
+  requestDigest: ""
+  planDigest: ""
+  memberIndex: ""
+  priorReceiptDigest: ""
+  deadlineMicros: ""
+
+awsAdmin:
+  # Closed permit kinds; there is no generic material or target selector.
+  mode: ""
+  authorityScope: ""
+  authorityEndpoint: ""
+
+attestation:
+  heartbeatMicros: ""
+
+job:
+  activeDeadlineSeconds: 900
+
+# The supported renderer supplies a Guaranteed-QoS envelope from the compiled
+# capacity plan; no chart-local fallback is authoritative.
+resources: {}

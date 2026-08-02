@@ -2,10 +2,9 @@
 
 -- | Secret-safe decoding for the PGP-targeted Vault initialization response.
 --
--- The legacy host workflow still decodes 'Prodbox.Vault.Client.InitResponse',
--- whose root-token field is printable plaintext.  The Broker must never use
--- that type: this decoder admits only canonical base64 ciphertext and projects
--- it immediately into opaque, redacting custody values.
+-- This is the only init-response decoder in the supported runtime. It admits
+-- only canonical base64 ciphertext and projects it immediately into opaque,
+-- redacting custody values.
 module Prodbox.Bootstrap.Broker.VaultWire
   ( EncryptedVaultInitResponse
   , encryptedVaultInitShares

@@ -452,10 +452,11 @@ settingsDhall
   -> Settings.BootstrapBrokerConfigDhall
 settingsDhall port limits =
   Settings.BootstrapBrokerConfigDhall
-    { Settings.schemaVersion = 1
+    { Settings.schemaVersion = 2
     , Settings.cluster_id = "server-safety-cluster"
     , Settings.vault_address = "http://127.0.0.1:8200"
     , Settings.service_identity = Request.renderBrokerServiceIdentity testServiceIdentity
+    , Settings.parent_registration = Nothing
     , Settings.listener =
         Settings.BrokerListenerDhall
           { Settings.listen_host = "127.0.0.1"

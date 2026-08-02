@@ -1,26 +1,37 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Typed loopback client for the dedicated Bootstrap Broker.
+-- | Typed client for the dedicated Bootstrap Broker.
 --
 -- Target calls carry authenticated, secret-free controller metadata only.
 -- Operator password/share bytes are delivered directly to an attested
 -- one-shot worker by the Phase-3 physical adapter and cannot be represented by
--- this API.  The Standard-P rollback helpers at the bottom remain explicitly
--- typed against a Gateway 'PeerEndpoint' until deployment qualification.
+-- this API. Production callers construct their context from the fixed
+-- custom-audience projected ServiceAccount token path; the token is reread for
+-- every call so kubelet rotation cannot leave a long-lived stale credential.
 module Prodbox.Bootstrap.Broker.Client
   ( BrokerError (..)
   , renderBrokerError
   , brokerErrorIsTransient
   , BrokerEndpoint
   , brokerEndpointFromSettings
+  , mkLoopbackBrokerEndpoint
   , brokerRouteUrl
   , BrokerClientCredential
   , mkBrokerClientCredential
   , brokerClientCredentialLength
+  , BrokerClientContextError (..)
+  , renderBrokerClientContextError
+  , brokerProjectedTokenPath
   , BrokerCallContext
   , mkBrokerCallContext
+  , loadProjectedBrokerCallContext
+  , withProjectedBrokerCallContext
+  , requestHostBrokerCallContext
+  , requestHostBrokerCallContextWithEnvironment
   , BrokerActionRequest
   , mkBrokerActionRequest
+  , brokerRequestDigestForAction
+  , brokerRequestDigestForPkiAction
   , queryBrokerHealth
   , queryBrokerReadiness
   , initializeVault
@@ -33,44 +44,42 @@ module Prodbox.Bootstrap.Broker.Client
   , queryVaultPkiStatus
   , issueVaultPkiTestCert
   , resetAmbiguousVaultInitialization
-  , commitChildCustody
+  , prepareChildCustody
+  , finalizeChildCustody
+  , brokerRequestDigestForChildCustodyFinalize
   , deliverChildRecovery
   , observeChildRecovery
-  , legacyBootstrapVaultUrl
-  , ensureVaultBootstrapLegacy
-  , queryVaultStatusLegacy
-  , sealVaultLegacy
-  , rotateVaultUnlockBundleLegacy
-  , rotateVaultTransitKeyLegacy
-  , queryVaultPkiStatusLegacy
-  , issueVaultPkiTestCertLegacy
   )
 where
 
+import Codec.Serialise (deserialiseOrFail)
+import Control.Exception (IOException, try)
 import Data.Aeson
   ( Value
   , encode
-  , object
-  , (.=)
+  , withObject
+  , (.:)
   )
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.Text (Text)
+import Data.Char (isAscii, isControl, isSpace)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Network.HTTP.Types.Header (Header)
 import Numeric.Natural (Natural)
-import Prodbox.Bootstrap.Broker.LegacyAdapter
-  ( LegacyGatewayBootstrapRoute (..)
-  , legacyGatewayBootstrapPath
-  )
+import Prodbox.Bootstrap.Broker.ChartStatics qualified as ChartStatics
 import Prodbox.Bootstrap.Broker.Program
   ( PkiIssueRequest
   )
 import Prodbox.Bootstrap.Broker.Protocol
   ( BrokerActionRequest
   , brokerControllerRequestValue
+  , encodeBrokerControllerRequest
   , mkBrokerActionRequest
+  , mkBrokerChildCustodyFinalizeRequest
   , mkBrokerControllerRequest
   , mkBrokerPkiControllerRequest
   , renderBrokerProtocolError
@@ -78,6 +87,8 @@ import Prodbox.Bootstrap.Broker.Protocol
 import Prodbox.Bootstrap.Broker.Request
   ( BrokerServiceIdentity
   , IdempotencyKey
+  , RequestDigest
+  , mkBrokerServiceIdentity
   , renderBrokerServiceIdentity
   , renderIdempotencyKey
   , renderRequestDigest
@@ -94,18 +105,27 @@ import Prodbox.Bootstrap.Broker.Settings
   , brokerListenPort
   , brokerListener
   )
-import Prodbox.Gateway.Types (PeerEndpoint, peerRestUrl)
+import Prodbox.Cluster.FederationRegistration
+  ( ChildCustodyExport
+  , FederationRegistrationCompletion
+  , validateChildCustodyExport
+  )
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError (..)
   , defaultHttpConfig
-  , httpGetJson
   , httpGetJsonWithHeaders
-  , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
   , renderHttpError
   )
-import Prodbox.Vault.Client (SealStatus)
+import Prodbox.Subprocess
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessBounded
+  )
+import System.Exit (ExitCode (..))
+import System.IO (IOMode (ReadMode), withBinaryFile)
 
 data BrokerError
   = BrokerTransport HttpError
@@ -138,6 +158,14 @@ brokerEndpointFromSettings settings =
  where
   listener = brokerListener settings
 
+-- | Host-side endpoint for a bounded @kubectl port-forward@. Only literal
+-- IPv4 loopback is constructible; the caller cannot redirect the bearer token
+-- to a hostname or remote address.
+mkLoopbackBrokerEndpoint :: Natural -> Either String BrokerEndpoint
+mkLoopbackBrokerEndpoint port
+  | port == 0 || port > 65535 = Left "Bootstrap Broker loopback port must be in 1..65535"
+  | otherwise = Right (BrokerEndpoint LoopbackIpv4 port)
+
 brokerRouteUrl :: BrokerEndpoint -> BrokerRoute -> String
 brokerRouteUrl endpoint route = brokerEndpointBaseUrl endpoint ++ brokerRoutePath route
 
@@ -157,16 +185,52 @@ instance Show BrokerClientCredential where
       ++ show (brokerClientCredentialLength credential)
       ++ " bytes>"
 
+maximumBrokerClientCredentialBytes :: Int
+maximumBrokerClientCredentialBytes = 4096
+
 mkBrokerClientCredential :: ByteString -> Either String BrokerClientCredential
 mkBrokerClientCredential bytes
   | ByteString.null bytes = Left "broker transport credential must not be empty"
-  | ByteString.length bytes > 4096 =
+  | ByteString.length bytes > maximumBrokerClientCredentialBytes =
       Left "broker transport credential exceeds 4096 bytes"
   | otherwise = Right (BrokerClientCredential bytes)
 
 brokerClientCredentialLength :: BrokerClientCredential -> Natural
 brokerClientCredentialLength (BrokerClientCredential bytes) =
   fromIntegral (ByteString.length bytes)
+
+data BrokerClientContextError
+  = BrokerProjectedCredentialReadFailed
+  | BrokerProjectedCredentialTooLarge
+  | BrokerProjectedCredentialInvalid
+  | BrokerProjectedCredentialRejected !String
+  | BrokerTokenRequestNamespaceInvalid
+  | BrokerTokenRequestProcessFailed
+  | BrokerTokenRequestRefused
+  deriving (Eq, Show)
+
+renderBrokerClientContextError :: BrokerClientContextError -> String
+renderBrokerClientContextError err = case err of
+  BrokerProjectedCredentialReadFailed ->
+    "failed to read the projected Bootstrap Broker ServiceAccount token"
+  BrokerProjectedCredentialTooLarge ->
+    "projected Bootstrap Broker ServiceAccount token exceeds 4096 bytes"
+  BrokerProjectedCredentialInvalid ->
+    "projected Bootstrap Broker ServiceAccount token is empty or contains invalid bytes"
+  BrokerProjectedCredentialRejected detail -> detail
+  BrokerTokenRequestNamespaceInvalid ->
+    "Bootstrap Broker TokenRequest namespace is invalid"
+  BrokerTokenRequestProcessFailed ->
+    "failed to execute the Kubernetes Bootstrap Broker TokenRequest"
+  BrokerTokenRequestRefused ->
+    "Kubernetes refused the Bootstrap Broker TokenRequest"
+
+-- | Fixed mount coordinate for a short-lived ServiceAccount token whose
+-- audience is @prodbox-bootstrap-broker@. This is intentionally distinct from
+-- Kubernetes' default API-audience token.
+brokerProjectedTokenPath :: FilePath
+brokerProjectedTokenPath =
+  "/var/run/secrets/prodbox/bootstrap-broker/token"
 
 data BrokerCallContext = BrokerCallContext
   { callServiceIdentity :: !BrokerServiceIdentity
@@ -189,6 +253,163 @@ mkBrokerCallContext
   -> BrokerClientCredential
   -> BrokerCallContext
 mkBrokerCallContext = BrokerCallContext
+
+-- | Read and validate the rotating projected token immediately before one
+-- Broker call. Callers must not retain the returned context across operations;
+-- use 'withProjectedBrokerCallContext' when possible to make that lifetime
+-- explicit.
+loadProjectedBrokerCallContext
+  :: BrokerServiceIdentity
+  -> IdempotencyKey
+  -> IO (Either BrokerClientContextError BrokerCallContext)
+loadProjectedBrokerCallContext identity idempotencyKey = do
+  readResult <-
+    try
+      ( withBinaryFile brokerProjectedTokenPath ReadMode $ \handle ->
+          ByteString.hGet handle (maximumBrokerClientCredentialBytes + 1)
+      )
+      :: IO (Either IOException ByteString)
+  pure $ do
+    bytes <- either (const (Left BrokerProjectedCredentialReadFailed)) Right readResult
+    if ByteString.length bytes > maximumBrokerClientCredentialBytes
+      then Left BrokerProjectedCredentialTooLarge
+      else Right ()
+    decoded <-
+      either
+        (const (Left BrokerProjectedCredentialInvalid))
+        Right
+        (TextEncoding.decodeUtf8' bytes)
+    if Text.null decoded
+      || Text.any
+        (\character -> not (isAscii character) || isSpace character || isControl character)
+        decoded
+      then Left BrokerProjectedCredentialInvalid
+      else Right ()
+    credential <-
+      either
+        (Left . BrokerProjectedCredentialRejected)
+        Right
+        (mkBrokerClientCredential bytes)
+    Right (mkBrokerCallContext identity idempotencyKey credential)
+
+withProjectedBrokerCallContext
+  :: BrokerServiceIdentity
+  -> IdempotencyKey
+  -> (BrokerCallContext -> IO value)
+  -> IO (Either BrokerClientContextError value)
+withProjectedBrokerCallContext identity idempotencyKey use = do
+  loaded <- loadProjectedBrokerCallContext identity idempotencyKey
+  case loaded of
+    Left err -> pure (Left err)
+    Right context -> Right <$> use context
+
+-- | Mint one short-lived custom-audience credential from the host through the
+-- Kubernetes TokenRequest API. The token is retained only in the opaque call
+-- context and is bounded/validated by the same constructor as projected-token
+-- callers. This is the host counterpart of
+-- 'loadProjectedBrokerCallContext'; it is not a shared-profile or persisted
+-- credential source.
+requestHostBrokerCallContext
+  :: FilePath
+  -> Text.Text
+  -> IdempotencyKey
+  -> IO (Either BrokerClientContextError BrokerCallContext)
+requestHostBrokerCallContext repoRoot namespace idempotencyKey =
+  requestHostBrokerCallContextWithEnvironment
+    Nothing
+    repoRoot
+    namespace
+    idempotencyKey
+
+-- | Environment-explicit TokenRequest variant used by substrate-selecting
+-- host brackets. In particular, the caller can pin @KUBECONFIG@ rather than
+-- allowing an ambient context to redirect the custom-audience credential.
+requestHostBrokerCallContextWithEnvironment
+  :: Maybe [(String, String)]
+  -> FilePath
+  -> Text.Text
+  -> IdempotencyKey
+  -> IO (Either BrokerClientContextError BrokerCallContext)
+requestHostBrokerCallContextWithEnvironment environment repoRoot namespace idempotencyKey =
+  case validateKubernetesNamespace namespace of
+    Left err -> pure (Left err)
+    Right () -> do
+      captured <-
+        captureSubprocessBounded
+          hostTokenRequestLimits
+          Subprocess
+            { subprocessPath = "kubectl"
+            , subprocessArguments =
+                [ "create"
+                , "token"
+                , Text.unpack
+                    ( ChartStatics.brokerStaticClientServiceAccount
+                        ChartStatics.brokerChartStatics
+                    )
+                , "--namespace"
+                , Text.unpack namespace
+                , "--audience"
+                , Text.unpack
+                    ( ChartStatics.brokerStaticTokenAudience
+                        ChartStatics.brokerChartStatics
+                    )
+                , "--duration=10m"
+                ]
+            , subprocessEnvironment = environment
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      pure $ do
+        output <- case captured of
+          Left _ -> Left BrokerTokenRequestProcessFailed
+          Right value -> Right value
+        case processExitCode output of
+          ExitFailure _ -> Left BrokerTokenRequestRefused
+          ExitSuccess -> Right ()
+        let tokenText = Text.strip (Text.pack (processStdout output))
+            tokenBytes = TextEncoding.encodeUtf8 tokenText
+        if Text.null tokenText
+          || Text.any
+            (\character -> not (isAscii character) || isSpace character || isControl character)
+            tokenText
+          then Left BrokerProjectedCredentialInvalid
+          else Right ()
+        credential <-
+          either
+            (Left . BrokerProjectedCredentialRejected)
+            Right
+            (mkBrokerClientCredential tokenBytes)
+        identity <-
+          either
+            (Left . BrokerProjectedCredentialRejected . show)
+            Right
+            ( mkBrokerServiceIdentity
+                ( ChartStatics.brokerStaticClientServiceAccount
+                    ChartStatics.brokerChartStatics
+                )
+            )
+        Right (mkBrokerCallContext identity idempotencyKey credential)
+
+hostTokenRequestLimits :: BoundedSubprocessLimits
+hostTokenRequestLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 1
+    , boundedSubprocessMaximumStdoutBytes = maximumBrokerClientCredentialBytes + 1
+    , boundedSubprocessMaximumStderrBytes = 4096
+    , boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+    }
+
+validateKubernetesNamespace :: Text.Text -> Either BrokerClientContextError ()
+validateKubernetesNamespace namespace
+  | Text.null namespace = Left BrokerTokenRequestNamespaceInvalid
+  | Text.length namespace > 63 = Left BrokerTokenRequestNamespaceInvalid
+  | not (asciiAlphaNumeric (Text.head namespace)) = Left BrokerTokenRequestNamespaceInvalid
+  | not (asciiAlphaNumeric (Text.last namespace)) = Left BrokerTokenRequestNamespaceInvalid
+  | Text.any (\character -> not (asciiAlphaNumeric character || character == '-')) namespace =
+      Left BrokerTokenRequestNamespaceInvalid
+  | otherwise = Right ()
+ where
+  asciiAlphaNumeric character =
+    (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9')
 
 queryBrokerHealth
   :: BrokerEndpoint -> BrokerCallContext -> IO (Either BrokerError Value)
@@ -279,13 +500,55 @@ resetAmbiguousVaultInitialization
 resetAmbiguousVaultInitialization endpoint context =
   postBrokerAction endpoint context BrokerVaultResetAmbiguousInitialization
 
-commitChildCustody
+prepareChildCustody
   :: BrokerEndpoint
   -> BrokerCallContext
   -> BrokerActionRequest
+  -> IO (Either BrokerError ChildCustodyExport)
+prepareChildCustody endpoint context action = do
+  response <-
+    postBrokerAction endpoint context BrokerChildCustodyPrepare action
+  pure (response >>= decodeChildCustodyExport)
+
+finalizeChildCustody
+  :: BrokerEndpoint
+  -> BrokerCallContext
+  -> BrokerActionRequest
+  -> FederationRegistrationCompletion
   -> IO (Either BrokerError Value)
-commitChildCustody endpoint context =
-  postBrokerAction endpoint context BrokerChildCustodyCommit
+finalizeChildCustody endpoint context action completion =
+  postBrokerControllerRequest
+    endpoint
+    context
+    BrokerChildCustodyFinalize
+    ( brokerControllerRequestValue
+        (mkBrokerChildCustodyFinalizeRequest action completion)
+    )
+
+decodeChildCustodyExport :: Value -> Either BrokerError ChildCustodyExport
+decodeChildCustodyExport value = do
+  encoded <-
+    either
+      (Left . BrokerPayload)
+      Right
+      ( parseEither
+          (withObject "child custody prepare response" (.: "custody_export_cbor_base64"))
+          value
+      )
+  bytes <-
+    either
+      (Left . BrokerPayload)
+      Right
+      (Base64.decode (TextEncoding.encodeUtf8 encoded))
+  exported <-
+    either
+      (Left . BrokerPayload . show)
+      Right
+      (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  either
+    (Left . BrokerPayload . show)
+    Right
+    (validateChildCustodyExport exported)
 
 deliverChildRecovery
   :: BrokerEndpoint
@@ -302,6 +565,39 @@ observeChildRecovery
   -> IO (Either BrokerError Value)
 observeChildRecovery endpoint context =
   postBrokerAction endpoint context BrokerChildRecoveryObserve
+
+-- | Digest the exact JSON entity bytes the ordinary route client will send.
+-- Host secret-ingress attestation uses this value to bind the one-shot Pod to
+-- the controller request without exposing or duplicating the entity encoder.
+brokerRequestDigestForAction
+  :: BrokerRoute
+  -> BrokerActionRequest
+  -> Either BrokerError RequestDigest
+brokerRequestDigestForAction route action = do
+  request <-
+    either
+      (Left . BrokerPayload . renderBrokerProtocolError)
+      Right
+      (mkBrokerControllerRequest route action)
+  Right (requestDigestForBytes (encodeBrokerControllerRequest request))
+
+brokerRequestDigestForPkiAction
+  :: BrokerActionRequest
+  -> PkiIssueRequest
+  -> RequestDigest
+brokerRequestDigestForPkiAction action request =
+  requestDigestForBytes
+    (encodeBrokerControllerRequest (mkBrokerPkiControllerRequest action request))
+
+brokerRequestDigestForChildCustodyFinalize
+  :: BrokerActionRequest
+  -> FederationRegistrationCompletion
+  -> RequestDigest
+brokerRequestDigestForChildCustodyFinalize action completion =
+  requestDigestForBytes
+    ( encodeBrokerControllerRequest
+        (mkBrokerChildCustodyFinalizeRequest action completion)
+    )
 
 getBrokerAction
   :: BrokerEndpoint
@@ -373,84 +669,4 @@ targetReadConfig :: HttpConfig
 targetReadConfig = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
 
 targetWriteConfig :: HttpConfig
-targetWriteConfig = defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
-
--- Standard-P rollback adapter ---------------------------------------------
-
-legacyBootstrapVaultUrl :: PeerEndpoint -> String
-legacyBootstrapVaultUrl endpoint =
-  legacyGatewayRouteUrl endpoint LegacyGatewayVaultEnsure
-
-legacyGatewayRouteUrl :: PeerEndpoint -> LegacyGatewayBootstrapRoute -> String
-legacyGatewayRouteUrl endpoint route =
-  peerRestUrl endpoint ++ legacyGatewayBootstrapPath route
-
-ensureVaultBootstrapLegacy :: PeerEndpoint -> Text -> IO (Either BrokerError Value)
-ensureVaultBootstrapLegacy endpoint unlockPassword =
-  postLegacyJsonAction
-    (legacyGatewayRouteUrl endpoint LegacyGatewayVaultEnsure)
-    ( object
-        [ "unlock_password" .= unlockPassword
-        , "loopback_nodeport_verified" .= True
-        ]
-    )
-
-queryVaultStatusLegacy :: PeerEndpoint -> IO (Either BrokerError SealStatus)
-queryVaultStatusLegacy endpoint = do
-  result <-
-    httpGetJson
-      targetReadConfig
-      (legacyGatewayRouteUrl endpoint LegacyGatewayVaultStatus)
-  pure (either (Left . BrokerTransport) Right result)
-
-sealVaultLegacy :: PeerEndpoint -> Text -> IO (Either BrokerError Value)
-sealVaultLegacy endpoint =
-  postLegacyPasswordAction (legacyGatewayRouteUrl endpoint LegacyGatewayVaultSeal)
-
-rotateVaultUnlockBundleLegacy
-  :: PeerEndpoint -> Text -> Text -> IO (Either BrokerError Value)
-rotateVaultUnlockBundleLegacy endpoint unlockPassword newUnlockPassword =
-  postLegacyJsonAction
-    (legacyGatewayRouteUrl endpoint LegacyGatewayVaultRotateUnlockBundle)
-    ( object
-        [ "unlock_password" .= unlockPassword
-        , "new_unlock_password" .= newUnlockPassword
-        , "loopback_nodeport_verified" .= True
-        ]
-    )
-
-rotateVaultTransitKeyLegacy
-  :: PeerEndpoint -> Text -> Text -> IO (Either BrokerError Value)
-rotateVaultTransitKeyLegacy endpoint unlockPassword keyName =
-  postLegacyJsonAction
-    (legacyGatewayRouteUrl endpoint LegacyGatewayVaultRotateTransitKey)
-    ( object
-        [ "unlock_password" .= unlockPassword
-        , "key_name" .= keyName
-        , "loopback_nodeport_verified" .= True
-        ]
-    )
-
-queryVaultPkiStatusLegacy :: PeerEndpoint -> Text -> IO (Either BrokerError Value)
-queryVaultPkiStatusLegacy endpoint =
-  postLegacyPasswordAction (legacyGatewayRouteUrl endpoint LegacyGatewayVaultPkiStatus)
-
-issueVaultPkiTestCertLegacy :: PeerEndpoint -> Text -> IO (Either BrokerError Value)
-issueVaultPkiTestCertLegacy endpoint =
-  postLegacyPasswordAction
-    (legacyGatewayRouteUrl endpoint LegacyGatewayVaultPkiIssueTestCertificate)
-
-postLegacyPasswordAction :: String -> Text -> IO (Either BrokerError Value)
-postLegacyPasswordAction url unlockPassword =
-  postLegacyJsonAction
-    url
-    ( object
-        [ "unlock_password" .= unlockPassword
-        , "loopback_nodeport_verified" .= True
-        ]
-    )
-
-postLegacyJsonAction :: String -> Value -> IO (Either BrokerError Value)
-postLegacyJsonAction url payload = do
-  result <- httpPostJsonResponseJson targetWriteConfig url payload
-  pure (either (Left . BrokerTransport) Right result)
+targetWriteConfig = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 60 * 1000 * 1000}

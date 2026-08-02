@@ -13,7 +13,14 @@
 -- server had, now reachable through a typed dispatch point rather than an ad-hoc
 -- byte prefix match.
 module Prodbox.ControlPlane.Server
-  ( ParsedControlPlaneRequest (..)
+  ( controlPlaneMaximumHeaderBytes
+  , controlPlaneMaximumBodyBytes
+  , controlPlaneMaximumLargeBodyBytes
+  , ControlPlaneFramingError (..)
+  , ControlPlaneFramingProgress (..)
+  , inspectControlPlaneRequestFraming
+  , finishControlPlaneRequestFraming
+  , ParsedControlPlaneRequest (..)
   , parseControlPlaneRequest
   , ControlPlaneDisposition (..)
   , classifyControlPlaneRequest
@@ -28,12 +35,246 @@ where
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as Char8
+import Data.Char (isAlphaNum, isDigit, toLower)
 import Prodbox.ControlPlane.Route
   ( ControlPlaneMethod (ControlPlaneGet, ControlPlanePost)
-  , ControlPlaneRoute
+  , ControlPlaneRoute (..)
+  , allControlPlaneRoutes
+  , controlPlaneRouteMethod
+  , controlPlaneRoutePath
   , decodeRoleRoute
   )
 import Prodbox.Runtime.Role (RuntimeRole)
+
+-- | The complete request header, including its terminating CRLFCRLF, is bounded
+-- before any body bytes are accumulated.
+controlPlaneMaximumHeaderBytes :: Int
+controlPlaneMaximumHeaderBytes = 16 * 1024
+
+-- | The ordinary one-MiB request ceiling admits the bounded aggregate and TLS
+-- protocols while still rejecting an oversized declared body during header
+-- preflight. Individual payload constructors impose tighter component bounds
+-- before storage.
+controlPlaneMaximumBodyBytes :: Int
+controlPlaneMaximumBodyBytes = 1024 * 1024
+
+-- | The two checkpoint-bearing routes admit a 96-MiB ciphertext inside the
+-- canonical request, signature, and authentication envelopes.  The route is
+-- identified from the closed typed topology before body bytes are accumulated;
+-- every other (including unknown) request retains the ordinary one-MiB ceiling.
+controlPlaneMaximumLargeBodyBytes :: Int
+controlPlaneMaximumLargeBodyBytes = 100 * 1024 * 1024
+
+-- | Fail-closed framing refusals detected before route classification or role
+-- dispatch. The socket boundary deliberately supports only a single,
+-- Content-Length-framed request followed by connection close.
+data ControlPlaneFramingError
+  = ControlPlaneHeaderTooLarge
+  | ControlPlaneMalformedHeader
+  | ControlPlaneDuplicateContentLength
+  | ControlPlaneInvalidContentLength
+  | ControlPlaneBodyTooLarge
+  | ControlPlaneBodyPastDeclaredLength
+  | ControlPlaneContentLengthRequired
+  | ControlPlaneUnsupportedTransferEncoding
+  | ControlPlaneConnectionClosedBeforeComplete
+  deriving (Eq, Show)
+
+-- | Pure incremental framing result over all bytes received so far.
+data ControlPlaneFramingProgress
+  = ControlPlaneFramingIncomplete
+  | ControlPlaneFramingComplete !ByteString
+  deriving (Eq, Show)
+
+-- | Inspect an accumulated request without performing I/O. Headers must end
+-- within the fixed 16 KiB budget. POST requests require one exact decimal
+-- @Content-Length@; GET requests without that header are framed as empty-body
+-- requests. Transfer-Encoding and ambiguous/malformed lengths are unsupported.
+-- A complete result contains exactly the bytes safe to pass to the existing
+-- pure parser/classifier seam.
+inspectControlPlaneRequestFraming
+  :: ByteString
+  -> Either ControlPlaneFramingError ControlPlaneFramingProgress
+inspectControlPlaneRequestFraming raw =
+  case breakOnSubstring "\r\n\r\n" raw of
+    Nothing
+      | ByteString.length raw >= controlPlaneMaximumHeaderBytes ->
+          Left ControlPlaneHeaderTooLarge
+      | otherwise -> Right ControlPlaneFramingIncomplete
+    Just (headerSection, terminatorAndBody)
+      | ByteString.length headerSection + 4 > controlPlaneMaximumHeaderBytes ->
+          Left ControlPlaneHeaderTooLarge
+      | otherwise -> do
+          declaredBodyBytes <- framingBodyLength headerSection
+          let body = ByteString.drop 4 terminatorAndBody
+              observedBodyBytes = ByteString.length body
+          case compare observedBodyBytes declaredBodyBytes of
+            LT -> Right ControlPlaneFramingIncomplete
+            EQ -> Right (ControlPlaneFramingComplete raw)
+            GT -> Left ControlPlaneBodyPastDeclaredLength
+
+-- | Resolve end-of-stream against the same pure framing rules. An EOF while
+-- either the header terminator or declared body is incomplete is a framing
+-- refusal, never a truncated request passed to an interpreter.
+finishControlPlaneRequestFraming
+  :: ByteString
+  -> Either ControlPlaneFramingError ByteString
+finishControlPlaneRequestFraming raw = do
+  progress <- inspectControlPlaneRequestFraming raw
+  case progress of
+    ControlPlaneFramingIncomplete ->
+      Left ControlPlaneConnectionClosedBeforeComplete
+    ControlPlaneFramingComplete request -> Right request
+
+framingBodyLength :: ByteString -> Either ControlPlaneFramingError Int
+framingBodyLength headerSection = do
+  headers <- parseFramingHeaders headerSection
+  if any ((== "transfer-encoding") . fst) headers
+    then Left ControlPlaneUnsupportedTransferEncoding
+    else do
+      let contentLengths = [value | (name, value) <- headers, name == "content-length"]
+      case contentLengths of
+        []
+          | requestMethod headerSection == Just "POST" ->
+              Left ControlPlaneContentLengthRequired
+          | otherwise -> Right 0
+        [value] -> parseContentLength (framingMaximumBodyBytes headerSection) value
+        _ -> Left ControlPlaneDuplicateContentLength
+
+framingMaximumBodyBytes :: ByteString -> Int
+framingMaximumBodyBytes headerSection =
+  case framingRequestRoute headerSection of
+    Just route -> controlPlaneRouteMaximumBodyBytes route
+    Nothing -> controlPlaneMaximumBodyBytes
+
+framingRequestRoute :: ByteString -> Maybe ControlPlaneRoute
+framingRequestRoute headerSection = do
+  line <- firstLine headerSection
+  (method, path) <- case Char8.words line of
+    methodBytes : pathBytes : _ -> do
+      decodedMethod <- decodeControlPlaneMethod methodBytes
+      pure (decodedMethod, Char8.unpack pathBytes)
+    _ -> Nothing
+  exactlyOne
+    [ route
+    | route <- allControlPlaneRoutes
+    , controlPlaneRouteMethod route == method
+    , controlPlaneRoutePath route == path
+    ]
+ where
+  exactlyOne matches = case matches of
+    [route] -> Just route
+    _ -> Nothing
+
+controlPlaneRouteMaximumBodyBytes :: ControlPlaneRoute -> Int
+controlPlaneRouteMaximumBodyBytes route = case route of
+  LifecyclePulumiCheckpoint -> controlPlaneMaximumLargeBodyBytes
+  AuthorityBackupCopy -> controlPlaneMaximumLargeBodyBytes
+  LifecycleConfigProposeCas -> controlPlaneMaximumLargeBodyBytes
+  TargetTlsRestore -> controlPlaneMaximumLargeBodyBytes
+  LifecycleAuthorityControl -> controlPlaneMaximumBodyBytes
+  LifecycleMigrationApply -> controlPlaneMaximumBodyBytes
+  LifecycleProjectionImport -> controlPlaneMaximumBodyBytes
+  LifecycleAuthorityObserve -> controlPlaneMaximumBodyBytes
+  LifecycleAuthorityBackupExport -> controlPlaneMaximumBodyBytes
+  LifecycleAuthorityDecommissionExport -> controlPlaneMaximumBodyBytes
+  LifecycleAuthorityDecommissionStop -> controlPlaneMaximumBodyBytes
+  LifecycleRetainedSesLease -> controlPlaneMaximumBodyBytes
+  LifecycleOperationSubmit -> controlPlaneMaximumBodyBytes
+  LifecycleOperationObserve -> controlPlaneMaximumBodyBytes
+  LifecycleConfigObserve -> controlPlaneMaximumBodyBytes
+  LifecycleExternalMaterialIngress -> controlPlaneMaximumBodyBytes
+  LifecycleFederationRegister -> controlPlaneMaximumLargeBodyBytes
+  LifecycleAdminAction -> controlPlaneMaximumBodyBytes
+  LifecycleAwsAdminProvisioner -> controlPlaneMaximumBodyBytes
+  LifecycleProviderDispatch -> controlPlaneMaximumBodyBytes
+  ProviderWorkApply -> controlPlaneMaximumBodyBytes
+  ProviderWorkObserve -> controlPlaneMaximumBodyBytes
+  AuthorityBackupObserve -> controlPlaneMaximumBodyBytes
+  TlsRetentionStore -> controlPlaneMaximumBodyBytes
+  TlsRetentionRestore -> controlPlaneMaximumBodyBytes
+  TargetMaterialObserve -> controlPlaneMaximumBodyBytes
+  TargetSecretDecommissionInventory -> controlPlaneMaximumBodyBytes
+  TargetSecretDecommissionTombstone -> controlPlaneMaximumBodyBytes
+  TargetSecretDecommissionCustodyTombstone -> controlPlaneMaximumBodyBytes
+  TargetTlsPrepareExchange -> controlPlaneMaximumBodyBytes
+  TargetTlsRetain -> controlPlaneMaximumBodyBytes
+  TargetTlsHomeWrap -> controlPlaneMaximumBodyBytes
+  TargetTlsHomeRewrap -> controlPlaneMaximumBodyBytes
+  TargetTlsVerifySource -> controlPlaneMaximumBodyBytes
+  LifecycleTlsRetentionObserve -> controlPlaneMaximumBodyBytes
+  LifecycleTlsRetentionPromote -> controlPlaneMaximumBodyBytes
+  LifecycleAdminActionExecution -> controlPlaneMaximumBodyBytes
+  TargetSecretAdminActionGenerationTombstone -> controlPlaneMaximumBodyBytes
+  TargetSecretAdminActionCustodyTombstone -> controlPlaneMaximumBodyBytes
+  TargetChildCustodyCommit -> controlPlaneMaximumBodyBytes
+  TargetChildRecoveryPrepare -> controlPlaneMaximumBodyBytes
+  TargetChildRecoveryObserve -> controlPlaneMaximumBodyBytes
+  LifecycleBootstrapHandoffAccept -> controlPlaneMaximumBodyBytes
+  LifecycleBootstrapHandoffObserve -> controlPlaneMaximumBodyBytes
+  LifecycleTargetIntentIssue -> controlPlaneMaximumBodyBytes
+  TargetSecretTrustInstall -> controlPlaneMaximumBodyBytes
+  LifecycleRetainedMaterialDelivery -> controlPlaneMaximumBodyBytes
+  TargetRetainedMaterialRewrap -> controlPlaneMaximumBodyBytes
+  LifecycleCleanupRun -> controlPlaneMaximumLargeBodyBytes
+
+parseFramingHeaders
+  :: ByteString
+  -> Either ControlPlaneFramingError [(String, ByteString)]
+parseFramingHeaders headerSection =
+  case fmap stripTrailingCarriageReturn (Char8.split '\n' headerSection) of
+    [] -> Left ControlPlaneMalformedHeader
+    requestLine : headerLines
+      | ByteString.null requestLine -> Left ControlPlaneMalformedHeader
+      | otherwise -> traverse parseHeaderLine headerLines
+
+parseHeaderLine
+  :: ByteString
+  -> Either ControlPlaneFramingError (String, ByteString)
+parseHeaderLine line =
+  let (rawName, colonAndValue) = Char8.break (== ':') line
+      name = fmap toLower (Char8.unpack rawName)
+   in if ByteString.null colonAndValue || null name || not (all isHeaderNameCharacter name)
+        then Left ControlPlaneMalformedHeader
+        else Right (name, trimOptionalWhitespace (ByteString.drop 1 colonAndValue))
+
+isHeaderNameCharacter :: Char -> Bool
+isHeaderNameCharacter character =
+  isAlphaNum character || character `elem` ("!#$%&'*+-.^_`|~" :: String)
+
+parseContentLength :: Int -> ByteString -> Either ControlPlaneFramingError Int
+parseContentLength maximumBodyBytes rawValue
+  | ByteString.null rawValue = Left ControlPlaneInvalidContentLength
+  | not (Char8.all isDigit rawValue) = Left ControlPlaneInvalidContentLength
+  | parsed > toInteger maximumBodyBytes = Left ControlPlaneBodyTooLarge
+  | otherwise = Right (fromInteger parsed)
+ where
+  parsed = foldl' step 0 (Char8.unpack rawValue)
+  step total digit = total * 10 + toInteger (fromEnum digit - fromEnum '0')
+
+requestMethod :: ByteString -> Maybe ByteString
+requestMethod headerSection = do
+  line <- firstLine headerSection
+  case Char8.words line of
+    method : _ -> Just method
+    [] -> Nothing
+
+decodeControlPlaneMethod :: ByteString -> Maybe ControlPlaneMethod
+decodeControlPlaneMethod method
+  | method == "GET" = Just ControlPlaneGet
+  | method == "POST" = Just ControlPlanePost
+  | otherwise = Nothing
+
+stripTrailingCarriageReturn :: ByteString -> ByteString
+stripTrailingCarriageReturn value =
+  case ByteString.unsnoc value of
+    Just (before, 13) -> before
+    _ -> value
+
+trimOptionalWhitespace :: ByteString -> ByteString
+trimOptionalWhitespace = Char8.dropWhileEnd isOptionalWhitespace . Char8.dropWhile isOptionalWhitespace
+ where
+  isOptionalWhitespace character = character == ' ' || character == '\t'
 
 -- | A minimally parsed HTTP request: the decoded method (only the two methods the
 -- closed route topology uses are recognised), the request-target token, and the
@@ -47,9 +288,9 @@ data ParsedControlPlaneRequest = ParsedControlPlaneRequest
   deriving (Eq, Show)
 
 -- | Parse the request line (method + target) and the body. The body is whatever
--- follows the first CRLFCRLF; a single bounded @recv@ is sufficient for the small
--- control-plane command bodies, and a truncated body simply fails the downstream
--- bounded command codec rather than corrupting state.
+-- follows the first CRLFCRLF. The production socket boundary calls
+-- 'inspectControlPlaneRequestFraming' first, so this deliberately small parser
+-- only receives a complete, exactly framed request there.
 parseControlPlaneRequest :: ByteString -> Maybe ParsedControlPlaneRequest
 parseControlPlaneRequest raw = do
   let (headerSection, body) = splitOnHeaderTerminator raw
@@ -58,16 +299,11 @@ parseControlPlaneRequest raw = do
     (method : target : _) ->
       Just
         ParsedControlPlaneRequest
-          { parsedRequestMethod = decodeMethod method
+          { parsedRequestMethod = decodeControlPlaneMethod method
           , parsedRequestPath = Char8.unpack target
           , parsedRequestBody = body
           }
     _ -> Nothing
- where
-  decodeMethod method
-    | method == "GET" = Just ControlPlaneGet
-    | method == "POST" = Just ControlPlanePost
-    | otherwise = Nothing
 
 -- | Split on the first @\\r\\n\\r\\n@. If the terminator is absent (a header-only
 -- probe such as @GET /healthz@ that a client may send without the blank line) the

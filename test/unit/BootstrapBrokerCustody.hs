@@ -10,7 +10,7 @@ module BootstrapBrokerCustody
   )
 where
 
-import Control.Monad (forM_)
+import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as ByteString
 import Data.Either (isLeft, isRight)
@@ -86,6 +86,8 @@ data Fixture = Fixture
   , fixtureCurrentAbsence :: !AccessorAbsenceAttestation
   , fixtureBaselineReadBack :: !BaselineReadBackReceipt
   , fixtureProvisionerLogin :: !ProvisionerLoginReceipt
+  , fixtureProvisionerPolicyAbsence :: !ProvisionerAccessorAbsenceAttestation
+  , fixtureProvisionerAbsence :: !ProvisionerAccessorAbsenceAttestation
   , fixtureHandoffReceipt :: !PostUnsealHandoffReceipt
   , fixtureChildBinding :: !ChildCustodyBinding
   , fixtureOtherChildBinding :: !ChildCustodyBinding
@@ -239,6 +241,14 @@ buildFixture = do
     bootstrapEither (mkProvisionerAccessor "provisioner-accessor")
   provisionerLogin <-
     bootstrapEither (mkProvisionerLoginReceipt generation provisionerAccessor 300)
+  provisionerPolicyInventory <-
+    bootstrapEither (mkProvisionerAccessorInventory generation [])
+  provisionerInventory <-
+    bootstrapEither (mkProvisionerAccessorInventory generation [provisionerAccessor])
+  let provisionerPolicyAbsence =
+        mkProvisionerAccessorAbsenceAttestation provisionerPolicyInventory digestA
+      provisionerAbsence =
+        mkProvisionerAccessorAbsenceAttestation provisionerInventory digestB
   let handoffReceipt =
         mkPostUnsealHandoffReceipt
           generation
@@ -311,6 +321,8 @@ buildFixture = do
       , fixtureCurrentAbsence = currentAbsence
       , fixtureBaselineReadBack = baselineReadBack
       , fixtureProvisionerLogin = provisionerLogin
+      , fixtureProvisionerPolicyAbsence = provisionerPolicyAbsence
+      , fixtureProvisionerAbsence = provisionerAbsence
       , fixtureHandoffReceipt = handoffReceipt
       , fixtureChildBinding = childBinding
       , fixtureOtherChildBinding = otherChildBinding
@@ -813,19 +825,19 @@ rootSessionSuite =
       withFixture $ \fixture ->
         expectRight (rootSessionPrefixes fixture) $ \states -> do
           applyRootSessionCommand
-            (states !! 1)
+            (states !! 11)
             (ConfirmRootAccessorInventory (fixtureOtherGenerationInventory fixture))
             `shouldSatisfy` isLeft
           applyRootSessionCommand
-            (states !! 2)
+            (states !! 12)
             (ConfirmStaleRootAccessorRevoked (fixtureAccessorB fixture))
             `shouldBe` Left RootSessionStaleAccessorOrderMismatch
           applyRootSessionCommand
-            (states !! 4)
+            (states !! 14)
             (ConfirmStableRootAccessorAbsence (fixtureEmptyAbsence fixture))
             `shouldBe` Left RootSessionStableAbsenceMismatch
           applyRootSessionCommand
-            (states !! 7)
+            (states !! 3)
             (ConfirmGeneratedRootAccessorJournaled (fixtureAccessorA fixture))
             `shouldBe` Left RootSessionAccessorJournalMismatch
 
@@ -866,11 +878,11 @@ rootSessionSuite =
                 $ \wrongGeneration -> do
                   forM_ [wrongSession, wrongGeneration] $ \receipt ->
                     applyRootSessionCommand
-                      (states !! 10)
+                      (states !! 6)
                       (ConfirmAllowlistedBaselineReadBack receipt)
                       `shouldBe` Left RootSessionBaselineReadBackMismatch
                   applyRootSessionCommand
-                    (states !! 14)
+                    (states !! 10)
                     (ConfirmCurrentRootAccessorAbsent (fixtureStaleAbsence fixture))
                     `shouldBe` Left RootSessionCurrentAccessorAbsenceMismatch
 
@@ -886,44 +898,42 @@ rootSessionSuite =
                 rootSessionStatePhase restarted
                   `shouldBe` RootSessionCancelIncompleteGenerateRoot
                 rootSessionInvariantViolations restarted `shouldBe` []
-          restartRootSession (fixtureSessionId fixture) (states !! 6)
+          restartRootSession (fixtureSessionId fixture) (states !! 2)
             `shouldBe` Left RootSessionRestartMustAdvanceSessionId
           restartRootSession
             (fixtureReplacementSessionId fixture)
             (last states)
             `shouldBe` Right (last states)
 
-    it "cancels before generation cleanly and cancels an in-flight generation through inventory" $
+    it "cancels an early or in-flight pre-auditor generation through the safety tail" $
       withFixture $ \fixture ->
         expectRight (rootSessionPrefixes fixture) $ \states -> do
-          expectRight (cancelRootSession fixture (states !! 5)) $ \cancelled -> do
+          expectRight (cancelRootSession fixture (states !! 1)) $ \cancelled -> do
             planRootSession cancelled
-              `shouldBe` RootSessionPlanFinishCancellation
-                (fixtureStaleAbsence fixture)
-            expectRight
-              (applyRootSessionCommand cancelled FinishRootSessionCancellation)
-              $ \finished -> do
-                rootSessionIsCancelledClean finished `shouldBe` True
-                rootSessionIsComplete finished `shouldBe` False
-          expectRight (cancelRootSession fixture (states !! 6)) $ \cancelled -> do
-            planRootSession cancelled
-              `shouldBe` RootSessionPlanCancelIncompleteGenerateRoot
+              `shouldBe` RootSessionPlanGeneratePreAuditorRoot
                 (rootSessionStateBinding cancelled)
             expectRight
-              ( applyRootSessionCommand
-                  cancelled
-                  ConfirmIncompleteGenerateRootCancelled
-              )
-              $ \cleaning ->
-                rootSessionStatePhase cleaning
-                  `shouldBe` RootSessionInventoryStaleAccessors
+              (applyRootSessionCommand cancelled RecordShortLivedRootGenerationStarted)
+              $ \inFlight ->
+                expectRight
+                  (cancelRootSession fixture inFlight)
+                  $ \cancelledInFlight ->
+                    expectRight
+                      ( restartRootSession
+                          (fixtureReplacementSessionId fixture)
+                          cancelledInFlight
+                      )
+                      $ \restarted ->
+                        planRootSession restarted
+                          `shouldBe` RootSessionPlanCancelIncompleteGenerateRoot
+                            (rootSessionStateBinding restarted)
 
     it "journals a returned accessor under cancellation, then revokes and proves it absent" $
       withFixture $ \fixture ->
         expectRight (rootSessionPrefixes fixture) $ \states -> do
-          expectRight (cancelRootSession fixture (states !! 7)) $ \cancelled -> do
+          expectRight (cancelRootSession fixture (states !! 3)) $ \cancelled -> do
             planRootSession cancelled
-              `shouldBe` RootSessionPlanJournalGeneratedAccessor
+              `shouldBe` RootSessionPlanJournalPreAuditorAccessor
                 (rootSessionStateBinding cancelled)
                 (fixtureCurrentAccessor fixture)
             expectRight
@@ -960,7 +970,7 @@ rootSessionSuite =
     it "preserves cancellation across restart and completes a read-back baseline safety tail" $
       withFixture $ \fixture ->
         expectRight (rootSessionPrefixes fixture) $ \states -> do
-          expectRight (cancelRootSession fixture (states !! 6)) $ \cancelled ->
+          expectRight (cancelRootSession fixture (states !! 2)) $ \cancelled ->
             expectRight
               ( restartRootSession
                   (fixtureReplacementSessionId fixture)
@@ -972,7 +982,7 @@ rootSessionSuite =
                 planRootSession restarted
                   `shouldBe` RootSessionPlanCancelIncompleteGenerateRoot
                     (rootSessionStateBinding restarted)
-          expectRight (cancelRootSession fixture (states !! 11)) $ \cancelled ->
+          expectRight (cancelRootSession fixture (states !! 7)) $ \cancelled ->
             expectRight
               (applyRootSessionCommand cancelled ArmCurrentRootSessionRevocation)
               $ \armed ->
@@ -989,7 +999,40 @@ rootSessionSuite =
                                   (fixtureCurrentAbsence fixture)
                               )
                           )
-                          $ \complete -> rootSessionIsComplete complete `shouldBe` True
+                          $ \postBaseline ->
+                            expectRight
+                              ( applyRootSessionCommand
+                                  postBaseline
+                                  ( ConfirmRootAccessorInventory
+                                      (fixtureStaleInventory fixture)
+                                  )
+                              )
+                              $ \inventory ->
+                                expectRight
+                                  ( applyRootSessionCommand
+                                      inventory
+                                      ( ConfirmStaleRootAccessorRevoked
+                                          (fixtureAccessorA fixture)
+                                      )
+                                  )
+                                  $ \oneRemaining ->
+                                    expectRight
+                                      ( applyRootSessionCommand
+                                          oneRemaining
+                                          ( ConfirmStaleRootAccessorRevoked
+                                              (fixtureAccessorB fixture)
+                                          )
+                                      )
+                                      $ \zeroPending ->
+                                        expectRight
+                                          ( applyRootSessionCommand
+                                              zeroPending
+                                              ( ConfirmStableRootAccessorAbsence
+                                                  (fixtureStaleAbsence fixture)
+                                              )
+                                          )
+                                          $ \complete ->
+                                            rootSessionIsComplete complete `shouldBe` True
 
 rootSessionCommands :: Fixture -> [RootSessionCommand]
 rootSessionCommands
@@ -1003,10 +1046,6 @@ rootSessionCommands
     , fixtureCurrentAbsence
     } =
     [ ConfirmIncompleteGenerateRootCancelled
-    , ConfirmRootAccessorInventory fixtureStaleInventory
-    , ConfirmStaleRootAccessorRevoked fixtureAccessorA
-    , ConfirmStaleRootAccessorRevoked fixtureAccessorB
-    , ConfirmStableRootAccessorAbsence fixtureStaleAbsence
     , RecordShortLivedRootGenerationStarted
     , CaptureGeneratedRootAccessor fixtureCurrentAccessor
     , ConfirmGeneratedRootAccessorJournaled fixtureCurrentAccessor
@@ -1017,6 +1056,10 @@ rootSessionCommands
     , ConfirmCurrentRootSessionRevoked
     , ArmCurrentRootAccessorAbsenceCheck
     , ConfirmCurrentRootAccessorAbsent fixtureCurrentAbsence
+    , ConfirmRootAccessorInventory fixtureStaleInventory
+    , ConfirmStaleRootAccessorRevoked fixtureAccessorA
+    , ConfirmStaleRootAccessorRevoked fixtureAccessorB
+    , ConfirmStableRootAccessorAbsence fixtureStaleAbsence
     ]
 
 rootSessionPrefixes :: Fixture -> Either RootSessionError [RootSessionState]
@@ -1038,27 +1081,22 @@ rootSessionExpectedPlans
     , fixtureStaleInventory
     , fixtureAccessorA
     , fixtureAccessorB
-    , fixtureStaleAbsence = _
+    , fixtureStaleAbsence
     , fixtureCurrentAccessor
     , fixtureBaselineReadBack
-    , fixtureCurrentAbsence
+    , fixtureCurrentAbsence = _
     } =
     let binding = mkRootSessionBinding fixtureSessionId fixtureRecoveryCustody
         completion =
           RootSessionCompletion
             { completedRootSessionBinding = binding
             , completedRootBaselineReadBack = fixtureBaselineReadBack
-            , completedRootAccessorAbsence = fixtureCurrentAbsence
+            , completedRootAccessorAbsence = fixtureStaleAbsence
             }
      in [ RootSessionPlanCancelIncompleteGenerateRoot binding
-        , RootSessionPlanInventoryStaleAccessors
-            (rootSessionStorageGeneration binding)
-        , RootSessionPlanRevokeStaleAccessor fixtureAccessorA
-        , RootSessionPlanRevokeStaleAccessor fixtureAccessorB
-        , RootSessionPlanProveStableAccessorAbsence fixtureStaleInventory
-        , RootSessionPlanGenerateShortLivedRoot binding
-        , RootSessionPlanAwaitGeneratedRootAccessor binding
-        , RootSessionPlanJournalGeneratedAccessor binding fixtureCurrentAccessor
+        , RootSessionPlanGeneratePreAuditorRoot binding
+        , RootSessionPlanAwaitPreAuditorRootAccessor binding
+        , RootSessionPlanJournalPreAuditorAccessor binding fixtureCurrentAccessor
         , RootSessionPlanArmAllowlistedBaseline fixtureCurrentAccessor
         , RootSessionPlanApplyAllowlistedBaseline fixtureCurrentAccessor
         , RootSessionPlanReadBackAllowlistedBaseline fixtureCurrentAccessor
@@ -1066,6 +1104,11 @@ rootSessionExpectedPlans
         , RootSessionPlanRevokeCurrentAccessor fixtureCurrentAccessor
         , RootSessionPlanArmCurrentAccessorAbsenceCheck fixtureCurrentAccessor
         , RootSessionPlanProveCurrentAccessorAbsent fixtureCurrentAccessor
+        , RootSessionPlanInventoryPostBaselineAccessors
+            (rootSessionStorageGeneration binding)
+        , RootSessionPlanRevokePostBaselineAccessor fixtureAccessorA
+        , RootSessionPlanRevokePostBaselineAccessor fixtureAccessorB
+        , RootSessionPlanProvePostBaselineZero fixtureStaleInventory
         , RootSessionPlanComplete completion
         ]
 
@@ -1672,31 +1715,44 @@ provisionerSealAndHandoffSuite =
                 rootSessionStorageGeneration
                   (completedRootSessionBinding completion)
           planProvisionerSession initial
-            `shouldBe` ProvisionerPlanArmLogin generation
+            `shouldBe` ProvisionerPlanCleanupPolicyAccessors generation
           expectRight
-            (applyProvisionerSessionCommand initial ArmProvisionerLogin)
-            $ \pending -> do
-              planProvisionerSession pending
-                `shouldBe` ProvisionerPlanLogin generation
-              expectRight
-                ( applyProvisionerSessionCommand
-                    pending
-                    (ConfirmProvisionerLogin (fixtureProvisionerLogin fixture))
+            ( applyProvisionerSessionCommand
+                initial
+                ( ConfirmProvisionerPolicyAccessorsAbsent
+                    (fixtureProvisionerPolicyAbsence fixture)
                 )
-                $ \loggedIn -> do
-                  provisionerSessionIsReady loggedIn `shouldBe` True
-                  planProvisionerSession loggedIn
-                    `shouldBe` ProvisionerPlanReady
-                      (fixtureProvisionerLogin fixture)
-                  provisionerSessionPhase (restartProvisionerSession loggedIn)
-                    `shouldBe` ProvisionerLoggedOut
+            )
+            $ \precleaned ->
+              expectRight
+                (applyProvisionerSessionCommand precleaned ArmProvisionerLogin)
+                $ \pending -> do
+                  planProvisionerSession pending
+                    `shouldBe` ProvisionerPlanLogin generation
                   expectRight
                     ( applyProvisionerSessionCommand
-                        loggedIn
-                        InvalidateProvisionerLogin
+                        pending
+                        (ConfirmProvisionerLogin (fixtureProvisionerLogin fixture))
                     )
-                    $ \invalidated ->
-                      provisionerSessionIsReady invalidated `shouldBe` False
+                    $ \loggedIn -> do
+                      provisionerSessionIsReady loggedIn `shouldBe` False
+                      planProvisionerSession loggedIn
+                        `shouldBe` ProvisionerPlanArmBaselineApply
+                          (fixtureProvisionerLogin fixture)
+                      provisionerSessionPhase (restartProvisionerSession loggedIn)
+                        `shouldBe` ProvisionerRevocationPending
+                          (fixtureProvisionerLogin fixture)
+                          Nothing
+                      expectRight
+                        (completeProvisionerSession fixture loggedIn)
+                        $ \closed -> do
+                          provisionerSessionIsReady closed `shouldBe` True
+                          planProvisionerSession closed
+                            `shouldBe` ProvisionerPlanComplete
+                              (fixtureProvisionerLogin fixture)
+                              (fixtureBaselineReadBack fixture)
+                              (fixtureProvisionerAbsence fixture)
+                          restartProvisionerSession closed `shouldBe` closed
 
     it "refuses a provisioner receipt from another storage generation" $
       withFixture $ \fixture ->
@@ -1713,12 +1769,20 @@ provisionerSealAndHandoffSuite =
             )
             $ \wrongReceipt ->
               expectRight
-                (applyProvisionerSessionCommand initial ArmProvisionerLogin)
-                $ \pending ->
-                  applyProvisionerSessionCommand
-                    pending
-                    (ConfirmProvisionerLogin wrongReceipt)
-                    `shouldSatisfy` isLeft
+                ( applyProvisionerSessionCommand
+                    initial
+                    ( ConfirmProvisionerPolicyAccessorsAbsent
+                        (fixtureProvisionerPolicyAbsence fixture)
+                    )
+                )
+                $ \precleaned ->
+                  expectRight
+                    (applyProvisionerSessionCommand precleaned ArmProvisionerLogin)
+                    $ \pending ->
+                      applyProvisionerSessionCommand
+                        pending
+                        (ConfirmProvisionerLogin wrongReceipt)
+                        `shouldSatisfy` isLeft
 
     it "bounds provisioner sessions to one hour" $
       withFixture $ \fixture -> do
@@ -1843,6 +1907,24 @@ withRootCompletion fixture assertion =
     case sessionCompletion of
       Nothing -> expectationFailure "root session fixture did not complete"
       Just completion -> assertion completion
+
+completeProvisionerSession
+  :: Fixture
+  -> ProvisionerSessionState
+  -> Either ProvisionerSessionError ProvisionerSessionState
+completeProvisionerSession fixture initial =
+  foldM
+    applyProvisionerSessionCommand
+    initial
+    [ ArmProvisionerBaselineApply
+    , ConfirmProvisionerBaselineApplied
+    , ArmProvisionerBaselineReadBack
+    , ConfirmProvisionerBaselineReadBack (fixtureBaselineReadBack fixture)
+    , ArmProvisionerRevocation
+    , ConfirmProvisionerRevoked
+    , ArmProvisionerAccessorAbsenceCheck
+    , ConfirmProvisionerAccessorAbsent (fixtureProvisionerAbsence fixture)
+    ]
 
 -- Child initialization custody --------------------------------------------
 
@@ -2745,10 +2827,19 @@ buildProjectionParts fixture = do
   rootCompleteUnsealed <-
     first show (mkBootstrapProjection rootComplete sealUnsealed)
   let provisionerInitial = newProvisionerSessionState completion
+  provisionerPrecleaned <-
+    first
+      show
+      ( applyProvisionerSessionCommand
+          provisionerInitial
+          ( ConfirmProvisionerPolicyAccessorsAbsent
+              (fixtureProvisionerPolicyAbsence fixture)
+          )
+      )
   provisionerPending <-
     first
       show
-      (applyProvisionerSessionCommand provisionerInitial ArmProvisionerLogin)
+      (applyProvisionerSessionCommand provisionerPrecleaned ArmProvisionerLogin)
   provisionerLoggedIn <-
     first
       show
@@ -2756,6 +2847,8 @@ buildProjectionParts fixture = do
           provisionerPending
           (ConfirmProvisionerLogin (fixtureProvisionerLogin fixture))
       )
+  provisionerClosed <-
+    first show (completeProvisionerSession fixture provisionerLoggedIn)
   let handoffInitial = newPostUnsealHandoffState generation
   handoffPending <-
     first
@@ -2774,7 +2867,7 @@ buildProjectionParts fixture = do
   let completeProjection =
         rootCompleteUnsealed
           { bootstrapProjectionRootSession = Just rootSessionCompleteState
-          , bootstrapProjectionProvisioner = Just provisionerLoggedIn
+          , bootstrapProjectionProvisioner = Just provisionerClosed
           , bootstrapProjectionHandoff = handoffObserved
           }
   pure
@@ -2786,7 +2879,7 @@ buildProjectionParts fixture = do
       , partsRootSessionComplete = rootSessionCompleteState
       , partsRootCompletion = completion
       , partsProvisionerInitial = provisionerInitial
-      , partsProvisionerLoggedIn = provisionerLoggedIn
+      , partsProvisionerLoggedIn = provisionerClosed
       , partsHandoffPending = handoffPending
       , partsCompleteProjection = completeProjection
       }

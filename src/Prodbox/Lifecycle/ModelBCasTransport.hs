@@ -4,25 +4,24 @@
 -- | Sprint 4.51 Increment B (Stage B): the ONE shared Model-B ↔ authority-object
 -- CAS translation both retained-authority transports delegate to.
 --
--- 'gatewayModelBCasAdapter' (the in-cluster gateway HTTP client) and
--- 'Prodbox.Lifecycle.HostDirectAuthorityStore.hostDirectModelBCasAdapter' (the
--- host-direct CLI reaching MinIO through 'Prodbox.Lifecycle.AuthorityObjectCore')
--- are BOTH partial applications of 'modelBCasAdapterOverTransport' over an
+-- The admitted Lifecycle Authority store and the pre-Authority bootstrap store
+-- are both partial applications of 'modelBCasAdapterOverTransport' over an
 -- injected 'ModelBTransport'. The coordinate-authority guard, guard-coordinate
 -- validation, payload encode/decode, and every 'ModelBObservation' /
--- 'ModelBCasResult' response mapping live here exactly once, so the two transports
--- cannot silently diverge into disjoint Model-B translation behaviour. This
--- extends the Stage-A structural byte-compat (shared 'AuthorityObjectCore') one
--- level up: there is no second hand-maintained Model-B↔AuthorityObject copy.
+-- 'ModelBCasResult' response mapping live here exactly once, so the transports
+-- cannot silently diverge into disjoint Model-B translation behaviour.
 module Prodbox.Lifecycle.ModelBCasTransport
   ( ModelBTransport (..)
   , modelBCasAdapterOverTransport
+  , transportFailureObservation
+  , transportFailureCasResult
+  , modelBEndpointUnreadyFragments
   )
 where
 
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Gateway.ObjectStore
+import Prodbox.ControlPlane.AuthorityObject
   ( AuthorityObjectCasRequest (..)
   , AuthorityObjectCasResponse (..)
   , AuthorityObjectLeaseGuard (..)
@@ -42,14 +41,12 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , modelBObjectLogicalName
   , modelBObjectVersionText
   )
+import Prodbox.Service (isRetryableTransientFailure)
 
--- | The injected authority-object transport. Both transports reach the SAME
--- sealed retained-authority objects; only the path differs — the gateway
--- transport goes over the daemon's loopback-verified NodePort HTTP surface, the
--- host-direct transport reaches MinIO in-process through
--- 'Prodbox.Lifecycle.AuthorityObjectCore'. Errors are normalised to 'Text' so the
--- shared adapter maps them identically to 'ModelBUnobservable' /
--- 'ModelBCasUnobservable', exactly as the pre-Stage-B gateway adapter did.
+-- | The injected authority-object transport. Production authority and bounded
+-- bootstrap transports reach the same sealed retained-authority objects. Errors
+-- are normalised to 'Text' so the shared adapter maps them identically to
+-- 'ModelBUnobservable' / 'ModelBCasUnobservable'.
 data ModelBTransport = ModelBTransport
   { transportObserveObject
       :: !(Text -> IO (Either Text AuthorityObjectObservation))
@@ -57,9 +54,40 @@ data ModelBTransport = ModelBTransport
       :: !(AuthorityObjectCasRequest -> IO (Either Text AuthorityObjectCasResponse))
   }
 
+-- | Classify a transport read failure into the typed three-valued observation:
+-- a transient endpoint-unreachability (a not-yet-routable port-forward / NodePort,
+-- e.g. a connection-refused or the aws-CLI "could not connect to the endpoint URL"
+-- phrase) becomes the retryable, gate-closed 'ModelBEndpointUnready', while any
+-- other read failure (decode/auth/HMAC/etc.) stays the terminal 'ModelBUnobservable'.
+-- Retryability is a total function of the shared 'Prodbox.Service' transient table
+-- plus the object-store-specific fragments, never a hand-set flag at the call site.
+transportFailureObservation :: Text -> ModelBObservation value
+transportFailureObservation err
+  | isRetryableTransientFailure modelBEndpointUnreadyFragments (Text.unpack err) =
+      ModelBEndpointUnready err
+  | otherwise = ModelBUnobservable err
+
+-- | Object-store-specific transient fragments beyond the shared
+-- 'Prodbox.Service.transientFailureFragments' base.  The base already carries
+-- @"connection refused"@; these add the aws-CLI phrasing that the base omits.
+modelBEndpointUnreadyFragments :: [String]
+modelBEndpointUnreadyFragments =
+  [ "could not connect to the endpoint"
+  , "could not connect"
+  ]
+
+-- | Classify a transport write failure, the CAS-path analogue of
+-- 'transportFailureObservation': a transient endpoint-unreachability becomes the
+-- retryable 'ModelBCasEndpointUnready', anything else the terminal
+-- 'ModelBCasUnobservable'.
+transportFailureCasResult :: Text -> ModelBCasResult value
+transportFailureCasResult err
+  | isRetryableTransientFailure modelBEndpointUnreadyFragments (Text.unpack err) =
+      ModelBCasEndpointUnready err
+  | otherwise = ModelBCasUnobservable err
+
 -- | Build a lifetime-indexed Model-B CAS adapter over an injected transport. The
--- body is lifted verbatim from the pre-Stage-B @gatewayModelBCasAdapter@: it
--- validates that the target (and any guard) coordinate belongs to the configured
+-- body validates that the target (and any guard) coordinate belongs to the configured
 -- authority, encodes the payload, delegates the read / conditional write to the
 -- transport, and maps the flat authority-object observation/response back into the
 -- typed 'ModelBObservation' / 'ModelBCasResult'.
@@ -80,7 +108,7 @@ modelBCasAdapterOverTransport authority transport codec =
       Right () -> do
         result <- transportObserveObject transport (modelBObjectLogicalName coordinate)
         pure $ case result of
-          Left err -> ModelBUnobservable err
+          Left err -> transportFailureObservation err
           Right observation -> decodeObservation codec observation
 
   compareAndSwap request =
@@ -99,14 +127,14 @@ modelBCasAdapterOverTransport authority transport codec =
                         , authorityObjectCasExpectedVersion = expectedVersion
                         , authorityObjectCasLeaseGuard = authorityObjectLeaseGuard <$> maybeGuard
                         , authorityObjectCasPayload = encodedValue
-                        , -- Consumed only by the daemon's server-side NodePort admission
-                          -- check; the host-direct core ignores it. The gateway transport
-                          -- re-derives it at the loopback boundary, so this value is inert.
+                        , -- Consumed by the in-cluster Authority server's
+                          -- admission check. The typed transport establishes
+                          -- this invariant before the request reaches the core.
                           authorityObjectCasLoopbackNodePortVerified = True
                         }
                 result <- transportCasObject transport casRequest
                 pure $ case result of
-                  Left err -> ModelBCasUnobservable err
+                  Left err -> transportFailureCasResult err
                   Right (AuthorityObjectCasApplied versionText) ->
                     case mkModelBObjectVersion versionText of
                       Left err -> ModelBCasUnobservable (Text.pack (show err))

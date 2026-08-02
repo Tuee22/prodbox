@@ -49,6 +49,10 @@ data StackDescriptor = StackDescriptor
   -- 'stackRegistryName', but the EKS validation stack is the registry
   -- name @aws-eks@ provisioned under the Pulumi stack id
   -- @aws-eks-test@.
+  , stackPulumiProjectName :: String
+  -- ^ The exact Pulumi project name embedded in the encrypted checkpoint.
+  -- Together with 'stackPulumiStackId' this is the closed checkpoint identity
+  -- accepted by the Lifecycle Authority; neither half may be caller-guessed.
   , stackProjectSubdir :: String
   -- ^ The project subdir under @pulumi/@ holding @Pulumi.yaml@ +
   -- @Main.yaml@.
@@ -72,6 +76,7 @@ stackDescriptors =
   [ StackDescriptor
       { stackRegistryName = "aws-eks"
       , stackPulumiStackId = "aws-eks-test"
+      , stackPulumiProjectName = "prodbox-aws-eks-test"
       , stackProjectSubdir = "aws-eks"
       , stackCliVerb = "eks"
       , stackLifecycleClass = PerRun
@@ -79,6 +84,7 @@ stackDescriptors =
   , StackDescriptor
       { stackRegistryName = "aws-eks-subzone"
       , stackPulumiStackId = "aws-eks-subzone"
+      , stackPulumiProjectName = "prodbox-aws-eks-subzone"
       , stackProjectSubdir = "aws-eks-subzone"
       , stackCliVerb = "aws-subzone"
       , stackLifecycleClass = PerRun
@@ -86,6 +92,7 @@ stackDescriptors =
   , StackDescriptor
       { stackRegistryName = "aws-test"
       , stackPulumiStackId = "aws-test"
+      , stackPulumiProjectName = "prodbox-aws-test"
       , stackProjectSubdir = "aws-test"
       , stackCliVerb = "test"
       , stackLifecycleClass = PerRun
@@ -93,6 +100,7 @@ stackDescriptors =
   , StackDescriptor
       { stackRegistryName = "aws-ses"
       , stackPulumiStackId = "aws-ses"
+      , stackPulumiProjectName = "prodbox-aws-ses"
       , stackProjectSubdir = "aws-ses"
       , stackCliVerb = "aws-ses"
       , stackLifecycleClass = LongLived

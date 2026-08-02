@@ -20,21 +20,20 @@
 
 ## Phase Status
 
-⏸️ **Reopened and blocked by Sprint `6.4`.** Sprint `7.33` expands the AWS substrate's own
+✅ **Reclosed 2026-08-02 on Sprint `7.33`.** The AWS substrate now has its own
 platform surface with the Bootstrap Broker and Target Secret Agent, dedicated control-plane
 transport, independent resource/admission envelopes, and fault-injection parity. The EKS gateway
 Service is no longer the retained checkpoint authority or secret-delivery transport. Sprint
 `7.32` remains Done for its graph-derived AWS reconcile order and historical restore projection.
 
-📋 **Expanded 2026-07-12 by the Foundation Epoch adoption (Sprint `0.17`; counterexample
-`LCPC-2026-07-11`)** — Sprint `7.34` (📋 Planned) is registered on Phase `7`'s owned
+✅ **Expanded 2026-07-12 by the Foundation Epoch adoption (Sprint `0.17`; counterexample
+`LCPC-2026-07-11`)** — Sprint `7.34` (✅ Done) is registered on Phase `7`'s owned
 harness-postflight surface: the postflight residue bypass narrows from
 `BypassAllResidueForHarnessRefresh` to `BypassPerRunResidueForHarnessRefresh`, restoring the
 long-lived `aws-ses`/public-edge-tls protection of the lifecycle preconditions and reversing the
 Sprint `7.9` all-residue decision (see the Sprint `7.34` block below). The Foundation Epoch is an
 execution-priority decision narrated in [README.md → Closure Status](README.md); it adds no
-`Blocked by` edge onto Sprint `7.33` or the existing `1.61` → `8.12` chain, and this phase remains
-⏸️ blocked by Sprint `6.4` on the Sprint `7.33` surface.
+`Blocked by` edge onto Sprint `7.33` or the existing `1.61` → `8.12` chain.
 
 ✅ **Reclosed 2026-07-10 after AWS-substrate reconcile parity** — Sprint `7.32` is Done on Phase
 `7`'s code-owned surface. `AwsSubstratePlatform` now compiles the configured component DAG through
@@ -4676,19 +4675,22 @@ Bring the AWS substrate to full parity with the completed home-path readiness/or
 
 - Update [substrates.md](substrates.md) parity notes; ledger row D (AWS classifier) names Sprint `7.32`.
 
-## Sprint 7.33: AWS Control-Plane Isolation and Fault-Parity [⏸️ Blocked]
+## Sprint 7.33: AWS Control-Plane Isolation and Fault-Parity [✅ Done]
 
-**Status**: Blocked
+**Status**: Done
 **Deployment qualification**: pending
-**Implementation**: planned revisions to `src/Prodbox/Lib/AwsSubstratePlatform.hs`, typed AWS
-component-step projections, role-specific port forwards/clients, chart values, IAM/Vault
-bindings, fake-command fixtures, and AWS fault scenarios
-**Blocked by**: Sprint `6.4`
-**Live-proof**: pending after code-local implementation; the full current-revision AWS aggregate
+**Implementation**: `src/Prodbox/Lib/AwsControlPlaneIsolation.hs` defines the closed AWS role,
+transport, capability, deterministic-IAM, controller-ownership, and fault-disposition model;
+`AwsSubstratePlatform` validates it before mutation and installs the target-local DNS01 worker.
+Provider intents now own exact public Route 53 A-record observation/reconcile, the Pulumi EKS
+program uses deterministic run/cluster IAM names, and retained SES preparation uses the canonical
+AWS target instead of a placeholder.
+**Live-proof**: pending; the full current-revision AWS aggregate
 and fault matrix are deployment-qualification evidence
-**Independent Validation**: pure AWS plan/order tables, rendered manifests, fake `kubectl`/AWS/
-authority clients, and installed-binary traces validate the substrate-owned surface without live
-AWS or a later phase.
+**Independent Validation**: ✅ AWS isolation 11/11, Provider execution 18/18, full unit 3040/3040,
+installed CLI/env integration 55/55 twice, warning-clean build, and `prodbox dev check` exit 0 with
+no HLint hints. Pure topology/manifests, fake clients, and installed-binary traces validate the
+substrate-owned surface without live AWS or a later phase.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`,
 `documents/engineering/bootstrap_readiness_doctrine.md`,
@@ -4763,8 +4765,8 @@ fault behavior without using the EKS gateway as an authority proxy.
 
 ### Remaining Work
 
-- Blocked until Sprint `6.4` closes the home clean-room migration contract.
-- Live AWS evidence remains separate from Phase-7 code-local status and must bind the complete
+- None on the Sprint-7.33 code-owned surface.
+- Live AWS evidence remains separate from Phase-7 completion and must bind the complete
   replacement identity; final qualification remains Sprint `8.12`.
 
 ## Documentation Requirements

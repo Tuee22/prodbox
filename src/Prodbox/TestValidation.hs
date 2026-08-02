@@ -13,6 +13,7 @@ module Prodbox.TestValidation
   , recordGatewayRuntimeStabilitySample
   , resetGatewayRuntimeStabilityHealthyWindow
   , runGatewayRuntimeStabilityGate
+  , recordGatewayMeasuredProfile
   , DaemonBootstrapAuditInput (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
@@ -30,6 +31,7 @@ module Prodbox.TestValidation
   , assertInviteOidcClaims
   , gatewayPartitionValidationReport
   , renderGatewayValidationConfigDhall
+  , demoOidcSessionValidationAgentManifest
   )
 where
 
@@ -56,17 +58,21 @@ import Control.Exception
   , finally
   , try
   )
-import Control.Monad (foldM, void, when)
+import Control.Monad (filterM, foldM, forM, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( Value (..)
   , eitherDecode
+  , encode
+  , object
+  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor qualified as Bifunctor
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
@@ -80,9 +86,10 @@ import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Vector qualified as Vector
 import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (..)
@@ -104,17 +111,11 @@ import Prodbox.Aws
   ( runAwsIamHarnessInspect
   )
 import Prodbox.AwsEnvironment
-  ( awsCliSubprocessEnvironment
-  , overlayAwsCredentials
+  ( overlayAwsCredentials
   )
-import Prodbox.Bootstrap.Broker.LegacyAdapter
-  ( bootstrapVaultPath
-  , bootstrapVaultPkiIssueTestCertPath
-  , bootstrapVaultPkiStatusPath
-  , bootstrapVaultRotateTransitKeyPath
-  , bootstrapVaultRotateUnlockBundlePath
-  , bootstrapVaultSealPath
-  , bootstrapVaultStatusPath
+import Prodbox.Bootstrap.Broker.Routes
+  ( BrokerRoute (..)
+  , brokerRoutePath
   )
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
@@ -131,19 +132,32 @@ import Prodbox.CLI.Rke2
   , retainedStorageInventoryEntries
   )
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.MeasuredProfile qualified as MeasuredProfile
 import Prodbox.Capacity.Placement qualified as Placement
 import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Cbor
   ( CborPayload (..)
   )
+import Prodbox.CheckCode (listRepoOwnedPaths)
+import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.Capacity qualified as EmitterCapacity
 import Prodbox.ControlPlane.Deadline qualified as Deadline
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityTestHarness)
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchHostProviderIntentFresh
+  , renderProviderCallerError
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( OidcIdentity (..)
+  )
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
   , queryRoute53Record
   )
-import Prodbox.Error (fatalError)
+import Prodbox.Error (AppError, errorMsg, fatalError)
 import Prodbox.Gateway.Bounds qualified as GatewayBounds
 import Prodbox.Gateway.Continuity qualified as GatewayContinuity
 import Prodbox.Gateway.Emitter.Actor qualified as EmitterActor
@@ -170,6 +184,10 @@ import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , awsTestStackName
   , fetchPerRunStackOutputs
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObserveProviderReadiness)
+  , ProviderReadinessProbe (ProviderReadinessRoute53Zone)
   )
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
@@ -228,28 +246,38 @@ import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
   ( AwsCredentialsRef (..)
-  , Credentials
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
   , aws
   , domain
-  , resolveAwsCredentialsRefFromHostVault
+  , resolveLifecycleProviderCredentials
   , route53
   , validateAndLoadSettings
   )
 import Prodbox.Settings qualified
 import Prodbox.Subprocess
   ( BackgroundProcess
+  , BoundedSubprocessLimits (..)
   , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
+  , captureSubprocessWithInputBounded
   , commandDisplay
   , runSubprocessStreaming
   , startBackgroundProcess
   , stopBackgroundProcess
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Test.CertificateScopeServing
+  ( renderCertificateServingDefect
+  , validatePresentedDnsSans
+  )
+import Prodbox.Test.CleanRoomHandoff qualified as CleanRoom
+import Prodbox.Test.CounterexampleValidation
+  ( runControlPlaneCounterexampleValidation
+  )
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayPayloadSource (..)
   , GatewayRuntimeStabilityReport (..)
@@ -257,21 +285,25 @@ import Prodbox.Test.GatewayRuntimeStability
   , GatewayStabilityState
   , beginPlannedGatewayRollout
   , gatewayRuntimeStabilityReport
-  , gatewayStabilityUnreachableIsTransient
   , initialGatewayStabilityState
   , mkGatewayStabilityPolicy
   , observeGatewayRuntimeFailure
   , observeGatewayRuntimePayloads
   , renderGatewayRuntimeStabilityReport
-  , stabilityStatePolicy
   )
 import Prodbox.TestPlan
   ( NativeValidation (..)
   , nativeValidationId
   )
+import Prodbox.Tls.CertScope (certScopeSetDnsNames)
 import Prodbox.UsersAdmin qualified
-import Prodbox.Vault.Host (readHostVaultKvField)
-import System.Directory (doesDirectoryExist, removeFile)
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , removeFile
+  , renameFile
+  )
 import System.Environment
   ( getEnvironment
   , lookupEnv
@@ -332,13 +364,15 @@ defaultDaemonBootstrapAuditInput =
   DaemonBootstrapAuditInput
     { daemonBootstrapDaemonAvailable = True
     , daemonBootstrapObservedTransports =
-        [ "POST http://127.0.0.1:30443" ++ bootstrapVaultPath ++ " loopback_nodeport_verified=True"
-        , "GET http://127.0.0.1:30443" ++ bootstrapVaultStatusPath
-        , "POST http://127.0.0.1:30443" ++ bootstrapVaultSealPath
-        , "POST http://127.0.0.1:30443" ++ bootstrapVaultRotateUnlockBundlePath
-        , "POST http://127.0.0.1:30443" ++ bootstrapVaultRotateTransitKeyPath
-        , "POST http://127.0.0.1:30443" ++ bootstrapVaultPkiStatusPath
-        , "POST http://127.0.0.1:30443" ++ bootstrapVaultPkiIssueTestCertPath
+        [ "TOKENREQUEST audience=prodbox-bootstrap-broker duration=10m"
+        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultInitialize
+        , "GET http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultStatus
+        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultSeal
+        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultRotateUnlockBundle
+        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultRotateTransitKey
+        , "GET http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultPkiStatus
+        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultPkiIssueTestCertificate
+        , "ATTACH pod/bootstrap-secret-worker framed-stdin"
         ]
     , daemonBootstrapObservedOutput =
         [ "daemon-bootstrap result=ok"
@@ -347,20 +381,19 @@ defaultDaemonBootstrapAuditInput =
         , "response_root_token=redacted"
         ]
     , daemonBootstrapRequiredDaemonPaths =
-        [ bootstrapVaultPath
-        , bootstrapVaultStatusPath
-        , bootstrapVaultSealPath
-        , bootstrapVaultRotateUnlockBundlePath
-        , bootstrapVaultRotateTransitKeyPath
-        , bootstrapVaultPkiStatusPath
-        , bootstrapVaultPkiIssueTestCertPath
+        [ brokerRoutePath BrokerVaultInitialize
+        , brokerRoutePath BrokerVaultStatus
+        , brokerRoutePath BrokerVaultSeal
+        , brokerRoutePath BrokerVaultRotateUnlockBundle
+        , brokerRoutePath BrokerVaultRotateTransitKey
+        , brokerRoutePath BrokerVaultPkiStatus
+        , brokerRoutePath BrokerVaultPkiIssueTestCertificate
         ]
     }
 
 daemonBootstrapForbiddenPatterns :: [String]
 daemonBootstrapForbiddenPatterns =
-  [ "kubectl port-forward"
-  , "port-forward service/minio"
+  [ "port-forward service/minio"
   , "127.0.0.1:39000"
   , "localhost:39000"
   , "127.0.0.1:31820"
@@ -581,18 +614,6 @@ gatewayRuntimeKubectlRequestTimeout = "5s"
 gatewayRuntimeKubectlDeadlineMicroseconds :: Int
 gatewayRuntimeKubectlDeadlineMicroseconds = 15000000
 
--- | Bounded budget for waiting until the gateway runtime is observable before a
--- stability sample is recorded.  A freshly-(re)started gateway Pod reaches
--- @Ready@ before metrics-server's first scrape, so its working-set is briefly
--- unobservable; at ~2s per probe this covers the default 15s metric resolution
--- with headroom.  A runtime that stays unobservable past this budget still falls
--- through to the recorded sample and fails closed.
-gatewayRuntimeObservabilityMaximumAttempts :: Int
-gatewayRuntimeObservabilityMaximumAttempts = 30
-
-gatewayRuntimeObservabilityDelayMicroseconds :: Int
-gatewayRuntimeObservabilityDelayMicroseconds = 2000000
-
 newGatewayRuntimeStabilityRecorder
   :: FilePath -> IO (Either String GatewayRuntimeStabilityRecorder)
 newGatewayRuntimeStabilityRecorder repoRoot = do
@@ -632,20 +653,7 @@ withGatewayRuntimeStabilityMonitor substrate repoRoot recorder action =
               (GatewayRuntimeKubectlContext repoRoot Nothing)
           )
     SubstrateAws -> do
-      settingsResult <- validateAndLoadSettings repoRoot
-      case settingsResult of
-        Left err -> pure (Left err)
-        Right settings -> do
-          credentialsResult <-
-            resolveAwsCredentialsRefFromHostVault
-              repoRoot
-              "aws"
-              (aws (validatedConfig settings))
-          case credentialsResult of
-            Left err ->
-              pure (Left ("load operational AWS credentials from Vault: " ++ err))
-            Right credentials ->
-              Right <$> runWithWorker (gatewayRuntimeAwsMonitorLoop repoRoot credentials)
+      Right <$> runWithWorker (gatewayRuntimeAwsMonitorLoop repoRoot)
  where
   runWithWorker workerAction = do
     enabled <- newMVar True
@@ -683,17 +691,16 @@ gatewayRuntimeHomeMonitorLoop context monitor firstObservationComplete =
 
 gatewayRuntimeAwsMonitorLoop
   :: FilePath
-  -> Credentials
   -> GatewayRuntimeStabilityMonitor
   -> MVar ()
   -> IO ()
-gatewayRuntimeAwsMonitorLoop repoRoot credentials monitor firstObservationComplete =
+gatewayRuntimeAwsMonitorLoop repoRoot monitor firstObservationComplete =
   go Nothing
  where
   go maybeRefreshAcknowledgement = do
     nextRefreshAcknowledgement <-
       AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        baseEnvironment <- awsCliSubprocessEnvironment credentials
+        baseEnvironment <- getEnvironment
         let monitorEnvironment =
               ("KUBECONFIG", kubeconfigPath)
                 : filter ((/= "KUBECONFIG") . fst) baseEnvironment
@@ -801,97 +808,19 @@ recordGatewayRuntimeStabilitySample
   -> GatewayRuntimeStabilityRecorder
   -> IO ExitCode
 recordGatewayRuntimeStabilitySample substrate repoRoot recorder = do
-  policy <- stabilityStatePolicy <$> readMVar (gatewayRuntimeStabilityStateVar recorder)
   scopedResult <-
     withSubstrateKubeconfigResult
       repoRoot
       substrate
-      ( do
-          let context = GatewayRuntimeKubectlContext repoRoot Nothing
-          awaitGatewayRuntimeObservable context policy
-          observeGatewayRuntimeStability context recorder
+      ( observeGatewayRuntimeStability
+          (GatewayRuntimeKubectlContext repoRoot Nothing)
+          recorder
       )
   case scopedResult of
     Left err -> do
       report <- recordGatewayRuntimeFailure recorder GatewayPodsPayload err
       failWith (renderGatewayRuntimeStabilityReport report)
     Right report -> gatewayRuntimeSampleExit report
-
--- | Wait for the gateway runtime to become observable before a stability sample
--- is recorded.  A freshly-(re)started gateway Pod that reaches @Ready@ before
--- metrics-server's first scrape reports a transient 'StabilityUnreachable' (for
--- example 'GatewayMemoryReadingUnobservable') that
--- 'recordGatewayRuntimeStabilitySample' would otherwise latch as fatal on the
--- first fold, failing the restore-time gateway reconcile even though the Pod is
--- healthy.  This read-only probe folds into a throwaway state (never the run
--- recorder) and polls until the runtime is observable or the bounded budget is
--- exhausted; a runtime that stays unobservable past the budget still falls
--- through to the recorded sample and fails closed, and an unhealthy or
--- over-threshold runtime is observable immediately and proceeds without delay.
-awaitGatewayRuntimeObservable
-  :: GatewayRuntimeKubectlContext -> GatewayStabilityPolicy -> IO ()
-awaitGatewayRuntimeObservable context policy =
-  go gatewayRuntimeObservabilityMaximumAttempts
- where
-  go attemptsRemaining
-    | attemptsRemaining <= 1 = pure ()
-    | otherwise = do
-        scratch <- observeGatewayRuntimeScratch context policy
-        if scratchStillWarmingUp scratch
-          then do
-            threadDelay gatewayRuntimeObservabilityDelayMicroseconds
-            go (attemptsRemaining - 1)
-          else pure ()
-  scratchStillWarmingUp scratch =
-    case scratch of
-      Nothing -> True
-      Just (StabilityUnreachable reason) -> gatewayStabilityUnreachableIsTransient reason
-      Just _ -> False
-
--- | One non-latching stability observation folded into a throwaway state, used
--- only to decide whether the gateway runtime is observable yet.  'Nothing' means
--- a kubectl read failed, which is treated as still-warming-up so the caller
--- waits and retries.
-observeGatewayRuntimeScratch
-  :: GatewayRuntimeKubectlContext
-  -> GatewayStabilityPolicy
-  -> IO (Maybe GatewayRuntimeStabilityReport)
-observeGatewayRuntimeScratch context policy = do
-  podsResult <-
-    gatewayRuntimeKubectlJson
-      context
-      ["get", "pods", "--namespace", gatewayValidationNamespace, "-o", "json"]
-  eventsResult <-
-    gatewayRuntimeKubectlJson
-      context
-      [ "get"
-      , "events"
-      , "--namespace"
-      , gatewayValidationNamespace
-      , "--field-selector"
-      , "involvedObject.kind=Pod"
-      , "-o"
-      , "json"
-      ]
-  metricsResult <-
-    gatewayRuntimeKubectlJson
-      context
-      ["get", "--raw", "/apis/metrics.k8s.io/v1beta1/namespaces/gateway/pods"]
-  observedAt <- Text.pack . show <$> getPOSIXTime
-  pure $
-    case (podsResult, eventsResult, metricsResult) of
-      (Right pods, Right events, Right metrics) ->
-        Just
-          ( gatewayRuntimeStabilityReport
-              ( observeGatewayRuntimePayloads
-                  observedAt
-                  pods
-                  events
-                  metrics
-                  (initialGatewayStabilityState policy)
-              )
-          )
-      _ -> Nothing
 
 runGatewayRuntimeStabilityGate
   :: Substrate
@@ -912,6 +841,187 @@ runGatewayRuntimeStabilityGate substrate repoRoot recorder = do
       report <- recordGatewayRuntimeFailure recorder GatewayPodsPayload err
       failWith (renderGatewayRuntimeStabilityReport report)
     Right exitCode -> pure exitCode
+
+-- | Sprint 5.21 live recorder. The gateway-pods validation has already
+-- established the workload; this observer then keeps the absorbing runtime
+-- health fold active for the whole steady window while collecting cumulative
+-- cgroup counters plus daemon-owned heap/object-store telemetry.
+recordGatewayMeasuredProfile :: Substrate -> FilePath -> IO ExitCode
+recordGatewayMeasuredProfile substrate repoRoot = do
+  recorderResult <- newGatewayRuntimeStabilityRecorder repoRoot
+  case recorderResult of
+    Left err -> failWith err
+    Right recorder -> do
+      scoped <-
+        withSubstrateKubeconfigResult repoRoot substrate $
+          withGatewayRuntimeStabilityMonitor substrate repoRoot recorder $ \_monitor -> do
+            podResult <- gatewayCalibrationPod repoRoot
+            case podResult of
+              Left err -> failWith err
+              Right podName -> do
+                writeOutputLine
+                  ( "Recording gateway measured profile from Pod `"
+                      ++ podName
+                      ++ "` for at least "
+                      ++ show MeasuredProfile.recorderMinimumWindowSeconds
+                      ++ " seconds."
+                  )
+                samplesResult <- collectGatewayCalibrationSamples repoRoot podName
+                case samplesResult of
+                  Left err -> failWith err
+                  Right samples -> do
+                    healthExit <-
+                      runGatewayRuntimeStabilityGateInCurrentContext
+                        (GatewayRuntimeKubectlContext repoRoot Nothing)
+                        recorder
+                    case healthExit of
+                      ExitFailure code -> pure (ExitFailure code)
+                      ExitSuccess -> commitGatewayMeasuredProfile repoRoot samples
+      case scoped of
+        Left err -> failWith err
+        Right (Left err) -> failWith err
+        Right (Right exitCode) -> pure exitCode
+
+gatewayCalibrationPod :: FilePath -> IO (Either String String)
+gatewayCalibrationPod repoRoot = do
+  output <-
+    captureCalibrationKubectl
+      repoRoot
+      [ "get"
+      , "pods"
+      , "--namespace"
+      , gatewayValidationNamespace
+      , "--selector"
+      , "app.kubernetes.io/name=prodbox-gateway"
+      , "--field-selector"
+      , "status.phase=Running"
+      , "--output"
+      , "jsonpath={.items[0].metadata.name}"
+      ]
+  pure $ do
+    textOutput <- output
+    let podName = Text.unpack (Text.strip (Text.pack textOutput))
+    if null podName
+      then Left "measured-profile recorder found no Running gateway Pod"
+      else Right podName
+
+gatewayCalibrationSampleCount :: Int
+gatewayCalibrationSampleCount = fromIntegral MeasuredProfile.recorderMinimumSampleCount
+
+gatewayCalibrationDelayMicroseconds :: Int
+gatewayCalibrationDelayMicroseconds = 6100000
+
+collectGatewayCalibrationSamples
+  :: FilePath -> String -> IO (Either String [MeasuredProfile.MeasuredProfileSample])
+collectGatewayCalibrationSamples repoRoot podName = go gatewayCalibrationSampleCount []
+ where
+  go remaining collected
+    | remaining <= 0 = pure (Right (reverse collected))
+    | otherwise = do
+        sample <- collectGatewayCalibrationSample repoRoot podName
+        case sample of
+          Left err -> pure (Left err)
+          Right observed
+            | remaining == 1 -> pure (Right (reverse (observed : collected)))
+            | otherwise -> do
+                threadDelay gatewayCalibrationDelayMicroseconds
+                go (remaining - 1) (observed : collected)
+
+collectGatewayCalibrationSample
+  :: FilePath -> String -> IO (Either String MeasuredProfile.MeasuredProfileSample)
+collectGatewayCalibrationSample repoRoot podName = do
+  observedAt <- fromIntegral <$> getMonotonicTimeNSec
+  output <- captureCalibrationKubectl repoRoot (calibrationExecArguments podName)
+  pure $ do
+    raw <- output
+    values <- traverse readNatural (words raw)
+    case values of
+      [usageMicros, periods, throttled, rssBytes, heapBytes, objectMillis]
+        | heapBytes == 0 ->
+            Left "gateway /metrics reported zero heap bytes; the daemon must run with RTS stats enabled"
+        | otherwise ->
+            Right
+              MeasuredProfile.MeasuredProfileSample
+                { MeasuredProfile.sampleObservedAtNanoseconds = observedAt
+                , MeasuredProfile.sampleCpuUsageNanoseconds = usageMicros * 1000
+                , MeasuredProfile.sampleCfsPeriods = periods
+                , MeasuredProfile.sampleCfsThrottledPeriods = throttled
+                , MeasuredProfile.sampleRssBytes = rssBytes
+                , MeasuredProfile.sampleHeapBytes = heapBytes
+                , MeasuredProfile.sampleObjectStoreOpMillis = objectMillis
+                }
+      _ -> Left "gateway calibration sample did not contain exactly six Natural values"
+ where
+  readNatural token =
+    case reads token of
+      [(value, "")] -> Right value
+      _ -> Left ("gateway calibration sample contains a non-Natural value: " ++ token)
+
+calibrationExecArguments :: String -> [String]
+calibrationExecArguments podName =
+  [ "exec"
+  , "--namespace"
+  , gatewayValidationNamespace
+  , podName
+  , "--container"
+  , "gateway"
+  , "--"
+  , "sh"
+  , "-ceu"
+  , unlines
+      [ "usage=$(awk '$1 == \"usage_usec\" { printf \"%s\\n\", $2 }' /sys/fs/cgroup/cpu.stat)"
+      , "periods=$(awk '$1 == \"nr_periods\" { printf \"%s\\n\", $2 }' /sys/fs/cgroup/cpu.stat)"
+      , "throttled=$(awk '$1 == \"nr_throttled\" { printf \"%s\\n\", $2 }' /sys/fs/cgroup/cpu.stat)"
+      , "rss=$(cat /sys/fs/cgroup/memory.current)"
+      , "metrics=$(curl --fail --silent --show-error http://127.0.0.1:8443/metrics)"
+      , "heap=$(printf '%s\n' \"$metrics\" | awk '$1 == \"prodbox_gateway_heap_live_bytes\" { printf \"%s\\n\", $2; exit }')"
+      , "object=$(printf '%s\n' \"$metrics\" | awk '$1 == \"prodbox_gateway_object_store_op_p99_millis\" { printf \"%s\\n\", $2; exit }')"
+      , "test -n \"$usage\" -a -n \"$periods\" -a -n \"$throttled\" -a -n \"$rss\" -a -n \"$heap\" -a -n \"$object\""
+      , "printf '%s %s %s %s %s %s\n' \"$usage\" \"$periods\" \"$throttled\" \"$rss\" \"$heap\" \"$object\""
+      ]
+  ]
+
+captureCalibrationKubectl :: FilePath -> [String] -> IO (Either String String)
+captureCalibrationKubectl repoRoot arguments = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "timeout"
+        , subprocessArguments = ["--kill-after=2s", "12s", "kubectl"] ++ arguments
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Failure err -> Left err
+    Success output -> case processExitCode output of
+      ExitSuccess -> Right (processStdout output)
+      ExitFailure code ->
+        Left
+          ( "kubectl calibration observation failed (exit "
+              ++ show code
+              ++ "): "
+              ++ outputDetail output
+          )
+
+commitGatewayMeasuredProfile
+  :: FilePath -> [MeasuredProfile.MeasuredProfileSample] -> IO ExitCode
+commitGatewayMeasuredProfile repoRoot samples = do
+  digest <- MeasuredProfile.computeHotPathDigest repoRoot "gateway"
+  recordedAt <- fromIntegral . (floor :: POSIXTime -> Integer) <$> getPOSIXTime
+  case MeasuredProfile.aggregateMeasuredProfileSamples "gateway" recordedAt digest True samples of
+    Left refusal -> failWith (MeasuredProfile.renderMeasuredProfileRecorderRefusal refusal)
+    Right profile -> do
+      let directory = repoRoot </> MeasuredProfile.measuredProfilesDir
+          destination = directory </> "gateway.dhall"
+      createDirectoryIfMissing True directory
+      (temporary, handle) <- openTempFile directory ".gateway.dhall.tmp"
+      BS8.hPutStr
+        handle
+        (TextEncoding.encodeUtf8 (MeasuredProfile.renderMeasuredResourceProfileDhall profile))
+      hClose handle
+      renameFile temporary destination
+      writeOutputLine ("Recorded measured gateway profile: " ++ destination)
+      pure ExitSuccess
 
 runGatewayRuntimeStabilityGateInCurrentContext
   :: GatewayRuntimeKubectlContext
@@ -1132,6 +1242,9 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
           environment
           maybeGatewayStability
       ValidationGatewayPartition -> runGatewayPartitionValidation
+      ValidationControlPlaneCounterexample -> runControlPlaneCounterexampleValidation repoRoot
+      ValidationCertificateScope -> runCertificateScopeServingValidation repoRoot substrate
+      ValidationCleanRoomHandoff -> runCleanRoomHandoffValidation repoRoot
       ValidationChartsPlatform ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
@@ -1207,12 +1320,9 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
 -- For `SubstrateHomeLocal` the operator's default kubeconfig is in scope
 -- already (no-op). For `SubstrateAws` (Sprint 4.18 fifth chunk
 -- re-migration) the EKS kubeconfig is materialized into a scoped temp
--- file via 'AwsEks.withEksKubeconfig' and exported alongside
--- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION`
--- (and optionally `AWS_SESSION_TOKEN`) from `settings.aws.*`, so every
--- kubectl/helm subprocess that inherits the parent process environment
--- can both target the EKS substrate and successfully resolve the
--- kubeconfig's `aws eks get-token` exec provider.
+-- file via 'AwsEks.withEksKubeconfig'. The file carries endpoint/CA and a
+-- FIFO token path; no AWS credential or bearer enters the environment or
+-- generated configuration.
 withSubstrateKubeconfigEnv :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
 withSubstrateKubeconfigEnv repoRoot substrate action = do
   result <- withSubstrateKubeconfigResult repoRoot substrate action
@@ -1225,28 +1335,14 @@ withSubstrateKubeconfigResult
 withSubstrateKubeconfigResult repoRoot substrate action =
   case substrate of
     SubstrateHomeLocal -> Right <$> action
-    SubstrateAws -> do
-      settingsResult <- validateAndLoadSettings repoRoot
-      case settingsResult of
-        Left err -> pure (Left err)
-        Right settings -> do
-          credentialsResult <-
-            resolveAwsCredentialsRefFromHostVault
-              repoRoot
-              "aws"
-              (aws (validatedConfig settings))
-          case credentialsResult of
-            Left err ->
-              pure (Left ("load operational AWS credentials from Vault: " ++ err))
-            Right credentials ->
-              AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-                let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
-                previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-                Right
-                  <$> bracket_
-                    (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-                    (mapM_ restoreOne (zip envOverrides previousValues))
-                    action
+    SubstrateAws ->
+      AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+        previousValue <- lookupEnv "KUBECONFIG"
+        Right
+          <$> bracket_
+            (setEnv "KUBECONFIG" kubeconfigPath)
+            (restoreOne (("KUBECONFIG", kubeconfigPath), previousValue))
+            action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name
@@ -3825,77 +3921,343 @@ runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken w
 
 completeDirectOidcLogin :: FilePath -> ValidatedSettings -> Substrate -> IO (Either String Value)
 completeDirectOidcLogin repoRoot settings substrate =
-  withTemporaryFilePath repoRoot "prodbox-oidc-cookies" $ \cookieJarPath ->
-    withTemporaryFilePath repoRoot "prodbox-oidc-login-body" $ \bodyPath -> do
-      -- Sprint 3.18: demo-user password lives in Vault KV, not in the
-      -- removed host-side @.prodbox-state@ cache or the pre-Vault OIDC Secret.
-      demoPasswordResult <- readKeycloakOidcClientField repoRoot "DEMO_USER_PASSWORD"
-      case demoPasswordResult of
-        Left err -> pure (Left err)
-        Right demoPassword -> do
-          loginPageResult <-
-            runTextCommand
-              Subprocess
-                { subprocessPath = "curl"
-                , subprocessArguments =
-                    [ "-sS"
-                    , "-L"
-                    , "-c"
-                    , cookieJarPath
-                    , "-b"
-                    , cookieJarPath
-                    , "-o"
-                    , bodyPath
-                    , substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/start"
-                    ]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-          case loginPageResult of
-            Left err -> pure (Left err)
-            Right _ -> do
-              loginBody <- readFile bodyPath
-              case extractLoginFormAction loginBody of
-                Left err -> pure (Left err)
-                Right formActionUrl -> do
-                  loginResult <-
-                    runTextCommand
-                      Subprocess
-                        { subprocessPath = "curl"
-                        , subprocessArguments =
-                            [ "-sS"
-                            , "-L"
-                            , "-c"
-                            , cookieJarPath
-                            , "-b"
-                            , cookieJarPath
-                            , "--data-urlencode"
-                            , "username=demo-user"
-                            , "--data-urlencode"
-                            , "password=" ++ demoPassword
-                            , formActionUrl
+  runDemoOidcSessionValidationAgent
+    repoRoot
+    (substratePublicRouteUrl settings substrate PublicRouteWebsocket)
+
+-- | Run the browser-style password login inside a one-shot, exact Vault
+-- consumer. The host submits only a secret-free Job and receives the final
+-- non-secret session projection; the demo password exists solely on the Pod's
+-- memory-backed volume and is read by curl from a file rather than argv.
+runDemoOidcSessionValidationAgent :: FilePath -> String -> IO (Either String Value)
+runDemoOidcSessionValidationAgent repoRoot publicWebsocketBaseUrl = do
+  preclean <- deleteDemoOidcSessionValidationAgent repoRoot
+  case preclean of
+    Left err -> pure (Left err)
+    Right () -> do
+      operationResult <- do
+        applied <-
+          runDemoOidcAgentWithInput
+            repoRoot
+            (BL.toStrict (encode (demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl)))
+            ["apply", "-f", "-"]
+        case applied of
+          Left err -> pure (Left err)
+          Right () -> do
+            completed <-
+              runDemoOidcAgentCommand
+                repoRoot
+                [ "wait"
+                , "--namespace"
+                , demoOidcSessionValidationNamespace
+                , "--for=condition=complete"
+                , "job/" ++ demoOidcSessionValidationJobName
+                , "--timeout=180s"
+                ]
+            case completed of
+              Left err -> pure (Left err)
+              Right () -> readDemoOidcSessionValidationAgentResult repoRoot
+      cleanupResult <- deleteDemoOidcSessionValidationAgent repoRoot
+      pure $ case (operationResult, cleanupResult) of
+        (Right payload, Right ()) -> Right payload
+        (Left err, Right ()) -> Left err
+        (Right _, Left cleanupErr) -> Left cleanupErr
+        (Left err, Left cleanupErr) -> Left (err ++ "; " ++ cleanupErr)
+
+demoOidcSessionValidationNamespace :: String
+demoOidcSessionValidationNamespace = "vscode"
+
+demoOidcSessionValidationJobName :: String
+demoOidcSessionValidationJobName = "oidc-session-validation-agent"
+
+demoOidcSessionValidationAgentManifest :: String -> Value
+demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl =
+  object
+    [ "apiVersion" .= ("batch/v1" :: String)
+    , "kind" .= ("Job" :: String)
+    , "metadata"
+        .= object
+          [ "name" .= demoOidcSessionValidationJobName
+          , "namespace" .= demoOidcSessionValidationNamespace
+          ]
+    , "spec"
+        .= object
+          [ "activeDeadlineSeconds" .= (180 :: Int)
+          , "backoffLimit" .= (0 :: Int)
+          , "template"
+              .= object
+                [ "metadata"
+                    .= object
+                      [ "labels"
+                          .= object
+                            [ "app.kubernetes.io/component"
+                                .= ("oidc-session-validation-agent" :: String)
                             ]
-                        , subprocessEnvironment = Nothing
-                        , subprocessWorkingDirectory = Just repoRoot
-                        }
-                  case loginResult of
-                    Left err -> pure (Left err)
-                    Right _ ->
-                      runJsonCommand
-                        Subprocess
-                          { subprocessPath = "curl"
-                          , subprocessArguments =
-                              [ "-sS"
-                              , "-L"
-                              , "-c"
-                              , cookieJarPath
-                              , "-b"
-                              , cookieJarPath
-                              , substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/session"
-                              ]
-                          , subprocessEnvironment = Nothing
-                          , subprocessWorkingDirectory = Just repoRoot
-                          }
+                      ]
+                , "spec"
+                    .= object
+                      [ "restartPolicy" .= ("Never" :: String)
+                      , "automountServiceAccountToken" .= False
+                      , "serviceAccountName"
+                          .= ("oidc-session-validation-agent" :: String)
+                      , "securityContext"
+                          .= object
+                            [ "fsGroup" .= (100 :: Int)
+                            ]
+                      , "initContainers"
+                          .= [ object
+                                 [ "name" .= ("vault-materializer" :: String)
+                                 , "image" .= ("hashicorp/vault:1.18.3" :: String)
+                                 , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                 , "env"
+                                     .= [ object
+                                            [ "name" .= ("VAULT_ADDR" :: String)
+                                            , "value"
+                                                .= ("http://vault.vault.svc.cluster.local:8200" :: String)
+                                            ]
+                                        ]
+                                 , "command" .= (["/bin/sh", "-ec", demoOidcVaultMaterializerScript] :: [String])
+                                 , "resources"
+                                     .= object
+                                       [ "requests"
+                                           .= object
+                                             [ "cpu" .= ("25m" :: String)
+                                             , "memory" .= ("64Mi" :: String)
+                                             ]
+                                       , "limits"
+                                           .= object
+                                             [ "cpu" .= ("25m" :: String)
+                                             , "memory" .= ("64Mi" :: String)
+                                             ]
+                                       ]
+                                 , "volumeMounts"
+                                     .= [ object
+                                            [ "name" .= ("vault-materialized" :: String)
+                                            , "mountPath" .= ("/vault-materialized" :: String)
+                                            ]
+                                        , object
+                                            [ "name" .= ("service-account-token" :: String)
+                                            , "mountPath"
+                                                .= ("/var/run/secrets/kubernetes.io/serviceaccount" :: String)
+                                            , "readOnly" .= True
+                                            ]
+                                        ]
+                                 ]
+                             ]
+                      , "containers"
+                          .= [ object
+                                 [ "name" .= demoOidcSessionValidationJobName
+                                 , "image"
+                                     .= ContainerImage.renderImageRef ContainerImage.harborCurlImage
+                                 , "imagePullPolicy" .= ("IfNotPresent" :: String)
+                                 , "env"
+                                     .= [ object
+                                            [ "name" .= ("PUBLIC_WEBSOCKET_BASE_URL" :: String)
+                                            , "value" .= publicWebsocketBaseUrl
+                                            ]
+                                        ]
+                                 , "command" .= (["/bin/sh", "-ec", demoOidcSessionValidationScript] :: [String])
+                                 , "resources"
+                                     .= object
+                                       [ "requests"
+                                           .= object
+                                             [ "cpu" .= ("10m" :: String)
+                                             , "memory" .= ("32Mi" :: String)
+                                             ]
+                                       , "limits"
+                                           .= object
+                                             [ "cpu" .= ("10m" :: String)
+                                             , "memory" .= ("32Mi" :: String)
+                                             ]
+                                       ]
+                                 , "volumeMounts"
+                                     .= [ object
+                                            [ "name" .= ("vault-materialized" :: String)
+                                            , "mountPath" .= ("/vault-materialized" :: String)
+                                            , "readOnly" .= True
+                                            ]
+                                        , object
+                                            [ "name" .= ("runtime" :: String)
+                                            , "mountPath" .= ("/run/prodbox-oidc" :: String)
+                                            ]
+                                        ]
+                                 ]
+                             ]
+                      , "volumes"
+                          .= [ object
+                                 [ "name" .= ("service-account-token" :: String)
+                                 , "projected"
+                                     .= object
+                                       [ "sources"
+                                           .= [ object
+                                                  [ "serviceAccountToken"
+                                                      .= object
+                                                        [ "audience" .= ("vault" :: String)
+                                                        , "expirationSeconds" .= (600 :: Int)
+                                                        , "path" .= ("token" :: String)
+                                                        ]
+                                                  ]
+                                              ]
+                                       ]
+                                 ]
+                             , object
+                                 [ "name" .= ("vault-materialized" :: String)
+                                 , "emptyDir"
+                                     .= object
+                                       [ "medium" .= ("Memory" :: String)
+                                       , "sizeLimit" .= ("64Ki" :: String)
+                                       ]
+                                 ]
+                             , object
+                                 [ "name" .= ("runtime" :: String)
+                                 , "emptyDir"
+                                     .= object
+                                       [ "medium" .= ("Memory" :: String)
+                                       , "sizeLimit" .= ("2Mi" :: String)
+                                       ]
+                                 ]
+                             ]
+                      ]
+                ]
+          ]
+    ]
+
+demoOidcVaultMaterializerScript :: String
+demoOidcVaultMaterializerScript =
+  unlines
+    [ "set -eu"
+    , "jwt=\"$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)\""
+    , "export VAULT_TOKEN=\"$(vault write -field=token auth/kubernetes/login role=oidc-session-validation jwt=\"${jwt}\")\""
+    , "unset jwt"
+    , "demo_password=\"$(vault kv get -field=password secret/vscode/oidc/demo-user)\""
+    , "umask 077"
+    , "printf '%s' \"${demo_password}\" > /vault-materialized/demo-password"
+    , "unset demo_password VAULT_TOKEN"
+    , "chmod 0444 /vault-materialized/demo-password"
+    ]
+
+demoOidcSessionValidationScript :: String
+demoOidcSessionValidationScript =
+  unlines
+    [ "set -eu"
+    , "umask 077"
+    , "cookie_jar=/run/prodbox-oidc/cookies"
+    , "login_body=/run/prodbox-oidc/login-body"
+    , "login_response=/run/prodbox-oidc/login-response"
+    , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" -o \"${login_body}\" \"${PUBLIC_WEBSOCKET_BASE_URL}/oidc/start\""
+    , "form_action=\"$(sed -n 's/.*action=\"\\([^\"]*\\)\".*/\\1/p' \"${login_body}\" | head -n 1 | sed 's/&amp;/\\\&/g')\""
+    , "test -n \"${form_action}\""
+    , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" --data-urlencode username=demo-user --data-urlencode password@/vault-materialized/demo-password -o \"${login_response}\" \"${form_action}\""
+    , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" \"${PUBLIC_WEBSOCKET_BASE_URL}/oidc/session\""
+    ]
+
+demoOidcAgentLimits :: BoundedSubprocessLimits
+demoOidcAgentLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 128 * 1024
+    , boundedSubprocessMaximumStdoutBytes = 256 * 1024
+    , boundedSubprocessMaximumStderrBytes = 64 * 1024
+    , boundedSubprocessTimeoutMicros = 240 * 1000 * 1000
+    }
+
+runDemoOidcAgentWithInput
+  :: FilePath -> BS8.ByteString -> [String] -> IO (Either String ())
+runDemoOidcAgentWithInput repoRoot input arguments = do
+  result <-
+    captureSubprocessWithInputBounded
+      demoOidcAgentLimits
+      input
+      (demoOidcKubectlSubprocess repoRoot arguments)
+  pure (boundedAgentCommandResult result)
+
+runDemoOidcAgentCommand :: FilePath -> [String] -> IO (Either String ())
+runDemoOidcAgentCommand repoRoot arguments = do
+  result <-
+    captureSubprocessBounded
+      demoOidcAgentLimits
+      (demoOidcKubectlSubprocess repoRoot arguments)
+  pure (boundedAgentCommandResult result)
+
+boundedAgentCommandResult
+  :: Either AppError ProcessOutput -> Either String ()
+boundedAgentCommandResult result = case result of
+  Left err -> Left (Text.unpack (errorMsg err))
+  Right output -> case processExitCode output of
+    ExitSuccess -> Right ()
+    ExitFailure _ -> Left "OIDC session validation Agent command failed"
+
+readDemoOidcSessionValidationAgentResult :: FilePath -> IO (Either String Value)
+readDemoOidcSessionValidationAgentResult repoRoot = do
+  result <-
+    captureSubprocessBounded
+      demoOidcAgentLimits
+      ( demoOidcKubectlSubprocess
+          repoRoot
+          [ "logs"
+          , "--namespace"
+          , demoOidcSessionValidationNamespace
+          , "job/" ++ demoOidcSessionValidationJobName
+          , "--container"
+          , demoOidcSessionValidationJobName
+          ]
+      )
+  pure $ case result of
+    Left err -> Left (Text.unpack (errorMsg err))
+    Right output -> case processExitCode output of
+      ExitFailure _ -> Left "OIDC session validation Agent result was unavailable"
+      ExitSuccess ->
+        case eitherDecode (BL.fromStrict (BS8.pack (processStdout output))) of
+          Left _ -> Left "OIDC session validation Agent returned invalid JSON"
+          Right payload -> Right payload
+
+deleteDemoOidcSessionValidationAgent :: FilePath -> IO (Either String ())
+deleteDemoOidcSessionValidationAgent repoRoot = do
+  deleted <-
+    runDemoOidcAgentCommand
+      repoRoot
+      [ "delete"
+      , "--namespace"
+      , demoOidcSessionValidationNamespace
+      , "job/" ++ demoOidcSessionValidationJobName
+      , "--ignore-not-found=true"
+      , "--cascade=foreground"
+      , "--wait=true"
+      ]
+  case deleted of
+    Left err -> pure (Left err)
+    Right () -> observeDemoOidcSessionValidationAgentAbsent repoRoot
+
+observeDemoOidcSessionValidationAgentAbsent :: FilePath -> IO (Either String ())
+observeDemoOidcSessionValidationAgentAbsent repoRoot = do
+  result <-
+    captureSubprocessBounded
+      demoOidcAgentLimits
+      ( demoOidcKubectlSubprocess
+          repoRoot
+          [ "get"
+          , "pods"
+          , "--namespace"
+          , demoOidcSessionValidationNamespace
+          , "--selector=job-name=" ++ demoOidcSessionValidationJobName
+          , "--output=name"
+          ]
+      )
+  pure $ case result of
+    Left err -> Left (Text.unpack (errorMsg err))
+    Right output -> case processExitCode output of
+      ExitFailure _ -> Left "OIDC session validation Agent absence was unobservable"
+      ExitSuccess
+        | null (Text.unpack (Text.strip (Text.pack (processStdout output)))) -> Right ()
+        | otherwise -> Left "OIDC session validation Agent Pod remained after Job deletion"
+
+demoOidcKubectlSubprocess :: FilePath -> [String] -> Subprocess
+demoOidcKubectlSubprocess repoRoot arguments =
+  Subprocess
+    { subprocessPath = "kubectl"
+    , subprocessArguments = arguments
+    , subprocessEnvironment = Nothing
+    , subprocessWorkingDirectory = Just repoRoot
+    }
 
 openManagedWebsocketConnection
   :: String -> String -> String -> IO (Either String ManagedWebsocketConnection)
@@ -4116,19 +4478,6 @@ websocketPayloadField payload fieldName =
     Object obj -> requireStringField obj fieldName
     _ -> Left "websocket payload was not a JSON object"
 
-extractLoginFormAction :: String -> Either String String
-extractLoginFormAction bodyText =
-  case splitOnSubstring "action=\"" bodyText of
-    Nothing -> Left "could not find Keycloak login form action"
-    Just (_, actionAndRest) ->
-      case break (== '"') actionAndRest of
-        (actionUrl, _ : _) | actionUrl /= "" -> Right (decodeHtmlAttributeValue actionUrl)
-        _ -> Left "could not parse Keycloak login form action"
-
-decodeHtmlAttributeValue :: String -> String
-decodeHtmlAttributeValue value =
-  replaceAll "&amp;" "&" value
-
 replaceAll :: String -> String -> String -> String
 replaceAll needle replacement = go
  where
@@ -4188,76 +4537,32 @@ waitForAccessToken repoRoot settings substrate secretKey clientId = go tokenFetc
 
 fetchAccessToken
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String String)
-fetchAccessToken repoRoot settings substrate secretKey clientId = do
-  -- Sprint 3.18: the OIDC client secrets + demo-user password live in Vault KV.
-  -- The @secretKey@ argument is the legacy chart-secret key name; we map it to
-  -- the corresponding Vault path and field.
-  clientSecretResult <- readKeycloakOidcClientField repoRoot secretKey
-  case clientSecretResult of
+fetchAccessToken repoRoot _settings _substrate secretKey clientId =
+  case oidcClientSecretIdentityFor secretKey of
     Left err -> pure (Left err)
-    Right clientSecret -> do
-      demoPasswordResult <- readKeycloakOidcClientField repoRoot "DEMO_USER_PASSWORD"
-      case demoPasswordResult of
-        Left err -> pure (Left err)
-        Right demoPassword -> do
-          payloadResult <-
-            runJsonCommand
-              Subprocess
-                { subprocessPath = "curl"
-                , subprocessArguments =
-                    [ "-sS"
-                    , "--fail-with-body"
-                    , "-X"
-                    , "POST"
-                    , "--data-urlencode"
-                    , "grant_type=password"
-                    , "--data-urlencode"
-                    , "client_id=" ++ clientId
-                    , "--data-urlencode"
-                    , "client_secret=" ++ clientSecret
-                    , "--data-urlencode"
-                    , "username=demo-user"
-                    , "--data-urlencode"
-                    , "password=" ++ demoPassword
-                    , substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/token"
-                    ]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-          case payloadResult of
-            Left err -> pure (Left err)
-            Right payload -> pure (accessTokenFromPayload payload)
+    Right identity
+      | oidcClientIdForIdentity identity /= clientId ->
+          pure (Left "OIDC validation client identity/client-id mismatch")
+      | otherwise ->
+          Prodbox.UsersAdmin.issueDemoOidcAccessToken repoRoot identity
 
--- | Map a legacy validation key to the Vault KV path and field used by the
--- shared-edge Keycloak deployment. The caller surface remains stable for the
--- validation code, but the secret source is now Vault KV.
-oidcClientSecretVaultRefFor :: String -> (Text.Text, Text.Text)
-oidcClientSecretVaultRefFor "keycloak_vscode_client_secret" = ("vscode/oidc/vscode", "client_secret")
-oidcClientSecretVaultRefFor "keycloak_api_client_secret" = ("vscode/oidc/prodbox-api", "client_secret")
-oidcClientSecretVaultRefFor "keycloak_websocket_client_secret" = ("vscode/oidc/prodbox-websocket", "client_secret")
-oidcClientSecretVaultRefFor "keycloak_demo_user_password" = ("vscode/oidc/demo-user", "password")
-oidcClientSecretVaultRefFor "VSCODE_CLIENT_SECRET" = ("vscode/oidc/vscode", "client_secret")
-oidcClientSecretVaultRefFor "API_CLIENT_SECRET" = ("vscode/oidc/prodbox-api", "client_secret")
-oidcClientSecretVaultRefFor "WEBSOCKET_CLIENT_SECRET" = ("vscode/oidc/prodbox-websocket", "client_secret")
-oidcClientSecretVaultRefFor "DEMO_USER_PASSWORD" = ("vscode/oidc/demo-user", "password")
-oidcClientSecretVaultRefFor other = (Text.pack other, "client_secret")
+-- | Map the stable validation key onto the closed in-Pod consumer identity.
+-- Unknown names are rejected instead of becoming caller-controlled paths.
+oidcClientSecretIdentityFor :: String -> Either String OidcIdentity
+oidcClientSecretIdentityFor "keycloak_vscode_client_secret" = Right OidcVscode
+oidcClientSecretIdentityFor "keycloak_api_client_secret" = Right OidcProdboxApi
+oidcClientSecretIdentityFor "keycloak_websocket_client_secret" = Right OidcProdboxWebsocket
+oidcClientSecretIdentityFor "VSCODE_CLIENT_SECRET" = Right OidcVscode
+oidcClientSecretIdentityFor "API_CLIENT_SECRET" = Right OidcProdboxApi
+oidcClientSecretIdentityFor "WEBSOCKET_CLIENT_SECRET" = Right OidcProdboxWebsocket
+oidcClientSecretIdentityFor other = Left ("unsupported registered OIDC material key: " ++ other)
 
--- | Read a validation OIDC secret field from Vault KV. A sealed/unreachable
--- Vault or missing field fails the validation closed.
-readKeycloakOidcClientField :: FilePath -> String -> IO (Either String String)
-readKeycloakOidcClientField repoRoot fieldName = do
-  let (path, field) = oidcClientSecretVaultRefFor fieldName
-  result <- readHostVaultKvField repoRoot "secret" path field
-  pure (Text.unpack <$> result)
-
-accessTokenFromPayload :: Value -> Either String String
-accessTokenFromPayload payload =
-  case payload of
-    Object obj ->
-      case KeyMap.lookup "access_token" obj of
-        Just (String tokenText) -> Right (Text.unpack tokenText)
-        _ -> Left "token endpoint response did not contain access_token"
-    _ -> Left "token endpoint response was not a JSON object"
+oidcClientIdForIdentity :: OidcIdentity -> String
+oidcClientIdForIdentity identity = case identity of
+  OidcVscode -> "vscode"
+  OidcProdboxApi -> "prodbox-api"
+  OidcProdboxWebsocket -> "prodbox-websocket"
+  OidcDemoUser -> "demo-user"
 
 statusOnlyCurlSpec :: FilePath -> [String] -> String -> Subprocess
 statusOnlyCurlSpec repoRoot extraArgs url =
@@ -4411,25 +4716,21 @@ waitForPublicEdgeReady repoRoot substrate = do
 
 runPublicDnsValidation :: FilePath -> Substrate -> IO ExitCode
 runPublicDnsValidation repoRoot _substrate = do
-  settingsEnvResult <- settingsAwsEnvironment repoRoot
-  case settingsEnvResult of
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
     Left err -> failWith err
-    Right (settings, awsEnvironment) -> do
-      zonePayloadResult <-
-        runJsonCommand
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "get-hosted-zone"
-                , "--id"
-                , textValue (zone_id (route53 (validatedConfig settings)))
-                , "--output"
-                , "json"
-                ]
-            , subprocessEnvironment = Just awsEnvironment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
+    Right settings -> do
+      zoneEvidence <-
+        dispatchHostProviderIntentFresh
+          LifecycleAuthorityTestHarness
+          repoRoot
+          "validation-public-dns-zone"
+          ( ObserveProviderReadiness
+              (ProviderReadinessRoute53Zone (zone_id (route53 (validatedConfig settings))))
+          )
+      let zonePayloadResult = case zoneEvidence of
+            Left err -> Left (renderProviderCallerError err)
+            Right evidence -> decodeRoute53ZoneEvidence evidence
       case zonePayloadResult of
         Left err -> failWith err
         Right payload ->
@@ -4465,6 +4766,172 @@ runPublicDnsValidation repoRoot _substrate = do
                             ++ " but found "
                             ++ show actualNameservers
                         )
+
+runCertificateScopeServingValidation :: FilePath -> Substrate -> IO ExitCode
+runCertificateScopeServingValidation repoRoot substrate = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> failWith ("load settings for certificate-scope validation: " ++ err)
+    Right settings -> do
+      let config = Prodbox.Settings.validatedConfig settings
+          domainSection = Prodbox.Settings.domain config
+          awsSection = Prodbox.Settings.aws_substrate config
+          servedHost = case substrate of
+            SubstrateHomeLocal -> Prodbox.Settings.demo_fqdn domainSection
+            SubstrateAws -> Prodbox.Settings.subzone_name awsSection
+      case Prodbox.Settings.certScopeSetForServedHost domainSection awsSection servedHost of
+        Left err -> failWith err
+        Right scopeSet -> do
+          probeResult <- curlTlsServingProbe repoRoot (Text.unpack servedHost)
+          case probeResult of
+            Left err -> failWith err
+            Right () -> do
+              sansResult <- presentedCertificateSans repoRoot (Text.unpack servedHost)
+              case sansResult of
+                Left err -> failWith err
+                Right presented ->
+                  case validatePresentedDnsSans (certScopeSetDnsNames scopeSet) (Text.pack presented) of
+                    Left defect -> failWith (renderCertificateServingDefect defect)
+                    Right () -> do
+                      writeOutput
+                        ( unlines
+                            [ "CERTIFICATE_SCOPE_SERVING_VALIDATION"
+                            , "SUBSTRATE=" ++ substrateId substrate
+                            , "SERVED_HOST=" ++ Text.unpack servedHost
+                            , "PRESENTED_SAN_SET=" ++ show (certScopeSetDnsNames scopeSet)
+                            , "TLS_HANDSHAKE=verified"
+                            ]
+                        )
+                      pure ExitSuccess
+
+runCleanRoomHandoffValidation :: FilePath -> IO ExitCode
+runCleanRoomHandoffValidation repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  sourcePaths <-
+    filterM
+      (doesFileExist . (repoRoot </>))
+      (filter isProductionPath paths)
+  sources <-
+    forM
+      sourcePaths
+      ( \path -> do
+          source <- readFile (repoRoot </> path)
+          pure (path, Text.pack source)
+      )
+  case CleanRoom.legacyResidueViolations paths sources of
+    residue : _ -> failWith ("clean-room legacy residue remains: " ++ show residue)
+    [] -> do
+      writeOutput (CleanRoom.renderCleanRoomPlan [])
+      pure ExitSuccess
+ where
+  isProductionPath path =
+    any (`isPrefixOf` path) ["app/", "src/", "charts/"]
+      && path /= "src/Prodbox/CheckCode.hs"
+      && path /= "src/Prodbox/Test/CleanRoomHandoff.hs"
+
+curlTlsServingProbe :: FilePath -> String -> IO (Either String ())
+curlTlsServingProbe repoRoot host = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments =
+            [ "--silent"
+            , "--show-error"
+            , "--output"
+            , "/dev/null"
+            , "--connect-timeout"
+            , "15"
+            , "--max-time"
+            , "30"
+            , "https://" ++ host ++ "/"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Failure err -> Left err
+    Success output -> case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure code ->
+        Left
+          ("TLS serving probe failed for " ++ host ++ " (exit " ++ show code ++ "): " ++ outputDetail output)
+
+presentedCertificateSans :: FilePath -> String -> IO (Either String String)
+presentedCertificateSans repoRoot host = do
+  handshake <-
+    captureSubprocessBounded
+      certificateProbeLimits
+      Subprocess
+        { subprocessPath = "openssl"
+        , subprocessArguments =
+            [ "s_client"
+            , "-connect"
+            , host ++ ":443"
+            , "-servername"
+            , host
+            , "-verify_hostname"
+            , host
+            , "-verify_return_error"
+            , "-showcerts"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case handshake of
+    Left err -> pure (Left (Text.unpack (errorMsg err)))
+    Right output -> case processExitCode output of
+      ExitFailure code ->
+        pure
+          (Left ("TLS handshake failed for " ++ host ++ " (exit " ++ show code ++ "): " ++ outputDetail output))
+      ExitSuccess ->
+        case firstPemCertificate (processStdout output) of
+          Left err -> pure (Left err)
+          Right certificate -> inspectCertificateSans repoRoot certificate
+
+certificateProbeLimits :: BoundedSubprocessLimits
+certificateProbeLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 128 * 1024
+    , boundedSubprocessMaximumStdoutBytes = 512 * 1024
+    , boundedSubprocessMaximumStderrBytes = 128 * 1024
+    , boundedSubprocessTimeoutMicros = 45 * 1000 * 1000
+    }
+
+firstPemCertificate :: String -> Either String String
+firstPemCertificate output =
+  case dropWhile (not . isPrefixOf "-----BEGIN CERTIFICATE-----") (lines output) of
+    [] -> Left "TLS handshake returned no PEM certificate"
+    certificateLines ->
+      let throughEnd = takeThrough (== "-----END CERTIFICATE-----") certificateLines
+       in if "-----END CERTIFICATE-----" `elem` throughEnd
+            then Right (unlines throughEnd)
+            else Left "TLS handshake returned a truncated PEM certificate"
+
+takeThrough :: (a -> Bool) -> [a] -> [a]
+takeThrough _ [] = []
+takeThrough predicate (value : values)
+  | predicate value = [value]
+  | otherwise = value : takeThrough predicate values
+
+inspectCertificateSans :: FilePath -> String -> IO (Either String String)
+inspectCertificateSans repoRoot certificate = do
+  result <-
+    captureSubprocessWithInputBounded
+      certificateProbeLimits
+      (BS8.pack certificate)
+      Subprocess
+        { subprocessPath = "openssl"
+        , subprocessArguments = ["x509", "-noout", "-ext", "subjectAltName"]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case result of
+    Left err -> Left (Text.unpack (errorMsg err))
+    Right output -> case processExitCode output of
+      ExitSuccess -> Right (processStdout output)
+      ExitFailure code ->
+        Left ("certificate SAN inspection failed (exit " ++ show code ++ "): " ++ outputDetail output)
 
 runDnsAwsValidation :: FilePath -> IO ExitCode
 runDnsAwsValidation repoRoot = do
@@ -4834,6 +5301,7 @@ renderGatewayValidationConfigDhall settings nodeId ordersPath =
       -- Kubernetes-auth token) nor a TestPlaintext one (production mode). An empty
       -- list has nothing to resolve, so the host status check decodes cleanly.
       "    , event_keys = [] : List { name : Text, value : " ++ secretRefType ++ " }"
+    , "    , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "    , dns_write_gate = Some"
     , "        { zone_id = " ++ dhallText (Text.unpack (zone_id (route53 (validatedConfig settings))))
     , "        , fqdn = " ++ dhallText (publicFqdn settings)
@@ -5323,7 +5791,7 @@ settingsAwsEnvironment repoRoot = do
     Right settings -> do
       currentEnvironment <- getEnvironment
       credentialsResult <-
-        resolveAwsCredentialsRefFromHostVault
+        resolveLifecycleProviderCredentials
           repoRoot
           "aws"
           (aws (validatedConfig settings))
@@ -5335,6 +5803,19 @@ settingsAwsEnvironment repoRoot = do
               ( settings
               , overlayAwsCredentials currentEnvironment credentials
               )
+
+decodeRoute53ZoneEvidence :: Text.Text -> Either String Value
+decodeRoute53ZoneEvidence evidence = do
+  encoded <-
+    maybe
+      (Left "Provider Route 53 observation returned an unexpected evidence type")
+      Right
+      (Text.stripPrefix "provider-readiness-route53-json:" evidence)
+  bytes <-
+    Bifunctor.first
+      (const "Provider Route 53 evidence is not valid base64")
+      (Base64.decode (TextEncoding.encodeUtf8 encoded))
+  eitherDecode (BL.fromStrict bytes)
 
 hostedZoneDelegation :: Value -> Either String (String, [String])
 hostedZoneDelegation payload =
@@ -5705,58 +6186,21 @@ waitForInviteOidcClaims repoRoot settings substrate recipient password = go toke
 fetchInviteOidcClaims
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO (Either String ())
 fetchInviteOidcClaims repoRoot settings substrate recipient password = do
-  clientSecretResult <- readKeycloakOidcClientField repoRoot "API_CLIENT_SECRET"
-  case clientSecretResult of
+  tokenResult <-
+    Prodbox.UsersAdmin.issueUserOidcAccessToken
+      repoRoot
+      OidcProdboxApi
+      (Text.pack recipient)
+      (Text.pack password)
+  case tokenResult of
     Left err -> pure (Left err)
-    Right clientSecret -> do
-      payloadResult <-
-        runJsonCommand
-          Subprocess
-            { subprocessPath = "curl"
-            , subprocessArguments =
-                [ "-sS"
-                , "--fail-with-body"
-                , "-X"
-                , "POST"
-                , "--data-urlencode"
-                , "grant_type=password"
-                , "--data-urlencode"
-                , "client_id=prodbox-api"
-                , "--data-urlencode"
-                , "client_secret=" ++ clientSecret
-                , "--data-urlencode"
-                , "username=" ++ recipient
-                , "--data-urlencode"
-                , "password=" ++ password
-                , "--data-urlencode"
-                , "scope=openid email profile"
-                , substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/token"
-                ]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      case payloadResult of
-        Left err -> pure (Left err)
-        Right tokenPayload ->
-          pure $ do
-            token <- inviteTokenForClaims tokenPayload
-            claimsPayload <- decodeJwtPayload token
-            assertInviteOidcClaims
-              (substrateIdentityIssuerUrl settings substrate)
-              recipient
-              claimsPayload
-
-inviteTokenForClaims :: Value -> Either String String
-inviteTokenForClaims payload =
-  case payload of
-    Object obj ->
-      case KeyMap.lookup "id_token" obj of
-        Just (String tokenText) -> Right (Text.unpack tokenText)
-        _ ->
-          case KeyMap.lookup "access_token" obj of
-            Just (String tokenText) -> Right (Text.unpack tokenText)
-            _ -> Left "token endpoint response did not contain id_token or access_token"
-    _ -> Left "token endpoint response was not a JSON object"
+    Right token ->
+      pure $ do
+        claimsPayload <- decodeJwtPayload token
+        assertInviteOidcClaims
+          (substrateIdentityIssuerUrl settings substrate)
+          recipient
+          claimsPayload
 
 decodeJwtPayload :: String -> Either String Value
 decodeJwtPayload tokenValue =

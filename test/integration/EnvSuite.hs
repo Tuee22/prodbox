@@ -3,6 +3,7 @@ module EnvSuite
   )
 where
 
+import CliSuite (runInstalledWithFakeAuthority)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -34,13 +35,11 @@ integrationEnvSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
 
         (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "show"]) {cwd = Just tmpDir}
-            ""
+          runInstalledWithFakeAuthority tmpDir binary ["config", "show"]
 
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
-        stdoutText `shouldContain` "aws.access_key_id=Vault:secret/gateway/gateway/aws#access_key_id"
+        stdoutText `shouldContain` "aws.access_key_id=Vault:secret/aws/lifecycle-provider#access_key_id"
         stdoutText `shouldContain` "acme.email=****.com"
         doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
@@ -51,9 +50,7 @@ integrationEnvSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidConfig)
 
         (exitCode, _, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "validate"]) {cwd = Just tmpDir}
-            ""
+          runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
 
         exitCode `shouldBe` ExitFailure 1
         stderrText `shouldContain` "domain.demo_fqdn must not be empty"
@@ -65,9 +62,7 @@ integrationEnvSuite = do
         writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidResourceConfig)
 
         (exitCode, _, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["config", "validate"]) {cwd = Just tmpDir}
-            ""
+          runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
 
         exitCode `shouldBe` ExitFailure 1
         stderrText `shouldContain` "rke2_reserved + eviction_floor"
@@ -173,7 +168,7 @@ invalidResourceConfig =
 configWithDomainAndCapacity :: String -> String -> String
 configWithDomainAndCapacity domainName capacityFragment =
   unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "gateway/gateway/aws" "us-east-1" True
+    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1" True
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"

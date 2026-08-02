@@ -1,9 +1,11 @@
 {{- /*
 Isolation policy for the pre-Vault Bootstrap Broker. Egress is limited to what
-the bounded broker route surface actually needs — DNS, the Vault API (init /
-unseal / seal / PKI status / test-issuance), and the object store (child
-custody / recovery). The broker has NO mesh, generic-KV, Pulumi, SES,
-authority-CAS, or target-secret egress (Sprint 2.33 route boundary). Ingress is
+the bounded broker route surface actually needs — DNS, the Kubernetes API for
+TokenReview, the exact-name secret worker and Vault pristine reset, the Vault
+API (init / unseal / seal / PKI status / test-issuance), the object store, and
+the two exact authenticated custody consumers (Target Secret Agent and
+Lifecycle Authority). The broker has NO mesh, generic-KV, Pulumi, or SES
+egress. Ingress is
 restricted to its own namespace; kubelet liveness/readiness probes are
 node-local and unaffected.
 */ -}}
@@ -18,7 +20,6 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: prodbox-bootstrap-broker
-      app.kubernetes.io/instance: {{ .Release.Name }}
   policyTypes:
     - Ingress
     - Egress
@@ -40,6 +41,13 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Kubernetes API Service endpoints are commonly host-networked rather than
+    # selected by stable Pod labels. The Broker's RBAC still restricts this
+    # path to create-only TokenReview plus the exact-name Broker worker/Lease
+    # and Vault reset Role permissions. pods/exec remains ungranted.
+    - ports:
+        - protocol: TCP
+          port: 443
     - to:
         - namespaceSelector:
             matchLabels:
@@ -56,7 +64,27 @@ spec:
               kubernetes.io/metadata.name: prodbox
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: minio
+              app.kubernetes.io/name: prodbox-minio
       ports:
         - protocol: TCP
           port: 9000
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: target-secret-agent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-target-secret-agent
+      ports:
+        - protocol: TCP
+          port: 8600
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lifecycle-authority
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-lifecycle-authority
+      ports:
+        - protocol: TCP
+          port: 8600

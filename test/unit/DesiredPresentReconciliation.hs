@@ -16,7 +16,6 @@ import Prodbox.Lifecycle.AuthorityConfig
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( checkpointAuthorityClusterId
-  , checkpointAuthorityGatewayEndpoint
   , checkpointAuthorityObjectBucket
   )
 import Prodbox.Lifecycle.DesiredPresence
@@ -191,7 +190,6 @@ desiredPresentReconciliationSuite = do
         Left err -> expectationFailure ("authority decode failed: " ++ show err)
         Right authority -> do
           checkpointAuthorityClusterId authority `shouldBe` Text.pack "control-plane-a"
-          checkpointAuthorityGatewayEndpoint authority `shouldBe` Text.pack "http://127.0.0.1:30443"
           checkpointAuthorityObjectBucket authority `shouldBe` Text.pack "prodbox-state"
 
 observableDecisionTable

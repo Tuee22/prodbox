@@ -25,6 +25,7 @@ module Prodbox.Test.GatewayRuntimeStability
   , GatewayPodSample (..)
   , GatewayMemoryPressure (..)
   , GatewayUnobservableReason (..)
+  , GatewayObservationIncompleteReason (..)
   , GatewayPodDiagnostic (..)
   , GatewayPodHealthObservation (..)
   , classifyGatewayPodHealth
@@ -37,10 +38,8 @@ module Prodbox.Test.GatewayRuntimeStability
 
     -- * Run-wide and healthy-window folds
   , GatewayStabilityState
-  , stabilityStatePolicy
   , GatewayRuntimeStabilityReport (..)
   , GatewayStabilityUnreachableReason (..)
-  , gatewayStabilityUnreachableIsTransient
   , initialGatewayStabilityState
   , foldGatewayRuntimeSnapshot
   , observeGatewayRuntimePayloads
@@ -196,16 +195,28 @@ data GatewayMemoryPressure
   | GatewayMemoryFailure
   deriving (Eq, Show)
 
+-- | A genuinely-broken observation of an otherwise-scheduled Pod — terminal
+-- (fail-closed).  A per-UID restart counter that moved backwards is impossible,
+-- so it is a definitive fault, distinct from a merely-incomplete observation.
 data GatewayUnobservableReason
-  = GatewayPhaseUnobservable
-  | GatewayReadinessUnobservable
-  | GatewayRestartCountUnobservable
-  | GatewayRestartCountRegressed
-      { gatewayPreviousRestartCount :: Natural
-      , gatewayCurrentRestartCount :: Natural
-      }
-  | GatewayContainerLimitUnobservable
-  | GatewayMemoryReadingUnobservable
+  = GatewayRestartCountRegressed
+  { gatewayPreviousRestartCount :: Natural
+  , gatewayCurrentRestartCount :: Natural
+  }
+  deriving (Eq, Show)
+
+-- | A Ready+Running Pod whose field or metrics scrape has not yet landed — a
+-- transient, not-yet-complete observation (the "not-yet-ready" third value).
+-- It is a distinct NON-TERMINAL constructor, routed like 'GatewayPodPending':
+-- it resets the success window but is never absorbed as fatal, so a healthy
+-- not-yet-scraped Pod cannot latch the run.  Per Bootstrap Readiness Doctrine
+-- §2.4 (typed three-valued readiness — not-ready is never collapsed into fatal).
+data GatewayObservationIncompleteReason
+  = GatewayPhaseIncomplete
+  | GatewayReadinessIncomplete
+  | GatewayRestartCountIncomplete
+  | GatewayContainerLimitIncomplete
+  | GatewayMemoryReadingIncomplete
   deriving (Eq, Show)
 
 -- | The single diagnostic record used by every classifier outcome.  Optional
@@ -232,6 +243,7 @@ data GatewayPodHealthObservation
   | GatewayOomKilledResidue GatewayPodDiagnostic
   | GatewayMemoryPressure GatewayMemoryPressure GatewayPodDiagnostic
   | GatewayPodPending GatewayPodDiagnostic
+  | GatewayObservationIncomplete GatewayObservationIncompleteReason GatewayPodDiagnostic
   | GatewayPodUnobservable GatewayUnobservableReason GatewayPodDiagnostic
   deriving (Eq, Show)
 
@@ -307,30 +319,30 @@ classifyWithoutRestart
   -> GatewayPodHealthObservation
 classifyWithoutRestart thresholds restartDelta sampledHighWater termination sample =
   case gatewaySamplePhase sample of
-    Nothing -> unobservable GatewayPhaseUnobservable
+    Nothing -> incomplete GatewayPhaseIncomplete
     Just phase ->
       case gatewaySampleReady sample of
         Nothing ->
           if phase == GatewayPodPendingPhase
             then pending
-            else unobservable GatewayReadinessUnobservable
+            else incomplete GatewayReadinessIncomplete
         Just False -> pending
         Just True
           | phase /= GatewayPodRunning -> pending
           | otherwise -> classifyReadyStatus
  where
   diagnostic = diagnosticFor thresholds restartDelta sampledHighWater termination sample
-  unobservable reason = GatewayPodUnobservable reason diagnostic
+  incomplete reason = GatewayObservationIncomplete reason diagnostic
   pending = GatewayPodPending diagnostic
   classifyReadyStatus =
     case gatewaySampleRestartCount sample of
-      Nothing -> unobservable GatewayRestartCountUnobservable
+      Nothing -> incomplete GatewayRestartCountIncomplete
       Just _ ->
         case gatewaySampleCurrentLimitBytes sample of
-          Nothing -> unobservable GatewayContainerLimitUnobservable
+          Nothing -> incomplete GatewayContainerLimitIncomplete
           Just _ ->
             case sampledHighWater of
-              Nothing -> unobservable GatewayMemoryReadingUnobservable
+              Nothing -> incomplete GatewayMemoryReadingIncomplete
               Just highWater
                 | highWater >= gatewayMemoryFailureBytes thresholds ->
                     GatewayMemoryPressure GatewayMemoryFailure diagnostic
@@ -859,6 +871,7 @@ observationIsStable observation =
     GatewayOomKilledResidue _ -> False
     GatewayMemoryPressure _ _ -> False
     GatewayPodPending _ -> False
+    GatewayObservationIncomplete _ _ -> False
     GatewayPodUnobservable _ _ -> False
 
 firstAbsorbingOutcome :: [GatewayPodHealthObservation] -> Maybe GatewayAbsorbingOutcome
@@ -878,7 +891,11 @@ firstAbsorbingOutcome observations =
       GatewayRestartFreeReady _ -> False
       GatewayMemoryPressure GatewayMemoryWarning _ -> False
       GatewayPodPending _ -> False
+      GatewayObservationIncomplete _ _ -> False
       GatewayPodUnobservable _ _ -> False
+  -- Only a terminal 'GatewayPodUnobservable' is absorbed; a non-terminal
+  -- 'GatewayObservationIncomplete' (not-yet-scraped) falls through to 'Nothing'
+  -- and is never latched — the structural three-valued-readiness guarantee.
   unobservableOutcome observation =
     case observation of
       GatewayPodUnobservable reason diagnostic ->
@@ -965,26 +982,6 @@ gatewayRuntimeStabilityReport state =
   stableSamples =
     healthyWindowStableSamples (stabilityStateHealthyWindow state)
 
--- | Whether a 'StabilityUnreachable' reason is expected to clear on its own
--- once a freshly-(re)started gateway Pod finishes scheduling and metrics-server
--- performs its first scrape, as opposed to a persistent configuration error.
---
--- A Pod that reaches @Ready@ before its first metrics scrape reports a
--- 'GatewayPodObservationUnreachable' (for example
--- 'GatewayMemoryReadingUnobservable'), and a transient kubectl/API read failure
--- surfaces as 'GatewayPayloadUnreachable'; both clear with time.  A
--- 'GatewaySnapshotPolicyMismatch' is a static configuration error that never
--- clears by waiting.  This does not weaken the fail-closed contract: it only
--- lets the observability wait distinguish a not-yet-scraped fresh Pod from a
--- persistent gap, and a runtime that stays unobservable past the wait budget is
--- still recorded and fails closed.
-gatewayStabilityUnreachableIsTransient :: GatewayStabilityUnreachableReason -> Bool
-gatewayStabilityUnreachableIsTransient reason =
-  case reason of
-    GatewayPodObservationUnreachable _ _ -> True
-    GatewayPayloadUnreachable _ -> True
-    GatewaySnapshotPolicyMismatch _ _ -> False
-
 renderGatewayPodDiagnostic :: GatewayPodDiagnostic -> String
 renderGatewayPodDiagnostic diagnostic =
   unwords
@@ -1025,6 +1022,8 @@ renderObservation observation =
       memoryPressureLabel pressure ++ " " ++ renderGatewayPodDiagnostic diagnostic
     GatewayPodPending diagnostic ->
       "pending " ++ renderGatewayPodDiagnostic diagnostic
+    GatewayObservationIncomplete reason diagnostic ->
+      "observation-incomplete=" ++ show reason ++ " " ++ renderGatewayPodDiagnostic diagnostic
     GatewayPodUnobservable reason diagnostic ->
       "unobservable=" ++ show reason ++ " " ++ renderGatewayPodDiagnostic diagnostic
 

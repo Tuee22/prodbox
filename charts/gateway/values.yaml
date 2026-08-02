@@ -47,6 +47,10 @@ nodePort:
   rest: 30443
 serviceAccount:
   name: prodbox-gateway-daemon
+externalCallers:
+  serviceAccounts:
+    - prodbox-control-plane-operator
+    - prodbox-control-plane-test-harness
 # prodbox:gateway-chart-statics.values:end
 
 # prodbox:gateway-probes.values:start
@@ -127,6 +131,14 @@ emitterPersistence:
 tier0:
   prodboxDhall: ""
 
+# Retained Lifecycle Authority identity observed before any Gateway DNS write.
+# The supported ChartPlatform renderer supplies the exact cluster scope and
+# same-namespace service DNS; empty defaults make unsupported generic renders
+# fail closed at runtime rather than granting an ambient authority.
+lifecycleAuthority:
+  scope: ""
+  endpoint: "http://lifecycle-authority.gateway.svc.cluster.local:8600"
+
 # Route 53 ownership configuration. The dns_write_gate section is mounted
 # into the daemon config so the elected leader keeps the named record
 # pointed at the current public IP.
@@ -147,7 +159,7 @@ vault:
   # prodbox-pulumi-state Transit key for the encrypted Pulumi backend, which live
   # on the `prodbox-gateway` policy — bound to this `prodbox-gateway-daemon` role.
   # That role also binds the `gateway-gateway` policy for the daemon's
-  # per-node event-key / aws / minio KV reads (see Vault/Reconcile.hs).
+  # per-node event-key / Gateway-DNS / minio KV reads (see Vault/Reconcile.hs).
   role: prodbox-gateway-daemon
   serviceAccountTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
   paths:
@@ -155,7 +167,7 @@ vault:
     # `nodes.rankedIds` in configmap-config.yaml (`gateway/gateway/<nodeId>/event-key`),
     # so the event-key set is substrate-variable (2 on home, 3 on AWS) and matches
     # Orders membership exactly. No fixed eventKeyNode{A,B,C} default is kept here.
-    aws: gateway/gateway/aws
+    aws: aws/gateway-dns
     minio: gateway/gateway/minio
 
 # In-cluster MinIO endpoint URL for gateway-owned object-store access.

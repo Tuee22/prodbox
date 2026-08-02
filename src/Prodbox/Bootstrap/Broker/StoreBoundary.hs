@@ -39,7 +39,6 @@ import Prodbox.Bootstrap.Broker.Types
   , ChildRecoveryDelivery
   , EncryptedInitResponseReceipt
   , FinalUnlockBundle
-  , ParentCustodyAcknowledgement
   , PreparedInitEnvelope
   , RootInitBinding
   , StoreVersion (..)
@@ -85,8 +84,16 @@ data BootstrapStoreBoundary m = BootstrapStoreBoundary
       -> m (Either StoreBoundaryError BootstrapFenceStoreObservation)
   , observeVaultStorageGeneration
       :: m (Either StoreBoundaryError RootInitBinding)
+  , advanceVaultStorageGeneration
+      :: BootstrapStoreMutationPermit
+      -> RootInitBinding
+      -> RootInitBinding
+      -> m (Either StoreBoundaryError RootInitBinding)
   , readRootInitJournal
       :: RootInitBinding
+      -> m (Either StoreBoundaryError (StoreReadBack RootInitState))
+  , readRootInitJournalForReset
+      :: VaultStorageGeneration
       -> m (Either StoreBoundaryError (StoreReadBack RootInitState))
   , createRootInitJournal
       :: BootstrapStoreMutationPermit
@@ -124,6 +131,11 @@ data BootstrapStoreBoundary m = BootstrapStoreBoundary
       -> EncryptedInitResponseReceipt
       -> FinalUnlockBundle
       -> m (Either StoreBoundaryError (StoreWriteResult FinalUnlockBundle))
+  , casFinalUnlockBundle
+      :: BootstrapStoreMutationPermit
+      -> StoreVersion
+      -> FinalUnlockBundle
+      -> m (Either StoreBoundaryError (StoreWriteResult FinalUnlockBundle))
   , readRootSessionJournal
       :: VaultStorageGeneration
       -> m (Either StoreBoundaryError (StoreReadBack RootSessionState))
@@ -143,10 +155,6 @@ data BootstrapStoreBoundary m = BootstrapStoreBoundary
       :: BootstrapStoreMutationPermit
       -> ChildEncryptedReceipt
       -> m (Either StoreBoundaryError (StoreWriteResult ChildEncryptedReceipt))
-  , parentCustodyGenerationCas
-      :: BootstrapStoreMutationPermit
-      -> ChildEncryptedReceipt
-      -> m (Either StoreBoundaryError (StoreWriteResult ParentCustodyAcknowledgement))
   , deleteChildEncryptedReceipt
       :: BootstrapStoreMutationPermit
       -> ChildCustodyBinding
@@ -225,7 +233,9 @@ unavailableBootstrapStoreBoundary =
     , casRetireBootstrapSessionFence = \_ -> unavailable
     , releaseBootstrapSessionFence = \_ _ -> unavailable
     , observeVaultStorageGeneration = unavailable
+    , advanceVaultStorageGeneration = \_ _ _ -> unavailable
     , readRootInitJournal = \_ -> unavailable
+    , readRootInitJournalForReset = \_ -> unavailable
     , createRootInitJournal = \_ _ -> unavailable
     , casRootInitJournal = \_ _ _ -> unavailable
     , readPreparedInitEnvelope = \_ -> unavailable
@@ -235,12 +245,12 @@ unavailableBootstrapStoreBoundary =
     , createEncryptedInitResponse = \_ _ -> unavailable
     , readFinalUnlockBundle = \_ -> unavailable
     , promoteFinalUnlockBundle = \_ _ _ -> unavailable
+    , casFinalUnlockBundle = \_ _ _ -> unavailable
     , readRootSessionJournal = \_ -> unavailable
     , createRootSessionJournal = \_ _ -> unavailable
     , casRootSessionJournal = \_ _ _ -> unavailable
     , readChildEncryptedReceipt = \_ -> unavailable
     , createChildEncryptedReceipt = \_ _ -> unavailable
-    , parentCustodyGenerationCas = \_ _ -> unavailable
     , deleteChildEncryptedReceipt = \_ _ _ -> unavailable
     , readChildCustodyJournal = \_ -> unavailable
     , createChildCustodyJournal = \_ _ -> unavailable

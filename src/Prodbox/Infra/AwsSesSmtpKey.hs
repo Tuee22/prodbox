@@ -18,6 +18,7 @@ module Prodbox.Infra.AwsSesSmtpKey
   , deleteAwsSesSmtpAccessKeyWith
   , observeAwsSesSmtpKeyInventory
   , observeAwsSesSmtpKeyInventoryWith
+  , renderAwsSesSmtpCommandFailure
   , smtpKeyMaterialDigest
   )
 where

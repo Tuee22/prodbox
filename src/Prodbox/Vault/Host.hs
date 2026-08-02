@@ -1,22 +1,18 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Host-side access to the in-cluster Vault root token.
+-- | Host-side operator-password, bootstrap-bundle, and fixture decoding helpers.
 --
--- Operator/admin helper flows use this module when they must read or write
--- Vault KV from the host process. Workloads continue to use Vault Kubernetes
--- auth directly in-cluster.
+-- Production Vault effects use role-scoped in-cluster identities. The host
+-- helpers below never recover an initial root token or read/write Vault KV.
 module Prodbox.Vault.Host
   ( hostVaultAddress
   , loadAndDecryptBundle
   , loadReadyVaultRootToken
   , obtainNewOperatorPassword
   , obtainOperatorPassword
-  , readHostVaultKvField
-  , readHostVaultKvObject
   , requireReadyVault
   , resolveHostVaultAddress
-  , writeHostVaultKvObject
 
     -- * Sprint 7.19 P3: pure bootstrap-bundle unseal-source classification
   , BootstrapMinioRead (..)
@@ -29,22 +25,21 @@ module Prodbox.Vault.Host
   , defaultTestSecrets
   , testSecretsPath
   , loadTestSecrets
-  , seedAcmeEabFromTestSecrets
   )
 where
 
 import Control.Exception (SomeException, bracket_, try)
-import Control.Monad (forM)
 import Data.ByteString qualified as BS
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Dhall (FromDhall, ToDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine, writeOutputLine)
-import Prodbox.Http.Client (HttpError (..), renderHttpError)
-import Prodbox.Infra.MinioBackend (withMinioPortForward)
+import Prodbox.Http.Client (HttpError, renderHttpError)
+import Prodbox.Infra.MinioBackend
+  ( hostDirectEndpointPort
+  , withMinioPortForward
+  )
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -53,9 +48,7 @@ import Prodbox.Vault.BootstrapBundle
 import Prodbox.Vault.Client
   ( SealStatus (..)
   , VaultAddress (..)
-  , VaultToken (..)
-  , vaultKvReadV2
-  , vaultKvWriteV2
+  , VaultToken
   , vaultSealStatus
   )
 import Prodbox.Vault.UnlockBundle
@@ -63,12 +56,7 @@ import Prodbox.Vault.UnlockBundle
   , decryptUnlockBundle
   , renderUnlockBundleError
   )
-import System.Directory
-  ( createDirectoryIfMissing
-  , doesDirectoryExist
-  , doesFileExist
-  , listDirectory
-  )
+import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO
@@ -90,166 +78,15 @@ resolveHostVaultAddress = do
   override <- lookupEnv "PRODBOX_TEST_HOST_VAULT_ADDR"
   pure (VaultAddress (Text.pack (maybe "http://127.0.0.1:31820" id override)))
 
--- LEGACY-ESCAPE[host-direct-vault-root-token]: the host CLI loads the Vault
--- root token directly (to build AWS provider credentials and drive host-side
--- Vault lifecycle) rather than obtaining a role-scoped projection from the
--- Lifecycle Authority. Registered in Prodbox.Legacy.EscapeRegistry; removed when
--- the Authority owns credential provisioning (Sprints 4.49/4.50).
+-- | Temporary source-compatible refusal for callers being migrated by the
+-- Authority/checkpoint cutovers. It cannot construct or recover a token and
+-- must be deleted with the final importing call site.
 loadReadyVaultRootToken :: FilePath -> VaultAddress -> IO (Either String VaultToken)
-loadReadyVaultRootToken repoRoot address = do
-  readiness <- requireReadyVault address
-  case readiness of
-    Left err -> pure (Left err)
-    Right () -> do
-      testToken <- lookupEnv "PRODBOX_TEST_HOST_VAULT_TOKEN"
-      case testToken of
-        Just token | not (null token) -> pure (Right (VaultToken (Text.pack token)))
-        _ -> do
-          bundleResult <- loadAndDecryptBundle repoRoot
-          pure $ VaultToken . unlockBundleInitialRootToken <$> bundleResult
-
-readHostVaultKvObject
-  :: FilePath -> Text -> Text -> IO (Either String (Map Text Text))
-readHostVaultKvObject repoRoot mount path = do
-  testKvDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
-  case testKvDir of
-    Just dir | not (null dir) -> readTestHostVaultKvObject dir mount path
-    _ -> do
-      testKv <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
-      case testKv of
-        Just "allow" -> pure (Right testHostVaultFields)
-        _ -> do
-          address <- resolveHostVaultAddress
-          tokenResult <- loadReadyVaultRootToken repoRoot address
-          case tokenResult of
-            Left err -> pure (Left err)
-            Right token -> do
-              result <- vaultKvReadV2 address token mount path
-              pure $ case result of
-                Left err@(HttpStatus 404 _) ->
-                  Left
-                    ( "Vault KV object "
-                        ++ Text.unpack (mount <> "/" <> path)
-                        ++ " missing: "
-                        ++ renderHttpError err
-                    )
-                Left err ->
-                  Left
-                    ( "read Vault KV object "
-                        ++ Text.unpack (mount <> "/" <> path)
-                        ++ ": "
-                        ++ renderHttpError err
-                    )
-                Right fields -> Right fields
-
-readTestHostVaultKvObject :: FilePath -> Text -> Text -> IO (Either String (Map Text Text))
-readTestHostVaultKvObject kvRoot mount path = do
-  let objectDir = testHostVaultObjectDir kvRoot mount path
-  exists <- doesDirectoryExist objectDir
-  if not exists
-    then pure (Left ("test Vault KV object " ++ Text.unpack (mount <> "/" <> path) ++ " missing"))
-    else do
-      fieldFiles <- listDirectory objectDir
-      fields <-
-        forM fieldFiles $ \fieldName -> do
-          value <- readFile (objectDir </> fieldName)
-          pure (Text.pack fieldName, Text.pack value)
-      pure (Right (Map.fromList fields))
-
-testHostVaultObjectDir :: FilePath -> Text -> Text -> FilePath
-testHostVaultObjectDir kvRoot mount path =
-  kvRoot </> Text.unpack mount </> Text.unpack path
-
--- LEGACY-ESCAPE[host-direct-vault-kv]: the host CLI reads Vault KV directly
--- here to resolve credentials, bypassing the Lifecycle Authority's role-scoped
--- projection. Registered in Prodbox.Legacy.EscapeRegistry; removed by Sprint 4.49.
-readHostVaultKvField
-  :: FilePath -> Text -> Text -> Text -> IO (Either String Text)
-readHostVaultKvField repoRoot mount path field = do
-  objectResult <- readHostVaultKvObject repoRoot mount path
-  pure $ case objectResult of
-    Left err -> Left err
-    Right fields ->
-      case Map.lookup field fields of
-        Nothing ->
-          Left
-            ( "Vault KV object "
-                ++ Text.unpack (mount <> "/" <> path)
-                ++ " missing field `"
-                ++ Text.unpack field
-                ++ "`"
-            )
-        Just value
-          | Text.null (Text.strip value) ->
-              Left
-                ( "Vault KV object "
-                    ++ Text.unpack (mount <> "/" <> path)
-                    ++ " field `"
-                    ++ Text.unpack field
-                    ++ "` is empty"
-                )
-          | otherwise -> Right value
-
-writeHostVaultKvObject
-  :: FilePath -> Text -> Text -> Map Text Text -> IO (Either String ())
-writeHostVaultKvObject repoRoot mount path fields = do
-  testKvDir <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV_DIR"
-  case testKvDir of
-    Just dir | not (null dir) -> writeTestHostVaultKvObject dir mount path fields
-    _ -> do
-      testKv <- lookupEnv "PRODBOX_TEST_HOST_VAULT_KV"
-      case testKv of
-        Just "allow" -> pure (Right ())
-        _ -> do
-          address <- resolveHostVaultAddress
-          tokenResult <- loadReadyVaultRootToken repoRoot address
-          case tokenResult of
-            Left err -> pure (Left err)
-            Right token -> do
-              result <- vaultKvWriteV2 address token mount path fields
-              pure $ case result of
-                Left err ->
-                  Left
-                    ( "write Vault KV object "
-                        ++ Text.unpack (mount <> "/" <> path)
-                        ++ ": "
-                        ++ renderHttpError err
-                    )
-                Right () -> Right ()
-
-writeTestHostVaultKvObject :: FilePath -> Text -> Text -> Map Text Text -> IO (Either String ())
-writeTestHostVaultKvObject kvRoot mount path fields = do
-  let objectDir = testHostVaultObjectDir kvRoot mount path
-  createDirectoryIfMissing True objectDir
-  mapM_
-    ( \(fieldName, value) ->
-        writeFile (objectDir </> Text.unpack fieldName) (Text.unpack value)
+loadReadyVaultRootToken _repoRoot _address =
+  pure
+    ( Left
+        "host root-token recovery is removed; use a role-scoped in-cluster capability"
     )
-    (Map.toList fields)
-  pure (Right ())
-
-testHostVaultFields :: Map Text Text
-testHostVaultFields =
-  Map.fromList
-    [ ("client_secret", "test-vault-client-secret")
-    , ("password", "test-vault-password")
-    , ("access_key_id", "test-vault-access-key")
-    , ("secret_access_key", "test-vault-secret-key")
-    , ("session_token", "test-vault-session-token")
-    , ("region", "us-west-2")
-    , ("host", "email-smtp.us-east-1.amazonaws.com")
-    , ("port", "587")
-    , ("from", "noreply@test.resolvefintech.com")
-    , ("from_display_name", "prodbox")
-    , ("reply_to", "support@test.resolvefintech.com")
-    , ("username", "smtp-user")
-    , ("key", "test-vault-hmac-key")
-    , -- Sprint 7.15: ZeroSSL EAB material (secret/acme/eab). The key ID is
-      -- read host-side for the ClusterIssuer; the HMAC key is materialized
-      -- in-cluster and only present here for completeness.
-      ("key_id", "test-eab-key-id")
-    , ("hmac_key", "test-eab-hmac-key")
-    ]
 
 -- | Read the encrypted unlock bundle from the durable MinIO bucket and decrypt
 -- it with the operator password. Shared by host-side Vault commands and
@@ -347,8 +184,8 @@ fetchBootstrapBundleEnvelope = do
             Left err -> BootstrapMinioUnavailable ("test bootstrap-bundle read failed: " ++ show err)
     Nothing -> do
       result <-
-        withMinioPortForward $ \localPort ->
-          getBundleObject (bootstrapObjectStoreConfig localPort)
+        withMinioPortForward $ \endpoint ->
+          getBundleObject (bootstrapObjectStoreConfig (hostDirectEndpointPort endpoint))
       pure $ case result of
         Right (Right (Just envelopeBytes)) -> BootstrapMinioPresent envelopeBytes
         Right (Right Nothing) -> BootstrapMinioAbsent
@@ -464,11 +301,11 @@ data TestSecrets = TestSecrets
     pulumi_state_backend_bucket_name :: Text
   , pulumi_state_backend_region :: Text
   , aws_admin_for_test_simulation :: TestSecretsAdminCredentials
-  , -- Sprint 7.18: optional so existing @test-secrets.dhall@ fixtures (and the
+  , -- Optional so existing @test-secrets.dhall@ fixtures (and the
     -- @TestSecrets.default@ used by the round-trip drift guard) without the EAB
-    -- block still decode. When present and populated, the suite-level IAM
-    -- harness seeds @secret/acme/eab@ the same way it materializes @aws.*@,
-    -- mirroring the interactive @prodbox config setup@ EAB prompt.
+    -- block still decode. When present, the value may enter only through the
+    -- schema-indexed attested external-material ingress; it is never consumed
+    -- by Tier-0 config setup or the IAM-only harness.
     acme_eab :: Maybe AcmeEabFixture
   }
   deriving (Eq, Generic, Show)
@@ -551,55 +388,6 @@ loadTestSecrets repoRoot = do
         Just $ case decoded of
           Left ex -> Left ("failed to decode test-secrets.dhall: " ++ show ex)
           Right testSecrets -> Right testSecrets
-
--- | Sprint 7.18: load @test-secrets.dhall@ and, when it carries a populated
--- optional @acme_eab@ block, seed @secret/acme/eab@ in Vault (fields
--- @key_id@ / @hmac_key@) so the in-cluster ACME EAB materializer Job reads a
--- non-empty HMAC. This is the non-interactive analog of the interactive
--- @prodbox config setup@ EAB prompt.
---
--- It lives here (low in the import graph) so both the AWS IAM harness preflight
--- ('Prodbox.Aws.runAwsIamHarnessSetup') and the edge/ACME reconcile
--- ('Prodbox.CLI.Rke2.ensureAcmeRuntime', which must seed before applying the
--- materializer Job) can call it without an import cycle.
---
--- A missing file, a decode failure, an absent block, or empty fields are all
--- silent no-ops: this is a best-effort fixture seam (real operators have no
--- @test-secrets.dhall@ and seed the EAB interactively via @config setup@), and
--- the public-edge prerequisites fail loud later if the EAB is genuinely
--- required but unset. A decode failure here is already surfaced by the
--- admin-credential acquisition path (which decodes the same file and fails
--- loud), so we avoid a second redundant failure path for the EAB seam.
---
--- The best-effort tolerance covers only the "nothing to seed" inputs listed
--- above. A *write* failure is different: valid EAB data was present and the
--- Vault KV write itself was rejected (e.g. Vault unreachable), which signals a
--- real environment fault rather than a missing fixture, so it is surfaced loudly
--- ('ioError' below) instead of being swallowed.
-seedAcmeEabFromTestSecrets :: FilePath -> IO ()
-seedAcmeEabFromTestSecrets repoRoot = do
-  testSecretsResult <- loadTestSecrets repoRoot
-  case testSecretsResult of
-    Just (Right testSecrets) ->
-      case acme_eab testSecrets of
-        Just eab
-          | not (Text.null (Text.strip (key_id eab)))
-          , not (Text.null (Text.strip (hmac_key eab))) -> do
-              result <-
-                writeHostVaultKvObject
-                  repoRoot
-                  "secret"
-                  "acme/eab"
-                  ( Map.fromList
-                      [ ("key_id", key_id eab)
-                      , ("hmac_key", hmac_key eab)
-                      ]
-                  )
-              case result of
-                Left err -> ioError (userError err)
-                Right () -> pure ()
-        _ -> pure ()
-    _ -> pure ()
 
 promptOperatorPassword :: IO Text
 promptOperatorPassword =

@@ -24,6 +24,7 @@ module Prodbox.Minio.ObjectStoreNative
   , putIfVersion
   , putIfVersionObserved
   , deleteObject
+  , deleteIfVersionObserved
   , listKeys
   , ensureObjectStoreBucket
   , S3Timestamp (..)
@@ -318,6 +319,37 @@ deleteObject config key = do
       -- also returns 204. A missing bucket (404) is treated as already-absent.
       | (status >= 200 && status < 300) || isAbsent status -> Right ()
       | otherwise -> Left ("object-store DELETE failed (" ++ show status ++ "): " ++ shortBody body)
+
+-- | Delete only the exact ETag observed by the caller.  A precondition
+-- failure is reported as a conflict so fixed-key state machines never turn a
+-- stale logical version into an unconditional delete race.
+deleteIfVersionObserved
+  :: ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> IO (Either String ConditionalDeleteResult)
+deleteIfVersionObserved config key version = do
+  result <-
+    performS3
+      config
+      "DELETE"
+      (objectPath config key)
+      []
+      ""
+      [("If-Match", ifMatchValue version)]
+  pure $ case result of
+    Left err -> Left err
+    Right (status, _, body)
+      | status >= 200 && status < 300 -> Right ConditionalDeleteApplied
+      | isConditionalConflict status || isAbsent status ->
+          Right ConditionalDeleteConflict
+      | otherwise ->
+          Left
+            ( "object-store conditional DELETE failed ("
+                ++ show status
+                ++ "): "
+                ++ shortBody body
+            )
 
 listKeys :: ObjectStoreConfig -> IO (Either String [Text])
 listKeys config = do

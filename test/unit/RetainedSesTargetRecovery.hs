@@ -420,7 +420,6 @@ authority =
   expectRight
     ( mkLongLivedCheckpointAuthority
         "home-control"
-        "https://gateway.control.example.test"
         "prodbox-state"
         "lifecycle"
         "transit/prodbox"
@@ -433,14 +432,14 @@ intentCoordinate :: TargetIntentCoordinate
 intentCoordinate = expectRight (mkTargetIntentCoordinate authority leaseKey)
 
 homeSink :: TargetClusterSecretSink
-homeSink = targetSink "home" "https://gateway.home.example.test"
+homeSink = targetSink "home"
 
 awsSink :: TargetClusterSecretSink
-awsSink = targetSink "aws" "https://gateway.aws.example.test"
+awsSink = targetSink "aws"
 
-targetSink :: Text -> Text -> TargetClusterSecretSink
-targetSink identity endpoint =
-  expectRight (mkTargetClusterSecretSink identity endpoint "secret" "keycloak/smtp")
+targetSink :: Text -> TargetClusterSecretSink
+targetSink identity =
+  expectRight (mkTargetClusterSecretSink identity "secret" "keycloak/smtp")
 
 registeredTargets :: RegisteredTargetSet
 registeredTargets = expectRight (mkRegisteredTargetSet 2 [homeSink, awsSink])

@@ -11,7 +11,7 @@ where
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM_, void)
-import Data.Aeson (Value)
+import Data.Aeson (Value (Null))
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -100,7 +100,8 @@ bootstrapBrokerClientSuite =
           , Routes.BrokerVaultBaselineReconcile
           , Routes.BrokerVaultPkiStatus
           , Routes.BrokerVaultPkiIssueTestCertificate
-          , Routes.BrokerChildCustodyCommit
+          , Routes.BrokerChildCustodyPrepare
+          , Routes.BrokerChildCustodyFinalize
           , Routes.BrokerChildRecoveryDeliver
           , Routes.BrokerChildRecoveryObserve
           , Routes.BrokerVaultSeal
@@ -197,11 +198,12 @@ validatedClientSettings port =
 clientConfig :: PortNumber -> Settings.BootstrapBrokerConfigDhall
 clientConfig port =
   Settings.BootstrapBrokerConfigDhall
-    { Settings.schemaVersion = 1
+    { Settings.schemaVersion = 2
     , Settings.cluster_id = "target-client-test-cluster"
     , Settings.vault_address = "http://127.0.0.1:8200"
     , Settings.service_identity =
         Request.renderBrokerServiceIdentity validServiceIdentity
+    , Settings.parent_registration = Nothing
     , Settings.listener =
         Settings.BrokerListenerDhall
           { Settings.listen_host = "127.0.0.1"
@@ -228,7 +230,7 @@ clientConfig port =
     , Settings.limits =
         Settings.BrokerLimitsDhall
           { Settings.queue_capacity = 16
-          , Settings.max_request_body_bytes = 4096
+          , Settings.max_request_body_bytes = 65_536
           , Settings.request_deadline_milliseconds = 5000
           , Settings.drain_deadline_milliseconds = 1000
           }
@@ -315,8 +317,13 @@ invokeClientRoute runtime fake route = do
         (mustRight (Program.mkPkiIssueRequest "client.test.invalid" 60))
     Routes.BrokerVaultResetAmbiguousInitialization ->
       Client.resetAmbiguousVaultInitialization endpoint context action
-    Routes.BrokerChildCustodyCommit ->
-      Client.commitChildCustody endpoint context action
+    Routes.BrokerChildCustodyPrepare ->
+      fmap
+        (fmap (const Null))
+        (Client.prepareChildCustody endpoint context action)
+    Routes.BrokerChildCustodyFinalize -> do
+      completion <- Fake.fakeFederationRegistrationCompletionFor fake
+      Client.finalizeChildCustody endpoint context action completion
     Routes.BrokerChildRecoveryDeliver ->
       Client.deliverChildRecovery endpoint context action
     Routes.BrokerChildRecoveryObserve ->

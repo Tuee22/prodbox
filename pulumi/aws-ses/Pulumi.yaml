@@ -1,6 +1,6 @@
 name: prodbox-aws-ses
 runtime: yaml
-description: Pulumi-managed cross-substrate AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user for Phase 8 operator-invited email auth
+description: Pulumi-managed cross-substrate AWS SES sending identity, receive subdomain, receipt rules, and S3 capture bucket
 backend:
   # Long-lived cross-substrate state lives on the dedicated operator-account
   # S3 bucket named by `pulumi_state_backend` in prodbox-config.dhall, so the

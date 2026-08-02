@@ -13,6 +13,7 @@ module Prodbox.Minio.EncryptedObject
   , encodeIndex
   , getLogical
   , getLogicalVersioned
+  , getLogicalVersionedWith
   , getLogicalWith
   , logicalObjectAad
   , logicalObjectName
@@ -20,7 +21,9 @@ module Prodbox.Minio.EncryptedObject
   , opaqueObjectId
   , putLogical
   , putLogicalIfAbsent
+  , putLogicalIfAbsentWith
   , putLogicalIfVersion
+  , putLogicalIfVersionWith
   , putLogicalWith
   , renderEncryptedObjectError
   )
@@ -107,10 +110,9 @@ logicalObjectName object = case object of
 -- 'LogicalPulumiStack'; every other authority name (leases, target-commit
 -- intents, SMTP projections, checkpoints) is a 'LogicalLongLivedState' — the
 -- object store then keys it under @long-lived-state/<name>@ via
--- 'logicalObjectName'. The in-cluster gateway daemon and the host-direct
--- 'ClusterRetained' adapter MUST both route through this one function so a
--- host-direct GET opens the exact envelope a daemon PUT sealed (and vice-versa);
--- a one-character drift here silently orphans every retained object.
+-- 'logicalObjectName'. The sole in-cluster Lifecycle Authority repository
+-- routes every 'ClusterRetained' object through this function; a one-character
+-- drift here would silently orphan retained state.
 authorityLogicalObject :: Text -> LogicalObject
 authorityLogicalObject logicalName =
   case Text.stripPrefix "pulumi-stack/" logicalName of
@@ -168,13 +170,25 @@ putLogicalIfAbsent
   -> ByteString
   -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
 putLogicalIfAbsent config cipher hmacKey clusterId object plaintext =
-  putLogicalConditional
+  putLogicalIfAbsentWith
     (putIfAbsentObserved config)
     cipher
     hmacKey
     clusterId
     object
     plaintext
+
+-- | Backend-injected create-only logical write.  Kept beside the shared
+-- envelope implementation so the native and subprocess clients cannot drift.
+putLogicalIfAbsentWith
+  :: (Text -> ByteString -> IO (Either String ConditionalPutResult))
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> ByteString
+  -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
+putLogicalIfAbsentWith = putLogicalConditional
 
 putLogicalIfVersion
   :: ObjectStoreConfig
@@ -186,13 +200,25 @@ putLogicalIfVersion
   -> ByteString
   -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
 putLogicalIfVersion config cipher hmacKey clusterId object version plaintext =
-  putLogicalConditional
+  putLogicalIfVersionWith
     (\key -> putIfVersionObserved config key version)
     cipher
     hmacKey
     clusterId
     object
     plaintext
+
+-- | Backend-injected ETag-guarded logical replacement, sharing the exact
+-- envelope implementation with every retained-authority transport.
+putLogicalIfVersionWith
+  :: (Text -> ByteString -> IO (Either String ConditionalPutResult))
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> ByteString
+  -> IO (Either EncryptedObjectError LogicalConditionalPutResult)
+putLogicalIfVersionWith = putLogicalConditional
 
 putLogicalConditional
   :: (Text -> ByteString -> IO (Either String ConditionalPutResult))
@@ -231,9 +257,22 @@ getLogicalVersioned
   -> Text
   -> LogicalObject
   -> IO (Either EncryptedObjectError (Maybe VersionedLogicalObject))
-getLogicalVersioned config cipher hmacKey clusterId object = do
+getLogicalVersioned config = getLogicalVersionedWith (getObjectVersioned config)
+
+-- | Backend-injected versioned read.  The native in-cluster Lifecycle
+-- Authority and the compatibility subprocess client share this exact envelope,
+-- opaque-name, AAD, and ETag interpretation rather than maintaining parallel
+-- implementations.
+getLogicalVersionedWith
+  :: (Text -> IO (Either String (Maybe VersionedObject)))
+  -> DekCipher
+  -> ByteString
+  -> Text
+  -> LogicalObject
+  -> IO (Either EncryptedObjectError (Maybe VersionedLogicalObject))
+getLogicalVersionedWith getVersioned cipher hmacKey clusterId object = do
   let key = objectKeyForOpaqueId (opaqueObjectId hmacKey object)
-  fetchResult <- getObjectVersioned config key
+  fetchResult <- getVersioned key
   case fetchResult of
     Left err -> pure (Left (EncryptedObjectFetchFailed err))
     Right Nothing -> pure (Right Nothing)

@@ -21,29 +21,34 @@
 
 ## Phase Status
 
-📋 **Expanded 2026-07-26 with Sprint `5.23`; unblocked 2026-07-27 by Sprint `2.36`.** The
+✅ **Sprint `5.25` closed 2026-08-01 on its independently validated typed-readiness surface** (own-surface,
+Standard A): the gateway runtime-stability observation type is split so a healthy not-yet-scraped Pod is
+a distinct non-terminal observation, never latched fatal — **superseding Sprint `5.24`** (its
+observability-wait band-aid is deleted). Code-owned and `dev check`-green (18/18). See
+[Sprint 5.25](#sprint-525-typed-three-valued-gateway-readiness-observation-).
+
+✅ **Sprint `5.23` expansion completed after Sprint `2.36`.** The
 canonical validation must reproduce forced shutdown under deterministic finalizer stalls and
 full-suite scheduler contention, and must fail on any leaked worker, waiter, queue entry, or
 idempotency record. One hundred isolated focused passes do not close a source-reachable illegal
 transition.
 
-📋 **Expanded 2026-07-12 for the Foundation Epoch.** Counterexample `LCPC-2026-07-11` froze four
+✅ **Foundation Epoch expansion completed.** Counterexample `LCPC-2026-07-11` froze four
 aggregate-suite failure mechanisms; this phase gains the two suite-side structural owners, adopted
 by governance Sprint `0.17` ([phase-0-planning-documentation.md](phase-0-planning-documentation.md)).
-Sprint `5.20` (📋 Planned) closes the `F-RESTORE` class: restore/cleanup becomes a graph whose
+Sprint `5.20` closes the `F-RESTORE` class: restore/cleanup becomes a graph whose
 `RequiresSuccess`/`RequiresAttempt` edges are derived from chart-dependency and storage-lifetime
 fact tables, executed by a total executor that aggregates every failure and never silently discards
-an independent restoration. Sprint `5.21` (⏸️ Blocked by Sprint `1.65`) closes the measurement
+an independent restoration. Sprint `5.21` closes the measurement
 loop: a `--record-profile` mode of the gateway-runtime-stability suite writes the committed
 `MeasuredResourceProfile` artifact from a healthy run, and the first committed gateway profile
 activates the Sprint `1.65` certification check. The Foundation Epoch (Sprints `1.63`–`1.66`,
-`2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) is the active work front and is executed before Sprints
-`1.61` and `1.62` as an execution-priority decision; it introduces no `Blocked by` edge onto the
-existing `1.61` → `8.12` chain, which resumes unchanged once the epoch closes. Sprints
-`5.18`/`5.19` remain blocked exactly as recorded below.
+`2.34`, `4.51`, `5.20`, `5.21`, and `7.34`) completed before Sprints `1.61` and `1.62` as an
+execution-priority decision and introduced no `Blocked by` edge onto the existing `1.61` →
+`8.12` chain. Sprints `5.18`, `5.19`, `5.21`, and `5.22` are Done.
 
-📋 **Certificate-scope serving validation added 2026-07-12; unblocked 2026-07-20.** Sprint
-`5.22` (Planned) adds a named integration validation that proves serving rather than assertion: a
+✅ **Certificate-scope serving validation completed in Sprint `5.22`.** The named integration
+validation proves serving rather than assertion: a
 real TLS handshake against every explicit substrate-bound served hostname, inspection that the
 presented real ZeroSSL DNS-01 certificate carries the exact configured canonical SAN set, and an
 exact-scope retained restore-vs-reissue proof. An unchanged canonical set restores without an
@@ -54,13 +59,17 @@ consumer of the configurable-certificate-scope policy adopted by governance Spri
 by Sprint `2.35` ([phase-2-gateway-dns.md](phase-2-gateway-dns.md)); it is not part of the Foundation
 Epoch and introduces no `Blocked by` edge onto the existing `1.61` → `8.12` chain.
 
-⏸️ **Reopened and blocked by Sprint `4.50`.** Sprint `5.18` makes restore and retained
+✅ **Reclosed 2026-08-02 on Sprint `5.22`.** Sprint `5.18` makes restore and retained
 preparation consume the same exact capability references that execution uses and lowers cleanup to an
 always-run DAG, so an unrelated selected-target probe cannot authorize retained-authority work and
-one failure cannot skip independent restoration. Sprint `5.19`, blocked by `5.18`, adds temporal
+one failure cannot skip independent restoration. Sprint `5.19` adds temporal
 load/fault evidence for CPU throttling, admission queues, deadlines, cancellation, and cleanup.
 Earlier point-readiness and restart/OOM evidence remains useful but is not the expanded temporal
 qualification.
+Sprint `5.21` adds the live, fail-closed calibration recorder and secret-free empirical artifact;
+the first real 30-minute capture remains the non-blocking live-proof axis. Sprint `5.22` supplies
+the exact certificate-scope serving validation on the code-owned surface; its live serving proof
+remains a non-blocking Standards O/P axis.
 
 ✅ **Reclosed 2026-07-10 after retained-resource preparation.** Sprint `5.16` supplies the typed
 restart/OOM/high-water stability oracle and run-scoped restore recorder. Sprint `5.17` now derives
@@ -1462,14 +1471,13 @@ SMTP sync; unrelated suites do not touch SES, and ordinary postflight never dest
 - Link Sprint `5.16` to Sprints `1.60`/`2.31` and Sprint `5.17` to Sprints `4.47`/`8.10` without
   creating backward blockers.
 
-## Sprint 5.18: Capability-Bound Preparation and Always-Run Cleanup DAG [⏸️ Blocked]
+## Sprint 5.18: Capability-Bound Preparation and Always-Run Cleanup DAG [✅ Done]
 
-**Status**: Blocked
+**Status**: Done — validated 2026-08-02.
 **Deployment qualification**: pending
 **Implementation**: planned revisions to `src/Prodbox/TestRestore.hs`, `TestPlan.hs`,
 `TestRunner.hs`, `Prerequisite.hs`, a retained `CleanupRun` journal/client, the EffectDAG cleanup
 projection, installed-binary fixtures, and focused pure plan tests
-**Blocked by**: Sprint `4.50`
 **Independent Validation**: pure plan/property tests and fake capability clients prove exact-handle
 binding and always-run cleanup after every injected failure without a live cluster, AWS, or a later
 phase.
@@ -1537,10 +1545,54 @@ cleanup node fails.
    capability providers and no fallback.
 5. Unit/CLI/env integration suites and `prodbox dev check` pass.
 
-### Remaining Work
+### Closure Evidence
 
-- Blocked until Sprint `4.50` makes the new authority and target clients the sole supported path.
-- Sprint `5.19` adds temporal load and fault qualification over this plan.
+- Validated checkpoint (2026-08-01): `Prodbox.Test.CleanupRun` now supplies the pure retained
+  aggregate and bounded canonical codec. Every node plan receives its coordinate digest only from
+  an opaque indexed `CapabilityRef`; graph validation refuses empty, duplicate, dangling, self, and
+  cyclic plans. The aggregate commits graph/digest/stable operation IDs before work, uses a fenced
+  owner lease, records `RunnerLost` and resets only ambiguous in-flight nodes after expiry, preserves
+  `RequiresSuccess` versus `RequiresAttempt`, aggregates primary and cleanup failures, makes exact
+  begin/complete/primary replay idempotent, and compacts only terminal runs. Its exact-revision
+  Model-B repository re-observes an ambiguous CAS response. The authenticated route/client and
+  bounded-shield durable executor now commit before the primary action, retain synchronous primary
+  failure, run every eligible `RequiresAttempt` successor, aggregate node failures, and rethrow
+  cancellation only after cleanup; expired in-flight ownership is reacquired under a greater fence
+  before its stable operation is retried. The primary-plus-backup namespace receipt-registers each
+  complete immutable plan, repairs an indexed-but-missing primary before recovery, scans every
+  uncompacted run, refuses identifier reuse, and accumulates recovery failures. After the retention
+  boundary, authenticated compaction copies and re-observes the exact canonical report before CAS-
+  publishing digest-only non-reusable tombstones to both the per-run primary and namespace. Scan
+  repairs response loss between those two commits, and a repeated compact request re-observes and
+  decodes the immutable report instead of treating the tombstone as an error. The managed cleanup
+  compiler now binds each interpreter to the same typed capability reference whose digest is
+  committed in its node. Command-style non-zero primary exits are now recorded as failures rather
+  than successful values. `TestRunner` now places AWS harness setup inside the create-before-primary
+  boundary and lowers drain, Vault unseal, the three registry-owned per-run stacks, the EBS reaper,
+  and operational teardown into one capability-bound DAG. Every provider cleanup has
+  `RequiresAttempt` progress; teardown has `RequiresSuccess` edges from every credential consumer,
+  preserving recovery credentials after cleanup failure. Authority-scope recovery uses the
+  universal action interpreter before compiling the selected run, so a narrower successor suite
+  can still resume an older broader graph. Focused validation passes 20/20 and the TestRunner plan
+  suite passes 59/59; the unit
+  executable builds warning-clean; and `./.build/prodbox dev check` exits 0 with the namespace,
+  endpoint, client, recovery, compaction, tests, and governed documentation included.
+- Installed-binary CLI/env fixtures exposed by the Phase-4 closure audit now provide
+  the retained Authority/config/capability topology instead of assuming filesystem-authoritative
+  runtime config or removed transports. Current checkpoint (2026-08-02): the unmodified
+  installed-binary audit reproduced the recorded 28/52 failure baseline. The shared capacity
+  fixture now includes all six control-plane roles, the fake Docker boundary returns an immutable
+  runtime-image digest, and Haskell fixture servers provide the Broker, Vault, Lifecycle Authority,
+  and Authority Backup transports over the real port-forward-selected loopback coordinates. The
+  fixture projects an in-force Authority config, healthy retained backup, completed provider
+  readiness, absent first-reconcile continuation, Kubernetes TokenRequest/RBAC identity, readable
+  kubeconfig, retained backend, and materializer absence/metadata read-backs. The installed-binary
+  native RKE2 reconcile/delete proof is green 1/1 (49.49s). The complete CLI audit has improved
+  from 28/52 failures to 52/52 passing after these shared repairs; config-only cases reuse the retained
+  Authority environment across CLI and env suites. The integration executable runs threaded but
+  serially, avoiding the non-threaded descriptor ceiling without racing shared Cabal/build fixtures.
+  Closure evidence is the complete installed-binary integration gate 52/52 (383.31s), unit gate
+  2992/2992 (35.58s), and `prodbox dev check` exit 0 with no HLint hints and a warning-clean build.
 
 ## Documentation Requirements
 
@@ -1563,14 +1615,13 @@ cleanup node fails.
 
 - Link cleanup resource classes to the managed-resource registry and substrate inventory.
 
-## Sprint 5.19: Temporal Load, Fault, and Cleanup Qualification Oracle [⏸️ Blocked]
+## Sprint 5.19: Temporal Load, Fault, and Cleanup Qualification Oracle [✅ Done]
 
-**Status**: Blocked
+**Status**: Done — validated 2026-08-02
 **Deployment qualification**: pending
 **Implementation**: planned `src/Prodbox/Test/TemporalQualification.hs`, extensions to
 `GatewayRuntimeStability.hs`, TestRunner structured observers, fake cgroup/metrics fixtures, and
 installed-binary fault scenarios, including named regression `LCPC-2026-07-11`
-**Blocked by**: Sprint `5.18`
 **Live-proof**: pending after code-local implementation; current-revision deployment
 qualification is tracked separately from phase status
 **Independent Validation**: deterministic metrics streams, fake Kubernetes/cgroup payloads,
@@ -1645,9 +1696,29 @@ cleanup across the whole suite run.
    substrate/fault/aggregate/cleanup/timestamp fields.
 7. Unit/CLI/env integration suites and `prodbox dev check` pass.
 
-### Remaining Work
+### Closure Evidence
 
-- Blocked until Sprint `5.18` supplies exact capability binding and always-run cleanup.
+- Active checkpoint (2026-08-02): `Prodbox.Test.TemporalQualification` now provides the pure
+  three-valued temporal classifier and absorbing run-wide fold for CPU throttle, queue occupancy and
+  wait, service time, p95/p99 latency, deadline misses, admission rejection, cancellation lag,
+  session refresh failure, restart, OOM, and missing telemetry. Recovery windows and Pod UID
+  replacement reset only the healthy sample window; they retain every incomplete/failed observation.
+  The exhaustive deterministic fault schedule requires one queryable operation and attempted
+  cleanup for each Authority-before/after-CAS, Provider-after-accept, Target-after-CAS,
+  MinIO-read-back, Vault-session-refresh, client-response-loss, and cleanup-failure point; it
+  classifies resume, exact read-back success, fail-closed refusal, and successor-blocking ambiguity.
+  Authority revision, Target generation, and durable progress are monotonic even while the gateway
+  is unavailable. `Prodbox.Test.Qualification.Evidence` constructs only complete, distinct
+  superseded/replacement source/config/image/topology/envelope/load identities plus opaque custody
+  bindings, exact counterexample/fault results, aggregate/cleanup outcomes, and ordered timestamps.
+  The named `prodbox test integration control-plane-counterexample` command validates the frozen
+  historical source, equal normalized envelope, five expected superseded failures, five replacement
+  closures, the eight-point fault matrix, replacement temporal profile, and emits the public evidence
+  digest through an installed binary. Focused validation passes 13/13 plus the named command.
+- Complete closure gates pass: installed-binary CLI/env 53/53 (394.70s), unit 3007/3007
+  (136.81s, serial shared-fixture runner), and `prodbox dev check` exit 0 with no HLint hints and a
+  warning-clean build. Live home/AWS load campaigns remain the separate, non-closing Standard-P
+  deployment-qualification axis (`pending`); no deployment-ready or operational-cutover claim is made.
 - Live home/AWS campaigns remain a separate deployment-qualification axis after code closure.
 
 ## Documentation Requirements
@@ -1748,9 +1819,8 @@ position.
 - 🧪 The end-to-end exercise — a real `prodbox test all` in which the total executor keeps an
   independent app-chart restoration alive across a retained-SES failure and surfaces the aggregate
   `RestoreReport` — is the non-blocking Standard-O live axis.
-- Sprint `5.18` remains separately blocked by Sprint `4.50` and later composes its capability-bound
-  cleanup DAG over the same restore surface; the Foundation Epoch introduces no `Blocked by` edge
-  between them.
+- Active Sprint `5.18` composes its capability-bound cleanup DAG over this same restore surface;
+  Sprint `4.50` has closed and the Foundation Epoch introduces no additional blocker between them.
 
 ## Documentation Requirements
 
@@ -1772,28 +1842,23 @@ position.
 - Link the derived fact tables to the managed-resource registry lifecycle classes and the
   storage-lifetime index owned by Sprint `4.51` (no `Blocked by` edge).
 
-## Sprint 5.21: Resource Calibration Recorder [🔄 Active]
+## Sprint 5.21: Resource Calibration Recorder [✅ Done]
 
-**Status**: Active — the pure healthy-run gate exists; the artifact is being refactored from a
-parallel envelope-certification record into certified empirical inputs consumed by Sprint `1.71`'s
-pure derivation algebra.
+**Status**: Done (validated 2026-08-02) — the pure and live recorder surfaces are complete.
 **Deployment qualification**: pending
-**Live-proof**: pending — recording the first committed gateway profile requires a healthy live
-≥30-minute run and extending the gateway-runtime-stability observer to sample CPU, throttle, heap,
-and object-store demand; the `--record-profile` wiring and first artifact are the non-blocking live
-axis.
-**Implementation**: ✅ **Recorder gate landed** — `recordMeasuredProfile` (the pure health +
-30-minute-steady-window gate over a `MeasuredProfileRecorderInput`, refusing an unhealthy run or a
-short window), `recorderMinimumWindowSeconds`, `renderMeasuredResourceProfileDhall` (the committed
-`dhall/capacity/measured/` artifact literal that round-trips back through the generic
-`Dhall.FromDhall` the Sprint 1.65 check reads), and the `MeasuredProfileRecorderRefusal` taxonomy,
-all in `src/Prodbox/Capacity/MeasuredProfile.hs`. 🔄 **Remaining**: the live `--record-profile`
-metric collection (extending `src/Prodbox/Test/GatewayRuntimeStability.hs` to sample the demand the
-profile carries) and committing the first gateway profile from a healthy live run.
-**Independent Validation**: ✅ recorder refusal tables (unhealthy run, short window) and a Dhall
-round-trip proving the recorded artifact is exactly what the certification check consumes
-(`test/unit/MeasuredProfile.hs`, "Sprint 5.21 measured profile recorder gate"); pre-cluster. The
-first committed profile activates the Sprint 1.65 certification for `gateway`.
+**Live-proof**: pending — the first healthy ≥30-minute home capture is the non-blocking Standard-O
+axis; no unmeasured gateway profile is committed in its place.
+**Implementation**: `src/Prodbox/Capacity/MeasuredProfile.hs` owns the pure recorder, cumulative
+counter reducer, refusal taxonomy, and Dhall renderer; `src/Prodbox/TestValidation.hs` and
+`src/Prodbox/TestRunner.hs` own the live `gateway-pods --record-profile` mode and atomic artifact
+write; `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Gateway/ContinuityStore.hs` expose real GHC
+heap and encrypted object-store latency telemetry. CPU/CFS observations are interval-derived, and
+Pod replacement/counter regression, incomplete telemetry, an unhealthy absorbing fold, a short
+window, or fewer than 300 samples refuses the write.
+**Independent Validation**: recorder refusal/aggregation tables and the committed artifact golden
+pass in `test/unit/MeasuredProfile.hs`; parser tests prove the flag is accepted only by
+`gateway-pods`; the rendered artifact round-trips through the same `Dhall.FromDhall` reader used by
+Sprint `1.65` and certifies the deterministic derived envelope.
 **Docs to update**: `documents/engineering/resource_scaling_doctrine.md`
 
 ### Objective
@@ -1820,9 +1885,8 @@ the envelope deterministically.
 
 ### Remaining Work
 
-- Refactor the artifact into the calibrated input/provenance shape consumed by Sprint `1.71`.
-- Add live metric collection and `--record-profile` wiring.
-- Record the first healthy gateway calibration in a non-blocking live run.
+- None on the code-owned surface. The first healthy live capture is tracked by `Live-proof` and
+  does not block `Done` under Standard O.
 
 ## Documentation Requirements
 
@@ -1840,27 +1904,26 @@ the envelope deterministically.
 - Link the recorder to Sprint `1.65`'s certification check and the `dhall/capacity/measured/`
   artifact home ([phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)).
 
-## Sprint 5.22: Certificate Scope Serving Validation [📋 Planned]
+## Sprint 5.22: Certificate Scope Serving Validation [✅ Done]
 
-**Status**: Planned — Sprint `2.35` is Done, so this validation is unblocked. The pure
-restore-vs-reissue retention-coordinate proof (the algebra half of deliverable 2) has landed as unit
-tests; the live TLS-handshake serving proof (deliverable 1/3) is the outstanding Standard-O half that
-keeps the sprint Planned.
+**Status**: Done (validated 2026-08-02). The named validation, exact presented-SAN oracle,
+restore-vs-reissue proof, typed OpenSSL prerequisite, installed-binary surface, and canonical-suite
+registration are complete.
 **Deployment qualification**: pending
 **Live-proof**: pending — the real TLS handshake against harness-owned home infrastructure with a
 real ZeroSSL DNS-01 certificate is the non-blocking Standard-O serving axis; a cert-manager Ready
 condition is not accepted as proof.
-**Implementation**: the pure restore-vs-reissue retention-coordinate proof has landed as unit tests
-(`test/unit/Main.hs`, three "Sprint 5.22" cases in the retention-key describe): the same SAN set is
-isolated per substrate under distinct `publicEdgeTlsRetentionKey` coordinates; an `impliedBy`-covered
-but distinct exact set reissues under its own coordinate rather than restoring the wildcard material;
-and an order-independent unchanged set restores under one coordinate. The named integration validation
-exercising real TLS handshakes against every explicit substrate-bound served hostname and inspecting
-the exact presented SAN set remains the outstanding Standard-O serving half
-**Independent Validation**: the validation runs on the home substrate with harness-owned
-infrastructure and a real ZeroSSL DNS-01 certificate; AWS-substrate coverage is tracked in
-substrates.md parity (Standards N/O). Ready-condition alone is not accepted as proof.
-**Docs to update**: `documents/engineering/acme_provider_guide.md`
+**Implementation**: `Prodbox.Test.CertificateScopeServing` parses and compares the peer DNS SANs
+as an exact canonical set; `Prodbox.TestValidation` drives verified `curl` and bounded OpenSSL
+handshakes against the substrate's explicit served host; `certificate-scope` is a named canonical
+validation with typed `ToolOpenSsl`/public-edge prerequisites. The production retention-coordinate
+tests prove substrate isolation, distinct-set reissue, and order-independent exact-set restore.
+**Independent Validation**: seven focused Sprint-`5.22` tests, the installed-binary command test,
+updated generated CLI goldens/registry tables, and the full `3018/3018` unit suite passed on
+2026-08-02. The `/metrics` gateway golden also passes after adding the recorder telemetry. The live
+home/AWS serving runs remain the separate non-blocking Standard-O deployment axis.
+**Docs updated**: `documents/engineering/acme_provider_guide.md`, `README.md`, generated CLI docs,
+and the Phase-5/overview ledgers
 
 ### Objective
 
@@ -1898,17 +1961,17 @@ condition alone is not accepted as proof.
    AWS-substrate coverage is the non-blocking parity axis in [substrates.md](substrates.md)
    (Standards N/O).
 
-### Remaining Work
+### Closure Evidence
 
-- ✅ The pure restore-vs-reissue retention-coordinate proof landed (`test/unit/Main.hs`, three
+- The pure restore-vs-reissue retention-coordinate proof landed (`test/unit/Main.hs`, three
   "Sprint 5.22" cases): per-substrate coordinate isolation of the same SAN set,
   `impliedBy`-covered-but-distinct sets reissuing under distinct production `publicEdgeTlsRetentionKey`
   coordinates, and an order-independent unchanged set restoring under one coordinate. This proves the
   algebra half of deliverable 2 at the production retention key; `impliedBy` is checked separately as
   the coverage/admission relation.
-- Implement and run the now-unblocked named home-substrate validation against the Sprint `2.35`
-  algebra, Tier-0 scope config, explicit served-host binding, exact retention key, and status rungs.
-- The live AWS-substrate serving proof is the non-blocking substrate-parity axis tracked in
+- `prodbox test integration certificate-scope --substrate <home-local|aws>` now verifies the real
+  chain/hostname and exact presented SAN set rather than accepting a readiness condition.
+- The live home and AWS serving proofs are non-blocking deployment/substrate-parity axes tracked in
   [substrates.md](substrates.md); it is not a `5.22` blocker (Standards N/O).
 
 ## Documentation Requirements
@@ -2107,6 +2170,77 @@ fail-closed contract for a genuinely unobservable or unhealthy runtime.
   from the [gateway heap-leak](legacy-tracking-for-deletion.md): the restore-gate scrape race is a
   harness-observability defect, whereas the RTS heap-overflow restart it now correctly surfaces is the
   cutover-gated leak.
+
+## Sprint 5.25: Typed Three-Valued Gateway Readiness Observation [✅ Done]
+
+**Status**: Done — own-surface Phase-5 reopen (Standard A) adopting the typed three-valued readiness
+doctrine ([bootstrap_readiness_doctrine.md §0.9/§2.4](../documents/engineering/bootstrap_readiness_doctrine.md)).
+It **supersedes Sprint `5.24`**: the observability-wait band-aid and its `gatewayStabilityUnreachableIsTransient`
+`Bool` are deleted, and the not-yet-ready state is made a distinct non-terminal constructor so the
+illegal "latch a healthy not-yet-scraped Pod as fatal" state is unrepresentable by construction.
+**Implementation**: ✅ `src/Prodbox/Test/GatewayRuntimeStability.hs` splits `GatewayUnobservableReason`
+into a terminal-only reason (`GatewayRestartCountRegressed`) and a new
+`GatewayObservationIncompleteReason` (phase / readiness / restart-count / container-limit / memory-reading),
+and adds a non-absorbing `GatewayObservationIncomplete` constructor routed like `GatewayPodPending`
+(`firstAbsorbingOutcome` matches only `GatewayPodUnobservable`, so an incomplete observation can never be
+absorbed). A warming-up snapshot folds to the already-retried `NotStableYet`. The Sprint `5.24`
+`awaitGatewayRuntimeObservable` / `observeGatewayRuntimeScratch` / constants are removed from
+`src/Prodbox/TestValidation.hs`. The invariant is build-enforced by
+`readinessObservationViolations` in `runConformanceTierChecks` (`src/Prodbox/CheckCode.hs`).
+**Live-proof**: 🧪 the removed-band-aid live restore proof carries over from Sprint `5.24` (the
+`RestoreChartGateway` restore node's fresh-Pod case); a full home run through Phase 2 remains
+Standard-O.
+**Deployment qualification**: pending — a test-harness readiness-type fix; no production-composition
+surface changes.
+**Independent Validation**: ✅ `test/unit/GatewayRuntimeStability.hs` (18/18) — the metrics- and
+per-field-unobservable cases now assert a non-absorbing `NotStableYet` that a subsequent green sample
+advances (proving no poisoning), the terminal regressed-restart stays absorbing, and the fail-closed
+policy-mismatch is preserved; `prodbox dev check` exit 0 including the new conformance gate.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Make "gate a gateway-stability decision on a not-yet-complete observation" unrepresentable: a healthy
+but not-yet-scraped Pod is a distinct non-terminal observation, never latched as fatal, while genuine
+unhealth / regressed-restart / policy mismatch still fails closed.
+
+### Deliverables
+
+- Split the unobservable reason type into terminal-only and incomplete/retryable sets; add the
+  non-absorbing `GatewayObservationIncomplete` observation constructor.
+- Delete the Sprint `5.24` observability-wait band-aid and its transient `Bool`.
+- A build-enforced conformance gate that fails if the non-terminal constructor is removed (collapse
+  regression).
+
+### Validation
+
+1. A not-yet-scraped Ready Pod folds to a non-absorbing `NotStableYet`; a green sample then advances it.
+2. Each incomplete Pod-status field classifies as `GatewayObservationIncomplete <reason>`.
+3. A regressed restart stays terminal (`GatewayPodUnobservable`); a policy mismatch stays fatal.
+4. `prodbox dev check` (incl. the three-valued readiness gate) and the Sprint `5.16` suite pass.
+
+### Remaining Work
+
+None. The type split, band-aid removal, conformance gate, and unit proof are landed (`dev check`
+exit 0, 18/18); live aggregate exercise remains the non-blocking Standard-O axis recorded above.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- ✅ `documents/engineering/bootstrap_readiness_doctrine.md` - §0.9 typed three-valued gate, §1
+  bring-up-dual defect, §2.4 transient-vs-persistent split (SSoT).
+- ✅ `documents/engineering/unit_testing_policy.md` - §6.2 the non-terminal-observation model,
+  superseding the Sprint 5.24 wait prose.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link to Sprint `5.24` (superseded) and the doctrine SSoT §2.4.
 
 ## Related Documents
 

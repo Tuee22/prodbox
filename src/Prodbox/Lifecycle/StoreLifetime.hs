@@ -20,13 +20,14 @@ where
 -- | The durability class of a retained-authority object namespace.
 data StoreLifetime
   = -- | State bounded by a Helm chart / per-run Pulumi stack: it is destroyed on
-    -- teardown. This is the gateway-daemon-backed object-store transport; it may
-    -- never carry retained authority state.
+    -- teardown. It may never carry retained authority state; the removed
+    -- Gateway/host-direct object-store transports must not be inferred from
+    -- this durability tag.
     ChartLifetime
   | -- | Retained control-plane authority state — the lease, target-commit
     -- intent, SMTP projection, and retained Pulumi checkpoint that outlive any
-    -- single run. Reached host-direct over the sealed-envelope layer (the
-    -- Lifecycle Authority primary MinIO namespace).
+    -- single run. Reached only through the Lifecycle Authority's sealed
+    -- in-cluster primary MinIO repository.
     ClusterRetained
   | -- | State that must survive the destruction of an entire cluster — the
     -- separately credentialed, non-aliased long-lived backup failure domain.

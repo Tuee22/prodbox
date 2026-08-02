@@ -5,12 +5,11 @@ module Prodbox.CLI.Charts
   )
 where
 
-import Control.Exception (IOException, bracket_, try)
+import Control.Exception (IOException, try)
 import Data.Char (toLower)
 import Data.List (intercalate)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Prodbox.AwsEnvironment (overlayAwsCredentials)
 import Prodbox.CLI.Command
   ( ChartsCommand (..)
   , buildPlan
@@ -30,7 +29,7 @@ import Prodbox.Host
   , runHostFirewallGatewayRestrictOptional
   , runHostFirewallGatewayUnrestrict
   )
-import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
+import Prodbox.Infra.SubstrateKubectl (withSubstrateKubectlEnvironment)
 import Prodbox.Lib.AwsSubstratePlatform (ensureAwsSubstratePlatformRuntime)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
@@ -46,14 +45,10 @@ import Prodbox.Lib.ChartPlatform
   )
 import Prodbox.PublicEdge (publicEdgeTlsRetentionKey)
 import Prodbox.Settings
-  ( ConfigFile (..)
-  , ValidatedSettings (..)
-  , aws
-  , resolveAwsCredentialsRefFromHostVault
+  ( ValidatedSettings (..)
   , validateAndLoadSettings
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
@@ -267,41 +262,15 @@ ensurePlatformForSubstrate repoRoot settings SubstrateAws =
   awsSubstrateLabelValue = "prodbox-aws-substrate"
 
 -- | Run a chart-deploy/delete action with KUBECONFIG pointed at the substrate's
--- kubeconfig and AWS_* credentials projected for substrate-aware subprocesses.
+-- kubeconfig backed by the Provider-issued short-lived client projection.
 --
 -- For the home substrate this is a no-op (kubectl/helm pick up the operator's
 -- default kubeconfig and the home cluster doesn't need AWS auth). For the AWS
 -- substrate (Sprint 4.18 fifth chunk re-migration), the EKS kubeconfig is
--- materialized via 'withEksKubeconfig' into a scoped temp file and exported
--- alongside `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
--- (and optionally `AWS_SESSION_TOKEN`) from `settings.aws.*`. Without the AWS
--- env vars, the EKS kubeconfig's `aws eks get-token` exec provider can't
--- fetch a token and every kubectl/helm call returns 401 "the server has asked
--- for the client to provide credentials".
+-- materialized via 'withEksKubeconfig' into a scoped temp file. The kubeconfig
+-- contains endpoint/CA and a FIFO token path; no AWS credential or bearer is
+-- projected into the subprocess environment or generated configuration.
 withSubstrateEnvironment
   :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode -> IO ExitCode
 withSubstrateEnvironment repoRoot settings substrate action =
-  case substrate of
-    SubstrateHomeLocal -> action
-    SubstrateAws ->
-      withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        credentialsResult <-
-          resolveAwsCredentialsRefFromHostVault
-            repoRoot
-            "aws"
-            (aws (validatedConfig settings))
-        case credentialsResult of
-          Left err -> do
-            writeError (fatalError (Text.pack ("load operational AWS credentials from Vault: " ++ err)))
-            pure (ExitFailure 1)
-          Right credentials -> do
-            let envOverrides = overlayAwsCredentials [("KUBECONFIG", kubeconfigPath)] credentials
-            previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
-            bracket_
-              (mapM_ (\(name, value) -> setEnv name value) envOverrides)
-              (mapM_ restoreOne (zip envOverrides previousValues))
-              action
- where
-  restoreOne :: ((String, String), Maybe String) -> IO ()
-  restoreOne ((name, _), Nothing) = unsetEnv name
-  restoreOne ((name, _), Just value) = setEnv name value
+  withSubstrateKubectlEnvironment repoRoot settings substrate action

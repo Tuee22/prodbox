@@ -55,6 +55,7 @@ lifecycleAuthorityBackupRepairSuite =
       d `shouldBe` BackupRepairReopen [BackupRepairAdmissionReopened epoch2] epoch2
       admitsNormalOperations reopened `shouldBe` True
       establishedEpoch reopened `shouldBe` Just epoch2
+      reopened `shouldBe` BackupEstablished epoch2 previousGeneration (BackupReceipt "backup-1")
 
     it "an unobservable backup keeps admission frozen and merely waits" $ do
       let (_, frozen) = stepBackupRepair established1 (AssessBackupHealth BackupUnobservable)
@@ -77,6 +78,7 @@ lifecycleAuthorityBackupRepairSuite =
           epoch2
       admitsNormalOperations s4 `shouldBe` True
       establishedEpoch s4 `shouldBe` Just epoch2
+      s4 `shouldBe` BackupEstablished epoch2 nextGeneration newReceipt
 
     it "policy drift runs the same repair path (receipt order-independent)" $ do
       let (_, s1) = stepBackupRepair established1 (AssessBackupHealth BackupPolicyDrift)
@@ -90,6 +92,7 @@ lifecycleAuthorityBackupRepairSuite =
           epoch2
       admitsNormalOperations s4 `shouldBe` True
       establishedEpoch s4 `shouldBe` Just epoch2
+      s4 `shouldBe` BackupEstablished epoch2 nextGeneration newReceipt
 
     it "refuses a repair receipt before the one-time permit is minted" $ do
       let (_, frozen) = stepBackupRepair established1 (AssessBackupHealth BackupPositivelyAbsent)
@@ -130,12 +133,26 @@ lifecycleAuthorityBackupRepairSuite =
       d `shouldBe` AuthorityOperationArmed "op-2" epoch2 "intent-a"
       authorityOperationPhase "op-2" s' `shouldBe` Just (OperationArmed "intent-a")
  where
-  established1 = BackupEstablished authorityEpochGenesis
+  established1 =
+    BackupEstablished authorityEpochGenesis previousGeneration (BackupReceipt "backup-1")
   epoch2 = nextAuthorityEpoch authorityEpochGenesis
   establishingProgress = GenesisProgress (GenesisPlan "d" "c") Nothing Nothing
-  samplePermit = BackupRepairPermit "repair-digest" "authority-backup-store/home/repair"
-  otherPermit = BackupRepairPermit "repair-digest-2" "authority-backup-store/home/repair"
+  samplePermit =
+    BackupRepairPermit
+      "repair-digest"
+      "authority-backup-store/home/repair"
+      authorityEpochGenesis
+      previousGeneration
+      (BackupReceipt "backup-1")
+  otherPermit =
+    BackupRepairPermit
+      "repair-digest-2"
+      "authority-backup-store/home/repair"
+      authorityEpochGenesis
+      previousGeneration
+      (BackupReceipt "backup-1")
   nextGeneration = TargetAgentGenerationReceipt "gen-2"
+  previousGeneration = TargetAgentGenerationReceipt "gen-1"
   newReceipt = BackupReceipt "backup-2"
   repairSteps =
     [ AuthorityBackupRepair (AssessBackupHealth BackupPositivelyAbsent)

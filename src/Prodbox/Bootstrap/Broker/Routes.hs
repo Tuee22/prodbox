@@ -44,7 +44,8 @@ data BrokerRoute
   | BrokerVaultPkiStatus
   | BrokerVaultPkiIssueTestCertificate
   | BrokerVaultResetAmbiguousInitialization
-  | BrokerChildCustodyCommit
+  | BrokerChildCustodyPrepare
+  | BrokerChildCustodyFinalize
   | BrokerChildRecoveryDeliver
   | BrokerChildRecoveryObserve
   deriving (Eq, Ord, Show, Enum, Bounded)
@@ -127,8 +128,10 @@ brokerRouteSpec route = case route of
     mutationSpec BrokerPkiOperate "/v1/bootstrap/vault/pki/issue-test-cert"
   BrokerVaultResetAmbiguousInitialization ->
     mutationSpec BrokerBootstrapMutate "/v1/bootstrap/vault/ambiguous-init/reset"
-  BrokerChildCustodyCommit ->
-    mutationSpec BrokerBootstrapMutate "/v1/bootstrap/child/custody/commit"
+  BrokerChildCustodyPrepare ->
+    mutationSpec BrokerBootstrapMutate "/v1/bootstrap/child/custody/prepare"
+  BrokerChildCustodyFinalize ->
+    mutationSpec BrokerBootstrapMutate "/v1/bootstrap/child/custody/finalize"
   BrokerChildRecoveryDeliver ->
     mutationSpec BrokerBootstrapMutate "/v1/bootstrap/child/recovery/deliver"
   BrokerChildRecoveryObserve ->

@@ -2,6 +2,8 @@ FROM ubuntu:24.04
 
 ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.1.0
+ARG PULUMI_VERSION=3.228.0
+ARG KUBECTL_VERSION=v1.35.5
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
 # Default container locale is C/POSIX with no UTF-8 support. The prodbox binary's
@@ -50,6 +52,35 @@ RUN arch_name="$(dpkg --print-architecture)" \
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscliv2.zip
 
+# Provider Worker runs only the checked-in, typed Pulumi programs below. Pin
+# the CLI in the image so execution never depends on a mutable host binary.
+RUN arch_name="$(dpkg --print-architecture)" \
+    && case "${arch_name}" in \
+        amd64) pulumi_arch=x64 ;; \
+        arm64) pulumi_arch=arm64 ;; \
+        *) echo "Unsupported Debian architecture: ${arch_name}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://get.pulumi.com/releases/sdk/pulumi-v${PULUMI_VERSION}-linux-${pulumi_arch}.tar.gz" -o /tmp/pulumi.tar.gz \
+    && tar -xzf /tmp/pulumi.tar.gz -C /tmp \
+    && install -m 0755 /tmp/pulumi/pulumi /usr/local/bin/pulumi \
+    && rm -rf /tmp/pulumi /tmp/pulumi.tar.gz
+
+# The Target Secret Agent coordinates exact one-shot Jobs through its
+# namespaced RBAC. Pin kubectl to the proven RKE2 Kubernetes minor and verify
+# the release checksum before installing it into the union runtime image.
+RUN arch_name="$(dpkg --print-architecture)" \
+    && case "${arch_name}" in \
+        amd64) kubectl_arch=amd64 ;; \
+        arm64) kubectl_arch=arm64 ;; \
+        *) echo "Unsupported Debian architecture: ${arch_name}" >&2; exit 1 ;; \
+    esac \
+    && kubectl_url="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl" \
+    && curl -fsSL "${kubectl_url}" -o /tmp/kubectl \
+    && curl -fsSL "${kubectl_url}.sha256" -o /tmp/kubectl.sha256 \
+    && echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum --check \
+    && install -m 0755 /tmp/kubectl /usr/local/bin/kubectl \
+    && rm -f /tmp/kubectl /tmp/kubectl.sha256
+
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://get-ghcup.haskell.org -o /tmp/ghcup.sh \
     && chmod +x /tmp/ghcup.sh \
     && BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
@@ -65,6 +96,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://get-ghcup.haskell.org -o /tmp/
 COPY prodbox.cabal cabal.project LICENSE README.md ./
 COPY app ./app
 COPY src ./src
+COPY pulumi ./pulumi
 
 # Plain RUN — no BuildKit cache mounts. The build uses basic `docker build`
 # with the daemon's default builder (no `docker buildx`, no docker-container

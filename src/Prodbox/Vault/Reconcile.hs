@@ -9,6 +9,7 @@ module Prodbox.Vault.Reconcile
   , VaultKubernetesAuthConfigSpec (..)
   , VaultTransitKeySpec (..)
   , VaultPolicySpec (..)
+  , VaultKubernetesTokenType (..)
   , VaultKubernetesRoleSpec (..)
   , VaultReconcilePlan (..)
   , VaultReconcileOps (..)
@@ -17,7 +18,15 @@ module Prodbox.Vault.Reconcile
   , VaultReconcileStep (..)
   , VaultReconcileError (..)
   , defaultVaultReconcilePlan
-  , operatorWritePolicy
+  , bootstrapBrokerRotatableTransitKeys
+  , bootstrapProvisionerRole
+  , bootstrapPkiOperatorRole
+  , bootstrapControlPlaneClientRole
+  , bootstrapSealRole
+  , tokenAccessorAuditorRole
+  , VaultPkiBaselineStatus (..)
+  , reconcileVaultPkiBaseline
+  , observeVaultPkiBaseline
   , runVaultReconcile
   , runVaultReconcileWith
   , renderVaultReconcileStep
@@ -25,17 +34,53 @@ module Prodbox.Vault.Reconcile
   )
 where
 
+import Data.Char (isDigit)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( adminActionRunnerAuditorVaultRole
+  , adminActionRunnerCompletionVaultRole
+  , adminActionRunnerVaultRole
+  , controlPlaneSigningKeyInventory
+  , controlPlaneSigningKeyName
+  , controlPlaneSigningKeyRefFor
+  , credentialProvisionerAuditorVaultRole
+  , credentialProvisionerCompletionVaultRole
+  , credentialProvisionerVaultRole
+  , externalMaterialIngressAuditorVaultRole
+  , externalMaterialIngressVaultRole
+  , harnessControlPlaneVaultRole
+  , operatorControlPlaneVaultRole
+  , targetSecretControllerAuditorVaultRole
+  , targetSecretWorkerAuditorVaultRole
+  , targetSecretWorkerVaultRole
+  , trustedCallersForRole
+  )
+import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (..))
+import Prodbox.ControlPlane.RetainedAuthentication
+  ( controlPlaneAuthorityEpochPath
+  , controlPlaneRequestReplayPath
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( AwsCredentialIdentity (..)
+  , TargetSecretId (..)
+  , allTargetMaterialIds
+  , targetSecretIdToken
+  , targetSecretIdVaultLogicalPath
+  )
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
+import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Secret.VaultInventory
   ( VaultSecretBootstrapAction (..)
   , VaultSecretBootstrapError (..)
   , VaultSecretBootstrapOps (..)
   , VaultSecretBootstrapStep (..)
   , VaultSecretConsumer (..)
+  , VaultSecretFieldSource (..)
+  , VaultSecretFieldSpec (..)
   , VaultSecretObjectSpec (..)
   , VaultSecretPath (..)
   , chartVaultManagedSecretObjects
@@ -46,7 +91,10 @@ import Prodbox.Secret.VaultInventory
   , vaultSecretPathName
   )
 import Prodbox.Vault.Client
-  ( TransitKeyInfo (..)
+  ( KubernetesRoleReadback (..)
+  , PkiIssuerListing (..)
+  , PkiRoleInfo (..)
+  , TransitKeyInfo (..)
   , VaultAddress
   , VaultAuthInfo (..)
   , VaultMountInfo (..)
@@ -54,18 +102,25 @@ import Prodbox.Vault.Client
   , vaultCreateTransitKey
   , vaultEnableAuthMethod
   , vaultEnableMount
+  , vaultGeneratePkiInternalRoot
   , vaultKvReadV2
   , vaultKvWriteV2
   , vaultListAuthMethods
   , vaultListMounts
+  , vaultListPkiIssuers
+  , vaultReadKubernetesRole
+  , vaultReadPkiRole
   , vaultReadTransitKey
   , vaultWriteKubernetesAuthConfig
+  , vaultWriteKubernetesBatchRole
   , vaultWriteKubernetesRole
+  , vaultWritePkiRole
   , vaultWritePolicy
   )
 import Prodbox.Vault.RoleId
   ( VaultRoleId
       ( VaultRoleAuthorityBackup
+      , VaultRoleBootstrapBroker
       , VaultRoleGatewayDaemon
       , VaultRoleLifecycleAuthority
       , VaultRoleProviderWorker
@@ -74,6 +129,7 @@ import Prodbox.Vault.RoleId
       )
   , vaultRoleIdText
   )
+import Text.Read (readMaybe)
 
 data VaultMountSpec = VaultMountSpec
   { vaultMountSpecPath :: Text
@@ -111,8 +167,15 @@ data VaultKubernetesRoleSpec = VaultKubernetesRoleSpec
   , vaultKubernetesRoleSpecServiceAccounts :: [Text]
   , vaultKubernetesRoleSpecNamespaces :: [Text]
   , vaultKubernetesRoleSpecPolicies :: [Text]
+  , vaultKubernetesRoleSpecAudience :: Maybe Text
   , vaultKubernetesRoleSpecTtl :: Text
+  , vaultKubernetesRoleSpecTokenType :: VaultKubernetesTokenType
   }
+  deriving (Eq, Show)
+
+data VaultKubernetesTokenType
+  = VaultKubernetesServiceToken
+  | VaultKubernetesBatchToken
   deriving (Eq, Show)
 
 data VaultReconcilePlan = VaultReconcilePlan
@@ -136,6 +199,9 @@ data VaultReconcileOps = VaultReconcileOps
   , vaultOpsCreateTransitKey :: VaultTransitKeySpec -> IO (Either HttpError ())
   , vaultOpsWritePolicy :: VaultPolicySpec -> IO (Either HttpError ())
   , vaultOpsWriteKubernetesRole :: VaultKubernetesRoleSpec -> IO (Either HttpError ())
+  , vaultOpsReadKubernetesRole
+      :: VaultKubernetesRoleSpec
+      -> IO (Either HttpError KubernetesRoleReadback)
   , vaultOpsSecretBootstrap :: VaultSecretBootstrapOps
   }
 
@@ -168,6 +234,7 @@ data VaultReconcileError
   | VaultReconcileMountOptionMismatch Text Text Text (Maybe Text)
   | VaultReconcileAuthTypeMismatch Text Text Text
   | VaultReconcileTransitKeyTypeMismatch Text Text Text
+  | VaultReconcileKubernetesRoleReadbackMismatch Text
   | VaultReconcileSecretBootstrapFailed VaultSecretBootstrapError
   deriving (Eq, Show)
 
@@ -194,17 +261,105 @@ defaultVaultReconcilePlan =
           , "prodbox-pulumi-state"
           , "prodbox-minio-envelope"
           , "prodbox-downstream-cluster-config"
+          , "prodbox-retained-material"
+          , "prodbox-tls-retention-dek"
           ]
+          ++ [VaultTransitKeySpec "prodbox-authority-genesis-signing" "ed25519"]
+          ++ [VaultTransitKeySpec "prodbox-target-secret-commitment" "hmac"]
+          ++ [VaultTransitKeySpec "prodbox-retained-material-commitment" "hmac"]
+          ++ [ VaultTransitKeySpec (controlPlaneSigningKeyName ref) "ed25519"
+             | ref <- controlPlaneSigningKeyInventory
+             ]
     , vaultReconcilePolicies =
-        [ VaultPolicySpec "prodbox-gateway" gatewayPolicy
+        [ VaultPolicySpec
+            "prodbox-gateway"
+            (gatewayPolicy <> serviceControlPlaneClientPolicy GatewayRuntime)
+        , VaultPolicySpec
+            (vaultRoleIdText VaultRoleBootstrapBroker)
+            bootstrapBrokerPolicy
+        , VaultPolicySpec bootstrapProvisionerRole bootstrapProvisionerPolicy
+        , VaultPolicySpec bootstrapPkiOperatorRole bootstrapPkiOperatorPolicy
+        , VaultPolicySpec bootstrapSealRole bootstrapSealPolicy
+        , VaultPolicySpec
+            bootstrapControlPlaneClientRole
+            (serviceControlPlaneClientPolicy BootstrapBroker)
+        , VaultPolicySpec tokenAccessorAuditorRole tokenAccessorAuditorPolicy
         , VaultPolicySpec "prodbox-pulumi" pulumiPolicy
         , VaultPolicySpec "prodbox-federation-custody" federationPolicy
-        , VaultPolicySpec "prodbox-operator-write" operatorWritePolicy
-        , VaultPolicySpec "prodbox-lifecycle-authority" lifecycleAuthorityPolicy
-        , VaultPolicySpec "prodbox-provider-worker" providerWorkerPolicy
-        , VaultPolicySpec "prodbox-authority-backup" authorityBackupPolicy
-        , VaultPolicySpec "prodbox-tls-retention" tlsRetentionPolicy
-        , VaultPolicySpec "prodbox-target-secret-agent" targetSecretAgentPolicy
+        , VaultPolicySpec
+            "prodbox-lifecycle-authority"
+            ( lifecycleAuthorityPolicy
+                <> standingControlPlaneAuthenticationPolicy LifecycleAuthorityRuntime
+            )
+        , VaultPolicySpec
+            "prodbox-provider-worker"
+            ( providerWorkerPolicy
+                <> standingControlPlaneAuthenticationPolicy ProviderWorkerRuntime
+            )
+        , VaultPolicySpec
+            "prodbox-authority-backup"
+            ( authorityBackupPolicy
+                <> standingControlPlaneAuthenticationPolicy AuthorityBackupRuntime
+            )
+        , VaultPolicySpec
+            "prodbox-tls-retention"
+            ( tlsRetentionPolicy
+                <> standingControlPlaneAuthenticationPolicy TlsRetentionRuntime
+            )
+        , VaultPolicySpec
+            "prodbox-target-secret-agent"
+            ( targetSecretAgentPolicy
+                <> standingControlPlaneAuthenticationPolicy TargetSecretAgentRuntime
+            )
+        , VaultPolicySpec
+            operatorControlPlaneVaultRole
+            (externalControlPlaneAuthenticationPolicy CallerOperatorCli)
+        , VaultPolicySpec
+            harnessControlPlaneVaultRole
+            (externalControlPlaneAuthenticationPolicy CallerTestHarness)
+        , VaultPolicySpec
+            externalMaterialIngressVaultRole
+            externalMaterialIngressPolicy
+        , VaultPolicySpec
+            externalMaterialIngressAuditorVaultRole
+            ( narrowTokenAccessorAuditorPolicy
+                <> serviceSessionJournalPolicy externalMaterialIngressVaultRole
+                <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
+            )
+        , VaultPolicySpec
+            credentialProvisionerAuditorVaultRole
+            ( narrowTokenAccessorAuditorPolicy
+                <> serviceSessionJournalPolicy credentialProvisionerVaultRole
+                <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
+            )
+        , VaultPolicySpec
+            credentialProvisionerVaultRole
+            credentialProvisionerPolicy
+        , VaultPolicySpec
+            credentialProvisionerCompletionVaultRole
+            (externalControlPlaneAuthenticationPolicy CallerCredentialProvisioner)
+        , VaultPolicySpec
+            adminActionRunnerVaultRole
+            ( adminActionRunnerPolicy
+                <> externalControlPlaneAuthenticationPolicy CallerAdminActionRunner
+            )
+        , VaultPolicySpec
+            adminActionRunnerAuditorVaultRole
+            adminActionRunnerAuditorPolicy
+        , VaultPolicySpec
+            adminActionRunnerCompletionVaultRole
+            (externalControlPlaneAuthenticationPolicy CallerAdminActionRunner)
+        , VaultPolicySpec
+            targetSecretWorkerVaultRole
+            targetSecretWorkerPolicy
+        , VaultPolicySpec
+            targetSecretWorkerAuditorVaultRole
+            targetSecretWorkerAuditorPolicy
+        , VaultPolicySpec
+            targetSecretControllerAuditorVaultRole
+            ( targetSecretWorkerAuditorPolicy
+                <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
+            )
         ]
           ++ map chartSecretPolicy chartVaultSecretConsumers
     , vaultReconcileKubernetesRoles =
@@ -216,33 +371,75 @@ defaultVaultReconcilePlan =
             -- `vault.role`). It needs BOTH policies: `prodbox-gateway` for the
             -- object-store HMAC read + prodbox-pulumi-state Transit encrypt/decrypt,
             -- and `gateway-gateway` (the gateway-event-keys consumer policy) for the
-            -- per-node event-key / gateway aws / gateway minio KV reads.
+            -- per-node event-key / Gateway DNS / gateway minio KV reads.
             ["prodbox-gateway", "gateway-gateway"]
+            Nothing
             "1h"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            (vaultRoleIdText VaultRoleBootstrapBroker)
+            ["prodbox-bootstrap-secret-worker"]
+            ["bootstrap-broker"]
+            [vaultRoleIdText VaultRoleBootstrapBroker]
+            Nothing
+            "5m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            bootstrapProvisionerRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [bootstrapProvisionerRole]
+            Nothing
+            "5m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            bootstrapPkiOperatorRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [bootstrapPkiOperatorRole]
+            Nothing
+            "5m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            bootstrapSealRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [bootstrapSealRole]
+            Nothing
+            "1m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            bootstrapControlPlaneClientRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [bootstrapControlPlaneClientRole]
+            Nothing
+            "15m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            tokenAccessorAuditorRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [tokenAccessorAuditorRole]
+            Nothing
+            "5m"
+            VaultKubernetesBatchToken
         , VaultKubernetesRoleSpec
             "prodbox-pulumi-runner"
             ["prodbox-pulumi-runner"]
             ["prodbox-system"]
             ["prodbox-pulumi"]
+            Nothing
             "1h"
+            VaultKubernetesServiceToken
         , VaultKubernetesRoleSpec
             "prodbox-federation-controller"
             ["prodbox-federation-controller"]
             ["gateway"]
             ["prodbox-federation-custody"]
+            Nothing
             "1h"
-        , -- Sprint 1.44: the operator-write role the gateway daemon's
-          -- @POST /v1/secret/<logical>@ endpoint logs into Vault under, using
-          -- the operator-injected Kubernetes JWT presented on the request (NOT
-          -- the daemon's own read-only @prodbox-gateway-daemon@ identity). It is
-          -- scoped to exactly the two host-minted operator secrets routed
-          -- through the daemon: @secret/acme/eab@ and @secret/gateway/gateway/aws@.
-          VaultKubernetesRoleSpec
-            "prodbox-operator-write"
-            ["prodbox-operator-write"]
-            ["gateway"]
-            ["prodbox-operator-write"]
-            "5m"
+            VaultKubernetesServiceToken
         , standingRole
             VaultRoleLifecycleAuthority
             "prodbox-lifecycle-authority"
@@ -258,9 +455,114 @@ defaultVaultReconcilePlan =
         , standingRole
             VaultRoleTargetSecretAgent
             "prodbox-target-secret-agent"
+        , VaultKubernetesRoleSpec
+            operatorControlPlaneVaultRole
+            [operatorControlPlaneVaultRole]
+            ["gateway"]
+            [operatorControlPlaneVaultRole]
+            Nothing
+            "5m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            harnessControlPlaneVaultRole
+            [harnessControlPlaneVaultRole]
+            ["gateway"]
+            [harnessControlPlaneVaultRole]
+            Nothing
+            "15m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            externalMaterialIngressVaultRole
+            [externalMaterialIngressVaultRole]
+            ["credential-provisioner"]
+            [externalMaterialIngressVaultRole]
+            (Just "prodbox-control-plane")
+            "10m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            externalMaterialIngressAuditorVaultRole
+            [externalMaterialIngressVaultRole]
+            ["credential-provisioner"]
+            [externalMaterialIngressAuditorVaultRole]
+            (Just "prodbox-control-plane")
+            "2m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            credentialProvisionerAuditorVaultRole
+            [credentialProvisionerVaultRole]
+            ["credential-provisioner"]
+            [credentialProvisionerAuditorVaultRole]
+            (Just "prodbox-control-plane")
+            "2m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            credentialProvisionerVaultRole
+            [credentialProvisionerVaultRole]
+            ["credential-provisioner"]
+            [credentialProvisionerVaultRole]
+            (Just "prodbox-control-plane")
+            "10m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            credentialProvisionerCompletionVaultRole
+            [credentialProvisionerVaultRole]
+            ["credential-provisioner"]
+            [credentialProvisionerCompletionVaultRole]
+            (Just "prodbox-control-plane")
+            "2m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            adminActionRunnerVaultRole
+            [adminActionRunnerVaultRole]
+            ["admin-action-runner"]
+            [adminActionRunnerVaultRole]
+            (Just "vault")
+            "10m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            adminActionRunnerAuditorVaultRole
+            [adminActionRunnerVaultRole]
+            ["admin-action-runner"]
+            [adminActionRunnerAuditorVaultRole]
+            (Just "vault")
+            "5m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            adminActionRunnerCompletionVaultRole
+            [adminActionRunnerVaultRole]
+            ["admin-action-runner"]
+            [adminActionRunnerCompletionVaultRole]
+            (Just "vault")
+            "2m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            targetSecretWorkerVaultRole
+            [targetSecretWorkerVaultRole]
+            ["target-secret-agent"]
+            [targetSecretWorkerVaultRole]
+            (Just "prodbox-control-plane")
+            "10m"
+            VaultKubernetesServiceToken
+        , VaultKubernetesRoleSpec
+            targetSecretWorkerAuditorVaultRole
+            [targetSecretWorkerVaultRole]
+            ["target-secret-agent"]
+            [targetSecretWorkerAuditorVaultRole]
+            (Just "prodbox-control-plane")
+            "5m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
+            targetSecretControllerAuditorVaultRole
+            ["prodbox-target-secret-agent", "prodbox-lifecycle-authority"]
+            ["target-secret-agent", "lifecycle-authority"]
+            [targetSecretControllerAuditorVaultRole]
+            (Just "prodbox-control-plane")
+            "5m"
+            VaultKubernetesBatchToken
         ]
           ++ map chartSecretRole chartVaultSecretConsumers
-    , vaultReconcileSecretObjects = chartVaultManagedSecretObjects
+    , vaultReconcileSecretObjects =
+        controlPlaneAuthorityEpochSeed : chartVaultManagedSecretObjects
     }
 
 standingRole :: VaultRoleId -> Text -> VaultKubernetesRoleSpec
@@ -270,7 +572,21 @@ standingRole role policy =
     [vaultRoleIdText role]
     ["gateway"]
     [policy]
+    Nothing
     "1h"
+    VaultKubernetesServiceToken
+
+controlPlaneAuthorityEpochSeed :: VaultSecretObjectSpec
+controlPlaneAuthorityEpochSeed =
+  VaultSecretObjectSpec
+    { vaultSecretObjectPath = VaultSecretPath "secret" controlPlaneAuthorityEpochPath
+    , vaultSecretObjectFields =
+        [ VaultSecretFieldSpec
+            { vaultSecretFieldName = "epoch"
+            , vaultSecretFieldSource = VaultSecretStatic "1"
+            }
+        ]
+    }
 
 chartSecretPolicy :: VaultSecretConsumer -> VaultPolicySpec
 chartSecretPolicy consumer =
@@ -285,7 +601,9 @@ chartSecretRole consumer =
     (vaultSecretConsumerServiceAccounts consumer)
     (vaultSecretConsumerNamespaces consumer)
     [vaultSecretConsumerPolicyName consumer]
+    Nothing
     (vaultSecretConsumerTtl consumer)
+    VaultKubernetesServiceToken
 
 runVaultReconcile
   :: VaultAddress
@@ -323,15 +641,25 @@ runVaultReconcile address token =
       , vaultOpsWritePolicy =
           \spec -> vaultWritePolicy address token (vaultPolicySpecName spec) (vaultPolicySpecDocument spec)
       , vaultOpsWriteKubernetesRole =
-          \spec ->
-            vaultWriteKubernetesRole
+          \spec -> do
+            let writeRole = case vaultKubernetesRoleSpecTokenType spec of
+                  VaultKubernetesServiceToken -> vaultWriteKubernetesRole
+                  VaultKubernetesBatchToken -> vaultWriteKubernetesBatchRole
+            writeRole
               address
               token
               (vaultKubernetesRoleSpecName spec)
               (vaultKubernetesRoleSpecServiceAccounts spec)
               (vaultKubernetesRoleSpecNamespaces spec)
               (vaultKubernetesRoleSpecPolicies spec)
+              (vaultKubernetesRoleSpecAudience spec)
               (vaultKubernetesRoleSpecTtl spec)
+      , vaultOpsReadKubernetesRole =
+          \spec ->
+            vaultReadKubernetesRole
+              address
+              token
+              (vaultKubernetesRoleSpecName spec)
       , vaultOpsSecretBootstrap =
           VaultSecretBootstrapOps
             { vaultSecretBootstrapRead =
@@ -565,17 +893,76 @@ reconcileKubernetesRoles ops =
  where
   go steps [] = pure (Right (reverse steps))
   go steps (spec : rest) = do
-    result <- vaultOpsWriteKubernetesRole ops spec
-    case result of
+    written <- vaultOpsWriteKubernetesRole ops spec
+    case written of
       Left err ->
         pure
           ( Left
               (VaultReconcileHttpError ("write Kubernetes role " <> vaultKubernetesRoleSpecName spec) err)
           )
-      Right () ->
-        go
-          (step VaultReconcileKubernetesRole (vaultKubernetesRoleSpecName spec) VaultReconcileWritten : steps)
-          rest
+      Right () -> do
+        observed <- vaultOpsReadKubernetesRole ops spec
+        case observed of
+          Left err ->
+            pure
+              ( Left
+                  (VaultReconcileHttpError ("read back Kubernetes role " <> vaultKubernetesRoleSpecName spec) err)
+              )
+          Right readback
+            | kubernetesRoleReadbackMatches spec readback ->
+                go
+                  (step VaultReconcileKubernetesRole (vaultKubernetesRoleSpecName spec) VaultReconcileWritten : steps)
+                  rest
+            | otherwise ->
+                pure
+                  ( Left
+                      ( VaultReconcileKubernetesRoleReadbackMismatch
+                          (vaultKubernetesRoleSpecName spec)
+                      )
+                  )
+
+kubernetesRoleReadbackMatches
+  :: VaultKubernetesRoleSpec -> KubernetesRoleReadback -> Bool
+kubernetesRoleReadbackMatches spec readback =
+  case vaultDurationSeconds (vaultKubernetesRoleSpecTtl spec) of
+    Nothing -> False
+    Just ttlSeconds ->
+      kubernetesRoleReadbackServiceAccounts readback
+        == vaultKubernetesRoleSpecServiceAccounts spec
+        && kubernetesRoleReadbackNamespaces readback
+          == vaultKubernetesRoleSpecNamespaces spec
+        && kubernetesRoleReadbackPolicies readback
+          == vaultKubernetesRoleSpecPolicies spec
+        && normalizeAudience (kubernetesRoleReadbackAudience readback)
+          == normalizeAudience (vaultKubernetesRoleSpecAudience spec)
+        && kubernetesRoleReadbackTtlSeconds readback == ttlSeconds
+        && kubernetesRoleReadbackMaximumTtlSeconds readback == ttlSeconds
+        && kubernetesRoleReadbackExplicitMaximumTtlSeconds readback == ttlSeconds
+        && kubernetesRoleReadbackTokenType readback == expectedTokenType
+ where
+  expectedTokenType = case vaultKubernetesRoleSpecTokenType spec of
+    VaultKubernetesServiceToken -> "service"
+    VaultKubernetesBatchToken -> "batch"
+
+normalizeAudience :: Maybe Text -> Maybe Text
+normalizeAudience candidate = case Text.strip <$> candidate of
+  Just value | not (Text.null value) -> Just value
+  _ -> Nothing
+
+vaultDurationSeconds :: Text -> Maybe Natural
+vaultDurationSeconds raw = do
+  (digits, suffix) <- Text.unsnoc (Text.strip raw)
+  if Text.null digits || not (Text.all isDigit digits)
+    then Nothing
+    else do
+      value <- readMaybe (Text.unpack digits)
+      multiplier <- case suffix of
+        's' -> Just 1
+        'm' -> Just 60
+        'h' -> Just 3600
+        _ -> Nothing
+      let seconds = value * multiplier
+      if seconds > 0 then Just seconds else Nothing
 
 reconcileSecretObjects
   :: VaultReconcileOps
@@ -661,6 +1048,10 @@ renderVaultReconcileError err = case err of
       ++ Text.unpack actual
       ++ "; expected "
       ++ Text.unpack expected
+  VaultReconcileKubernetesRoleReadbackMismatch role ->
+    "Vault Kubernetes role "
+      ++ Text.unpack role
+      ++ " did not read back with its exact ServiceAccount, namespace, policy, audience, token type, and TTL caps"
   VaultReconcileSecretBootstrapFailed bootstrapErr ->
     renderVaultSecretBootstrapError bootstrapErr
 
@@ -743,6 +1134,165 @@ gatewayPolicy =
     , "}"
     ]
 
+-- | The only keys the isolated Broker worker may rotate.  The same closed
+-- inventory drives both its Vault ACL and its runtime input validation.
+bootstrapBrokerRotatableTransitKeys :: [Text]
+bootstrapBrokerRotatableTransitKeys =
+  [ "prodbox-active-config"
+  , "prodbox-gateway-state"
+  , "prodbox-pulumi-state"
+  , "prodbox-minio-envelope"
+  , "prodbox-downstream-cluster-config"
+  ]
+
+bootstrapBrokerPolicy :: Text
+bootstrapBrokerPolicy =
+  Text.concat (fmap keyRules bootstrapBrokerRotatableTransitKeys)
+ where
+  keyRules keyName =
+    Text.unlines
+      [ "path \"transit/keys/" <> keyName <> "\" {"
+      , "  capabilities = [\"read\"]"
+      , "}"
+      , "path \"transit/keys/" <> keyName <> "/rotate\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      ]
+
+bootstrapProvisionerRole :: Text
+bootstrapProvisionerRole = "prodbox-bootstrap-provisioner"
+
+-- | Accessor-free batch role for post-bootstrap PKI observation and the exact
+-- compiled test-certificate issuance.  It cannot reconcile mounts, policies,
+-- auth roles, secrets, or seal Vault.
+bootstrapPkiOperatorRole :: Text
+bootstrapPkiOperatorRole = "prodbox-bootstrap-pki-operator"
+
+-- | Standing controller-only role used solely to sign the Broker's closed
+-- service-to-service requests.  Secret workers cannot select this role, and
+-- it carries none of the provisioner's Vault baseline capability.
+bootstrapControlPlaneClientRole :: Text
+bootstrapControlPlaneClientRole = "prodbox-bootstrap-control-plane-client"
+
+bootstrapSealRole :: Text
+bootstrapSealRole = "prodbox-bootstrap-seal"
+
+tokenAccessorAuditorRole :: Text
+tokenAccessorAuditorRole = "prodbox-token-accessor-auditor"
+
+data VaultPkiBaselineStatus
+  = VaultPkiBaselineAbsent
+  | VaultPkiBaselineDrifted
+  | VaultPkiBaselineReady
+  deriving (Eq, Show)
+
+reconcileVaultPkiBaseline
+  :: VaultAddress -> VaultToken -> IO (Either Text VaultPkiBaselineStatus)
+reconcileVaultPkiBaseline address token = do
+  issuers <- vaultListPkiIssuers address token
+  generated <- case issuers of
+    Right listing
+      | null (pkiIssuerKeys listing) ->
+          fmap (either (Left . Text.pack . renderHttpError) Right) $
+            vaultGeneratePkiInternalRoot address token
+    Right _ -> pure (Right ())
+    Left failure -> pure (Left (Text.pack (renderHttpError failure)))
+  case generated of
+    Left failure -> pure (Left failure)
+    Right () -> do
+      written <- vaultWritePkiRole address token "prodbox-bootstrap-test"
+      case written of
+        Left failure -> pure (Left (Text.pack (renderHttpError failure)))
+        Right () -> do
+          observed <- observeVaultPkiBaseline address token
+          pure $ case observed of
+            Right VaultPkiBaselineReady -> Right VaultPkiBaselineReady
+            Right _ -> Left "Vault PKI baseline read-back was not exact"
+            Left failure -> Left failure
+
+observeVaultPkiBaseline
+  :: VaultAddress -> VaultToken -> IO (Either Text VaultPkiBaselineStatus)
+observeVaultPkiBaseline address token = do
+  issuers <- vaultListPkiIssuers address token
+  role <- vaultReadPkiRole address token "prodbox-bootstrap-test"
+  pure $ case (issuers, role) of
+    (Right listing, Right info)
+      | null (pkiIssuerKeys listing) -> Right VaultPkiBaselineAbsent
+      | pkiRoleAllowsAnyName info
+          && pkiRoleMaxTtlSeconds info == 3600
+          && pkiRoleKeyType info == "ec" ->
+          Right VaultPkiBaselineReady
+      | otherwise -> Right VaultPkiBaselineDrifted
+    (Left (HttpStatus 404 _), _) -> Right VaultPkiBaselineAbsent
+    (_, Left (HttpStatus 404 _)) -> Right VaultPkiBaselineAbsent
+    (Left failure, _) -> Left (Text.pack (renderHttpError failure))
+    (_, Left failure) -> Left (Text.pack (renderHttpError failure))
+
+-- The post-bootstrap provisioner can reconcile only the compiled Vault
+-- baseline families plus the Broker's exact test-PKI operations. It
+-- has no token administration, generated-root, or generic raw sys capability.
+bootstrapProvisionerPolicy :: Text
+bootstrapProvisionerPolicy =
+  Text.unlines
+    [ "path \"sys/mounts\" { capabilities = [\"read\"] }"
+    , "path \"sys/mounts/secret\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"sys/mounts/transit\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"sys/mounts/pki\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"sys/auth\" { capabilities = [\"read\"] }"
+    , "path \"sys/auth/kubernetes\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"auth/kubernetes/config\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"transit/keys/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"sys/policies/acl/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"auth/kubernetes/role/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"secret/data/*\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"secret/metadata/*\" { capabilities = [\"read\"] }"
+    , "path \"pki/issuers\" { capabilities = [\"list\"] }"
+    , "path \"pki/root/generate/internal\" { capabilities = [\"update\"] }"
+    , "path \"pki/roles/prodbox-bootstrap-test\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    , "path \"pki/issue/prodbox-bootstrap-test\" { capabilities = [\"update\"] }"
+    ]
+
+bootstrapPkiOperatorPolicy :: Text
+bootstrapPkiOperatorPolicy =
+  Text.unlines
+    [ "path \"pki/issuers\" { capabilities = [\"list\"] }"
+    , "path \"pki/roles/prodbox-bootstrap-test\" { capabilities = [\"read\"] }"
+    , "path \"pki/issue/prodbox-bootstrap-test\" { capabilities = [\"update\"] }"
+    ]
+
+-- The seal operation uses a one-minute batch token.  It has no server-side
+-- accessor to defer across the transition to sealed state and cannot perform
+-- any baseline, token-administration, or data operation.
+bootstrapSealPolicy :: Text
+bootstrapSealPolicy =
+  Text.unlines
+    [ "path \"sys/seal\" { capabilities = [\"update\", \"sudo\"] }"
+    ]
+
+tokenAccessorAuditorPolicy :: Text
+tokenAccessorAuditorPolicy =
+  Text.unlines
+    [ "path \"auth/token/accessors\" { capabilities = [\"list\", \"sudo\"] }"
+    , "path \"auth/token/lookup-accessor\" { capabilities = [\"update\", \"sudo\"] }"
+    , "path \"auth/token/revoke-accessor\" { capabilities = [\"update\", \"sudo\"] }"
+    ]
+
+narrowTokenAccessorAuditorPolicy :: Text
+narrowTokenAccessorAuditorPolicy =
+  Text.unlines
+    [ "path \"auth/token/accessors\" { capabilities = [\"list\", \"sudo\"] }"
+    , "path \"auth/token/lookup-accessor\" { capabilities = [\"update\", \"sudo\"] }"
+    , "path \"auth/token/revoke-accessor\" { capabilities = [\"update\", \"sudo\"] }"
+    ]
+
+serviceSessionJournalPolicy :: Text -> Text
+serviceSessionJournalPolicy workerRole =
+  Text.unlines
+    [ "path \"secret/data/control-plane/service-sessions/" <> workerRole <> "\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    ]
+
 lifecycleAuthorityPolicy :: Text
 lifecycleAuthorityPolicy =
   Text.unlines
@@ -757,6 +1307,21 @@ lifecycleAuthorityPolicy =
     , "}"
     , "path \"transit/decrypt/prodbox-pulumi-state\" {"
     , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/encrypt/prodbox-active-config\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/decrypt/prodbox-active-config\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"transit/sign/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"secret/data/control-plane/bootstrap-handoff\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
     , "}"
     ]
 
@@ -774,44 +1339,286 @@ tlsRetentionPolicy =
 
 targetSecretAgentPolicy :: Text
 targetSecretAgentPolicy =
+  Text.concat (fmap targetRule allTargetMaterialIds)
+    <> Text.concat (fmap trustRule targetWorkerAuthorizationIds)
+    <> Text.unlines
+      [ "path \"secret/data/target-agent/retained-home/ses-smtp-source\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\"]"
+      , "}"
+      , "path \"secret/metadata/target-agent/retained-home/ses-smtp-source\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\", \"delete\"]"
+      , "}"
+      , "path \"secret/data/target-agent/retained-home/acme-eab-source\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\"]"
+      , "}"
+      , "path \"secret/metadata/target-agent/retained-home/acme-eab-source\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\", \"delete\"]"
+      , "}"
+      , "path \"transit/encrypt/prodbox-retained-material\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/decrypt/prodbox-retained-material\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/hmac/prodbox-retained-material-commitment\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/encrypt/prodbox-tls-retention-dek\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/decrypt/prodbox-tls-retention-dek\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+      , "  capabilities = [\"read\"]"
+      , "}"
+      , "path \"secret/data/target-agent/child-custody/*\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\"]"
+      , "}"
+      ]
+ where
+  targetRule target =
+    let logical = targetSecretIdVaultLogicalPath target
+     in Text.unlines
+          [ "path \"secret/metadata/" <> logical <> "\" {"
+          , "  capabilities = [\"read\", \"delete\"]"
+          , "}"
+          ]
+  trustRule target =
+    Text.unlines
+      [ "path \"secret/data/target-agent/trust/" <> targetSecretIdToken target <> "\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\"]"
+      , "}"
+      ]
+
+standingControlPlaneAuthenticationPolicy :: RuntimeRole -> Text
+standingControlPlaneAuthenticationPolicy role =
   Text.unlines
-    [ "path \"secret/data/keycloak/smtp\" {"
-    , "  capabilities = [\"create\", \"read\", \"update\"]"
-    , "}"
-    , "path \"secret/data/acme/eab\" {"
-    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    ( [ ""
+      , "path \"transit/keys/" <> ownKey <> "\" {"
+      , "  capabilities = [\"read\"]"
+      , "}"
+      , "path \"transit/sign/" <> ownKey <> "\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      ]
+        <> concatMap publicReadRule inboundKeyNames
+        <> epochRules
+        <> [ "path \"secret/data/" <> controlPlaneRequestReplayPath role <> "\" {"
+           , "  capabilities = [\"create\", \"read\", \"update\"]"
+           , "}"
+           ]
+    )
+ where
+  ownKey = controlPlaneSigningKeyName (controlPlaneSigningKeyRefFor (CallerService role))
+  inboundKeyNames =
+    filter
+      (/= ownKey)
+      [ controlPlaneSigningKeyName (controlPlaneSigningKeyRefFor caller)
+      | caller <- trustedCallersForRole role
+      ]
+  publicReadRule keyName =
+    [ "path \"transit/keys/" <> keyName <> "\" {"
+    , "  capabilities = [\"read\"]"
     , "}"
     ]
+  epochRules
+    | role == LifecycleAuthorityRuntime =
+        [ "path \"secret/data/" <> controlPlaneAuthorityEpochPath <> "\" {"
+        , "  capabilities = [\"create\", \"read\", \"update\"]"
+        , "}"
+        ]
+    | otherwise =
+        [ "path \"secret/data/" <> controlPlaneAuthorityEpochPath <> "\" {"
+        , "  capabilities = [\"read\"]"
+        , "}"
+        ]
+
+externalControlPlaneAuthenticationPolicy :: CallerPrincipal -> Text
+externalControlPlaneAuthenticationPolicy caller =
+  Text.unlines
+    [ "path \"transit/keys/" <> keyName <> "\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"transit/sign/" <> keyName <> "\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"secret/data/" <> controlPlaneAuthorityEpochPath <> "\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    ]
+ where
+  keyName = controlPlaneSigningKeyName (controlPlaneSigningKeyRefFor caller)
+
+-- | Exact one-shot EAB ingress/custody capability.  The schema-bound worker can
+-- verify the Authority permit and seal only the retained ACME EAB source.  It
+-- has no retained decrypt, final-target KV, generic Target Agent, or
+-- control-plane signing capability.
+externalMaterialIngressPolicy :: Text
+externalMaterialIngressPolicy =
+  Text.unlines
+    [ "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"secret/data/target-agent/retained-home/acme-eab-source\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"secret/metadata/target-agent/retained-home/acme-eab-source\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"transit/encrypt/prodbox-retained-material\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/hmac/prodbox-retained-material-commitment\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"auth/token/revoke-self\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+
+-- | Exact one-shot AWS-admin worker capability. Administrator credentials
+-- arrive only over the bounded stdin frame, and newly minted credentials leave
+-- only through the authenticated Target materialization protocol. The worker
+-- can verify the Authority permit, maintain its own two secret-free journals,
+-- and revoke itself. A disjoint accessor-free completion role authenticates
+-- the terminal handoff only after the worker session is proven absent; this
+-- role has no generic secret read/write, AWS credential KV, or retained
+-- decrypt grant.
+credentialProvisionerPolicy :: Text
+credentialProvisionerPolicy =
+  Text.unlines
+    [ "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"secret/data/control-plane/aws-admin-executions/*\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"secret/data/target-agent/retained-home/ses-smtp-source\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"secret/metadata/target-agent/retained-home/ses-smtp-source\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"transit/encrypt/prodbox-retained-material\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"transit/hmac/prodbox-retained-material-commitment\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    , "path \"auth/token/revoke-self\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+    <> serviceSessionJournalPolicy credentialProvisionerVaultRole
+
+-- | The one-shot Admin Runner can verify only the Authority-signed permit and
+-- revoke its own short lease. AWS authorization arrives separately over the
+-- attested stdin frame; no standing AWS KV, generic control-plane signing, or
+-- Target Secret Agent data capability is granted here.
+adminActionRunnerPolicy :: Text
+adminActionRunnerPolicy =
+  Text.unlines
+    [ "path \"transit/keys/prodbox-authority-genesis-signing\" {"
+    , "  capabilities = [\"read\"]"
+    , "}"
+    , "path \"auth/token/revoke-self\" {"
+    , "  capabilities = [\"update\"]"
+    , "}"
+    ]
+
+-- | A second, independently short batch session may revoke and answer exactly
+-- one journaled accessor lookup. It has no accessor of its own, cannot list,
+-- sign, or read any application/Vault data, and expires after five minutes.
+adminActionRunnerAuditorPolicy :: Text
+adminActionRunnerAuditorPolicy =
+  narrowTokenAccessorAuditorPolicy
+    <> serviceSessionJournalPolicy adminActionRunnerVaultRole
+
+-- | Ephemeral Target materializer authority.  Every KV coordinate comes from
+-- the closed target registry and this policy is bound only to the one-shot
+-- worker ServiceAccount.  There is no control-plane signing/replay capability,
+-- generic KV wildcard, list, delete, or Transit decrypt authority.
+targetSecretWorkerPolicy :: Text
+targetSecretWorkerPolicy =
+  Text.concat (fmap targetRules targetWorkerTargetIds)
+    <> Text.concat (fmap trustRule targetWorkerAuthorizationIds)
+    <> Text.unlines
+      [ "path \"transit/hmac/prodbox-target-secret-commitment\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/hmac/prodbox-retained-material-commitment\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/encrypt/prodbox-tls-retention-dek\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"transit/decrypt/prodbox-tls-retention-dek\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      , "path \"secret/data/target-agent/child-custody/*\" {"
+      , "  capabilities = [\"create\", \"read\", \"update\"]"
+      , "}"
+      , "path \"auth/token/revoke-self\" {"
+      , "  capabilities = [\"update\"]"
+      , "}"
+      ]
+ where
+  targetRules target =
+    let logical = targetSecretIdVaultLogicalPath target
+     in Text.unlines
+          [ "path \"secret/data/" <> logical <> "\" {"
+          , "  capabilities = [\"create\", \"read\", \"update\"]"
+          , "}"
+          , "path \"secret/metadata/" <> logical <> "\" {"
+          , "  capabilities = [\"create\", \"read\", \"update\"]"
+          , "}"
+          ]
+  trustRule target =
+    Text.unlines
+      [ "path \"secret/data/target-agent/trust/" <> targetSecretIdToken target <> "\" {"
+      , "  capabilities = [\"read\"]"
+      , "}"
+      ]
+
+targetSecretWorkerAuditorPolicy :: Text
+targetSecretWorkerAuditorPolicy =
+  tokenAccessorAuditorPolicy
+    <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
+
+targetWorkerTargetIds :: [TargetSecretId]
+targetWorkerTargetIds =
+  [ TargetSesSmtp
+  , TargetAcmeEab
+  ]
+    <> [ TargetAwsCredential identity
+       | identity <- [minBound .. maxBound]
+       , identity /= AwsRunCertManagerDns01
+       ]
+
+-- | Every signed intent coordinate the one-shot worker may authenticate.
+-- Operation coordinates receive trust-record access and their own exact
+-- capabilities above, but no synthetic KV target authority.
+targetWorkerAuthorizationIds :: [TargetSecretId]
+targetWorkerAuthorizationIds =
+  targetWorkerTargetIds
+    <> [TargetPublicEdgeTls, TargetFederationCustody]
+
+-- Gateway is a client of Lifecycle Authority observation/submission routes but
+-- owns no authenticated server route, so it receives no replay-object access
+-- and no inbound-caller public-key reads.
+serviceControlPlaneClientPolicy :: RuntimeRole -> Text
+serviceControlPlaneClientPolicy role =
+  externalControlPlaneAuthenticationPolicy (CallerService role)
 
 readOnlyKvPolicy :: Text -> Text
 readOnlyKvPolicy path =
   Text.unlines
     [ "path \"" <> path <> "\" {"
     , "  capabilities = [\"read\"]"
-    , "}"
-    ]
-
--- | Sprint 1.44: the operator-write policy. The gateway daemon's
--- @POST /v1/secret/<logical>@ endpoint logs into Vault under this policy (via
--- the operator-injected Kubernetes JWT) to persist exactly the two host-minted
--- operator secrets that route through the daemon instead of a host root-token
--- direct write:
---
---   * @secret/acme/eab@ — the ZeroSSL external-account-binding material.
---   * @secret/gateway/gateway/aws@ — the minted operational @aws.*@ credential.
---
--- It is deliberately narrow (create/update on those two KV paths only) so a
--- compromised operator JWT cannot reach the rest of the KV store, the transit
--- keys, or the federation custody tree.
-operatorWritePolicy :: Text
-operatorWritePolicy =
-  Text.unlines
-    [ "path \"secret/data/acme/eab\" {"
-    , "  capabilities = [\"create\", \"update\"]"
-    , "}"
-    , ""
-    , "path \"secret/data/gateway/gateway/aws\" {"
-    , "  capabilities = [\"create\", \"update\"]"
     , "}"
     ]
 

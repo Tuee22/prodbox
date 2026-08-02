@@ -58,6 +58,14 @@ operation-indexed capability types are owned by
 8. **Readiness includes service capacity.** Memory containment alone is insufficient. A capability
    is not admissible when its bounded queue, measured service rate, CPU budget, or remaining
    absolute deadline cannot support the request.
+9. **Readiness is a typed three-valued gate.** An observation resolves to `ReadyObserved`,
+   `NotReadyYet`, or `Unreachable`. `NotReadyYet` — and a *transient*, not-yet-scraped `Unreachable`
+   (§2.4) — is a **distinct non-terminal constructor**: the "act" transition is reachable only from
+   `ReadyObserved`, while a not-yet-ready observation keeps the gate closed and is bounded-retried,
+   never latched. It must never be collapsed into a definitively-fatal bucket (the **bring-up dual**:
+   not-ready → terminal-fail) or a definitively-absent bucket (the **fail-open predicate**: not-ready →
+   absent). A timed wait is a mitigation of that illegal state, not its removal — the distinction must
+   live in the type the fold or decision consumes.
 
 ## 1. Failure Class
 
@@ -81,6 +89,16 @@ The later gateway/lifecycle counterexample was stronger:
 These are one defect class: **a weaker or differently bound observation was promoted into
 authority for a stronger operation**. Longer polling, retries, or a broader “deep” label cannot
 repair that mismatch.
+
+The **inverse** defect is equally forbidden: a `NotReadyYet` — or transiently-`Unreachable` —
+observation **collapsed into a terminal or absent bucket**. This is the **bring-up dual** (not-ready →
+definitive fail) and the **fail-open predicate** (not-ready → absent). Two concrete instances: a gateway
+runtime-stability sample latched a not-yet-scraped but healthy Pod as a terminal unreachable (poisoning
+the whole run), and a host-direct object-store / lease read collapsed a transient connection-refused
+into a terminal authority-unobservable / ownership-lost. In both, the not-yet-ready third value shared a
+constructor with the definitive one, so nothing at the type level stopped the collapse; the correction
+is a *distinct non-terminal constructor* per §2.4, enforced by `prodbox dev check`'s three-valued
+readiness conformance gate.
 
 ## 2. Four Independent Observations
 
@@ -173,6 +191,16 @@ required evidence are absorbing for the run. A replacement Pod or later green sa
 them. Warning evidence resets the consecutive-success window. Only an explicitly planned rollout
 may reset that success window, never the absorbing record.
 
+A **not-yet-observable** sample is not the same as an **unobservable** one, and only the latter is
+absorbing. A freshly-(re)started but healthy resource whose scrape or read-back has not yet landed — a
+not-yet-scraped metrics working set, a transiently-unroutable object-store endpoint — is `NotReadyYet`
+(§0.9): a distinct non-terminal observation that resets the success window and is bounded-retried,
+never latched. Only *persistently* unobservable required evidence (still unobservable past the bounded
+readiness budget) or a static wrong-scope / policy mismatch is absorbing. Collapsing the transient case
+into the absorbing one is the bring-up-dual defect (§1); the fix routes each transient case through a
+distinct non-terminal constructor (`GatewayObservationIncomplete`, `ModelBEndpointUnready`,
+`LeaseAuthorityEndpointUnready`) that the fold or lease monitor cannot promote to fatal.
+
 The old restart/OOM/memory-only classifier is a useful subset, not sufficient proof of capability
 stability. CPU throttling, queue pressure, and latency are mandatory because a memory-safe process
 can still be computationally unable to meet its contract.
@@ -218,6 +246,12 @@ gateway readiness. Normal Authority mutation additionally requires the exact fre
 reported ready for normal work. Credential Provisioner/Admin Action Runner readiness is permit-
 specific Pod UID/image/ServiceAccount attestation, never a standing component label.
 
+The AWS projection validates the complete role/transport registry before its first platform
+effect. Its readiness order is capability-first: EKS Broker and target transports, retained-home
+Authority transport, Provider Worker registration, target-local DNS01 generation/read-back, then
+cert-manager issuer admission and controller-owned public edge. A Gateway-ready observation cannot
+satisfy any Authority, Provider, or Target-Agent prerequisite.
+
 The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
 `--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway config or
 a generic endpoint. Until the physical adapters and workload rendering owned by Sprint `3.26`
@@ -260,9 +294,12 @@ accept a genesis/repair/operator-material or admin-action permit; and Credential
 accept an Admin Action permit. Raw prompt/credential bytes travel over a separately authenticated
 linear ingress after attestation and therefore are not readiness inputs or serializable programs.
 
-`ReadinessObservation` remains a flat external projection. The GADT proves only that an attempted
-program is legal for the reference kind. The interpreter's typed result and fresh observations
-prove what the external system actually did.
+`ReadinessObservation` remains a flat external projection over the three-valued constructor set
+`ReadyObserved | NotReadyYet | Unreachable` (§0.9): only `ReadyObserved` opens the gate, and
+`NotReadyYet` / a transient `Unreachable` is retained as a distinct non-terminal state, never folded
+into ready or into a definitive failure. The GADT proves only that an attempted program is legal for
+the reference kind. The interpreter's typed result and fresh observations prove what the external
+system actually did.
 
 ## 4. Absolute Deadlines, Retry, and Cancellation
 
@@ -312,7 +349,10 @@ deployment qualification and counterexample closure are governed by
 ## 6. Intent Ownership
 
 This document owns capability-exact bootstrap ordering and the distinctions among liveness,
-admission, execution, and runtime stability.
+admission, execution, and runtime stability. It owns the **typed three-valued readiness gate** (§0.9,
+§2.4): a not-yet-ready observation is a distinct non-terminal constructor, the "act" step is reachable
+only from a proven-ready state, and neither the bring-up dual (not-ready → fatal) nor the fail-open
+predicate (not-ready → absent) is representable.
 
 It does not own process topology, authority workflow, target-delivery protocol, exact resource
 thresholds, test-suite membership, sprint status, or deployment evidence. Those remain in their

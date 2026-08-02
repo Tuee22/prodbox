@@ -73,6 +73,12 @@ brokerChartStaticsSuite =
         `shouldBe` unlines
           [ "serviceAccount:"
           , "  name: prodbox-bootstrap-broker"
+          , "  workerName: prodbox-bootstrap-secret-worker"
+          , "client:"
+          , "  serviceAccountName: prodbox-bootstrap-broker-client"
+          , "  tokenAudience: prodbox-bootstrap-broker"
+          , "worker:"
+          , "  imageRepository: 127.0.0.1:30080/prodbox/prodbox-runtime"
           , "vault:"
           , "  role: prodbox-bootstrap-broker"
           , "probes:"

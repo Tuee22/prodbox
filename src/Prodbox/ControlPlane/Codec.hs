@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Sprint 4.50: the shared bounded, versioned, canonical request codec for the
+-- | Sprint 4.50: the shared bounded, versioned, canonical wire codec for the
 -- standing control-plane role servers.
 --
 -- The Lifecycle Authority migration route (Increment K) fixed a request framing in
@@ -13,10 +13,10 @@
 -- check, and a canonical round-trip check, so a corrupt, oversized, non-canonical,
 -- or wrong-version request body is refused before it reaches a decision. This
 -- module lifts that exact framing into one generic codec every other fronted role
--- reuses for its own request payload, so the roles cannot each reinvent — or
--- subtly diverge on — the bound/version/canonical discipline. Migration keeps its
--- own byte-frozen copy; the roles brought to codec parity here (Authority Backup,
--- TLS Retention) route through this shared codec.
+-- reuses for request and response payloads, so the roles cannot each reinvent —
+-- or subtly diverge on — the bound/version/canonical discipline. Migration keeps
+-- its own byte-frozen copy; the roles brought to codec parity here (Authority
+-- Backup, TLS Retention) route through this shared codec.
 --
 -- Everything here is pure and total. Binding a role's decoded request to its
 -- production retained store and dispatching the raw socket body to its handler is
@@ -24,10 +24,15 @@
 -- that follow-on cannot loosen the bound/version/canonical guarantees.
 module Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (..)
+  , ControlPlaneResponseCodecError
   , controlPlaneRequestCodecToken
+  , controlPlaneResponseCodecToken
   , currentControlPlaneRequestVersion
+  , currentControlPlaneResponseVersion
   , encodeControlPlaneRequest
   , decodeControlPlaneRequest
+  , encodeControlPlaneResponse
+  , decodeControlPlaneResponse
   )
 where
 
@@ -53,6 +58,11 @@ data ControlPlaneRequestCodecError
     ControlPlaneRequestNonCanonical
   deriving stock (Eq, Show)
 
+-- | Responses use the same stable wire-error taxonomy as requests.  The alias
+-- is deliberate: one canonical envelope and one error algebra prevent a client
+-- from accepting bytes that the server-side decoder would refuse.
+type ControlPlaneResponseCodecError = ControlPlaneRequestCodecError
+
 -- | Stable kebab token for a codec error, for a role's @bad-request@ summary body.
 controlPlaneRequestCodecToken :: ControlPlaneRequestCodecError -> Text
 controlPlaneRequestCodecToken err = case err of
@@ -60,6 +70,9 @@ controlPlaneRequestCodecToken err = case err of
   ControlPlaneRequestInvalid -> "invalid"
   ControlPlaneRequestUnsupportedVersion -> "unsupported-version"
   ControlPlaneRequestNonCanonical -> "non-canonical"
+
+controlPlaneResponseCodecToken :: ControlPlaneResponseCodecError -> Text
+controlPlaneResponseCodecToken = controlPlaneRequestCodecToken
 
 -- | The versioned request envelope: a schema version plus the role's payload. A
 -- version bump lets a role evolve its request shape without a silent misparse.
@@ -73,6 +86,12 @@ data RequestEnvelope a = RequestEnvelope
 -- | The one supported request-envelope schema version.
 currentControlPlaneRequestVersion :: Word
 currentControlPlaneRequestVersion = 1
+
+-- | Responses intentionally share the request-envelope version.  A future
+-- incompatible framing change must bump both together or introduce a distinct
+-- response envelope explicitly.
+currentControlPlaneResponseVersion :: Word
+currentControlPlaneResponseVersion = currentControlPlaneRequestVersion
 
 -- | Encode a role request payload as a bounded, canonical, versioned envelope.
 encodeControlPlaneRequest :: (Serialise a) => a -> ByteString
@@ -103,3 +122,15 @@ decodeControlPlaneRequest maximumBytes bytes
               Left ControlPlaneRequestUnsupportedVersion
           | serialise envelope /= bytes -> Left ControlPlaneRequestNonCanonical
           | otherwise -> Right (requestEnvelopePayload envelope)
+
+-- | Encode a role response payload with the same versioned canonical envelope.
+encodeControlPlaneResponse :: (Serialise a) => a -> ByteString
+encodeControlPlaneResponse = encodeControlPlaneRequest
+
+-- | Decode a role response payload under an explicit byte bound.
+decodeControlPlaneResponse
+  :: (Serialise a)
+  => Int
+  -> ByteString
+  -> Either ControlPlaneResponseCodecError a
+decodeControlPlaneResponse = decodeControlPlaneRequest

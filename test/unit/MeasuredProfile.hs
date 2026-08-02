@@ -9,6 +9,8 @@ module MeasuredProfile
   )
 where
 
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Text.Encoding qualified as TextEncoding
 import Dhall qualified
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.Config (defaultResourcePlan)
@@ -148,10 +150,61 @@ measuredProfileSuite =
         parsed <- Dhall.input Dhall.auto (renderMeasuredResourceProfileDhall baseGatewayProfile)
         parsed `shouldBe` baseGatewayProfile
 
+      goldenTest
+        "pins the committed measured-profile artifact shape"
+        "test/golden/capacity/measured-gateway.dhall"
+        ( pure
+            ( LazyByteString.fromStrict
+                (TextEncoding.encodeUtf8 (renderMeasuredResourceProfileDhall baseGatewayProfile))
+            )
+        )
+
       it "a recorded profile certifies cleanly against the authored plan (closes the loop)" $
         case recordMeasuredProfile baseRecorderInput of
           Left refusal -> expectationFailure (renderMeasuredProfileRecorderRefusal refusal)
           Right recorded -> certifyGateway recorded `shouldBe` []
+
+      it "reduces cumulative live samples into deterministic percentiles and high-water marks" $ do
+        aggregateMeasuredProfileSamples
+          "gateway"
+          (referenceNow - 1000)
+          "current-digest"
+          True
+          healthySamples
+          `shouldBe` Right baseGatewayProfile {cpu_p95_milli = 500}
+
+      it "refuses a counter regression as replacement or incomplete evidence" $ do
+        let regressed =
+              take 200 healthySamples
+                ++ [ (healthySamples !! 200) {sampleCpuUsageNanoseconds = 0}
+                   ]
+                ++ drop 201 healthySamples
+        aggregateMeasuredProfileSamples "gateway" referenceNow "current-digest" True regressed
+          `shouldBe` Left RecorderCounterRegressed
+
+      it "refuses duplicate or unordered observation timestamps" $ do
+        let duplicated =
+              take 1 healthySamples
+                ++ [ (healthySamples !! 1) {sampleObservedAtNanoseconds = 0}
+                   ]
+                ++ drop 2 healthySamples
+        aggregateMeasuredProfileSamples "gateway" referenceNow "current-digest" True duplicated
+          `shouldBe` Left RecorderSamplesNotMonotonic
+
+healthySamples :: [MeasuredProfileSample]
+healthySamples = map sampleAt [0 .. 299]
+ where
+  sampleAt index =
+    let elapsedSeconds = (index * 1800) `div` 299
+     in MeasuredProfileSample
+          { sampleObservedAtNanoseconds = elapsedSeconds * 1000000000
+          , sampleCpuUsageNanoseconds = elapsedSeconds * 500000000
+          , sampleCfsPeriods = index * 1000
+          , sampleCfsThrottledPeriods = index
+          , sampleRssBytes = 300 * 1024 * 1024
+          , sampleHeapBytes = 268435456
+          , sampleObjectStoreOpMillis = 50
+          }
 
 isCpuDefect :: MeasuredProfileDefect -> Bool
 isCpuDefect InsufficientCpuHeadroom {} = True

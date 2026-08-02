@@ -1,18 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 3.20: pure Vault seal-mode model. The root cluster uses Vault's
--- default Shamir seal and writes its init material to the host-side encrypted
--- unlock bundle. Child clusters use Vault's Transit auto-unseal pointed at
--- the parent's Vault; their recovery keys and initial root token are stored in
--- the parent's Vault KV, never on the child.
+-- | Pure Vault seal-mode rendering. Child clusters use Vault Transit
+-- auto-unseal pointed at the parent. Recovery custody and initialization are
+-- owned by the typed Bootstrap Broker protocol, not by this chart-oriented
+-- module; in particular this module has no initial-token or child-custody type.
 module Prodbox.Vault.Seal
-  ( ChildSealCustody (..)
-  , ShamirSealConfig (..)
+  ( ShamirSealConfig (..)
   , TransitSealConfig (..)
   , VaultSealMode (..)
-  , childInitCustodyFromInitResponse
-  , childInitCustodyVaultFields
-  , childSealCustodyFromInitResponse
   , defaultRootShamirSealConfig
   , defaultTransitSealConfig
   , initRequestForSealMode
@@ -21,20 +16,11 @@ module Prodbox.Vault.Seal
   )
 where
 
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
-import Prodbox.Cluster.Federation
-  ( ChildInitCustody (..)
-  , ChildMetadata (..)
-  , encodeChildInitCustody
-  )
 import Prodbox.Vault.Client
   ( InitRequest (..)
-  , InitResponse (..)
   , VaultAddress (..)
   )
 
@@ -58,12 +44,6 @@ data TransitSealConfig = TransitSealConfig
 data VaultSealMode
   = VaultSealRootShamir ShamirSealConfig
   | VaultSealChildTransit TransitSealConfig
-  deriving (Eq, Show)
-
-data ChildSealCustody = ChildSealCustody
-  { childSealCustodyMetadata :: ChildMetadata
-  , childSealCustodyInit :: ChildInitCustody
-  }
   deriving (Eq, Show)
 
 defaultRootShamirSealConfig :: ShamirSealConfig
@@ -119,47 +99,6 @@ renderVaultSealHcl sealMode = case sealMode of
       , "      tls_skip_verify = " <> hclString (hclBool (transitSealTlsSkipVerify config))
       , "    }"
       ]
-
-childSealCustodyFromInitResponse
-  :: Text
-  -> Text
-  -> Text
-  -> Text
-  -> Text
-  -> InitResponse
-  -> ChildSealCustody
-childSealCustodyFromInitResponse parentClusterId childClusterId childVaultAddress childVaultNamespace transitKey response =
-  ChildSealCustody
-    { childSealCustodyMetadata =
-        ChildMetadata
-          { childMetadataClusterId = childClusterId
-          , childMetadataVaultAddress = childVaultAddress
-          , childMetadataTransitKey = transitKey
-          , childMetadataVaultNamespace = childVaultNamespace
-          , childMetadataParentClusterId = parentClusterId
-          , childMetadataEndpoints = Map.empty
-          , childMetadataKubeconfigReference = Nothing
-          , childMetadataAccountId = Nothing
-          , childMetadataPulumiStacks = Map.empty
-          }
-    , childSealCustodyInit =
-        childInitCustodyFromInitResponse childClusterId transitKey response
-    }
-
-childInitCustodyFromInitResponse :: Text -> Text -> InitResponse -> ChildInitCustody
-childInitCustodyFromInitResponse childClusterId transitKey response =
-  ChildInitCustody
-    { childInitClusterId = childClusterId
-    , childInitRecoveryKeysBase64 = initResponseRecoveryKeysBase64 response
-    , childInitRootToken = initResponseRootToken response
-    , childInitTransitKey = transitKey
-    }
-
-childInitCustodyVaultFields :: ChildInitCustody -> Map Text Text
-childInitCustodyVaultFields custody =
-  Map.singleton
-    "payload_json"
-    (TextEncoding.decodeUtf8 (encodeChildInitCustody custody))
 
 transitSealPolicyDocument :: Text -> Text
 transitSealPolicyDocument keyName =

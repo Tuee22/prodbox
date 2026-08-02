@@ -32,7 +32,6 @@ module Prodbox.Settings
   , defaultConfigFile
   , defaultTestTopology
   , decodeConfigDhallBytes
-  , inForceConfigObjectAbsent
   , loadConfigFile
   , loadConfigFileAtPath
   , loadTestTopology
@@ -42,17 +41,15 @@ module Prodbox.Settings
   , loadUnencryptedBasicsAtPath
   , renderConfigDhall
   , renderSeedInForceOutcome
+  , reconcileInForceConfigFromFile
   , renderSettingsDisplay
-  , resolveAwsCredentialsRefFromHostVault
-  , seedInForceConfigFromFileWithToken
-  , forceSyncInForceConfigFromFile
+  , resolveLifecycleProviderCredentials
   , supportedPublicHostname
   , renderTestTopologyError
   , validateAwsBootstrapConfig
   , validateAndLoadSettings
   , validateAndLoadSettingsAtPath
   , validateAndLoadBootstrapSettings
-  , validateAndLoadSettingsWithVaultToken
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
   , validateConfiguredCertScope
@@ -69,7 +66,6 @@ import Data.ByteString qualified as BS
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Char qualified as Char
 import Data.List (intercalate)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -117,26 +113,32 @@ import Prodbox.Config.ComponentGraph
   , defaultComponentGraph
   )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
-import Prodbox.Config.InForce.Core
-  ( ConfigSource (..)
-  , SeedProposeDecision (..)
-  , fetchInForceValueWith
-  , renderInForceConfigError
-  , seedProposeDecision
-  , storeInForcePayloadWith
+import Prodbox.ControlPlane.ConfigClient
+  ( ConfigClient (..)
+  , ConfigClientError
+  , configClientWithTransport
   )
-import Prodbox.Http.Client (renderHttpError)
-import Prodbox.Infra.MinioBackend (withMinioPortForward)
-import Prodbox.Minio.EncryptedObject
-  ( LogicalObject (LogicalInForceConfig)
-  , objectKeyForOpaqueId
-  , opaqueObjectId
+import Prodbox.ControlPlane.ConfigEndpoint
+  ( ConfigObservation (..)
+  , ConfigProjection (..)
+  , ConfigProjectionScope (ConfigProjectionOperator, ConfigProjectionTestHarness)
+  , ConfigProposeCasRequest (..)
+  , ConfigProposeCasResponse (..)
   )
-import Prodbox.Minio.ObjectStore
-  ( ObjectStoreConfig (..)
-  , defaultObjectStoreBucket
-  , getObject
-  , putObject
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (..)
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  , withLifecycleAuthorityAuthenticatedTransport
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( AwsCredentialIdentity (..)
+  , TargetSecretId (TargetAwsCredential)
+  , targetSecretIdVaultLogicalPath
+  )
+import Prodbox.Lifecycle.Authority.Config
+  ( ConfigSchemaVersion (ConfigSchemaVersion)
+  , inForceGeneration
   )
 import Prodbox.Repo
   ( ConfigPaths (..)
@@ -178,17 +180,6 @@ import Prodbox.Tls.CertScope
   , mkScopeSet
   , renderScopeError
   )
-import Prodbox.Vault.Client
-  ( VaultAddress (..)
-  , VaultToken
-  , vaultKvReadV2
-  )
-import Prodbox.Vault.Host
-  ( loadReadyVaultRootToken
-  , readHostVaultKvField
-  )
-import Prodbox.Vault.Orchestration (clusterEstablishedMarkerPath)
-import Prodbox.Vault.TransitCipher (vaultTransitDekCipher)
 import System.Directory
   ( copyFile
   , doesFileExist
@@ -399,7 +390,7 @@ validateAndLoadSettings repoRoot = do
 -- path, resolving repo-relative fields (the manual PV root) against @repoRoot@.
 -- This is the path-injection seam in-process unit tests exercise directly;
 -- production 'validateAndLoadSettings' resolves the binary-sibling config and
--- consults the established-marker / in-force SSoT. Sprint 1.48.
+-- consults the Lifecycle Authority's in-force generation. Sprint 1.48.
 validateAndLoadSettingsAtPath
   :: FilePath -> FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadSettingsAtPath configPath repoRoot = do
@@ -409,8 +400,8 @@ validateAndLoadSettingsAtPath configPath repoRoot = do
     Right config -> validateConfig repoRoot config
 
 -- | Lifecycle bootstrap settings are the repository Dhall seed/propose input.
--- Use this only for the pre-Vault/pre-MinIO steps that cannot read the
--- encrypted in-force config yet.
+-- Use this only for the Tier-0 bootstrap steps that run before the frozen
+-- Lifecycle Authority and its backup are established.
 validateAndLoadBootstrapSettings :: FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadBootstrapSettings repoRoot = do
   configResult <- loadConfigFile repoRoot
@@ -418,20 +409,11 @@ validateAndLoadBootstrapSettings repoRoot = do
     Left err -> pure (Left err)
     Right config -> validateConfig repoRoot config
 
-validateAndLoadSettingsWithVaultToken
-  :: FilePath -> VaultToken -> IO (Either String ValidatedSettings)
-validateAndLoadSettingsWithVaultToken repoRoot token = do
-  configResult <-
-    loadConfigForSettingsWith (loadRuntimeInForceConfigWithToken repoRoot token) repoRoot
-  case configResult of
-    Left err -> pure (Left err)
-    Right config -> validateConfig repoRoot config
-
 -- | Resolve the config source for supported host settings loads. Without a
--- sealed-Vault basics floor (no Tier-0 @prodbox.dhall@ to project it from), the
--- filesystem Dhall remains the first-bring-up seed input. Once a floor exists,
--- the filesystem file is no longer authoritative: the caller-supplied in-force
--- loader must fetch and decrypt the MinIO SSoT.
+-- Tier-0 basics floor (no @prodbox.dhall@ to project it from), the filesystem
+-- Dhall remains the first-bring-up seed input. Once a floor exists, the
+-- filesystem file is no longer authoritative: the caller-supplied loader must
+-- observe the role-scoped Lifecycle Authority projection.
 --
 -- Sprint 7.18: the floor is projected straight off @prodbox.dhall@ (via
 -- 'Prodbox.Config.FloorDhall.loadUnencryptedBasics') — there is no separate
@@ -448,381 +430,180 @@ loadConfigForSettingsWith loadInForce repoRoot = do
     -- No Tier-0 prodbox.dhall floor at all: the cluster is not configured.
     -- 'loadConfigFile' surfaces the actionable "run config setup" message.
     Left _ -> loadConfigFile repoRoot
-    Right basics -> do
-      -- Sprint 1.42 Part B / Sprint 7.25: the "established" signal is the
-      -- presence of the NON-SECRET cluster-established marker, stamped on host
-      -- disk at first-ever @vault init@. Before establishment — first-ever
-      -- bring-up, and every host integration test with no real cluster — there
-      -- is no marker, so the in-force SSoT cannot exist yet: read the
-      -- operator-authored Tier-0 @prodbox.dhall@ @parameters@ directly (the
-      -- seed/pre-establishment source). This is NOT a fallback for a sealed
-      -- Vault. (Sprint 7.25 made the unlock bundle MinIO-only; this cheap,
-      -- port-forward-free probe uses the marker instead of the former on-disk
-      -- bundle file.)
-      established <- doesFileExist (clusterEstablishedMarkerPath repoRoot)
-      if not established
-        then loadConfigFile repoRoot
-        else do
-          inForceResult <- loadInForce basics
-          case inForceResult of
-            Right config -> pure (Right config)
-            Left err
-              -- The cluster IS established but the in-force SSoT object was not
-              -- seeded yet (the brief window between @vault init@ and the
-              -- first-bring-up seed): read the Tier-0 @parameters@ seed. Every
-              -- OTHER in-force error — a sealed or unreachable Vault, a decrypt
-              -- failure — is returned as-is: per the fail-closed doctrine the
-              -- cluster simply cannot read its config (it keeps running), with
-              -- NO fallback to the authored @parameters@ (operator decision
-              -- 2026-06-19).
-              | inForceConfigObjectAbsent err -> loadConfigFile repoRoot
-              | otherwise -> pure (Left err)
-
--- | True when an in-force config load failed specifically because the SSoT
--- object is absent from MinIO (not yet seeded), as distinct from a sealed
--- Vault, an unreachable backend, or a decrypt failure — which must stay
--- fail-closed. Mirrors the 'in-force config object missing' surface emitted by
--- 'fetchInForceConfigEnvelope'.
-inForceConfigObjectAbsent :: String -> Bool
-inForceConfigObjectAbsent err =
-  Text.isInfixOf "in-force config object missing" (Text.pack err)
+    Right basics -> loadInForce basics
 
 loadRuntimeInForceConfig :: FilePath -> UnencryptedBasics -> IO (Either String ConfigFile)
-loadRuntimeInForceConfig repoRoot basics = do
-  let address = VaultAddress (basicsVaultAddress basics)
-  tokenResult <- loadReadyVaultRootToken repoRoot address
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token -> loadRuntimeInForceConfigWithToken repoRoot token basics
+loadRuntimeInForceConfig repoRoot _basics = do
+  observed <-
+    runHostConfigClient
+      LifecycleAuthorityOperator
+      ConfigProjectionOperator
+      repoRoot
+      observeConfig
+  case observed of
+    Left detail -> pure (Left detail)
+    Right ConfigObservationMissing ->
+      pure (Left "Lifecycle Authority config is absent; run cluster reconcile to submit the Tier-0 seed")
+    Right (ConfigObservationCorrupt detail) ->
+      pure (Left ("Lifecycle Authority config is corrupt: " ++ Text.unpack detail))
+    Right (ConfigObservationUnobservable detail) ->
+      pure (Left ("Lifecycle Authority config is unobservable: " ++ Text.unpack detail))
+    Right (ConfigObservationObserved projection) ->
+      decodeConfigDhallBytes repoRoot (configProjectionBytes projection)
 
-loadRuntimeInForceConfigWithToken
-  :: FilePath -> VaultToken -> UnencryptedBasics -> IO (Either String ConfigFile)
-loadRuntimeInForceConfigWithToken repoRoot token basics = do
-  let address = VaultAddress (basicsVaultAddress basics)
-  credentialsResult <- readMinioRootCredentials address token
-  case credentialsResult of
-    Left err -> pure (Left err)
-    Right (accessKey, secretKey) -> do
-      hmacKeyResult <- readObjectStoreHmacKey address token
-      case hmacKeyResult of
-        Left err -> pure (Left err)
-        Right hmacKey -> do
-          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
-          portForwardResult <-
-            withMinioPortForward $ \localPort ->
-              fetchInForceValueWith
-                ( fetchInForceConfigEnvelope
-                    localPort
-                    (Text.unpack accessKey)
-                    (Text.unpack secretKey)
-                    hmacKey
-                )
-                cipher
-                (basicsClusterId basics)
-                (decodeConfigDhallBytes repoRoot)
-          pure $ case portForwardResult of
-            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
-            Right result -> mapLeft renderInForceConfigError result
-
-readMinioRootCredentials :: VaultAddress -> VaultToken -> IO (Either String (Text, Text))
-readMinioRootCredentials address token = do
-  result <- vaultKvReadV2 address token "secret" "minio/root"
-  pure $ case result of
-    Left err -> Left ("failed to read secret/minio/root from Vault: " ++ renderHttpError err)
-    Right fields -> do
-      accessKey <- requireVaultField "secret/minio/root" "rootUser" fields
-      secretKey <- requireVaultField "secret/minio/root" "rootPassword" fields
-      Right (accessKey, secretKey)
-
-readObjectStoreHmacKey :: VaultAddress -> VaultToken -> IO (Either String ByteString)
-readObjectStoreHmacKey address token = do
-  result <- vaultKvReadV2 address token "secret" "object-store/hmac"
-  pure $ case result of
-    Left err -> Left ("failed to read secret/object-store/hmac from Vault: " ++ renderHttpError err)
-    Right fields -> TextEncoding.encodeUtf8 <$> requireVaultField "secret/object-store/hmac" "key" fields
-
-fetchInForceConfigEnvelope
-  :: Int
-  -> String
-  -> String
-  -> ByteString
-  -> IO (Either String ByteString)
-fetchInForceConfigEnvelope localPort accessKey secretKey hmacKey = do
-  let key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
-      config =
-        ObjectStoreConfig
-          { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
-          , objectStoreBucket = defaultObjectStoreBucket
-          , objectStoreAccessKey = accessKey
-          , objectStoreSecretKey = secretKey
-          }
-  result <- getObject config key
-  pure $ case result of
-    Left err -> Left err
-    Right Nothing -> Left ("in-force config object missing at " ++ Text.unpack key)
-    Right (Just envelope) -> Right envelope
-
--- | Sprint 1.42 PART A: the outcome of the in-force MinIO SSoT seed step, so
--- the reconcile can log precisely what happened. Seeding is the establish step;
--- it is a no-op once the SSoT exists or when there is no filesystem seed.
+-- | The observable result of reconciling the Tier-0 proposal with the
+-- Lifecycle Authority's exact in-force generation.
 data SeedInForceOutcome
-  = -- | The SSoT object was absent and the filesystem operator config was
-    -- present, so the operator config was sealed and written as the SSoT
-    -- ('SeedProposeDecision.SeedInForce').
+  = -- | No in-force generation existed and the Authority accepted generation 1.
     SeededInForce
-  | -- | The SSoT object already exists; the seed is a no-op
-    -- ('SeedProposeDecision.UseInForceAsIs').
+  | -- | The proposed canonical bytes already name the current generation.
     InForceAlreadyPresent
-  | -- | Both the SSoT object and a filesystem operator config exist; the file
-    -- is a proposed update, which PART A does not auto-apply
-    -- ('SeedProposeDecision.ProposeUpdate').
-    InForceProposeUpdateSkipped
-  | -- | Neither the SSoT object nor a filesystem operator config is available;
-    -- there is nothing to seed ('SeedProposeDecision.NoConfigAvailable').
+  | -- | An existing generation was advanced by an exact-generation proposal.
+    InForceUpdated
+  | -- | No filesystem proposal is available during an optional authoring flow.
     NoConfigToSeed
   deriving (Eq, Show)
 
 renderSeedInForceOutcome :: SeedInForceOutcome -> String
 renderSeedInForceOutcome outcome = case outcome of
   SeededInForce ->
-    "Seeded the in-force config SSoT in MinIO from the filesystem operator config."
+    "Seeded the Lifecycle Authority in-force config from the Tier-0 proposal."
   InForceAlreadyPresent ->
-    "In-force config SSoT already present in MinIO; seed is a no-op."
-  InForceProposeUpdateSkipped ->
-    "In-force config SSoT present and a filesystem config exists; the file is a"
-      ++ " proposed update (not auto-applied)."
+    "The proposed config is already the current Lifecycle Authority generation."
+  InForceUpdated ->
+    "Advanced the Lifecycle Authority in-force config generation and read it back."
   NoConfigToSeed ->
-    "No in-force config SSoT and no filesystem operator config; nothing to seed."
+    "No Tier-0 config proposal was available."
 
--- | Sprint 1.42 PART A: establish the in-force MinIO SSoT on first-ever
--- bring-up. Mirrors the read path 'loadRuntimeInForceConfigWithToken' exactly —
--- same Vault-derived MinIO root credentials ('readMinioRootCredentials'), same
--- HMAC key ('readObjectStoreHmacKey'), same MinIO port-forward
--- ('withMinioPortForward'), same Vault-Transit DEK cipher
--- (@prodbox-active-config@), same opaque object key
--- (@objectKeyForOpaqueId . opaqueObjectId@ over 'LogicalInForceConfig') — but
--- it GETs to observe presence and then PUTs the sealed operator config envelope
--- instead of GETting to read.
---
--- The seed decision is 'seedProposeDecision': SSoT-absent + file-present ⇒
--- 'SeedInForce' (seal + write); SSoT-present ⇒ 'UseInForceAsIs' / 'ProposeUpdate'
--- (no-op, PART A never auto-applies a proposed update); both absent ⇒
--- 'NoConfigAvailable' (no-op). The sealed envelope is the same shape the read
--- path decodes back to the identical 'ConfigFile' (unit-tested round-trip).
-seedInForceConfigFromFileWithToken
-  :: FilePath -> VaultToken -> UnencryptedBasics -> IO (Either String SeedInForceOutcome)
-seedInForceConfigFromFileWithToken repoRoot token basics = do
-  let address = VaultAddress (basicsVaultAddress basics)
-  credentialsResult <- readMinioRootCredentials address token
-  case credentialsResult of
+-- | Observe the Authority generation, submit the Tier-0 bytes with the exact
+-- prior generation (or as the one legal seed), and trust only the typed
+-- read-back response.  No root token or object-store coordinate crosses this
+-- host boundary.
+reconcileInForceConfigFromFile
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> IO (Either String SeedInForceOutcome)
+reconcileInForceConfigFromFile caller repoRoot = do
+  configResult <- loadConfigFile repoRoot
+  case configResult of
     Left err -> pure (Left err)
-    Right (accessKey, secretKey) -> do
-      hmacKeyResult <- readObjectStoreHmacKey address token
-      case hmacKeyResult of
-        Left err -> pure (Left err)
-        Right hmacKey -> do
-          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
-              key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
-          portForwardResult <-
-            withMinioPortForward $ \localPort -> do
-              let storeConfig =
-                    ObjectStoreConfig
-                      { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
-                      , objectStoreBucket = defaultObjectStoreBucket
-                      , objectStoreAccessKey = Text.unpack accessKey
-                      , objectStoreSecretKey = Text.unpack secretKey
-                      }
-              -- Observe SSoT presence the same way the read path does (GET the
-              -- opaque key); a present object short-circuits the seal.
-              presenceResult <- getObject storeConfig key
-              case presenceResult of
-                Left err -> pure (Left ("failed to observe in-force config SSoT: " ++ err))
-                Right inForcePresence -> do
-                  fileResult <- loadConfigFile repoRoot
-                  let inForcePresent = maybe False (const True) inForcePresence
-                      filePresent = either (const False) (const True) fileResult
-                      source =
-                        ConfigSource
-                          { configSourceFilePresent = filePresent
-                          , configSourceInForcePresent = inForcePresent
-                          }
-                  case seedProposeDecision source of
-                    SeedInForce ->
-                      case fileResult of
-                        Left err ->
-                          -- Should not happen (filePresent implies a Right),
-                          -- but stay total and fail-closed if the file vanished.
-                          pure (Left ("failed to load filesystem operator config to seed SSoT: " ++ err))
-                        Right config -> do
-                          storeResult <-
-                            storeInForcePayloadWith
-                              (putObject storeConfig key)
-                              cipher
-                              (basicsClusterId basics)
-                              (renderInForceSeedPayload config)
-                          pure $ case storeResult of
-                            Left err -> Left (renderInForceConfigError err)
-                            Right () -> Right SeededInForce
-                    UseInForceAsIs -> pure (Right InForceAlreadyPresent)
-                    ProposeUpdate -> pure (Right InForceProposeUpdateSkipped)
-                    NoConfigAvailable -> pure (Right NoConfigToSeed)
-          pure $ case portForwardResult of
-            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
-            Right result -> result
-
--- | Sprint 5.10 follow-up: FORCE-apply the binary-sibling operator config to the
--- in-force MinIO SSoT. The test harness OWNS the test cluster's config, so —
--- unlike 'seedInForceConfigFromFileWithToken', which never auto-applies a
--- proposed update on an established cluster (@ProposeUpdate@ is a no-op) — this
--- UNCONDITIONALLY re-seals the binary-sibling config into the in-force SSoT,
--- keeping the edge reconcile (which reads the in-force SSoT, not the
--- binary-sibling file) in sync with the config the harness regenerated and the
--- preflight validated. Best-effort + graceful: a no-op @Right ()@ when the
--- cluster is not established (no Tier-0 floor), when Vault is sealed/unreachable
--- (a fresh cluster seeds from the file on first reconcile instead), or when no
--- binary-sibling config exists; @Left@ only on a genuine MinIO write failure.
-forceSyncInForceConfigFromFile :: FilePath -> IO (Either String ())
-forceSyncInForceConfigFromFile repoRoot = do
-  basicsResult <- loadUnencryptedBasics repoRoot
-  case basicsResult of
-    Left _ -> pure (Right ())
-    Right basics -> do
-      let address = VaultAddress (basicsVaultAddress basics)
-      tokenResult <- loadReadyVaultRootToken repoRoot address
-      case tokenResult of
-        Left _ -> pure (Right ())
-        Right token -> do
-          configResult <- loadConfigFile repoRoot
-          case configResult of
-            Left _ -> pure (Right ())
-            Right config -> forceStoreInForceConfigWithToken token basics config
-
--- | The unconditional in-force seal+write — the force analog of the
--- @SeedInForce@ branch of 'seedInForceConfigFromFileWithToken' (same
--- Vault-derived MinIO credentials, HMAC key, Transit DEK cipher, opaque object
--- key, and payload shape), but with no presence/decision gate. Sprint 5.10.
-forceStoreInForceConfigWithToken
-  :: VaultToken -> UnencryptedBasics -> ConfigFile -> IO (Either String ())
-forceStoreInForceConfigWithToken token basics config = do
-  let address = VaultAddress (basicsVaultAddress basics)
-  credentialsResult <- readMinioRootCredentials address token
-  case credentialsResult of
-    Left err -> pure (Left err)
-    Right (accessKey, secretKey) -> do
-      hmacKeyResult <- readObjectStoreHmacKey address token
-      case hmacKeyResult of
-        Left err -> pure (Left err)
-        Right hmacKey -> do
-          let cipher = vaultTransitDekCipher address token "prodbox-active-config"
-              key = objectKeyForOpaqueId (opaqueObjectId hmacKey LogicalInForceConfig)
-          portForwardResult <-
-            withMinioPortForward $ \localPort -> do
-              let storeConfig =
-                    ObjectStoreConfig
-                      { objectStoreEndpoint = "http://127.0.0.1:" ++ show localPort
-                      , objectStoreBucket = defaultObjectStoreBucket
-                      , objectStoreAccessKey = Text.unpack accessKey
-                      , objectStoreSecretKey = Text.unpack secretKey
-                      }
-              storeInForcePayloadWith
-                (putObject storeConfig key)
-                cipher
-                (basicsClusterId basics)
-                (renderInForceSeedPayload config)
-          pure $ case portForwardResult of
-            Left err -> Left ("failed to reach in-force config MinIO backend: " ++ err)
-            Right (Left err) -> Left (renderInForceConfigError err)
-            Right (Right ()) -> Right ()
-
--- | Serialize a 'ConfigFile' to its in-force payload bytes (the same Dhall text
--- the read path decodes via 'decodeConfigDhallBytes'). Mirrors
--- 'Prodbox.Config.InForce.renderInForcePayload' without importing it (that
--- module depends on this one).
-renderInForceSeedPayload :: ConfigFile -> ByteString
-renderInForceSeedPayload = TextEncoding.encodeUtf8 . Text.pack . renderConfigDhall
-
-requireVaultField :: Text -> Text -> Map.Map Text Text -> Either String Text
-requireVaultField path field fields =
-  case Map.lookup field fields of
-    Nothing -> Left ("Vault KV object " ++ Text.unpack path ++ " missing field `" ++ Text.unpack field ++ "`")
-    Just value
-      | Text.null (Text.strip value) ->
-          Left ("Vault KV object " ++ Text.unpack path ++ " field `" ++ Text.unpack field ++ "` is empty")
-      | otherwise -> Right value
-
-resolveAwsCredentialsRefFromHostVault
-  :: FilePath -> String -> AwsCredentialsRef -> IO (Either String Credentials)
-resolveAwsCredentialsRefFromHostVault repoRoot label refs = do
-  accessKeyResult <- resolveRequiredSecret "access_key_id" (awsCredentialAccessKeyId refs)
-  secretKeyResult <- resolveRequiredSecret "secret_access_key" (awsCredentialSecretAccessKey refs)
-  sessionTokenResult <- resolveOptionalSecret "session_token" (awsCredentialSessionToken refs)
-  pure $ do
-    accessKey <- accessKeyResult
-    secretKey <- secretKeyResult
-    sessionTokenValue <- sessionTokenResult
-    let regionValue = Text.strip (awsCredentialRegion refs)
-    if Text.null regionValue
-      then Left (label ++ ".region must not be empty")
-      else
-        Right
-          Credentials
-            { access_key_id = accessKey
-            , secret_access_key = secretKey
-            , session_token = sessionTokenValue
-            , region = regionValue
-            }
+    Right config -> do
+      let scope = callerProjectionScope caller
+          canonicalBytes =
+            TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall config))
+      observed <-
+        runHostConfigClient caller scope repoRoot observeConfig
+      case observed of
+        Left detail -> pure (Left detail)
+        Right (ConfigObservationCorrupt detail) ->
+          pure (Left ("Lifecycle Authority config is corrupt: " ++ Text.unpack detail))
+        Right (ConfigObservationUnobservable detail) ->
+          pure (Left ("Lifecycle Authority config is unobservable: " ++ Text.unpack detail))
+        Right ConfigObservationMissing ->
+          submit canonicalBytes Nothing
+        Right (ConfigObservationObserved projection) ->
+          submit
+            canonicalBytes
+            (Just (inForceGeneration (configProjectionIdentity projection)))
  where
-  resolveRequiredSecret
-    :: String -> SecretRef -> IO (Either String Text)
-  resolveRequiredSecret field ref = do
-    result <- resolveHostSecretRef field ref
-    pure $ case result of
-      Left err -> Left err
-      Right value
-        | Text.null (Text.strip value) ->
-            Left (label ++ "." ++ field ++ " resolved from Vault as empty")
-        | otherwise -> Right (Text.strip value)
+  submit canonicalBytes expected = do
+    proposed <-
+      runHostConfigClient
+        caller
+        (callerProjectionScope caller)
+        repoRoot
+        ( \client ->
+            proposeConfigCas
+              client
+              ConfigProposeCasRequest
+                { configProposeExpectedGeneration = expected
+                , configProposeSchema = ConfigSchemaVersion 1
+                , configProposeCanonicalBytes = canonicalBytes
+                }
+        )
+    pure $ case proposed of
+      Left detail -> Left detail
+      Right (ConfigProposalSeeded _) -> Right SeededInForce
+      Right (ConfigProposalAdvanced _) -> Right InForceUpdated
+      Right (ConfigProposalAlreadyCurrent _) -> Right InForceAlreadyPresent
+      Right (ConfigProposalRefusedByGate refusal) ->
+        Left ("Lifecycle Authority refused config proposal: " ++ show refusal)
+      Right (ConfigProposalRefused refusal) ->
+        Left ("Lifecycle Authority refused config proposal: " ++ show refusal)
+      Right (ConfigProposalInvalid detail) -> Left (Text.unpack detail)
+      Right (ConfigProposalConflict _) -> Left "Lifecycle Authority config generation CAS conflict"
+      Right (ConfigProposalUnavailable detail) -> Left (Text.unpack detail)
 
-  resolveOptionalSecret
-    :: String -> Maybe SecretRef -> IO (Either String (Maybe Text))
-  resolveOptionalSecret _ Nothing = pure (Right Nothing)
-  resolveOptionalSecret field (Just ref) = do
-    result <- resolveHostSecretRef field ref
-    pure $ case result of
-      Left err -> Left err
-      Right value -> Right (normalizeOptionalText value)
+runHostConfigClient
+  :: ExternalLifecycleAuthorityCaller
+  -> ConfigProjectionScope
+  -> FilePath
+  -> (ConfigClient IO -> IO (Either ConfigClientError value))
+  -> IO (Either String value)
+runHostConfigClient caller scope repoRoot action = do
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication caller repoRoot $ \authentication ->
+      withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+        action (configClientWithTransport transport scope)
+  pure $ case authenticated of
+    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right (Left err) -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right (Right (Left err)) -> Left ("Lifecycle Authority config client failed: " ++ show err)
+    Right (Right (Right value)) -> Right value
 
-  resolveHostSecretRef :: String -> SecretRef -> IO (Either String Text)
-  resolveHostSecretRef field ref =
-    case ref of
-      SecretRefVault resolvedVaultRef ->
-        readHostVaultKvField
-          repoRoot
-          (vaultSecretMount resolvedVaultRef)
-          (vaultSecretPath resolvedVaultRef)
-          (vaultSecretField resolvedVaultRef)
-      SecretRefTestPlaintext _ ->
-        pure
-          ( Left
-              ( label
-                  ++ "."
-                  ++ field
-                  ++ ": plaintext secret values are forbidden in production config; use a SecretRef.Vault reference"
-              )
-          )
-      SecretRefTransitKey _ ->
-        pure (Left (label ++ "." ++ field ++ ": TransitKey references are not readable AWS credentials"))
-      SecretRefPrompt spec ->
-        pure
-          ( Left
-              ( label
-                  ++ "."
-                  ++ field
-                  ++ ": prompted secret "
-                  ++ Text.unpack (promptSpecName spec)
-                  ++ " cannot be resolved non-interactively"
-              )
-          )
+callerProjectionScope
+  :: ExternalLifecycleAuthorityCaller -> ConfigProjectionScope
+callerProjectionScope caller = case caller of
+  LifecycleAuthorityOperator -> ConfigProjectionOperator
+  LifecycleAuthorityTestHarness -> ConfigProjectionTestHarness
+
+-- | Resolve the root operational credential through the exact registered
+-- Lifecycle-provider Target Agent object.  The Tier-0 SecretRefs remain a
+-- non-secret schema assertion; no supported host path reads Vault KV fields.
+resolveLifecycleProviderCredentials
+  :: FilePath -> String -> AwsCredentialsRef -> IO (Either String Credentials)
+resolveLifecycleProviderCredentials _repoRoot label refs =
+  case validateRegisteredAwsRefs AwsLifecycleProvider refs of
+    Left err -> pure (Left (label ++ ": " ++ err))
+    Right () ->
+      pure
+        ( Left
+            ( label
+                ++ ": lifecycle-provider credentials are consumer-owned; host plaintext materialization is disabled"
+            )
+        )
+
+validateRegisteredAwsRefs
+  :: AwsCredentialIdentity -> AwsCredentialsRef -> Either String ()
+validateRegisteredAwsRefs identity refs = do
+  validateField "access_key_id" (awsCredentialAccessKeyId refs)
+  validateField "secret_access_key" (awsCredentialSecretAccessKey refs)
+  case awsCredentialSessionToken refs of
+    Nothing -> Right ()
+    Just ref -> validateField "session_token" ref
+ where
+  expectedPath = targetSecretIdVaultLogicalPath (TargetAwsCredential identity)
+  validateField expectedField ref = case ref of
+    SecretRefVault registeredVaultRef
+      | vaultSecretMount registeredVaultRef == "secret"
+          && vaultSecretPath registeredVaultRef == expectedPath
+          && vaultSecretField registeredVaultRef == expectedField ->
+          Right ()
+      | otherwise ->
+          Left
+            ( "expected SecretRef.Vault secret/"
+                ++ Text.unpack expectedPath
+                ++ "#"
+                ++ Text.unpack expectedField
+            )
+    SecretRefTestPlaintext _ -> Left "plaintext AWS credential references are forbidden"
+    SecretRefTransitKey _ -> Left "TransitKey is not an AWS credential target"
+    SecretRefPrompt spec ->
+      Left
+        ( "prompted secret `"
+            ++ Text.unpack (promptSpecName spec)
+            ++ "` cannot be a runtime AWS credential target"
+        )
 
 renderSettingsDisplay :: ValidatedSettings -> String
 renderSettingsDisplay settings =
@@ -915,7 +696,7 @@ decodeConfigFileAtPath configPath = do
 -- expression so this stays in "Prodbox.Settings" without importing
 -- "Prodbox.Config.Tier0" (which imports this module). All existing
 -- 'loadConfigFile' callers (the seed, the pre-establishment fallback in
--- 'loadConfigForSettingsWith', the direct config readers, and the authoring
+-- 'loadConfigForSettingsWith' and the authoring
 -- read in 'loadConfigForWrite') therefore now read the Tier-0 file.
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = resolveTier0ConfigPath repoRoot >>= loadConfigFileAtPath
@@ -1456,8 +1237,8 @@ maskSecret value =
 operationalAwsCredentialsRef :: Text -> AwsCredentialsRef
 operationalAwsCredentialsRef regionValue =
   AwsCredentialsRef
-    { awsCredentialAccessKeyId = vaultRef "gateway/gateway/aws" "access_key_id"
-    , awsCredentialSecretAccessKey = vaultRef "gateway/gateway/aws" "secret_access_key"
+    { awsCredentialAccessKeyId = vaultRef "aws/lifecycle-provider" "access_key_id"
+    , awsCredentialSecretAccessKey = vaultRef "aws/lifecycle-provider" "secret_access_key"
     , awsCredentialSessionToken = Nothing
     , awsCredentialRegion = regionValue
     }

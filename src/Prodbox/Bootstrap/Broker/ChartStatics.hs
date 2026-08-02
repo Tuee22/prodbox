@@ -23,6 +23,7 @@ module Prodbox.Bootstrap.Broker.ChartStatics
   ( BrokerChartStatics (..)
   , brokerChartStatics
   , brokerChartStaticsServiceAccountValue
+  , brokerChartStaticsClientValue
   , renderBrokerChartStaticsYaml
   )
 where
@@ -36,6 +37,10 @@ import Prodbox.Vault.RoleId (VaultRoleId (VaultRoleBootstrapBroker), vaultRoleId
 -- | The Bootstrap Broker chart's compiled static identities.
 data BrokerChartStatics = BrokerChartStatics
   { brokerStaticServiceAccount :: Text
+  , brokerStaticClientServiceAccount :: Text
+  , brokerStaticWorkerServiceAccount :: Text
+  , brokerStaticWorkerImageRepository :: Text
+  , brokerStaticTokenAudience :: Text
   , brokerStaticVaultRole :: Text
   , brokerStaticLivenessPath :: Text
   , brokerStaticReadinessPath :: Text
@@ -49,6 +54,11 @@ brokerChartStatics :: BrokerChartStatics
 brokerChartStatics =
   BrokerChartStatics
     { brokerStaticServiceAccount = vaultRoleIdText VaultRoleBootstrapBroker
+    , brokerStaticClientServiceAccount = "prodbox-bootstrap-broker-client"
+    , brokerStaticWorkerServiceAccount = "prodbox-bootstrap-secret-worker"
+    , brokerStaticWorkerImageRepository =
+        "127.0.0.1:30080/prodbox/prodbox-runtime"
+    , brokerStaticTokenAudience = "prodbox-bootstrap-broker"
     , brokerStaticVaultRole = vaultRoleIdText VaultRoleBootstrapBroker
     , brokerStaticLivenessPath = Text.pack (Routes.brokerRoutePath Routes.BrokerHealth)
     , brokerStaticReadinessPath = Text.pack (Routes.brokerRoutePath Routes.BrokerReadiness)
@@ -59,6 +69,16 @@ brokerChartStaticsServiceAccountValue :: Value
 brokerChartStaticsServiceAccountValue =
   object
     [ "name" .= brokerStaticServiceAccount brokerChartStatics
+    , "workerName" .= brokerStaticWorkerServiceAccount brokerChartStatics
+    ]
+
+-- | Secret-free caller identity and custom TokenRequest audience. The client
+-- account has no Vault role and cannot borrow the controller identity.
+brokerChartStaticsClientValue :: Value
+brokerChartStaticsClientValue =
+  object
+    [ "serviceAccountName" .= brokerStaticClientServiceAccount brokerChartStatics
+    , "tokenAudience" .= brokerStaticTokenAudience brokerChartStatics
     ]
 
 -- | The @bootstrap-broker-chart-statics.values@ generated section body. The
@@ -70,6 +90,12 @@ renderBrokerChartStaticsYaml =
   unlines
     [ "serviceAccount:"
     , "  name: " ++ Text.unpack (brokerStaticServiceAccount brokerChartStatics)
+    , "  workerName: " ++ Text.unpack (brokerStaticWorkerServiceAccount brokerChartStatics)
+    , "client:"
+    , "  serviceAccountName: " ++ Text.unpack (brokerStaticClientServiceAccount brokerChartStatics)
+    , "  tokenAudience: " ++ Text.unpack (brokerStaticTokenAudience brokerChartStatics)
+    , "worker:"
+    , "  imageRepository: " ++ Text.unpack (brokerStaticWorkerImageRepository brokerChartStatics)
     , "vault:"
     , "  role: " ++ Text.unpack (brokerStaticVaultRole brokerChartStatics)
     , "probes:"

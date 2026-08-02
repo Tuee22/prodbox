@@ -14,13 +14,17 @@
 -- The acceptance is one-time: a fresh matching permit under a frozen admission and a
 -- ready verifier is accepted and consumed once; replaying the same nonce is
 -- idempotent (a lost response recovers by the stable nonce); a divergent nonce after
--- consumption conflicts. Audience and bound plan are structural — a cross-role or
--- cross-plan permit is refused regardless of state. This module is pure: admission,
--- verifier readiness, and freshness are supplied by the interpreter as observations.
+-- consumption conflicts. Audience and complete-manifest identity are structural —
+-- a cross-role or cross-manifest permit is refused regardless of state. This module
+-- is pure: admission, verifier readiness, and freshness are supplied by the
+-- interpreter as observations.
 module Prodbox.Lifecycle.Decommission.Permit
   ( DecommissionPermit (..)
   , AdmissionState (..)
-  , VerifierPreflight (..)
+  , DecommissionPreflight
+  , DecommissionPreflightError (..)
+  , bindDecommissionPreflight
+  , decommissionPreflightManifestDigest
   , DecommissionRunnerState (..)
   , initialDecommissionRunnerState
   , DecommissionPermitDecision (..)
@@ -37,12 +41,27 @@ import Prodbox.Lifecycle.Authority.AdminAction
   , RunnerRole (DecommissionRunner)
   )
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
+import Prodbox.Lifecycle.Decommission.Manifest
+  ( VerifiedDecommissionManifest
+  , verifiedManifestDigest
+  , verifiedVerifierBinding
+  )
+import Prodbox.Lifecycle.Decommission.Verifier
+  ( ExternalArtifactPath
+  , PinnedExecutionDecision
+  , PreflightedVerifierArtifact
+  , VerifierBinding
+  , pinnedExecutionBinding
+  , pinnedExecutionIsCurrent
+  , pinnedSelfExecutionPath
+  , preflightedVerifierBinding
+  )
 
 -- | A signed one-time decommission permit: the runner role it is issued for, the
 -- committed plan (manifest digest) it authorizes, and a nonce.
 data DecommissionPermit = DecommissionPermit
   { decommissionPermitAudience :: !RunnerRole
-  , decommissionPermitPlanDigest :: !FrameDigest
+  , decommissionPermitManifestDigest :: !FrameDigest
   , decommissionPermitNonce :: !Text
   }
   deriving (Eq, Show)
@@ -54,13 +73,53 @@ data AdmissionState
   | AdmissionOpen
   deriving (Eq, Show)
 
--- | Whether the exported/pinned verifier + Decommission-Runner artifact preflight
--- has succeeded (the artifact lives outside every deletion target, is fsynced and
--- byte-for-byte read back, and passed its digest/schema/registry self-check).
-data VerifierPreflight
-  = VerifierArtifactReady
-  | VerifierArtifactMissing
+-- | Opaque evidence that the exact verifier bound into one authenticated complete
+-- manifest was reopened successfully and that this process is that pinned build.
+-- There is deliberately no public constructor: neither a Boolean nor a caller-made
+-- enum may authorize the point of no return.
+data DecommissionPreflight = DecommissionPreflight
+  { decommissionPreflightManifestDigest :: !FrameDigest
+  , decommissionPreflightVerifierBinding :: !VerifierBinding
+  }
   deriving (Eq, Show)
+
+data DecommissionPreflightError
+  = -- | The reopened artifact is not the verifier bound by the signed manifest.
+    DecommissionPreflightVerifierBindingMismatch
+  | -- | The execution decision was produced from a different reopened artifact.
+    DecommissionPreflightExecutionBindingMismatch
+  | -- | An internally inconsistent opaque execution decision was supplied.
+    DecommissionPreflightExecutionDecisionInvalid
+  | -- | A different/new build is running and must replace itself with this path.
+    DecommissionPreflightPinnedSelfExecutionRequired !ExternalArtifactPath
+  deriving (Eq, Show)
+
+-- | Join independently opaque authentication, disk-preflight, and running-build
+-- evidence.  Success is the only way to obtain readiness accepted by the permit
+-- fold.
+bindDecommissionPreflight
+  :: VerifiedDecommissionManifest
+  -> PreflightedVerifierArtifact
+  -> PinnedExecutionDecision
+  -> Either DecommissionPreflightError DecommissionPreflight
+bindDecommissionPreflight verified preflighted execution
+  | preflightedBinding /= expectedBinding =
+      Left DecommissionPreflightVerifierBindingMismatch
+  | pinnedExecutionBinding execution /= expectedBinding =
+      Left DecommissionPreflightExecutionBindingMismatch
+  | Just path <- pinnedSelfExecutionPath execution =
+      Left (DecommissionPreflightPinnedSelfExecutionRequired path)
+  | not (pinnedExecutionIsCurrent execution) =
+      Left DecommissionPreflightExecutionDecisionInvalid
+  | otherwise =
+      Right
+        DecommissionPreflight
+          { decommissionPreflightManifestDigest = verifiedManifestDigest verified
+          , decommissionPreflightVerifierBinding = expectedBinding
+          }
+ where
+  expectedBinding = verifiedVerifierBinding verified
+  preflightedBinding = preflightedVerifierBinding preflighted
 
 -- | The runner's one-time acceptance state: awaiting its permit, or already
 -- consumed (carrying the nonce so replay is recognized and a divergent nonce
@@ -76,12 +135,14 @@ initialDecommissionRunnerState = DecommissionAwaitingPermit
 data DecommissionPermitRefusal
   = -- | The permit is issued for a different runner role.
     DecommissionWrongAudience
-  | -- | The permit's bound plan is not the runner's committed plan.
-    DecommissionWrongPlan
+  | -- | The permit is not bound to the authenticated complete manifest.
+    DecommissionWrongManifest
   | -- | Normal admission is still open; freeze it before teardown.
     DecommissionAdmissionNotFrozen
   | -- | The exported verifier/runner artifact preflight has not succeeded.
     DecommissionVerifierNotReady
+  | -- | The supplied readiness evidence belongs to another manifest/build.
+    DecommissionVerifierBoundToDifferentManifest
   | -- | The permit is past its validity window.
     DecommissionPermitExpired
   | -- | A different nonce after a permit has already been consumed.
@@ -96,39 +157,45 @@ data DecommissionPermitDecision
   | DecommissionPermitRefused !DecommissionPermitRefusal
   deriving (Eq, Show)
 
--- | Decide whether the Decommission Runner, committed to @expectedPlan@, accepts
+-- | Decide whether the Decommission Runner, committed to @verified@, accepts
 -- @permit@ under the observed admission/verifier/freshness and its current state.
--- Audience and bound plan are checked first (a cross-role or cross-plan permit is
--- always refused, regardless of state). While awaiting, the permit is accepted only
--- when admission is frozen, the verifier artifact is ready, and the permit is fresh.
--- Once consumed, replaying the same nonce is idempotent and a different nonce
--- conflicts.
+-- Audience and complete-manifest identity are checked first.  Both first acceptance
+-- and replay require current preflight evidence for that manifest; permit expiry is
+-- checked only before first consumption so a lost response remains recoverable.
 decideDecommissionPermit
-  :: FrameDigest
+  :: VerifiedDecommissionManifest
   -> AdmissionState
-  -> VerifierPreflight
+  -> Maybe DecommissionPreflight
   -> PermitFreshness
   -> DecommissionRunnerState
   -> DecommissionPermit
   -> DecommissionPermitDecision
-decideDecommissionPermit expectedPlan admission verifier freshness state permit
+decideDecommissionPermit verified admission preflight freshness state permit
   | decommissionPermitAudience permit /= DecommissionRunner =
       DecommissionPermitRefused DecommissionWrongAudience
-  | decommissionPermitPlanDigest permit /= expectedPlan =
-      DecommissionPermitRefused DecommissionWrongPlan
-  | otherwise = case state of
-      DecommissionAwaitingPermit
-        | admission /= AdmissionFrozen ->
-            DecommissionPermitRefused DecommissionAdmissionNotFrozen
-        | verifier /= VerifierArtifactReady ->
-            DecommissionPermitRefused DecommissionVerifierNotReady
-        | freshness == PermitExpired ->
-            DecommissionPermitRefused DecommissionPermitExpired
-        | otherwise -> DecommissionPermitAccepted (decommissionPermitNonce permit)
-      DecommissionPermitConsumed consumed
-        | consumed == decommissionPermitNonce permit ->
-            DecommissionPermitAlreadyConsumed consumed
-        | otherwise -> DecommissionPermitRefused DecommissionNonceConflict
+  | decommissionPermitManifestDigest permit /= expectedDigest =
+      DecommissionPermitRefused DecommissionWrongManifest
+  | admission /= AdmissionFrozen =
+      DecommissionPermitRefused DecommissionAdmissionNotFrozen
+  | otherwise = case preflight of
+      Nothing -> DecommissionPermitRefused DecommissionVerifierNotReady
+      Just ready
+        | decommissionPreflightManifestDigest ready /= expectedDigest
+            || decommissionPreflightVerifierBinding ready /= expectedBinding ->
+            DecommissionPermitRefused DecommissionVerifierBoundToDifferentManifest
+        | otherwise -> decideReady state
+ where
+  expectedDigest = verifiedManifestDigest verified
+  expectedBinding = verifiedVerifierBinding verified
+  decideReady runnerState = case runnerState of
+    DecommissionAwaitingPermit
+      | freshness == PermitExpired ->
+          DecommissionPermitRefused DecommissionPermitExpired
+      | otherwise -> DecommissionPermitAccepted (decommissionPermitNonce permit)
+    DecommissionPermitConsumed consumed
+      | consumed == decommissionPermitNonce permit ->
+          DecommissionPermitAlreadyConsumed consumed
+      | otherwise -> DecommissionPermitRefused DecommissionNonceConflict
 
 -- | Fold an acceptance decision into the runner state. Consuming a permit records
 -- its nonce; every other decision leaves the state unchanged.
@@ -141,13 +208,13 @@ applyDecommissionPermit decision state = case decision of
 
 -- | 'decideDecommissionPermit' then apply, returning the decision and evolved state.
 stepDecommissionPermit
-  :: FrameDigest
+  :: VerifiedDecommissionManifest
   -> AdmissionState
-  -> VerifierPreflight
+  -> Maybe DecommissionPreflight
   -> PermitFreshness
   -> DecommissionRunnerState
   -> DecommissionPermit
   -> (DecommissionPermitDecision, DecommissionRunnerState)
-stepDecommissionPermit expectedPlan admission verifier freshness state permit =
-  let decision = decideDecommissionPermit expectedPlan admission verifier freshness state permit
+stepDecommissionPermit verified admission verifier freshness state permit =
+  let decision = decideDecommissionPermit verified admission verifier freshness state permit
    in (decision, applyDecommissionPermit decision state)

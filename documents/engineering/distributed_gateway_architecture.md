@@ -683,12 +683,10 @@ the authoritative record under the same request deadline. Desired absence uses t
 The EKS Gateway has no DNS-mutation capability; the AWS A record belongs to a Lifecycle Authority
 provider intent.
 
-**Historical pre-cutover implementation.** The current daemon still invokes `curl` for public-IP
-discovery and `aws route53 change-resource-record-sets` for direct UPSERT, with the shared
-`secret/gateway/gateway/aws` credential seeded by `vault reconcile`. Those children are bounded by
-the current runtime-memory plan, but they have no registered record epoch/read-back/tombstone and
-are not the target writer. Sprints `4.50`/`7.33` remove the direct subprocess paths, shared Vault
-coordinate, and EKS gateway fallback after exact-record cutover.
+**Historical pre-cutover implementation.** The former writer combined public-IP discovery, a
+direct Route 53 UPSERT, and one shared AWS credential. The registered home writer now receives the
+dedicated Gateway-DNS generation and binds the exact record epoch/read-back/tombstone. Sprint
+`7.33` separately owns the AWS-target projection; EKS Gateway has no fallback mutation capability.
 
 ---
 
@@ -697,9 +695,8 @@ coordinate, and EKS gateway fallback after exact-record cutover.
 The target Gateway Runtime surface is limited to the bounded peer protocol, read-only gateway
 state, constant-time health/readiness, and metrics described below. Bootstrap, lifecycle,
 object-store, federation-custody, and target-secret operations belong to their separately deployed
-services. The route descriptions explicitly marked historical in this section record the current
-implementation that must be removed during the plan-owned epoch cutover; they confer no target
-authority on Gateway Runtime.
+services. Route descriptions explicitly marked historical record already-removed implementation;
+their former paths return `404` and confer no authority on Gateway Runtime.
 
 ### Peer cursor, delta, and repair routes
 
@@ -796,8 +793,8 @@ a Kubernetes liveness/readiness probe and is not polled at probe cadence.
 Sprint `3.19` removed the gateway daemon's former `/v1/secret/derive` and
 `/v1/secret/ensure-namespace` endpoints. Secrets are not derived by the gateway daemon anymore:
 each secret is a Vault KV / PKI / Transit object, and each in-cluster consumer authenticates to
-Vault with its Kubernetes service account. The host-side gateway client covers status, daemon
-observability, and the Vault-backed federation read endpoints below.
+Vault with its Kubernetes service account. The host-side gateway client covers status and daemon
+observability only; lifecycle and federation state is outside the Gateway Runtime boundary.
 
 Supported chart pre-install Jobs and host/admin helpers read/write Vault objects directly through
 their owned roles/helpers. The deleted RPC family's history belongs only in
@@ -806,8 +803,9 @@ payload example.
 
 ### Historical Federation Read Endpoints (Legacy Cutover Surface)
 
-The following Sprint `2.26` gateway-mediated routes are an implementation record, not the target
-authority boundary:
+The following Sprint `2.26` gateway-mediated routes are a removed implementation record, not the
+target authority boundary. Sprint `4.50` deleted them from the route registry, client, daemon
+dispatcher, and bounded-operation taxonomy:
 
 - `GET /v1/federation/children` logs in to Vault through the daemon's configured Kubernetes-auth
   block, reads `secret/data/clusters/index`, fetches each child metadata object, and returns
@@ -816,80 +814,26 @@ authority boundary:
   the parent-custodied child bootstrap credential from
   `secret/data/clusters/<child>/bootstrap`.
 
-Both endpoints fail closed when Vault auth, Vault reachability, or KV decoding fails. They do not
-read child inventory from repository Dhall, Kubernetes Secrets, or gateway-local files.
+Historically, both endpoints failed closed when Vault auth, Vault reachability, or KV decoding
+failed. The paths now return `404`; current federation delivery and read-back belong to the
+Lifecycle Authority and Target Secret Agent capability path.
 
 ### Historical Operator-Write Endpoint (`POST /v1/secret/<logical>`, Legacy Cutover Surface)
 
-The following Sprint `1.44` route is an implementation record, not a target Gateway Runtime
-capability. Target writes use the allowlisted, generation-checked Target Secret Agent through one
-operation-indexed `CapabilityRef`; observation, admission, CAS, and read-back cannot be rebound to
-a separately supplied endpoint. Historically the host CLI (a real operator, or the
-test harness simulating one) persists the two host-minted operator secrets through the in-cluster
-daemon over the loopback-restricted NodePort instead of a host root-token direct Vault write:
-
-- `POST /v1/secret/acme/eab` — the ZeroSSL external-account-binding material.
-- `POST /v1/secret/gateway/gateway/aws` — the minted operational `aws.*` credential.
-
-The logical path is a fixed two-entry allowlist (`allowedOperatorSecretPaths`); any other
-`/v1/secret/*` path is a `404`, and a non-`POST` method on an allowlisted path is a `405`. The
-endpoint never echoes the written secret back — the secrets it owns are read in-cluster via Vault
-Kubernetes auth, never returned over REST.
-
-Authentication is by an **operator-injected Kubernetes JWT** carried in the
-`X-Prodbox-Operator-Jwt` header (operator decision 2026-06-19). The daemon exchanges that JWT for
-a short-lived Vault token under the dedicated, narrowly-scoped `prodbox-operator-write` Kubernetes
-auth role (create/update on exactly those two KV paths) and writes the KV v2 object — it never
-uses the daemon's own read-only `prodbox-gateway-daemon` identity for the write. A missing JWT is
-`401`, a failed Vault login is `403`, an unconfigured gateway Vault auth is `503`, and a Vault KV
-write failure is `502`.
-
-The host side (`Prodbox.Gateway.Client.writeOperatorSecret`) mints the JWT with
-`kubectl create token prodbox-operator-write --namespace gateway` and posts the field map.
-`Prodbox.Aws.writeOperatorSecretViaDaemonOrHost` prefers this daemon path and falls back to the
-host root-token Vault write only when no operator service-account token can be minted yet or an
-explicit unit/integration host-vault seam is active. Once the operator JWT exists, a daemon
-rejection or transport failure is authoritative and does not bypass to a host root-token write.
+This route family is physically removed from the registry, client, daemon dispatcher, service
+account inventory, and Vault policy/role plan. Target writes use only the generation-checked
+Target Secret Agent through an operation-indexed `CapabilityRef`; observation, admission, CAS,
+and read-back cannot be rebound to a separately supplied endpoint. Its former two-entry contract
+is retained only in the cleanup ledger as historical provenance.
 
 ### Historical Pre-Vault Bootstrap Endpoint (`POST /v1/bootstrap/vault/ensure`, Legacy Cutover Surface)
 
-This gateway route is a historical implementation record and an explicit
-[Standard-P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
-rollback path.
-In the target architecture the Bootstrap Broker is the only pre-Vault process and sole owner of
-bounded init/unlock/seal/rotation; Gateway Runtime never receives an unlock proof or calls the
-bootstrap object store. Bootstrap paths are absent from the compiled `GatewayRoute` registry,
-gateway client, and `JournalLeaseEmitter` dispatch. The combined wrapper consults the separately
-registered `Prodbox.Bootstrap.Broker.LegacyAdapter` only while the mutually exclusive
-`LegacyModelBEmitter` topology is selected; there is no target/legacy dual write.
-
-The rollback adapter preserves the old deliberately small pre-Vault REST surface so current
-operators retain an explicit rollback while replacement qualification is pending. Historically it
-let the host binary use the Kubernetes control plane only for initial substrate bootstrap and
-daemon deployment; once MinIO, Vault, and the daemon NodePort were up, further host requests went
-through the daemon service.
-
-The endpoint accepts one bounded request carrying the operator/test unlock-bundle password, never
-logs or echoes it, and performs the remaining steps in-cluster:
-
-- read the password-AEAD-sealed unlock bundle from MinIO through
-  `minio.prodbox.svc.cluster.local`;
-- initialize Vault if the retained Vault PV is empty, preserving init-once semantics;
-- submit Shamir unseal shares to Vault through the in-cluster Vault Service;
-- run the baseline Vault reconcile after Vault is unsealed.
-
-The daemon must not have standing authority to unseal Vault. It holds no persisted operator
-password, no persisted plaintext unseal shares, and no alternate secret store that can reconstruct
-the shares while Vault is sealed. A sealed Vault still bricks the cluster until fresh operator/test
-input arrives. The endpoint is reachable only through the loopback-restricted NodePort described in
-§12.1, with the firewall restriction treated as mandatory for this password-bearing route.
-
-Sprint `2.29` implemented the pre-Vault bootstrap mode by decoding the daemon's non-secret boot/live
-fields without resolving Vault-backed event keys, AWS credentials, or MinIO credentials. The REST
-listener can therefore bind diagnostics and this endpoint before those Vault-resolved fields are
-available. Sprint `4.42` routed root Vault lifecycle through this daemon boundary; Sprint `7.30`
-added the same daemon boundary for supported Pulumi/object-store paths. Those statements describe
-the rollback implementation, not target Gateway authority.
+This gateway route and its `LegacyAdapter` are physically removed. The compiled route registry,
+client, and daemon dispatcher return `404` for the former path in every emitter topology. The
+dedicated Bootstrap Broker is the only pre-Vault process and sole owner of bounded
+init/unlock/seal/rotation; secret-bearing requests attach to an attested one-shot worker and never
+enter Gateway Runtime. The former password-bearing handler and its direct bootstrap-object-store
+and root-token DTOs remain historical cleanup-ledger provenance only; they are not a rollback path.
 
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 
@@ -968,12 +912,9 @@ Production-default and deployment-qualification status remain owned only by the 
 Gateway Runtime has no pre-Vault mode in the target topology. Bootstrap Broker is a distinct
 Deployment, Service, ServiceAccount, Vault/MinIO policy, queue, resource envelope, and readiness
 identity; it alone accepts the bounded bootstrap requests needed before Vault is unsealed. The
-same-binary pre-Vault gateway mode and routes remain usable only through the isolated
-`LegacyModelBEmitter`/`LegacyAdapter` rollback boundary.
-[Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
-retains that explicit rollback
-until the replacement is the sole supported route and current-revision deployment qualification is
-proven; cutover and deletion status are owned by the Development Plan.
+same-binary pre-Vault Gateway route and `LegacyAdapter` are deleted; every former bootstrap path
+returns `404` regardless of emitter topology. Standard-P qualification governs deployment evidence,
+not restoration of the removed authority route.
 
 The separate binary role is `prodbox bootstrap-broker start` with
 `--config /etc/bootstrap-broker/config/config.dhall`. Its code-local production boundary remains fail closed

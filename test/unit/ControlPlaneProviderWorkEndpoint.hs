@@ -12,8 +12,10 @@ import Prodbox.ControlPlane.ProviderWorkEndpoint
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ReconcileRegisteredStack)
+  , ProviderStackConfig
   , ProviderWorkState (ProviderIdle, ProviderInFlight)
   , initialProviderWorkState
+  , mkAwsEksProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
   , mkRegisteredProviderResources
@@ -27,6 +29,18 @@ controlPlaneProviderWorkEndpointSuite =
     it "round-trips an apply payload through the shared request codec" $ do
       decodeControlPlaneRequest 4096 (encodeControlPlaneRequest submitReconcile)
         `shouldBe` Right submitReconcile
+    it "admits every closed Provider intent payload through the decision endpoint" $
+      mapM_
+        ( \payload -> do
+            (repository, _) <- freshRepository ProviderIdle False
+            result <-
+              serveProviderWorkApplyRequest
+                4096
+                repository
+                (encodeControlPlaneRequest payload)
+            providerWorkApplyHttpStatus result `shouldBe` 200
+        )
+        allSubmitPayloads
     it "admits a well-formed stack reconcile and commits the in-flight state" $ do
       (repository, stateRef) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitReconcile)
@@ -81,15 +95,51 @@ controlPlaneProviderWorkEndpointSuite =
     ProviderWorkApplyPayload
       { applyCommandKind = SubmitCommand
       , applyIntentKind = ReconcileStackIntent
-      , applyResourceRef = "prod"
+      , applyResourceRef = "aws-eks"
+      , applySecondaryRef = ""
+      , applyTertiaryRef = ""
       , applyRequestedRevision = 3
+      , applyStackConfig = Just awsEksConfig
       , applyCoordinate = ""
       }
   submitStaging = submitReconcile {applyResourceRef = "staging"}
   submitEmptyRef = submitReconcile {applyResourceRef = ""}
+  allSubmitPayloads =
+    [ submitReconcile
+    , submitReconcile {applyIntentKind = DestroyStackIntent}
+    , nonStack ObserveStackIntent "aws-eks" ""
+    , nonStack ReadBackStackIntent "aws-eks" ""
+    , nonStack ScratchCheckpointIntent "scratch" ""
+    , nonStack SesSendingIdentityIntent "example.test" ""
+    , nonStack SesDkimIntent "example.test" ""
+    , (nonStack SesReceiptRulesIntent "prodbox-receive-rule-set" "inbox.example.test")
+        { applyTertiaryRef = "capture-bucket"
+        }
+    , nonStack SesCaptureBucketIntent "capture-bucket" ""
+    , (nonStack SesDnsIntent "Z123EXAMPLE" "example.test")
+        { applyTertiaryRef = "inbox.example.test"
+        }
+    , nonStack ReapTestEbsVolumesIntent "prodbox-test" ""
+    , nonStack ObserveSpotPriceIntent "t3.small" "Linux/UNIX"
+    , nonStack ObserveOperationalIdentityIntent "" ""
+    , nonStack ObserveReadinessStsIntent "" ""
+    , nonStack ObserveReadinessRoute53Intent "Z123EXAMPLE" ""
+    ]
+  nonStack intentKind resource secondary =
+    submitReconcile
+      { applyIntentKind = intentKind
+      , applyResourceRef = resource
+      , applySecondaryRef = secondary
+      , applyRequestedRevision = 0
+      , applyStackConfig = Nothing
+      }
   coordReconcile =
     providerIntentCoordinate
-      (ReconcileRegisteredStack (unsafeRef (mkProviderStackRef "prod")) (unsafeRef (mkProviderRevision 3)))
+      ( ReconcileRegisteredStack
+          (unsafeRef (mkProviderStackRef "aws-eks"))
+          (unsafeRef (mkProviderRevision 3))
+          awsEksConfig
+      )
   freshRepository initial failWrites = do
     stateRef <- newIORef initial
     pure (inMemoryRepository stateRef failWrites, stateRef)
@@ -99,7 +149,22 @@ inMemoryRepository stateRef failWrites =
   ProviderWorkRepository
     { readProviderWorkState = readIORef stateRef
     , readRegisteredProviderResources =
-        pure (mkRegisteredProviderResources ["stack:prod", "ses-identity:mail"])
+        pure
+          ( mkRegisteredProviderResources
+              [ "stack:aws-eks"
+              , "checkpoint:pulumi-scratch:scratch"
+              , "ses:sending-identity:example.test"
+              , "ses:dkim:example.test"
+              , "ses:receipt-rules:prodbox-receive-rule-set:inbox.example.test:capture-bucket"
+              , "ses:capture-bucket:capture-bucket"
+              , "ses:dns:Z123EXAMPLE:example.test:inbox.example.test"
+              , "ebs-reaper:test-scoped:prodbox-test"
+              , "spot-price:ec2:t3.small:Linux/UNIX"
+              , "operational-identity"
+              , "readiness:sts"
+              , "readiness:route53:Z123EXAMPLE"
+              ]
+          )
     , readBoundProviderRevision = pure (unsafeRef (mkProviderRevision 2))
     , readProviderAuthorityNow = pure (authorityTimeFromMicros 1000)
     , readProviderSessionDeadline = pure (authorityTimeFromMicros 5000)
@@ -110,6 +175,9 @@ inMemoryRepository stateRef failWrites =
             writeIORef stateRef state
             pure (Right ())
     }
+
+awsEksConfig :: ProviderStackConfig
+awsEksConfig = unsafeRef (mkAwsEksProviderStackConfig "127.0.0.1/32")
 
 unsafeRef :: (Show e) => Either e a -> a
 unsafeRef = either (error . show) id

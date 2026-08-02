@@ -15,7 +15,6 @@ module Prodbox.TestRestore
   , RetainedSesPreparationStep (..)
   , RetainedSesRequirement (..)
   , buildRestoreCyclePlan
-  , gatewayDaemonLivenessPrecondition
   , retainedSesPreparationPrecondition
   , retainedSesPreparationTrace
   , restoreChartId
@@ -24,26 +23,10 @@ module Prodbox.TestRestore
   )
 where
 
-import Data.Text (Text)
-import Data.Text qualified as Text
-import Prodbox.Config.ComponentGraph
-  ( ComponentId (..)
-  , ReadinessProbe (..)
-  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , TargetClusterSecretSink
   )
-import Prodbox.Lifecycle.Preconditions
-  ( Precondition (..)
-  , StructuredError (..)
-  )
-import Prodbox.Lifecycle.ReadinessObservation
-  ( ComponentReadinessTarget (..)
-  , ReadinessProbeResult
-  , waitForComponentReadiness
-  )
-import Prodbox.Retry (RetryPolicy)
 import Prodbox.Substrate (Substrate)
 
 data RestoreChart
@@ -80,11 +63,11 @@ data RetainedSesPreparationStep
   | RetainedSesRelease
   deriving (Bounded, Enum, Eq, Show)
 
--- | The target gateway must prove a real object-store round trip before the
--- retained transaction may acquire its lease.  This is plan data rather than
--- an ambient bootstrap convention, so every interpreter must account for it.
+-- | The selected Target Secret Agent must be reachable and ready before the
+-- retained transaction may acquire its lease.  No Gateway endpoint or
+-- object-store probe is representable in this plan data.
 data RetainedSesPreparationPrecondition
-  = RetainedSesGatewayObjectStoreReady
+  = RetainedSesTargetSecretAgentReady
   deriving (Eq, Show)
 
 -- | Opaque nested plan for the one registered retained-SES effect.  The
@@ -100,7 +83,7 @@ data RetainedSesPreparationPlan = RetainedSesPreparationPlan
 canonicalRetainedSesPreparationPlan :: RetainedSesPreparationPlan
 canonicalRetainedSesPreparationPlan =
   RetainedSesPreparationPlan
-    { retainedSesPreparationPrecondition = RetainedSesGatewayObjectStoreReady
+    { retainedSesPreparationPrecondition = RetainedSesTargetSecretAgentReady
     , retainedSesPreparationTrace = [minBound .. maxBound]
     }
 
@@ -203,88 +186,3 @@ buildRestoreCyclePlan substrate retainedSesRequirement =
     case retainedSesRequirement of
       SesNotRequired -> []
       SesRequired -> [RestorePrepareRetainedSes canonicalRetainedSesPreparationPlan]
-
--- | Adapt one gateway object-store observation into a composable, bounded,
--- fail-closed prerequisite. The caller supplies the real one-shot actions and
--- loopback NodePort label; this module owns neither transport coordinates nor
--- a second polling loop.
---
--- Sprint 2.34: the gate gains a kubelet @/readyz@ PRECHECK ('observeReadyzOnce')
--- ordered before the object-store round trip. The daemon's @/readyz@ now
--- latches only on the first proven object-store round trip since boot, so
--- requiring @/readyz@ ready before this lifecycle round trip makes
--- lifecycle-ready imply kubelet-ready by construction: the lifecycle gate can
--- never admit dependent work through a daemon the kubelet would still pull from
--- its Service endpoints.
-gatewayDaemonLivenessPrecondition
-  :: RetryPolicy
-  -> String
-  -> IO (Either Text ReadinessProbeResult)
-  -> IO (Either Text ReadinessProbeResult)
-  -> Precondition
-gatewayDaemonLivenessPrecondition policy endpointLabel observeReadyzOnce observeRoundTripOnce =
-  Precondition
-    { preconditionLabel = gatewayDaemonLivenessLabel
-    , preconditionCheck = do
-        readyzResult <-
-          waitForComponentReadiness
-            policy
-            (FrontDoorHttpTarget ComponentGatewayDaemonFull observeReadyzOnce)
-            ProbeFrontDoorHttp
-        case readyzResult of
-          Left reason -> pure (Left (readyzError reason))
-          Right () -> do
-            result <-
-              waitForComponentReadiness
-                policy
-                ( BackendRoundTripTarget
-                    ComponentGatewayDaemonFull
-                    ComponentMinio
-                    observeRoundTripOnce
-                )
-                (ProbeBackendRoundTrip ComponentMinio)
-            pure (either (Left . readinessError) Right result)
-    }
- where
-  readyzError reason =
-    StructuredError
-      { errorPreconditionLabel = gatewayDaemonLivenessLabel
-      , errorSummaryLine =
-          "Gateway daemon kubelet readiness (/readyz) was not observed at "
-            ++ endpointLabel
-            ++ "."
-      , errorOffendingItems =
-          [(endpointLabel, "prodbox charts reconcile gateway")]
-      , errorNarrative =
-          unlines
-            [ "Refused: gateway daemon /readyz did not report ready at "
-                ++ endpointLabel
-                ++ "."
-            , "Observation: " ++ Text.unpack reason
-            , "No object-store round trip was attempted."
-            , "No Keycloak SMTP sync was started."
-            , "Run `prodbox charts reconcile gateway`, confirm the daemon NodePort reports /readyz ready, then retry."
-            ]
-      }
-  readinessError reason =
-    StructuredError
-      { errorPreconditionLabel = gatewayDaemonLivenessLabel
-      , errorSummaryLine =
-          "Gateway daemon object-store readiness was not observed at "
-            ++ endpointLabel
-            ++ "."
-      , errorOffendingItems =
-          [(endpointLabel, "prodbox charts reconcile gateway")]
-      , errorNarrative =
-          unlines
-            [ "Refused: gateway daemon object-store readiness was not observed at "
-                ++ endpointLabel
-                ++ "."
-            , "Observation: " ++ Text.unpack reason
-            , "No Keycloak SMTP sync was started."
-            , "Run `prodbox charts reconcile gateway`, confirm the daemon NodePort is ready, then retry."
-            ]
-      }
-
-gatewayDaemonLivenessLabel :: String
-gatewayDaemonLivenessLabel = "gatewayDaemonObjectStoreReady"

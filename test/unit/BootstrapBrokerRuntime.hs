@@ -83,7 +83,7 @@ defaultRuntimeLimits :: RuntimeLimits
 defaultRuntimeLimits =
   RuntimeLimits
     { runtimeQueueCapacity = 32
-    , runtimeMaximumBodyBytes = 4096
+    , runtimeMaximumBodyBytes = 65_536
     , runtimeRequestDeadlineMilliseconds = 5000
     , runtimeDrainDeadlineMilliseconds = 1000
     }
@@ -269,10 +269,11 @@ validatedRuntimeSettings port limits =
 runtimeConfig :: PortNumber -> RuntimeLimits -> Settings.BootstrapBrokerConfigDhall
 runtimeConfig port limits =
   Settings.BootstrapBrokerConfigDhall
-    { Settings.schemaVersion = 1
+    { Settings.schemaVersion = 2
     , Settings.cluster_id = "runtime-test-cluster"
     , Settings.vault_address = "http://127.0.0.1:8200"
     , Settings.service_identity = TextEncoding.decodeUtf8 testServiceIdentity
+    , Settings.parent_registration = Nothing
     , Settings.listener =
         Settings.BrokerListenerDhall
           { Settings.listen_host = "127.0.0.1"
@@ -507,8 +508,8 @@ parseStatusLine headerBlock =
 routeConformanceSuite :: SuiteBuilder ()
 routeConformanceSuite =
   describe "Sprint 2.33 Bootstrap Broker real-loopback route conformance" $ do
-    it "covers the closed fifteen-route registry" $
-      length Routes.allBrokerRoutes `shouldBe` 15
+    it "covers the closed sixteen-route registry" $
+      length Routes.allBrokerRoutes `shouldBe` 16
     forM_ Routes.allBrokerRoutes $ \route ->
       it ("projects exact method, path, body, and authentication for " ++ show route) $
         exerciseRouteConformance route
@@ -553,11 +554,17 @@ prepareRoutePrerequisites
 prepareRoutePrerequisites runtime fake route =
   case route of
     Routes.BrokerChildRecoveryDeliver ->
-      sendSuccessfulSetup runtime fake "setup-child-custody" Routes.BrokerChildCustodyCommit
+      prepareAndFinalizeChildCustody
     Routes.BrokerChildRecoveryObserve -> do
-      sendSuccessfulSetup runtime fake "setup-child-custody" Routes.BrokerChildCustodyCommit
+      prepareAndFinalizeChildCustody
       sendSuccessfulSetup runtime fake "setup-child-delivery" Routes.BrokerChildRecoveryDeliver
+    Routes.BrokerChildCustodyFinalize ->
+      sendSuccessfulSetup runtime fake "setup-child-custody-prepare" Routes.BrokerChildCustodyPrepare
     _ -> pure ()
+ where
+  prepareAndFinalizeChildCustody = do
+    sendSuccessfulSetup runtime fake "setup-child-custody-prepare" Routes.BrokerChildCustodyPrepare
+    sendSuccessfulSetup runtime fake "setup-child-custody-finalize" Routes.BrokerChildCustodyFinalize
 
 sendSuccessfulSetup
   :: TestRuntime
@@ -586,7 +593,8 @@ routeInitialState route = case route of
   Routes.BrokerVaultPkiStatus -> Fake.FakeUnsealed
   Routes.BrokerVaultPkiIssueTestCertificate -> Fake.FakeUnsealed
   Routes.BrokerVaultResetAmbiguousInitialization -> Fake.FakeAmbiguousInitialization
-  Routes.BrokerChildCustodyCommit -> Fake.FakeInitializedSealed
+  Routes.BrokerChildCustodyPrepare -> Fake.FakeInitializedSealed
+  Routes.BrokerChildCustodyFinalize -> Fake.FakeInitializedSealed
   Routes.BrokerChildRecoveryDeliver -> Fake.FakeInitializedSealed
   Routes.BrokerChildRecoveryObserve -> Fake.FakeInitializedSealed
 
@@ -604,7 +612,8 @@ routeExpectedStatus route = case route of
   Routes.BrokerVaultPkiStatus -> 200
   Routes.BrokerVaultPkiIssueTestCertificate -> 200
   Routes.BrokerVaultResetAmbiguousInitialization -> 202
-  Routes.BrokerChildCustodyCommit -> 202
+  Routes.BrokerChildCustodyPrepare -> 202
+  Routes.BrokerChildCustodyFinalize -> 202
   Routes.BrokerChildRecoveryDeliver -> 202
   Routes.BrokerChildRecoveryObserve -> 200
 

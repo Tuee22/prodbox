@@ -1,6 +1,5 @@
 encryptionsalt: v1:tfqnjKriIV4=:v1:5VHnKm5IYiVeztLZ:BOCb1SkZ0bPCqtTq3fsisZ00F8nWzg==
 config:
-  prodbox-aws-ses:parentZoneId: Z07495372G135SKEMQJZU
   prodbox-aws-ses:senderDomain: test.resolvefintech.com
   prodbox-aws-ses:receiveSubdomain: inbox.test.resolvefintech.com
   prodbox-aws-ses:captureBucket: prodbox-ses-capture

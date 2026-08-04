@@ -453,7 +453,9 @@ renderCommandFailure label output =
    in if null rendered then label ++ " exited unsuccessfully" else rendered
 
 -- | Sprint 7.25: the in-cluster MinIO root credential is a STATIC constant
--- ('Prodbox.Minio.RootCredential'), injected into the chart via
+-- ('Prodbox.Minio.RootCredential') — the registered bootstrap-floor credential of
+-- @vault_doctrine.md@ §6.1, whose reachability and blast radius are stated in that
+-- module's header. It is injected into the chart via
 -- @renderMinioChartArgs --set rootUser/rootPassword@ — the former @minio@
 -- Kubernetes Secret (and the @vault-secrets@ init container that materialized
 -- it) were removed. So return the constant directly rather than reading a

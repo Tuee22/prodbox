@@ -14,6 +14,27 @@
 
 ## Phase Status
 
+✅ **Sprint `0.20` (2026-08-03) adopts repository value hygiene on the same already-reclosed Phase 0
+documentation/governance surface** — it neither re-closes nor reopens the phase (Sprint `0.17`'s
+reclosure below stands unchanged). Every committed value that stands in for real-world data is
+officially synthetic, unmistakably synthetic, or genuinely real and declared as such in place
+([vault_doctrine.md §20](../documents/engineering/vault_doctrine.md#20-repository-value-hygiene)).
+The rule generalizes Sprint `0.19`'s credential-literal invariant to the class that actually leaked:
+a real Route 53 hosted-zone id survived seven commits in the version-controlled long-lived stack
+settings file, indistinguishable from the synthetic zone ids beside it. Sprint `0.20` retitles §20
+from *secret* to *value* hygiene, folds the bootstrap-floor credential registration back into §6.1
+where it already lived, reconciles the §17 ownership statement, and scopes Exit Definition item 17 to
+runtime surfaces so it no longer contradicts the doctrine's preference for reserved placeholders.
+Companion own-surface reopens land the remediation on the phases that own it: Sprint `7.35`
+(Phase 7), Sprint `5.26` (Phase 5), Sprint `1.74` (Phase 1).
+
+✅ **Sprint `0.19` (2026-08-03) adds repository secret hygiene on the same already-reclosed surface**
+— likewise neither re-closing nor reopening the phase. It established §20 as the SSoT for credential
+material in tracked content, removed a vestigial hardcoded registry admin credential that
+authenticated to nothing, and corrected the comment sites that mis-stated the MinIO bootstrap
+credential's reachability. Superseded in part by Sprint `0.20`, which generalizes the rule and
+withdraws the construct-the-value fixture convention in favour of not imitating credentials at all.
+
 ✅ **Sprint `0.18` (2026-07-12) adds an operator-configurable certificate-scope governance policy on
 the same already-reclosed Phase 0 documentation/governance surface** — it neither re-closes nor
 reopens the phase (Sprint `0.17`'s reclosure below stands unchanged). Sprint `0.18` adopts a
@@ -1841,6 +1862,249 @@ None on this surface — implementation is owned by Sprints `2.35` and `5.22`.
   `documents/engineering/envoy_gateway_edge_doctrine.md` gains a
   [phase-2-gateway-dns.md](phase-2-gateway-dns.md) referrer. Engineering docs name owning sprints
   sparingly and link the Development Plan; sprint status lives only in the plan suite.
+
+## Sprint 0.19: Repository Secret-Hygiene Doctrine Adoption ✅
+
+**Status**: Done (2026-08-03; documentation/governance surface plus dead-credential removal)
+**Implementation**: this documentation change — `documents/engineering/vault_doctrine.md` (new § 20;
+§ 19 scope-clarifying sentence), `documents/engineering/code_quality.md` (new
+`Credential-Shaped Source Literals` lint subsection), `documents/engineering/unit_testing_policy.md`
+(§ 3 forbidden bullet; § 4 amended plus new allowed bullets), and
+`documents/engineering/README.md` (index row plus Quick Navigation) — together with the § 20.2
+remediation it mandates: deletion of the vestigial hardcoded registry admin credential from
+`src/Prodbox/Lib/EksCustomImagePush.hs`, `src/Prodbox/Lib/EksImageMirror.hs`, and
+`src/Prodbox/CLI/Rke2.hs`, and correction of the five comment sites that mis-stated the MinIO
+bootstrap credential's reachability and precedent.
+**Blocked by**: none (governance addition on an already-reclosed surface).
+**Deployment qualification**: pending — and, correcting the original entry, this sprint **does** touch
+a Standard-P surface: it deleted the credential environment entries from the rendered EKS image-push
+Pod and image-mirror Job manifests and removed a `kubectl exec` login step from the push
+orchestration, which is capability wiring. Both substrate rows were already `pending`, so nothing is
+invalidated, but the next qualification run must exercise the post-`0.19` manifests.
+**Independent Validation**: `prodbox dev check`, `prodbox dev lint docs`, and `prodbox dev docs
+check` pass. The § 20.1 invariant is verified empirically against the tree: the § 20.5 access-key
+pattern over all tracked files yields only exclusion-tagged candidates, and no other § 20.5 provider
+pattern occurs in any tracked file. The removed registry credential is proven vestigial — the
+rendered registry config carries no `auth` stanza (`test/golden/config/registry-config.yaml`), so it
+authenticated to nothing; the affected pod- and Job-manifest suites pass with the former
+credential-projection assertions inverted into leak canaries.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/code_quality.md`, `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/README.md`
+
+### Objective
+
+Close the doctrine gap that produced a push-protection rejection on a wholly fabricated credential
+fixture: no document governed credential-shaped literals in tracked source. § 19 was the nearest
+neighbour and was the wrong owner — its scope is generated artifacts and runtime observation
+surfaces, and widening it would have banned the bare access-key prefix and silently vacated the leak
+canaries in `test/unit/CredentialProvisionerAwsAdminAuthority.hs` and `test/integration/CliSuite.hs`.
+Adopt instead an invariant keyed to scanner-matchability, which the repository already satisfies with
+zero exemptions, and make the codebase honest against the stronger "no secrets in source" rule the
+same section states.
+
+### Deliverables
+
+- `vault_doctrine.md` § 20 is the SSoT: the no-secret-material rule; the extension of `SecretRef`
+  discipline from Tier-0 Dhall to Haskell constants and chart values; the bootstrap-floor exception
+  class with its four obligations and its one registered entry; the construct-don't-spell fixture
+  convention with four closed load-bearing carve-outs; the scanner-matchability gate with its
+  exclusion and boundary semantics; the never-committed list and the `.gitignore` ↔ `.dockerignore`
+  pairing rule; and the ordered incident procedure.
+- § 19 gains one sentence fixing its scope against § 20, so its access-key entry cannot be read as a
+  source-file ban.
+- `code_quality.md` gains the lint-surface entry beside `Operator Vocabulary Enforcement` — not in
+  `forbiddenPathRegistry`, which is path-shaped — with pattern parity and no-exemption as mandatory
+  properties, the tracked-source scope decision, and the record that `prodbox dev check` is the only
+  sanctioned gate because repository CI and pre-commit scanners are forbidden surfaces under § 2A.
+- `unit_testing_policy.md` § 4's "concrete ADT values and captured payloads" bullet is qualified by
+  the § 20 gate, and a new allowed bullet re-permits the four load-bearing categories explicitly, so
+  the tightening cannot be misapplied to the canaries.
+- The vestigial registry admin credential is deleted rather than carved out, along with the dead
+  login step it fed and its stale Haddock referencing a function that no longer exists. The two
+  manifest tests that asserted the credential was projected now assert it is absent.
+- The MinIO bootstrap credential is registered under § 20.3 with a corrected analysis: the Services
+  are `ClusterIP` reached through a port-forward, not a localhost-only NodePort, and the blast radius
+  includes registry-blob write access. The former Harbor precedent is withdrawn as vacuous.
+
+### Validation
+
+1. `prodbox dev lint docs` — governed-doc header, `**Generated sections**: none` reconciliation, and
+   relative-link resolution across all four touched documents.
+2. `prodbox dev docs check` and `prodbox dev check` exit 0.
+3. Whole-tree § 20.5 pattern sweep, including over § 20 itself — the doctrine is a tracked file and
+   is subject to its own rule (§ 20.7 item 6).
+4. Targeted unit suites for the image-push and image-mirror manifests.
+
+### Remaining Work
+
+The three `prodbox dev check` policies § 20 anticipates — the scanner-matchability scan, the
+bootstrap-floor registry bijection, and the chart-values literal scan — are registered and not closed
+by this sprint, as is the migration of the MinIO bootstrap credential from a compiled-in constant to
+a per-install generated value. Sprint `0.20` supersedes this sprint's fixture convention and relocates
+the bootstrap-credential registration into `vault_doctrine.md` § 6.1.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - new § 20 as the SSoT for credential material in tracked
+  content, plus a § 19 sentence fixing that section's scope to generated artifacts and runtime
+  observation surfaces.
+- `documents/engineering/code_quality.md` - the lint-surface entry, recorded beside the
+  operator-vocabulary regex scan rather than in the path-shaped forbidden-path registry.
+- `documents/engineering/unit_testing_policy.md` - the test-author-facing fixture rule in the
+  forbidden/allowed pattern lists.
+- `documents/engineering/README.md` - index row and Quick Navigation entry.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- `documents/engineering/vault_doctrine.md` gains `code_quality.md` and `unit_testing_policy.md`
+  referrers; each of those gains a `vault_doctrine.md` referrer. Engineering docs name owning sprints
+  sparingly and link the Development Plan; sprint status lives only in the plan suite.
+
+## Sprint 0.20: Repository Value Hygiene Adoption ✅
+
+**Status**: Done (2026-08-03; documentation/governance surface plus committed-value remediation) —
+a governance addition on the same already-reclosed Phase 0 documentation surface as Sprints `0.18`
+and `0.19`. It neither re-closes nor reopens the phase.
+**Implementation**: this documentation change — `documents/engineering/vault_doctrine.md` (§ 20
+retitled and restated; § 6.1 gains the integrity blast radius and the generated-per-install
+obligation; § 17 ownership reconciled; § 19 red-team bullet), `documents/engineering/code_quality.md`
+(the review-enforced-not-lint-enforced boundary), `documents/engineering/unit_testing_policy.md`
+(fixture rules generalized from credential-shaped to value-shaped),
+`documents/engineering/aws_test_environment.md` (an invented registrable domain replaced with an
+RFC 2606 reserved one), `documents/engineering/local_registry_pipeline.md` (a spelled vendor default
+credential removed; the build-context claim reconciled against the enumerated copy steps), and
+`documents/engineering/README.md`; and the scoping of Exit Definition item 17 to runtime surfaces.
+All `vault_doctrine.md` text — including the § 6.1 and § 17 edits — is authored here; the owning
+phases adopt it rather than author it. The committed-value remediation on other phases' surfaces
+is carried by Sprints `1.74` (Phase 1), `3.30` (Phase 3), `5.26` (Phase 5), and `7.35` (Phase 7).
+**Blocked by**: none (governance addition on an already-reclosed surface).
+**Deployment qualification**: pending — no Standard-P production-composition surface is touched
+(topology, capability wiring, deadline composition, queueing/admission, resource envelopes,
+persistence protocol, lifecycle orchestration, destructive cleanup, and substrate routing are all
+unchanged), so this neither advances nor invalidates the already-pending qualification, and the
+current revision must not be called deployment-ready on the strength of a documentation and
+fixture-value change. Note that `SourceIdentity` binds governed documentation, so this change moves
+the source-manifest digest a future `proven` row would bind.
+**Independent Validation**: Phase-0's governed-documentation surface, validated with no dependency on
+any other phase or on live infrastructure — `prodbox dev lint docs`, `prodbox dev docs check`, and
+`prodbox dev check` exit 0, plus a cross-reference audit confirming every § 20.x citation resolves to
+the section it names and every registered-real-values row resolves to an existing declaration site.
+The companion sprints each validate their own remediation on their own surface; this sprint does not
+depend on them having landed. Sprint-status and cross-reference audits confirm Standard G / H / J / N
+compliance.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/code_quality.md`, `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_test_environment.md`,
+`documents/engineering/local_registry_pipeline.md`, `documents/engineering/README.md`
+
+### Objective
+
+Generalize Sprint `0.19`'s credential-literal invariant to the class that actually leaked.
+
+An audit prompted by `0.19` established two things. First, the credential class is the **cleanest** in
+the repository: 119 credential-imitating fixture literals across 19 test files, and not one realistic
+fake — every one is self-labelling or too short to mistake for real. Second, a **real Route 53
+hosted-zone id was committed across seven commits** in the version-controlled long-lived stack
+settings file, and survived review because it was shape-identical to the synthetic zone ids beside it.
+No credential rule would have caught it; a hosted-zone id is not a credential.
+
+The governing insight is therefore not "do not commit secrets" but: **a repository full of realistic
+fakes cannot show a real value.** The defect class is *imitation*, and it is widest exactly where no
+vendor publishes a placeholder — cloud resource ids — so authors invent shapes that collide with real
+ones.
+
+The same audit found that § 20 as written by `0.19` restated roughly 30% of its own file (§ 3, § 4,
+§ 13, § 17, and `.gitignore`), which `documentation_standards.md` § 5 forbids, and that the
+restatement had introduced three unreconciled contradictions.
+
+### Deliverables
+
+- `vault_doctrine.md` § 20 is retitled *Repository value hygiene* and restated around the three-way
+  rule — officially synthetic, unmistakably synthetic, or genuinely real and declared as such in
+  place — with a placeholder registry naming the reserved value for each class and marking the
+  cloud-resource-id row as the one with no vendor placeholder.
+- The duplication is removed: § 20 now links § 3, § 4, § 13, § 17, and `.gitignore` instead of
+  restating them.
+- The bootstrap-floor credential registration is folded back into § 6.1, which already carried it,
+  and gains the fact § 6.1's confidentiality-only argument missed: the credential grants **write**
+  access to the container-registry blob store, so overwritten blobs are pulled as trusted images —
+  an integrity exposure, not merely ciphertext access. The generated-per-install obligation is edited
+  into § 6.1 so it amends the stability justification rather than contradicting it from elsewhere.
+- § 17's closing sentence is reconciled: the MinIO root credential is Vault-*mirrored*, not
+  Vault-owned; its authoritative value is the § 6.1 bootstrap constant.
+- § 20.5 is demoted to an explicitly mechanical outer ring, with the reason its exclusion list is
+  narrower than § 20.1's stated in place — the two rules have different judges, one a scanner and one
+  a reader.
+- The `0.19` fixture convention is withdrawn. Nothing in the codebase validates fixture shape — the
+  admin-credential validator enforces non-emptiness and the SMTP key-id constructor enforces an
+  alphanumeric bound — so imitation was decoration, and constructing a credential-shaped value merely
+  hid it from a scanner. Fixtures are unmistakably synthetic; only published vendor test vectors are
+  immovable.
+- A leak canary asserts the absence of *the value the test passed in*, never of a vendor prefix,
+  which silently weakens as fixtures stop imitating.
+- Exit Definition item 17 is scoped to runtime surfaces, resolving its conflict with the doctrine's
+  preference for reserved placeholders in examples and fixtures.
+- Twelve committed-value defects are remediated across Sprints `1.74`, `5.26`, `7.35` and this one.
+
+### Validation
+
+1. `prodbox dev lint docs` — governed-doc headers, `**Generated sections**: none` reconciliation, and
+   relative-link resolution across all six touched documents plus the retitled § 20 anchors.
+2. `prodbox dev docs check` and `prodbox dev check` exit 0.
+3. `prodbox test unit` at 3066/3066 with the fd-flaky real-`ssh` case excluded — unchanged from before
+   the fixture-value remediation, which is the proof those values were behaviourally inert.
+4. Whole-tree self-check: the § 20.5 patterns run over the edited documents, since a governed doc is
+   tracked content and subject to the rule it states.
+5. Defect sweep: each remediated value returns its synthetic replacement and no routable address,
+   RFC 4122-shaped Kubernetes UID, invented registrable domain, spelled vendor default credential, or
+   real per-run cloud resource id survives.
+6. Contradiction audit: the MinIO bootstrap credential holds one consistent position across § 6.1,
+   § 17, and § 20; Exit Definition item 17 and § 20.1 no longer conflict.
+
+### Remaining Work
+
+None. The three `prodbox dev check` policies registered by Sprint `0.19` remain registered and
+unclosed, and are unaffected by this sprint — the committed-value rule is deliberately
+review-enforced rather than lint-enforced, because no scanner can distinguish a real cloud resource
+id from a synthetic one. The migration of the MinIO bootstrap credential to a per-install generated
+value likewise remains scheduled.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - § 20 retitled and restated as the SSoT for committed
+  values; § 6.1 gains the integrity blast radius and the generated-per-install obligation; § 17
+  ownership reconciled; § 19 gains a red-team bullet.
+- `documents/engineering/code_quality.md` - records that the committed-value rule is review-enforced
+  rather than lint-enforced, and why adding a pattern for it would be wrong.
+- `documents/engineering/unit_testing_policy.md` - fixture rules generalized from credential-shaped
+  to value-shaped.
+- `documents/engineering/aws_test_environment.md` - the ephemeral-subdomain example uses an RFC 2606
+  reserved domain.
+- `documents/engineering/local_registry_pipeline.md` - the retired component's default credential is
+  described rather than spelled; the build-context claim matches the enumerated copy steps.
+- `documents/engineering/README.md` - index row and Quick Navigation entry.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- `DEVELOPMENT_PLAN/README.md` Exit Definition item 17 links `vault_doctrine.md` § 20.1 and states
+  the runtime-surface scoping. `documents/engineering/aws_test_environment.md` and
+  `local_registry_pipeline.md` gain `vault_doctrine.md` links. Record the Phase `1`, `5`, and `7`
+  own-surface reopens in [README.md](README.md) and [00-overview.md](00-overview.md), and add the
+  remediated-value rows to
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

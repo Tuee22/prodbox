@@ -498,8 +498,18 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-08-02 — all code-owned phases are closed):**
+**Current head state (2026-08-03 — all code-owned phases are closed):**
 
+- Sprints `0.19`/`0.20` add repository secret hygiene and then repository value hygiene as governance
+  additions on Phase `0`'s already-reclosed documentation surface (no further reclose event).
+  `vault_doctrine.md` §20 requires every committed value that stands in for real-world data to be
+  officially synthetic, unmistakably synthetic, or genuinely real and declared as such in place.
+- Phases `1`, `3`, `5`, and `7` reopen on their **own** surfaces (Standard A/N) to land the remediation
+  each owns — Sprint `1.74` declares two real non-secret constants in production source, Sprint
+  `3.30` declares the RFC 6455 handshake GUID and repoints the MinIO chart credential comment, Sprint
+  `5.26` replaces fixture values that imitated real-world data, and Sprint `7.35` redacts two real
+  per-run cloud resource ids from that phase's own live-run narrative and declares its Pulumi
+  programs' real values. No later phase reopened any of them; each is validated on its owned surface.
 - The numerical completion pass validated and closed every sprint through `8.12` in order.
 - Sprint `8.12` is the final code-owned closure: its typed artifact fixes eight invite assertions,
   23 exhaustive fault dispositions, both substrate commands, Authority epoch and exact backup

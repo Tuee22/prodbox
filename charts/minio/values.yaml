@@ -36,8 +36,15 @@ resources:
 
 # Sprint 7.25: the STATIC MinIO root credential, injected by `renderMinioChartArgs`
 # (--set rootUser / rootPassword) from `Prodbox.Minio.RootCredential` (the single
-# source of truth). Non-secret, like Harbor's hardcoded creds; these defaults are
-# only a fallback. MinIO no longer reads its credential from Vault at startup, so
-# it depends only on the cluster + its retained PV.
+# source of truth); these defaults are only a fallback. MinIO no longer reads its
+# credential from Vault at startup, so it depends only on the cluster + its
+# retained PV.
+#
+# This is the registered bootstrap-floor credential of vault_doctrine.md §6.1 —
+# needed before Vault can be read, so it cannot be a Vault reference. It is a
+# real credential; see the `Prodbox.Minio.RootCredential` module header for its
+# reachability and blast radius. The bootstrap floor is the single registered
+# exception to "no credential in chart values" (§20.3); it is not licence to
+# hardcode anywhere else.
 rootUser: prodbox-minio-root
 rootPassword: prodboxMinioRootStaticCredentialV1

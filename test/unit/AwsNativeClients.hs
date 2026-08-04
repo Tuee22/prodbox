@@ -249,7 +249,7 @@ singleAExpected =
     <> "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet>"
     <> "<Name>demo.resolvefintech.com.</Name><Type>A</Type><TTL>60</TTL>"
-    <> "<ResourceRecords><ResourceRecord><Value>1.2.3.4</Value></ResourceRecord></ResourceRecords>"
+    <> "<ResourceRecords><ResourceRecord><Value>192.0.2.1</Value></ResourceRecord></ResourceRecords>"
     <> "</ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
 multiAExpected :: ByteString
@@ -258,8 +258,8 @@ multiAExpected =
     <> "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet>"
     <> "<Name>demo.resolvefintech.com.</Name><Type>A</Type><TTL>60</TTL><ResourceRecords>"
-    <> "<ResourceRecord><Value>1.2.3.4</Value></ResourceRecord>"
-    <> "<ResourceRecord><Value>5.6.7.8</Value></ResourceRecord>"
+    <> "<ResourceRecord><Value>192.0.2.1</Value></ResourceRecord>"
+    <> "<ResourceRecord><Value>192.0.2.2</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch>"
     <> "</ChangeResourceRecordSetsRequest>"
 
@@ -278,7 +278,7 @@ listExactAResponse =
   "<ListResourceRecordSetsResponse xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ResourceRecordSets><ResourceRecordSet>"
     <> "<Name>Demo.ResolveFintech.com.</Name><Type>A</Type><TTL>60</TTL>"
-    <> "<ResourceRecords><ResourceRecord><Value>1.2.3.4</Value></ResourceRecord>"
+    <> "<ResourceRecords><ResourceRecord><Value>192.0.2.1</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
     <> "<IsTruncated>false</IsTruncated><MaxItems>1</MaxItems>"
     <> "</ListResourceRecordSetsResponse>"
@@ -573,11 +573,12 @@ awsNativeClientsSuite =
 
     describe "Route 53 change-batch XML is a deterministic function of the desired records" $ do
       it "renders a single A UPSERT with a trailing dot" $
-        renderChangeBatchXml [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4"])]
+        renderChangeBatchXml
+          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"])]
           `shouldBe` singleAExpected
       it "renders multiple values in list order" $
         renderChangeBatchXml
-          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4", "5.6.7.8"])]
+          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1", "192.0.2.2"])]
           `shouldBe` multiAExpected
       it "escapes quotes in a TXT value" $
         renderChangeBatchXml
@@ -619,7 +620,7 @@ awsNativeClientsSuite =
           `shouldBe` [("name", "inbox.example.test."), ("type", "MX"), ("maxitems", "1")]
       it "parses only an exact name/type record with TTL and values" $
         parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listExactAResponse
-          `shouldBe` Right (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4"]))
+          `shouldBe` Right (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"]))
       it "reports a lexicographically subsequent first record as exact absence" $
         parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listSubsequentResponse
           `shouldBe` Right Nothing
@@ -638,7 +639,7 @@ awsNativeClientsSuite =
         result <- listExactResourceRecordSet r53 "Z123" "demo.resolvefintech.com" RecordA
         result
           `shouldBe` Right
-            (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["1.2.3.4"]))
+            (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"]))
         request <- readIORef captured
         fmap shrMethod request `shouldBe` Just "GET"
         fmap shrUrl request

@@ -21,6 +21,13 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-03 on Sprint `5.26`** — own-surface reopen (Standard A/N) replacing canonical
+suite fixture values that imitated real-world data: really routable IPv4 record values, RFC
+4122-shaped Kubernetes UIDs, and a plausible delegation-set nameserver, now reserved-range and
+descriptive-slug equivalents
+([vault_doctrine.md §20.4](../documents/engineering/vault_doctrine.md#204-fixtures-are-synthetic-not-shaped)).
+The suite passes unchanged, which is the proof the values were behaviourally inert.
+
 ✅ **Sprint `5.25` closed 2026-08-01 on its independently validated typed-readiness surface** (own-surface,
 Standard A): the gateway runtime-stability observation type is split so a healthy not-yet-scraped Pod is
 a distinct non-terminal observation, never latched fatal — **superseding Sprint `5.24`** (its
@@ -2241,6 +2248,79 @@ exit 0, 18/18); live aggregate exercise remains the non-blocking Standard-O axis
 **Cross-references to add:**
 
 - Link to Sprint `5.24` (superseded) and the doctrine SSoT §2.4.
+
+## Sprint 5.26: Fixture Values Stop Imitating Real-World Data [✅ Done]
+
+**Status**: Done (2026-08-03) — Phase `5` own-surface reopen (Standard A/N) on the canonical suite's
+fixture values, adopting
+[vault_doctrine.md §20.4](../documents/engineering/vault_doctrine.md#204-fixtures-are-synthetic-not-shaped)
+(Sprint `0.20`). Value substitution only; no assertion, prerequisite, or validation membership changes.
+**Implementation**: `test/unit/AwsNativeClients.hs`, `test/unit/CredentialProvisioner.hs`,
+`test/unit/ExternalMaterialIngressLifecycle.hs`,
+`test/unit/CredentialProvisionerAwsAdminAuthority.hs`, `test/unit/Main.hs`,
+`test/integration/CliSuite.hs`
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — test-fixture data only; no Standard-P production-composition
+surface is touched, so this neither advances nor invalidates the already-pending qualification.
+**Independent Validation**: pure fixture-value surface exercised by the existing unit suite on the
+home substrate, with no cluster, live AWS, or later-phase dependency. The suite passing **unchanged**
+at 3066/3066 is itself the proof the substituted values were behaviourally inert.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/vault_doctrine.md`
+
+`test/` is co-owned by Phases 1, 4, and 5 (`00-overview.md`). A change that alters only fixture
+*values*, with no assertion, prerequisite, or validation-membership change, is taken by Phase 5 as
+the canonical suite's custodian; a change to what a test *proves* would belong to the phase owning
+that behaviour.
+
+### Objective
+
+Three fixture families imitated real-world data closely enough that a reader could not classify them,
+which is the property § 20.1 exists to remove. None of the three was required to be realistic: the
+Kubernetes UID validator accepts any bounded non-control string, and the Route 53 record values are
+opaque to every assertion over them.
+
+### Deliverables
+
+- `test/unit/AwsNativeClients.hs` — record values that were **really routable** addresses are replaced
+  with RFC 5737 documentation addresses, the range the repository already uses in 38 other places
+  including a live Route 53 call in production code. A test value that escapes into a real record or
+  firewall rule must not point at a stranger's host.
+- `test/unit/CredentialProvisioner.hs` and `test/unit/ExternalMaterialIngressLifecycle.hs` — three
+  RFC 4122-shaped v4 UUIDs standing in for Kubernetes Job, Pod, and ServiceAccount UIDs are replaced
+  with descriptive slugs, matching the ~35 fixtures that already use that form.
+- `test/integration/CliSuite.hs` — a delegation-set nameserver shaped like a real Route 53 one, but
+  which is not, is replaced with an RFC 2606 reserved name.
+
+### Validation
+
+1. `prodbox dev check` exit 0.
+2. `prodbox test unit` at 3066/3066 with the fd-flaky real-`ssh` case excluded — **unchanged** from
+   before the substitution, which is the proof these values were behaviourally inert.
+3. Defect sweep: the replaced values no longer appear and their synthetic equivalents do.
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/unit_testing_policy.md` - the forbidden/allowed pattern lists carry the
+  fixture rule these substitutions satisfy.
+- `documents/engineering/vault_doctrine.md` - § 20.4 is the governing statement; authored by Sprint
+  `0.20`.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `5` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md), and add the replaced-value rows to
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

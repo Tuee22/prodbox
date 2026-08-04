@@ -21,12 +21,13 @@
 --
 -- The MinIO access credential is a static constant
 -- ('Prodbox.Minio.RootCredential'), NOT password-derived: the security here is
--- the password-AEAD seal on the bundle body (you need the operator password to
--- decrypt it) and Vault Transit on every other object — the access credential
--- only gates ciphertext access over a localhost NodePort (operator decision
--- 2026-06-22; see "Prodbox.Minio.RootCredential"). Using the real (valid) root
--- credential is also what makes the bundle round-trip through MinIO actually
--- work (a derived made-up credential MinIO never accepted).
+-- the password-AEAD seal on the bundle body — you need the operator password to
+-- decrypt it, not merely to read its ciphertext. It is nonetheless a real
+-- credential, the registered bootstrap-floor entry of @vault_doctrine.md@ §6.1;
+-- see "Prodbox.Minio.RootCredential" for its reachability and blast radius. Using
+-- the real (valid) root credential is also what makes the bundle round-trip
+-- through MinIO actually work (a derived made-up credential MinIO never
+-- accepted).
 --
 -- The host-disk bundle remains the load-bearing unseal fallback this stage; this
 -- module is written-to and preferred-on-read with a disk fallback. Dropping the

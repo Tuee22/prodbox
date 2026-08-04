@@ -2531,8 +2531,15 @@ configFromSetupInput currentConfig input =
     }
 
 -- | The ACME registration email the harness bakes into the generated config
--- (Sprint 5.10) — the operator's contact, used non-interactively in place of
--- the @prodbox config setup@ ACME-email prompt. Not a secret.
+-- (Sprint 5.10), used non-interactively in place of the @prodbox config setup@
+-- ACME-email prompt.
+--
+-- This address is REAL and deliberately so: it becomes the @contact@ on the
+-- ACME account. A reserved-domain address is not an option — ACME servers
+-- reject contacts at reserved domains outright, so account registration fails
+-- and no certificate is ever issued. It is non-secret: an email address is not
+-- a credential. Recorded here as real rather than left ambiguous
+-- (vault_doctrine.md §20.1, the declared-real arm).
 harnessAcmeEmail :: Text
 harnessAcmeEmail = "matthewnowak@gmail.com"
 

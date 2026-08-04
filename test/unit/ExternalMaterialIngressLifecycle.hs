@@ -803,13 +803,13 @@ fixtureImageDigestText =
   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 fixtureJobUidText :: Text
-fixtureJobUidText = "f4d16d4a-2b04-48a6-bb02-aef624aec469"
+fixtureJobUidText = "fixture-job-uid-1"
 
 fixturePodUidText :: Text
-fixturePodUidText = "2c136199-c7cc-48bf-b78f-a3dc96d78695"
+fixturePodUidText = "fixture-pod-uid-1"
 
 fixtureServiceAccountUidText :: Text
-fixtureServiceAccountUidText = "80fb8022-dc57-469f-a0b8-d9cfa06a3c3d"
+fixtureServiceAccountUidText = "fixture-service-account-uid-1"
 
 fixturePodName :: Text
 fixturePodName = "external-material-ingress-fixture-pod"

@@ -62,7 +62,7 @@ cross-substrate shared infrastructure (see
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage/delete lifecycle, constant-time gateway probe-binding contract, and the probe/route single-source rule for `prodbox charts` |
 | [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Vault-only secret storage and the host↔cluster access boundary; the filename is retained for link stability after retirement of master-seed derivation and gateway secret-service RPCs |
-| [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef contract, MinIO-resident password-AEAD unlock bundle, Bootstrap Broker boundary, dedicated authority/target-agent policies, Transit envelope encryption, sealed-state invariant, and Kubernetes auth |
+| [vault_doctrine.md](./vault_doctrine.md) | Vault as the fail-closed secrets / KMS / PKI backend: the SecretRef contract, MinIO-resident password-AEAD unlock bundle, Bootstrap Broker boundary, dedicated authority/target-agent policies, Transit envelope encryption, sealed-state invariant, Kubernetes auth, and § 20 repository value hygiene — every committed value officially synthetic, unmistakably synthetic, or declared real in place; fixture shape; `.gitignore` ↔ `.dockerignore` pairing; and the incident procedure |
 | [burn_recipient_provenance.md](./burn_recipient_provenance.md) | Immutable version-one OpenPGP burn-recipient identity, destructive ceremony record, packet structure, public-key pins, and exact Vault-library compatibility proof |
 | [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) | Cluster federation: the root/child Vault transit-seal trust tree, parent custody of child recovery material, downstream-cluster metadata as secret, generation-CAS config authority, and the fail-closed unseal cascade; child-cluster public-edge TLS is per-zone self-issuance with delivered `AcmeEabMaterial` (a parent never hands a child certificate private-key material) |
 | [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md) | Self-maintained native-protocol Pulsar client and the project-wide CBOR-always payload rule (no codec-selection field — non-CBOR payloads unrepresentable), the derived `topicFor` topic algebra, and the `Work*` envelope family |
@@ -191,6 +191,7 @@ cross-substrate shared infrastructure (see
 - [Bootstrap MinIO credential](./vault_doctrine.md#61-bootstrap-minio-credential)
 - [Envelope encryption with Vault Transit](./vault_doctrine.md#8-envelope-encryption-with-vault-transit)
 - [Sealed-state behavior matrix](./vault_doctrine.md#15-sealed-state-behavior-matrix)
+- [Repository value hygiene (officially/unmistakably synthetic or declared real; ignore-file pairing; incident procedure)](./vault_doctrine.md#20-repository-value-hygiene)
 - [Cluster Federation Doctrine](./cluster_federation_doctrine.md)
 - [Transit-seal trust tree](./cluster_federation_doctrine.md#2-the-transit-seal-trust-tree)
 - [Fail-closed unseal cascade](./cluster_federation_doctrine.md#7-the-fail-closed-unseal-cascade)

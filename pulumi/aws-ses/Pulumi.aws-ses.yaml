@@ -1,3 +1,15 @@
+# DECLARED REAL (vault_doctrine.md §20.1, registered real values).
+#
+# This is the one version-controlled Pulumi settings file: the aws-ses stack is
+# long-lived, so its settings are tracked rather than generated per run. Every
+# value below therefore names real infrastructure this stack manages, and all of
+# them are non-secret — public DNS names, a bucket name, and a region.
+#
+# This file is also where the hosted-zone-id disclosure happened: a real Route 53
+# hosted-zone id sat here across seven commits, indistinguishable from the
+# synthetic zone ids used in the test suite. It is gone from the tree and
+# permanent in history. Nothing here may carry a cloud resource id, an account
+# id, or any other opaque identifier a reader cannot classify at a glance.
 encryptionsalt: v1:tfqnjKriIV4=:v1:5VHnKm5IYiVeztLZ:BOCb1SkZ0bPCqtTq3fsisZ00F8nWzg==
 config:
   prodbox-aws-ses:senderDomain: test.resolvefintech.com

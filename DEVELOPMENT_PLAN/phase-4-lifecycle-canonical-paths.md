@@ -282,7 +282,7 @@ that always-success compatibility helper with registered absence/read-back. The 
 bucket via `registry:2`'s native S3 driver + the `harbor-registry-s3` Secret (`envFrom`), and
 the MinIO→registry circular-dependency ordering (MinIO public bootstrap → registry → mirror →
 MinIO steady-state) is unchanged. Push is now **anonymous over HTTP**: no `docker login`, no
-`admin:Harbor12345` credential, no TLS, and no projects REST API (repos auto-create on first
+published default admin credential, no TLS, and no projects REST API (repos auto-create on first
 push). Registry readiness is a plain `GET /v2/` probe on `127.0.0.1:30080` (expect 200/401)
 with the same six-consecutive-rounds stability contract before image writes — the old Harbor
 nginx `/readyz` readiness patch is gone. The registry has no web UI, so the OIDC-gated

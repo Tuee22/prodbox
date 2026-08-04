@@ -18,6 +18,10 @@
 [aws_admin_credentials.md](./aws_admin_credentials.md),
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
 [cli_command_surface.md](./cli_command_surface.md),
+[code_quality.md](./code_quality.md),
+[unit_testing_policy.md](./unit_testing_policy.md),
+[aws_test_environment.md](./aws_test_environment.md),
+[local_registry_pipeline.md](./local_registry_pipeline.md),
 [streaming_doctrine.md](./streaming_doctrine.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
@@ -467,18 +471,38 @@ Because the unlock bundle lives in MinIO rather than on host disk (§6), prodbox
 object *before* Vault is unsealed. The credential it uses is the **static MinIO root credential**
 (`Prodbox.Minio.RootCredential`), NOT a password-derived value (operator decision 2026-06-22):
 
-- The MinIO access credential is **not** the security boundary. The Bootstrap Broker uses it
-  from inside the cluster through the `minio.prodbox.svc.cluster.local` Service rather than from a
-  host-side `kubectl port-forward`. The prepared/final bootstrap bodies are
+- The credential does **not** grant unseal authority. The prepared/final bootstrap bodies are
   **password-AEAD-sealed** (Argon2id + ChaCha20-Poly1305), so reading their ciphertext is useless
   without the operator password; and every Tier-2 operational object is a **Vault-Transit envelope**,
-  useless without an unsealed Vault. The access credential only gates ciphertext access; it does
-  not grant unseal authority.
-- A static credential is trivially **stable across rebuilds**, so a retained MinIO data PV always
-  matches Vault (no random/derived drift), and it is a credential MinIO actually **accepts** — so the
-  bundle round-trips through MinIO rather than failing `InvalidAccessKeyId`.
-- Deriving a key-value pair from a human-memorized password (Argon2id) to gate that ciphertext access
-  added machinery without adding real security, so it is removed.
+  useless without an unsealed Vault. Against Vault's material, the credential reaches ciphertext only.
+- It is nonetheless a **real credential**, and the confidentiality argument above is not the whole
+  analysis. Reachability: both MinIO Services are `ClusterIP`, so the Bootstrap Broker uses the
+  in-cluster `minio.prodbox.svc.cluster.local` Service and the host reaches MinIO through a
+  `kubectl port-forward` onto the loopback interface — the credential is usable from any pod in the
+  cluster and from any host holding a working kubeconfig. **Integrity blast radius:** it is MinIO
+  root, so it carries write access to the container-registry blob store — overwritten blobs are
+  pulled by the cluster as trusted images — and destroy-or-deny against Vault's recovery path.
+  Neither is covered by "only gates ciphertext access", and neither makes the credential non-secret.
+- A static credential is **stable across rebuilds**, so a retained MinIO data PV always matches Vault
+  (no random/derived drift), and it is a credential MinIO actually **accepts** — so the bundle
+  round-trips rather than failing `InvalidAccessKeyId`. Stability is a real requirement; it is **not**
+  a reason to publish the value. A per-install generated value persisted on first bring-up satisfies
+  it identically, and the in-repo precedent already exists in the registry-storage credential path,
+  which draws from the system entropy source and re-reads the persisted value on later runs.
+  **Obligation.** The credential must become a per-install generated value persisted on first
+  bring-up, not a compiled constant duplicated as the chart default and written into Vault as the same
+  value. Until that lands, the registered exception covers exactly the two committed sites named
+  above. Migration status lives in the Development Plan (§18).
+- Password-derivation (Argon2id over the operator password) was removed for a **stability** reason,
+  not a security one: a derived value drifts from a retained MinIO PV across rebuilds and fails
+  `InvalidAccessKeyId`. It is worth being precise here, because the earlier rationale — "it gated only
+  ciphertext access, so it added no real security" — no longer follows once the integrity exposure
+  above is admitted. Derivation would in fact have narrowed that exposure; the right answer to it is
+  per-install generation, not password derivation.
+
+Do not cite the former Harbor deployment as precedent for hardcoding a credential. That component is
+gone; the endpoint is a plain registry rendering no authentication stanza, so its former credential
+authenticated to nothing and establishes nothing.
 
 The operator password remains the sole operator-memorized bootstrap secret (§6): it is the AEAD key
 for prepared/final bootstrap bodies (the thing that actually protects the share-recipient and
@@ -1362,8 +1386,12 @@ Vault may not own:
    (§6.1).
 4. **Child cluster only:** the bootstrap reference + transit-seal credential the child uses to
    reach its parent's Vault to auto-unseal — itself provisioned and owned by the parent (§16).
+5. The static MinIO root credential (§6.1). Its authoritative value is the compiled bootstrap
+   constant — the host must reach the unlock bundle before there is a Vault to ask. The same value is
+   mirrored into Vault KV for in-cluster consumers; that mirror is a convenience copy and is never
+   authoritative. It is Vault-*mirrored*, not Vault-owned.
 
-Everything else — MinIO root creds, all derived-then-now-KV secrets, ACME EAB, AWS creds, SES,
+Everything else — all derived-then-now-KV secrets, ACME EAB, AWS creds, SES,
 OIDC, the in-force config, Pulumi state, and child-cluster custody — is Vault-owned or
 Vault-enveloped. Public-edge TLS follows §11's exact-Secret/Agent encryption path and is retained
 only as ciphertext plus a retained-home-Transit-wrapped DEK.
@@ -1468,6 +1496,10 @@ the Development Plan:
   tombstone are rejected.
 - Cluster teardown preserves the Vault and MinIO PVs; cluster recreate cannot recover secrets
   without unsealing Vault — and is not a fresh Vault (unseal-on-rebuild; §5).
+- A repo grep finds no undeclared real-world value: every committed domain, address, account id,
+  cloud resource id, digest, and identifier is officially synthetic, unmistakably synthetic, or
+  declared real — either at its own site or in §20.1's registered-real-values table. Run the grep;
+  do not assert it. A value that resolves to neither is a defect whether or not it is real.
 
 The forbidden golden-output patterns for the SecretRef / sealed-state golden tests (Sprint `5.8`)
 include `AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "…"`,
@@ -1475,6 +1507,249 @@ include `AKIA`, `aws_secret_access_key`, `BEGIN PRIVATE KEY`, `client_secret = "
 gateway `/v1/secret/*` RPC paths, child names, and stack names such as `aws-eks`. The pure
 sealed-state audit helper is landed; the full generated-artifact SecretRef sweep remains part of
 Sprint `5.8` closure.
+
+That list governs generated artifacts and runtime observation surfaces only. Credential-shaped
+literals in tracked **source** are governed by §20, which deliberately does **not** forbid the bare
+`AKIA` prefix — the leak canaries assert its absence and would be vacuous without it.
+
+## 20. Repository value hygiene
+
+The working tree has two egress paths Vault does not govern: the git object store — and through it
+the remote — and the container build context. §3–§4 and §13 classify a datum and say where it is
+stored; this section governs what may cross those two boundaries, and in what form.
+
+This is not §19 restated. §19 forbids named strings in **generated artifacts and runtime observation
+surfaces** and asks *does prodbox emit a secret?*; it is code-backed by
+`sealedVaultForbiddenPatterns`. §20 governs **values in tracked content** and asks *can a reader tell
+whether this value is real?* Reading either section as the other breaks the invariants of both.
+
+### 20.1 The rule
+
+Every **non-secret** committed value that stands in for real-world data is **(a) officially
+synthetic**, **(b) unmistakably synthetic**, or **(c) genuinely real and declared as such in place**.
+
+- **(a) Officially synthetic** — the value the relevant standard or vendor publishes for the purpose.
+  Prefer this whenever one exists; it is unambiguous to every reader and every tool, forever.
+- **(b) Unmistakably synthetic** — where no reserved value exists, a shape the real thing cannot
+  have: an embedded `EXAMPLE` token, a counting run (`Z1234567890ABC`), a repeated nibble
+  (`aaaaaaaa…`), or a descriptive slug (`pod-uid-1`).
+- **(c) Real and declared** — a genuinely real value may be committed when it is non-secret *and* its
+  realness and its non-secrecy are both recorded at the site. The exemplar is
+  [burn_recipient_provenance.md](./burn_recipient_provenance.md), where a real OpenPGP fingerprint is
+  committed alongside the ceremony record proving the private half was destroyed.
+
+**Realness dominates form.** When a value is genuinely real it is classified (c), however synthetic
+it looks; arms (a) and (b) are available only to values that are not real. A descriptive-slug name
+never discharges the declaration obligation — otherwise a real value hides by looking fake, which is
+this section's failure mode inverted.
+
+Secret material is **outside this partition entirely**: it is not committed at all, in any form
+(§20.2), so the question of which arm applies never arises. The single exception is the registered
+bootstrap-floor credential — a real secret that is committed because it must exist before Vault can
+be read (§17, registered in §6.1). That is a **registered exception with exactly one entry**, not a
+fourth arm; adding a second requires amending §6.1.
+
+The reason for all of this: **a repository full of realistic fakes cannot show a real value.** A real
+value pasted among them looks like every other fixture and passes review — not hypothetically, but
+here: a real hosted-zone id survived seven commits in a version-controlled stack settings file
+because it was shape-identical to the synthetic ids beside it. Unmistakable fixtures are what make a
+real value visible.
+
+The corollary runs in both directions: anything that **looks** real is treated as real until declared
+otherwise, and anything that **is** real is treated as real however it looks. A value that fits no
+arm is a defect regardless of its provenance.
+
+#### Placeholder registry
+
+"Required form" is the value to use; "Arm" says which of (a)/(b) it satisfies.
+
+| Class | Required form | Arm |
+|---|---|---|
+| Domain name | `example.com` / `.org` / `.net` (RFC 2606); the `.test`, `.example`, `.invalid` TLDs (RFC 6761) | (a) |
+| IPv4 address | `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (RFC 5737) | (a) |
+| IPv6 address | `2001:db8::/32` (RFC 3849) | (a) |
+| Email address | a local part at a reserved domain above | (a) |
+| AWS account id | `123456789012`, the account the AWS documentation publishes | (a) |
+| AWS access key id | an identifier the AWS documentation publishes, or any token embedding `EXAMPLE` | (a) or (b) |
+| **Cloud resource ids** — hosted-zone ids, OIDC issuer ids, cluster ids, Kubernetes UIDs | **no reserved value exists.** Embed `EXAMPLE`, use a counting run, or use a descriptive slug | (b) |
+| Digest, fingerprint, key material | a repeated nibble or a counting run | (b) |
+
+The cloud-resource-id row is the dangerous one and explains the incident: it is exactly the class with
+no vendor placeholder, so authors invent shapes that collide with real ones. A registrable domain
+invented for an example is the same defect in the other direction — someone else can register it and
+turn it into a live target, which is what RFC 2606 exists to prevent.
+
+#### Registered real values
+
+These are arm (c) at repository scope: real, non-secret, and declared here because they recur too
+widely to annotate at every site. Each names its declaration site, which carries the reasoning.
+
+| Value | Why it must be real | Declaration site |
+|---|---|---|
+| The operator's served public hostname and its subdomains | It is the actual served host: certificates are issued for it, Route 53 answers for it, and the public edge routes on it. A reserved name here would break serving. | `Prodbox.Settings.supportedPublicHostname` |
+| The vendor AMI-owner account id in the AWS test program | The image lookup resolves against the vendor's real account; a placeholder finds no image. | `pulumi/aws-test/Main.yaml`, commented in place |
+| The EKS OIDC root-CA thumbprint | Federation fails unless the thumbprint is the real one. | `pulumi/aws-eks/Main.yaml`, commented in place |
+| The long-lived stack's settings file | Its config keys name real infrastructure the stack manages. It is the one version-controlled settings file, and it is where the hosted-zone-id disclosure happened — every value in it is declared at the head of the file. | `pulumi/aws-ses/Pulumi.aws-ses.yaml` |
+
+A value not in this table and not declared at its own site is undeclared, and undeclared is a defect
+whether or not the value turns out to be real.
+
+### 20.2 Secret material is the strictest class
+
+The §20.1 partition ranges over committed values. Secret material is never a committed value: it is
+not committed at all, in any form, so the question of which arm applies never arises. §3 owns the `SecretRef`
+contract, §4 owns the production-reference / test-plaintext split and names the single git-ignored
+cleartext fixture, and §13 classifies the material. Those sections are the source of truth; this one
+does not restate them.
+
+The one thing §20 adds is scope. §19's sweep and §4's rule are written against Dhall and config
+surfaces. The same prohibition holds for **all tracked content** — Haskell source, chart values,
+comments, governed documents, commit messages, and history.
+
+### 20.3 Production code carries handles, not values
+
+Every secret-bearing field is a `SecretRef` resolving through Vault — coordinates only, never
+material (§3). That discipline is enforced today over Tier-0 Dhall by `tier0CarriesNoSecretValues`;
+as doctrine it also binds two surfaces the type does not reach:
+
+1. **Haskell top-level constants.** A `String`/`Text` binding holding a credential is a committed
+   secret regardless of how it is later injected.
+2. **Chart values and templates.** A credential environment variable is `valueFrom.secretKeyRef` or
+   materialized by a Vault-login init container. A literal `value:`, or a credential default in a
+   chart's values file, is forbidden.
+
+The sole exception is the bootstrap floor: a credential needed *before* Vault can be read cannot come
+from Vault (§17). There is exactly one, and §6.1 registers it with its reachability, blast radius,
+and outstanding obligations.
+
+### 20.4 Fixtures are synthetic, not shaped
+
+A fixture credential or identifier is an obviously-fake descriptive value. Validation in this
+codebase is a **liveness check, not a shape check**: the admin-credential validator and the
+credential-handle constructors reject only empty fields; the Kubernetes-UID validator rejects empty,
+over-length, and whitespace. None requires a vendor prefix, and none requires production length. So
+**production shape in a fixture is decoration** — and it is the decoration that makes a real value
+invisible.
+
+Two charsets do constrain the value, and a fixture author will hit them: the SMTP key-id constructor
+and the MinIO command-argument guard accept ASCII alphanumerics only. A hyphenated slug is rejected
+there. Use a camel-case or run-concatenated slug at those sites.
+
+A fixture is shape-faithful only where the shape is the thing under test, and then only to the extent
+the test actually inspects. The prefix-dispatch helper reads **four characters**; a fixture that pads
+to full production length is imitating for no reason. Where a scanner-matchable shape is genuinely
+required, note that a lowercase character **within the sixteen characters following the four-character
+prefix** defeats the uppercase-only tail regardless of total length. A lowercase prefix or suffix does
+**not** — `\b` is satisfied by any non-word separator, so a hyphenated wrapper around an otherwise
+uppercase token still matches.
+
+Only one category is genuinely immovable: **published vendor test vectors**, which reproduce a
+documented signature, so changing an input changes the expected output and the test stops proving
+conformance to anything. Those sites carry a comment naming the vector they reproduce.
+
+Two supporting rules:
+
+- A **leak canary** asserts the absence of *the value the test passed in*, never of a vendor prefix.
+  The prefix form silently weakens as fixtures stop being credential-shaped, leaving an assertion
+  that passes because it can no longer fail.
+- A fixture reused across sites — planted in a simulated response and re-asserted as the expected
+  value — needs a *stable* identifier, not a realistic one. Byte-identity across the sites is the
+  test's content; the bytes themselves are free.
+
+### 20.5 The mechanical outer ring
+
+§20.1 is judged by a reader: can a person tell whether this value is real? §20.5 is judged by a
+machine that has never read the repository. **They are different judges and they accept different
+things** — a value that satisfies §20.1 may still be rejected here, and passing here proves nothing
+about §20.1. Do not read the narrower list below as amending the broader rule above.
+
+The mechanical rule: **no tracked file may contain a string literal matching a scanned provider
+pattern that the scanner's own exclusions do not cover** — whether or not the value is real. A wholly
+fabricated value is still a rejected push. Push protection decides on shape, never on truth.
+
+The pattern that has actually fired is the AWS access-key identifier:
+
+```text
+\b(A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b
+```
+
+Two properties of it are load-bearing and are frequently misread:
+
+- **The exclusion is the token `EXAMPLE`, and nothing else.** Not `FAKE`, not `TEST`, not a run of
+  zeroes, not an adjacent explanatory comment, not a sibling field that is obviously synthetic. This
+  is narrower than §20.1's "unmistakably synthetic" on purpose: the scanner is not reading for
+  meaning, and a value this ring accepts still has to satisfy §20.1 on its own terms.
+- **The trailing boundary is real.** A twenty-one-character identifier whose first twenty characters
+  match is not a finding, because the trailing `\b` fails. That explains why a near-miss literal was
+  not flagged. It says nothing about whether the literal satisfies §20.1, and it is not a reason to
+  leave one in place — the pattern set is the remote's and changes without notice, so treat any
+  acceptance as provisional.
+
+Also in scope, by prefix: GitHub personal-access and OAuth tokens; Slack tokens and webhook URLs;
+Anthropic and OpenAI API keys; Google API keys; GitLab, npm, PyPI, and Stripe tokens; Azure storage
+connection strings; and armored private-key blocks. None occurs in the tree. The list exists so a
+fixture is checked against it before it is written, not after a push is rejected.
+
+The pattern set belongs to the remote and changes without notice. A fixture legal only because of an
+exclusion is correct today and fragile tomorrow — which is why §20.4 is the durable form and this
+section is the backstop.
+
+### 20.6 Version control and the build context
+
+`.gitignore` is the enforcing record of what is never committed, and its groupings carry the reason
+for each. It is the list; this section does not restate it. Adding a path there without the reason is
+incomplete — the reason is what lets a later reader tell a secret-bearing exclusion from a build
+artifact, which is exactly the distinction the pairing rule below turns on.
+
+The long-lived stack's settings file is the one deliberate exception: it is version-controlled, so
+every value in it is subject to §20.1. That file is where a real hosted-zone id was committed.
+
+**Ignore-file pairing.** `.gitignore` and `.dockerignore` are two independent filters over the same
+working tree, and a Dockerfile copies **directories**, not files. A path git-ignored for a
+secret-or-host-state reason must also appear in `.dockerignore` whenever the container build copies
+an ancestor of it. Otherwise material deliberately kept out of the object store is baked into an
+image layer instead — a worse egress, because the layer is pushed to a registry and is scanned by
+nobody.
+
+The per-run Pulumi stack settings are the live instance: the build copies the whole `pulumi`
+directory, so those files are git-ignored and docker-ignored for the same reason. The long-lived
+stack's settings file is deliberately in neither list; its settings are version-controlled.
+
+The implication is one-directional — a docker-ignored build artifact need not be git-ignored. Two
+standing obligations follow:
+
+- Adding a secret-or-state path to `.gitignore` requires answering, in the same change, whether any
+  copy step in the container build reaches it.
+- The container build enumerates the directories it copies. That enumeration is part of the
+  containment; a whole-context copy is forbidden, because it silently converts every future
+  `.gitignore` addition into an obligation nobody is prompted to discharge.
+
+### 20.7 Incident procedure
+
+A rejected push means an offending blob exists somewhere in the pushed range. The order is
+load-bearing.
+
+1. **Classify before touching git.** Real credential, or fixture? If real, revoke and rotate at the
+   provider **first**. Rewriting history does not un-leak; only rotation does, and the value may
+   already have been read from a transient object.
+2. **Never bypass.** The rejection offers a bypass link. Do not use it. A bypass is recorded, is
+   permanent, and admits a matching literal to the default branch — after which this section's
+   invariant can never again be asserted by a whole-tree scan. The remedy is to change the literal,
+   never to authorize it.
+3. **Rewrite; do not append.** Push protection scans **every commit in the range**, not the tip. A
+   follow-up commit that fixes the literal leaves the offending blob in the range, and the push is
+   rejected again. Amend the offending commit, or rebase to edit it.
+4. **Re-derive the fixture; do not weaken the test.** Replace the literal per §20.4. Do not delete
+   the assertion, do not relax a canary to something that no longer proves absence, and do not
+   introduce a scanner exemption.
+5. **Already-pushed material is public.** If the literal reached the remote before protection fired,
+   treat it as disclosed: rotate, then rewrite, then have the unreachable objects purged. A fixture
+   needs no rotation but still needs the rewrite — the blob stays reachable through forks and the
+   events API.
+6. **This section is subject to itself.** Governed documents are tracked files and are scanned like
+   any other. A counterexample in a document is **described, never spelled** — which is why §20.4
+   and §20.5 name shapes, prefixes, and lengths instead of quoting the literal that caused a
+   rejection.
 
 ## Cross-References
 
@@ -1504,13 +1779,18 @@ Sprint `5.8` closure.
 - [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) — the AWS
   substrate environment whose prodbox-created identities resolve via `SecretRef.Vault`
 - [cli_command_surface.md](./cli_command_surface.md) — the `prodbox vault` command group
+- [code_quality.md](./code_quality.md) — the `prodbox dev check` gate that enforces the §20
+  credential-literal invariant, and the forbidden-surfaces registry that keeps that gate out of
+  repository CI workflows and git hooks
+- [unit_testing_policy.md](./unit_testing_policy.md) — the test-author-facing §20.4 fixture
+  convention, and the forbidden/allowed pattern lists that carry it
 - [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — implementation status,
   migration order, and deployment-qualification evidence
 - [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
   — removal ledger for the retired master-seed derivation model, the removed FileSecret /
   Secret-mounted Dhall path, the host-CLI direct-config-read model, and the folded-in
   `VAULT_REFACTOR.md` proposal
-</content>
+
 ## SES SMTP Generation and Legacy Checkpoint GC
 
 The Credential Provisioner receives the one-time IAM secret, derives the region-bound SMTP

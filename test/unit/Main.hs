@@ -12578,14 +12578,12 @@ unitSuite = do
     let cfg = Prodbox.Lib.EksCustomImagePush.defaultEksCustomImagePushConfig
         manifest = Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest cfg
         manifestJson = BL8.unpack (encode manifest)
-    it "default config matches bootstrap Harbor admin + in-cluster DNS endpoint" $ do
+    it "default config pins the namespace, pod name, and both endpoints" $ do
       Prodbox.Lib.EksCustomImagePush.customPushPodNamespace cfg `shouldBe` "harbor"
       Prodbox.Lib.EksCustomImagePush.customPushPodName cfg `shouldBe` "prodbox-custom-image-push"
       Prodbox.Lib.EksCustomImagePush.customPushHarborInternalEndpoint cfg
         `shouldBe` "harbor.harbor.svc.cluster.local"
       Prodbox.Lib.EksCustomImagePush.customPushChartRegistryEndpoint cfg `shouldBe` "127.0.0.1:30080"
-      Prodbox.Lib.EksCustomImagePush.customPushHarborAdminUser cfg `shouldBe` "admin"
-      Prodbox.Lib.EksCustomImagePush.customPushHarborAdminPassword cfg `shouldBe` "Harbor12345"
     it "pod manifest declares v1 Pod in harbor namespace with sprint label + restartPolicy Never" $ do
       manifestJson `shouldContain` "\"apiVersion\":\"v1\""
       manifestJson `shouldContain` "\"kind\":\"Pod\""
@@ -12600,11 +12598,13 @@ unitSuite = do
       manifestJson `shouldContain` "\"emptyDir\":{\"sizeLimit\":\"12Gi\"}"
       manifestJson `shouldContain` "\"memory\":\"4Gi\""
       manifestJson `shouldContain` "\"ephemeral-storage\":\"12Gi\""
-    it "projects Harbor credentials and authenticates before crane push" $ do
+    -- The push pod reaches an anonymous registry, so it needs no credential.
+    -- Pin the env list exactly rather than naming absent variables: an
+    -- absence assertion over specific names passes if a credential returns
+    -- under a different name, via envFrom, or as a command argument.
+    it "projects exactly one env entry: the in-cluster endpoint" $
       manifestJson
-        `shouldContain` "\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\""
-      manifestJson `shouldContain` "\"name\":\"HARBOR_USER\",\"value\":\"admin\""
-      manifestJson `shouldContain` "\"name\":\"HARBOR_PASSWORD\",\"value\":\"Harbor12345\""
+        `shouldContain` "\"env\":[{\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\"}]"
     it "rewriteChartRefForInClusterPush swaps the host:port for the in-cluster DNS endpoint" $ do
       Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush
         cfg
@@ -12626,14 +12626,12 @@ unitSuite = do
         manifest = Prodbox.Lib.EksImageMirror.eksImageMirrorJobManifest cfg pairs
         manifestJson = BL8.unpack (encode manifest)
         copyScript = Prodbox.Lib.EksImageMirror.eksImageMirrorCopyScript cfg pairs
-    it "default config matches the bootstrap Harbor admin contract + in-cluster DNS endpoint" $ do
+    it "default config pins the namespace, Job name, and both endpoints" $ do
       Prodbox.Lib.EksImageMirror.mirrorJobNamespace cfg `shouldBe` "harbor"
       Prodbox.Lib.EksImageMirror.mirrorJobName cfg `shouldBe` "prodbox-image-mirror"
       Prodbox.Lib.EksImageMirror.mirrorHarborInternalEndpoint cfg
         `shouldBe` "harbor.harbor.svc.cluster.local"
       Prodbox.Lib.EksImageMirror.mirrorChartRegistryEndpoint cfg `shouldBe` "127.0.0.1:30080"
-      Prodbox.Lib.EksImageMirror.mirrorHarborAdminUser cfg `shouldBe` "admin"
-      Prodbox.Lib.EksImageMirror.mirrorHarborAdminPassword cfg `shouldBe` "Harbor12345"
     it "Job manifest declares batch/v1 Job in harbor namespace with sprint label and crane container" $ do
       manifestJson `shouldContain` "\"apiVersion\":\"batch/v1\""
       manifestJson `shouldContain` "\"kind\":\"Job\""
@@ -12641,20 +12639,19 @@ unitSuite = do
       manifestJson `shouldContain` "\"name\":\"prodbox-image-mirror\""
       manifestJson `shouldContain` "\"prodbox.io/sprint\":\"7.5.c.iv\""
       manifestJson `shouldContain` "go-containerregistry/crane:debug"
-    it
-      "Job manifest projects HARBOR_INTERNAL + HARBOR_USER + HARBOR_PASSWORD env into the crane container"
-      $ do
-        manifestJson
-          `shouldContain` "\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\""
-        manifestJson `shouldContain` "\"name\":\"HARBOR_USER\",\"value\":\"admin\""
-        manifestJson `shouldContain` "\"name\":\"HARBOR_PASSWORD\",\"value\":\"Harbor12345\""
+    -- Exact env-list pin, for the same reason as the push pod above: naming
+    -- absent variables passes if a credential returns under another name.
+    it "Job manifest projects exactly one env entry: the in-cluster endpoint" $
+      manifestJson
+        `shouldContain` "\"env\":[{\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\"}]"
     it "copy script rewrites 127.0.0.1:30080 chart targets to the in-cluster harbor DNS for crane push" $ do
       copyScript
         `shouldContain` "crane copy \"docker.io/percona/percona-postgresql-operator:2.9.0\" \"harbor.harbor.svc.cluster.local/prodbox/percona-postgresql-operator-mirror:2.9.0\""
       copyScript
         `shouldContain` "crane copy \"quay.io/keycloak/keycloak:26.0.0\" \"harbor.harbor.svc.cluster.local/prodbox/keycloak-mirror:26.0.0\""
-    it "copy script authenticates to Harbor before any copy + emits a per-pair progress line" $ do
-      copyScript `shouldContain` "crane auth login \"${HARBOR_INTERNAL}\""
+    it "copy script passes no credential + emits an aggregate and a per-pair line" $ do
+      copyScript `shouldNotContain` "--password"
+      copyScript `shouldNotContain` "auth login"
       copyScript `shouldContain` "prodbox-image-mirror: copying 2 required public images"
       copyScript
         `shouldContain` "prodbox-image-mirror: docker.io/percona/percona-postgresql-operator:2.9.0 -> harbor.harbor.svc.cluster.local/prodbox/percona-postgresql-operator-mirror:2.9.0"

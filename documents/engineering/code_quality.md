@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox dev check`.
@@ -468,6 +468,59 @@ doctrine-alignment scans in `src/Prodbox/CheckCode.hs` (forbidden
 subprocess primitives, direct-stderr writes, generated-section
 integrity).
 
+### Committed Values
+
+[vault_doctrine.md § 20](./vault_doctrine.md#20-repository-value-hygiene)
+governs every committed value that stands in for real-world data: it is
+officially synthetic, unmistakably synthetic, or genuinely real and
+declared as such in place.
+
+**Most of that rule is review-enforced, not lint-enforced, and that is a
+deliberate boundary rather than a gap.** A scanner cannot tell whether
+an opaque identifier is real — realness is a fact about the world, not
+about the string. Only a reader can. Do not add a pattern for it; the
+check that catches this class is a reader asking whether a value could
+be real, and the doctrine's job is to make that question answerable at
+a glance.
+
+What the lint stack *does* enforce is the mechanical outer ring
+([§ 20.5](./vault_doctrine.md#205-the-mechanical-outer-ring)):
+no tracked file may contain a string literal matching a scanned
+credential pattern that the scanner's own exclusions do not cover.
+
+The scan is content-shaped, not path-shaped, so it does not belong in
+`forbiddenPathRegistry` below — "delete this path" is the wrong remedy
+for a test fixture. It belongs beside the operator-vocabulary regex scan
+in `src/Prodbox/CheckCode.hs`.
+
+Two properties are mandatory, and they are what separate this from a
+generic secret scanner:
+
+1. **Pattern parity with the remote.** The scanned pattern set, its
+   exclusions, and its match-boundary treatment mirror the remote's push
+   protection. Anything stricter forbids the one immovable category
+   [§ 20.4](./vault_doctrine.md#204-fixtures-are-synthetic-not-shaped)
+   names — published vendor test vectors, whose bytes cannot change
+   without the test ceasing to prove conformance to anything.
+2. **No exemption mechanism.** No allowlist, no per-file suppression, no
+   marker comment. The repository satisfies the invariant with zero
+   exemptions; the first exemption request is evidence the pattern set
+   drifted from the remote's, not that the rule needs an escape hatch.
+
+Scope is tracked source. A filesystem walk would read the git-ignored
+`test-secrets.dhall`, which by design carries real credential values
+(§ 4 of the Vault doctrine), and fail `dev check` on a developer whose
+credentials are exactly where doctrine says to put them. Push protection
+can only reject tracked content, so the narrowing loses no coverage.
+
+`prodbox dev check` is the only sanctioned gate. A repository CI
+secret-scan job or a pre-commit scanner is a forbidden surface under
+[§ 2A](#2a-development-tooling-policy) and the registry below; the
+remote's push protection is the outer ring and is not repo-owned.
+
+The doctrine is in force now. Implementation status lives in the
+Development Plan.
+
 ### Forbidden Surfaces (Negative-Space Lint)
 
 The lint stack enforces both that required artifacts are correct *and* that
@@ -568,4 +621,5 @@ The doctrine does not include strict AST-based nesting enforcement.
 - [Haskell Code Guide](./haskell_code_guide.md)
 - [Pure FP Standards](./pure_fp_standards.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)

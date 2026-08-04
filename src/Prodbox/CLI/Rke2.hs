@@ -4380,8 +4380,9 @@ harborStorageBackendManifestItems accessKey secretKey =
                   [ "spec"
                       .= object
                         [ "restartPolicy" .= ("OnFailure" :: String)
-                        , -- Sprint 7.25 follow-up: the MinIO root credential is a fixed,
-                          -- non-secret static constant (Prodbox.Minio.RootCredential), identical
+                        , -- Sprint 7.25 follow-up: the MinIO root credential is a fixed static
+                          -- constant (Prodbox.Minio.RootCredential) — the registered
+                          -- bootstrap-floor credential of vault_doctrine.md §6.1, identical
                           -- to the @secret/minio/root@ Vault value and injected directly into the
                           -- MinIO chart. This bootstrap Job runs BEFORE the daemon-mediated Vault
                           -- init/unseal (which itself depends on Harbor via the gateway image), so
@@ -7341,7 +7342,8 @@ ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),
 -- @docker save@'s the image to a tarball, then publishes via an
--- authenticated in-cluster crane pod. The @ctr@ import step is intentionally
+-- in-cluster crane pod (anonymous — the registry renders no @auth@
+-- stanza). The @ctr@ import step is intentionally
 -- omitted — EKS nodes pull from in-cluster Harbor via the
 -- containerd registry-mirror DaemonSet.
 ensureCustomImageVariantsAws
@@ -7369,10 +7371,10 @@ buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs =
 -- | Render + apply the in-cluster crane pod from
 -- 'Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest',
 -- @docker save@ the locally-built image to a tarball under the
--- chart-platform tmp dir, @kubectl cp@ the tarball into the pod,
--- @kubectl exec@ @crane auth login@, @kubectl exec@
--- @crane push --insecure@ once per requested tag,
--- then delete the pod.
+-- chart-platform tmp dir, @kubectl cp@ the tarball into the pod, then
+-- @kubectl exec@ @crane push --insecure@ once per requested tag and
+-- delete the pod. There is no login step: the in-cluster registry
+-- renders no @auth@ stanza and accepts anonymous push.
 pushCustomImageVariantsViaInClusterCrane
   :: FilePath -> String -> [String] -> IO ExitCode
 pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
@@ -7451,47 +7453,16 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
                       }
                 case cpExit of
                   ExitFailure _ -> pure cpExit
+                  -- No registry login: the in-cluster @registry:2@ renders no
+                  -- @auth@ stanza and accepts anonymous push, exactly as the
+                  -- home substrate does (vault_doctrine.md §20.3).
                   ExitSuccess -> do
-                    authExit <- authenticateCranePodToHarbor cfg podNs podNm repoRoot
-                    case authExit of
-                      ExitFailure _ -> do
-                        _ <- deleteCranePushPod podNs podNm repoRoot
-                        pure authExit
-                      ExitSuccess -> do
-                        pushExits <-
-                          mapM
-                            (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
-                            taggedRefs
-                        _ <- deleteCranePushPod podNs podNm repoRoot
-                        pure $ firstNonSuccess pushExits
-
-authenticateCranePodToHarbor
-  :: EksCustomImagePushConfig -> String -> String -> FilePath -> IO ExitCode
-authenticateCranePodToHarbor cfg podNs podNm repoRoot = do
-  writeOutputLine
-    ( "  crane auth login "
-        ++ customPushHarborInternalEndpoint cfg
-        ++ " --username "
-        ++ customPushHarborAdminUser cfg
-        ++ " --password <redacted>"
-    )
-  runCommand
-    Subprocess
-      { subprocessPath = "kubectl"
-      , subprocessArguments =
-          [ "exec"
-          , "-n"
-          , podNs
-          , podNm
-          , "--"
-          ]
-            ++ [ "/busybox/sh"
-               , "-c"
-               , "/ko-app/crane auth login \"${HARBOR_INTERNAL}\" --username \"${HARBOR_USER}\" --password \"${HARBOR_PASSWORD}\""
-               ]
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
+                    pushExits <-
+                      mapM
+                        (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
+                        taggedRefs
+                    _ <- deleteCranePushPod podNs podNm repoRoot
+                    pure $ firstNonSuccess pushExits
 
 deleteCranePushPod :: String -> String -> FilePath -> IO ExitCode
 deleteCranePushPod podNs podNm repoRoot =

@@ -1306,6 +1306,14 @@ requireIntClaim claimName payload =
         _ -> Left ("JWT payload did not include numeric claim `" ++ claimName ++ "`")
     _ -> Left "JWT payload was not a JSON object"
 
+-- | Derive the @Sec-WebSocket-Accept@ response header from the client's
+-- @Sec-WebSocket-Key@.
+--
+-- The GUID concatenated below is REAL and REQUIRED: it is the fixed
+-- handshake GUID published in RFC 6455 §1.3, identical in every WebSocket
+-- implementation. It is neither secret nor synthetic, and it must not be
+-- replaced with a placeholder — a different value produces a header no
+-- browser will accept (vault_doctrine.md §20.1, the declared-real arm).
 websocketAcceptKey :: HttpRequest -> Either String String
 websocketAcceptKey request =
   case Map.lookup "sec-websocket-key" (httpRequestHeaders request) of

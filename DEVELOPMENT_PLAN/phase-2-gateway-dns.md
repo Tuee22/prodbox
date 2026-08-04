@@ -21,6 +21,11 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-07-30 on Sprint `2.37`** — own-surface reopen (Standard A) making the emitter
+retained-assertion (unacked-suffix) leak class non-constructible, with a failed-checkpoint
+recompaction liveness fix. Byte-compatible; no durable-format change and no runtime selector.
+The prior reclose on Sprint `2.36` below stands unchanged.
+
 ✅ **Reclosed 2026-07-27 on Sprint `2.36` (own Bootstrap Broker runtime surface).** A full-unit
 contention run falsified the Sprint `2.33` forced-drain closure: the manager can discard a timed-out
 worker cancellation and publish `BrokerStopped` while a replay worker remains blocked on its

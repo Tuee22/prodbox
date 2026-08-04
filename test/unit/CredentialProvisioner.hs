@@ -873,13 +873,13 @@ validPodObservation
 validPodObservation permit intent =
   RawCredentialProvisionerPodObservation
     { rawCredentialProvisionerJobName = credentialProvisionerJobName intent
-    , rawCredentialProvisionerJobUid = "f4d16d4a-2b04-48a6-bb02-aef624aec469"
-    , rawCredentialProvisionerPodUid = "2c136199-c7cc-48bf-b78f-a3dc96d78695"
+    , rawCredentialProvisionerJobUid = "fixture-job-uid-1"
+    , rawCredentialProvisionerPodUid = "fixture-pod-uid-1"
     , rawCredentialProvisionerImageDigest =
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     , rawCredentialProvisionerServiceAccount = "prodbox-credential-provisioner"
     , rawCredentialProvisionerServiceAccountUid =
-        "80fb8022-dc57-469f-a0b8-d9cfa06a3c3d"
+        "fixture-service-account-uid-1"
     , rawCredentialProvisionerSchema = AwsAdminProvisioningIngress
     , rawCredentialProvisionerPermitId = "permit-lifecycle"
     , rawCredentialProvisionerRequestDigest = operatorMaterialPermitRequestDigest permit

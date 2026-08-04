@@ -67,21 +67,17 @@ data EksImageMirrorConfig = EksImageMirrorConfig
   -- @<mirrorChartRegistryEndpoint>/<repo>:<tag>@ into
   -- @<mirrorHarborInternalEndpoint>/<repo>:<tag>@ before invoking
   -- @crane copy@.
-  , mirrorHarborAdminUser :: String
-  -- ^ Harbor admin user the Job authenticates as. Default
-  -- @admin@; matches the home-substrate bootstrap contract.
-  , mirrorHarborAdminPassword :: String
-  -- ^ Harbor admin password. The home substrate's bootstrap
-  -- contract uses the static @Harbor12345@ value
-  -- ('Prodbox.CLI.Rke2.ensureHarborDockerLogin') — both substrates
-  -- start from that bootstrap credential.
   }
   deriving (Eq, Show)
 
--- | Default mirror Job config matching the home substrate's Harbor
--- bootstrap contract: pushes to @harbor.harbor.svc.cluster.local@,
--- rewrites target refs from @127.0.0.1:30080/...@, authenticates as
--- the bootstrap admin user.
+-- | Default mirror Job config: pushes to @harbor.harbor.svc.cluster.local@ and
+-- rewrites target refs from @127.0.0.1:30080/...@.
+--
+-- The Job carries no registry credential. The endpoint is a single-binary
+-- @registry:2@ whose rendered config has no @auth@ stanza, so it accepts
+-- anonymous push — the same contract the home substrate relies on. The former
+-- hardcoded admin credential authenticated to nothing and was removed under
+-- vault_doctrine.md §20.3.
 defaultEksImageMirrorConfig :: EksImageMirrorConfig
 defaultEksImageMirrorConfig =
   EksImageMirrorConfig
@@ -90,8 +86,6 @@ defaultEksImageMirrorConfig =
     , mirrorJobImage = "gcr.io/go-containerregistry/crane:debug"
     , mirrorHarborInternalEndpoint = "harbor.harbor.svc.cluster.local"
     , mirrorChartRegistryEndpoint = "127.0.0.1:30080"
-    , mirrorHarborAdminUser = "admin"
-    , mirrorHarborAdminPassword = "Harbor12345"
     }
 
 -- | Render the copy script that the Job's container runs. Iterates
@@ -108,9 +102,6 @@ eksImageMirrorCopyScript config pairs =
     "\n"
     ( [ "#!/busybox/sh"
       , "set -eu"
-      , ""
-      , "echo \"prodbox-image-mirror: authenticating to ${HARBOR_INTERNAL}\""
-      , "crane auth login \"${HARBOR_INTERNAL}\" --username \"${HARBOR_USER}\" --password \"${HARBOR_PASSWORD}\""
       , ""
       , "echo \"prodbox-image-mirror: copying " ++ show (length pairs) ++ " required public images\""
       , ""
@@ -212,14 +203,6 @@ eksImageMirrorJobManifest config pairs =
                                      .= [ object
                                             [ "name" .= ("HARBOR_INTERNAL" :: String)
                                             , "value" .= mirrorHarborInternalEndpoint config
-                                            ]
-                                        , object
-                                            [ "name" .= ("HARBOR_USER" :: String)
-                                            , "value" .= mirrorHarborAdminUser config
-                                            ]
-                                        , object
-                                            [ "name" .= ("HARBOR_PASSWORD" :: String)
-                                            , "value" .= mirrorHarborAdminPassword config
                                             ]
                                         ]
                                  , "resources"

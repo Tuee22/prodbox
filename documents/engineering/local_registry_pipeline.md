@@ -2,8 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: the prior Harbor-based local-registry doctrine (multi-pod Harbor Helm stack, Harbor
-projects REST API, and the `admin:Harbor12345` credential), retired when the in-cluster registry
-became a single-binary `registry:2`.
+projects REST API, and that component's published default admin credential), retired when the
+in-cluster registry became a single-binary `registry:2`.
 **Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
@@ -269,6 +269,16 @@ Docker Hub rate limiting without widening the supported steady-state image sourc
 All repository-owned Haskell image builds use the single `docker/prodbox.Dockerfile` with
 full-repository build context, producing one union runtime image (`prodbox-runtime`) for every
 in-cluster role.
+
+Because the context is the whole repository, the Dockerfile **enumerates** the directories it copies
+out of it rather than copying the context wholesale. Enumeration bounds the obligation to the
+enumerated roots; within those roots `.dockerignore` is still load-bearing — `COPY pulumi ./pulumi`
+is exactly why the per-run stack settings must be docker-ignored. That
+enumeration is load-bearing containment, not style: a whole-context copy silently converts every
+future `.gitignore` addition into a `.dockerignore` obligation nobody is prompted to discharge, and
+material kept out of the object store would be baked into a layer that is pushed to a registry and
+scanned by nobody ([vault_doctrine.md §20.6](./vault_doctrine.md#206-version-control-and-the-build-context)).
+Keep `.dockerignore` synchronized with the intended build inputs on the same principle.
 
 This native-host-architecture image publication extends across the macOS (Lima) and Windows
 (WSL2) host providers per [host_platform_doctrine.md](./host_platform_doctrine.md): the build runs

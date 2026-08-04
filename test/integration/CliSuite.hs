@@ -4196,7 +4196,7 @@ fakeAwsScript stateDir =
     , "    if [[ -f \"$(identity_file \"$access_key_id\")\" || \"$access_key_id\" == 'ASIAFAKEFED' || \"$access_key_id\" == 'ADMINKEY' || \"$access_key_id\" == 'CONFIGADMINKEY' ]]; then"
     , "      printf '%s\\n' \"$access_key_id\" > \"$STATE_DIR/route53_get_hosted_zone_access_key_id\""
     , "      cat <<'JSON'"
-    , "{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"},\"DelegationSet\":{\"NameServers\":[\"ns-1.awsdns-01.com\"]}}"
+    , "{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"},\"DelegationSet\":{\"NameServers\":[\"ns-1.example.com\"]}}"
     , "JSON"
     , "    else"
     , "      aws_error 'InvalidClientTokenId' 'GetHostedZone' 'The security token included in the request is invalid.'"

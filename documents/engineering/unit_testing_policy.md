@@ -34,7 +34,8 @@ documents/engineering/refactoring_patterns.md,
 documents/engineering/bootstrap_readiness_doctrine.md,
 documents/engineering/resource_scaling_doctrine.md,
 documents/engineering/streaming_doctrine.md,
-documents/engineering/test_topology_doctrine.md
+documents/engineering/test_topology_doctrine.md,
+documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define interpreter-only mocking, pure/model/property testing, production-adapter
@@ -454,6 +455,10 @@ long-lived resources.
 - arbitrary `IO` stored in a capability/readiness target;
 - probing one endpoint and executing through another;
 - mocks inside pure decision code;
+- fixture values that imitate real-world data — any test literal a reader could mistake for a real
+  credential, domain, IP or email address, account id, cloud resource id, or digest — except the
+  published-vendor-test-vector case in § 4
+  ([vault_doctrine.md § 20.1](./vault_doctrine.md#201-the-rule));
 - `threadDelay` for concurrency coordination;
 - timeout tests that omit queue and cancellation time;
 - memory-only stability claimed as service-capacity proof;
@@ -463,7 +468,18 @@ long-lived resources.
 
 ## 4. Allowed Patterns
 
-- concrete ADT values and captured payloads in pure unit tables;
+- concrete ADT values and captured payloads in pure unit tables, subject to the committed-value gate
+  in [vault_doctrine.md § 20](./vault_doctrine.md#20-repository-value-hygiene);
+- fixture values taking the required form for their class in
+  [§ 20.1's placeholder registry](./vault_doctrine.md#201-the-rule) — the registry is the list, and
+  this policy does not restate it;
+- narrowing the bullet above, a fixture that is shape-faithful *only* where the shape is the thing
+  under test, and then only to the extent the test inspects it — a prefix-dispatch test reads four
+  characters and needs no more
+  ([§ 20.4](./vault_doctrine.md#204-fixtures-are-synthetic-not-shaped));
+- the **one** exception to both bullets above: a published vendor test vector reproduced verbatim,
+  with a comment naming the vector, because changing an input changes the expected output and the
+  test stops proving conformance to anything;
 - fake tools and fake clients at the interpreter boundary;
 - deterministic simulated clocks, queues, storage, and process faults;
 - real binary composition against local isolated MinIO/Vault services;
@@ -553,6 +569,7 @@ business semantics, substrate inventory, or cleanup implementation details.
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
 - [Code Quality Doctrine](./code_quality.md)
+- [Vault Secret-Management Doctrine](./vault_doctrine.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 ## Invite Qualification Recorder
 

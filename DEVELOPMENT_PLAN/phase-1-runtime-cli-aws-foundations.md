@@ -24,6 +24,13 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-03 on Sprint `1.74`** — own-surface reopen (Standard A/N) declaring the served
+public hostname (`Prodbox.Settings.supportedPublicHostname`) a real value rather than leaving it
+indistinguishable from the synthetic hostnames beside it
+([vault_doctrine.md §20.1](../documents/engineering/vault_doctrine.md#201-the-rule)). It recurs in
+roughly 260 places and must be real: certificates are issued for it and the public edge routes on
+it. Comment-only; no behaviour changes and no later-phase dependency.
+
 ✅ **Reclosed 2026-07-28 on the resource-representability surface (Sprints `1.72`/`1.73`).** Phase 1
 reopened on its own capacity/config surface (Standard A/N — no backward dependency) to land the Ring-1
 `assertPlanValid` Dhall over-commit shim (`1.72`) and host-fitting `config generate` (`1.73`). The
@@ -3118,7 +3125,7 @@ ephemeral config.
   (`dockerHubAuthFromConfig`), and forward it via a throwaway `mkdtemp` `DOCKER_CONFIG` that is
   **scrubbed on exit** (`bracket`); `Nothing` ⇒ anonymous pulls (graceful degrade).
 - The ephemeral config's `auths` = the host `docker.io` auth **plus an inline Harbor
-  `127.0.0.1:30080` entry** (`base64 admin:Harbor12345`) — so **no `docker login` runs at all**.
+  `127.0.0.1:30080` entry** (the registry component's published default admin credential, base64-encoded) — so **no `docker login` runs at all**.
 - Wrap the host-docker flows (`mirrorClusterImagesOnce`, `ensureCustomImageVariantsHomeLocal`, the
   AWS host build/save) in `withEphemeralDockerConfig`; inside, plain `docker` subprocesses inherit
   `DOCKER_CONFIG`. Remove `ensureHarborDockerLogin` + the per-call `captureDockerToolOutput` wiring +
@@ -3130,7 +3137,7 @@ ephemeral config.
 ### Validation
 
 `prodbox dev check` 0; six `DockerConfig` unit tests (the `docker.io` projection + the
-ephemeral-config render incl. the exact `base64 admin:Harbor12345`); the CliSuite reconcile asserts
+ephemeral-config render incl. the exact base64 encoding of the registry component's published default admin credential); the CliSuite reconcile asserts
 **no `docker login`** runs and the build/push/mirror docker calls carry an ephemeral
 `prodbox-docker-config` `DOCKER_CONFIG`; full `test unit` 1061/1061.
 
@@ -5110,6 +5117,69 @@ covering demand and fitting the device, while leaving host-agnostic contexts on 
 - Link consumer Sprints `3.27`, `4.52`, and calibration-recorder Sprint `5.21` without making a
   later phase a Phase-1 validation prerequisite. Sprint `4.52`'s Ring-3 reader consumes the
   Phase-1-owned `Prodbox.Capacity.HostProbe` reader (Sprint `1.73`) forward, not backward.
+
+## Sprint 1.74: Declare the Served Public Hostname as a Real Value [✅ Done]
+
+**Status**: Done (2026-08-03) — Phase `1` own-surface reopen (Standard A/N) on the configuration
+constants this phase owns (`00-overview.md` assigns `src/Prodbox/Settings.hs` to Phase 1), adopting
+the declared-real arm of
+[vault_doctrine.md §20.1](../documents/engineering/vault_doctrine.md#201-the-rule) (Sprint `0.20`).
+Comment-only; no behaviour changes.
+**Implementation**: `src/Prodbox/Settings.hs` (`supportedPublicHostname` Haddock)
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — comment-only, so no Standard-P production-composition surface
+is touched; it neither advances nor invalidates the already-pending qualification, and the revision
+must not be called deployment-ready on the strength of a comment.
+**Independent Validation**: pure source-comment surface, validated on the home substrate with no
+later-phase or live dependency — `prodbox dev check` exit 0 and the unit suite unchanged.
+**Docs to update**: `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+The served public hostname is a real, registered, operator-owned domain that recurs in roughly 260
+places across charts, goldens, and fixtures. Under § 20.1 it was undeclared: nothing at any of those
+sites said it is real, so a reader could not distinguish it from the synthetic hostnames beside it,
+and a later reader might "clean it up" into a reserved name — which would break serving.
+
+Companion declarations on other phases' surfaces are carried by their owners: Sprint `3.30`
+(`Workload.hs`), Sprint `7.35` (`Aws.hs` and the Pulumi programs).
+
+### Deliverables
+
+- `src/Prodbox/Settings.hs` — `supportedPublicHostname` gains a Haddock declaring the value REAL and
+  required: certificates are issued for it, Route 53 answers for it, and the public edge routes on
+  it, so arms (a) and (b) of § 20.1 do not apply. It is non-secret — a public DNS name is
+  discoverable by anyone who resolves it. The Haddock is the declaration site § 20.1's
+  registered-real-values table points at, and it records that every other occurrence across charts,
+  goldens, and fixtures is a projection of this constant rather than an independent value.
+
+### Validation
+
+1. `prodbox dev check` exit 0.
+2. `prodbox test unit` unchanged — as expected from a comment-only change.
+3. The § 20.1 registered-real-values table resolves: the served-hostname row names this Haddock, and
+   the Haddock exists.
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and its registered-real-values
+  table are the rule this constant now satisfies; the doctrine itself is authored by Sprint `0.20`.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md). Engineering docs name owning sprints sparingly and link the
+  Development Plan; sprint status lives only in the plan suite.
 
 ## Related Documents
 

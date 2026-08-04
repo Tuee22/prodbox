@@ -20,8 +20,8 @@
 -- EKS node so chart pods can pull.
 --
 -- The home substrate is unchanged: 'ensureCustomImageVariantsForSubstrate
--- SubstrateHomeLocal' keeps the existing host-Docker login + push +
--- @ctr@ import path.
+-- SubstrateHomeLocal' keeps the existing host-Docker build + push (no
+-- @docker login@ — the registry is anonymous) + @ctr@ import path.
 module Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
   , defaultEksCustomImagePushConfig
@@ -55,15 +55,18 @@ data EksCustomImagePushConfig = EksCustomImagePushConfig
   -- @<endpoint>\/prodbox\/prodbox-runtime:...@ get rewritten to the
   -- in-cluster endpoint for the @crane push@ destination URL
   -- because crane resolves the host:port to a network target.
-  , customPushHarborAdminUser :: String
-  , customPushHarborAdminPassword :: String
   }
   deriving (Eq, Show)
 
--- | Default push pod config matching the bootstrap Harbor admin
--- contract: pushes into @harbor.harbor.svc.cluster.local@, rewrites
--- @127.0.0.1:30080@ chart refs to the in-cluster endpoint, uses the
--- @Harbor12345@ bootstrap admin credential.
+-- | Default push pod config: pushes into @harbor.harbor.svc.cluster.local@ and
+-- rewrites @127.0.0.1:30080@ chart refs to the in-cluster endpoint.
+--
+-- The pod carries no registry credential. The endpoint is a single-binary
+-- @registry:2@ whose rendered config has no @auth@ stanza, so it accepts
+-- anonymous push — the same contract the home substrate relies on
+-- (@ensureCustomImageVariantsHomeLocal@ pushes with no @docker login@). The
+-- former hardcoded admin credential authenticated to nothing and was removed
+-- under vault_doctrine.md §20.3.
 defaultEksCustomImagePushConfig :: EksCustomImagePushConfig
 defaultEksCustomImagePushConfig =
   EksCustomImagePushConfig
@@ -72,8 +75,6 @@ defaultEksCustomImagePushConfig =
     , customPushImage = "gcr.io/go-containerregistry/crane:debug"
     , customPushHarborInternalEndpoint = "harbor.harbor.svc.cluster.local"
     , customPushChartRegistryEndpoint = "127.0.0.1:30080"
-    , customPushHarborAdminUser = "admin"
-    , customPushHarborAdminPassword = "Harbor12345"
     }
 
 -- | Rewrite a chart-image reference (e.g.
@@ -99,8 +100,8 @@ stripPrefix' (p : ps) (c : cs)
 -- | Render the long-running crane pod manifest that receives the
 -- docker-saved image tarball via @kubectl cp@. The pod uses
 -- @sleep infinity@ so the orchestrator can @kubectl cp@ in the
--- tarball, @kubectl exec@ a Harbor auth login, and @kubectl exec@
--- multiple @crane push@ invocations before deleting the pod.
+-- tarball and @kubectl exec@ multiple @crane push@ invocations
+-- before deleting the pod.
 --
 -- The pod runs with a single emptyDir at @\/data@ as the cp target.
 -- The crane binary is on @PATH@ in the @:debug@ variant via
@@ -134,14 +135,6 @@ eksCustomImagePushPodManifest config =
                          .= [ object
                                 [ "name" .= ("HARBOR_INTERNAL" :: String)
                                 , "value" .= customPushHarborInternalEndpoint config
-                                ]
-                            , object
-                                [ "name" .= ("HARBOR_USER" :: String)
-                                , "value" .= customPushHarborAdminUser config
-                                ]
-                            , object
-                                [ "name" .= ("HARBOR_PASSWORD" :: String)
-                                , "value" .= customPushHarborAdminPassword config
                                 ]
                             ]
                      , "volumeMounts"

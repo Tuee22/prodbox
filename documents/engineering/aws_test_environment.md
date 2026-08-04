@@ -386,7 +386,16 @@ Preferred naming shape:
 
 Example:
 
-`r-20260323-4f7c.orders.t-9f3a.net`
+`r-20260323-4f7c.orders.<test-domain>`
+
+`<test-domain>` stands for the permanent parent domain of § 5.1 — a domain the project genuinely
+registers. It is deliberately left as a placeholder rather than spelled: a plausible-looking invented
+domain is registrable by anyone, so an example that escapes into a real record or rule points traffic
+at a stranger's host, and a reader cannot tell an invented example from a real one
+([vault_doctrine.md §20.1](./vault_doctrine.md#201-the-rule)). Note the distinction from RFC 2606
+names such as `example.com`: those are correct in *documentation and fixtures* precisely because they
+can never be registered, which also means you cannot create a public hosted zone for one or delegate
+NS records into it. The parent domain here must be real.
 
 The preferred implementation is a delegated child hosted zone per run:
 

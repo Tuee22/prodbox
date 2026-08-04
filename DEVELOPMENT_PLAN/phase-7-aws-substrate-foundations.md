@@ -20,6 +20,13 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-03 on Sprint `7.35`** — own-surface reopen (Standard A/N) on this phase's own
+live-run narrative and the bootstrap credential its Sprints `7.19`/`7.25` introduced. Two real
+per-run cloud resource ids quoted in Sprint `7.5.c.v`'s record are redacted, and this phase's real
+values — the harness ACME contact and the Pulumi programs' vendor account id, OIDC thumbprint, and
+long-lived stack settings — are declared in place. The governing doctrine text is authored by Sprint
+`0.20`. Narrative and comment only; no code or command changes.
+
 ✅ **Reclosed 2026-08-02 on Sprint `7.33`.** The AWS substrate now has its own
 platform surface with the Bootstrap Broker and Target Secret Agent, dedicated control-plane
 transport, independent resource/admission envelopes, and fault-injection parity. The EKS gateway
@@ -1843,10 +1850,14 @@ Sprint `7.5.c` and flips the substrate parity row in
 The first live run of `prodbox charts deploy gateway --substrate
 aws` exercised the new 11-step `ensureAwsSubstratePlatformRuntime`
 pipeline on a real EKS cluster (`aws-eks-test-cluster`, us-west-2,
-2-node group, OIDC issuer
-`E20FBA05EEE845723AAD42E683C41778`, Route 53 subzone
-`Z01860472YFEU56UMS4W2`). The orchestration surfaced six gaps; five
-are fixed and verified live:
+2-node group, with a per-run OIDC issuer id and a per-run Route 53
+subzone id). The concrete ids that run allocated are deliberately not
+recorded: they are real, per-run, and non-reproducible, so quoting them
+adds nothing to the narrative while publishing operator infrastructure
+identifiers that a reader cannot distinguish from the synthetic ids used
+throughout the suite
+([vault_doctrine.md §20.1](../documents/engineering/vault_doctrine.md#201-the-rule)).
+The orchestration surfaced six gaps; five are fixed and verified live:
 
 1. **EBS CSI driver missing on EKS** (steps 6+ blocked: MinIO PVC
    `Pending` waiting on `ebs.csi.aws.com` provisioner that EKS no
@@ -4876,6 +4887,84 @@ decision; the narrowing row owned by this sprint carries the withdrawal.
 - Update [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md): the
   `BypassAllResidueForHarnessRefresh` narrowing row (Sprint `7.34`) carries the withdrawal of the
   Sprint `7.9` pending removal of the per-run constructor.
+
+## Sprint 7.35: Redact the Real Per-Run Cloud Ids and Declare the Phase-7 Real Values [✅ Done]
+
+**Status**: Done (2026-08-03) — Phase `7` own-surface reopen (Standard A/N) on this phase's own
+live-run narrative, its Pulumi programs, and the AWS-administration module
+(`00-overview.md` assigns `src/Prodbox/Aws.hs` to Phase 7), adopting
+[vault_doctrine.md §20.1](../documents/engineering/vault_doctrine.md#201-the-rule) (Sprint `0.20`).
+Narrative and comment only; no code, command, or rendered-resource changes.
+**Implementation**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (the Sprint `7.5.c.v`
+live-run narrative), `src/Prodbox/Aws.hs` (`harnessAcmeEmail` Haddock),
+`pulumi/aws-test/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-ses/Pulumi.aws-ses.yaml`
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — narrative and comment only; no Standard-P
+production-composition surface is touched, and no Pulumi resource definition changes.
+**Independent Validation**: governed-plan-document, source-comment, and Pulumi-comment surface,
+validated on the home substrate with no later-phase or live dependency — `prodbox dev lint docs`,
+`prodbox dev docs check`, and `prodbox dev check` exit 0. No live AWS is required: nothing here
+alters a resource, only the text describing one.
+**Docs to update**: `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Phase 7's own surfaces carried both halves of the § 20.1 defect: real values published with no
+marker, and real values that should never have been published at all.
+
+**Why Phase 7 reopened.** Sprint `7.5.c.v`'s live-run record quoted the real EKS OIDC issuer id and
+the real Route 53 subzone id that run allocated — genuinely real operator infrastructure identifiers,
+committed with no marker distinguishing them from the synthetic ids used throughout the suite. That
+is the same shape-ambiguity that let a real hosted-zone id survive seven commits elsewhere. Because
+the defect is on Phase 7's own AWS-substrate narrative and its own Pulumi programs, the phase reopens
+for one sprint to close both.
+
+### Deliverables
+
+- The two per-run ids are removed from this phase's narrative in favour of naming their kind. They
+  were per-run and non-reproducible, so quoting them added nothing while publishing identifiers a
+  reader could not tell from fixtures. The surrounding real, non-secret, project-owned names (cluster
+  name, region, node-group size) stay under § 20.1's declared-real arm.
+- `src/Prodbox/Aws.hs` — `harnessAcmeEmail` is declared REAL and required: it becomes the `contact`
+  on the ACME account, and ACME servers reject contacts at reserved domains outright, so a synthetic
+  address means no account and no certificate. Non-secret: an email address is not a credential.
+- `pulumi/aws-test/Main.yaml` — the vendor AMI-owner account id is declared real and required; the
+  image lookup resolves against it, so a placeholder finds no image.
+- `pulumi/aws-eks/Main.yaml` — the EKS OIDC root-CA thumbprint gains a declaration. Its existing
+  comment said what the value *does*, not that it is real and non-secret, which § 20.1 requires; the
+  registry cited it as an exemplar of the declared-real arm while it did not satisfy that arm.
+- `pulumi/aws-ses/Pulumi.aws-ses.yaml` — the one version-controlled stack settings file gains a
+  header declaring every value in it real and non-secret, and recording that this is the file where
+  the hosted-zone-id disclosure happened and that no opaque identifier may appear in it again.
+
+### Validation
+
+1. `prodbox dev lint docs`, `prodbox dev docs check`, and `prodbox dev check` exit 0.
+2. Defect sweep: neither real per-run id appears anywhere in tracked content.
+3. The § 20.1 registered-real-values table resolves: each row's declaration site exists and says the
+   value is real and non-secret.
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - § 6.1 gains the integrity blast radius and the
+  generated-per-install obligation for the bootstrap credential this phase introduced; § 17's
+  ownership statement is reconciled against it.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `7` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md), and add the redacted-id row to
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

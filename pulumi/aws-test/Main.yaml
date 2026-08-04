@@ -16,6 +16,10 @@ variables:
       arguments:
         mostRecent: true
         owners:
+          # REAL and required: the distribution vendor's own published AMI-owner
+          # account. The image lookup resolves against it, so a placeholder finds
+          # no image. Non-secret — it is public in every AMI listing.
+          # Declared per vault_doctrine.md §20.1 (registered real values).
           - "099720109477"
         filters:
           - name: name

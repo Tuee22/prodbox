@@ -62,8 +62,15 @@ cabal.project.local
 
 # Pulumi
 .pulumi/
+.pulumi-backend/
 Pulumi.*.yaml.bak
+# Per-run stack settings files, written by the harness at run start and destroyed
+# at run end — host-local run state that must never enter the build context. One
+# line per PerRun entry in Infra/StackDescriptor.hs (the stack *id*, which differs
+# from the registry name for aws-eks). The aws-ses settings file is deliberately
+# absent: that stack is LongLived and its settings are version-controlled.
 pulumi/aws-eks/Pulumi.aws-eks-test.yaml
+pulumi/aws-eks-subzone/Pulumi.aws-eks-subzone.yaml
 pulumi/aws-test/Pulumi.aws-test.yaml
 
 # Environment

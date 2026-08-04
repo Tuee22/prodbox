@@ -376,6 +376,18 @@ validatedResourcePlan settings =
   case validatedAllocatedPlan settings of
     Allocation.SomeAllocatedPlan _ plan -> Allocation.allocatedPlanSource plan
 
+-- | The single supported served public hostname.
+--
+-- This value is REAL, and must be: certificates are issued for it, Route 53
+-- answers for it, and the public edge routes on it. A reserved or synthetic
+-- name here would break serving outright, so arms (a) and (b) of
+-- @vault_doctrine.md@ §20.1 do not apply. It is non-secret — it is a public DNS
+-- name, discoverable by anyone who resolves it — and this Haddock is its
+-- declaration site under the registered-real-values table in §20.1. Its
+-- subdomains inherit the same declaration.
+--
+-- Every other occurrence of this hostname across charts, goldens, and fixtures
+-- is a projection of this constant, not an independent value.
 supportedPublicHostname :: Text
 supportedPublicHostname = "test.resolvefintech.com"
 

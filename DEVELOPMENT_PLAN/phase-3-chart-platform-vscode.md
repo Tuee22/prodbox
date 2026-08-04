@@ -20,6 +20,12 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-03 on Sprint `3.30`** — own-surface reopen (Standard A/N) declaring the
+RFC 6455 WebSocket handshake GUID a real, required constant and pointing the MinIO chart
+credential default at its actual registration in
+[vault_doctrine.md §6.1](../documents/engineering/vault_doctrine.md). Comment-only; rendered
+chart output is byte-identical.
+
 ✅ **Reclosed 2026-07-25 on physically separated control-plane workloads and derived resource
 rendering.** Sprint `3.26` renders the Bootstrap Broker, Lifecycle Authority, Provider Worker,
 Authority Backup Adapter, TLS Retention Adapter, and Target Secret Agent as separate workloads with
@@ -3076,6 +3082,71 @@ same proof the § 2C render ring emits.
   template) in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint.
 - Link the single-sourced durable size to Sprint `3.28`'s `Capacity.Render` durable-CSV vector and
   Sprint `3.27`'s durable-quota reproduction.
+
+## Sprint 3.30: Declare the Phase-3 Real Constants and Point the Chart Default at Its Registration [✅ Done]
+
+**Status**: Done (2026-08-03) — Phase `3` own-surface reopen (Standard A/N) on the public workload
+runtime and chart values this phase owns (`00-overview.md` assigns `src/Prodbox/Workload.hs` and
+`charts/` to Phase 3), adopting
+[vault_doctrine.md §20.1](../documents/engineering/vault_doctrine.md#201-the-rule) (Sprint `0.20`).
+Comment-only; no behaviour changes and no rendered-manifest changes.
+**Implementation**: `src/Prodbox/Workload.hs` (`websocketAcceptKey` Haddock),
+`charts/minio/values.yaml` (the credential-default comment)
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — comment-only, so no Standard-P production-composition surface
+is touched; the revision must not be called deployment-ready on the strength of a comment.
+**Independent Validation**: pure source-comment and chart-comment surface, validated on the home
+substrate with no later-phase or live dependency — `prodbox dev check` exit 0, `prodbox dev lint
+chart` unaffected, and the unit suite unchanged (chart rendering is byte-identical; only comments
+moved).
+**Docs to update**: `documents/engineering/vault_doctrine.md`
+
+### Objective
+
+Two Phase-3-owned values were undeclared under § 20.1: one genuinely real constant that a reader
+could mistake for a fixture, and one credential default whose comment pointed at a doctrine section
+that no longer registers it.
+
+### Deliverables
+
+- `src/Prodbox/Workload.hs` — the WebSocket handshake GUID is declared REAL and required: it is the
+  fixed constant published in RFC 6455 § 1.3 and normative in § 4.2.2, identical in every
+  implementation. It must not be replaced with a placeholder, because a different value yields an
+  accept header no client will honour. Previously it sat as a bare literal with no provenance, which
+  is exactly the shape a later reader "cleans up".
+- `charts/minio/values.yaml` — the MinIO root credential default now cites § 6.1, where the
+  bootstrap-floor credential is actually registered, instead of the § 20.3 slot that Sprint `0.20`
+  reassigned. The comment also states plainly that the bootstrap floor is the single registered
+  exception to "no credential in chart values" (§ 20.3) and is not licence to hardcode elsewhere.
+
+### Validation
+
+1. `prodbox dev check` exit 0.
+2. `prodbox test unit` unchanged — as expected from comment-only edits.
+3. Rendered chart output is byte-identical; the chart-statics conformance checks pass unchanged.
+
+### Remaining Work
+
+None. Migration of the MinIO bootstrap credential from a compiled constant to a per-install generated
+value remains scheduled and is not closed here.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and § 6.1's bootstrap-floor
+  registration are the rules these two sites now satisfy; the doctrine is authored by Sprint `0.20`.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `3` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md). Engineering docs name owning sprints sparingly and link the
+  Development Plan; sprint status lives only in the plan suite.
+
 
 ## Related Documents
 

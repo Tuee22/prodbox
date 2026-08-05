@@ -2,25 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md,
-documents/engineering/README.md, documents/engineering/code_quality.md,
-documents/engineering/dependency_management.md,
-documents/engineering/distributed_gateway_architecture.md,
-documents/engineering/effect_interpreter.md,
-documents/engineering/lifecycle_control_plane_architecture.md,
-documents/engineering/lifecycle_reconciliation_doctrine.md,
-documents/engineering/refactoring_patterns.md,
-documents/engineering/unit_testing_policy.md,
-documents/engineering/pulsar_messaging_doctrine.md,
-documents/engineering/resource_scaling_doctrine.md,
-documents/engineering/pulsar_topic_lifecycle_doctrine.md,
-documents/engineering/tiered_storage_capacity_doctrine.md,
-documents/engineering/host_platform_doctrine.md,
-documents/engineering/cluster_topology_doctrine.md,
-documents/engineering/test_topology_doctrine.md,
-documents/engineering/bootstrap_readiness_doctrine.md,
-DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
-DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md
 **Generated sections**: none
 
 > **Purpose**: Define the repository-wide Haskell rules for pure planning, operation-indexed
@@ -337,7 +318,7 @@ Gateway peer gossip remains a bounded anti-entropy protocol, not a durable work 
 idempotent fold requirements but uses the protocol defined by
 [Distributed Gateway Architecture](./distributed_gateway_architecture.md).
 
-## GADT-Indexed State Machines
+## 7. GADT-Indexed State Machines
 
 Use GADTs for either:
 
@@ -371,7 +352,7 @@ prove that the action used the named endpoint, operation, or authority. The repl
 operation-indexed program plus an opaque same-reference interpreter, owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
-## Plan / Apply
+## 8. Plan / Apply
 
 Every one-shot command that performs meaningful mutation splits into a pure build and an effectful
 apply:
@@ -428,6 +409,15 @@ Before closing a change, confirm:
 - cleanup is registered before mutation and independent cleanup cannot short-circuit; and
 - the appropriate pure, simulation, composition, load, chaos, and deployment proofs exist.
 
+## SES Workflow Algebra
+
+`Prodbox.Ses.Workflow.Model` is the canonical pure SES decision model. Explicit state, command,
+event, refusal, and effect ADTs make every known stage total and testable. Provider,
+operator-material, custody, and admin-teardown effects are separate data families rather than a
+stringly tagged universal request. `Prodbox.Ses.Workflow.Coordinator` interprets one decision,
+performs observe/apply/read-back convergence, and commits the resulting event through the
+exact-revision repository.
+
 ## Intent Ownership
 
 This document owns generic pure-FP and interpreter-boundary doctrine. It does not own component
@@ -435,6 +425,11 @@ topology, lifecycle business semantics, exact capacity thresholds, or implementa
 
 ## Cross-References
 
+- [Chaos Hardening Doctrine § 21](./chaos_hardening_doctrine.md) — the eight coordinates, and why
+  the delivery mechanism for every one of them is a *required field* rather than the proof type
+  itself. `Prodbox.Settings.ValidatedSettings` carrying `SomeAllocatedPlan` is the worked example:
+  no proof means no settings, which means no renderer input. § 7 below constrains where a GADT
+  index is legal; § 22 of that doctrine states what a ring-2 gate does and does not prove.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md)
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
@@ -444,11 +439,3 @@ topology, lifecycle business semantics, exact capacity thresholds, or implementa
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Refactoring Patterns](./refactoring_patterns.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
-## SES Workflow Algebra
-
-`Prodbox.Ses.Workflow.Model` is the canonical pure SES decision model. Explicit state, command,
-event, refusal, and effect ADTs make every known stage total and testable. Provider,
-operator-material, custody, and admin-teardown effects are separate data families rather than a
-stringly tagged universal request. `Prodbox.Ses.Workflow.Coordinator` interprets one decision,
-performs observe/apply/read-back convergence, and commits the resulting event through the
-exact-revision repository.

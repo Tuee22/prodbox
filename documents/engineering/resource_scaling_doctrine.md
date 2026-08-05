@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: the scaling prose in [envoy_gateway_edge_doctrine.md § 8](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine) (Envoy / application / Keycloak / Redis "may scale horizontally" statements) — that section now points here for the typed capacity, policy, and placement model; it retains only per-component availability notes.
-**Referenced by**: [README.md](../../README.md), [documents/engineering/README.md](./README.md), [DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md), [DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md), [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md), [DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md), [documents/engineering/bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md), [documents/engineering/cluster_federation_doctrine.md](./cluster_federation_doctrine.md), [documents/engineering/cluster_topology_doctrine.md](./cluster_topology_doctrine.md), [documents/engineering/code_quality.md](./code_quality.md), [documents/engineering/config_doctrine.md](./config_doctrine.md), [documents/engineering/dependency_management.md](./dependency_management.md), [documents/engineering/distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [documents/engineering/haskell_code_guide.md](./haskell_code_guide.md), [documents/engineering/helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [documents/engineering/host_platform_doctrine.md](./host_platform_doctrine.md), [documents/engineering/lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md), [documents/engineering/storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md), [documents/engineering/tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), [documents/engineering/unit_testing_policy.md](./unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox sizes, caps, scales, and places workloads
@@ -653,7 +652,7 @@ three-valued `discover` and a `reconcileAbsent`-style converge step:
   sealed-Vault downstream cluster's capacity (§6) — is three-valued, and "cannot observe" refuses.
   Scaling **up** on unobservable capacity and scaling **down** past an unobservable floor are both
   forbidden.
-- **Plan / Apply** ([pure_fp_standards § Plan / Apply](./pure_fp_standards.md#plan--apply)): the
+- **Plan / Apply** ([pure_fp_standards § Plan / Apply](./pure_fp_standards.md#8-plan--apply)): the
   desired-shape diff is a pure `Plan` value, `--dry-run` renders it without touching AWS or the
   cluster, and `apply` is the only effectful arm.
 

@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, DEVELOPMENT_PLAN/phase-8-email-invite-auth.md, documents/cli/commands.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/vault_doctrine.md
 **Generated sections**: `command-surface-toplevel`, `command-surface-matrix`
 
 > **Purpose**: Define the explicit, no-passthrough command surface for `prodbox`.
@@ -1263,11 +1262,11 @@ run when it is not.
 
 Composition with prior sections:
 
-- [Plan / Apply](./pure_fp_standards.md#plan--apply). A reconcile is built as
+- [Plan / Apply](./pure_fp_standards.md#8-plan--apply). A reconcile is built as
   a Plan/Apply pair. `build` reads current state, computes the diff against
   desired state, and emits a plan listing only the steps that still need to
   run. An empty plan is the steady state and `apply` is a no-op.
-- [Prerequisites as Typed Effects](./prerequisite_doctrine.md#prerequisites-as-typed-effects).
+- [Prerequisites as Typed Effects](./prerequisite_doctrine.md#8-prerequisites-as-typed-effects).
   The prerequisite DAG runs before any mutating step. A reconcile on a host
   missing required tools or credentials fails fast at the gate.
 - `--dry-run` prints the plan and exits. This is the operator's contract for

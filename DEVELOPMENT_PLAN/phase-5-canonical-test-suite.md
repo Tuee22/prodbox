@@ -2,16 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[substrates.md](substrates.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
-[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
-[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
@@ -1635,7 +1625,12 @@ than left implied-complete:
   Certificate/Challenge/TXT node, and no `_acme-challenge` coordinate is ever observed absent. Phase
   `4` explicitly assigns this to Phase 5: "Sprint `5.18` alone owns run-time pre-issuance
   registration, always-run Challenge deletion, and exact TXT absence observation"
-  ([phase-4](phase-4-lifecycle-canonical-paths.md)). **Open; not owned by any in-flight sprint.**
+  ([phase-4](phase-4-lifecycle-canonical-paths.md)). **Open; split out as Sprint `5.29` on
+  2026-08-05 (Sprint `0.21`), which now owns it.** This sprint's remaining deliverables stay closed;
+  only this bullet moved. Its original validation items used *"every plan node"* and *"every
+  eligible cleanup operation"* with no enumeration and no named test, which is how a deliverable
+  that was never built survived a closure — Sprint `5.29` restates them as falsifiable criteria
+  over the rendered plan.
   This is code-owned work (a registry entry, a cleanup node, and a TXT read-back over the existing
   descriptor), not a live-infrastructure axis.
 
@@ -2493,7 +2488,59 @@ longer existed.
 
 None on this sprint's surface. The companion Sprint `5.18` bullet — run-time DNS01 pre-issuance
 registration, always-run Challenge deletion, and exact `_acme-challenge` TXT absence observation — is
-**not** owned here and remains open; see the note under Sprint `5.18`.
+**not** owned here and remains open; it is now Sprint `5.29` below.
+
+## Sprint 5.29: DNS01 Challenge/TXT Pre-Issuance Registration and Absence Observation [📋 Planned]
+
+**Status**: Planned — split out of Sprint `5.18` on 2026-08-05 (Sprint `0.21`). This is the sole
+remaining reason Phase `5` is `🔄 Active`.
+**Blocked by**: none. Sprint `4.50` built the descriptor half; this is the run-time half, and Phase
+`4` assigns it here explicitly.
+**Deployment qualification**: pending — destructive cleanup and substrate routing are Standard-P
+surfaces; both rows are already `pending`.
+**Independent Validation**: fake-driven cleanup-DAG fixtures on the home substrate, no live AWS —
+a registered Challenge/TXT node is present in the plan **before** the mutation that creates it, and
+absence is observed by exact record read-back rather than inferred from a delete exit code.
+**Docs to update**: `documents/engineering/acme_provider_guide.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`
+
+### Objective
+
+Sprint `5.18` recorded this deliverable as closed; it was never built. `mkDns01ChallengeRegistration`
+and `dnsRecordLifecycleClass` exist in `src/Prodbox/Lifecycle/DnsRecord.hs` and have **no production
+consumer** — their only references are `test/unit/DnsRecord.hs`, and `_acme-challenge` appears
+exactly once in `src/`, inside the unconsumed constructor. The cleanup DAG emits no Challenge or TXT
+node, so a run that creates a DNS01 challenge record and then fails leaves it behind with nothing
+registered to remove it.
+
+Splitting rather than reopening `5.18` keeps that sprint's genuinely-landed deliverables closed and
+gives this one its own falsifiable criteria — the vagueness of `5.18`'s original items is what let
+the gap survive a closure in the first place.
+
+### Deliverables
+
+- The existing descriptor gains a production consumer: the challenge record is registered as a
+  managed resource **before** the mutation that creates it, per
+  [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+- An always-run Challenge deletion node in the cleanup DAG, independent of run outcome.
+- Absence proven by an exact `_acme-challenge` TXT read-back; "cannot observe" stays distinct from
+  "absent" and keeps the gate closed.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 5.29"` passes.
+2. The rendered cleanup plan contains a Challenge/TXT node for a run that reaches issuance, and the
+   node is present in the plan **before** the create step — asserted on the rendered plan, not on a
+   live run.
+3. Injected failure at the create step still runs the deletion node; injected failure *of* the
+   deletion node accumulates rather than being swallowed.
+4. A read-back that cannot observe the record yields the unobservable constructor and fails closed,
+   distinct from an observed absence.
+5. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above. Closing this closes Phase `5`.
 
 ## Related Documents
 

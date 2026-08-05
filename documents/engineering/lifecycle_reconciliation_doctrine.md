@@ -2,32 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../CLAUDE.md](../../CLAUDE.md),
-[../../README.md](../../README.md), [the engineering doctrine docs](../../documents/engineering/README.md),
-[acme_provider_guide.md](acme_provider_guide.md),
-[../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
-[../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
-[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md),
-[../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
-[README.md](README.md),
-[aws_admin_credentials.md](aws_admin_credentials.md),
-[aws_integration_environment_doctrine.md](aws_integration_environment_doctrine.md),
-[cli_command_surface.md](cli_command_surface.md),
-[integration_fixture_doctrine.md](integration_fixture_doctrine.md),
-[prerequisite_doctrine.md](prerequisite_doctrine.md),
-[pure_fp_standards.md](pure_fp_standards.md),
-[secret_derivation_doctrine.md](secret_derivation_doctrine.md),
-[storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md),
-[unit_testing_policy.md](unit_testing_policy.md),
-[vault_doctrine.md](vault_doctrine.md),
-[resource_scaling_doctrine.md](resource_scaling_doctrine.md),
-[pulsar_topic_lifecycle_doctrine.md](pulsar_topic_lifecycle_doctrine.md),
-[host_platform_doctrine.md](host_platform_doctrine.md),
-[cluster_topology_doctrine.md](cluster_topology_doctrine.md),
-[test_topology_doctrine.md](test_topology_doctrine.md),
-[bootstrap_readiness_doctrine.md](bootstrap_readiness_doctrine.md),
-[lifecycle_control_plane_architecture.md](lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox lifecycle commands reconcile required
@@ -1434,7 +1408,7 @@ The retained long-lived bucket is created idempotently by `ensureLongLivedPulumi
 destroyed only by `prodbox nuke`'s final pass — never by `aws teardown`, never by `cluster delete`,
 never as a side effect of any other command.
 
-## Vault in the cluster lifecycle
+## 8. Vault in the cluster lifecycle
 
 Vault is the fail-closed secrets / encryption-as-a-service authority layered
 *beneath* the existing reconciler model — it extends, and does not replace, the
@@ -1481,8 +1455,28 @@ section records only how the lifecycle commands integrate it. See
   Pulumi checkpoint wrapper. See
   [vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault).
 
+## 9. SES Aggregate Reconciliation
+
+SES reconciliation is a durable staged aggregate rather than one synchronous lease-held request.
+It commits the desired contract and provider revision, converges the non-credential Provider
+inventory, releases the narrow mutation fence, awaits the exact semantic revision, reconciles a
+Credential-Provisioner SMTP generation, and drains one durable delivery per selected target.
+Restart resumes the first incomplete committed stage. A newer generation refuses while any target
+still records an older or absent receipt.
+
+Legacy credential ownership moves only through `LegacyPulumiWriter`,
+`CredentialMigrationFrozen`, and `ProvisionerWriter`. Adoption requires exact checkpoint/IAM/key
+evidence, checkpoint release, retained-home custody, and read-back from every current target. There
+is never a state with two IAM writers; rollback is a forward migration to a greater epoch.
+
 ## Related Documents
 
+- [chaos_hardening_doctrine.md § 21](./chaos_hardening_doctrine.md) — the *Cardinality* class. The
+  registry in § 3.1 makes a resource discoverable and destroyable; it does not make an authoritative
+  write *entitled*. "At most one writer" asserted in a chart comment plus `replicas: 1` is a
+  deployment wish, not a proof. The move is a write permit minted only from a live fenced lease or
+  CAS, carrying the token the store checks at apply time — and § 22 records why even that is a
+  process property, not a protocol one, until a model exists.
 - [README.md](README.md)
 - [aws_admin_credentials.md](aws_admin_credentials.md)
 - [aws_integration_environment_doctrine.md](aws_integration_environment_doctrine.md)
@@ -1500,16 +1494,3 @@ section records only how the lifecycle commands integrate it. See
 - [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
 - [the engineering doctrine docs](../../documents/engineering/README.md)
 - [../../CLAUDE.md](../../CLAUDE.md)
-## SES Aggregate Reconciliation
-
-SES reconciliation is a durable staged aggregate rather than one synchronous lease-held request.
-It commits the desired contract and provider revision, converges the non-credential Provider
-inventory, releases the narrow mutation fence, awaits the exact semantic revision, reconciles a
-Credential-Provisioner SMTP generation, and drains one durable delivery per selected target.
-Restart resumes the first incomplete committed stage. A newer generation refuses while any target
-still records an older or absent receipt.
-
-Legacy credential ownership moves only through `LegacyPulumiWriter`,
-`CredentialMigrationFrozen`, and `ProvisionerWriter`. Adoption requires exact checkpoint/IAM/key
-evidence, checkpoint release, retained-home custody, and read-back from every current target. There
-is never a state with two IAM writers; rollback is a forward migration to a greater epoch.

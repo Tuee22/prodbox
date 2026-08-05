@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md
 **Generated sections**: none
 
 > **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and

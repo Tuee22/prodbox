@@ -2,11 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[substrates.md](substrates.md),
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the

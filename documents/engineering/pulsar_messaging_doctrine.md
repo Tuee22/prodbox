@@ -4,7 +4,6 @@
 **Supersedes**: the older non-CBOR wire-format language in
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md). CBOR is the only
 sanctioned prodbox payload and envelope format.
-**Referenced by**: [../../README.md](../../README.md), documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/tiered_storage_capacity_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: SSoT for prodbox's self-maintained native-protocol Pulsar client, its
@@ -42,7 +41,7 @@ It deliberately does **not** own, and only references:
 
 | Concern | Owner |
 |---------|-------|
-| At-least-once delivery, idempotent handlers, first-write-wins dedup | [streaming_doctrine.md § At-Least-Once Event Processing](./streaming_doctrine.md#at-least-once-event-processing) |
+| At-least-once delivery, idempotent handlers, first-write-wins dedup | [streaming_doctrine.md § At-Least-Once Event Processing](./streaming_doctrine.md#9-at-least-once-event-processing) |
 | Topic create / validate / reconcile / teardown lifecycle and retention | [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) |
 | Tiered storage, capacity, and offload for Pulsar-backed topics | [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) |
 | Gateway leadership, Orders semantics, bounded semantic state, and signed delta/cursor transport | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
@@ -61,7 +60,7 @@ The illegal-state technique here is *absence*: the message payload type admits n
 constructor and no codec tag, so any non-CBOR payload is **unconstructible** — a compile error,
 not a validated-away runtime case. (This is the same "make the illegal state
 unrepresentable" discipline as [pure_fp_standards.md § GADT-Indexed State
-Machines](./pure_fp_standards.md#gadt-indexed-state-machines); here the state is eliminated by a
+Machines](./pure_fp_standards.md#7-gadt-indexed-state-machines); here the state is eliminated by a
 closed newtype with no variants rather than by a GADT index.)
 
 ```haskell
@@ -92,7 +91,7 @@ decodeCanonical (CborPayload bytes) =
 
 Determinism is **load-bearing**, not cosmetic. Gateway signed assertions and delta frames derive
 stable identities/signatures from canonical bytes, and the at-least-once store dedups by content
-([streaming_doctrine.md](./streaming_doctrine.md#at-least-once-event-processing)); a
+([streaming_doctrine.md](./streaming_doctrine.md#9-at-least-once-event-processing)); a
 nondeterministic encoding would make equal payloads hash differently and silently break both the
 chain and dedup. The canonical rule is therefore consistent with — and checked by — the repo's
 no-nondeterminism lint over serialization-source modules
@@ -270,9 +269,9 @@ This SSoT owns the prodbox message-codec and message-shape doctrine.
 ## Cross-References
 
 - [Engineering Doctrine Index](./README.md)
-- [Streaming Doctrine § At-Least-Once Event Processing](./streaming_doctrine.md#at-least-once-event-processing)
+- [Streaming Doctrine § At-Least-Once Event Processing](./streaming_doctrine.md#9-at-least-once-event-processing)
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
-- [Pure FP Standards § GADT-Indexed State Machines](./pure_fp_standards.md#gadt-indexed-state-machines)
+- [Pure FP Standards § GADT-Indexed State Machines](./pure_fp_standards.md#7-gadt-indexed-state-machines)
 - [Config Doctrine](./config_doctrine.md)
 - [Code Quality](./code_quality.md)
 - [Pulsar Topic Lifecycle Doctrine](./pulsar_topic_lifecycle_doctrine.md)

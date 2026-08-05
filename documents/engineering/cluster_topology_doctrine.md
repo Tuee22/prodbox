@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/substrates.md, documents/engineering/host_platform_doctrine.md, documents/engineering/resource_scaling_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for prodbox cluster topology — the three explicit cluster
@@ -78,7 +77,7 @@ which and that the worker is substrate-typed*.
 ## 2. Illegal topologies are unrepresentable, not rejected
 
 The house technique is to prefer the type that cannot express the illegal state over a validator
-that rejects it ([pure_fp_standards.md → GADT-Indexed State Machines / Plan/Apply](./pure_fp_standards.md#gadt-indexed-state-machines)).
+that rejects it ([pure_fp_standards.md → GADT-Indexed State Machines / Plan/Apply](./pure_fp_standards.md#7-gadt-indexed-state-machines)).
 Cluster shape is decoded-from-config, not an in-process state machine, so it is a **closed ADT with
 typed newtype smart constructors** plus a Dhall `assert : contractOK self === True` for the
 relational invariants Dhall cannot type structurally (mirroring jitML). Each rule below is made
@@ -241,7 +240,7 @@ unrepresentable rather than merely validated.
 ## Cross-References
 
 - [Reconciler-with-predicates lifecycle doctrine](./lifecycle_reconciliation_doctrine.md)
-- [Pure FP Standards — illegal states unrepresentable](./pure_fp_standards.md#gadt-indexed-state-machines)
+- [Pure FP Standards — illegal states unrepresentable](./pure_fp_standards.md#7-gadt-indexed-state-machines)
 - [Host Platform Doctrine — host-resident workers](./host_platform_doctrine.md)
 - [Resource Scaling Doctrine — the capacity half of rule i](./resource_scaling_doctrine.md)
 - [Tiered Storage Capacity Doctrine — rule k per-worker JIT/model-cache budget](./tiered_storage_capacity_doctrine.md)

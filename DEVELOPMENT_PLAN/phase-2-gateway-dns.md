@@ -2,16 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
-[chaos_hardening_doctrine.md](../documents/engineering/chaos_hardening_doctrine.md),
-[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
-[streaming_doctrine.md](../documents/engineering/streaming_doctrine.md),
-[tla_modelling_assumptions.md](../documents/engineering/tla_modelling_assumptions.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
@@ -1358,7 +1348,7 @@ database, live infrastructure, or a later phase.
 ### Objective
 
 Formalize the durable at-least-once event-processing pattern from
-[streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)
+[streaming_doctrine.md#9-at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#9-at-least-once-event-processing)
 so daemon event-consuming surfaces share one canonical module rather than ad-hoc per-call-site
 patterns. Gateway peer anti-entropy deliberately remains a separate bounded in-memory semantic
 protocol; it does not adopt the durable processed-marker store.
@@ -2282,7 +2272,7 @@ Sprint `3.19` removed the derivation RPC, and Sprint `2.31` replaced the log tra
 - Restore the `markEventProcessed` IS-NULL guard in `src/Prodbox/Daemon/Events.hs` so a
   processed-marker write only fires when `processed_at IS NULL`, preserving the at-least-once
   idempotent-replay contract from
-  [streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)
+  [streaming_doctrine.md#9-at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#9-at-least-once-event-processing)
   under concurrent processors.
 - Topology-honest fault-model reframe in
   [distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)
@@ -3681,11 +3671,21 @@ the fold's compaction depends on the signer succeeding and there was no hard cei
 - Link the bounded-retention invariant to Sprint `2.32`'s emitter kernel and to the Deployment
   Qualification ledger's outstanding live leak-free axis in [README.md](README.md).
 
-## Sprint 2.39: Restore the Broker's Constant-Time Readiness Contract [📋 Planned]
+## Sprint 2.39: Restore the Broker's Constant-Time Readiness Contract [🔄 Active]
 
-**Status**: Planned — live-surfaced 2026-08-04 on a cold home bring-up. This is a Phase-2-owned
-production defect on the Bootstrap Broker runtime, not a harness or environment problem, and it
-currently blocks **every** home-substrate bring-up.
+**Status**: Active — live-surfaced 2026-08-04 on a cold home bring-up, and **partially implemented
+since**. This is a Phase-2-owned production defect on the Bootstrap Broker runtime, not a harness or
+environment problem, and it currently blocks **every** home-substrate bring-up.
+
+**Status correction (Sprint `0.21`, 2026-08-05).** This block previously read `📋 Planned` with a
+`Remaining Work` section stating *"no fix has been attempted"*. That was false at the time it was
+read: `src/Prodbox/Bootstrap/Broker/Readiness.hs` and the reworked
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs` had already moved `/readyz` to a cached
+projection with a background observer. Standard C requires status to describe reality, so the
+marker is corrected to `🔄 Active` and `Remaining Work` now names what is genuinely outstanding.
+Two of the three deliverables have landed; the third has not, and the landed half rests on an
+unsound constant (Sprint `2.40`).
+
 **Blocked by**: none. The defect and its fix are code-owned; the reproducer below needs only a
 running cluster.
 **Deployment qualification**: pending — readiness semantics are a Standard-P surface. Both rows are
@@ -3759,9 +3759,139 @@ that is a prerequisite for anyone debugging the store half.
 
 ### Remaining Work
 
-Everything above. The defect is diagnosed and evidenced; no fix has been attempted, because moving
-readiness to a cached projection changes Standard-P readiness semantics and deserves a deliberate
-design pass rather than an expedient patch under a blocked bring-up.
+Rewritten 2026-08-05 (Sprint `0.21`) to describe the tree as it stands.
+
+**Landed.** `/readyz` is a constant-time projection over boundary-owned cached facts
+(`src/Prodbox/Bootstrap/Broker/Readiness.hs`, `computeBrokerReadiness`), refreshed by a background
+observer; no boundary call remains on the request path. The dependency observation is four-valued,
+with an **absorbing** identity-rejection constructor, so the broker-Pod-only ServiceAccount-token
+401 can no longer read as "not up yet" — that is the *Distinguishability* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and it is
+what makes the second half of the original defect unrepresentable rather than merely handled.
+
+**Open — deliverable 3, the conformance gate.** The sprint requires a gate asserting `/readyz`
+performs no boundary I/O in its request path. `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`
+refers to a `broker-readiness-projection` gate in a comment, but **no such check exists** in
+`src/Prodbox/CheckCode.hs`. Until it does, nothing prevents a future edit from reintroducing a
+backend call — which is exactly how this defect arrived. The gate belongs in `runConformanceTier`
+beside the existing readiness-observation and gateway-probe scans.
+
+**Open — the staleness bound is unsound.** Split out as Sprint `2.40`; the landed projection is not
+correct until it lands.
+
+**Open — the live reproducer.** Validation items 1 and 2 (cold-cluster `curl --max-time 1` inside
+the broker Pod, and `cluster reconcile` converging to exit 0 from the half-built state) are
+Standard-O live-infra proofs and remain unrun.
+
+## Sprint 2.40: Derive the Broker's Readiness Staleness Bound [📋 Planned]
+
+**Status**: Planned — Phase `2` own-surface work on the Bootstrap Broker readiness projection
+Sprint `2.39` introduced. Dependencies are satisfied; this is not blocked.
+**Blocked by**: none. Sprint `2.39`'s projection is already in the tree; this corrects a constant
+inside it.
+**Deployment qualification**: pending — readiness semantics are a Standard-P surface, and both rows
+are already `pending`.
+**Independent Validation**: pure, injected-clock, no live substrate — a focused unit case pinning
+`stalenessBound >= 2 * (observerPeriod + observationBudget)` for the shipped schedule, plus a
+mutation exercise restoring the current free constants and observing the case fail.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`
+
+### Objective
+
+Sprint `2.39`'s projection fails closed when its cached record is older than
+`brokerReadinessObservationBoundMicros`. That bound is authored as `3 * observerPeriod` = 15 s,
+independently of the per-pass budget. The observer's actual inter-stamp interval is
+`observerPeriod + passDuration`, and `observedAt` is stamped **after** the pass, so the interval
+includes the whole pass. With a 5 s period and a 5 s budget the bound must be at least
+`2 * (5 + 5)` = 20 s; it is 15 s.
+
+The consequence is not a slow failure, it is a self-inflicted one: a broker whose dependencies are
+all `Ready` projects `Starting` for most of every cycle, and `failureThreshold: 6` at
+`periodSeconds: 10` removes the Pod after 60 s. A healthy system evicts itself because two
+constants were authored separately.
+
+This is the *Containment* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md): bounds are
+computed, never authored.
+
+### Deliverables
+
+- An `ObservationSchedule` with a hidden constructor whose single smart constructor **derives** the
+  staleness bound from the observer period and the per-pass budget, so a bound the observer cannot
+  meet is not constructible.
+- `computeBrokerReadiness` takes the schedule rather than reading free top-level constants.
+- The three independently-authored constants in `Broker/Readiness.hs` and
+  `Broker/ProductionEngine.hs` are replaced by that one value.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 2.40"` passes, including a case asserting
+   `stalenessBound >= 2 * (period + budget)` for the shipped schedule.
+2. A mutation exercise: restoring the free `3 * period` constant fails that case, and the source
+   restores byte-exactly afterward.
+3. `mkObservationSchedule` returns `Left` for a zero period and for a zero budget.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
+
+## Sprint 2.41: One Emitter Authority Value and a Supervised Worker Roster [📋 Planned]
+
+**Status**: Planned — Phase `2` own-surface work on the gateway daemon runtime this phase owns.
+**Blocked by**: none.
+**Deployment qualification**: pending — process topology and readiness semantics are Standard-P
+surfaces; both rows are already `pending`. This sprint does not perform the emitter cutover, so it
+neither advances nor invalidates qualification.
+**Independent Validation**: pure fold plus fake-driven daemon fixtures, no live substrate — the
+readiness fold rejects `Ready` when the authority runtime is absent or a roster worker has exited,
+proven by a mutation exercise that reintroduces the split state and observes the case fail.
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`
+
+### Objective
+
+Two defects with one shape: a fact and the runtime it asserts live in separate mutable cells that
+can disagree.
+
+`Prodbox.Gateway.Daemon` keeps emitter readiness in `envEmitterAuthorityStatus` and the runtime it
+asserts in `envContinuity`. Five sites clear `envContinuity` and touch readiness on none of them —
+deliberately, under a comment describing the readiness cell as a monotone latch. `Ready` while
+`envContinuity == Nothing` is therefore reachable in production, and it is reachable on the
+**deployed** path: `runGatewayDaemon` selects `LegacyModelBEmitter`, whose authority arm is a bare
+`readTVar`, while the lease-re-checking arm belongs to the target topology.
+
+Separately, `WorkersStatus` is a monotone flag written before any worker exists, so a worker that
+dies never un-readies the Pod, and eight long-lived children are spawned without linking their
+handles.
+
+Both are the *Staleness* and *Scope* classes of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md). The fix
+for the first is deletion, not synchronisation: if two cells can disagree, keep one.
+
+### Deliverables
+
+- One `EmitterAuthority` value replacing `envContinuity`, `envEmitterRuntime`, and
+  `envEmitterAuthorityStatus`, so clearing the runtime *is* clearing readiness, on every path
+  including ones not yet written. Readiness becomes topology-free — no arm can be the one that
+  forgets.
+- A `WorkerRoster` over a `Bounded`/`Enum` worker key, with a `withSupervisedWorkers` bracket as the
+  only way to run one: it links the `Async`, stamps a heartbeat, and records exit on every path.
+- `WorkersStatus` deleted; the readiness fold consumes the roster against a heartbeat bound.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 2.41"` passes.
+2. The readiness fold returns `Starting`, not `Ready`, when the authority runtime is absent — a
+   state the type no longer permits to be constructed separately from the readiness value.
+3. A worker recorded as exited holds the fold at `Starting`; a mutation exercise restoring the
+   monotone `WorkersStatus` flag fails that case, and the source restores byte-exactly.
+4. Raw `withAsync` is not in scope in `src/Prodbox/Gateway/Daemon.hs` — the negative-space check
+   pattern Sprint `2.10` established for module-local mutable counters.
+5. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
 
 ## Sprint 2.38: Reachable Shutdown Postcondition for the Bootstrap Broker [✅ Done]
 

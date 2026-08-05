@@ -2,25 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md),
-[development_plan_standards.md](development_plan_standards.md),
-[00-overview.md](00-overview.md),
-[system-components.md](system-components.md),
-[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
-[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
-[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
-[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
-[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
-[phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
-[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[../documents/engineering/lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[../documents/engineering/acme_provider_guide.md](../documents/engineering/acme_provider_guide.md),
-[../documents/engineering/vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md),
-[../documents/engineering/resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
-[../documents/engineering/cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md)
 **Generated sections**: resource-lifecycle-classes, stack-command-surface
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the

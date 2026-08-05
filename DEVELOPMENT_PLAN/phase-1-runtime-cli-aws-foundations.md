@@ -2,19 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
-[tiered_storage_capacity_doctrine.md](../documents/engineering/tiered_storage_capacity_doctrine.md),
-[host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md),
-[cluster_topology_doctrine.md](../documents/engineering/cluster_topology_doctrine.md),
-[test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md),
-[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
-[pure_fp_standards.md](../documents/engineering/pure_fp_standards.md),
-[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
@@ -773,7 +760,7 @@ None.
 
 ### Objective
 
-Adopt [pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply) on every state-changing
+Adopt [pure_fp_standards.md#8-plan--apply](../documents/engineering/pure_fp_standards.md#8-plan--apply) on every state-changing
 command.
 
 ### Deliverables
@@ -854,7 +841,7 @@ coverage.
 
 ### Objective
 
-Adopt [prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects), including the required error-message contract.
+Adopt [prerequisite_doctrine.md#8-prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#8-prerequisites-as-typed-effects), including the required error-message contract.
 
 ### Deliverables
 
@@ -1054,7 +1041,10 @@ Adopt [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/en
 ### Validation
 
 1. Property tests confirm exponential backoff for the default policy.
-2. The retry surface is consumed only through the `RetryPolicy` API.
+2. The retry surface is consumed only through the `RetryPolicy` API. **Unfalsifiable as written
+   (noted Sprint `0.21`, 2026-08-05)**: it names no lint, gate, or scan, so nothing can check it.
+   Sprint `1.77` restates it as a construction rule that fails — the shape Sprint `2.10` item 4
+   uses for its negative-space rule.
 
 ### Current Validation State
 
@@ -1167,7 +1157,7 @@ None.
 
 ### Objective
 
-Adopt [pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines) for
+Adopt [pure_fp_standards.md#7-gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines) for
 workflows with more than two states.
 
 ### Deliverables
@@ -1206,7 +1196,7 @@ None.
 
 ### Objective
 
-Adopt [streaming_doctrine.md#output-rules](../documents/engineering/streaming_doctrine.md#output-rules) for one-shot `prodbox`
+Adopt [streaming_doctrine.md#8-output-rules](../documents/engineering/streaming_doctrine.md#8-output-rules) for one-shot `prodbox`
 commands so stdout, stderr, machine-readable output, and color follow the doctrine's
 prescribed surface.
 
@@ -2072,7 +2062,7 @@ prerequisite at most once per run. Validation green: `check-code` 0, `test unit`
 
 Enforce prerequisite-DAG acyclicity at construction time and collapse the redundant
 settings-node pair, per
-[prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects)
+[prerequisite_doctrine.md#8-prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#8-prerequisites-as-typed-effects)
 and the DAG-construction discipline in
 [prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md).
 
@@ -2088,7 +2078,7 @@ and the DAG-construction discipline in
   Sprint 1.31 as the owning sprint.
 - Add an interpreter satisfied-node memo so an already-satisfied prerequisite is not
   re-evaluated within one interpreter run, per
-  [prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects).
+  [prerequisite_doctrine.md#8-prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#8-prerequisites-as-typed-effects).
 
 ### Validation
 
@@ -2124,7 +2114,7 @@ existentials remain forbidden). Validation green: `check-code` 0, `test unit` 75
 Retire the un-adopted `src/Prodbox/StateMachine.hs` and its lone typecheck test, and realign
 the GADT-indexed-state-machine doctrine (change D1) to the externally-authoritative,
 log-reconciled state the gateway actually uses, per
-[pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines).
+[pure_fp_standards.md#7-gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines).
 
 ### Deliverables
 
@@ -2133,7 +2123,7 @@ log-reconciled state the gateway actually uses, per
   removal in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with Sprint
   1.32 as the owning sprint.
 - Doctrine change D1: soften the
-  [pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines)
+  [pure_fp_standards.md#7-gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines)
   mandate to "GADTs for authoritative in-process transitions; externally-authoritative /
   log-reconciled state (the then-current gateway ownership fold over the now-superseded
   append-only commit log was the motivating example) may use a flat exhaustive ADT." Keep the exhaustive-ADT and
@@ -3865,7 +3855,7 @@ later phases; Sprint `1.59` deliberately introduces no second implementation or 
 
 **Cross-references to add:**
 
-- Add `src/Prodbox/Lifecycle/ReadinessObservation.hs` to the `Referenced by` back-link set of the three docs above.
+- Add `src/Prodbox/Lifecycle/ReadinessObservation.hs` to the `Referenced by` back-link set of the three docs above. **Superseded by Sprint `0.21` (2026-08-05)**: the `Referenced by` field is struck repository-wide, so there is no back-link set to add to. The forward citations in those three docs remain the record.
 
 ## Sprint 1.60: Runtime Memory Budget Decomposition and RTS Policy [✅ Done]
 
@@ -5252,6 +5242,113 @@ was the mechanism that keeps it holding.
 None on this sprint's surface. Two of the three policies Sprint `0.19` registered — the
 bootstrap-floor registry bijection and the chart-values literal scan — remain registered and
 unclosed, and are not owned here.
+
+## Sprint 1.76: Provenance-Carrying Readiness Evidence [📋 Planned]
+
+**Status**: Planned — Phase `1` own-surface work (Standard A/N) on the operation-indexed capability
+and readiness-evidence seam Sprint `1.61` owns.
+**Blocked by**: none.
+**Deployment qualification**: pending — capability wiring is a Standard-P surface and both rows are
+already `pending`.
+**Independent Validation**: pure plus fake-driven, no live substrate — a type-level exercise proving
+a shallow probe no longer inhabits the deep slot, plus behavioural cases showing a constant-time GET
+cannot satisfy a conditional-write requirement.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`
+
+### Objective
+
+`bootstrap_readiness_doctrine.md` § 0.2 requires observation, admission, and execution to use the
+same opaque reference, and § 2.3 permits an object GET to prove only a read capability. The
+implementation does not enforce either.
+
+`RoundTripWitness` is exported **with** its constructor, so
+`Prodbox.Lifecycle.CapabilityReadinessBarrier` mints one from a string literal — the source records
+this as *"a fixed valid placeholder"*. The deep-probe slot in `ComponentReadinessTarget` holds an
+arbitrary action carrying no witness, so the component graph's pure depth check constrains the
+*declaration* and never the *adapter*. A constant-time GET of a monotone latch therefore satisfies a
+requirement whose declared evidence class is a conditional write plus authoritative read-back. The
+freshness window is inert alongside it, because the observation instant is stamped after the read
+rather than carried from the write.
+
+`legacy-tracking-for-deletion.md` already carries the row for the arbitrary-`IO` readiness payload
+under this sprint's predecessor; this supplies the type-level fix that row was waiting for. It is
+the *Provenance* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md).
+
+### Deliverables
+
+- `RoundTripWitness` becomes opaque, minted only by the interpreter that performed the operation
+  and carrying the instant the write landed rather than a later clock read.
+- The probe result is parameterised by its witness type, so a deep target's action type differs by
+  construction from a shallow one's and the existing placeholder call site stops compiling.
+- Evidence classification consumes the witness instead of synthesising one.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 1.76"` passes.
+2. A shallow probe placed in the deep slot is a **type error**, not a runtime rejection.
+3. A mutation exercise: restoring the literal-minted witness fails the evidence cases, and the
+   source restores byte-exactly afterward.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above. Note this forces a real gateway CAS lane to be written for the one call site that
+currently fakes its witness; budget for that rather than widening the type to accommodate it.
+
+## Sprint 1.77: Indeterminate Outcomes and Jittered Retry [📋 Planned]
+
+**Status**: Planned — Phase `1` own-surface work on the retry classifier and `RetryPolicy` this
+phase owns (Sprints `1.13`, `1.57`).
+**Blocked by**: none.
+**Deployment qualification**: pending — retry behaviour bears on queueing and admission, both
+Standard-P surfaces; both rows are already `pending`.
+**Independent Validation**: pure, property-driven, no live substrate — retrying a non-idempotent
+operation after an indeterminate outcome does not type-check, and the jitter property holds across
+generated policies.
+**Docs to update**: `documents/engineering/streaming_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`
+
+### Objective
+
+Two gaps in the same surface.
+
+`ServiceError` distinguishes permanent from transient, which is the wrong axis for a mutation. A
+timeout or connection failure on a **mutating** call is *indeterminate*: the effect may have been
+applied and only the response lost. Retrying it is safe exactly when the operation is idempotent,
+so retryability is a property of the (operation, error) pair — not of the error alone. Today the
+unclassified default is retryable by documented choice, which is the least safe reading.
+
+Separately, `RetryPolicy` has an exported constructor and no jitter field, and **no jitter exists
+anywhere in the tree**. Every retrier therefore shares one deterministic schedule, so N clients
+failing against one dependency retry in permanent lockstep.
+
+This also repairs Sprint `1.13`'s validation item 2 — *"the retry surface is consumed only through
+the `RetryPolicy` API"* — which names no lint, no gate, and no scan, and so cannot be checked. The
+model to copy is Sprint `2.10` item 4, which states its negative-space rule as a check that fails.
+
+### Deliverables
+
+- An indeterminate outcome constructor, distinct from transient and permanent.
+- An idempotence witness required to retry through the shared helper, so retrying a non-idempotent
+  operation after an indeterminate outcome is inexpressible.
+- `RetryPolicy` gains a hidden constructor and a jitter fraction; its smart constructor rejects a
+  zero or out-of-range fraction.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 1.77"` passes.
+2. Retrying a non-idempotent operation after an indeterminate outcome is a **type error**.
+3. A property test over generated policies shows successive delays are not identical across
+   independent retriers, and remain within the configured bounds.
+4. Constructing a `RetryPolicy` outside the smart constructor is impossible outside its module —
+   the Sprint `1.57` inline-classifier lint pattern extended to policy construction, which is what
+   Sprint `1.13` item 2 should have said.
+5. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
 
 ## Documentation Requirements
 

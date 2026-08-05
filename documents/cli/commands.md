@@ -2,7 +2,6 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/cli_command_surface.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md
 **Generated sections**: `command-registry.markdown`
 
 > **Purpose**: Provide the generated leaf-command registry derived from `src/Prodbox/CLI/Spec.hs`

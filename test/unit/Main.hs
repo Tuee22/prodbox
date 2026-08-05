@@ -379,21 +379,29 @@ import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , awsCreateSiteViolations
   , awsCreateVerbs
+  , citedSourcePathsInDoc
   , destructivePlanOptionsArms
   , doctrineViolationsInPaths
   , extractMarkdownLinkTargets
   , extractStringLiterals
   , generatedSectionsReconcilerViolations
+  , governedDocStatusValues
+  , governedDocStatusViolations
   , iamCreateSiteViolations
+  , inlineCodeSpansInLine
   , inlineRetrySubstringListViolations
+  , isCitedSourcePath
   , isRelativeLinkTarget
   , listRepoOwnedPaths
   , matchesSprintToken
   , parseGeneratedSectionsField
+  , parseGovernedDocStatusField
   , planOptionsHonoredViolations
   , prodboxMarkerKeysPresent
   , pulumiCreateSiteViolations
   , relativeLinkResolves
+  , removedLegacyTransportSourcePaths
+  , retiredCitedSourcePaths
   , scannedCredentialPatternsPresent
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
@@ -13884,6 +13892,92 @@ unitSuite = do
         parseGeneratedSectionsField
           "**Generated sections**: none (the matrices are hand-maintained today)\n"
           `shouldBe` Just []
+
+    describe "Sprint 0.21 parseGovernedDocStatusField" $ do
+      it "reads the declared status value" $
+        parseGovernedDocStatusField "# Title\n\n**Status**: Authoritative source\n"
+          `shouldBe` Just "Authoritative source"
+
+      it "returns Nothing when the field is absent" $
+        parseGovernedDocStatusField "# Title\n\n**Supersedes**: N/A\n"
+          `shouldBe` Nothing
+
+      it "ignores the alternation spelled inside a fenced teaching example" $
+        parseGovernedDocStatusField
+          ( unlines
+              [ "# Title"
+              , ""
+              , "**Status**: Reference only"
+              , ""
+              , "```markdown"
+              , "**Status**: [Authoritative source | Reference only | Deprecated]"
+              , "```"
+              ]
+          )
+          `shouldBe` Just "Reference only"
+
+    describe "Sprint 0.21 governedDocStatusViolations" $ do
+      it "accepts every legal status value" $
+        concat
+          [ governedDocStatusViolations "doc.md" ("**Status**: " ++ value ++ "\n")
+          | value <- governedDocStatusValues
+          ]
+          `shouldBe` []
+
+      it "rejects a vague status value (documentation_standards.md § 9)" $
+        governedDocStatusViolations "doc.md" "**Status**: WIP\n"
+          `shouldNotBe` []
+
+      it "rejects a document with no status field at all" $
+        governedDocStatusViolations "doc.md" "# Title\n"
+          `shouldNotBe` []
+
+    describe "Sprint 0.21 inlineCodeSpansInLine" $ do
+      it "extracts each backtick-delimited span without its delimiters" $
+        inlineCodeSpansInLine "cites `src/Prodbox/A.hs` and `test/unit/B.hs` today"
+          `shouldBe` ["src/Prodbox/A.hs", "test/unit/B.hs"]
+
+      it "drops an unterminated span" $
+        inlineCodeSpansInLine "a dangling `span with no close"
+          `shouldBe` []
+
+    describe "Sprint 0.21 isCitedSourcePath" $ do
+      it "accepts a concrete in-repo module path" $
+        isCitedSourcePath "src/Prodbox/Lifecycle/ModelBCasTransport.hs" `shouldBe` True
+
+      it "accepts a concrete test module path" $
+        isCitedSourcePath "test/unit/ModelBCasTransportAdapter.hs" `shouldBe` True
+
+      it "rejects a glob family, which names a set rather than an artifact" $
+        isCitedSourcePath "src/Prodbox/**.hs" `shouldBe` False
+
+      it "rejects a brace expansion" $
+        isCitedSourcePath "src/Prodbox/Infra/{AwsTestStack,AwsSesStack}.hs" `shouldBe` False
+
+      it "rejects an angle-bracket placeholder" $
+        isCitedSourcePath "src/Prodbox/Lifecycle/<Role>/ChartStatics.hs" `shouldBe` False
+
+      it "rejects a path elided with a horizontal ellipsis" $
+        isCitedSourcePath "test/\8230.hs" `shouldBe` False
+
+      it "rejects a path outside the known source roots" $
+        isCitedSourcePath "vendor/Other.hs" `shouldBe` False
+
+    describe "Sprint 0.21 citedSourcePathsInDoc" $ do
+      it "collects concrete cited paths outside fenced blocks" $
+        citedSourcePathsInDoc
+          ( unlines
+              [ "The seam lives in `src/Prodbox/Lifecycle/ModelBCasTransport.hs`."
+              , "```haskell"
+              , "-- `src/Prodbox/Fenced/Example.hs` is a teaching example"
+              , "```"
+              ]
+          )
+          `shouldBe` ["src/Prodbox/Lifecycle/ModelBCasTransport.hs"]
+
+      it "declares every removed legacy transport module as retired" $
+        filter (`notElem` retiredCitedSourcePaths) removedLegacyTransportSourcePaths
+          `shouldBe` []
 
     describe "generatedSectionsReconcilerViolations" $ do
       it "agrees: registered + declared + marked yields no violations" $

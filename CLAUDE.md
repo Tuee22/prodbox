@@ -2,7 +2,6 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 **Generated sections**: none
 
 > **Purpose**: Guide for Claude Code development on the current `prodbox` worktree baseline.

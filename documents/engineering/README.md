@@ -2,13 +2,14 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/00-overview.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
 **Generated sections**: none
 
 > **Purpose**: Index of engineering and architecture documentation.
 
-SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal
-content.
+SSoT ownership and non-duplication rules are mandatory for all new doctrinal content. A fact that
+can be derived from another document is derived, never copied — that is why back-links are
+recovered by search rather than authored
+([documentation_standards.md § 4](../documentation_standards.md)).
 
 ## Roadmap
 
@@ -204,8 +205,8 @@ cross-substrate shared infrastructure (see
 
 This index co-owns documentation-topology doctrine intention.
 
-- Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory
-  for all new doctrinal content.
+- Owned statement: SSoT ownership and non-duplication rules are mandatory for all new doctrinal
+  content; a fact derivable from another document is derived, never copied.
 - Linked dependents: [Documentation Standards](../documentation_standards.md), [Code Quality Doctrine](./code_quality.md).
 
 ## Cross-References

@@ -2,14 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md),
-[substrates.md](substrates.md),
-[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Switch Keycloak from the current hardcoded-`emailVerified` state to operator-invited,

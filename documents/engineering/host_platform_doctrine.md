@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, documents/engineering/cluster_topology_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define how the `prodbox` binary classifies the host it runs on and reaches a Linux
@@ -198,7 +197,7 @@ otherwise it returns the substrate-branched install plan and lets the effectful 
 after apply. The WSL2 reconciler additionally treats a required host reboot as a first-class
 fail-fast outcome, not a silent hang. This is the [prerequisite_doctrine.md](./prerequisite_doctrine.md)
 fail-fast contract projected onto host provisioning, composed with `Plan` / `Apply`
-([pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#plan--apply)) so `--dry-run` renders
+([pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#8-plan--apply)) so `--dry-run` renders
 the install plan without touching a package manager.
 
 ## 7. Relationship to the Existing Host Gate and Sibling Models

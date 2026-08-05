@@ -4,7 +4,6 @@
 **Supersedes**: the prior Harbor-based local-registry doctrine (multi-pod Harbor Helm stack, Harbor
 projects REST API, and that component's published default admin credential), retired when the
 in-cluster registry became a single-binary `registry:2`.
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/bootstrap_readiness_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define how `prodbox` provisions the in-cluster single-binary `registry:2` (CNCF

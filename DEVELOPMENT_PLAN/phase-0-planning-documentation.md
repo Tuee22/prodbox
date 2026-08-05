@@ -2,11 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[substrates.md](substrates.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
@@ -577,7 +572,7 @@ context.
 - Add **Sprint 4.8: Hermetic `rke2 delete` Success Reporting** to
   `phase-4-lifecycle-canonical-paths.md` as the owning implementation sprint for the lifecycle
   follow-up. The sprint cites
-  [Output Rules](../documents/engineering/streaming_doctrine.md#output-rules) and
+  [Output Rules](../documents/engineering/streaming_doctrine.md#8-output-rules) and
   [Reconcilers: Idempotent Mutation as a Single
   Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
 - Reopen the top-level plan surfaces so they state the current reality: Phase `0` re-closed after
@@ -1173,7 +1168,10 @@ ZeroSSL issuer.
   `prodbox test unit` 823/823 — the governed doc set validates; the same run also gated the
   Sprint `3.17` tmpfs seed-scratch increment (see Phase 3).
 - Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
-  link discipline).
+  link discipline). **Falsified and superseded by Sprint `0.21` (2026-08-05)** — a mechanical
+  inversion across all 62 governed docs measured 53 stale and 660 missing entries, so this
+  criterion was never satisfied on any revision. The field is struck; the reverse edge is now
+  recovered by search.
 
 ### Remaining Work
 
@@ -1264,6 +1262,8 @@ adoption lands in the cited implementation sprints.
 3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
 4. Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
    link discipline), and no inbound reference to the deleted `VAULT_REFACTOR.md` survives.
+   **The back-link half is falsified and superseded by Sprint `0.21` (2026-08-05)** — it was never
+   satisfied on any revision. The `VAULT_REFACTOR.md` half stands.
 5. A grep replay confirms no governed doc still frames the Vault-root model or the
    derivation-retirement as future-optional, and the `FileSecret` arm no longer appears in any
    `SecretRef` union mention.
@@ -1384,7 +1384,9 @@ sprint; the code adoption lands in the cited implementation sprints.
 3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
 4. Every governed doc's `**Referenced by**` header and cross-reference list agree (bidirectional
    link discipline), and rule-J harmony holds across `README.md`, `00-overview.md`, the phase
-   files, and the legacy ledger.
+   files, and the legacy ledger. **The back-link half is falsified and superseded by Sprint
+   `0.21` (2026-08-05)** — it was never satisfied on any revision. The Standard-J harmony half
+   stands.
 5. A grep replay confirms no "Option A/B/C" Pulumi ladder and no "long-lived SSE" wording
    survives in any governed doc, the 2026-06-15 Closure Status reads as a refinement (not a phase
    reopen), and every `📋` / `🔄` implementation status stays honest.
@@ -2108,6 +2110,125 @@ value likewise remains scheduled.
   own-surface reopens in [README.md](README.md) and [00-overview.md](00-overview.md), and add the
   remediated-value rows to
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 0.21: Governed-Document Metadata Reconciliation ✅
+
+**Status**: Done (2026-08-05; documentation/governance surface plus the two lint gates it adds) —
+a governance addition on the same already-reclosed Phase 0 documentation surface as Sprints `0.18`,
+`0.19`, and `0.20`. It neither re-closes nor reopens the phase.
+**Implementation**: `src/Prodbox/CheckCode.hs` (the `**Status**:` value-legality gate —
+`governedDocStatusValues`, `parseGovernedDocStatusField`, `governedDocStatusViolations`,
+`checkGovernedDocStatusValues`; and the cited-source-path existence gate —
+`retiredCitedSourcePaths` derived from the extracted `removedLegacyTransportSourcePaths` SSoT,
+`inlineCodeSpansInLine`, `isCitedSourcePath`, `citedSourcePathsInDoc`,
+`checkPlanCitedSourcePaths`, both wired into `runGovernedDocChecks`), `test/unit/Main.hs`
+(16 cases in the Sprint 0.9 documentation-harmony group), the operator-facing remedy hint and
+generated-artifact banners corrected from the non-existent `prodbox docs generate` to
+`prodbox dev docs generate` (`CheckCode.hs`, `src/Prodbox/CLI/Docs.hs`,
+`src/Prodbox/Lifecycle/ResourceClass.hs`, `src/Prodbox/Infra/StackDescriptor.hs`, and the three
+regenerated `share/completion/` artifacts), and the strike of the `**Referenced by**:` field from
+`documents/documentation_standards.md` § 1/§ 3/§ 4/§ 10, its co-owner
+`documents/engineering/README.md`, `documents/engineering/code_quality.md`, and all 62 governed
+documents.
+**Blocked by**: none (governance addition on an already-reclosed surface).
+**Deployment qualification**: pending — no Standard-P production-composition surface is touched
+(topology, capability wiring, deadline composition, queueing/admission, resource envelopes,
+persistence protocol, lifecycle orchestration, destructive cleanup, and substrate routing are all
+unchanged), so this neither advances nor invalidates the already-pending qualification. Note that
+`SourceIdentity` binds governed documentation, so this change moves the source-manifest digest a
+future `proven` row would bind.
+**Independent Validation**: Phase-0's governed-documentation surface plus its own lint gates,
+validated with no dependency on any other phase or on live infrastructure —
+`prodbox test unit -p "Sprint 0.21"` 16/16; `prodbox dev lint docs`, `prodbox dev docs check`, and
+`prodbox dev check` exit 0; the cited-path gate demonstrably fails closed, having flagged nine real
+stale citations on its first run (`system-components.md`'s three phantom modules, Sprint `4.47`'s
+`CheckpointAuthorityStore.hs`, and Sprint `4.51`'s two dead Increment-B citations across two files)
+and passing only after each was repaired; and
+`grep -rn '^\*\*Referenced by\*\*:' documents/ DEVELOPMENT_PLAN/ README.md CLAUDE.md AGENTS.md`
+returns zero hits.
+**Docs to update**: `documents/documentation_standards.md`, `documents/engineering/README.md`,
+`documents/engineering/code_quality.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/README.md`
+
+### Objective
+
+Make the governed-document header block mean something. Of its four fields, `**Generated
+sections**:` was already machine-reconciled and `**Status**:` / `**Referenced by**:` were
+review-enforced conventions that had rotted. Enforce the fields that are derivable from an SSoT;
+strike the one that is not.
+
+### Deliverables
+
+- A closed `**Status**:` value set, rejecting anything outside the four values § 3 enumerates.
+  `documentation_standards.md` § 9 already named `**Status**: WIP` an anti-pattern with nothing
+  behind it.
+- A cited-source-path existence gate over `DEVELOPMENT_PLAN/`: every backtick-quoted
+  `src/…​.hs` / `test/…​.hs` citation resolves in the worktree, or is a declared historical
+  retirement. Glob families, brace expansions, and angle-bracket placeholders are excluded — they
+  name a set, not an artifact a reader can open.
+- `retiredCitedSourcePaths` derives from `removedLegacyTransportSourcePaths`, the list the
+  removed-legacy-transport negative-space lint already asserts must stay deleted. One SSoT, not a
+  second hand-authored copy.
+- The `**Referenced by**:` field struck from the standard and from all 62 governed documents
+  (480 physical lines), with the reverse edge recovered by search instead.
+- The operator-facing remedy hint and every generated manpage/completion banner name a command
+  that exists.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 0.21"` 16/16.
+2. The cited-path gate fails closed: restoring any of the nine repaired citations reproduces a
+   named violation, and the gate passes again once corrected.
+3. The `**Status**:` gate rejects `WIP` and a missing field, and accepts all four legal values.
+4. Zero `^**Referenced by**:` occurrences survive under `documents/`, `DEVELOPMENT_PLAN/`, or the
+   three root documents; no `src/`, `test/`, or `app/` code parses the field.
+5. `prodbox dev lint docs`, `prodbox dev docs check`, and `prodbox dev check` exit 0.
+
+### Closure Evidence
+
+The strike is evidence-led, not stylistic. Generating the field mechanically produced 52 entries
+(2,421 characters) on `DEVELOPMENT_PLAN/README.md` and over 1,500 characters on three doctrine
+hubs; scoping it to `documents/`-only referrers cut roughly a third and did not rescue it.
+Inverting the authored field across all 62 documents measured **53 stale and 660 missing**
+entries — about 7% complete and 8% wrong — and **no entry carried information `grep -rl` could not
+reconstruct exactly**. `AGENTS.md` claimed `CLAUDE.md` as a referrer while `CLAUDE.md` never
+mentioned it; every phase file claimed `documents/engineering/README.md`, which mentions no phase
+file; that index listed itself.
+
+The field was derived data cached in a second location, which § 1 already forbade. Search answers
+the same question at section granularity the field never could —
+`lifecycle_reconciliation_doctrine.md § 3.1` alone is cited from twelve source files.
+
+This also falsifies a criterion Sprints `0.12`, `0.13`, and `0.14` each closed on — "every governed
+doc's `**Referenced by**` header and cross-reference list agree" — which was never satisfied on any
+revision. Per Standard C those closures carry dated correction notes rather than being rewritten,
+and the Sprint `1.61` Standard-G bullet instructing a back-link addition is marked superseded.
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- ✅ `documents/documentation_standards.md` - § 3 header block reduced to three fields; § 4
+  `Bidirectional Links` replaced by `Back-Links Are Derived, Never Authored`; the § 1 and § 10
+  co-owned statement reworded (SSoT).
+- ✅ `documents/engineering/README.md` - the same co-owned statement, per § 10's linked-dependents
+  list.
+- ✅ `documents/engineering/code_quality.md` - the generated-sections metadata-block sentence names
+  `**Supersedes**` rather than the struck field.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the struck field in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) and the Sprint `0.21` row in
+  [README.md](README.md).
 
 ## Related Documents
 

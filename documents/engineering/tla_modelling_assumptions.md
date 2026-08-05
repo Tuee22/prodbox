@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/chaos_hardening_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define the gateway emitter model-to-runtime correspondence, the finite actor,

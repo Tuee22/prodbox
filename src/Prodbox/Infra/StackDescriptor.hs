@@ -140,8 +140,8 @@ stackCliVerbs = map stackCliVerb stackDescriptors
 -- | Sprint 4.27: render the registry-name↔CLI-command table from
 -- 'stackDescriptors', in declaration order. Deterministic (no IO, no
 -- sorting, no environment-derived input) so it is safe as a
--- @GeneratedSectionRule@ renderer: @prodbox docs generate@ splices it
--- into the substrates inventory doc and @prodbox docs check@ fails the
+-- @GeneratedSectionRule@ renderer: @prodbox dev docs generate@ splices it
+-- into the substrates inventory doc and @prodbox dev docs check@ fails the
 -- build if the doc table drifts from this SSoT. This is the typed source
 -- Sprint 0.10 consumes for the registry-name↔CLI-verb list and Sprint 5.6
 -- consumes for registry-generated golden coverage.

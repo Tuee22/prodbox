@@ -2,12 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
@@ -632,7 +626,7 @@ None.
 
 ### Objective
 
-Apply [pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply) (Sprint 1.7) to the
+Apply [pure_fp_standards.md#8-plan--apply](../documents/engineering/pure_fp_standards.md#8-plan--apply) (Sprint 1.7) to the
 lifecycle reconcile.
 
 ### Deliverables
@@ -705,7 +699,7 @@ None.
 ### Objective
 
 Harden the successful `prodbox rke2 delete --yes` operator surface so it matches
-[Output Rules](../documents/engineering/streaming_doctrine.md#output-rules) and
+[Output Rules](../documents/engineering/streaming_doctrine.md#8-output-rules) and
 [Reconcilers: Idempotent Mutation as a Single
 Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command):
 `prodbox` owns the success summary, while hard failures preserve actionable upstream context.
@@ -2578,7 +2572,7 @@ operator-driven.
 Make `--dry-run` and `--plan-file` honored on the destructive arms — `prodbox rke2 delete`
 (default and `--cascade`) and `prodbox nuke` — by routing them through the same
 `runPlanWithOptions` Plan / Apply entrypoint the reconcile path already uses
-([pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply),
+([pure_fp_standards.md#8-plan--apply](../documents/engineering/pure_fp_standards.md#8-plan--apply),
 Sprint 1.7), close two correctness gaps the audit surfaced (the default-delete sweep omitting
 `aws-eks-subzone`; the nuke step-4 tag sweep treating a failed sweep as success), and add a lint
 that keeps the wiring honest. The refuse-gate vs reconciler split stays intact: the default
@@ -5799,7 +5793,17 @@ exactly once, so the two transports cannot silently diverge. `test/unit/HostDire
 corrupt-encode semantics over the same in-memory conditional-put fake, plus a `'ClusterRetained` type
 witness. Evidence: `prodbox dev check` exit 0 (warning-clean, fourmolu, HLint, conformance); the new
 suite 11/11; existing `LifecycleAuthority*`/`AuthorityObjectCore` suites unaffected. The host-direct
-adapter is now a live-transaction writer. ✅ **Increment B Stage D transport half landed
+adapter is now a live-transaction writer.
+
+**Evidence supersession (Sprint `0.21`, 2026-08-05).** The two modules named in the Stage-B record
+above no longer exist: Sprint `4.50` deleted `HostDirectAuthorityStore.hs` with the rest of the
+host-direct transport, and the differential suite went with it. The record stands as dated history,
+but the surviving evidence a reader can open today is
+`test/unit/ModelBCasTransportAdapter.hs`, which Sprint `4.53` created to carry that coverage forward
+over the same `modelBCasAdapterOverTransport` seam (its module header records the replacement), and
+`src/Prodbox/Lifecycle/ModelBCasTransport.hs`, which survives as the one Model-B ↔ authority-object
+translation. This is the same repair Sprint `4.54` applied to Sprint `4.53`; Standard C requires the
+citation to point at something that exists. ✅ **Increment B Stage D transport half landed
 (2026-07-27)**: the gateway adapter is statically `'ChartLifetime`; retained lease, target-intent,
 and SMTP-projection operations use one transaction-resolved host-direct material value and a fresh
 short MinIO port-forward window per read/CAS. The gateway remains reachable only for authority
@@ -6175,6 +6179,110 @@ The store is gone and is not coming back; the seam it exercised survives in
 ### Remaining Work
 
 None.
+
+## Sprint 4.55: Control-Plane Readiness as Cached Facts [📋 Planned]
+
+**Status**: Planned — Phase `4` own-surface work (Standard A/N) on the lifecycle control-plane role
+runtimes this phase owns. Sprint `2.39` fixed this defect for the Bootstrap Broker; five roles carry
+it unfixed.
+**Blocked by**: none.
+**Deployment qualification**: pending — readiness semantics and queueing/admission are Standard-P
+surfaces; both rows are already `pending`.
+**Independent Validation**: pure fold plus fake-driven role fixtures, no live cluster — a role
+`/readyz` handler performing backend I/O does not type-check, and layered readiness resolves from
+one snapshot at one instant.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`
+
+### Objective
+
+The Bootstrap Broker was not special; it was the one that was measured. The Lifecycle Authority,
+Authority Backup, TLS Retention, Provider Worker, and Target Secret Agent each run six signed S3
+LISTs plus a Vault read plus a replay-projection read **on the kubelet request path**, against a
+chart-declared `timeoutSeconds: 1`. That is the same violation of
+[bootstrap_readiness_doctrine.md § 0.7](../documents/engineering/bootstrap_readiness_doctrine.md)
+Sprint `2.39` exists to repair.
+
+Two aggravations. The role seam types readiness as `m Bool`, so *unreachable* and *not ready yet*
+are the same value — the § 0.5 prohibition, and the *Distinguishability* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md). And the
+layered handlers compose as `do a <- inner; b <- own; pure (a && b)` at six sites, which **does not
+short-circuit**: every layer's backend call runs on every probe regardless of an earlier `False`.
+
+### Deliverables
+
+- The role seam exposes readiness **facts** in `STM` rather than an action in `m`. `STM` has no
+  `IO`, so performing a signed S3 LIST on a probe path ceases to type-check — the invariant becomes
+  structural rather than reviewed.
+- A four-valued observation per dependency, mirroring the shape landed for the broker, with an
+  absorbing refusal distinct from not-yet-ready.
+- Layering composes facts, not actions, so N layers resolve from one snapshot at one instant.
+- Split delivery: add the facts seam alongside the existing one and migrate a single role first;
+  migrate the remaining four and delete the old seam in a second, separately-landed increment. The
+  subtractive half is the 4.51-shaped one — land it alone.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 4.55"` passes.
+2. A role readiness handler that performs backend I/O is a **type error**.
+3. Unreachable and not-ready-yet resolve to distinct constructors; a mutation exercise collapsing
+   them fails the cases, and the source restores byte-exactly.
+4. Layered readiness performs exactly one snapshot read per probe, proven by a counting fake.
+5. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
+
+## Sprint 4.56: Thread the Dependency Admission Proof to the Act [📋 Planned]
+
+**Status**: Planned — Phase `4` own-surface work on the capability readiness barrier and anchored
+reconcile executor this phase owns.
+**Blocked by**: none.
+**Deployment qualification**: pending — lifecycle orchestration is a Standard-P surface; both rows
+are already `pending`.
+**Independent Validation**: pure, no live cluster — a mutating step cannot be invoked without an
+admission value, and an admission older than its bound is refused by a total function.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`
+
+### Objective
+
+The repository already mints the right proof and then discards it. `classifyObservation` produces
+an opaque, nominally-roled admission ticket binding coordinate digest, generation, and observation
+instant, failing closed on mismatch, staleness, and stale generation. One line in
+`Prodbox.Lifecycle.CapabilityReadinessBarrier` pattern-matches the ready verdict and returns unit.
+
+Downstream, `runAnchoredStepOrder` takes the mutation as an action that accepts no admission and the
+readiness gate as one that returns none, so a step mutating a component can run while that
+component's graph-declared dependency was last observed ready an entire reconcile phase earlier —
+minutes, across federated Vault unseal and settings reload.
+
+This is the *Staleness* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and the
+fix is the `ValidatedSettings` trick applied to ordering: make the proof a required argument.
+
+### Deliverables
+
+- An opaque `DependencyAdmission`, constructible only from a ready verdict, carrying the admitted
+  component and the instant.
+- The executor threads an admission set; the mutating step takes it as an argument, so a mutation
+  with no admission is not expressible.
+- A total re-validation at the mutating seam that refuses an admission older than a per-edge bound
+  derived from the graph, not authored beside it.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 4.56"` passes.
+2. Invoking a mutating step without an admission is a **type error**.
+3. An admission older than its bound yields a typed refusal, not a run; a mutation exercise
+   restoring the discarded-ticket line fails that case, and the source restores byte-exactly.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above. Note this narrows the observe-to-act window; it does not make the pair atomic.
+Only a fence does that, and that is Sprint `3.31`'s and the cardinality work's surface, not this
+one.
 
 ## Related Documents
 

@@ -2,16 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md),
-[pulsar_messaging_doctrine.md](../documents/engineering/pulsar_messaging_doctrine.md),
-[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md),
-[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md),
-[distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[helm_chart_platform_doctrine.md](../documents/engineering/helm_chart_platform_doctrine.md),
-[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
@@ -3129,6 +3119,102 @@ that no longer registers it.
 
 None. Migration of the MinIO bootstrap credential from a compiled constant to a per-install generated
 value remains scheduled and is not closed here.
+
+## Sprint 3.31: Typed Helm Release State and a Chart Write Permit [📋 Planned]
+
+**Status**: Planned — Phase `3` own-surface work (Standard A/N) on the chart platform this phase
+owns.
+**Blocked by**: none.
+**Deployment qualification**: pending — chart delivery is a Standard-P lifecycle-orchestration
+surface; both rows are already `pending`.
+**Independent Validation**: pure decode plus fake-driven chart fixtures, no live cluster — the seven
+Helm statuses decode to distinct constructors, and a concurrent-writer error resolves to a typed
+refusal rather than an uninstall.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+`Prodbox.Lifecycle.HelmRelease` derives presence from `helm status`'s **exit code**, so `deployed`,
+`failed`, `pending-install`, `pending-upgrade`, `pending-rollback`, `uninstalling`, and `superseded`
+collapse into one constructor — while `--output json` is already requested and `.info.status`
+discarded. That is the *Provenance* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md): a value
+whose legality depends on where it came from, decoded from the weakest available signal.
+
+The collapse has a concrete consequence. `Prodbox.Lib.ChartPlatform` answers *any* non-zero
+`helm upgrade --install` exit by running `helm uninstall --wait`. Helm's
+`"another operation (install/upgrade/rollback) is in progress"` is the **concurrency** error, so the
+recovery deletes the release another writer is mid-install on. A timeout on
+`--wait --timeout 30m0s` is likewise indistinguishable from failure, so a healthy-but-slow rollout
+is answered by deleting a working release.
+
+### Deliverables
+
+- A full `HelmReleaseStatus` decoded from `.info.status`, with an unrecognised status failing closed
+  rather than defaulting.
+- The failure path routes through the existing absence reconciler, which re-observes before acting,
+  instead of a fire-and-forget uninstall.
+- A `HelmWritePermit` on the mutating helpers, so the concurrency error resolves to a typed refusal
+  that cannot be answered by a destroy.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 3.31"` passes, including one case per Helm status.
+2. The concurrency error produces a refusal; a mutation exercise restoring the unconditional
+   uninstall fails that case, and the source restores byte-exactly.
+3. An unrecognised status string fails closed rather than mapping to present or absent.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
+
+## Sprint 3.32: Canonical Ownership Direction for Mirrored Secrets [📋 Planned]
+
+**Status**: Planned — Phase `3` own-surface work on the workload secret-delivery path this phase
+owns.
+**Blocked by**: none.
+**Deployment qualification**: pending — persistence protocol is a Standard-P surface; both rows are
+already `pending`.
+**Independent Validation**: pure, no live cluster — the non-canonical mirror direction has no
+inhabitant, proven by a compile-fail exercise rather than a runtime assertion.
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Percona PGO v2 owns the `pguser` password. The sync must run Secret → Vault and **never** the
+reverse, or the operator's rotation is overwritten with a stale value. That direction is enforced
+today by a code comment, a regression test, and an operator memory — none of which is a type.
+
+The same shape appears in DNS: `DnsRecordOwner` distinguishes the home from the AWS cert-manager
+DNS01 owner, and **nothing consumes the distinction**, so no compiled proof stops one substrate
+deleting the other's `_acme-challenge` records.
+
+This is the *Direction* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md): a
+reconciler that can run backwards.
+
+### Deliverables
+
+- Canonical ownership expressed as a class whose instance set is deliberately incomplete, so the
+  mirror helper has no inhabitant in the non-canonical direction — `Vault → Secret` for `pguser`
+  becomes unwritable rather than rejected at runtime.
+- The DNS record owner witness is consumed at the delete site, so cross-substrate deletion of
+  another owner's TXT record is likewise inexpressible.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 3.32"` passes.
+2. A mirror in the non-canonical direction does not compile; the exercise records the compile
+   failure rather than asserting a runtime rejection.
+3. Deleting a challenge record whose observed owner does not match the caller's witness fails
+   closed.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Everything above.
 
 ## Documentation Requirements
 

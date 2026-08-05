@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](./README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md), [unit_testing_policy.md](./unit_testing_policy.md), [integration_fixture_doctrine.md](./integration_fixture_doctrine.md), [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall`, generated

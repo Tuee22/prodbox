@@ -2,25 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](./README.md),
-[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
-[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
-[distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md),
-[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md),
-[cli_command_surface.md](./cli_command_surface.md),
-[local_registry_pipeline.md](./local_registry_pipeline.md),
-[vault_doctrine.md](./vault_doctrine.md),
-[cluster_federation_doctrine.md](./cluster_federation_doctrine.md),
-[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
-[../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
-[../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
-[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
-[../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
-[../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
-[../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
-[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for how prodbox stores and serves post-unseal operational

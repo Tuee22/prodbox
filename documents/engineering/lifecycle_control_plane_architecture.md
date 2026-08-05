@@ -2,43 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md,
-documents/engineering/bootstrap_readiness_doctrine.md,
-documents/engineering/aws_account_setup_guide.md,
-documents/engineering/aws_admin_credentials.md,
-documents/engineering/aws_test_environment.md,
-documents/engineering/chaos_hardening_doctrine.md,
-documents/engineering/cli_command_surface.md,
-documents/engineering/cluster_federation_doctrine.md,
-documents/engineering/config_doctrine.md,
-documents/engineering/distributed_gateway_architecture.md,
-documents/engineering/helm_chart_platform_doctrine.md,
-documents/engineering/haskell_code_guide.md,
-documents/engineering/integration_fixture_doctrine.md,
-documents/engineering/lifecycle_reconciliation_doctrine.md,
-documents/engineering/local_registry_pipeline.md,
-documents/engineering/prerequisite_doctrine.md,
-documents/engineering/prerequisite_dag_system.md,
-documents/engineering/pure_fp_standards.md,
-documents/engineering/resource_scaling_doctrine.md,
-documents/engineering/secret_derivation_doctrine.md,
-documents/engineering/storage_lifecycle_doctrine.md,
-documents/engineering/test_topology_doctrine.md,
-documents/engineering/unit_testing_policy.md,
-documents/engineering/vault_doctrine.md,
-documents/engineering/aws_integration_environment_doctrine.md,
-DEVELOPMENT_PLAN/development_plan_standards.md, DEVELOPMENT_PLAN/README.md,
-DEVELOPMENT_PLAN/00-overview.md, DEVELOPMENT_PLAN/system-components.md,
-DEVELOPMENT_PLAN/substrates.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md,
-DEVELOPMENT_PLAN/phase-0-planning-documentation.md,
-DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
-DEVELOPMENT_PLAN/phase-2-gateway-dns.md,
-DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
-DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md,
-DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md,
-DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md,
-DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md,
-DEVELOPMENT_PLAN/phase-8-email-invite-auth.md
 **Generated sections**: none
 
 > **Purpose**: Define the pure-functional component, capability, authority, and interpreter
@@ -874,7 +837,7 @@ Interpreters verify the receipt against their owning durable journal, authentica
 reject a stale epoch/fence before any effect; transport possession cannot forge provider, target,
 DNS, registry, emitter-retirement, or managed-resource authority. External observations and records
 remain flat exhaustive ADTs, as required by
-[Pure Functional Programming Standards](./pure_fp_standards.md#gadt-indexed-state-machines).
+[Pure Functional Programming Standards](./pure_fp_standards.md#7-gadt-indexed-state-machines).
 
 `AuthorityBackupProgram` is an authority-internal closed sum: prepare canonical envelope, put/read
 back content-addressed blob, commit/read back transition receipt, observe restore set, and fenced

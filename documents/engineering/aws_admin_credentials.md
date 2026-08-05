@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/cli_command_surface.md, [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md), [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md), [vault_doctrine.md](./vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the `aws_admin_for_test_simulation` test-harness fixture in

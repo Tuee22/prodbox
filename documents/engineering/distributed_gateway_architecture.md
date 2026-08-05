@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/bootstrap_readiness_doctrine.md, documents/engineering/cluster_federation_doctrine.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/haskell_code_guide.md, documents/engineering/lifecycle_control_plane_architecture.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/tla/README.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/unit_testing_policy.md, documents/engineering/chaos_hardening_doctrine.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define prodbox's peer-to-peer election/replication architecture using shared Orders,
@@ -1208,7 +1207,7 @@ and `withAsync`:
   validation error with a clear stderr message and non-zero exit. Daemons
   do not silently default away missing config.
 - **Prerequisite check** runs the typed DAG defined in
-  [prerequisite_doctrine.md → Prerequisites as Typed Effects](./prerequisite_doctrine.md#prerequisites-as-typed-effects)
+  [prerequisite_doctrine.md → Prerequisites as Typed Effects](./prerequisite_doctrine.md#8-prerequisites-as-typed-effects)
   between `load` and `acquire`. A single unmet node aborts before any
   resource is acquired.
 - **Resource acquisition** uses `bracket` (or `bracketOnError`) so cleanup

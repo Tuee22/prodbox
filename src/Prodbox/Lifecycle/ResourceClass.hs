@@ -110,8 +110,8 @@ resourceNamesOfClass wanted =
 -- | Sprint 4.22: render 'resourceLifecycleClasses' as a Markdown table,
 -- in declaration order. Deterministic (no IO, no sorting, no
 -- environment-derived input) so it is safe as a @GeneratedSectionRule@
--- renderer: @prodbox docs generate@ splices this into
--- @DEVELOPMENT_PLAN/substrates.md@ and @prodbox docs check@ fails the
+-- renderer: @prodbox dev docs generate@ splices this into
+-- @DEVELOPMENT_PLAN/substrates.md@ and @prodbox dev docs check@ fails the
 -- build if the doc table drifts from this registry — the machine-
 -- enforced registry ↔ doc parity that makes "a creatable-but-
 -- undocumented resource" unrepresentable.

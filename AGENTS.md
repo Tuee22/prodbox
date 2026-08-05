@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
 **Generated sections**: none
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.

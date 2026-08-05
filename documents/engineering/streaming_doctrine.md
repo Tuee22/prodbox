@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define streaming and terminal-record invariants for supported `prodbox` command
@@ -99,7 +98,7 @@ This SSoT co-owns streaming doctrine intention.
 - Linked dependents: `src/Prodbox/TestRunner.hs`, `src/Prodbox/Subprocess.hs`,
   `src/Prodbox/EffectInterpreter.hs`, `test/unit/Main.hs`.
 
-## Output Rules
+## 8. Output Rules
 
 Short-running CLI invocations use `stdout` for primary output:
 
@@ -179,7 +178,7 @@ landed the Haskell-side residue/listing gate and redacted token rendering; the
 live cross-surface red-team proof is exercised by the sealed-Vault validation
 in Sprint `5.8`.
 
-## At-Least-Once Event Processing
+## 9. At-Least-Once Event Processing
 
 Event-driven systems require idempotent handlers and explicit delivery
 tracking. Events are immutable records stored with timestamps; a
@@ -308,6 +307,11 @@ processEvents conn handler = do
 
 ## Cross-References
 
+- [Chaos Hardening Doctrine § 21](./chaos_hardening_doctrine.md) — the *Distinguishability* class
+  bears directly on § 9 here: a timeout or connection failure on a **mutating** call is
+  *indeterminate*, not transient, because the effect may have been applied and only the response
+  lost. Retrying one is safe exactly when the operation carries an idempotence witness, which makes
+  retryability a property of the (operation, error) pair rather than of the error alone.
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Effect Interpreter Runtime Contract](./effect_interpreter.md)
 - [CLI Command Surface § 2A — Operator Vocabulary Contract](./cli_command_surface.md#2a-operator-vocabulary-contract)

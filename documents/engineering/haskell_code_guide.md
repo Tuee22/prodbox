@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](../../README.md), [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md), [README.md](./README.md), [code_quality.md](./code_quality.md), [dependency_management.md](./dependency_management.md), [pure_fp_standards.md](./pure_fp_standards.md)
 **Generated sections**: none
 
 > **Purpose**: Define the repository's Haskell coding standards, the hard mechanical gates that
@@ -222,7 +221,7 @@ Why this matters:
 - The type system rules out "forgot to set cwd" or "leaked stale env" bugs at
   the call site.
 - Subprocesses compose as plain data — a `[Subprocess]` is a first-class plan
-  (see [Plan / Apply](./pure_fp_standards.md#plan--apply)).
+  (see [Plan / Apply](./pure_fp_standards.md#8-plan--apply)).
 
 **Forbidden patterns:**
 

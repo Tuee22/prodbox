@@ -2,7 +2,6 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, [documents/engineering/vault_doctrine.md](./documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Project overview, operator guide, installation guide, and documentation index for
@@ -352,6 +351,12 @@ git clone https://github.com/Tuee22/prodbox.git
 cd prodbox
 
 cabal install exe:prodbox --builddir=.build --installdir=.build --install-method=copy --overwrite-policy=always
+
+# The binary owns its config and resolves it beside the executable, so generate the
+# binary-sibling Tier-0 file before anything else. Commands that need it fail fast when
+# ./.build/prodbox.dhall is absent.
+./.build/prodbox config generate
+
 ./.build/prodbox --help
 ```
 
@@ -399,6 +404,10 @@ Use this sequence for a first supported local bring-up:
 
 ```bash
 cabal install exe:prodbox --builddir=.build --installdir=.build --install-method=copy --overwrite-policy=always
+
+# Generate the binary-sibling Tier-0 prodbox.dhall first; `config setup` re-authors it
+# interactively, but the file must exist before any command that reads it.
+./.build/prodbox config generate
 
 ./.build/prodbox config setup
 ./.build/prodbox config validate
@@ -486,7 +495,11 @@ role/capability coordinates. See
 - `prodbox config validate` verifies the required fields and binding rules.
 - No supported command materializes `prodbox-config.json` or any other JSON projection.
 - No supported `prodbox` binary reads `PRODBOX_*` environment variables for runtime
-  configuration; `--config <path>` is the sole startup-time CLI knob.
+  configuration. Startup-time config resolution differs by binary, and the difference is
+  load-bearing:
+  - the **host CLI** has no `--config` flag at all. It resolves the Tier-0 `prodbox.dhall` sitting
+    beside the executable, and fails fast when that sibling file is absent.
+  - the **in-cluster daemon and workloads** read their mounted Dhall through `--config <path>`.
 - The current `prodbox config show --show-secrets` flag is pre-cutover legacy. Sprint `1.61`
   removes the unrestricted reveal path; target `ConfigObserve` returns only a role-scoped,
   validated projection and has no generic secret-reveal capability.
@@ -606,7 +619,14 @@ Validate the executable-sibling operator config:
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws quotas check`, `aws quotas request` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
 | AWS validation stacks | `aws stack eks reconcile`, `aws stack eks destroy --yes`, `aws stack aws-subzone reconcile`, `aws stack aws-subzone destroy --yes`, `aws stack test reconcile`, `aws stack test destroy --yes`, `aws stack aws-ses reconcile`, `aws stack aws-ses destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
 | Vault | `vault status`, `vault init`, `vault unseal`, `vault seal`, `vault reconcile`, `vault rotate-unlock-bundle`, `vault rotate-transit-key`, `vault pki ...` | You need to initialize, unseal, seal, or reconcile the in-cluster Vault that backs cluster secrets. Bounded bootstrap leaves use the exact Bootstrap Broker capability and post-unseal work uses least-privilege Vault interpreters; the former combined Gateway and host-direct lifecycle routes are removed and guarded by source/route lints (see [vault_doctrine.md](./documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands)) |
-| Validation | `dev check`, `dev lint ...`, `dev docs ...`, `test lint`, `test ...`, `dev tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
+| Lifecycle control-plane roles | `lifecycle-authority start`, `provider-worker start`, `authority-backup start`, `tls-retention start`, `target-secret-agent start`, `admin-action run`, `credential-provisioner run`, `credential-provisioner target-worker`, `bootstrap-broker secret-worker`, `workload start` | You need to run one of the in-cluster control-plane role processes described under [Target Architecture](#target-architecture). Each takes its mounted Dhall through `--config <path>`; none is an operator-interactive command |
+| Users and federation | `users invite`, `users list`, `users revoke`, `cluster federation register` | You need to manage operator-invited Keycloak identities, or register a child cluster against its parent |
+| Validation | `dev check`, `dev lint {all,files,docs,haskell,chart}`, `dev docs {check,generate}`, `test lint`, `test unit`, `test integration ...`, `test all`, `dev tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
+
+This table is a navigational summary, not the command surface. The complete, generated leaf-command
+registry is [documents/cli/commands.md](./documents/cli/commands.md), rendered from the typed parser
+so it cannot drift from what the binary accepts; `prodbox --help` and the installed manpages are the
+same source.
 
 ## Common Workflows
 
@@ -959,6 +979,30 @@ prodbox/
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)
 - [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
 - [Agent Guidelines (AGENTS.md)](./AGENTS.md)
+
+The list above is a starting point, not the index. `documents/engineering/` holds 40 governed
+documents; [its README](./documents/engineering/README.md) is the complete one, and this file
+deliberately does not maintain a second copy of it
+([documentation_standards.md § 1](./documents/documentation_standards.md)). The ones most often
+reached for and not listed above:
+
+- [Config Doctrine](./documents/engineering/config_doctrine.md) — the three-tier model, the
+  binary-sibling Tier-0 file, and the encrypted in-force object.
+- [Chaos Hardening Doctrine](./documents/engineering/chaos_hardening_doctrine.md) — the
+  concurrency-hardening methodology, and § 21's eight coordinates a decision needs on the value it
+  decides from.
+- [Pure FP Standards](./documents/engineering/pure_fp_standards.md) — purity boundary, GADT rules,
+  Plan/Apply.
+- [Resource Scaling Doctrine](./documents/engineering/resource_scaling_doctrine.md) — the capacity
+  budget and the three enforcement rings.
+- [Haskell Code Guide](./documents/engineering/haskell_code_guide.md) — subprocesses, smart
+  constructors, capability classes, retry policy.
+- [Prerequisite Doctrine](./documents/engineering/prerequisite_doctrine.md) — prerequisites as
+  typed effects.
+- [Host Platform Doctrine](./documents/engineering/host_platform_doctrine.md) — the host substrate
+  is detected, never configured.
+- [Generated CLI command registry](./documents/cli/commands.md) — every leaf command, rendered from
+  the typed parser rather than transcribed.
 
 ### Retained SES workflow
 

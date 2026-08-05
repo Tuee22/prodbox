@@ -2,26 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../README.md](../../README.md),
-[acme_provider_guide.md](acme_provider_guide.md),
-[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
-[../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
-[../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
-[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
-[../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md),
-[../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
-[../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
-[../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
-[../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
-[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md),
-[README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
-[distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
-[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
-[local_registry_pipeline.md](./local_registry_pipeline.md),
-[unit_testing_policy.md](./unit_testing_policy.md),
-[vault_doctrine.md](./vault_doctrine.md),
-[resource_scaling_doctrine.md](./resource_scaling_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Define the canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine for

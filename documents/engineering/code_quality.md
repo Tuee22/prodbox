@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/vault_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox dev check`.
@@ -138,7 +137,7 @@ Current enforced quality surfaces:
   `prodbox cluster delete --yes --dry-run` *mutated* (`Rke2Delete flags _planOptions` discarded
   the options). This keeps every destructive command routed through `runPlanWithOptions` so
   `--dry-run` renders the full plan and exits `0` without mutation per
-  [pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#plan--apply) and
+  [pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#8-plan--apply) and
   [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
   (this build runs in `runCheckCode` *after* the lint surface passes; it is not part of
@@ -371,7 +370,7 @@ project that adopts this discipline must include the following in its
 3. **A "How to regenerate" instruction.** Name the writer command literally
    (`tool docs generate`).
 4. **A `**Generated sections**:` per-file metadata field.** The metadata
-   block that already declares `**Status**` and `**Referenced by**` extends
+   block that already declares `**Status**` and `**Supersedes**` extends
    with a `**Generated sections**: <key1>, <key2>` line (or `none`). Lint
    enforces that any file with markers declares them in this field, and vice
    versa.

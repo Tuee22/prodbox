@@ -25,7 +25,15 @@ module Prodbox.CheckCode
   , iamCreateSiteViolations
   , iamCreateVerbs
   , inlineRetrySubstringListViolations
+  , isCitedSourcePath
   , isRelativeLinkTarget
+  , citedSourcePathsInDoc
+  , governedDocStatusValues
+  , governedDocStatusViolations
+  , inlineCodeSpansInLine
+  , parseGovernedDocStatusField
+  , removedLegacyTransportSourcePaths
+  , retiredCitedSourcePaths
   , listRepoOwnedPaths
   , matchesSprintToken
   , parseGeneratedSectionsField
@@ -56,7 +64,7 @@ module Prodbox.CheckCode
 where
 
 import Control.Exception (evaluate)
-import Control.Monad (forM)
+import Control.Monad (filterM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.Char (isAlpha, isAlphaNum, isAsciiUpper, isDigit, isSpace, toLower)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort, tails)
@@ -281,7 +289,7 @@ generatedSectionRules =
       , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/TargetSecretAgent/ChartStatics.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
-    -- are rendered into substrates.md so `prodbox docs check` fails the
+    -- are rendered into substrates.md so `prodbox dev docs check` fails the
     -- build if the doc drifts from the registry SSoT.
     GeneratedSectionRule
       { generatedSectionKey = "resource-lifecycle-classes"
@@ -292,7 +300,7 @@ generatedSectionRules =
       , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/ResourceClass.hs"]
       }
   , -- Sprint 4.27: the registry-name↔CLI-command table is rendered from
-    -- the `StackDescriptor` SSoT into substrates.md so `prodbox docs
+    -- the `StackDescriptor` SSoT into substrates.md so `prodbox dev docs
     -- check` fails the build if the doc drifts from the typed source.
     -- This is the typed source Sprint 0.10 consumes for the
     -- registry-name↔CLI-verb list and Sprint 5.6 consumes for
@@ -307,7 +315,7 @@ generatedSectionRules =
       }
   , -- Sprint 1.29: the §2 top-level command table and the §3 per-group
     -- command matrix in cli_command_surface.md are rendered directly from
-    -- the typed `commandRegistry`, so `prodbox docs check` fails the build
+    -- the typed `commandRegistry`, so `prodbox dev docs check` fails the build
     -- if the operator command matrix drifts from the parser SSoT. The §2
     -- table and §3 matrix are non-contiguous (substantial prose lives
     -- between them and after the matrix), so they are two separate
@@ -474,11 +482,10 @@ runGeneratedArtifactLint repoRoot writeEnabled = do
     Just err -> failWith err
     Nothing -> do
       -- The marker-content splice always runs first so `docs generate` /
-      -- `--write` still regenerates the registered sections. The two
-      -- Sprint 0.9 governed-document checks (header ↔ markers ↔ registry
-      -- reconciler + relative-link resolution) then gate the exit code;
-      -- they have no auto-fix counterpart, so they only ever fail the
-      -- command, never block the writes above.
+      -- `--write` still regenerates the registered sections. The
+      -- governed-document checks then gate the exit code; they have no
+      -- auto-fix counterpart, so they only ever fail the command, never
+      -- block the writes above.
       whenWriteRepoFiles results
       governedDocViolations <- runGovernedDocChecks repoRoot
       case governedDocViolations of
@@ -488,15 +495,30 @@ runGeneratedArtifactLint repoRoot writeEnabled = do
             (unlines ("Governed-document harmony lint failed:" : map ("- " ++) violations))
 
 -- | Sprint 0.9: aggregate the governed-document harmony checks wired into
--- @prodbox lint docs@ / @prodbox docs check@ (and reached by
--- @prodbox check-code@ through @runLintAll@): the @**Generated
+-- @prodbox dev lint docs@ / @prodbox dev docs check@ (and reached by
+-- @prodbox dev check@ through @runLintAll@): the @**Generated
 -- sections**@ header ↔ markers ↔ registry reconciler and the
 -- relative-link resolution check.
+--
+-- Sprint 0.21 adds the @**Status**:@ value-legality gate and the cited-source-
+-- path existence gate, and STRIKES the @**Referenced by**:@ field entirely.
+-- That field was derived data cached in a second place — measured at ~7%
+-- complete and ~8% wrong across all 62 governed documents, with no entry
+-- carrying anything @grep -rl@ could not reconstruct exactly. The reverse edge
+-- is now recovered by search
+-- (@documents\/documentation_standards.md § 4@), not authored.
 runGovernedDocChecks :: FilePath -> IO [String]
 runGovernedDocChecks repoRoot = do
   harmonyViolations <- checkGeneratedSectionsHarmony repoRoot
   linkViolations <- checkGovernedDocRelativeLinks repoRoot
-  pure (harmonyViolations ++ linkViolations)
+  statusViolations <- checkGovernedDocStatusValues repoRoot
+  citedPathViolations <- checkPlanCitedSourcePaths repoRoot
+  pure
+    ( harmonyViolations
+        ++ linkViolations
+        ++ statusViolations
+        ++ citedPathViolations
+    )
 
 runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
 runTrackedGeneratedPathLint repoRoot = do
@@ -769,6 +791,23 @@ bootstrapIsolationSourcePaths =
   , "src/Prodbox/Bootstrap/Broker/Routes.hs"
   ]
 
+-- | Sprint 0.21: the lifecycle transport modules Sprint @4.50@ removed. The
+-- negative-space lint below requires each to stay absent (or empty), which
+-- makes this list the SSoT for "deliberately deleted, and enforced deleted" —
+-- so 'retiredCitedSourcePaths' derives from it rather than re-authoring the
+-- same facts. A plan document citing one of these is recording history, not
+-- asserting a live artifact.
+removedLegacyTransportSourcePaths :: [FilePath]
+removedLegacyTransportSourcePaths =
+  [ "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
+  , "src/Prodbox/Gateway/ObjectStore.hs"
+  , "src/Prodbox/Gateway/TargetSecret.hs"
+  , "src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs"
+  , "src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs"
+  , "src/Prodbox/Lifecycle/TargetSecretStore.hs"
+  , "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
+  ]
+
 bootstrapOptionalIsolationSourcePaths :: [FilePath]
 bootstrapOptionalIsolationSourcePaths =
   [ "src/Prodbox/Gateway/ObjectStore.hs"
@@ -856,15 +895,7 @@ bootstrapBrokerIsolationViolations sources =
     [ path ++ " retains a removed lifecycle transport module."
     | (path, contents) <- sources
     , ( ( not (null contents)
-            && path
-              `elem` [ "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
-                     , "src/Prodbox/Gateway/ObjectStore.hs"
-                     , "src/Prodbox/Gateway/TargetSecret.hs"
-                     , "src/Prodbox/Lifecycle/CheckpointAuthorityStore.hs"
-                     , "src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs"
-                     , "src/Prodbox/Lifecycle/TargetSecretStore.hs"
-                     , "src/Prodbox/Pulumi/HostDirectObjectStore.hs"
-                     ]
+            && path `elem` removedLegacyTransportSourcePaths
         )
           || any
             (`elem` sourceIdentifiers contents)
@@ -2635,6 +2666,185 @@ checkGovernedDocRelativeLinks repoRoot = do
             | not targetExists && not dirExists
             ]
 
+-- | Sprint 0.21 (pure). The four legal @**Status**:@ values enumerated by
+-- @documents/documentation_standards.md § 3@. § 9 already names
+-- @**Status**: WIP@ as an anti-pattern; this list is what makes that
+-- machine-checkable rather than review-enforced.
+governedDocStatusValues :: [String]
+governedDocStatusValues =
+  [ "Authoritative source"
+  , "Reference only"
+  , "Generated reference"
+  , "Deprecated"
+  ]
+
+-- | Sprint 0.21 (pure). Read the first @**Status**:@ metadata value from a
+-- governed document, scanning only content OUTSIDE fenced code blocks so
+-- the teaching example in @documentation_standards.md § 3@ (which spells
+-- the whole @[A | B | C | D]@ alternation inside a @```markdown@ fence) is
+-- not read as a real declaration. Exposed for unit tests.
+parseGovernedDocStatusField :: String -> Maybe String
+parseGovernedDocStatusField contents =
+  case metadataValues of
+    [] -> Nothing
+    (value : _) -> Just value
+ where
+  fieldPrefix = "**Status**:"
+  metadataValues =
+    [ trimLine (drop (length fieldPrefix) lineText)
+    | lineText <- stripFencedCodeBlocks (lines contents)
+    , fieldPrefix `isPrefixOf` lineText
+    ]
+
+-- | Sprint 0.21 (pure). Status-field violations for one governed document:
+-- a missing field, or a value outside the closed set. Exposed for unit
+-- tests.
+governedDocStatusViolations :: FilePath -> String -> [String]
+governedDocStatusViolations relativePath contents =
+  case parseGovernedDocStatusField contents of
+    Nothing ->
+      [ relativePath
+          ++ " is missing the mandatory `**Status**:` metadata field "
+          ++ "(documentation_standards.md § 3)."
+      ]
+    Just value
+      | value `elem` governedDocStatusValues -> []
+      | otherwise ->
+          [ relativePath
+              ++ " declares `**Status**: "
+              ++ value
+              ++ "`, which is not one of the four legal values ("
+              ++ intercalate " | " governedDocStatusValues
+              ++ ") (documentation_standards.md § 3)."
+          ]
+
+-- | Sprint 0.21 (IO wrapper). The @**Status**:@ legality check over every
+-- governed document.
+checkGovernedDocStatusValues :: FilePath -> IO [String]
+checkGovernedDocStatusValues repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let governedPaths = [path | path <- repoPaths, isGovernedDocPath path]
+  fmap concat $
+    forM governedPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (governedDocStatusViolations relativePath contents)
+
+-- | Sprint 0.21 (pure). Source paths the development plan cites as
+-- historical fact — each deleted by a named sprint that owns its removal —
+-- so a citation to them records what the repository USED to contain rather
+-- than asserting a live artifact. Every other cited path must exist.
+--
+-- Adding an entry here is a deliberate act: it says "this sprint deleted
+-- this file, and the citation is history." It is NOT a place to silence a
+-- stale evidence claim — Standard C requires status to describe reality,
+-- and Sprints @4.53@/@4.54@ are the worked example of an Independent
+-- Validation resting on a module a later sprint had already deleted.
+retiredCitedSourcePaths :: [FilePath]
+retiredCitedSourcePaths =
+  removedLegacyTransportSourcePaths
+    ++ [ "src/Prodbox/StateMachine.hs" -- retired by Sprint 1.32
+       , "src/Prodbox/SupportedRuntime.hs" -- retired by Sprints 6.3/7.3
+       , "src/Prodbox/Secret/Derive.hs" -- retired by Sprint 3.19 (master-seed removal)
+       , "src/Prodbox/Secret/EnsureNamespace.hs" -- retired by Sprint 3.19
+       , "src/Prodbox/Secret/HostBootstrap.hs" -- retired by Sprint 3.19
+       , "src/Prodbox/Secret/Inventory.hs" -- retired by Sprint 3.19
+       , "src/Prodbox/Secret/MasterSeed.hs" -- retired by Sprint 3.19
+       , "src/Prodbox/Secret/Wire.hs" -- retired by Sprint 3.19
+       , -- Deleted by Sprint 4.50 with the host-direct store it was named for.
+         -- Its coverage did not disappear: Sprint 4.53 moved the differential
+         -- suite to test/unit/ModelBCasTransportAdapter.hs, whose own header
+         -- records the replacement.
+         "test/unit/HostDirectModelBAdapter.hs"
+       ]
+
+-- | Sprint 0.21 (pure). The inline-code spans on one line, WITHOUT their
+-- delimiting backticks — the inverse of 'stripInlineCodeSpans'. An
+-- unterminated span yields nothing, which is the conservative choice.
+-- Exposed for unit tests.
+inlineCodeSpansInLine :: String -> [String]
+inlineCodeSpansInLine = goOutside
+ where
+  goOutside [] = []
+  goOutside ('`' : rest) = goInside "" rest
+  goOutside (_ : rest) = goOutside rest
+
+  goInside _ [] = []
+  goInside acc ('`' : rest) = reverse acc : goOutside rest
+  goInside acc (character : rest) = goInside (character : acc) rest
+
+-- | Sprint 0.21 (pure). Does an inline-code span name ONE concrete in-repo
+-- Haskell source or test module? Deliberately narrow: a single
+-- whitespace-free token ending in @.hs@ under a known source root, and
+-- carrying no glob or brace-expansion metacharacter — the plan legitimately
+-- writes families such as @src\/Prodbox\/**.hs@,
+-- @src\/Prodbox\/Infra\/{AwsEksTestStack,AwsTestStack}.hs@, and
+-- @src\/Prodbox\/ControlPlane\/RetainedMaterialDelivery*.hs@ in prose, and
+-- those name a set rather than an artifact a reader can open. Angle-bracket
+-- placeholders (@src\/Prodbox\/Lifecycle\/\<Role\>\/ChartStatics.hs@) are
+-- excluded for the same reason, as is an elided path such as
+-- @src\/\<U+2026\>.hs@ — the ellipsis is a placeholder exactly like the glob
+-- and brace forms. Exposed for unit tests.
+isCitedSourcePath :: String -> Bool
+isCitedSourcePath candidate =
+  ".hs" `isSuffixOf` candidate
+    && any (`isPrefixOf` candidate) ["src/Prodbox/", "test/", "app/"]
+    && not (any (`elem` placeholderCharacters) candidate)
+ where
+  -- Glob and brace metacharacters, angle-bracket placeholders, whitespace,
+  -- plus the horizontal ellipsis (U+2026) and zero-width space (U+200B) that
+  -- prose uses to elide a path segment.
+  placeholderCharacters :: String
+  placeholderCharacters = " \t*?{}[]<>\8230\8203"
+
+-- | Sprint 0.21 (pure). Every in-repo Haskell source path cited in a
+-- document's inline-code spans, outside fenced code blocks, sorted and
+-- de-duplicated. Exposed for unit tests.
+citedSourcePathsInDoc :: String -> [FilePath]
+citedSourcePathsInDoc contents =
+  dedupeSorted
+    [ codeSpan
+    | lineText <- stripFencedCodeBlocks (lines contents)
+    , codeSpan <- inlineCodeSpansInLine lineText
+    , isCitedSourcePath codeSpan
+    ]
+
+-- | Sprint 0.21 (IO wrapper). The cited-source-path existence check over
+-- @DEVELOPMENT_PLAN/@ — the mechanical form of the evidence sweep that has
+-- repeatedly found real defects by hand (Sprints @4.51@, @4.53@, @5.18@,
+-- @5.23@ each recorded a closure whose cited evidence did not exist).
+--
+-- A sprint may only claim @Done@ on evidence a reader can open, so a plan
+-- document that cites a module which is not in the worktree fails the
+-- build unless the path is a declared historical retirement.
+checkPlanCitedSourcePaths :: FilePath -> IO [String]
+checkPlanCitedSourcePaths repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let planPaths =
+        [ path
+        | path <- repoPaths
+        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
+        , ".md" `isSuffixOf` path
+        ]
+  fmap concat $
+    forM planPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      let candidates =
+            [ cited
+            | cited <- citedSourcePathsInDoc contents
+            , cited `notElem` retiredCitedSourcePaths
+            ]
+      missingPaths <-
+        filterM (fmap not . doesFileExist . (repoRoot </>)) candidates
+      pure
+        [ relativePath
+            ++ " cites source path `"
+            ++ missingPath
+            ++ "`, which does not exist in the worktree. Correct the citation, or add "
+            ++ "the path to `retiredCitedSourcePaths` naming the sprint that removed it "
+            ++ "(development_plan_standards.md Standard C: status must describe reality)."
+        | missingPath <- missingPaths
+        ]
+
 checkCreateCallSiteCoverage :: FilePath -> IO [String]
 checkCreateCallSiteCoverage repoRoot = do
   let registeredNames =
@@ -3403,7 +3613,7 @@ generatedAssetDriftMessage targetPath registryKey =
   unlines
     [ targetPath
     , registryKey
-    , "Run `prodbox docs generate` to update."
+    , "Run `prodbox dev docs generate` to update."
     ]
 
 missingGeneratedTargetMessage :: GeneratedSectionRule -> String

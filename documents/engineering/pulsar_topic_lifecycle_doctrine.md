@@ -2,9 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md),
-[../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
-[tiered_storage_capacity_doctrine.md](tiered_storage_capacity_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Establish that a Pulsar topic is a first-class prodbox managed resource — typed

@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](./README.md), [vault_doctrine.md](./vault_doctrine.md), [../../src/Prodbox/Bootstrap/Broker/Settings.hs](../../src/Prodbox/Bootstrap/Broker/Settings.hs)
 **Generated sections**: none
 
 > **Purpose**: Record the destructive generation ceremony, immutable public identity, packet

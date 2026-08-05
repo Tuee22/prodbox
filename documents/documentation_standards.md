@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/chaos_hardening_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/config_doctrine.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/host_platform_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/pulsar_messaging_doctrine.md, documents/engineering/resource_scaling_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/test_topology_doctrine.md, documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
@@ -15,7 +14,9 @@
 
 Every concept has exactly one canonical document. Other documents may reference but never duplicate.
 
-SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
+SSoT ownership and non-duplication rules are mandatory for all new doctrinal content. A fact that
+can be derived from another document is derived, never copied — that is why back-links are
+recovered by search rather than authored (Section 4).
 
 ### Development Plan Authority
 
@@ -74,7 +75,6 @@ Every document must include:
 
 **Status**: [Authoritative source | Reference only | Generated reference | Deprecated]
 **Supersedes**: [N/A | path/to/old/doc.md]
-**Referenced by**: [comma-separated list]
 **Generated sections**: [comma-separated list of generated-section keys | none]
 
 > **Purpose**: One-sentence description.
@@ -111,9 +111,20 @@ truth for generated sections per file is the `GeneratedSectionRule` registry des
 See [Effect Types](./engineering/effectful_dag_architecture.md#effect-types).
 ```
 
-### Bidirectional Links
+### Back-Links Are Derived, Never Authored
 
-When document A references document B, document B's "Referenced by" should include A.
+A document does not record who references it. The forward link is the single source of truth;
+a back-link duplicates it in a second place, which Section 1 forbids and which no reader can
+keep true by hand. Recover the reverse edge mechanically instead:
+
+```bash
+grep -rl 'config_doctrine.md' documents/ DEVELOPMENT_PLAN/ src/ test/
+```
+
+That answers the question the removed `**Referenced by**:` field tried to answer, and answers it
+at section granularity the field never could — `lifecycle_reconciliation_doctrine.md § 3.1` alone
+is cited from twelve source files. Sprint `0.21` struck the field; see
+[legacy-tracking-for-deletion.md](../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 ---
 
@@ -248,7 +259,9 @@ flowchart TB
 
 This SSoT co-owns documentation-topology doctrine intention.
 
-- Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
+- Owned statement: SSoT ownership and non-duplication rules are mandatory for all new doctrinal content. A fact that
+can be derived from another document is derived, never copied — that is why back-links are
+recovered by search rather than authored (Section 4).
 - Linked dependents: `documents/engineering/README.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`.
 
 ---

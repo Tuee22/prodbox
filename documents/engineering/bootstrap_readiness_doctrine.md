@@ -2,23 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md,
-documents/engineering/prerequisite_doctrine.md,
-documents/engineering/prerequisite_dag_system.md,
-documents/engineering/lifecycle_reconciliation_doctrine.md,
-documents/engineering/lifecycle_control_plane_architecture.md,
-documents/engineering/local_registry_pipeline.md,
-documents/engineering/config_doctrine.md,
-documents/engineering/pure_fp_standards.md,
-documents/engineering/helm_chart_platform_doctrine.md,
-documents/engineering/distributed_gateway_architecture.md,
-documents/engineering/resource_scaling_doctrine.md,
-documents/engineering/unit_testing_policy.md,
-DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
-DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
-DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md,
-DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md,
-DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md
 **Generated sections**: none
 
 > **Purpose**: Define capability-exact bootstrap ordering and the distinct liveness, admission,
@@ -31,41 +14,74 @@ operation-indexed capability types are owned by
 
 ## 0. Canonical Doctrine Statements
 
-1. **A dependency is an operation-scoped capability.** A component name, backend label, URL,
-   rollout, or successful command exit is not a capability. The requirement identifies the exact
-   operation, service identity, authority scope, and latency budget the consumer needs.
-2. **Observation, admission, and execution use the same opaque reference.** A caller cannot probe
-   one endpoint and execute through another, nor attach arbitrary `IO` to a constructor carrying a
-   stronger label. The interpreter resolves one `CapabilityRef kind` and uses it for all three.
-   This is observation of that requested operation's service/session/queue capability; a separate
-   read-only domain observation never authorizes a mutation kind.
-3. **Ordering is derived from pure requirements.** The component graph contains capability
-   requirements as data. It contains no executable callback. A graph with no unique compatible
-   provider, a cycle, a dangling provider, a scope mismatch, or no production interpreter is not a
-   valid plan.
-4. **External state is observed, not commanded.** Liveness, admission, capability result, and
-   stability are flat exhaustive ADTs projected from authoritative observations. A GADT indexes
-   which operation a program may request; it does not claim that a remote transition occurred.
-5. **Cannot observe is never success.** Unreachable, malformed, stale, wrong-scope, and
-   deadline-expired observations keep the gate closed and retain their structured reason.
-6. **Point readiness is not durable authority.** A successful observation can authorize only the
-   bounded next action through the same reference. Long-running lifecycle work is submitted as a
-   durable idempotent operation whose admission, journal, execution, and result share one
-   authority identity.
-7. **Lifecycle probes are constant time.** `/healthz` proves process liveness. `/readyz` is a
-   cached admission projection. Neither performs backend I/O, serializes operational state, or
-   claims runtime stability.
-8. **Readiness includes service capacity.** Memory containment alone is insufficient. A capability
-   is not admissible when its bounded queue, measured service rate, CPU budget, or remaining
-   absolute deadline cannot support the request.
-9. **Readiness is a typed three-valued gate.** An observation resolves to `ReadyObserved`,
-   `NotReadyYet`, or `Unreachable`. `NotReadyYet` — and a *transient*, not-yet-scraped `Unreachable`
-   (§2.4) — is a **distinct non-terminal constructor**: the "act" transition is reachable only from
-   `ReadyObserved`, while a not-yet-ready observation keeps the gate closed and is bounded-retried,
-   never latched. It must never be collapsed into a definitively-fatal bucket (the **bring-up dual**:
-   not-ready → terminal-fail) or a definitively-absent bucket (the **fail-open predicate**: not-ready →
-   absent). A timed wait is a mitigation of that illegal state, not its removal — the distinction must
-   live in the type the fold or decision consumes.
+Each statement below is a numbered sub-section so that a citation such as `§ 0.7` resolves to a
+heading a reader can link to. Source modules cite these by number —
+`src/Prodbox/Gateway/Readiness.hs` and `src/Prodbox/Bootstrap/Broker/Readiness.hs` both cite
+`§ 0.7`, and `src/Prodbox/CheckCode.hs` cites `§ 0`/`§ 2.4` — so the numbering is a contract, not
+presentation. Sprint `0.21` promoted these from an ordered list, which no citation could target.
+
+### 0.1 A dependency is an operation-scoped capability
+
+A component name, backend label, URL, rollout, or successful command exit is not a capability. The
+requirement identifies the exact operation, service identity, authority scope, and latency budget
+the consumer needs.
+
+### 0.2 Observation, admission, and execution use the same opaque reference
+
+A caller cannot probe one endpoint and execute through another, nor attach arbitrary `IO` to a
+constructor carrying a stronger label. The interpreter resolves one `CapabilityRef kind` and uses
+it for all three. This is observation of that requested operation's service/session/queue
+capability; a separate read-only domain observation never authorizes a mutation kind.
+
+### 0.3 Ordering is derived from pure requirements
+
+The component graph contains capability requirements as data. It contains no executable callback. A
+graph with no unique compatible provider, a cycle, a dangling provider, a scope mismatch, or no
+production interpreter is not a valid plan.
+
+### 0.4 External state is observed, not commanded
+
+Liveness, admission, capability result, and stability are flat exhaustive ADTs projected from
+authoritative observations. A GADT indexes which operation a program may request; it does not claim
+that a remote transition occurred.
+
+### 0.5 Cannot observe is never success
+
+Unreachable, malformed, stale, wrong-scope, and deadline-expired observations keep the gate closed
+and retain their structured reason.
+
+### 0.6 Point readiness is not durable authority
+
+A successful observation can authorize only the bounded next action through the same reference.
+Long-running lifecycle work is submitted as a durable idempotent operation whose admission,
+journal, execution, and result share one authority identity.
+
+### 0.7 Lifecycle probes are constant time
+
+`/healthz` proves process liveness. `/readyz` is a cached admission projection. Neither performs
+backend I/O, serializes operational state, or claims runtime stability.
+
+A readiness projection is only as sound as the schedule behind it. A cached record carries the
+instant it was observed at, and a staleness bound older than the observer can actually meet makes
+a healthy system project `Starting` and evict itself. The bound is therefore **derived from the
+observer period and its per-pass budget, never authored beside them** — see
+`Prodbox.Bootstrap.Broker.Readiness`.
+
+### 0.8 Readiness includes service capacity
+
+Memory containment alone is insufficient. A capability is not admissible when its bounded queue,
+measured service rate, CPU budget, or remaining absolute deadline cannot support the request.
+
+### 0.9 Readiness is a typed three-valued gate
+
+An observation resolves to `ReadyObserved`, `NotReadyYet`, or `Unreachable`. `NotReadyYet` — and a
+*transient*, not-yet-scraped `Unreachable` (§ 2.4) — is a **distinct non-terminal constructor**: the
+"act" transition is reachable only from `ReadyObserved`, while a not-yet-ready observation keeps the
+gate closed and is bounded-retried, never latched. It must never be collapsed into a
+definitively-fatal bucket (the **bring-up dual**: not-ready → terminal-fail) or a definitively-absent
+bucket (the **fail-open predicate**: not-ready → absent). A timed wait is a mitigation of that
+illegal state, not its removal — the distinction must live in the type the fold or decision
+consumes.
 
 ## 1. Failure Class
 
@@ -360,6 +376,17 @@ linked SSoTs.
 
 ## 7. Cross-References
 
+- [Chaos Hardening Doctrine § 21](./chaos_hardening_doctrine.md) — the eight coordinates a decision
+  needs on the value it decides from. § 0.5 here is the *Distinguishability* class stated as
+  doctrine; the four-valued observation shape that satisfies it is
+  `Prodbox.Bootstrap.Broker.Readiness.BrokerDependencyObservation`, whose absorbing
+  identity-rejection constructor is the point — a dependency refusing this workload's credential is
+  not a dependency that is still coming up.
+- `Prodbox.Lifecycle.CapabilityReadinessBarrier` is the production implementation of § 0.2's
+  same-reference rule: it resolves one `CapabilityRef`, classifies the observation, and mints the
+  admission ticket. Its evidence constructors are the *Provenance* class in
+  [§ 21](./chaos_hardening_doctrine.md) — a witness must be returned by performing the operation,
+  never synthesized from a description of it.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — capability
   GADT, same-reference rule, physical service split, deadlines, and durable operations.
 - [Pure FP Standards](./pure_fp_standards.md) — external `decide`/`evolve` folds and interpreter

@@ -2,7 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, documents/engineering/pulsar_topic_lifecycle_doctrine.md, documents/engineering/resource_scaling_doctrine.md
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for *how much* durable data prodbox may hold — a finite-budget capacity DSL in which storing more bytes than declared capacity, naming a sizeless durable claim, or calling a sink "unlimited" without an autoscaling witness are all Dhall typecheck failures.

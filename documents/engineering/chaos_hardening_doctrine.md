@@ -2,11 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/phase-2-gateway-dns.md,
-DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md, documents/engineering/README.md, CLAUDE.md,
-documents/engineering/distributed_gateway_architecture.md,
-documents/engineering/lifecycle_control_plane_architecture.md,
-documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: A treatise and working doctrine for hardening decisions made under concurrency — *Extract*
@@ -1028,6 +1023,90 @@ silently violates under partition. Build the first kind. Write down which kind y
 
 ---
 
+## 21. The eight coordinates — where to put the type
+
+Section 3 names the defect once: a premise read at `t0`, evidence resolved at `t1`, a branch taken
+on both, and a world that moved in between. True, and insufficient as guidance — it does not say
+where a type belongs.
+
+This section does. A decision needs eight coordinates on the value it decides from. This codebase
+types readiness — and most externally-authoritative facts — as `IO Bool`, `m Bool`, or
+`IO (Either Text Result)`. **`Bool` carries none of the eight.** Each class below is exactly one
+missing coordinate and has exactly one type-level move that restores it.
+
+| # | Class | Missing coordinate | One move |
+|---|---|---|---|
+| A | Provenance | *where* the value came from | Opaque receipt with a sole minter: a witness is returned by performing the operation, never constructed by describing it |
+| B | Staleness | *when* it was true, against which generation | No naked externally-authoritative fact (`Stamped a`), and the admission proof becomes a required argument of the act |
+| C | Cardinality | *who* is entitled to act | An authoritative write takes a `WritePermit` carrying the token the store itself checks |
+| D | Distinguishability | *whether it is known at all* | Ban `Bool` at every observation seam; one four-valued `Observation` with an absorbing refusal |
+| E | Containment | *how long* producing it may take | Bounds are computed, never authored; one absolute deadline threaded to every transport |
+| F | Direction | *which side owns* the value | Canonical ownership as a class with no reverse instance |
+| G | Totality | *whether the fold saw all of it* | Keys are `Bounded`/`Enum`; folds are total functions; cross-seam values derive from one source |
+| H | Scope | *which supervision scope owns the actor* | The raw spawn is not exported; a worker exists only inside a roster |
+
+The topology is a **product, not a list**: a site can lack several coordinates at once, and its
+severity is roughly how many. A forgeable round-trip witness that is also stamped after the fact
+and cannot distinguish unreachable from absent is missing A, B **and** D simultaneously.
+
+Two properties of this framing matter more than the taxonomy.
+
+**The refactor is not "make more code pure."** `Prodbox.Config.ComponentGraph`,
+`Prodbox.Lifecycle.AnchoredReconcile`, `Prodbox.Gateway.Emitter.Kernel`, and
+`Prodbox.Lifecycle.Authority.Config` are already sound pure algebras. The defect is that the
+effectful layer may hand the pure layer any value it likes. The work moves the purity *boundary*,
+not the purity *quantity*: constrain the effectful layer to produce only values the pure layer's
+types demand.
+
+**The delivery mechanism is the required field, not the proof type.** A proof type nobody must
+supply proves nothing. `Prodbox.Settings.ValidatedSettings` is the worked example — it carries
+`SomeAllocatedPlan` as a *required* field, so no proof means no settings, which means no renderer
+input. Every move above lands the same way: an opaque value with one minter, threaded as an
+argument something cannot be invoked without. See
+[pure_fp_standards.md § 8](./pure_fp_standards.md#8-plan--apply) for the Plan/Apply shape this
+composes with, and
+[bootstrap_readiness_doctrine.md § 0.5](./bootstrap_readiness_doctrine.md) for the
+distinguishability rule stated as doctrine.
+
+**One prohibition carries over unchanged.** Externally-authoritative state — readiness, leases,
+provider state, ownership, residue — stays a flat exhaustive ADT computed by pure projection. The
+GADT rule in [pure_fp_standards.md § 7](./pure_fp_standards.md#7-gadt-indexed-state-machines)
+permits an index only for operation legality and for in-process state this process solely writes.
+The proof belongs in the compile or decode gate, never as an index on an observed value.
+
+## 22. What a ring-2 gate does and does not prove
+
+Section 21's moves are *Decision*-layer results, and Section 4's blindness property applies to all
+of them. Classify every one against the three enforcement rings
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md) already defines, rather than
+inventing a second vocabulary:
+
+| Ring | Mechanism | Delivers "unrepresentable"? |
+|---|---|---|
+| 1 | Static Dhall `assert` | **No** — no refinement types; it trusts the emitted draw |
+| 2 | Haskell decode/compile gate | **Yes** — this is the only ring that does |
+| 3 | Runtime cgroup / Kubernetes / transport | **No** — inherently runtime; containment only |
+
+Three honest consequences.
+
+**Ring 2 proves a property of a process, not of a protocol.** It proves this process cannot
+construct an illegal value. Cross-process safety — at-most-one under partition, authority handoff,
+custody across a federation boundary — is CAP-bounded per Section 16 and provable only for a
+*model*. State those invariants conditionally, name the chosen failure mode, and record them as
+`assumed` in the Section 19 ledger until a specification exists.
+
+**A runtime allocation cannot be typed.** No gate prevents a process from allocating faster than a
+budget. What a type *can* do is make it impossible to **declare a tenant without an enforced
+bound** — declaration plus enforcement is what makes the declaration true. The pattern is already
+in-tree: `Prodbox.Capacity.RuntimeMemory` admits `UnboundedChildSchedule` only at the decode
+boundary, precisely so validation can refuse it.
+
+**A containment event is not a sufficiency proof.** As § 2C puts it, a cgroup OOM kill is evidence
+that containment worked and the workload's runtime contract failed. It is never evidence that the
+authored limit was adequate.
+
+---
+
 ## Appendix A — Worked example (fenced): cluster-wide single-consumer ownership
 
 > A first worked example, on the simplest substrate — a single shared broker — chosen because it is the
@@ -1706,6 +1785,17 @@ post-failover replay, or duplicates re-corrupt the derived total.
 
 ---
 
+## Mandatory Invite Fault Campaign
+
+The governed invite campaign covers Gateway saturation and death; Authority restart around CAS and
+response loss; Target Agent, Authority Backup, TLS Retention, and Provider Worker restart; every
+Credential Provisioner prompt/effect/read-back boundary; Admin Runner interruption; delayed
+Vault/MinIO/S3/AWS; unavailable and permanently lost backup; primary Authority loss; fresh AWS
+Vault/EBS; cleanup-owner loss and takeover; client cancellation; and cleanup failure. Each point
+must leave the operation queryable and either converged or explicitly refused, with cleanup
+attempted. Recovery may not prompt, rotate SMTP, reset EAB, use generic export, or expose plaintext
+to the Authority.
+
 ## Cross-References
 
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md) — sprint sequencing, adoption ownership, and validation closure. This doctrine maintains no competing status ledger; scheduling of any conformance work lives in the plan.
@@ -1717,13 +1807,3 @@ post-failover replay, or duplicates re-corrupt the derived total.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — dedicated
   control-plane components, operation-indexed capabilities, gateway local-journal actor, and
   failure-domain isolation.
-## Mandatory Invite Fault Campaign
-
-The governed invite campaign covers Gateway saturation and death; Authority restart around CAS and
-response loss; Target Agent, Authority Backup, TLS Retention, and Provider Worker restart; every
-Credential Provisioner prompt/effect/read-back boundary; Admin Runner interruption; delayed
-Vault/MinIO/S3/AWS; unavailable and permanently lost backup; primary Authority loss; fresh AWS
-Vault/EBS; cleanup-owner loss and takeover; client cancellation; and cleanup failure. Each point
-must leave the operation queryable and either converged or explicitly refused, with cleanup
-attempted. Recovery may not prompt, rotate SMTP, reset EAB, use generic export, or expose plaintext
-to the Authority.

@@ -2,16 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../README.md](../../README.md),
-[README.md](./README.md),
-[vault_doctrine.md](./vault_doctrine.md),
-[config_doctrine.md](./config_doctrine.md),
-[distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
-[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
-[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
-[resource_scaling_doctrine.md](./resource_scaling_doctrine.md),
-[cluster_topology_doctrine.md](./cluster_topology_doctrine.md),
-[lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md)
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for prodbox cluster federation — the root/child Vault

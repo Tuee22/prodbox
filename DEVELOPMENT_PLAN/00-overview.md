@@ -2,22 +2,6 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md),
-[development_plan_standards.md](development_plan_standards.md),
-[system-components.md](system-components.md),
-[substrates.md](substrates.md),
-[phase-0-planning-documentation.md](phase-0-planning-documentation.md),
-[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
-[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
-[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
-[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
-[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
-[phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
-[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[the engineering doctrine docs](../documents/engineering/README.md),
-[lifecycle_control_plane_architecture.md](../documents/engineering/lifecycle_control_plane_architecture.md),
-[vault_doctrine.md](../documents/engineering/vault_doctrine.md)
 **Generated sections**: none
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
@@ -848,6 +832,28 @@ model. Replacement and removal ownership live in the reopened phases and
 | Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1, 4, and 5 |
 
 ## Current Execution State
+
+**Own-surface reopens, 2026-08-05 (Standard A/N, recorded here per Standard C).** Sprint `0.21`
+struck the `**Referenced by**:` metadata field and added two governed-document lint gates; the
+illegal-state topology it accompanies
+([chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md)) reopened
+four phases on their own surfaces, each on verified evidence rather than intent:
+
+- **Phase `1` 🔄 Active** — Sprints `1.76`/`1.77`. Readiness evidence for a conditional-write
+  capability is constructible from a string literal, and no retry jitter exists anywhere in the
+  tree.
+- **Phase `2` 🔄 Active** — Sprint `2.39` corrected from `📋 Planned` to `🔄 Active` (its fix was
+  already in the tree while the block said none had been attempted), plus Sprints `2.40` (the
+  landed staleness bound fails its own arithmetic, so a healthy broker evicts itself) and `2.41`.
+- **Phase `3` 🔄 Active** — Sprints `3.31`/`3.32`.
+- **Phase `4` 🔄 Active** — Sprints `4.55`/`4.56`. Five control-plane roles carry the same probe-path
+  defect Sprint `2.39` repairs for the Bootstrap Broker.
+- **Phase `5` 🔄 Active** (unchanged) — Sprint `5.18`'s one never-built deliverable is split out as
+  Sprint `5.29`, which is now the sole reason this phase is open.
+
+No later phase blocks any earlier one; every entry above expands the phase's own owned surface, and
+Phases `6`, `7`, and `8` remain closed. Deployment qualification is unchanged and still `pending` on
+both substrates.
 
 As of the 2026-07-26 forced-shutdown counterexample, Phases `0` and `1` are reclosed and Phase `2`
 is reopened on Sprint `2.36`. Sprints `1.61`–`1.67`,

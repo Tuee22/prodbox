@@ -233,12 +233,12 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       :: Deadline
       -> BootstrapSessionFence
       -> IO BootstrapLeaseObservation
-  , -- | The scope argument is mandatory rather than defaulted so a caller must
-    -- state whether it may require the controller Pod's own Ready condition.
-    kubernetesObserveControllerImageDigest
+  , kubernetesObserveControllerImageDigest
       :: ControllerSelfObservationScope
       -> Deadline
       -> IO ControllerImageObservation
+  -- ^ The scope argument is mandatory rather than defaulted so a caller must
+  -- state whether it may require the controller Pod's own Ready condition.
   , kubernetesObserveSelfWorkerRequest
       :: Deadline
       -> SecretWorkerOperation
@@ -1781,48 +1781,48 @@ controllerImageDigestFromResponse scope namespace code body
       Right digest -> ControllerImageObserved digest
  where
   decodedDigest = do
-      listing <-
-        either
-          (const (Left "Bootstrap Broker PodList response is invalid"))
-          Right
-          (eitherDecodeStrict' body)
-      requireCreateEqual "apiVersion" "v1" (podListApiVersion listing)
-      requireCreateEqual "kind" "PodList" (podListKind listing)
-      wire <- case podListItems listing of
+    listing <-
+      either
+        (const (Left "Bootstrap Broker PodList response is invalid"))
+        Right
+        (eitherDecodeStrict' body)
+    requireCreateEqual "apiVersion" "v1" (podListApiVersion listing)
+    requireCreateEqual "kind" "PodList" (podListKind listing)
+    wire <- case podListItems listing of
+      [sole] -> Right sole
+      _ -> Left "Bootstrap Broker PodList did not contain exactly one controller"
+    requireCreateEqual "metadata.namespace" namespace (podWireNamespace wire)
+    requireCreateEqual
+      "controller ServiceAccount"
+      (ChartStatics.brokerStaticServiceAccount ChartStatics.brokerChartStatics)
+      (podWireServiceAccount wire)
+    case podWireDeletionTimestamp wire of
+      Nothing -> Right ()
+      Just _ -> Left "Bootstrap Broker controller Pod is deleting"
+    requireCreateEqual "controller phase" "Running" (podWirePhase wire)
+    container <-
+      case filter ((== "bootstrap-broker") . containerWireName) (podWireContainers wire) of
         [sole] -> Right sole
-        _ -> Left "Bootstrap Broker PodList did not contain exactly one controller"
-      requireCreateEqual "metadata.namespace" namespace (podWireNamespace wire)
-      requireCreateEqual
-        "controller ServiceAccount"
-        (ChartStatics.brokerStaticServiceAccount ChartStatics.brokerChartStatics)
-        (podWireServiceAccount wire)
-      case podWireDeletionTimestamp wire of
-        Nothing -> Right ()
-        Just _ -> Left "Bootstrap Broker controller Pod is deleting"
-      requireCreateEqual "controller phase" "Running" (podWirePhase wire)
-      container <-
-        case filter ((== "bootstrap-broker") . containerWireName) (podWireContainers wire) of
-          [sole] -> Right sole
-          _ -> Left "Bootstrap Broker controller container is missing or duplicated"
-      status <-
-        case filter ((== "bootstrap-broker") . containerStatusWireName) (podWireContainerStatuses wire) of
-          [sole] -> Right sole
-          _ -> Left "Bootstrap Broker controller status is missing or duplicated"
-      case scope of
-        ControllerObservedForWorkerLaunch ->
-          requireCreateEqual "controller readiness" True (containerStatusWireReady status)
-        ControllerObservedForOwnReadiness -> Right ()
-      observedDigest <- firstCreateString (imageDigestFromRuntimeId (containerStatusWireImageId status))
-      expectedRepository <-
-        maybe
-          (Left "Bootstrap Broker controller image reference is invalid")
-          Right
-          (Text.stripSuffix ":latest" (containerWireImage container))
-      requireCreateEqual
-        "controller image repository"
-        (ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics)
-        expectedRepository
-      either (Left . Text.pack . show) Right (mkWorkerImageDigest observedDigest)
+        _ -> Left "Bootstrap Broker controller container is missing or duplicated"
+    status <-
+      case filter ((== "bootstrap-broker") . containerStatusWireName) (podWireContainerStatuses wire) of
+        [sole] -> Right sole
+        _ -> Left "Bootstrap Broker controller status is missing or duplicated"
+    case scope of
+      ControllerObservedForWorkerLaunch ->
+        requireCreateEqual "controller readiness" True (containerStatusWireReady status)
+      ControllerObservedForOwnReadiness -> Right ()
+    observedDigest <- firstCreateString (imageDigestFromRuntimeId (containerStatusWireImageId status))
+    expectedRepository <-
+      maybe
+        (Left "Bootstrap Broker controller image reference is invalid")
+        Right
+        (Text.stripSuffix ":latest" (containerWireImage container))
+    requireCreateEqual
+      "controller image repository"
+      (ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics)
+      expectedRepository
+    either (Left . Text.pack . show) Right (mkWorkerImageDigest observedDigest)
 
 decodeWorkerPod :: Text -> ByteString -> Either String PodSnapshot
 decodeWorkerPod namespace body = do

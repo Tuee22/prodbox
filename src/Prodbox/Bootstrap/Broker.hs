@@ -22,11 +22,11 @@ import Prodbox.Bootstrap.Broker.ProductionEngine
   , brokerReadinessCacheRefresh
   , productionBrokerEngine
   )
-import Prodbox.Bootstrap.Broker.Readiness
-  ( brokerReadinessObserverPeriodMicros
-  )
 import Prodbox.Bootstrap.Broker.ProductionSecretWorker
   ( runProductionSecretWorker
+  )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( brokerReadinessObserverPeriodMicros
   )
 import Prodbox.Bootstrap.Broker.Server
   ( renderBrokerServerError

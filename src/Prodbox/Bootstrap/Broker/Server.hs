@@ -389,6 +389,11 @@ data BrokerServerSnapshot = BrokerServerSnapshot
   , snapshotQueuedConnections :: !Natural
   , snapshotActiveConnections :: !Natural
   , snapshotIdempotencyEntries :: !Natural
+  , snapshotRunningIdempotencyEntries :: !Natural
+  -- ^ Sprint 2.38: how many of those bindings still have an unresolved
+  -- completion cell. This is the term the shutdown postcondition and the
+  -- residue oracle care about; the total above also counts completed
+  -- bindings retained for replay, which are inert.
   }
   deriving stock (Eq, Show)
 
@@ -640,6 +645,7 @@ brokerServerSnapshot handle = atomically $ do
       , snapshotQueuedConnections = fromIntegral queued
       , snapshotActiveConnections = active
       , snapshotIdempotencyEntries = fromIntegral (Map.size entries)
+      , snapshotRunningIdempotencyEntries = runningEntryCount entries
       }
  where
   runtime = handleRuntime handle
@@ -1521,14 +1527,41 @@ resolveRunningWaitersForShutdown runtime = do
       void (tryPutTMVar completion unavailableReply)
     RuntimeRequestCompleted _ _ -> pure ()
 
+-- | Sprint 2.36's exact-empty postcondition, corrected by Sprint 2.38.
+--
+-- The property being proved is that no replay waiter is still live. The
+-- original form asked for @Map.null entries@ — an /empty/ idempotency map —
+-- which is a strictly stronger and unreachable condition: a completed request
+-- deliberately retains its binding so a later replay can be answered from
+-- cache, and completed bindings are evicted only under capacity pressure.
+--
+-- That made the fully-graceful branch of the manager loop wedge permanently
+-- after any successful request. Worse, the transaction reads only the queue,
+-- the active count, and the entry map, so a subsequent 'forceBrokerDrain' —
+-- which writes the phase — could not wake it: the manager stayed blocked, the
+-- completion cell was never filled, and 'waitBrokerServer' blocked with it.
+--
+-- A completed binding is inert data, not a live waiter, so the postcondition
+-- asks what it means to ask: nothing queued, nothing active, and no /running/
+-- entry. This is exactly the model's residue triple in
+-- 'Prodbox.Bootstrap.Broker.ShutdownModel', which counts @WaiterRunning@
+-- rather than all waiter cells.
 proveShutdownComplete :: BrokerRuntime -> STM ShutdownComplete
 proveShutdownComplete runtime = do
   queued <- lengthTBQueue (runtimeQueue runtime)
   active <- readTVar (runtimeActive runtime)
   entries <- idempotencyEntries <$> readTVar (runtimeIdempotency runtime)
-  if queued == 0 && active == 0 && Map.null entries
+  if queued == 0 && active == 0 && runningEntryCount entries == 0
     then pure ShutdownComplete
     else retry
+
+-- | How many idempotency bindings still have an unresolved completion cell.
+runningEntryCount :: Map IdempotencyKey RuntimeIdempotencyEntry -> Natural
+runningEntryCount = fromIntegral . length . filter isRunningEntry . Map.elems
+ where
+  isRunningEntry entry = case entry of
+    RuntimeRequestRunning _ -> True
+    RuntimeRequestCompleted {} -> False
 
 newDrainDeadline :: BrokerRuntime -> IO DrainDeadline
 newDrainDeadline runtime = do

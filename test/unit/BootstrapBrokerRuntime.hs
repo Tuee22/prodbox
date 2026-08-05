@@ -963,6 +963,7 @@ drainSuite =
               , Server.snapshotQueuedConnections = 0
               , Server.snapshotActiveConnections = 0
               , Server.snapshotIdempotencyEntries = 0
+              , Server.snapshotRunningIdempotencyEntries = 0
               }
 
     it "force-drains an admitted blocked interpreter on demand" $

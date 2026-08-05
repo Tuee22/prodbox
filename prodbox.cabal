@@ -298,6 +298,7 @@ library
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
+        Prodbox.Infra.Route53ValidationZone
         Prodbox.Infra.LongLivedPulumiBackend
         Prodbox.Infra.LongLivedDecommission
         Prodbox.Infra.StackDescriptor
@@ -676,6 +677,7 @@ test-suite prodbox-unit
         AuthorityObjectCoreCas
         HelmRelease
         LifecycleLease
+        ModelBCasTransportAdapter
         CertificateScopeServing
         CleanRoomHandoff
         MeasuredProfile

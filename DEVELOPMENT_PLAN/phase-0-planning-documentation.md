@@ -1941,7 +1941,8 @@ same section states.
 The three `prodbox dev check` policies § 20 anticipates — the scanner-matchability scan, the
 bootstrap-floor registry bijection, and the chart-values literal scan — are registered and not closed
 by this sprint, as is the migration of the MinIO bootstrap credential from a compiled-in constant to
-a per-install generated value. Sprint `0.20` supersedes this sprint's fixture convention and relocates
+a per-install generated value. The scanner-matchability scan is implemented by Sprint `1.75` on the
+phase that owns `src/Prodbox/CheckCode.hs`; the other two remain registered and unowned. Sprint `0.20` supersedes this sprint's fixture convention and relocates
 the bootstrap-credential registration into `vault_doctrine.md` § 6.1.
 
 ## Documentation Requirements
@@ -2070,10 +2071,12 @@ restatement had introduced three unreconciled contradictions.
 
 ### Remaining Work
 
-None. The three `prodbox dev check` policies registered by Sprint `0.19` remain registered and
-unclosed, and are unaffected by this sprint — the committed-value rule is deliberately
-review-enforced rather than lint-enforced, because no scanner can distinguish a real cloud resource
-id from a synthetic one. The migration of the MinIO bootstrap credential to a per-install generated
+None. Of the three `prodbox dev check` policies registered by Sprint `0.19`, the
+scanner-matchability scan is closed by Sprint `1.75` on the phase that owns the quality gate; the
+bootstrap-floor registry bijection and the chart-values literal scan remain registered and unowned.
+None is affected by this sprint — the § 20.1 committed-value rule is deliberately review-enforced
+rather than lint-enforced, because no scanner can distinguish a real cloud resource id from a
+synthetic one, and § 20.5 is the separate mechanical ring Sprint `1.75` implements. The migration of the MinIO bootstrap credential to a per-install generated
 value likewise remains scheduled.
 
 ## Documentation Requirements

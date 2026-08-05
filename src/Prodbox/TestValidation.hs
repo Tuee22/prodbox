@@ -173,6 +173,7 @@ import Prodbox.Gateway.Types
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
@@ -4944,33 +4945,23 @@ runDnsAwsValidation repoRoot = do
         Left err -> failWith err
         Right baseZoneName -> do
           nonce <- validationNonce
-          let zoneName = "prodbox-dns-aws-" ++ nonce ++ "." ++ baseZoneName
+          let zoneName = Route53ValidationZone.validationHostedZoneName nonce baseZoneName
               recordName = "gateway." ++ zoneName
               recordIp = "203.0.113.10"
-              callerReference = "prodbox-dns-aws-" ++ nonce
+              callerReference =
+                Route53ValidationZone.validationHostedZoneCallerReference nonce
+          -- Sprint 5.28: the create verb lives in its registered owner, and the
+          -- always-run cleanup DAG sweeps by this caller reference whether or
+          -- not the flow below reaches its own teardown.
           createZoneResult <-
-            runTextCommand
-              Subprocess
-                { subprocessPath = "aws"
-                , subprocessArguments =
-                    [ "route53"
-                    , "create-hosted-zone"
-                    , "--name"
-                    , zoneName
-                    , "--caller-reference"
-                    , callerReference
-                    , "--query"
-                    , "HostedZone.Id"
-                    , "--output"
-                    , "text"
-                    ]
-                , subprocessEnvironment = Just awsEnvironment
-                , subprocessWorkingDirectory = Just repoRoot
-                }
+            Route53ValidationZone.createValidationHostedZone
+              repoRoot
+              awsEnvironment
+              zoneName
+              callerReference
           case createZoneResult of
             Left err -> failWith err
-            Right zoneId -> do
-              let hostedZoneId = trim zoneId
+            Right hostedZoneId -> do
               validationExit <- do
                 upsertExit <- changeRoute53Record repoRoot awsEnvironment hostedZoneId "UPSERT" recordName recordIp
                 case upsertExit of
@@ -5050,19 +5041,13 @@ cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp
     changeRoute53Record repoRoot awsEnvironment hostedZoneId "DELETE" recordName recordIp
   case deleteRecordExit of
     ExitFailure _ -> pure deleteRecordExit
-    ExitSuccess ->
-      runCommandForExitCode
-        Subprocess
-          { subprocessPath = "aws"
-          , subprocessArguments =
-              [ "route53"
-              , "delete-hosted-zone"
-              , "--id"
-              , hostedZoneId
-              ]
-          , subprocessEnvironment = Just awsEnvironment
-          , subprocessWorkingDirectory = Just repoRoot
-          }
+    ExitSuccess -> do
+      -- Sprint 5.28: delete and prove absent, through the registered owner.
+      deleted <-
+        Route53ValidationZone.deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId
+      case deleted of
+        Right () -> pure ExitSuccess
+        Left err -> failWith err
 
 changeRoute53Record
   :: FilePath

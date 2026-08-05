@@ -1,7 +1,6 @@
 module Prodbox.CheckCode
   ( DoctrineViolation (..)
   , GeneratedSectionRule (..)
-  , awsCreateProbeVerbs
   , awsCreateSiteViolations
   , awsCreateVerbs
   , bootstrapBrokerChartStaticViolations
@@ -10,6 +9,7 @@ module Prodbox.CheckCode
   , ControlPlaneChartLint (..)
   , controlPlaneChartLints
   , controlPlaneChartStaticViolations
+  , checkCommittedValueHygiene
   , checkCreateCallSiteCoverage
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
@@ -41,6 +41,8 @@ module Prodbox.CheckCode
   , rendererDeterminismViolations
   , rendererSourceViolations
   , runCheckCode
+  , scannedCredentialPatternsPresent
+  , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
   , secretPayloadInternalSourceViolations
   , runDocsCommand
@@ -53,9 +55,11 @@ module Prodbox.CheckCode
   )
 where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM)
-import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, toLower)
-import Data.List (find, intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
+import Data.ByteString.Char8 qualified as ByteStringChar8
+import Data.Char (isAlpha, isAlphaNum, isAsciiUpper, isDigit, isSpace, toLower)
+import Data.List (find, intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort, tails)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
@@ -668,7 +672,7 @@ readinessObservationViolations repoRoot =
               ++ " is missing (expected the three-valued readiness/observation type)"
           ]
       else do
-        contents <- readFile absolutePath
+        contents <- readFileStrict absolutePath
         pure
           [ relativePath
               ++ ": missing the non-terminal readiness constructor `"
@@ -713,7 +717,7 @@ checkQualificationIsolation repoRoot = do
       , "src/" `isPrefixOf` path || "app/" `isPrefixOf` path
       , ".hs" `isSuffixOf` path
       ]
-      (\path -> do contents <- readFile (repoRoot </> path); pure (path, contents))
+      (\path -> do contents <- readFileStrict (repoRoot </> path); pure (path, contents))
   pure (qualificationIsolationViolations sources)
 
 qualificationIsolationViolations :: [(FilePath, String)] -> [String]
@@ -752,7 +756,7 @@ checkBootstrapBrokerIsolation repoRoot = do
       $ \relativePath -> do
         let absolutePath = repoRoot </> relativePath
         exists <- doesFileExist absolutePath
-        contents <- if exists then readFile absolutePath else pure ""
+        contents <- if exists then readFileStrict absolutePath else pure ""
         pure (relativePath, contents)
   pure (bootstrapBrokerIsolationViolations sources)
 
@@ -970,7 +974,7 @@ checkGatewayChartStatics repoRoot = do
   if not exists
     then pure ["charts/gateway/values.yaml is missing the gateway chart-statics defaults."]
     else do
-      valuesContents <- readFile valuesPath
+      valuesContents <- readFileStrict valuesPath
       pure (gatewayChartStaticsConformanceViolations valuesContents)
 
 -- | Sprint 2.34 (pure). Prove the deployed helm values equal the compiled
@@ -1062,7 +1066,7 @@ checkLegacyEscapeRegistry repoRoot = do
     forM
       (filter isLegacyEscapeScanFile repoPaths)
       ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
+          contents <- readFileStrict (repoRoot </> relativePath)
           pure (relativePath, contents)
       )
   pure (escapeRegistryViolations scanned)
@@ -1186,6 +1190,7 @@ haskellStyleViolations repoRoot = do
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
   secretPayloadInternalViolations <- checkSecretPayloadInternalBoundary repoRoot
+  committedValueViolations <- checkCommittedValueHygiene repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1201,6 +1206,7 @@ haskellStyleViolations repoRoot = do
         ++ testSuiteTypeViolations
         ++ forbidDotProdboxStateViolations
         ++ secretPayloadInternalViolations
+        ++ committedValueViolations
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -1210,7 +1216,7 @@ checkHlintDoctrineCoverage repoRoot = do
   if not fileExists
     then pure ["Missing `/.hlint.yaml` doctrine configuration file."]
     else do
-      contents <- readFile hintPath
+      contents <- readFileStrict hintPath
       pure
         [ "`.hlint.yaml` must mention `" ++ marker ++ "`."
         | marker <-
@@ -1255,7 +1261,7 @@ checkSecretPayloadInternalBoundary repoRoot = do
       , path /= "src/Prodbox/CheckCode.hs"
       ]
       ( \path -> do
-          contents <- readFile (repoRoot </> path)
+          contents <- readFileStrict (repoRoot </> path)
           pure (secretPayloadInternalSourceViolations (path, contents))
       )
 
@@ -1296,7 +1302,7 @@ verifyThinMainEntrypoint repoRoot = do
   if not fileExists
     then pure (Left "Missing `app/prodbox/Main.hs`; the library-first entrypoint gate cannot run.")
     else do
-      contents <- readFile mainPath
+      contents <- readFileStrict mainPath
       let normalizedLines =
             filter
               (not . null)
@@ -1321,7 +1327,7 @@ checkParserModuleImports repoRoot = do
   if not fileExists
     then pure Nothing
     else do
-      contents <- readFile parserPath
+      contents <- readFileStrict parserPath
       pure $
         if "typed-process" `isInfixOf` contents
           then Just "`test/unit/Parser.hs` must not import or mention `typed-process`."
@@ -1337,7 +1343,7 @@ checkNestedCaseViolations repoRoot = do
       , isHaskellSourcePath path
       ]
       ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
+          contents <- readFileStrict (repoRoot </> relativePath)
           pure (lambdaCaseViolations relativePath (lines contents))
       )
 
@@ -1397,7 +1403,7 @@ checkDaemonRuntimeImports repoRoot = do
         ]
   fmap concat $
     forM daemonPaths $ \path -> do
-      contents <- readFile path
+      contents <- readFileStrict path
       let importViolations =
             [ path ++ " must not import `System.Posix.Process`."
             | "System.Posix.Process" `isInfixOf` contents
@@ -1481,7 +1487,7 @@ daemonLogLineBuildsInlineObject lineText =
 checkDaemonHookContract :: FilePath -> IO [String]
 checkDaemonHookContract repoRoot = do
   let path = repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs"
-  contents <- readFile path
+  contents <- readFileStrict path
   pure
     ( missingHookSurfaceViolations path contents
         ++ [ path
@@ -1535,7 +1541,7 @@ checkDaemonLifecycleTestBoundaries repoRoot = do
   if not fileExists
     then pure []
     else do
-      contents <- readFile path
+      contents <- readFileStrict path
       pure
         ( [ path
               ++ " must not use raw `threadDelay`; readiness waits must route through shared retry or hooks."
@@ -1560,7 +1566,7 @@ checkSubprocessBoundaries repoRoot = do
       , path /= "src/Prodbox/CheckCode.hs"
       ]
       ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
+          contents <- readFileStrict (repoRoot </> relativePath)
           let tokens = tokenizeSource (stripStringLiterals contents)
               hasSystemProcessImport = "import System.Process" `isInfixOf` contents
               forbiddenTokens =
@@ -1607,7 +1613,7 @@ checkErrorBoundaryViolations repoRoot = do
       , path /= "src/Prodbox/CheckCode.hs"
       ]
       ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
+          contents <- readFileStrict (repoRoot </> relativePath)
           let tokens = tokenizeSource contents
               directStderrWrites =
                 [ "hPutStr stderr"
@@ -1644,7 +1650,7 @@ checkEnvVarConfigReads repoRoot =
           if not fileExists
             then pure []
             else do
-              contents <- readFile fullPath
+              contents <- readFileStrict fullPath
               let tokens = tokenizeSource (stripStringLiterals contents)
                   forbiddenTokens =
                     [ token
@@ -1707,7 +1713,7 @@ checkSubstrateImagePinning repoRoot =
           if not fileExists
             then pure []
             else do
-              contents <- readFile fullPath
+              contents <- readFileStrict fullPath
               pure (substrateImagePinningViolations relativePath contents)
       )
 
@@ -1929,7 +1935,7 @@ checkPlanOptionsHonored repoRoot =
           if not fileExists
             then pure []
             else do
-              contents <- readFile fullPath
+              contents <- readFileStrict fullPath
               pure (planOptionsHonoredViolations relativePath contents)
       )
  where
@@ -1956,7 +1962,7 @@ checkServiceErrorRetryableLiteral repoRoot = do
           if not isFile
             then pure []
             else do
-              contents <- readFile absolutePath
+              contents <- readFileStrict absolutePath
               pure (serviceErrorRetryableLiteralViolations relativePath contents)
       )
 
@@ -2023,7 +2029,7 @@ checkInlineRetrySubstringLists repoRoot = do
       , path /= forbidLintSelfPath
       ]
       ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
+          contents <- readFileStrict (repoRoot </> relativePath)
           pure (inlineRetrySubstringListViolations relativePath contents)
       )
 
@@ -2180,7 +2186,7 @@ checkForbidDotProdboxState repoRoot = do
           if not isFile
             then pure []
             else do
-              contents <- readFile absolutePath
+              contents <- readFileStrict absolutePath
               let offenders =
                     filter (needle `isInfixOf`) (extractStringLiterals contents)
               pure
@@ -2580,7 +2586,7 @@ checkGeneratedSectionsHarmony repoRoot = do
           ]
   fmap concat $
     forM governedPaths $ \relativePath -> do
-      contents <- readFile (repoRoot </> relativePath)
+      contents <- readFileStrict (repoRoot </> relativePath)
       let markerKeys = prodboxMarkerKeysPresent contents
           forFile = registryKeysForFile relativePath
       pure $
@@ -2609,7 +2615,7 @@ checkGovernedDocRelativeLinks repoRoot = do
   let governedPaths = [path | path <- repoPaths, isGovernedDocPath path]
   fmap concat $
     forM governedPaths $ \relativePath -> do
-      contents <- readFile (repoRoot </> relativePath)
+      contents <- readFileStrict (repoRoot </> relativePath)
       let resolvedTargets =
             [ (target, resolved)
             | target <- extractMarkdownLinkTargets contents
@@ -2633,7 +2639,7 @@ checkCreateCallSiteCoverage :: FilePath -> IO [String]
 checkCreateCallSiteCoverage repoRoot = do
   let registeredNames =
         resourceNamesOfClass PerRun ++ resourceNamesOfClass LongLived
-  commandContents <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Command.hs")
+  commandContents <- readFileStrict (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Command.hs")
   let pulumiViolations = pulumiCreateSiteViolations registeredNames commandContents
   repoPaths <- listRepoOwnedPaths repoRoot
   awsViolations <-
@@ -2646,7 +2652,7 @@ checkCreateCallSiteCoverage repoRoot = do
         , path /= "src/Prodbox/CheckCode.hs"
         ]
         ( \relativePath -> do
-            contents <- readFile (repoRoot </> relativePath)
+            contents <- readFileStrict (repoRoot </> relativePath)
             pure (awsCreateSiteViolations relativePath contents)
         )
   pure (pulumiViolations ++ awsViolations)
@@ -2730,7 +2736,7 @@ pulumiCreateSiteViolations registeredNames commandContents =
 --     registered @ses:capture-bucket@ provider resource.
 --
 -- @create-hosted-zone@ is deliberately NOT in this list — see
--- 'awsCreateProbeVerbs'. The verbs are matched as raw substrings because
+-- their owner modules. The verbs are matched as raw substrings because
 -- they are subprocess string-literal arguments (e.g. @aws iam
 -- create-user@). Exposed for unit tests; consumed by
 -- 'awsCreateSiteViolations'.
@@ -2747,6 +2753,7 @@ awsCreateVerbs =
   , ("put-user-policy", ["src/Prodbox/Aws.hs"])
   , ("create-role", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
   , ("put-role-policy", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
+  , ("create-hosted-zone", ["src/Prodbox/Infra/Route53ValidationZone.hs"])
   ,
     ( "create-bucket"
     ,
@@ -2757,22 +2764,6 @@ awsCreateVerbs =
       ]
     )
   ]
-
--- | Sprint 4.27: AWS-resource creation verbs that are deliberately
--- carved out of the create-site coverage lint because they are
--- transient capability\/validation probes with NO steady state to
--- discover or reconcile — the throwaway record is created and
--- immediately deleted in the same flow, so it is correctly NOT a
--- registered 'ManagedResource' (per
--- @lifecycle_reconciliation_doctrine.md § 3.1@). @create-hosted-zone@
--- is the Route 53 lifecycle capability proof in
--- @src/Prodbox/EffectInterpreter.hs::requireRoute53LifecycleCapability@
--- (wrapped in @bracketOnError@ so the proof zone is always deleted, even
--- on a mid-probe failure) and the @public-dns@ validation's throwaway
--- zone in @src/Prodbox/TestValidation.hs@. Exposed for unit tests;
--- consumed by 'awsCreateSiteViolations'.
-awsCreateProbeVerbs :: [String]
-awsCreateProbeVerbs = ["create-hosted-zone"]
 
 -- | The operational-IAM creation verbs. Retained for unit-test
 -- back-compatibility; the IAM verbs are the @src/Prodbox/Aws.hs@-owned
@@ -2786,8 +2777,8 @@ iamCreateVerbs = [verb | (verb, owners) <- awsCreateVerbs, owners == ["src/Prodb
 -- Sprint 4.22 IAM-only @iamCreateSiteViolations@ to every AWS-resource
 -- create call site so the create-site coverage lint cannot be bypassed
 -- by reaching for a non-IAM @aws … create-*@ verb in an unowned module.
--- The 'awsCreateProbeVerbs' carve-out (the Route 53 capability probe) is
--- never flagged: those verbs are not in 'awsCreateVerbs' at all.
+-- Sprint 5.28 removed the last carve-out ('awsCreateProbeVerbs', which had
+-- exempted @create-hosted-zone@): every AWS create verb is now owned.
 -- @CheckCode.hs@ is excluded from the scan by the path filter in
 -- 'checkCreateCallSiteCoverage', so its own occurrences of these verb
 -- literals do not self-trigger.
@@ -2839,7 +2830,7 @@ checkOperatorVocabulary repoRoot = do
   scanSpecHsStringLiterals :: IO [String]
   scanSpecHsStringLiterals = do
     let specPath = repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Spec.hs"
-    contents <- readFile specPath
+    contents <- readFileStrict specPath
     let literals = extractStringLiterals contents
         offenders =
           [ "src/Prodbox/CLI/Spec.hs string literal contains sprint identifier: "
@@ -2872,7 +2863,7 @@ checkOperatorVocabulary repoRoot = do
             if not isFile
               then pure []
               else do
-                contents <- readFile absolutePath
+                contents <- readFileStrict absolutePath
                 pure $
                   [ relativePath
                       ++ " contains sprint identifier in operator-facing "
@@ -2911,6 +2902,283 @@ shortenSprintLeak :: String -> String
 shortenSprintLeak lit
   | length lit <= 80 = lit
   | otherwise = take 77 lit ++ "..."
+
+-- | Sprint 1.75: the mechanical outer ring of repository value hygiene,
+-- registered by Sprint 0.19 and generalized by Sprint 0.20. See
+-- [vault_doctrine.md § 20.5] and [code_quality.md § Committed Values].
+--
+-- No tracked file may contain a string matching a scanned provider
+-- pattern that the scanner's own exclusions do not cover — whether or
+-- not the value is real. The remote decides on shape, never on truth,
+-- so this gate does too.
+--
+-- Scope is __tracked__ content, not a filesystem walk: the git-ignored
+-- @test-secrets.dhall@ carries real credential values by design (§ 4),
+-- and a walk would fail the gate on a developer whose credentials are
+-- exactly where doctrine says to put them. The remote can only reject
+-- tracked content, so the narrowing loses no coverage.
+--
+-- There is deliberately __no exemption mechanism__ — no allowlist, no
+-- per-file suppression, no marker comment. The repository satisfies the
+-- invariant with zero exemptions; a first exemption request is evidence
+-- the pattern set drifted from the remote's, not that the rule needs an
+-- escape hatch.
+checkCommittedValueHygiene :: FilePath -> IO [String]
+checkCommittedValueHygiene repoRoot = do
+  trackedResult <- trackedRepositoryFiles repoRoot
+  case trackedResult of
+    Left failureMessage -> pure [failureMessage]
+    Right trackedFiles ->
+      concat
+        <$> forM
+          trackedFiles
+          ( \relativePath -> do
+              let absolutePath = repoRoot </> relativePath
+              isFile <- doesFileExist absolutePath
+              if not isFile
+                then pure []
+                else do
+                  -- Read as bytes: two golden artifacts are not valid
+                  -- UTF-8, so a locale-sensitive read would throw on
+                  -- them. Every scanned pattern is ASCII, so a
+                  -- byte-wise view is both sufficient and total.
+                  contents <- ByteStringChar8.readFile absolutePath
+                  -- Cheap byte-level necessary condition first: the
+                  -- tracked corpus is ~19 MB, and unpacking all of it
+                  -- into a Haskell String to run the precise matchers
+                  -- would turn a seconds-long gate into a minutes-long
+                  -- one. A file carrying no candidate fragment cannot
+                  -- match any pattern, so it is never unpacked.
+                  if not (anyCandidateFragment contents)
+                    then pure []
+                    else
+                      pure
+                        ( scannedCredentialViolations
+                            relativePath
+                            (ByteStringChar8.unpack contents)
+                        )
+          )
+
+-- | Does this file carry any pattern's required fragment? Each entry
+-- in 'scannedCredentialPatterns' names substrings that any real match
+-- must contain, so a negative answer here is conclusive.
+anyCandidateFragment :: ByteStringChar8.ByteString -> Bool
+anyCandidateFragment contents =
+  any
+    (\fragment -> not (ByteStringChar8.null (snd (ByteStringChar8.breakSubstring fragment contents))))
+    allCandidateFragments
+
+allCandidateFragments :: [ByteStringChar8.ByteString]
+allCandidateFragments =
+  map
+    ByteStringChar8.pack
+    (concatMap scannedPatternFragments scannedCredentialPatterns)
+
+-- | Enumerate tracked repository paths. Delegates to the version
+-- control index rather than walking the filesystem, which is what keeps
+-- ignored secret material out of scope.
+trackedRepositoryFiles :: FilePath -> IO (Either String [FilePath])
+trackedRepositoryFiles repoRoot = do
+  captureResult <-
+    Subprocess.capture
+      Subprocess.Subprocess
+        { Subprocess.subprocessPath = "git"
+        , Subprocess.subprocessArguments = ["ls-files", "-z"]
+        , Subprocess.subprocessEnvironment = Nothing
+        , Subprocess.subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case captureResult of
+    Left err ->
+      Left
+        ( "Unable to enumerate tracked paths for the committed-value scan: "
+            ++ show err
+        )
+    Right output ->
+      Right
+        ( filter
+            (not . null)
+            (splitOnNulByte (Subprocess.processStdout output))
+        )
+
+-- | Read a file, fully, before returning.
+--
+-- 'System.IO.readFile' is lazy: its handle stays open until the caller
+-- consumes to end of input, and many checks in this module stop early
+-- (an 'any' that finds its match, a pattern that fails on line one).
+-- Those handles then survive until the garbage collector happens to
+-- finalize them.
+--
+-- The binary is built without @-threaded@, so its IO manager waits on
+-- descriptors with @select@, which cannot represent a descriptor
+-- numbered at or above 1024. Enough leaked handles and the next pipe
+-- this module opens — the tracked-path enumeration below, or any
+-- future one — is allocated a descriptor past that ceiling and fails
+-- with a @file descriptor out of range@ error that has nothing to do
+-- with the check that triggered it.
+--
+-- Forcing the content preserves the decoding behaviour of the lazy
+-- read exactly while letting each handle close as soon as it is done.
+readFileStrict :: FilePath -> IO String
+readFileStrict path = do
+  contents <- readFile path
+  _ <- evaluate (length contents)
+  pure contents
+
+splitOnNulByte :: String -> [String]
+splitOnNulByte input = case break (== '\NUL') input of
+  (segment, []) -> [segment]
+  (segment, _ : rest) -> segment : splitOnNulByte rest
+
+-- | Pure half of the § 20.5 scan: which scanned provider patterns does
+-- this file's content carry? Exposed for unit tests; consumed by
+-- 'checkCommittedValueHygiene'.
+scannedCredentialViolations :: FilePath -> String -> [String]
+scannedCredentialViolations relativePath contents =
+  [ relativePath
+      ++ " contains a string matching the scanned "
+      ++ patternName
+      ++ " pattern (see documents/engineering/vault_doctrine.md § 20.5)."
+  | patternName <- nub (scannedCredentialPatternsPresent contents)
+  ]
+
+-- | The scanned pattern set. It mirrors the remote's push protection;
+-- anything stricter would forbid the one immovable category § 20.4
+-- names, published vendor test vectors, whose bytes cannot change
+-- without the test ceasing to prove conformance to anything.
+--
+-- Several entries assemble their own literal from fragments. That is
+-- not obfuscation: this module is itself a tracked file, so spelling a
+-- scanned literal contiguously here would make the scanner report
+-- itself. Splitting the literal is the § 20.4 discipline — do not have
+-- the shape — applied to the scanner's own source.
+scannedCredentialPatternsPresent :: String -> [String]
+scannedCredentialPatternsPresent contents =
+  [ scannedPatternName scanned
+  | scanned <- scannedCredentialPatterns
+  , any (`isInfixOf` contents) (scannedPatternFragments scanned)
+  , scannedPatternPrecise scanned contents
+  ]
+
+-- | One scanned provider pattern. 'scannedPatternFragments' are
+-- substrings a real match must contain; they exist so the gate can
+-- reject a file at byte level without unpacking it, and each one is a
+-- necessary condition of 'scannedPatternPrecise' rather than an
+-- independent rule.
+data ScannedCredentialPattern = ScannedCredentialPattern
+  { scannedPatternName :: String
+  , scannedPatternFragments :: [String]
+  , scannedPatternPrecise :: String -> Bool
+  }
+
+scannedCredentialPatterns :: [ScannedCredentialPattern]
+scannedCredentialPatterns =
+  [ prefixPattern "AWS access key identifier" awsKeyFragments (scanWithBoundary awsAccessKeyIdAt)
+  , tokenPattern "GitHub token" githubTokenPrefixes 36
+  , tokenPattern "Slack token" slackTokenPrefixes 10
+  , literalPattern "Slack webhook URL" ("hooks.slack" ++ ".com/services/")
+  , tokenPattern "Anthropic API key" ["sk-" ++ "ant-"] 20
+  , tokenPattern "OpenAI API key" openAiKeyPrefixes 20
+  , tokenPattern "Google API key" ["AIza"] 35
+  , tokenPattern "GitLab token" ["glpat" ++ "-"] 20
+  , tokenPattern "npm token" ["npm" ++ "_"] 36
+  , tokenPattern "PyPI token" ["pypi-" ++ "AgEIcHlwaS5vcmc"] 10
+  , tokenPattern "Stripe secret key" stripeKeyPrefixes 24
+  , literalPattern
+      "Azure storage connection string"
+      ("DefaultEndpointsProtocol=https;" ++ "AccountName=")
+  , prefixPattern
+      "armored private key block"
+      ["-----" ++ "BEGIN"]
+      armoredPrivateKeyPresent
+  ]
+ where
+  awsKeyFragments = ["AKIA", "ASIA", "ABIA", "ACCA", "A3T"]
+  githubTokenPrefixes = map (\kind -> "gh" ++ [kind] ++ "_") "pousr"
+  slackTokenPrefixes = map (\kind -> "xox" ++ [kind] ++ "-") "baprs"
+  openAiKeyPrefixes = ["sk-" ++ "proj-", "sk-" ++ "svcacct-"]
+  stripeKeyPrefixes = ["sk" ++ "_live_", "rk" ++ "_live_"]
+
+  prefixPattern name fragments precise =
+    ScannedCredentialPattern
+      { scannedPatternName = name
+      , scannedPatternFragments = fragments
+      , scannedPatternPrecise = precise
+      }
+
+  tokenPattern name prefixes minimumBodyLength =
+    prefixPattern name prefixes (scanWithBoundary (prefixTokenAt prefixes minimumBodyLength))
+
+  literalPattern name literalText = prefixPattern name [literalText] (isInfixOf literalText)
+
+-- | Walk the content, offering each position to a matcher but only
+-- where a regex @\\b@ would hold — that is, where the preceding
+-- character is not a word character.
+scanWithBoundary :: (String -> Bool) -> String -> Bool
+scanWithBoundary matchesAt = go '\n'
+ where
+  go _ [] = False
+  go previousChar remaining@(currentChar : rest)
+    | not (isWordChar previousChar), matchesAt remaining = True
+    | otherwise = go currentChar rest
+
+-- | @\\b(A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\\b@.
+--
+-- Two properties are load-bearing and frequently misread. The
+-- exclusion is the token @EXAMPLE@ and nothing else — not @FAKE@, not
+-- @TEST@, not a run of zeroes, not an adjacent explanatory comment.
+-- And the trailing boundary is real: a twenty-one-character identifier
+-- whose first twenty characters match is not a finding. Neither
+-- property says anything about whether the literal satisfies § 20.1,
+-- which is judged by a reader rather than by this function.
+awsAccessKeyIdAt :: String -> Bool
+awsAccessKeyIdAt remaining =
+  let (prefixChars, afterPrefix) = splitAt 4 remaining
+      (bodyChars, afterBody) = splitAt 16 afterPrefix
+   in length prefixChars == 4
+        && awsPrefixValid prefixChars
+        && length bodyChars == 16
+        && all isAwsKeyChar bodyChars
+        && trailingBoundary afterBody
+        && not ("EXAMPLE" `isInfixOf` (prefixChars ++ bodyChars))
+ where
+  awsPrefixValid prefixChars =
+    prefixChars `elem` ["AKIA", "ASIA", "ABIA", "ACCA"]
+      || case prefixChars of
+        'A' : '3' : 'T' : fourthChar : _ -> isAwsKeyChar fourthChar
+        _ -> False
+
+isAwsKeyChar :: Char -> Bool
+isAwsKeyChar c = isAsciiUpper c || isDigit c
+
+-- | A vendor prefix followed by at least @minimumBodyLength@ token
+-- characters.
+prefixTokenAt :: [String] -> Int -> String -> Bool
+prefixTokenAt prefixes minimumBodyLength remaining =
+  any matchesPrefix prefixes
+ where
+  matchesPrefix prefixText =
+    prefixText `isPrefixOf` remaining
+      && length
+        (take minimumBodyLength (takeWhile isSecretBodyChar (drop (length prefixText) remaining)))
+        >= minimumBodyLength
+
+armoredPrivateKeyPresent :: String -> Bool
+armoredPrivateKeyPresent contents =
+  any isArmorLine (lines contents)
+ where
+  isArmorLine line =
+    ("-----" ++ "BEGIN") `isInfixOf` line
+      && ("PRIVATE KEY" ++ "-----") `isInfixOf` line
+
+trailingBoundary :: String -> Bool
+trailingBoundary [] = True
+trailingBoundary (nextChar : _) = not (isWordChar nextChar)
+
+isWordChar :: Char -> Bool
+isWordChar c = isAlphaNum c || c == '_'
+
+isSecretBodyChar :: Char -> Bool
+isSecretBodyChar c = isAlphaNum c || c == '_' || c == '-'
 
 -- | Walk a Haskell source string and emit the contents of every
 -- @"..."@ string literal (in source order). Escaped quotes inside
@@ -2983,7 +3251,7 @@ sourceIdentifiers = goOutside
 checkTestSuiteInterfaces :: FilePath -> IO [String]
 checkTestSuiteInterfaces repoRoot = do
   let cabalPath = repoRoot </> "prodbox.cabal"
-  contents <- readFile cabalPath
+  contents <- readFileStrict cabalPath
   pure (go [] Nothing (lines contents))
  where
   go violations _ [] = reverse violations
@@ -3010,7 +3278,7 @@ rendererDeterminismViolations :: FilePath -> IO [String]
 rendererDeterminismViolations repoRoot =
   fmap concat $
     forM uniqueRendererSources $ \relativePath -> do
-      contents <- readFile (repoRoot </> relativePath)
+      contents <- readFileStrict (repoRoot </> relativePath)
       pure (rendererSourceViolations relativePath contents)
  where
   uniqueRendererSources =
@@ -3077,7 +3345,7 @@ rewriteCabalFile repoRoot environment = do
 
 checkCabalFormat :: FilePath -> [(String, String)] -> IO ExitCode
 checkCabalFormat repoRoot environment = do
-  currentContents <- readFile (repoRoot </> "prodbox.cabal")
+  currentContents <- readFileStrict (repoRoot </> "prodbox.cabal")
   cabalTextResult <- renderFormattedCabal repoRoot environment
   case cabalTextResult of
     Left err -> failWith err
@@ -3098,7 +3366,7 @@ renderFormattedCabal repoRoot environment = do
   case formatExit of
     ExitFailure _ ->
       pure (Left "Failed to format `prodbox.cabal` via `cabal format`.")
-    ExitSuccess -> Right <$> readFile tempCabalPath
+    ExitSuccess -> Right <$> readFileStrict tempCabalPath
 
 spliceGeneratedSection :: String -> GeneratedSectionRule -> Either String String
 spliceGeneratedSection contents rule = do
@@ -3190,7 +3458,7 @@ processGeneratedSection repoRoot writeEnabled rule = do
   if not fileExists
     then pure (Left (missingGeneratedTargetMessage rule))
     else do
-      contents <- readFile targetPath
+      contents <- readFileStrict targetPath
       let forcedContents = length contents `seq` contents
       pure $
         case spliceGeneratedSection forcedContents rule of
@@ -3220,7 +3488,7 @@ processTrackedGeneratedPath repoRoot writeEnabled rule = do
         )
     (False, True) -> pure (Right (targetPath, expectedContents, True))
     (True, _) -> do
-      currentContents <- readFile targetPath
+      currentContents <- readFileStrict targetPath
       let forcedContents = length currentContents `seq` currentContents
           hasDrift = forcedContents /= expectedContents
       pure $
@@ -3242,12 +3510,12 @@ chartViolationsFor repoRoot relativeChartPath = do
   let absoluteChartPath = repoRoot </> relativeChartPath
       chartDir = takeDirectory absoluteChartPath
       helperPath = chartDir </> "templates" </> "_helpers.tpl"
-  chartContents <- readFile absoluteChartPath
+  chartContents <- readFileStrict absoluteChartPath
   helperExists <- doesFileExist helperPath
   helperViolations <-
     if helperExists
       then do
-        helperContents <- readFile helperPath
+        helperContents <- readFileStrict helperPath
         pure (labelViolations helperPath helperContents)
       else pure [helperPath ++ " is missing the shared label helper."]
   templateViolations <- chartTemplateResourceViolations chartDir
@@ -3281,8 +3549,8 @@ gatewayProbeChartViolations chartName chartDir =
       valuesExists <- doesFileExist valuesPath
       case (templateExists, valuesExists) of
         (True, True) -> do
-          templateContents <- readFile templatePath
-          valuesContents <- readFile valuesPath
+          templateContents <- readFileStrict templatePath
+          valuesContents <- readFileStrict valuesPath
           pure (gatewayProbeViolations templateContents valuesContents)
         (False, False) ->
           pure
@@ -3352,7 +3620,7 @@ gatewayStaticsChartViolations chartName chartDir =
  where
   readFileIfExists path = do
     exists <- doesFileExist path
-    if exists then readFile path else pure ""
+    if exists then readFileStrict path else pure ""
 
 -- | Sprint 2.34 (pure). The gateway chart's ServiceAccount identity must render
 -- @{{ .Values.serviceAccount.name }}@ from 'ChartStatics.gatewayChartStatics',
@@ -3405,7 +3673,7 @@ bootstrapBrokerStaticsChartViolations chartName chartDir =
  where
   readFileIfExists path = do
     exists <- doesFileExist path
-    if exists then readFile path else pure ""
+    if exists then readFileStrict path else pure ""
 
 -- | Sprint 3.26 (pure). The Bootstrap Broker chart's ServiceAccount identity and
 -- lifecycle probe paths must render from @.Values@ (fed by the compiled
@@ -3569,7 +3837,7 @@ controlPlaneChartStaticsViolations chartName chartDir =
  where
   readFileIfExists path = do
     exists <- doesFileExist path
-    if exists then readFile path else pure ""
+    if exists then readFileStrict path else pure ""
 
 -- | Sprint 3.26 (pure). A standing control-plane role chart's ServiceAccount
 -- identity and lifecycle probe paths must render from @.Values@ (fed by the
@@ -3667,7 +3935,7 @@ chartTemplateResourceViolations chartDir = do
           (sort [entry | entry <- entries, ".yaml" `isSuffixOf` entry])
           ( \entry -> do
               let path = templatesDir </> entry
-              contents <- readFile path
+              contents <- readFileStrict path
               pure (containerResourceViolations path contents)
           )
 
@@ -3774,7 +4042,7 @@ chartRootGuardrailViolations chartName chartDir =
       if not guardrailExists
         then pure [guardrailPath ++ " is missing the root-chart ResourceQuota/LimitRange manifest."]
         else do
-          contents <- readFile guardrailPath
+          contents <- readFileStrict guardrailPath
           pure
             ( missingPrefixedFields guardrailPath contents ["kind: ResourceQuota", "kind: LimitRange"]
                 ++ missingLiteralFields

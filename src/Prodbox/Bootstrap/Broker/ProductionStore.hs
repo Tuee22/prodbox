@@ -124,6 +124,7 @@ import Prodbox.Bootstrap.Broker.Types
   , resetAmbiguousBinding
   , rootInitStorageGeneration
   )
+import Prodbox.CLI.Output (writeDiagnosticLine)
 import Prodbox.Minio.ObjectStoreNative qualified as Native
 import Prodbox.Minio.ObjectStoreTypes
   ( ConditionalDeleteResult (..)
@@ -470,7 +471,22 @@ productionBootstrapStoreBoundary settings = do
       generationKey = Settings.vaultStorageGenerationKey keys
   bucket <- Native.ensureObjectStoreBucket config
   case bucket of
-    Left _ -> pure (Left BootstrapStoreUnavailable)
+    -- The wire vocabulary is deliberately opaque -- a client learns only
+    -- that the store is unavailable. The operator needs the cause, and
+    -- collapsing it into the constructor destroyed it: a bring-up failure
+    -- here reported `BootstrapStoreUnavailable` and nothing else, which is
+    -- indistinguishable between a wrong endpoint, a rejected credential, an
+    -- unroutable Service, and a bucket that exists but is not listable.
+    Left detail -> do
+      writeDiagnosticLine
+        ( "Bootstrap Broker store unavailable at "
+            ++ objectStoreEndpoint config
+            ++ " (bucket "
+            ++ objectStoreBucket config
+            ++ "): "
+            ++ detail
+        )
+      pure (Left BootstrapStoreUnavailable)
     Right () -> do
       generation <- observeOrCreateStorageGeneration config generationKey
       pure $ case generation of

@@ -58,6 +58,7 @@ import Prodbox.Bootstrap.Broker.Request qualified as Request
 import Prodbox.Bootstrap.Broker.Routes qualified as Routes
 import Prodbox.Bootstrap.Broker.Server qualified as Server
 import Prodbox.Bootstrap.Broker.Settings qualified as Settings
+import Prodbox.Bootstrap.Broker.ShutdownModel qualified as ShutdownModel
 import System.Timeout (timeout)
 import TestSupport
 
@@ -82,6 +83,9 @@ bootstrapBrokerServerSafetySuite =
     it
       "cannot publish Stopped while a cancelled worker finalizer is stalled"
       finalizerStallProof
+    it
+      "completes a graceful drain after a request has completed"
+      gracefulDrainAfterCompletionProof
 
 data TestLimits = TestLimits
   { testRequestDeadlineMilliseconds :: !Natural
@@ -227,6 +231,7 @@ atomicWorkerClaimProof = do
             , Server.snapshotQueuedConnections = 1
             , Server.snapshotActiveConnections = 0
             , Server.snapshotIdempotencyEntries = 0
+            , Server.snapshotRunningIdempotencyEntries = 0
             }
         atomically (putTMVar claimGate ())
         _ <- awaitSignal "accounted worker did not enter the interpreter" entered
@@ -310,6 +315,44 @@ finalizerStallProof = do
         clientSettled <- timeout 2_000_000 (waitCatch client)
         clientSettled `shouldSatisfy` maybe False (const True)
         assertStoppedWithoutRuntimeResidue server
+
+-- | Sprint 2.38 regression: a completed request retains its idempotency binding
+-- so a later replay can be answered from cache. That retained binding must not
+-- block a graceful drain.
+--
+-- Before the fix, 'Server.proveShutdownComplete' demanded an /empty/ entry map,
+-- so the manager's fully-graceful branch retried forever on a condition that
+-- could no longer become true. The transaction never read the phase, so a
+-- following 'forceBrokerDrain' could not wake it either: the manager thread
+-- stayed blocked and 'waitBrokerServer' blocked with it. The old fixture
+-- cleanup discarded both timeouts, so every such test leaked a permanently
+-- blocked manager instead of failing.
+gracefulDrainAfterCompletionProof :: Expectation
+gracefulDrainAfterCompletionProof =
+  withTestServer defaultTestLimits permissiveAuthenticator acceptingInterpreter $ \server -> do
+    status <-
+      exchange
+        server
+        ( rpcWire
+            Routes.BrokerVaultInitialize
+            "graceful-drain-after-completion"
+            "{\"action\":\"initialize\"}"
+        )
+    status `shouldBe` 202
+    awaitSnapshot server $ \snapshot ->
+      Server.snapshotIdempotencyEntries snapshot == 1
+        && Server.snapshotRunningIdempotencyEntries snapshot == 0
+    Server.beginBrokerDrain (testServerHandle server)
+    settled <- timeout 2_000_000 (Server.waitBrokerServer (testServerHandle server))
+    settled `shouldBe` Just (Right ())
+    stopped <- Server.brokerServerSnapshot (testServerHandle server)
+    Server.snapshotPhase stopped `shouldBe` Server.BrokerStopped
+    Server.snapshotQueuedConnections stopped `shouldBe` 0
+    Server.snapshotActiveConnections stopped `shouldBe` 0
+    Server.snapshotRunningIdempotencyEntries stopped `shouldBe` 0
+    -- The completed binding survives the stop. It is inert replay cache, not
+    -- residue, and requiring its absence is what wedged the drain.
+    Server.snapshotIdempotencyEntries stopped `shouldBe` 1
 
 firstInvocationBlocks
   :: TMVar ()
@@ -406,15 +449,80 @@ startTestServerWithHooks remainingAttempts limits hooks authenticator interprete
             interpreter
         Left err -> testFailure (Server.renderBrokerServerError err)
 
+-- | Sprint 5.23: fixture cleanup acquires the terminal witness or fails with
+-- typed residue, and never discards a second timeout.
+--
+-- This is the sole bracket release for the suite. The previous form discarded
+-- both the timeout and a @Just (Left BrokerShutdownIncomplete)@ — the exact
+-- terminal witness Sprint 2.36 exposed — so cleanup could return while broker
+-- workers survived and leaked into later tests. 'BrokerShutdownIncomplete' is
+-- explicitly not a terminal state; 'BrokerForcedShutdown' is.
 stopTestServer :: TestServer -> IO ()
 stopTestServer server = do
   Server.beginBrokerDrain (testServerHandle server)
-  settled <- timeout 2_000_000 (Server.waitBrokerServer (testServerHandle server))
+  settled <- timeout drainWitnessMicros (Server.waitBrokerServer (testServerHandle server))
   case settled of
-    Just _ -> pure ()
-    Nothing -> do
-      Server.forceBrokerDrain (testServerHandle server)
-      void (timeout 2_000_000 (Server.waitBrokerServer (testServerHandle server)))
+    Just (Left Server.BrokerShutdownIncomplete) -> forceAndWitness
+    Just _ -> assertNoRuntimeResidue server "graceful drain"
+    Nothing -> forceAndWitness
+ where
+  forceAndWitness = do
+    Server.forceBrokerDrain (testServerHandle server)
+    forced <- timeout drainWitnessMicros (Server.waitBrokerServer (testServerHandle server))
+    case forced of
+      Nothing ->
+        failWithRuntimeResidue server "did not settle within the forced-drain deadline"
+      Just (Left Server.BrokerShutdownIncomplete) ->
+        failWithRuntimeResidue server "still reported BrokerShutdownIncomplete after forced drain"
+      Just _ -> assertNoRuntimeResidue server "forced drain"
+
+drainWitnessMicros :: Int
+drainWitnessMicros = 2_000_000
+
+-- | Sprint 5.23: the run-final residue oracle, applied to the real runtime.
+--
+-- The snapshot's three counters are exactly the model's three residue terms, so
+-- the fixture reuses 'ShutdownModel.residueClean' rather than restating the
+-- acceptance rule. A fixture that returns while any of them is non-zero has
+-- leaked broker worker/manager threads or unresolved completion cells into
+-- whatever runs next.
+runtimeShutdownResidue :: Server.BrokerServerSnapshot -> ShutdownModel.ShutdownResidue
+runtimeShutdownResidue snapshot =
+  ShutdownModel.ShutdownResidue
+    { ShutdownModel.residueQueued = fromIntegral (Server.snapshotQueuedConnections snapshot)
+    , ShutdownModel.residueActiveWorkers = fromIntegral (Server.snapshotActiveConnections snapshot)
+    , ShutdownModel.residueRunningWaiters =
+        fromIntegral (Server.snapshotRunningIdempotencyEntries snapshot)
+    }
+
+assertNoRuntimeResidue :: TestServer -> String -> IO ()
+assertNoRuntimeResidue server context = do
+  snapshot <- Server.brokerServerSnapshot (testServerHandle server)
+  let residue = runtimeShutdownResidue snapshot
+  if Server.snapshotPhase snapshot == Server.BrokerStopped
+    && ShutdownModel.residueClean residue
+    then pure ()
+    else
+      testFailure
+        ( "Bootstrap Broker fixture cleanup ("
+            ++ context
+            ++ ") left runtime residue: phase="
+            ++ show (Server.snapshotPhase snapshot)
+            ++ " "
+            ++ show residue
+        )
+
+failWithRuntimeResidue :: TestServer -> String -> IO ()
+failWithRuntimeResidue server reason = do
+  snapshot <- Server.brokerServerSnapshot (testServerHandle server)
+  testFailure
+    ( "Bootstrap Broker fixture cleanup "
+        ++ reason
+        ++ "; residue: phase="
+        ++ show (Server.snapshotPhase snapshot)
+        ++ " "
+        ++ show (runtimeShutdownResidue snapshot)
+    )
 
 waitServerWithin :: TestServer -> IO (Either Server.BrokerServerError ())
 waitServerWithin server = do
@@ -590,6 +698,7 @@ assertStoppedWithoutRuntimeResidue server = do
       , Server.snapshotQueuedConnections = 0
       , Server.snapshotActiveConnections = 0
       , Server.snapshotIdempotencyEntries = 0
+      , Server.snapshotRunningIdempotencyEntries = 0
       }
 
 testServiceIdentity :: Request.BrokerServiceIdentity

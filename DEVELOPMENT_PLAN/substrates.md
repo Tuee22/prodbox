@@ -347,6 +347,7 @@ resource cannot be added to the registry without this inventory updating in lock
 | `aws-test` | PerRun |
 | `pulsar-topics-per-run` | PerRun |
 | `legacy-harbor-helm-release` | PerRun |
+| `dns-aws-validation-hosted-zone` | PerRun |
 | `aws-ses` | LongLived |
 | `aws-ebs-volumes` | LongLived |
 | `public-edge-tls` | LongLived |

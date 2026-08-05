@@ -21,6 +21,22 @@
 
 ## Phase Status
 
+🔄 **Active (2026-08-04).** Sprints `5.27` and `5.28` closed two Sprint-`5.18`/`5.23` deliverables
+that were recorded as complete but never built. A third remains open and is stated plainly rather
+than carried as implied-complete: **DNS01 Challenge/TXT pre-issuance registration, always-run
+Challenge deletion, and exact `_acme-challenge` TXT absence observation** (Sprint `5.18`). Sprint
+`4.50` built the descriptor half, but it has no production consumer and the cleanup DAG emits no
+Challenge/TXT node. Phase 4 assigns the run-time half to Phase 5 explicitly, so it is Phase-5-owned,
+code-owned work — not a live-infrastructure axis. Until it lands, this phase is not closed.
+
+✅ **Reclosed 2026-08-04 on Sprint `5.27`** — own-surface reopen (Standard A/N) implementing the two
+Sprint `5.23` fixture deliverables that were never built: cleanup now acquires the broker's terminal
+shutdown witness or fails with typed residue instead of discarding a second timeout, and the
+run-final residue oracle has a real consumer. It also corrects their Standard-O misclassification —
+an in-process STM runtime over a loopback port is not live infrastructure, and labelling it so parked
+implementable work behind a gate that does not exist. Implementing it immediately surfaced a real
+broker shutdown deadlock, fixed on Phase 2's surface by Sprint `2.38`.
+
 ✅ **Reclosed 2026-08-03 on Sprint `5.26`** — own-surface reopen (Standard A/N) replacing canonical
 suite fixture values that imitated real-world data: really routable IPv4 record values, RFC
 4122-shaped Kubernetes UIDs, and a plausible delegation-set nameserver, now reserved-range and
@@ -1601,6 +1617,28 @@ cleanup node fails.
   Closure evidence is the complete installed-binary integration gate 52/52 (383.31s), unit gate
   2992/2992 (35.58s), and `prodbox dev check` exit 0 with no HLint hints and a warning-clean build.
 
+### Remaining Work
+
+**Correction (2026-08-04).** Two of this sprint's deliverables were recorded as closed but were never
+built, and the Closure Evidence above does not mention either. Both are now tracked honestly rather
+than left implied-complete:
+
+- ✅ **Hosted-zone canary registration.** "Before create, register account/region/caller-reference/
+  name/operation … read back deletion, and remove the `awsCreateProbeVerbs` lint carve-out" did not
+  land: the carve-out survived, no hosted-zone resource was registered, and the zone was deleted only
+  along the validation's own return path with no absence read-back. **Closed by Sprint `5.28`.**
+- 📋 **DNS01 Challenge/TXT registration.** "Register the deterministic account/zone/FQDN/type intent
+  for every cert-manager DNS01 Challenge before issuance … then observes every registered TXT
+  coordinate absent" did not land either. Sprint `4.50` built the descriptor half
+  (`mkDns01ChallengeRegistration`, `dnsRecordLifecycleClass`), but it has **no production consumer** —
+  its only references are in `test/unit/DnsRecord.hs`. The compiled cleanup DAG emits no
+  Certificate/Challenge/TXT node, and no `_acme-challenge` coordinate is ever observed absent. Phase
+  `4` explicitly assigns this to Phase 5: "Sprint `5.18` alone owns run-time pre-issuance
+  registration, always-run Challenge deletion, and exact TXT absence observation"
+  ([phase-4](phase-4-lifecycle-canonical-paths.md)). **Open; not owned by any in-flight sprint.**
+  This is code-owned work (a registry entry, a cleanup node, and a TXT read-back over the existing
+  descriptor), not a live-infrastructure axis.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -2059,10 +2097,19 @@ counterexample and prevent a test fixture from returning while its structured ch
   scheduler, the counterexample (`stoppedWithLiveWaiter`), and the run-final residue oracle
   (`shutdownResidue` / `residueClean`) — landed and is fixture-proven against Sprint `2.36`'s
   proof-carrying postcondition and explicit incomplete state.
-- 🧪 Wiring the run-final residue oracle into the canonical-suite (broker daemon-lifecycle) fixture
-  teardown so real broker worker/manager threads and unresolved completion cells fail the run with
-  typed residue, and exercising full-suite contention over the live runtime, is the non-blocking
-  Standard-O live axis.
+- ✅ **Corrected 2026-08-04 (Sprint `5.27`).** Two deliverables above — "make fixture cleanup acquire
+  the terminal witness or fail with typed residue; never discard a second timeout" and "add a
+  run-final residue check for broker worker/manager threads and unresolved completion cells" — were
+  not implemented, and the remaining-work entry classified them as a **Standard-O live axis**. That
+  classification was wrong.
+  [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof) enumerates
+  the live axis as live AWS spend, a deployed cluster, an unsealed Vault, or an operator-supplied
+  credential. `BootstrapBrokerServerSafety` is a unit-suite module whose only external resource is a
+  loopback ephemeral port; it runs entirely under `prodbox test unit`. An in-process STM/`Async`
+  runtime is not live infrastructure, and labelling it so parked implementable work behind an
+  environmental gate that does not exist. Sprint `5.27` implements both deliverables.
+- 🧪 Exercising full-suite contention over the live runtime — as opposed to focused repetition —
+  remains a genuine non-blocking observation axis.
 
 ## Documentation Requirements
 
@@ -2321,6 +2368,132 @@ None.
 - Record the Phase `5` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md), and add the replaced-value rows to
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 5.27: Fixture Cleanup Acquires the Terminal Witness [✅ Done]
+
+**Status**: Done (2026-08-04) — Phase `5` own-surface reopen (Standard A/N) implementing the two
+Sprint `5.23` deliverables that were never built, and correcting their Standard-O misclassification.
+**Implementation**: `test/unit/BootstrapBrokerServerSafety.hs` (`stopTestServer`,
+`runtimeShutdownResidue`, `assertNoRuntimeResidue`, `failWithRuntimeResidue`)
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — a test-fixture change touches no Standard-P
+production-composition surface. (The production defect it exposed is fixed by Sprint `2.38`, which
+carries its own Standard-P note.)
+**Independent Validation**: unit-suite fixture over a loopback ephemeral port, no live substrate or
+later phase — `prodbox test unit -p "Sprint 2.33 Bootstrap Broker server"` 7/7, full
+`prodbox test unit` 3093/3093, `prodbox dev check` exit 0.
+**Docs to update**: none
+
+### Objective
+
+Sprint `5.23` promised that fixture cleanup would "acquire the terminal witness or fail with typed
+residue; never discard a second timeout", and that a run-final residue check would cover broker
+worker/manager threads and unresolved completion cells. Neither landed. `stopTestServer` — the sole
+bracket release for the suite — still ended in `void (timeout 2_000_000 (waitBrokerServer ...))`,
+discarding both the timeout and a `Just (Left BrokerShutdownIncomplete)`: precisely the terminal
+witness Sprint `2.36` had exposed in order to be checked. The residue oracle
+(`shutdownResidue` / `residueClean`) had no consumer outside its own model test.
+
+The remaining-work entry classified this as a Standard-O live axis. It is not; see the correction
+recorded under Sprint `5.23`.
+
+The cost was not hypothetical. A fixture that discards the incomplete witness cannot distinguish
+"shut down cleanly" from "returned while the broker was wedged", which is the exact confusion Sprint
+`5.23` exists to prevent — and a wedged broker was in fact present. Implementing the deliverable
+surfaced it immediately (Sprint `2.38`).
+
+### Deliverables
+
+- `stopTestServer` acquires the terminal witness. `BrokerShutdownIncomplete` is not terminal, so it
+  escalates to a forced drain; a second timeout or a second incomplete witness fails the fixture with
+  typed residue instead of being discarded.
+- `runtimeShutdownResidue` projects the real runtime snapshot into the model's `ShutdownResidue`
+  triple, and cleanup accepts a stop only when `ShutdownModel.residueClean` holds and the phase is
+  `BrokerStopped`. The fixture reuses the model's acceptance rule rather than restating it, which is
+  what makes the two agree by construction.
+- Failure messages carry the phase and the residue triple, so a leak names what leaked.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 2.33 Bootstrap Broker server"` 7/7.
+2. The strengthened cleanup demonstrably fails closed: against the pre-`2.38` server it reports
+   `phase=BrokerForceDraining` with a typed residue triple rather than passing silently.
+3. Full `prodbox test unit` 3093/3093 and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+None on this sprint's surface. Full-suite contention over the live runtime remains the observation
+axis recorded under Sprint `5.23`.
+
+## Sprint 5.28: Register the dns-aws Validation Hosted Zone [✅ Done]
+
+**Status**: Done (2026-08-04) — Phase `5` own-surface reopen (Standard A/N) landing the Sprint `5.18`
+deliverable that was recorded as closed but never built.
+**Implementation**: `src/Prodbox/Infra/Route53ValidationZone.hs` (new), `src/Prodbox/TestValidation.hs`,
+`src/Prodbox/TestRunner.hs`, `src/Prodbox/Lifecycle/ResourceClass.hs`, `src/Prodbox/CheckCode.hs`,
+`prodbox.cabal`, `test/unit/Main.hs`, and the regenerated `substrates.md`
+`resource-lifecycle-classes` section (`prodbox dev docs generate` — the registry and the published
+inventory move in lockstep, which the gate enforces)
+**Blocked by**: none (own-surface reopen; the code-owned surface needs no live infrastructure).
+**Deployment qualification**: pending — this **does** touch a Standard-P surface (destructive cleanup:
+a new always-run postflight node). Both substrate rows are already `pending`, so nothing is
+invalidated, but the next AWS qualification run must exercise the post-`5.28` cleanup DAG.
+**Live-proof**: 🧪 the sweep's live behaviour against real Route 53 — discovery by prefix, record
+pruning, delete, and absence read-back — is exercised by the next `prodbox test all --substrate aws`.
+The pure projection, the registration, and the lint closure are validated locally.
+**Independent Validation**: pure + registry surface, no live AWS —
+`prodbox test unit -p "Sprint 5.28"` 5/5 for the listing projection, prefix derivation, and
+lifecycle-class registration; `-p "create-call-site"` 12/12 including the real-repo scan with the
+carve-out removed; `prodbox dev check` exit 0.
+**Docs to update**: `documents/engineering/code_quality.md`, `DEVELOPMENT_PLAN/substrates.md`
+
+### Objective
+
+Sprint `5.18` promised to "register account/region/caller-reference/name/operation … read back
+deletion, and remove the `awsCreateProbeVerbs` lint carve-out". Its Closure Evidence never mentions
+either, and neither landed: `awsCreateProbeVerbs = ["create-hosted-zone"]` survived, no hosted-zone
+resource was ever registered, and no `callerReference` appeared in any Haskell source.
+
+So `runDnsAwsValidation` created a real Route 53 hosted zone inline, deleted it only along its own
+return path, and never observed it absent. The carve-out that permitted this justified itself by
+citing a `bracketOnError`-wrapped capability probe in `EffectInterpreter` — which HEAD `83c7e97`
+removed. The carve-out was therefore protecting an unbracketed create against a justification that no
+longer existed.
+
+### Deliverables
+
+- `Prodbox.Infra.Route53ValidationZone` is the sole owner of the zone: it holds the create verb, the
+  delete verb, the absence read-back, and the sweep. `TestValidation` calls into it and no longer
+  spells any Route 53 create verb.
+- Deletion is proved, not assumed. `deleteValidationHostedZone` follows `delete-hosted-zone` with a
+  `get-hosted-zone` read-back and fails when the zone still resolves.
+- Discovery is by identity, not memory. The zone's name and caller reference share the
+  `prodbox-dns-aws-` prefix, so `discoverValidationHostedZones` finds a zone leaked by an exception
+  or a cancelled run — the cases that defeated the old return-path cleanup.
+- `aws-dns-validation-zones` is a registered node in the always-run AWS cleanup DAG, sequenced after
+  `aws-test-ebs` and before `aws-operational-teardown` (it needs credentials the teardown removes).
+  It prunes non-SOA/NS record sets first, since Route 53 refuses to delete a non-empty zone, and
+  aggregates across zones so one stuck zone cannot hide the others.
+- A failed discovery returns failure rather than "nothing to sweep": cannot-observe is never treated
+  as absent ([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+- `dns-aws-validation-hosted-zone` is registered `PerRun` in the `ResourceClass` SSoT.
+- `awsCreateProbeVerbs` is deleted. `create-hosted-zone` is now an owned entry of `awsCreateVerbs`,
+  so the coverage lint flags it anywhere outside its owner. The lint has no carve-outs left.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 5.28"` 5/5.
+2. `prodbox test unit -p "create-call-site"` 12/12, including
+   `checkCreateCallSiteCoverage` over the real tree with the carve-out gone.
+3. `prodbox dev check` exit 0.
+4. 🧪 Live: the next `prodbox test all --substrate aws` exercises discovery, pruning, deletion, and
+   absence read-back against real Route 53.
+
+### Remaining Work
+
+None on this sprint's surface. The companion Sprint `5.18` bullet — run-time DNS01 pre-issuance
+registration, always-run Challenge deletion, and exact `_acme-challenge` TXT absence observation — is
+**not** owned here and remains open; see the note under Sprint `5.18`.
 
 ## Related Documents
 

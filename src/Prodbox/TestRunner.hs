@@ -104,6 +104,7 @@ import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
   )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
+import Prodbox.Infra.Route53ValidationZone (destroyValidationHostedZones)
 import Prodbox.Lib.ChartPlatform
   ( renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
@@ -914,8 +915,15 @@ awsHarnessCleanupPlan repoRoot environment suitePlan = do
       if includePerRun
         then fmap pure (cleanupCommandAction "aws-test-ebs" ["aws", "ebs", "reap-test", "--yes"])
         else Right []
+    -- Sprint 5.28: sweep any dns-aws validation hosted zone. Registered as
+    -- its own always-run node rather than left to the validation's return
+    -- path, so an exception or a cancelled run cannot leak a billable zone.
+    dnsZones <-
+      if includePerRun
+        then fmap pure (cleanupAction "aws-dns-validation-zones" runDnsValidationZoneSweep)
+        else Right []
     teardown <- fmap pure (cleanupAction "aws-operational-teardown" runManagedTeardown)
-    Right (drain ++ unseal ++ managed ++ ebs ++ teardown)
+    Right (drain ++ unseal ++ managed ++ ebs ++ dnsZones ++ teardown)
 
   cleanupCommandAction name arguments =
     cleanupAction name (runNativeCliCommandForExitCode repoRoot environment arguments)
@@ -934,6 +942,7 @@ awsHarnessCleanupPlan repoRoot environment suitePlan = do
       K8sDrain.DrainSkipped _ -> ExitFailure 1
       K8sDrain.DrainTimedOut _ -> ExitFailure 1
       K8sDrain.DrainFailed _ -> ExitFailure 1
+  runDnsValidationZoneSweep = destroyValidationHostedZones repoRoot environment
   runManagedTeardown = runManagedAwsHarnessTeardown repoRoot
   exitOutcome exitCode = case exitCode of
     ExitSuccess -> CleanupNodeSucceeded
@@ -947,6 +956,7 @@ awsHarnessCleanupTopology suitePlan =
         (if includePerRun then ["aws-k8s-drain", "aws-vault-unseal"] else [])
           ++ names
           ++ ["aws-test-ebs" | includePerRun]
+          ++ ["aws-dns-validation-zones" | includePerRun]
           ++ ["aws-operational-teardown"]
       chain = zipWith requiresAttempt names (drop 1 names)
       prefix = case names of
@@ -958,11 +968,18 @@ awsHarnessCleanupTopology suitePlan =
       ebsEdges = case reverse names of
         [] -> []
         finalName : _ -> [ManagedCleanupEdge finalName CleanupRequiresAttempt "aws-test-ebs"]
+      dnsZoneEdges =
+        [ ManagedCleanupEdge "aws-test-ebs" CleanupRequiresAttempt "aws-dns-validation-zones"
+        | includePerRun
+        ]
       credentialEdges =
         [ ManagedCleanupEdge resource CleanupRequiresSuccess "aws-operational-teardown"
-        | resource <- names ++ ["aws-test-ebs" | includePerRun]
+        | resource <-
+            names
+              ++ ["aws-test-ebs" | includePerRun]
+              ++ ["aws-dns-validation-zones" | includePerRun]
         ]
-   in (actionNames, prefix ++ chain ++ ebsEdges ++ credentialEdges)
+   in (actionNames, prefix ++ chain ++ ebsEdges ++ dnsZoneEdges ++ credentialEdges)
  where
   requiresAttempt predecessor successor =
     ManagedCleanupEdge predecessor CleanupRequiresAttempt successor

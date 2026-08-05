@@ -21,6 +21,23 @@
 
 ## Phase Status
 
+🔄 **Active (2026-08-04) on Sprint `2.39`** — a live cold home bring-up surfaced a Phase-2-owned
+production defect that blocks **every** home-substrate reconcile. The broker's `/readyz` violates the
+constant-time contract its own chart comment states: it performs a MinIO round trip, a Vault call,
+and two Kubernetes reads with 5-second deadlines inline in the probed request path. Measured on the
+live cluster: `/healthz` 0.19 ms, `/readyz` **5.003 s** against a 1-second probe budget. The
+Deployment can never report available, so `cluster reconcile` exits 1 before Vault is initialized.
+Diagnosed and evidenced; deliberately not patched under a blocked bring-up. See Sprint `2.39`.
+
+✅ **Reclosed 2026-08-04 on Sprint `2.38`** — own-surface reopen (Standard A) correcting the Sprint
+`2.36` shutdown postcondition. The proof-carrying witness demanded an *empty* idempotency map, which
+is unreachable once any request has completed (completed bindings are retained for replay), so a
+graceful drain wedged permanently — and because the transaction never read the phase, a following
+force-drain could not wake it. The postcondition now asks what it meant to ask: no **running** entry.
+This also restores agreement with the Sprint `5.23` shutdown model, whose residue oracle counts
+running waiters rather than all waiter cells. Standard-P lifecycle-orchestration surface; both rows
+already `pending`.
+
 ✅ **Reclosed 2026-07-30 on Sprint `2.37`** — own-surface reopen (Standard A) making the emitter
 retained-assertion (unacked-suffix) leak class non-constructible, with a failed-checkpoint
 recompaction liveness fix. Byte-compatible; no durable-format change and no runtime selector.
@@ -3663,6 +3680,157 @@ the fold's compaction depends on the signer succeeding and there was no hard cei
 
 - Link the bounded-retention invariant to Sprint `2.32`'s emitter kernel and to the Deployment
   Qualification ledger's outstanding live leak-free axis in [README.md](README.md).
+
+## Sprint 2.39: Restore the Broker's Constant-Time Readiness Contract [📋 Planned]
+
+**Status**: Planned — live-surfaced 2026-08-04 on a cold home bring-up. This is a Phase-2-owned
+production defect on the Bootstrap Broker runtime, not a harness or environment problem, and it
+currently blocks **every** home-substrate bring-up.
+**Blocked by**: none. The defect and its fix are code-owned; the reproducer below needs only a
+running cluster.
+**Deployment qualification**: pending — readiness semantics are a Standard-P surface. Both rows are
+already `pending`; this sprint is a prerequisite for any home qualification run, because
+`prodbox cluster reconcile` cannot converge until it lands.
+
+### Objective
+
+`charts/bootstrap-broker/values.yaml` (probeTiming) states the invariant plainly:
+
+> The broker's liveness/readiness endpoints are constant-time route projections (Sprint `2.34` route
+> registry); deep capability observations execute through the broker's own client, **never in a
+> kubelet probe.**
+
+The runtime does not honour it. `productionReady`
+(`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`) performs, inline in the `/readyz` request path:
+
+- `bootstrapStoreReady` — a MinIO `listKeys` plus a generation-object read;
+- `Vault.vaultSealStatus` — an HTTP call to the Vault Service;
+- `kubernetesObserveBootstrapLease` — a Kubernetes API read with a **5-second** deadline;
+- `kubernetesObserveControllerImageDigest` — a second Kubernetes API read with a **5-second**
+  deadline.
+
+These are exactly the "deep capability observations" the invariant forbids there. The probe budget is
+calibrated for the projection the comment describes (`timeoutSeconds: 1`, `--max-time 1`), so the
+endpoint cannot meet it.
+
+**Measured on the live home cluster (2026-08-04), same pod:**
+
+| Endpoint | Latency | Result |
+|----------|---------|--------|
+| `/healthz` | 0.19 ms | `{"healthy":true}` — a true constant-time projection |
+| `/readyz` | **5.003 s** | `{"ready":false}` — a timeout, 5× the probe budget |
+
+The consequence is total: the readiness probe can never pass, the Deployment never reports available,
+`helm upgrade` fails with `Progress deadline exceeded`, and `prodbox cluster reconcile` exits 1
+before Vault is ever initialized. Two consecutive cold reconciles failed identically.
+
+A second, independent defect compounds it. In the same pod, the projected ServiceAccount token was
+rejected by the API server with **HTTP 401 in 2.0 s**, while a sibling pod (`prodbox/minio-0`)
+authenticated normally (**HTTP 403 in 9 ms** — authenticated, merely unauthorized). Token
+authentication is therefore healthy cluster-wide and specifically broken for the broker Pod, so both
+Kubernetes observations fail regardless of the deadline. The likely mechanism is the failed-release
+uninstall/reinstall cycle recreating the `prodbox-bootstrap-broker` ServiceAccount with a new UID
+while a Pod holding a token bound to the previous UID survives; that must be confirmed rather than
+assumed.
+
+Note also that `Left _ -> pure (Left BootstrapStoreUnavailable)` in `ProductionStore.hs` discarded the
+underlying store error, so the first two hours of this failure reported only an opaque constructor.
+A diagnostic log at that collapse point landed with this investigation (wire vocabulary unchanged);
+that is a prerequisite for anyone debugging the store half.
+
+### Deliverables
+
+- `/readyz` becomes a projection over cached, boundary-owned facts — the shape Sprint `2.34` already
+  established for the gateway — rather than a request-time fan-out across MinIO, Vault, and two
+  Kubernetes reads. A background observer refreshes the facts; the endpoint reads the latch.
+- The probe budget and the readiness computation are related by construction, so a probe budget
+  smaller than the work behind the endpoint is unrepresentable rather than a silent 5× mismatch.
+- A conformance gate asserting `/readyz` performs no boundary I/O in its request path, so the
+  invariant the chart comment asserts is enforced rather than described.
+- The 401 is root-caused and fixed, with the disposition recorded: a rejected token must not be
+  indistinguishable from an unready dependency.
+
+### Validation
+
+1. Reproducer: on a cold home cluster, `curl --max-time 1 http://127.0.0.1:8600/readyz` inside the
+   broker Pod succeeds, and `/readyz` latency is within the same order as `/healthz`.
+2. `prodbox cluster reconcile` converges to exit 0 from the half-built state.
+3. The conformance gate fails if a boundary call is reintroduced into the readiness path.
+
+### Remaining Work
+
+Everything above. The defect is diagnosed and evidenced; no fix has been attempted, because moving
+readiness to a cached projection changes Standard-P readiness semantics and deserves a deliberate
+design pass rather than an expedient patch under a blocked bring-up.
+
+## Sprint 2.38: Reachable Shutdown Postcondition for the Bootstrap Broker [✅ Done]
+
+**Status**: Done (2026-08-04) — Phase `2` own-surface reopen (Standard A/N) on the Bootstrap Broker
+runtime this phase owns, correcting the Sprint `2.36` shutdown postcondition from an unreachable
+condition to the one it was meant to express.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Server.hs` (`proveShutdownComplete`,
+`runningEntryCount`, `BrokerServerSnapshot.snapshotRunningIdempotencyEntries`),
+`test/unit/BootstrapBrokerServerSafety.hs`, `test/unit/BootstrapBrokerRuntime.hs`
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — this **does** touch a Standard-P surface (lifecycle
+orchestration: broker shutdown). Both substrate rows are already `pending`, so nothing is
+invalidated, but the next qualification run must exercise the post-`2.38` shutdown path.
+**Independent Validation**: real-loopback broker suite, no live substrate or later phase —
+`prodbox test unit -p "Sprint 2.33 Bootstrap Broker server"` 7/7 and the broader
+`-p "Bootstrap Broker"` 114/114, plus a reproducer exercise: restoring the pre-fix postcondition
+wedges the new graceful-drain case at `BrokerForceDraining`, and the source restores byte-exactly.
+`prodbox dev check` exit 0.
+**Docs to update**: none
+
+### Objective
+
+Sprint `2.36` made terminal shutdown proof-carrying: `BrokerStopped` may be published only through an
+exact postcondition witness. The witness it shipped asked for `queued == 0 && active == 0 &&
+Map.null entries` — an **empty** idempotency map.
+
+An empty map is not reachable in normal operation. A completed request deliberately retains its
+idempotency binding so a later replay can be answered from cache, and completed bindings are evicted
+only under capacity pressure. So after any successful request, the manager's fully-graceful branch
+retried forever on a condition that could no longer become true.
+
+The failure mode is worse than a slow shutdown. `proveShutdownComplete` reads only the queue, the
+active count, and the entry map — never the phase — so a subsequent `forceBrokerDrain`, which writes
+the phase, could not wake the retrying transaction. The manager thread stayed blocked, the completion
+cell was never filled, and `waitBrokerServer` blocked with it. A graceful broker shutdown after any
+completed request wedged permanently, with no escalation path.
+
+This was invisible because the Sprint `5.23` fixture cleanup discarded both its timeout and the
+`BrokerShutdownIncomplete` witness (see Sprint `5.27`, which fixes that and surfaced this). Every
+affected test leaked a permanently blocked manager thread rather than failing.
+
+### Deliverables
+
+- `proveShutdownComplete` requires no **running** entry rather than an empty map. A completed binding
+  is inert replay cache, not a live waiter, so this is the property Sprint `2.36` intended: nothing
+  queued, nothing active, no unresolved completion cell. The forced path is unchanged — it already
+  clears the whole map through `resolveRunningWaitersForShutdown` before proving.
+- This restores agreement with `Prodbox.Bootstrap.Broker.ShutdownModel`, whose residue oracle counts
+  `WaiterRunning` rather than all waiter cells. The model and the server had disagreed, and the model
+  was right.
+- `BrokerServerSnapshot` gains `snapshotRunningIdempotencyEntries` so the postcondition's actual term
+  is observable, and the Sprint `5.27` residue oracle can express the model's triple exactly instead
+  of approximating the running count with the total.
+- A regression case pins the counterexample: a completed request, then a graceful drain, must reach
+  `BrokerStopped` with the completed binding still retained.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 2.33 Bootstrap Broker server"` 7/7, including the new
+   graceful-drain-after-completion case.
+2. Reproducer: restoring `Map.null entries` wedges that case at `BrokerForceDraining` with **zero**
+   running waiters — proving the demand was unreachable rather than genuinely unsatisfied.
+3. The Sprint `2.36` property is preserved: the finalizer-stall case still refuses to publish
+   `BrokerStopped` while a cancelled worker finalizer is stalled.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+None.
 
 ## Related Documents
 

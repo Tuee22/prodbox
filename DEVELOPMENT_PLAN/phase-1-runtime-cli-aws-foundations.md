@@ -24,6 +24,15 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-04 on Sprint `1.75`** — own-surface reopen (Standard A/N) implementing the
+§ 20.5 mechanical outer ring in the quality gate this phase owns. `prodbox dev check` now fails on any
+tracked file carrying a scanned provider credential shape its own exclusions do not cover, scoped to
+the version-control index so the git-ignored `test-secrets.dhall` stays out of reach. This closes the
+first of the three `dev check` policies Sprint `0.19` registered and Sprint `0.20` recorded as
+unclosed; the other two remain registered and unowned. The sprint also converts the module's lazy
+`readFile` call sites to strict reads, without which the accumulated descriptor leak pushed the new
+tracked-path enumeration past the non-threaded RTS's 1024-descriptor `select` ceiling.
+
 ✅ **Reclosed 2026-08-03 on Sprint `1.74`** — own-surface reopen (Standard A/N) declaring the served
 public hostname (`Prodbox.Settings.supportedPublicHostname`) a real value rather than leaving it
 indistinguishable from the synthetic hostnames beside it
@@ -5164,12 +5173,95 @@ Companion declarations on other phases' surfaces are carried by their owners: Sp
 
 None.
 
+## Sprint 1.75: Implement the § 20.5 Mechanical Outer Ring [✅ Done]
+
+**Status**: Done (2026-08-04) — Phase `1` own-surface reopen (Standard A/N) on the quality gate this
+phase owns (`00-overview.md` assigns `src/Prodbox/CheckCode.hs` to Phases `1`, `4`, and `5`). It
+closes the first of the three `prodbox dev check` policies Sprint `0.19` registered and Sprint `0.20`
+recorded as still unclosed. Phase `0` authors the doctrine; the implementing sprint lives on the
+phase that owns the gate, which is the same registration convention Sprint `0.18` used when it named
+Sprints `2.35` and `5.22` as its implementers.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`checkCommittedValueHygiene`,
+`scannedCredentialPatterns`, `trackedRepositoryFiles`, `readFileStrict`), `test/unit/Main.hs`
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — a lint over tracked source touches no Standard-P
+production-composition surface (process topology, capability wiring, deadline composition,
+queueing/admission, resource envelopes, persistence protocol, lifecycle orchestration, destructive
+cleanup, and substrate routing are all unchanged), so it neither advances nor invalidates the
+already-pending qualification.
+**Independent Validation**: pure lint surface over tracked repository content, validated on the home
+substrate with no later-phase or live-infrastructure dependency — `prodbox dev check` exit 0, the
+Sprint 1.75 unit block, and a planted-violation exercise proving the gate fails closed and a
+git-ignored-violation exercise proving `test-secrets.dhall` stays out of scope.
+**Docs to update**: `documents/engineering/code_quality.md`
+
+### Objective
+
+`code_quality.md` § Committed Values states in the present tense that the lint stack enforces
+[vault_doctrine.md § 20.5](../documents/engineering/vault_doctrine.md#205-the-mechanical-outer-ring),
+and names the exact module the scan belongs in. No such scan existed. The doctrine was in force with
+nothing enforcing it, and the gap was owned by no sprint — Sprint `0.19` registered the policy and
+Sprint `0.20` recorded it as still unclosed, but neither named an implementer.
+
+The invariant itself already held: the repository carries zero unexcluded matches. What was missing
+was the mechanism that keeps it holding.
+
+### Deliverables
+
+- `checkCommittedValueHygiene` scans tracked repository content for the § 20.5 provider pattern set
+  and fails `prodbox dev check` on any match its own exclusions do not cover. It sits beside
+  `checkOperatorVocabulary`, the placement `code_quality.md` prescribes, and is reached through
+  `haskellStyleViolations`.
+- Scope is the version-control index rather than a filesystem walk. A walk would read the
+  git-ignored `test-secrets.dhall`, which by design carries real credential values, and would fail
+  the gate on a developer whose credentials are exactly where doctrine says to put them. Push
+  protection can only reject tracked content, so the narrowing loses no coverage.
+- The AWS access-key matcher implements both regex word boundaries and the `EXAMPLE` exclusion
+  exactly. A twenty-one-character identifier whose first twenty characters match is not a finding,
+  and the exclusion is that one token — not `FAKE`, not a run of zeroes, not an adjacent comment.
+- The remaining scanned prefixes (GitHub, Slack, Anthropic, OpenAI, Google, GitLab, npm, PyPI,
+  Stripe, Azure connection strings, armored private-key blocks) are carried with the same
+  boundary treatment. There is no exemption mechanism: no allowlist, no per-file suppression, no
+  marker comment.
+- The scanner assembles its own pattern literals from fragments. This module is itself a tracked
+  file, so a contiguously spelled scanned literal would make the scanner report itself; splitting it
+  is § 20.4's "do not have the shape" discipline applied to the scanner's own source. The unit
+  fixtures are built the same way and for the same reason.
+- A byte-level necessary-condition pre-filter keeps the gate fast over the ~19 MB tracked corpus: a
+  file carrying no candidate fragment is never unpacked into a `String`.
+- `readFileStrict` replaces the lazy `readFile` at every call site in the module. This is a
+  prerequisite rather than a cleanup: the binary is built without `-threaded`, so its IO manager
+  waits on descriptors with `select`, which cannot represent a descriptor numbered at or above 1024.
+  The module's checks routinely stop reading early, leaving handles open until finalization, and the
+  accumulated leak pushed this sprint's tracked-path enumeration past that ceiling — a
+  `file descriptor out of range` failure with no relation to the check that triggered it. Forcing
+  each read preserves the lazy read's decoding behaviour exactly while closing handles eagerly.
+
+### Validation
+
+1. `prodbox dev check` exit 0 with the scan wired in.
+2. The Sprint 1.75 unit block covers both word boundaries, the `EXAMPLE` exclusion and its
+   deliberate narrowness, every scanned prefix, ordinary prose, and finding rendering.
+3. Fails closed: a scanned shape planted in a tracked file fails the gate with the § 20.5 message,
+   and the file restores byte-exactly afterward.
+4. Correct scope: the same shape planted in a git-ignored path leaves the gate green, with the real
+   `test-secrets.dhall` present in the worktree throughout.
+
+### Remaining Work
+
+None on this sprint's surface. Two of the three policies Sprint `0.19` registered — the
+bootstrap-floor registry bijection and the chart-values literal scan — remain registered and
+unclosed, and are not owned here.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and its registered-real-values
   table are the rule this constant now satisfies; the doctrine itself is authored by Sprint `0.20`.
+- `documents/engineering/code_quality.md` - § Committed Values describes the scan this sprint
+  implements; its present-tense claim is now true of the tree. The doctrine text is authored by
+  Sprint `0.20`.
 
 **Product docs to create/update:**
 

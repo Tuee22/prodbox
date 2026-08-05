@@ -64,6 +64,12 @@ resourceLifecycleClasses =
   , -- Superseded Harbor Helm release. It has no desired-present path; cluster
     -- reconcile observes and proves its absence before applying registry:2.
     ("legacy-harbor-helm-release", PerRun)
+  , -- Sprint 5.28: the throwaway Route 53 hosted zone the dns-aws
+    -- validation creates. Its id is only known at run time, so the
+    -- registered destroy discovers by the caller-reference/name prefix
+    -- rather than by a remembered id -- a zone leaked by an exception or
+    -- a cancelled run is still swept.
+    ("dns-aws-validation-hosted-zone", PerRun)
   , ("aws-ses", LongLived)
   , -- Sprint 4.39: pre-created EBS volumes that back EKS static
     -- @Retain@ PersistentVolumes. Production-retained volumes carry

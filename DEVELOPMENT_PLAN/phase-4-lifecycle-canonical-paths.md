@@ -16,6 +16,14 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-04 on Sprint `4.54`** — own-surface reopen (Standard A/N) repairing this
+phase's own validation evidence. Sprint `4.53`'s Independent Validation cited a test module that
+Sprint `4.50` had deleted, and the three endpoint-readiness classifier cases it rested on were never
+committed in any revision — leaving the production-live phrase-to-constructor mapping covered only by
+a constructor-name presence scan that cannot detect a wrong mapping. Coverage is restored on the
+surviving seam (`test/unit/ModelBCasTransportAdapter.hs`, 19/19), and a mutation exercise proves the
+suite fails closed on the exact bring-up-dual regression. Test-only; no production behaviour change.
+
 ✅ **Reclosed 2026-08-01 after Sprints `4.50` and `4.53`.** The typed endpoint-readiness
 refinement now includes the opaque authenticated-S3 endpoint witness and the shallow shell probe is
 deleted. The authority-epoch cutover is production-bound across retained Authority admission,
@@ -6038,9 +6046,11 @@ in `runConformanceTierChecks` (`src/Prodbox/CheckCode.hs`).
 persistence protocol/wire JSON/CAS semantics unchanged, so it neither advances nor invalidates the
 already-pending Standard-P qualification, and the current revision must not be called deployment-ready
 on the strength of this compile-time fix alone.
-**Independent Validation**: ✅ pure + fake-driven, no live cluster: `test/unit/HostDirectModelBAdapter.hs`
-(the classifier maps the aws phrase / connection-refused → `ModelBEndpointUnready`, auth errors →
-`ModelBUnobservable`, and the observe seam routes them), and `test/unit/LifecycleLease.hs` (the monitor
+**Independent Validation**: ✅ pure + fake-driven, no live cluster:
+`test/unit/ModelBCasTransportAdapter.hs` (the classifier maps the aws phrase / connection-refused →
+`ModelBEndpointUnready`, auth/HMAC/decode errors → `ModelBUnobservable`, both write-path analogues,
+and the observe/CAS seams route them through a transport that actually fails), and
+`test/unit/LifecycleLease.hs` (the monitor
 retries a transient endpoint-unready to recovery, fails closed on persistence past the deadline, and
 keeps a genuine loss terminal without retry). `prodbox dev check` exit 0 including the conformance gate.
 **Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
@@ -6073,7 +6083,14 @@ authority-loss, and make "issue an op against an unproven endpoint" unrepresenta
 
 ### Remaining Work
 
-None. Phase 2 replaces the `/dev/tcp` listener check with a bounded authenticated S3
+None. **Correction (2026-08-04, Sprint `4.54`):** this sprint's Independent Validation originally
+rested on `test/unit/HostDirectModelBAdapter.hs`, which Sprint `4.50` deleted along with the
+host-direct store it was named for. The three classifier cases behind Validation item 1 existed only
+as uncommitted edits and are in no revision, so the phrase-to-constructor mapping had no behavioural
+coverage — only a constructor-name presence scan, which cannot detect a wrong mapping. Sprint `4.54`
+restores the coverage on the surviving seam; the citation above now names the module that exists.
+
+Phase 2 replaces the `/dev/tcp` listener check with a bounded authenticated S3
 `list-buckets` round trip. The port-forward callback receives an opaque
 `HostDirectEndpointProven` value whose port can be projected only after that proof succeeds; the
 Pulumi prerequisite and bootstrap-bundle readers consume the witness. The shallow shell probe and
@@ -6098,6 +6115,66 @@ the live transient-MinIO recovery remains the non-blocking Standard-O proof abov
 - Enqueue the shallow host-direct `waitForPort` readiness gate in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) under this sprint (retired by
   Phase 2).
+
+## Sprint 4.54: Restore Behavioural Coverage of the Endpoint-Readiness Classifier [✅ Done]
+
+**Status**: Done (2026-08-04) — Phase `4` own-surface reopen (Standard A/N) repairing this phase's
+own validation evidence. Test-only; no production behaviour changes.
+**Implementation**: `test/unit/ModelBCasTransportAdapter.hs` (new), `prodbox.cabal`,
+`test/unit/Main.hs`
+**Blocked by**: none (own-surface reopen; validated without a later phase or live infrastructure).
+**Deployment qualification**: pending — a test-only change touches no Standard-P
+production-composition surface, so it neither advances nor invalidates the already-pending
+qualification.
+**Independent Validation**: pure + fake-driven, no live cluster —
+`prodbox test unit -p "Sprint 4.53"` 19/19, plus a mutation exercise: collapsing
+`ModelBEndpointUnready` back into `ModelBUnobservable` fails 3 of the 19 cases, and the classifier
+restores byte-exactly afterward. `prodbox dev check` exit 0.
+**Docs to update**: none
+
+### Objective
+
+Sprint `4.53` was recorded `Done` with `Independent Validation` resting on
+`test/unit/HostDirectModelBAdapter.hs`. Sprint `4.50` deleted that module along with
+`src/Prodbox/Lifecycle/HostDirectAuthorityStore.hs`, the transport it was named for. Both committed
+revisions of the deleted module contain zero endpoint-readiness cases, so the three cases behind
+`4.53`'s Validation item 1 were never committed at all.
+
+The classifier is production-live, and the only surviving gate over it is
+`readinessObservationViolations` — a constructor-name presence scan over three fixed paths. A
+presence scan proves the constructors are mentioned; it cannot prove the phrase-to-constructor
+mapping is right. The exact defect `4.53` exists to prevent — a transient MinIO connection-refused
+collapsing into terminal authority-loss — would therefore have shipped silently.
+
+The store is gone and is not coming back; the seam it exercised survives in
+`Prodbox.Lifecycle.ModelBCasTransport`, which is where the coverage belongs.
+
+### Deliverables
+
+- `test/unit/ModelBCasTransportAdapter.hs` replaces the deleted module. It carries the surviving
+  adapter cases (coordinate authority, observe/CAS, conflict, corrupt-encode, fail-closed lease
+  guard) and adds the endpoint-readiness cases `4.53` claimed.
+- Both classification paths are pinned behaviourally: `transportFailureObservation` and
+  `transportFailureCasResult` over a table of transient details (the aws-CLI
+  "could not connect to the endpoint URL" phrase, connection-refused, connection-reset) and terminal
+  details (signature mismatch, access denied, HMAC failure, decode failure).
+- A `failingTransport` fake drives the classifier through the adapter. Without it the `Left` arms of
+  `modelBCasAdapterOverTransport` are unreachable: the pre-existing `LifecycleLease.hs` case uses a
+  codec that short-circuits on encode, so the transport is never consulted and the classifier never
+  runs. A case pins that ordering explicitly so the gap cannot silently reopen.
+- The deleted module's `'ClusterRetained` type-witness case is not restored: it witnessed
+  `hostDirectModelBCasAdapter`, which no longer exists.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 4.53"` 19/19.
+2. Mutation: collapsing the not-yet-ready arm into the terminal bucket fails 3 cases, proving the
+   suite detects the exact regression class rather than merely exercising the code.
+3. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+None.
 
 ## Related Documents
 

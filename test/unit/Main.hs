@@ -178,6 +178,7 @@ import LifecycleLease (lifecycleLeaseSuite)
 import LifecycleProviderWork (lifecycleProviderWorkSuite)
 import LongLivedDecommission (longLivedDecommissionSuite)
 import MeasuredProfile (measuredProfileSuite)
+import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
 import Options.Applicative
@@ -376,7 +377,6 @@ import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
-  , awsCreateProbeVerbs
   , awsCreateSiteViolations
   , awsCreateVerbs
   , destructivePlanOptionsArms
@@ -394,6 +394,8 @@ import Prodbox.CheckCode
   , prodboxMarkerKeysPresent
   , pulumiCreateSiteViolations
   , relativeLinkResolves
+  , scannedCredentialPatternsPresent
+  , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
@@ -645,6 +647,7 @@ import Prodbox.Infra.MinioBackend
   , minioBackendBucket
   , parseDeletedMinioExportHostPath
   )
+import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Infra.StackDescriptor qualified as StackDescriptor
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
@@ -1494,6 +1497,7 @@ unitSuite = do
   authorityObjectCoreCasSuite
   helmReleaseSuite
   lifecycleLeaseSuite
+  modelBCasTransportAdapterSuite
   measuredProfileSuite
   objectStoreNativeSuite
   sigV4Suite
@@ -6025,6 +6029,9 @@ unitSuite = do
                              , "aws-eks-subzone"
                              , "aws-test"
                              , "aws-test-ebs"
+                             , -- Sprint 5.28: sweep leaked dns-aws validation zones
+                               -- before the teardown removes the credentials it needs.
+                               "aws-dns-validation-zones"
                              , "aws-operational-teardown"
                              ]
                            ,
@@ -6033,10 +6040,15 @@ unitSuite = do
                              , ManagedCleanupEdge "aws-eks" CleanupRequiresAttempt "aws-eks-subzone"
                              , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresAttempt "aws-test"
                              , ManagedCleanupEdge "aws-test" CleanupRequiresAttempt "aws-test-ebs"
+                             , ManagedCleanupEdge "aws-test-ebs" CleanupRequiresAttempt "aws-dns-validation-zones"
                              , ManagedCleanupEdge "aws-eks" CleanupRequiresSuccess "aws-operational-teardown"
                              , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresSuccess "aws-operational-teardown"
                              , ManagedCleanupEdge "aws-test" CleanupRequiresSuccess "aws-operational-teardown"
                              , ManagedCleanupEdge "aws-test-ebs" CleanupRequiresSuccess "aws-operational-teardown"
+                             , ManagedCleanupEdge
+                                 "aws-dns-validation-zones"
+                                 CleanupRequiresSuccess
+                                 "aws-operational-teardown"
                              ]
                            )
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
@@ -13102,6 +13114,8 @@ unitSuite = do
                    , "aws-test"
                    , "pulsar-topics-per-run"
                    , "legacy-harbor-helm-release"
+                   , -- Sprint 5.28: the dns-aws validation's throwaway hosted zone.
+                     "dns-aws-validation-hosted-zone"
                    ]
 
     it
@@ -13694,7 +13708,7 @@ unitSuite = do
         violation `shouldContain` "create-user"
         violation `shouldContain` "src/Prodbox/Aws.hs"
 
-    it "Sprint 4.27 the Route 53 capability probe (create-hosted-zone) is carved out, never flagged" $ do
+    it "Sprint 5.28 create-hosted-zone is owned, and flagged outside its owner" $ do
       let contentsWithCreateHostedZone =
             unlines
               [ "      [ \"route53\""
@@ -13702,12 +13716,29 @@ unitSuite = do
               , "      , \"--name\""
               , "      ]"
               ]
-      "create-hosted-zone" `shouldSatisfy` (`elem` awsCreateProbeVerbs)
-      ("create-hosted-zone" `elem` map fst awsCreateVerbs) `shouldBe` False
-      awsCreateSiteViolations "src/Prodbox/EffectInterpreter.hs" contentsWithCreateHostedZone
+      -- The Sprint 4.27 carve-out is gone: the verb is a first-class owned
+      -- entry, so an unowned module carrying it is a violation.
+      ("create-hosted-zone" `elem` map fst awsCreateVerbs) `shouldBe` True
+      awsCreateSiteViolations
+        "src/Prodbox/Infra/Route53ValidationZone.hs"
+        contentsWithCreateHostedZone
         `shouldBe` []
-      awsCreateSiteViolations "src/Prodbox/TestValidation.hs" contentsWithCreateHostedZone
-        `shouldBe` []
+      assertExactlyOne
+        ( awsCreateSiteViolations
+            "src/Prodbox/EffectInterpreter.hs"
+            contentsWithCreateHostedZone
+        )
+        $ \violation -> do
+          violation `shouldContain` "create-hosted-zone"
+          violation `shouldContain` "src/Prodbox/Infra/Route53ValidationZone.hs"
+      -- TestValidation used to carry the verb inline under the carve-out; it
+      -- now calls the owner, so it too is a violation if the verb reappears.
+      assertExactlyOne
+        ( awsCreateSiteViolations
+            "src/Prodbox/TestValidation.hs"
+            contentsWithCreateHostedZone
+        )
+        $ \violation -> violation `shouldContain` "create-hosted-zone"
 
     it "Sprint 4.27 awsCreateSiteViolations returns no violations on the current repo tree" $ do
       repoRoot <- getCurrentDirectory
@@ -14017,6 +14048,109 @@ unitSuite = do
       deleteReclaimPvcBindings
         "prodbox|minio-0\nvault|vault-0\nmalformed\n|empty-namespace\nempty-name|\n"
         `shouldBe` [("prodbox", "minio-0"), ("vault", "vault-0")]
+
+  describe "Sprint 5.28 dns-aws validation hosted-zone ownership" $ do
+    it "projects only validation-owned zones out of a listing" $ do
+      let payload =
+            "{\"HostedZones\":[\
+            \{\"Id\":\"/hostedzone/Z1\",\"Name\":\"prodbox-dns-aws-abc.example.invalid.\"},\
+            \{\"Id\":\"/hostedzone/Z2\",\"Name\":\"operator-owned.example.invalid.\"},\
+            \{\"Id\":\"/hostedzone/Z3\",\"Name\":\"prodbox-dns-aws-def.example.invalid.\"}]}"
+      Route53ValidationZone.parseHostedZoneListing payload
+        `shouldBe` Right
+          [ ("/hostedzone/Z1", "prodbox-dns-aws-abc.example.invalid.")
+          , ("/hostedzone/Z3", "prodbox-dns-aws-def.example.invalid.")
+          ]
+
+    it "leaves an operator-owned zone alone when nothing is validation-owned" $
+      Route53ValidationZone.parseHostedZoneListing
+        "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z9\",\"Name\":\"operator.example.invalid.\"}]}"
+        `shouldBe` Right []
+
+    it "refuses an undecodable listing rather than reporting nothing to sweep" $
+      Route53ValidationZone.parseHostedZoneListing "not json"
+        `shouldSatisfy` either (const True) (const False)
+
+    it "derives the zone name and caller reference from one prefix" $ do
+      Route53ValidationZone.validationHostedZoneName "abc" "example.invalid"
+        `shouldBe` "prodbox-dns-aws-abc.example.invalid"
+      Route53ValidationZone.validationHostedZoneCallerReference "abc"
+        `shouldBe` "prodbox-dns-aws-abc"
+
+    it "registers the zone in the lifecycle-class SSoT as per-run" $
+      lookup "dns-aws-validation-hosted-zone" ResourceClass.resourceLifecycleClasses
+        `shouldBe` Just ResourceClass.PerRun
+
+  describe "Sprint 1.75 committed-value mechanical outer ring" $ do
+    -- Every fixture below is assembled at run time from fragments.
+    -- This module is itself a tracked file, so spelling a scanned shape
+    -- contiguously here would make the repository fail its own gate --
+    -- which is the vault_doctrine.md section 20.4 discipline (do not
+    -- have the shape) applied to the test that proves the gate works.
+    let awsKey prefix body = prefix ++ body
+        sixteen = replicate 16 'Q'
+
+    it "flags a well-formed AWS access key identifier" $ do
+      scannedCredentialPatternsPresent (awsKey "AKIA" sixteen)
+        `shouldBe` ["AWS access key identifier"]
+      scannedCredentialPatternsPresent ("key = " ++ awsKey "ASIA" sixteen ++ "\n")
+        `shouldBe` ["AWS access key identifier"]
+      scannedCredentialPatternsPresent (awsKey "A3TX" sixteen)
+        `shouldBe` ["AWS access key identifier"]
+
+    it "excludes on the EXAMPLE token and on nothing else" $ do
+      -- The exclusion is the literal token, not a judgement about
+      -- whether the value looks synthetic.
+      scannedCredentialPatternsPresent (awsKey "AKIA" ("EXAMPLE" ++ replicate 9 'Q'))
+        `shouldBe` []
+      scannedCredentialPatternsPresent (awsKey "AKIA" ("FAKE" ++ replicate 12 'Q'))
+        `shouldBe` ["AWS access key identifier"]
+      scannedCredentialPatternsPresent (awsKey "AKIA" (replicate 16 '0'))
+        `shouldBe` ["AWS access key identifier"]
+
+    it "honours both regex word boundaries" $ do
+      -- A twenty-one character identifier whose first twenty characters
+      -- match is not a finding: the trailing boundary fails.
+      scannedCredentialPatternsPresent (awsKey "AKIA" (replicate 17 'Q'))
+        `shouldBe` []
+      -- A leading word character likewise defeats the match.
+      scannedCredentialPatternsPresent ("X" ++ awsKey "AKIA" sixteen)
+        `shouldBe` []
+      -- Punctuation is not a word character, so delimiters still match.
+      scannedCredentialPatternsPresent ("\"" ++ awsKey "AKIA" sixteen ++ "\"")
+        `shouldBe` ["AWS access key identifier"]
+
+    it "flags the remaining vendor prefixes carried by the pattern set" $ do
+      scannedCredentialPatternsPresent ("gh" ++ "p_" ++ replicate 36 'a')
+        `shouldBe` ["GitHub token"]
+      scannedCredentialPatternsPresent ("xox" ++ "b-" ++ replicate 12 'a')
+        `shouldBe` ["Slack token"]
+      scannedCredentialPatternsPresent ("sk-" ++ "ant-" ++ replicate 24 'a')
+        `shouldBe` ["Anthropic API key"]
+      scannedCredentialPatternsPresent ("AIza" ++ replicate 35 'a')
+        `shouldBe` ["Google API key"]
+      scannedCredentialPatternsPresent
+        ("-----" ++ "BEGIN RSA " ++ "PRIVATE KEY" ++ "-----")
+        `shouldBe` ["armored private key block"]
+
+    it "does not fire on ordinary repository prose" $ do
+      scannedCredentialPatternsPresent "the AKIA prefix is what push protection scans for"
+        `shouldBe` []
+      scannedCredentialPatternsPresent "aws_secret_access_key is read from Vault"
+        `shouldBe` []
+      scannedCredentialPatternsPresent "" `shouldBe` []
+
+    it "reports one finding per pattern with the offending path" $ do
+      scannedCredentialViolations "test/fixture.hs" (awsKey "AKIA" sixteen)
+        `shouldBe` [ "test/fixture.hs contains a string matching the scanned "
+                       ++ "AWS access key identifier pattern (see "
+                       ++ "documents/engineering/vault_doctrine.md § 20.5)."
+                   ]
+      -- Repeated occurrences of one pattern collapse to a single finding.
+      scannedCredentialViolations
+        "test/fixture.hs"
+        (awsKey "AKIA" sixteen ++ "\n" ++ awsKey "ASIA" sixteen)
+        `shouldSatisfy` ((== 1) . length)
 
   describe "Sprint 4.14 operator vocabulary scan" $ do
     it "matchesSprintToken returns True for an adjacent Sprint + digit pair" $ do

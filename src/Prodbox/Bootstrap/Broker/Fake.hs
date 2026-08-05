@@ -141,6 +141,9 @@ import Prodbox.Bootstrap.Broker.Protocol
   , mkBrokerControllerRequest
   , mkBrokerPkiControllerRequest
   )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( BrokerReadinessState (..)
+  )
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
   , renderRequestDigest
@@ -832,7 +835,7 @@ fakeInMemoryResult
   -> Either EngineBoundaryError result
 fakeInMemoryResult call record replyStatus = case call of
   InMemoryHealth _ -> Right True
-  InMemoryReadiness _ -> Right True
+  InMemoryReadiness _ -> Right BrokerReadinessReady
   InMemoryVaultStatus _ -> Right (fakeBootstrapStatus record)
   InMemoryVaultInitialize {} -> fakeRecoveryForRecord record
   InMemoryVaultUnseal _ permit _ ->

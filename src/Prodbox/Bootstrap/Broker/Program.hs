@@ -33,6 +33,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.Readiness (BrokerReadinessState)
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
 import Prodbox.Bootstrap.Broker.Types
   ( AccessorAbsenceAttestation
@@ -144,7 +145,7 @@ data BrokerProgram (operation :: CapabilityKind) result where
   ObserveBrokerHealth
     :: BrokerProgram 'VaultBootstrapObserve Bool
   ObserveBrokerReadiness
-    :: BrokerProgram 'VaultBootstrapObserve Bool
+    :: BrokerProgram 'VaultBootstrapObserve BrokerReadinessState
   ObserveChildRecoveryDelivery
     :: ChildCustodyBinding
     -> DeliveryNonce

@@ -22,6 +22,7 @@ import Prodbox.Bootstrap.Broker.Engine
   , executeBrokerCall
   , mkEngineExecutionContext
   , prepareBrokerCall
+  , someBrokerResponseIsUnreadyProbe
   )
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerRoute
@@ -53,11 +54,22 @@ engineBrokerInterpreter engine =
           context
           route
           body
-          (if brokerRouteIsMutation route then BrokerReplyAccepted else BrokerReplyOk)
+          (replyStatusFor route response)
           (encodeSomeBrokerResponse response)
       Left failure ->
         let (status, responseBody) = engineErrorReply failure
          in boundedReply context route body status responseBody
+
+-- | The reply status for a successfully interpreted call.
+--
+-- A readiness projection that is not ready answers 503 so the chart's
+-- @curl --fail@ probe fails on the verdict rather than on a timeout. The body
+-- still carries the full state, so the reason survives the status.
+replyStatusFor :: BrokerRoute -> SomeBrokerResponse -> BrokerReplyStatus
+replyStatusFor route response
+  | brokerRouteIsMutation route = BrokerReplyAccepted
+  | someBrokerResponseIsUnreadyProbe response = BrokerReplyServiceUnavailable
+  | otherwise = BrokerReplyOk
 
 runEngineBrokerRequest
   :: BrokerEngine IO

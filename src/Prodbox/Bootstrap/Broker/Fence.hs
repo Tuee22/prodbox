@@ -441,6 +441,12 @@ data BootstrapLeaseObservation
       !Deadline
       !Text
   | BootstrapLeaseUnobservable !Text
+  | -- | The API server refused this workload's own projected identity. This is
+    -- an absorbing observation, not a transient one: the same credential
+    -- cannot become acceptable by retrying, so it must never be folded into
+    -- 'BootstrapLeaseUnobservable' (bootstrap_readiness_doctrine §2.4 — a
+    -- static wrong-scope or policy mismatch is absorbing).
+    BootstrapLeaseIdentityRejected !Text
   deriving stock (Eq, Show)
 
 -- | Private proof that a fresh Lease observation exactly matched the fence.
@@ -468,6 +474,11 @@ data BootstrapLeaseRefusal
       !BootstrapLeaseBinding
   | BootstrapLeaseExpired
   | BootstrapLeaseResourceVersionEmpty
+  | -- | Propagates 'BootstrapLeaseIdentityRejected'. It deliberately does not
+    -- join 'BootstrapLeaseNotFound' or 'BootstrapLeaseExpired' in
+    -- 'decideBootstrapFenceRetire': a refused credential proves nothing about
+    -- the predecessor's lease and must never authorize fence takeover.
+    BootstrapLeaseIdentityRefused !Text
   deriving stock (Eq, Show)
 
 confirmBootstrapLease
@@ -478,6 +489,7 @@ confirmBootstrapLease
 confirmBootstrapLease now fence observation = case observation of
   BootstrapLeaseMissing -> Left BootstrapLeaseNotFound
   BootstrapLeaseUnobservable detail -> Left (BootstrapLeaseObservationUnobservable detail)
+  BootstrapLeaseIdentityRejected detail -> Left (BootstrapLeaseIdentityRefused detail)
   BootstrapLeaseObserved observedBinding leaseDeadline resourceVersion
     | observedBinding /= expectedBinding ->
         Left (BootstrapLeaseBindingMismatch expectedBinding observedBinding)

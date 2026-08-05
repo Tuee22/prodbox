@@ -12,10 +12,18 @@ module Prodbox.Bootstrap.Broker
   )
 where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (withAsync)
+import Control.Monad (forever)
 import Data.Text qualified as Text
 import Prodbox.Bootstrap.Broker.EngineAdapter (engineBrokerInterpreter)
 import Prodbox.Bootstrap.Broker.ProductionEngine
-  ( productionBrokerEngine
+  ( BrokerReadinessCache
+  , brokerReadinessCacheRefresh
+  , productionBrokerEngine
+  )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( brokerReadinessObserverPeriodMicros
   )
 import Prodbox.Bootstrap.Broker.ProductionSecretWorker
   ( runProductionSecretWorker
@@ -122,19 +130,32 @@ applyBootstrapBrokerStart settings = do
   engineResult <- productionBrokerEngine settings
   case engineResult of
     Left err -> failWith err
-    Right engine -> do
+    Right (engine, readinessCache) -> do
       authenticatorResult <- productionBrokerAuthenticator settings
       case authenticatorResult of
         Left err -> failWith err
         Right authenticator -> do
+          -- One synchronous pass before the listener opens, so the very first
+          -- probe reads a real observation rather than the fail-closed
+          -- placeholder.  The startup probe targets the constant-time health
+          -- route, so a slow first pass delays readiness, never liveness.
+          brokerReadinessCacheRefresh readinessCache
           result <-
-            runBrokerServer
-              settings
-              authenticator
-              (engineBrokerInterpreter engine)
+            withAsync (readinessObserverLoop readinessCache) $ \_ ->
+              runBrokerServer
+                settings
+                authenticator
+                (engineBrokerInterpreter engine)
           case result of
             Left err -> failWith (renderBrokerServerError err)
             Right () -> pure ExitSuccess
+
+-- | Refresh the latched readiness facts forever. Its lifetime is exactly the
+-- server call it brackets, so a returning or failing server reclaims it.
+readinessObserverLoop :: BrokerReadinessCache -> IO ()
+readinessObserverLoop cache = forever $ do
+  threadDelay (fromIntegral brokerReadinessObserverPeriodMicros)
+  brokerReadinessCacheRefresh cache
 
 failWith :: String -> IO ExitCode
 failWith message = do

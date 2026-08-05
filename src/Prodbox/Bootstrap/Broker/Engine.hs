@@ -71,6 +71,7 @@ module Prodbox.Bootstrap.Broker.Engine
   , brokerResponseRoute
   , encodeBrokerResponse
   , encodeSomeBrokerResponse
+  , someBrokerResponseIsUnreadyProbe
   )
 where
 
@@ -198,6 +199,11 @@ import Prodbox.Bootstrap.Broker.Protocol
   , brokerControllerRequestFederationCompletion
   , brokerControllerRequestPkiIssue
   , decodeBrokerControllerRequest
+  )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( BrokerReadinessState
+  , brokerReadinessIsReady
+  , renderBrokerReadinessState
   )
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
@@ -387,7 +393,7 @@ data DecodedBrokerCall (operation :: CapabilityKind) result where
     -> DecodedBrokerCall 'VaultBootstrapObserve Bool
   DecodedReadiness
     :: !RequestDigest
-    -> DecodedBrokerCall 'VaultBootstrapObserve Bool
+    -> DecodedBrokerCall 'VaultBootstrapObserve BrokerReadinessState
   DecodedVaultStatus
     :: !RequestDigest
     -> DecodedBrokerCall 'VaultBootstrapObserve BootstrapStatus
@@ -670,7 +676,7 @@ data PreparedExecution (operation :: CapabilityKind) result where
   ExecuteHealth
     :: PreparedExecution 'VaultBootstrapObserve Bool
   ExecuteReadiness
-    :: PreparedExecution 'VaultBootstrapObserve Bool
+    :: PreparedExecution 'VaultBootstrapObserve BrokerReadinessState
   ExecuteVaultStatus
     :: PreparedExecution 'VaultBootstrapObserve BootstrapStatus
   ExecuteVaultInitialize
@@ -1009,7 +1015,7 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
     -> BrokerPhysicalCall 'VaultBootstrapObserve Bool
   PhysicalReadiness
     :: CapabilityRef 'VaultBootstrapObserve
-    -> BrokerPhysicalCall 'VaultBootstrapObserve Bool
+    -> BrokerPhysicalCall 'VaultBootstrapObserve BrokerReadinessState
   PhysicalObserveVaultStatus
     :: CapabilityRef 'VaultBootstrapObserve
     -> BrokerPhysicalCall 'VaultBootstrapObserve BootstrapStatus
@@ -1306,7 +1312,7 @@ data BrokerInMemoryCall (operation :: CapabilityKind) result where
     -> BrokerInMemoryCall 'VaultBootstrapObserve Bool
   InMemoryReadiness
     :: CapabilityRef 'VaultBootstrapObserve
-    -> BrokerInMemoryCall 'VaultBootstrapObserve Bool
+    -> BrokerInMemoryCall 'VaultBootstrapObserve BrokerReadinessState
   InMemoryVaultStatus
     :: CapabilityRef 'VaultBootstrapObserve
     -> BrokerInMemoryCall 'VaultBootstrapObserve BootstrapStatus
@@ -1516,7 +1522,8 @@ mkEngineExecutionContext = EngineExecutionContext
 
 data BrokerResponse result where
   BrokerHealthResponse :: !Bool -> BrokerResponse Bool
-  BrokerReadinessResponse :: !Bool -> BrokerResponse Bool
+  BrokerReadinessResponse
+    :: !BrokerReadinessState -> BrokerResponse BrokerReadinessState
   BrokerVaultStatusResponse
     :: !BootstrapStatus -> BrokerResponse BootstrapStatus
   BrokerVaultInitializeResponse
@@ -1574,6 +1581,17 @@ brokerResponseRoute response = case response of
 encodeSomeBrokerResponse :: SomeBrokerResponse -> ByteString
 encodeSomeBrokerResponse (SomeBrokerResponse response) = encodeBrokerResponse response
 
+-- | Whether a response is a readiness projection that is not ready.
+--
+-- The HTTP adapter needs this because a kubelet @exec@ probe inspects only the
+-- process exit status of @curl --fail@: a 200 carrying @{"ready":false}@ would
+-- mark the Pod Ready with its dependencies down. Every other read-only route
+-- keeps its 200.
+someBrokerResponseIsUnreadyProbe :: SomeBrokerResponse -> Bool
+someBrokerResponseIsUnreadyProbe (SomeBrokerResponse response) = case response of
+  BrokerReadinessResponse state -> not (brokerReadinessIsReady state)
+  _ -> False
+
 encodeBrokerResponse :: BrokerResponse result -> ByteString
 encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
  where
@@ -1581,8 +1599,15 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
   responseObject response = case response of
     BrokerHealthResponse healthy ->
       object ["operation" .= ("health" :: Text), "healthy" .= healthy]
-    BrokerReadinessResponse ready ->
-      object ["operation" .= ("readiness" :: Text), "ready" .= ready]
+    -- `ready` keeps its established wire meaning; `state` is the added field
+    -- that lets an operator tell a rejected identity from a dependency that is
+    -- merely still coming up.
+    BrokerReadinessResponse state ->
+      object
+        [ "operation" .= ("readiness" :: Text)
+        , "ready" .= brokerReadinessIsReady state
+        , "state" .= renderBrokerReadinessState state
+        ]
     BrokerVaultStatusResponse status ->
       object
         [ "operation" .= ("vault_status" :: Text)

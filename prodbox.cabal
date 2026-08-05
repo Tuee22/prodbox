@@ -40,6 +40,7 @@ library
         Prodbox.Bootstrap.Broker.PortForward
         Prodbox.Bootstrap.Broker.Program
         Prodbox.Bootstrap.Broker.Protocol
+        Prodbox.Bootstrap.Broker.Readiness
         Prodbox.Bootstrap.Broker.Request
         Prodbox.Bootstrap.Broker.RequestJournal
         Prodbox.Bootstrap.Broker.Routes

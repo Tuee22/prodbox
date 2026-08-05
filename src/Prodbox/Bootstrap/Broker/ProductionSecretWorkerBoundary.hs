@@ -18,6 +18,7 @@ import Crypto.Random (getRandomBytes)
 import Data.ByteString qualified as ByteString
 import Data.Foldable (traverse_)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -40,7 +41,10 @@ import Prodbox.Bootstrap.Broker.Fence
   , authorizeBootstrapStoreMutation
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
-  ( KubernetesWorkerBoundary (..)
+  ( ControllerImageObservation (..)
+  , ControllerSelfObservationScope (..)
+  , KubernetesWorkerBoundary (..)
+  , controllerImageObservationDetail
   , readProjectedServiceAccountToken
   )
 import Prodbox.Bootstrap.Broker.PgpBoundary
@@ -199,10 +203,20 @@ allocateIntent
   -> IO (Either EngineBoundaryError SecretWorkerIntent)
 allocateIntent kubernetes operation fence = do
   deadline <- localDeadline workerApiBudgetMicros
-  imageResult <- kubernetesObserveControllerImageDigest kubernetes deadline
+  imageObservation <-
+    kubernetesObserveControllerImageDigest
+      kubernetes
+      ControllerObservedForWorkerLaunch
+      deadline
   identities <- freshWorkerIdentities
   pure $ do
-    image <- either (Left . EngineBoundaryUnavailable) Right imageResult
+    image <- case imageObservation of
+      ControllerImageObserved digest -> Right digest
+      failed ->
+        Left
+          ( EngineBoundaryUnavailable
+              (fromMaybe "controller image observation failed" (controllerImageObservationDetail failed))
+          )
     (serviceAccount, sessionId) <- identities
     Right
       ( mkSecretWorkerIntent

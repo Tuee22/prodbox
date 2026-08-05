@@ -13,6 +13,10 @@
 -- projected ServiceAccount token.
 module Prodbox.Bootstrap.Broker.KubernetesWorker
   ( KubernetesWorkerBoundary (..)
+  , ControllerImageObservation (..)
+  , ControllerSelfObservationScope (..)
+  , controllerImageDigestFromResponse
+  , controllerImageObservationDetail
   , VaultStorageIdentity
   , renderVaultStorageIdentity
   , productionKubernetesWorkerBoundary
@@ -229,9 +233,12 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       :: Deadline
       -> BootstrapSessionFence
       -> IO BootstrapLeaseObservation
-  , kubernetesObserveControllerImageDigest
-      :: Deadline
-      -> IO (Either Text WorkerImageDigest)
+  , -- | The scope argument is mandatory rather than defaulted so a caller must
+    -- state whether it may require the controller Pod's own Ready condition.
+    kubernetesObserveControllerImageDigest
+      :: ControllerSelfObservationScope
+      -> Deadline
+      -> IO ControllerImageObservation
   , kubernetesObserveSelfWorkerRequest
       :: Deadline
       -> SecretWorkerOperation
@@ -394,7 +401,7 @@ productionKubernetesWorkerBoundary = do
                       (if code == 201 then 200 else code)
                       body
                   )
-        , kubernetesObserveControllerImageDigest = \deadline -> do
+        , kubernetesObserveControllerImageDigest = \scope deadline -> do
             response <-
               requestKubernetes
                 manager
@@ -403,8 +410,8 @@ productionKubernetesWorkerBoundary = do
                 (brokerPodsUrl namespace)
                 Nothing
             pure $ case response of
-              Left detail -> Left detail
-              Right (code, body) -> controllerImageDigestFromResponse namespace code body
+              Left detail -> ControllerImageUnobservable detail
+              Right (code, body) -> controllerImageDigestFromResponse scope namespace code body
         , kubernetesObserveSelfWorkerRequest = \deadline operation -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
@@ -468,7 +475,16 @@ resetVaultStorage
   -> IO (Either Text VaultStorageIdentity)
 resetVaultStorage manager brokerNamespace deadline proof = do
   identityResult <- observeVaultStorageIdentity manager deadline
-  digestResult <- observeControllerImageDigest manager brokerNamespace deadline
+  digestObservation <-
+    observeControllerImageDigest
+      ControllerObservedForWorkerLaunch
+      manager
+      brokerNamespace
+      deadline
+  let digestResult = case digestObservation of
+        ControllerImageObserved digest -> Right digest
+        ControllerImageUnobservable detail -> Left detail
+        ControllerImageIdentityRejected detail -> Left detail
   case (identityResult, digestResult) of
     (Left detail, _) -> pure (Left detail)
     (_, Left detail) -> pure (Left detail)
@@ -521,11 +537,12 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                             Left detail -> pure (Left detail)
 
 observeControllerImageDigest
-  :: Manager
+  :: ControllerSelfObservationScope
+  -> Manager
   -> Text
   -> Deadline
-  -> IO (Either Text WorkerImageDigest)
-observeControllerImageDigest manager namespace deadline = do
+  -> IO ControllerImageObservation
+observeControllerImageDigest scope manager namespace deadline = do
   response <-
     requestKubernetes
       manager
@@ -534,8 +551,18 @@ observeControllerImageDigest manager namespace deadline = do
       (brokerPodsUrl namespace)
       Nothing
   pure $ case response of
-    Left detail -> Left detail
-    Right (code, body) -> controllerImageDigestFromResponse namespace code body
+    Left detail -> ControllerImageUnobservable detail
+    Right (code, body) -> controllerImageDigestFromResponse scope namespace code body
+
+-- | The API server's status for a credential it will not authenticate. It is
+-- deliberately not grouped with 403, which a cold cluster answers while the
+-- broker's RoleBinding is still being applied.
+kubernetesUnauthorizedStatus :: Int
+kubernetesUnauthorizedStatus = 401
+
+identityRejectionDetail :: Text
+identityRejectionDetail =
+  "Kubernetes refused the Bootstrap Broker projected ServiceAccount token"
 
 setVaultScale :: Manager -> Deadline -> Natural -> IO (Either Text ())
 setVaultScale manager deadline replicas = do
@@ -1295,6 +1322,13 @@ bootstrapLeaseFromResponse
   -> BootstrapLeaseObservation
 bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterWall code body
   | code == 404 = BootstrapLeaseMissing
+  -- Keep this guard above the generic non-success guard or it is unreachable.
+  -- 401 is the API server refusing the Pod's own projected ServiceAccount
+  -- token, which retrying the same credential can never repair; 403 stays
+  -- non-terminal because a cold cluster legitimately answers it while the
+  -- broker's RoleBinding has not yet been applied.
+  | code == kubernetesUnauthorizedStatus =
+      BootstrapLeaseIdentityRejected identityRejectionDetail
   | code /= 200 = BootstrapLeaseUnobservable "Bootstrap Lease GET returned a non-success status"
   | otherwise = case eitherDecodeStrict' body >>= validateLeaseWire namespace of
       Left _ -> BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
@@ -1694,14 +1728,59 @@ instance FromJSON ContainerTerminationWire where
       <$> value .: "exitCode"
       <*> value .: "message"
 
+-- | Whether an observation of the broker's own controller Pod may require that
+-- Pod to already be Ready.
+--
+-- The Ready condition of the broker Pod /is/ the verdict of its own readiness
+-- endpoint. An observation made on behalf of that endpoint therefore must not
+-- demand it: doing so is a self-reference that can never converge on a cold
+-- start, because the Pod cannot become Ready until the endpoint reports ready
+-- and the endpoint cannot report ready until the Pod is Ready. Naming the two
+-- scopes here makes the circular one unselectable by accident.
+data ControllerSelfObservationScope
+  = -- | The broker is serving a request, so its own Pod is necessarily Ready
+    -- already and requiring it adds a real safety check before a worker Pod
+    -- inherits the controller's image digest.
+    ControllerObservedForWorkerLaunch
+  | -- | The observation feeds the broker's own readiness projection. Requiring
+    -- self-readiness here is circular, so this scope never does.
+    ControllerObservedForOwnReadiness
+  deriving stock (Eq, Show)
+
+-- | A controller-Pod observation, three-valued for the same reason the Lease
+-- observation is: an identity rejection is absorbing and must not be read as a
+-- dependency that is still coming up.
+data ControllerImageObservation
+  = ControllerImageObserved !WorkerImageDigest
+  | ControllerImageUnobservable !Text
+  | ControllerImageIdentityRejected !Text
+  deriving stock (Eq, Show)
+
+-- | The detail carried by a failed controller-Pod observation, for callers
+-- that only need a message.
+controllerImageObservationDetail :: ControllerImageObservation -> Maybe Text
+controllerImageObservationDetail observation = case observation of
+  ControllerImageObserved _ -> Nothing
+  ControllerImageUnobservable detail -> Just detail
+  ControllerImageIdentityRejected detail -> Just detail
+
 controllerImageDigestFromResponse
-  :: Text
+  :: ControllerSelfObservationScope
+  -> Text
   -> Int
   -> ByteString
-  -> Either Text WorkerImageDigest
-controllerImageDigestFromResponse namespace code body
-  | code /= 200 = Left "Bootstrap Broker Pod observation returned a non-success status"
-  | otherwise = do
+  -> ControllerImageObservation
+controllerImageDigestFromResponse scope namespace code body
+  | code == kubernetesUnauthorizedStatus =
+      ControllerImageIdentityRejected identityRejectionDetail
+  | code /= 200 =
+      ControllerImageUnobservable
+        "Bootstrap Broker Pod observation returned a non-success status"
+  | otherwise = case decodedDigest of
+      Left detail -> ControllerImageUnobservable detail
+      Right digest -> ControllerImageObserved digest
+ where
+  decodedDigest = do
       listing <-
         either
           (const (Left "Bootstrap Broker PodList response is invalid"))
@@ -1729,7 +1808,10 @@ controllerImageDigestFromResponse namespace code body
         case filter ((== "bootstrap-broker") . containerStatusWireName) (podWireContainerStatuses wire) of
           [sole] -> Right sole
           _ -> Left "Bootstrap Broker controller status is missing or duplicated"
-      requireCreateEqual "controller readiness" True (containerStatusWireReady status)
+      case scope of
+        ControllerObservedForWorkerLaunch ->
+          requireCreateEqual "controller readiness" True (containerStatusWireReady status)
+        ControllerObservedForOwnReadiness -> Right ()
       observedDigest <- firstCreateString (imageDigestFromRuntimeId (containerStatusWireImageId status))
       expectedRepository <-
         maybe

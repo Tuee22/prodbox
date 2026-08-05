@@ -9,12 +9,21 @@
 -- abstract store, Kubernetes, authority-clock, and Vault observation ports are
 -- connected to live interpreters.
 module Prodbox.Bootstrap.Broker.ProductionEngine
-  ( productionBrokerEngine
+  ( BrokerReadinessCache
+  , brokerReadinessCacheRefresh
+  , productionBrokerEngine
   )
 where
 
 import Codec.Serialise (Serialise, serialise)
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM
+  ( TVar
+  , atomically
+  , newTVarIO
+  , readTVarIO
+  , writeTVar
+  )
 import Control.Exception (SomeException, mask, throwIO, try)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
@@ -60,7 +69,9 @@ import Prodbox.Bootstrap.Broker.Fence
   , vaultEffectPermitDeadline
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
-  ( KubernetesWorkerBoundary (..)
+  ( ControllerImageObservation (..)
+  , ControllerSelfObservationScope (..)
+  , KubernetesWorkerBoundary (..)
   , VaultStorageIdentity
   , productionKubernetesWorkerBoundary
   , readProjectedServiceAccountToken
@@ -81,10 +92,9 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   )
 import Prodbox.Bootstrap.Broker.ProductionCapabilities
   ( ProductionCapabilityRegistry
-  , ProductionDependencyReadiness (..)
   , mkProductionCapabilityRegistry
+  , productionCapabilityInventoryComplete
   , productionCapabilityRegistryBindings
-  , productionReadinessDecision
   )
 import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
   ( productionPristineStorageProof
@@ -115,6 +125,13 @@ import Prodbox.Bootstrap.Broker.Protocol
   ( BrokerActionRequest
   , brokerActionDigest
   , brokerActionStorageGeneration
+  )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( BrokerDependencyObservation (..)
+  , BrokerReadinessFacts (..)
+  , BrokerReadinessState
+  , computeBrokerReadiness
+  , unobservedBrokerReadinessFacts
   )
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
 import Prodbox.Bootstrap.Broker.Routes (BrokerRoute)
@@ -244,6 +261,7 @@ import Prodbox.ControlPlane.Deadline
   , deadlineAtOffset
   , deadlineExpired
   , deadlineObservation
+  , monotonicInstantMicros
   )
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.RequestAuthentication (mkRequestNonce)
@@ -293,14 +311,21 @@ data ProductionBrokerClients = ProductionBrokerClients
 
 type ProvisionerTokenRegistry = IORef (Map ProvisionerAccessor Vault.VaultToken)
 
+-- | Build the production engine together with the readiness cache its
+-- background observer owns. The two are returned as one value so a caller
+-- cannot start the listener without also holding the thing that must keep the
+-- latch fresh.
 productionBrokerEngine
-  :: BootstrapBrokerSettings -> IO (Either String (BrokerEngine IO))
+  :: BootstrapBrokerSettings
+  -> IO (Either String (BrokerEngine IO, BrokerReadinessCache))
 productionBrokerEngine settings = do
   storeResult <- productionBootstrapStoreBoundary settings
   kubernetesResult <- productionKubernetesWorkerBoundary
   ownerResult <- freshOwnerNonce
   clientsResult <- productionBrokerClients settings
   provisionerTokens <- newIORef Map.empty
+  -- Fail-closed until the observer's first pass completes.
+  factsVar <- newTVarIO unobservedBrokerReadinessFacts
   pure $ do
     store <- mapLeft show storeResult
     kubernetes <- kubernetesResult
@@ -310,10 +335,22 @@ productionBrokerEngine settings = do
     mutate <- coordinate "bootstrap-mutate"
     baseline <- coordinate "baseline-reconcile"
     pki <- coordinate "pki-operate"
-    mkBrokerEngine
-      (mkBrokerCapabilityRefs observe mutate baseline pki)
-      64
-      (productionBoundary settings owner store kubernetes clients provisionerTokens)
+    let cache =
+          BrokerReadinessCache
+            { brokerReadinessCacheFacts = factsVar
+            , brokerReadinessCacheRefresh = pure ()
+            }
+        (boundary, capabilityRegistry) =
+          productionBoundary settings owner store kubernetes clients provisionerTokens cache
+        refresh = do
+          facts <- observeBrokerReadinessFacts capabilityRegistry settings kubernetes
+          atomically (writeTVar factsVar facts)
+    engine <-
+      mkBrokerEngine
+        (mkBrokerCapabilityRefs observe mutate baseline pki)
+        64
+        boundary
+    Right (engine, cache {brokerReadinessCacheRefresh = refresh})
  where
   coordinate :: Text -> Either String CapabilityCoordinate
   coordinate logicalName = do
@@ -448,8 +485,9 @@ productionBoundary
   -> KubernetesWorkerBoundary
   -> ProductionBrokerClients
   -> ProvisionerTokenRegistry
-  -> BrokerEngineBoundary IO
-productionBoundary settings owner store kubernetes clients provisionerTokens =
+  -> BrokerReadinessCache
+  -> (BrokerEngineBoundary IO, ProductionCapabilityRegistry)
+productionBoundary settings owner store kubernetes clients provisionerTokens readinessCache =
   let evidence = productionEvidence settings store kubernetes
       secretWorker = productionBrokerSecretWorkerBoundary settings store kubernetes
       pgp =
@@ -463,30 +501,47 @@ productionBoundary settings owner store kubernetes clients provisionerTokens =
           transitRotation
           pgp
           secretWorker
-          (runPhysical capabilityRegistry settings store kubernetes clients provisionerTokens)
+          ( runPhysical
+              capabilityRegistry
+              settings
+              store
+              kubernetes
+              clients
+              provisionerTokens
+              readinessCache
+          )
           (runLocal store clients)
-   in BrokerEngineBoundary
-        { engineEvidenceBoundary = evidence
-        , engineResolveRootInitCryptoParameters =
-            \proof ->
-              pure
-                ( mapLeft
-                    (EngineBoundaryRefused . Text.pack)
-                    (productionRootInitCryptoParameters settings proof)
-                )
-        , engineAdmitCapability = \_ _ -> pure (Right ())
-        , engineBeginCapabilityExecution = \_ _ -> pure (Right ())
-        , engineAcquireMutationFence = acquireFence owner store kubernetes
-        , engineObserveFenceUse = observeFenceUse store kubernetes
-        , engineReleaseMutationFence = releaseFence store
-        , engineRunPhysicalCall =
-            runPhysical capabilityRegistry settings store kubernetes clients provisionerTokens
-        , engineRunLocalCall = runLocal store clients
-        , engineSecretWorkerBoundary = Just secretWorker
-        , enginePgpBoundary = Just pgp
-        , engineInMemoryBoundary = Nothing
-        , engineStoreBoundary = store
-        }
+      boundary =
+        BrokerEngineBoundary
+          { engineEvidenceBoundary = evidence
+          , engineResolveRootInitCryptoParameters =
+              \proof ->
+                pure
+                  ( mapLeft
+                      (EngineBoundaryRefused . Text.pack)
+                      (productionRootInitCryptoParameters settings proof)
+                  )
+          , engineAdmitCapability = \_ _ -> pure (Right ())
+          , engineBeginCapabilityExecution = \_ _ -> pure (Right ())
+          , engineAcquireMutationFence = acquireFence owner store kubernetes
+          , engineObserveFenceUse = observeFenceUse store kubernetes
+          , engineReleaseMutationFence = releaseFence store
+          , engineRunPhysicalCall =
+              runPhysical
+                capabilityRegistry
+                settings
+                store
+                kubernetes
+                clients
+                provisionerTokens
+                readinessCache
+          , engineRunLocalCall = runLocal store clients
+          , engineSecretWorkerBoundary = Just secretWorker
+          , enginePgpBoundary = Just pgp
+          , engineInMemoryBoundary = Nothing
+          , engineStoreBoundary = store
+          }
+   in (boundary, capabilityRegistry)
 
 productionEvidence
   :: BootstrapBrokerSettings
@@ -923,12 +978,12 @@ runPhysical
   -> KubernetesWorkerBoundary
   -> ProductionBrokerClients
   -> ProvisionerTokenRegistry
+  -> BrokerReadinessCache
   -> BrokerPhysicalCall operation result
   -> IO (Either EngineBoundaryError result)
-runPhysical capabilityRegistry settings store kubernetes clients provisionerTokens call = case call of
+runPhysical capabilityRegistry settings store kubernetes clients provisionerTokens readinessCache call = case call of
   PhysicalHealth _ -> pure (Right True)
-  PhysicalReadiness _ ->
-    Right <$> productionReady capabilityRegistry settings store kubernetes
+  PhysicalReadiness _ -> Right <$> productionReady readinessCache
   PhysicalObserveVaultStatus _ -> observeBootstrapStatus settings store
   PhysicalSealVault _ permit -> sealVaultPhysical settings permit
   PhysicalCancelIncompleteGenerateRoot {} ->
@@ -1881,13 +1936,42 @@ runLocal store clients call = case call of
           attestation
       )
 
-productionReady
+-- | The readiness request path.
+--
+-- This is the whole of @\/readyz@: read the latched record, read the monotonic
+-- clock, fold. It performs no object-store, Vault, OpenPGP, or Kubernetes work
+-- of any kind — that is the invariant the broker's chart comment always
+-- asserted, and it is now enforced by the
+-- @broker-readiness-projection@ conformance gate in @prodbox dev check@ rather
+-- than merely described.
+productionReady :: BrokerReadinessCache -> IO BrokerReadinessState
+productionReady cache = do
+  now <- realMonotonicNow
+  facts <- readTVarIO (brokerReadinessCacheFacts cache)
+  pure (computeBrokerReadiness (monotonicInstantMicros now) facts)
+
+-- | The latched dependency facts plus the action that refreshes them. The
+-- record keeps the two halves together so no caller can acquire the cache
+-- without also being able to name what fills it.
+data BrokerReadinessCache = BrokerReadinessCache
+  { brokerReadinessCacheFacts :: !(TVar BrokerReadinessFacts)
+  , brokerReadinessCacheRefresh :: !(IO ())
+  }
+
+-- | The observation budget for one background readiness pass. It is bounded by
+-- the observer period rather than by the kubelet probe budget, because nothing
+-- on the probe path waits for it.
+readinessObservationBudgetMicros :: Natural
+readinessObservationBudgetMicros = 5 * 1000 * 1000
+
+-- | One background observation pass. Every boundary call in the readiness path
+-- lives here and nowhere else.
+observeBrokerReadinessFacts
   :: ProductionCapabilityRegistry
   -> BootstrapBrokerSettings
-  -> BootstrapStoreBoundary IO
   -> KubernetesWorkerBoundary
-  -> IO Bool
-productionReady capabilityRegistry settings _ kubernetes = do
+  -> IO BrokerReadinessFacts
+observeBrokerReadinessFacts capabilityRegistry settings kubernetes = do
   storeReady <- bootstrapStoreReady settings
   vaultReady <- Vault.vaultSealStatus (Vault.VaultAddress (brokerVaultAddress settings))
   pgpReady <- productionPgpReady
@@ -1895,25 +1979,58 @@ productionReady capabilityRegistry settings _ kubernetes = do
   lease <-
     kubernetesObserveBootstrapLease
       kubernetes
-      (deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000)))
+      (deadlineAtOffset now (RemainingDuration readinessObservationBudgetMicros))
   image <-
     kubernetesObserveControllerImageDigest
       kubernetes
-      (deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000)))
+      -- Never the worker-launch scope: requiring this Pod's own Ready
+      -- condition here is the circular dependency that made a cold bring-up
+      -- unable to converge.
+      ControllerObservedForOwnReadiness
+      (deadlineAtOffset now (RemainingDuration readinessObservationBudgetMicros))
+  observedAt <- realMonotonicNow
   pure
-    ( productionReadinessDecision
-        (productionCapabilityRegistryBindings capabilityRegistry)
-        ProductionDependencyReadiness
-          { productionStoreDependencyReady = storeReady
-          , productionVaultDependencyReady = either (const False) (const True) vaultReady
-          , productionPgpDependencyReady = pgpReady
-          , productionLeaseDependencyReady = case lease of
-              BootstrapLeaseUnobservable _ -> False
-              _ -> True
-          , productionControllerImageDependencyReady =
-              either (const False) (const True) image
-          }
-    )
+    BrokerReadinessFacts
+      { brokerFactCapabilityInventory =
+          flagDependency
+            "the production capability inventory is incomplete"
+            ( productionCapabilityInventoryComplete
+                (productionCapabilityRegistryBindings capabilityRegistry)
+            )
+      , brokerFactBootstrapStore =
+          flagDependency "the bootstrap object store is unreachable" storeReady
+      , brokerFactVaultSeal =
+          flagDependency
+            "Vault seal-status is unavailable"
+            (either (const False) (const True) vaultReady)
+      , brokerFactOpenPgp =
+          flagDependency "the OpenPGP boundary is unavailable" pgpReady
+      , brokerFactBootstrapLease = leaseDependency lease
+      , brokerFactControllerImage = controllerImageDependency image
+      , brokerFactObservedAtMicros = Just (monotonicInstantMicros observedAt)
+      }
+ where
+  flagDependency detail satisfied =
+    if satisfied
+      then BrokerDependencyReady
+      else BrokerDependencyUnavailable detail
+
+-- | An absent Lease is the normal pre-mutation state, so it is ready. An
+-- identity rejection is absorbing and keeps its own constructor: this is the
+-- exact collapse that made a refused ServiceAccount token indistinguishable
+-- from a dependency that had not come up yet.
+leaseDependency :: BootstrapLeaseObservation -> BrokerDependencyObservation
+leaseDependency observation = case observation of
+  BootstrapLeaseMissing -> BrokerDependencyReady
+  BootstrapLeaseObserved {} -> BrokerDependencyReady
+  BootstrapLeaseUnobservable detail -> BrokerDependencyUnavailable detail
+  BootstrapLeaseIdentityRejected detail -> BrokerDependencyIdentityRejected detail
+
+controllerImageDependency :: ControllerImageObservation -> BrokerDependencyObservation
+controllerImageDependency observation = case observation of
+  ControllerImageObserved _ -> BrokerDependencyReady
+  ControllerImageUnobservable detail -> BrokerDependencyUnavailable detail
+  ControllerImageIdentityRejected detail -> BrokerDependencyIdentityRejected detail
 
 observeBootstrapStatus
   :: BootstrapBrokerSettings

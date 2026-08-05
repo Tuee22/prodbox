@@ -68,6 +68,7 @@ import Prodbox.Bootstrap.Broker.Model
 import Prodbox.Bootstrap.Broker.PgpBoundary qualified as Pgp
 import Prodbox.Bootstrap.Broker.Program
 import Prodbox.Bootstrap.Broker.Protocol
+import Prodbox.Bootstrap.Broker.Readiness (BrokerReadinessState (..))
 import Prodbox.Bootstrap.Broker.Request qualified as Request
 import Prodbox.Bootstrap.Broker.Routes
 import Prodbox.Bootstrap.Broker.SecretWorker
@@ -2795,7 +2796,7 @@ runPhysicalCall
   -> IO (Either EngineBoundaryError result)
 runPhysicalCall fixture harness call = case call of
   PhysicalHealth _ -> observe "health" True
-  PhysicalReadiness _ -> observe "readiness" True
+  PhysicalReadiness _ -> observe "readiness" BrokerReadinessReady
   PhysicalObserveVaultStatus _ ->
     observe
       "vault-status"

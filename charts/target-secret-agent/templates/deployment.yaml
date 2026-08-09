@@ -2,9 +2,15 @@
 The substrate-local Target Secret Agent workload. It runs the
 `target-secret-agent` runtime role via `target-secret-agent start`,
 authenticates to Vault Kubernetes auth as its own least-privilege
-ServiceAccount, and delivers/reads allowlisted target-secret KV. A single
-replica with a RollingUpdate strategy; it exposes only the constant-time
-`/healthz`/`/readyz` paths as kubelet probes.
+ServiceAccount, and delivers/reads allowlisted target-secret KV. It exposes
+only the constant-time `/healthz`/`/readyz` paths as kubelet probes.
+
+Sprint 4.58: a single replica with `Recreate`, matching the other five
+single-writer control-plane roles. This previously declared `RollingUpdate`,
+which on `replicas: 1` surges to two pods under the default `maxSurge: 25%` —
+so the agent ran two concurrent writers during every rollout, and the
+rollout-digest annotation below means rollouts are routine. `replicas: 1` is
+only a single-writer claim when the update strategy cannot surge past it.
 */ -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -19,7 +25,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: RollingUpdate
+    type: Recreate
   selector:
     matchLabels:
       {{- include "target-secret-agent.selectorLabels" . | nindent 6 }}

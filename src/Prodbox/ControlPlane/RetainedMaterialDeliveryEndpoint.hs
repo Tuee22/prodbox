@@ -168,7 +168,7 @@ retainedMaterialDeliveryAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 retainedMaterialDeliveryAuthenticatedHandler maximumBytes observeNow boundary inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where

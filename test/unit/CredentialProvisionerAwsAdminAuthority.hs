@@ -217,7 +217,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
       let handler =
             awsAdminProvisionerAuthenticatedHandler
               (256 * 1024)
-              (pure True)
+              fixtureReadyRoleReadinessSource
               (pure (Right signingTime))
               (const (Right repository))
               exactPreparedLifecycle
@@ -280,7 +280,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
           handler =
             awsAdminProvisionerAuthenticatedHandler
               (256 * 1024)
-              (pure True)
+              fixtureReadyRoleReadinessSource
               (pure (Right signingTime))
               (const (Left "repository must not be selected for continuation observation"))
               lifecycle
@@ -439,7 +439,7 @@ exactPreparedBoundary =
 emptyHandler :: AuthenticatedRoleHandler IO
 emptyHandler =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = pure True
+    { authenticatedHandlerReadiness = fixtureReadyRoleReadinessSource
     , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
     }
 

@@ -19,7 +19,6 @@ module Prodbox.Minio.EncryptedObject
   , logicalObjectName
   , objectKeyForOpaqueId
   , opaqueObjectId
-  , putLogical
   , putLogicalIfAbsent
   , putLogicalIfAbsentWith
   , putLogicalIfVersion
@@ -57,7 +56,6 @@ import Prodbox.Minio.ObjectStore
   , getObjectVersioned
   , putIfAbsentObserved
   , putIfVersionObserved
-  , putObject
   )
 
 data LogicalObject
@@ -74,8 +72,11 @@ data VersionedLogicalObject = VersionedLogicalObject
   }
   deriving (Eq, Show)
 
+-- | Sprint 1.76: the applied arm carries the store version the accepted write
+-- produced, so a caller that needs evidence a write landed has it from the
+-- interpreter that issued the write rather than having to assert it.
 data LogicalConditionalPutResult
-  = LogicalConditionalPutApplied
+  = LogicalConditionalPutApplied !ObjectVersion
   | LogicalConditionalPutConflict
   deriving (Eq, Show)
 
@@ -130,17 +131,6 @@ opaqueObjectId hmacKey object =
 objectKeyForOpaqueId :: Text -> Text
 objectKeyForOpaqueId opaqueId =
   "objects/" <> opaqueId <> ".enc"
-
-putLogical
-  :: ObjectStoreConfig
-  -> DekCipher
-  -> ByteString
-  -> Text
-  -> LogicalObject
-  -> ByteString
-  -> IO (Either EncryptedObjectError ())
-putLogical config =
-  putLogicalWith (putObject config)
 
 putLogicalWith
   :: (Text -> ByteString -> IO (Either String ()))
@@ -237,7 +227,7 @@ putLogicalConditional putOpaque cipher hmacKey clusterId object plaintext = do
       storeResult <- putOpaque key envelope
       pure $ case storeResult of
         Left err -> Left (EncryptedObjectStoreFailed err)
-        Right ConditionalPutApplied -> Right LogicalConditionalPutApplied
+        Right (ConditionalPutApplied version) -> Right (LogicalConditionalPutApplied version)
         Right ConditionalPutConflict -> Right LogicalConditionalPutConflict
 
 getLogical

@@ -142,7 +142,7 @@ targetIntentIssueAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 targetIntentIssueAuthenticatedHandler maximumBytes boundary inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handleTargetIntentIssue maximumBytes boundary inner
     }
 

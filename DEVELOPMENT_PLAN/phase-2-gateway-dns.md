@@ -11,13 +11,29 @@
 
 ## Phase Status
 
-🔄 **Active (2026-08-04) on Sprint `2.39`** — a live cold home bring-up surfaced a Phase-2-owned
-production defect that blocks **every** home-substrate reconcile. The broker's `/readyz` violates the
-constant-time contract its own chart comment states: it performs a MinIO round trip, a Vault call,
-and two Kubernetes reads with 5-second deadlines inline in the probed request path. Measured on the
-live cluster: `/healthz` 0.19 ms, `/readyz` **5.003 s** against a 1-second probe budget. The
-Deployment can never report available, so `cluster reconcile` exits 1 before Vault is initialized.
-Diagnosed and evidenced; deliberately not patched under a blocked bring-up. See Sprint `2.39`.
+✅ **Reclosed 2026-08-07 on Sprint `2.41`** — Sprints `2.39`, `2.40`, and `2.41` are all Done on
+their code-owned surfaces, so the 2026-08-04 reopen closes. The live reproducer and the deployed-path
+readiness change remain 🧪 Standard-O and do not prevent closure.
+
+**Status correction (2026-08-08, Standard C).** This header led with the 2026-08-04
+`🔄 Active on Sprint 2.39` paragraph until 2026-08-08, while every one of this file's 41 sprint
+blocks — including `2.39` itself — read `✅ Done`, and both
+[README.md](README.md) and [00-overview.md](00-overview.md) had recorded the reclose on `2.41` since
+2026-08-07. The phase document was the only one of the four Standard-J documents still asserting the
+reopen. Nothing about the work changed; the header had simply not been moved when `2.39` closed. It
+is corrected in place rather than rewritten silently, because a status that disagrees with its own
+contents is the failure mode Standard C exists to catch, and this one survived two subsequent
+sessions.
+
+What that stale header asserted, and what actually became of it: the broker's `/readyz` performed a
+MinIO round trip, a Vault call, and two 5-second Kubernetes reads inline in the probed request path,
+measured at **5.003 s** against a 1-second probe budget while `/healthz` answered in 0.19 ms — so
+the Deployment could never report available and `cluster reconcile` exited 1 before Vault was
+initialized. Sprint `2.39` made the request path a constant-time projection over boundary-owned
+cached facts and added `checkBrokerReadinessProjection` to hold it structurally; Sprint `2.40`
+replaced the projection's unsound staleness constant with a derived bound. The broker-Pod-only
+ServiceAccount-token 401 is no longer indistinguishable from "not up yet": the dependency
+observation is four-valued with an absorbing identity-rejection constructor.
 
 ✅ **Reclosed 2026-08-04 on Sprint `2.38`** — own-surface reopen (Standard A) correcting the Sprint
 `2.36` shutdown postcondition. The proof-carrying witness demanded an *empty* idempotency map, which
@@ -3671,11 +3687,11 @@ the fold's compaction depends on the signer succeeding and there was no hard cei
 - Link the bounded-retention invariant to Sprint `2.32`'s emitter kernel and to the Deployment
   Qualification ledger's outstanding live leak-free axis in [README.md](README.md).
 
-## Sprint 2.39: Restore the Broker's Constant-Time Readiness Contract [🔄 Active]
+## Sprint 2.39: Restore the Broker's Constant-Time Readiness Contract ✅
 
-**Status**: Active — live-surfaced 2026-08-04 on a cold home bring-up, and **partially implemented
-since**. This is a Phase-2-owned production defect on the Bootstrap Broker runtime, not a harness or
-environment problem, and it currently blocks **every** home-substrate bring-up.
+**Status**: Done (2026-08-07) on this sprint's code-owned surface. Live-surfaced 2026-08-04 on a
+cold home bring-up; this is a Phase-2-owned production defect on the Bootstrap Broker runtime, not a
+harness or environment problem, and it blocked **every** home-substrate bring-up.
 
 **Status correction (Sprint `0.21`, 2026-08-05).** This block previously read `📋 Planned` with a
 `Remaining Work` section stating *"no fix has been attempted"*. That was false at the time it was
@@ -3769,24 +3785,46 @@ with an **absorbing** identity-rejection constructor, so the broker-Pod-only Ser
 [chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and it is
 what makes the second half of the original defect unrepresentable rather than merely handled.
 
-**Open — deliverable 3, the conformance gate.** The sprint requires a gate asserting `/readyz`
-performs no boundary I/O in its request path. `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`
-refers to a `broker-readiness-projection` gate in a comment, but **no such check exists** in
-`src/Prodbox/CheckCode.hs`. Until it does, nothing prevents a future edit from reintroducing a
-backend call — which is exactly how this defect arrived. The gate belongs in `runConformanceTier`
-beside the existing readiness-observation and gateway-probe scans.
+**✅ Landed — deliverable 3, the conformance gate.** `checkBrokerReadinessProjection` /
+`brokerReadinessProjectionViolations` are in `src/Prodbox/CheckCode.hs`, wired into the same
+conformance sequence as the readiness-observation and gateway-probe scans. The comment in
+`ProductionEngine.hs` that referred to a `broker-readiness-projection` gate now refers to something
+that exists.
+
+It makes two **structural** claims rather than scanning for known-bad calls:
+
+- `Prodbox.Bootstrap.Broker.Readiness` may import only pure modules (`Data.*`, `Numeric.*`,
+  `GHC.Generics`), so no boundary is in scope where the fold is defined;
+- `productionReady`'s body draws from an exact token allowlist — the monotonic clock read, the
+  latched-record read, and the pure fold — so a **new** call fails the gate rather than only a
+  previously-seen one. A forbidden-substring list would need extending every time somebody invents
+  another way to reach a backend; an allowlist does not. A deleted `productionReady` is a finding
+  too, so the gate cannot pass vacuously.
 
 **Open — the staleness bound is unsound.** Split out as Sprint `2.40`; the landed projection is not
-correct until it lands.
+correct until it lands. That is a separate sprint's surface, not this one's, and this sprint does not
+claim it.
 
-**Open — the live reproducer.** Validation items 1 and 2 (cold-cluster `curl --max-time 1` inside
-the broker Pod, and `cluster reconcile` converging to exit 0 from the half-built state) are
-Standard-O live-infra proofs and remain unrun.
+**🧪 Live-proof: pending.** Validation items 1 and 2 (cold-cluster `curl --max-time 1` inside the
+broker Pod, and `cluster reconcile` converging to exit 0 from the half-built state) are Standard-O
+live-infra proofs and remain unrun. Per [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)
+they do not prevent `Done` on the code-owned surface, and the sprint is not claiming the home
+bring-up is unblocked — only that the request path is now constant-time by construction and stays
+that way.
 
-## Sprint 2.40: Derive the Broker's Readiness Staleness Bound [📋 Planned]
+**Code-owned evidence**: `prodbox-unit -p "Sprint 2.39"` 5/5, including a case proving a boundary
+brought into import scope is refused, a case proving an unrecognised new call on the request path is
+refused, and a case proving a deleted request path is a finding rather than a pass. `dev check`
+exit 0.
 
-**Status**: Planned — Phase `2` own-surface work on the Bootstrap Broker readiness projection
-Sprint `2.39` introduced. Dependencies are satisfied; this is not blocked.
+## Sprint 2.40: Derive the Broker's Readiness Staleness Bound ✅
+
+**Status**: Done (2026-08-07) — Phase `2` own-surface work on the Bootstrap Broker readiness
+projection Sprint `2.39` introduced.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Readiness.hs` (`ObservationSchedule`,
+`ObservationScheduleError`, `mkObservationSchedule`, `brokerReadinessSchedule`;
+`computeBrokerReadiness` now takes the schedule), `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`,
+`src/Prodbox/Bootstrap/Broker.hs`.
 **Blocked by**: none. Sprint `2.39`'s projection is already in the tree; this corrects a constant
 inside it.
 **Deployment qualification**: pending — readiness semantics are a Standard-P surface, and both rows
@@ -3816,29 +3854,49 @@ computed, never authored.
 
 ### Deliverables
 
-- An `ObservationSchedule` with a hidden constructor whose single smart constructor **derives** the
-  staleness bound from the observer period and the per-pass budget, so a bound the observer cannot
-  meet is not constructible.
-- `computeBrokerReadiness` takes the schedule rather than reading free top-level constants.
-- The three independently-authored constants in `Broker/Readiness.hs` and
-  `Broker/ProductionEngine.hs` are replaced by that one value.
+- ✅ An `ObservationSchedule` with a hidden constructor whose single smart constructor **derives**
+  the staleness bound as `2 * (period + budget)`, so a bound the observer cannot meet is not
+  constructible. The reasoning is in the type's own documentation rather than in a commit message:
+  `observedAt` is stamped *after* a pass, so the inter-stamp interval is `period + passDuration`,
+  and tolerating one missed pass doubles it.
+- ✅ `computeBrokerReadiness` takes the schedule rather than reading free top-level constants, so the
+  bound the projection enforces is the one the observer that filled the record was built with.
+  Reading a free constant is exactly how the two drifted apart.
+- ✅ The three independently-authored constants are replaced by that one value:
+  `brokerReadinessObserverPeriodMicros` and `brokerReadinessObservationBoundMicros` in
+  `Broker/Readiness.hs`, and `readinessObservationBudgetMicros` in `Broker/ProductionEngine.hs`. The
+  observer loop in `Broker.hs` and the two observation deadlines in `ProductionEngine.hs` now read
+  the schedule.
 
 ### Validation
 
-1. `prodbox test unit -p "Sprint 2.40"` passes, including a case asserting
-   `stalenessBound >= 2 * (period + budget)` for the shipped schedule.
-2. A mutation exercise: restoring the free `3 * period` constant fails that case, and the source
-   restores byte-exactly afterward.
-3. `mkObservationSchedule` returns `Left` for a zero period and for a zero budget.
-4. `prodbox dev check` exit 0.
+1. ✅ `prodbox-unit -p "Sprint 2.40"` — 3/3, including `stalenessBound >= 2 * (period + budget)` for
+   the shipped schedule, and the concrete consequence: a record aged one full inter-stamp interval
+   (10 s) still projects `Ready`, which is precisely where the superseded 15 s bound began evicting
+   a healthy broker.
+2. ✅ The mutation exercise: restoring `3 * (5 * 1000 * 1000)` as the bound fails
+   *derives a bound the observer can actually meet*, and the source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+3. ✅ `mkObservationSchedule` returns `Left ObservationPeriodZero` for a zero period and
+   `Left ObservationBudgetZero` for a zero budget — refused rather than normalised, because a zero
+   period is a spin and a zero budget is a pass that cannot complete.
+4. ✅ `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-Everything above.
+None. Note what this does and does not settle: the shipped bound is now 20 s rather than 15 s and is
+derived, so the self-eviction arithmetic is corrected at the source. Whether a live broker converges
+under it is the Sprint `2.39` reproducer's business, and that remains 🧪 Standard-O.
 
-## Sprint 2.41: One Emitter Authority Value and a Supervised Worker Roster [📋 Planned]
+## Sprint 2.41: One Emitter Authority Value and a Supervised Worker Roster ✅
 
-**Status**: Planned — Phase `2` own-surface work on the gateway daemon runtime this phase owns.
+**Status**: Done (2026-08-07) — Phase `2` own-surface work on the gateway daemon runtime this phase
+owns.
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs` (`EmitterAuthority` replacing `envContinuity` /
+`envEmitterRuntime` / `envEmitterAuthorityStatus`; `daemonWorkerNames`, `daemonWorkerAction`,
+`withSupervisedWorkers`), `src/Prodbox/Gateway/Readiness.hs` (`WorkerState`, `WorkerRoster`,
+`workerRosterLive`, `workerRosterStalled`; `WorkersStatus` deleted; `computeReadiness` folds the
+roster), `src/Prodbox/CheckCode.hs` (`checkSupervisedWorkers`).
 **Blocked by**: none.
 **Deployment qualification**: pending — process topology and readiness semantics are Standard-P
 surfaces; both rows are already `pending`. This sprint does not perform the emitter cutover, so it
@@ -3870,28 +3928,55 @@ for the first is deletion, not synchronisation: if two cells can disagree, keep 
 
 ### Deliverables
 
-- One `EmitterAuthority` value replacing `envContinuity`, `envEmitterRuntime`, and
-  `envEmitterAuthorityStatus`, so clearing the runtime *is* clearing readiness, on every path
-  including ones not yet written. Readiness becomes topology-free — no arm can be the one that
-  forgets.
-- A `WorkerRoster` over a `Bounded`/`Enum` worker key, with a `withSupervisedWorkers` bracket as the
-  only way to run one: it links the `Async`, stamps a heartbeat, and records exit on every path.
-- `WorkersStatus` deleted; the readiness fold consumes the roster against a heartbeat bound.
+- ✅ One `EmitterAuthority` value replacing all three cells, so clearing the runtime *is* clearing
+  readiness. `currentEmitterReadinessAuthority` is now topology-free — it folds the authority value
+  rather than branching on `envEmitterTopology`, so the legacy arm can no longer be the one that
+  forgets. It used to be a bare `readTVar` of a readiness cell that the five continuity-clearing
+  sites deliberately left alone, under a comment calling it a monotone latch, which is how `Ready`
+  with no runtime became reachable on the **deployed** path.
+
+  **One distinction was deliberately kept rather than collapsed**, and the reason is worth
+  recording: the journal topology genuinely needs "runtime installed, not currently authoritative"
+  while recovery is outstanding. Collapsing readiness into runtime *presence* would have broken
+  that, so `EmitterAuthorityRecovering` is its own constructor. The type keeps the distinction the
+  runtime actually has and removes the one nothing needed.
+- ✅ A `WorkerRoster` with `withSupervisedWorkers` as the only way to run a long-lived worker: it
+  links the `Async` (so a worker's exception reaches the supervisor instead of a discarded handle),
+  stamps a heartbeat on a timer, and records exit through `finally` — on every path, including an
+  exception. `daemonWorkerNames` is the single list from which both the roster and the spawn set are
+  built, so a worker cannot exist without a readiness entry.
+- ✅ `WorkersStatus` deleted. The readiness fold consumes the roster against a heartbeat bound
+  derived from the beat interval (the Sprint `2.40` rule applied again), so a worker that exits
+  **or** stops beating removes the Pod from ready endpoints. The flag could express neither: it was
+  written once, at `daemonWorkers` entry, before any worker existed.
 
 ### Validation
 
-1. `prodbox test unit -p "Sprint 2.41"` passes.
-2. The readiness fold returns `Starting`, not `Ready`, when the authority runtime is absent — a
-   state the type no longer permits to be constructed separately from the readiness value.
-3. A worker recorded as exited holds the fold at `Starting`; a mutation exercise restoring the
-   monotone `WorkersStatus` flag fails that case, and the source restores byte-exactly.
-4. Raw `withAsync` is not in scope in `src/Prodbox/Gateway/Daemon.hs` — the negative-space check
-   pattern Sprint `2.10` established for module-local mutable counters.
-5. `prodbox dev check` exit 0.
+1. ✅ `prodbox-unit -p "Sprint 2.41"` — 6/6, plus the migrated readiness suite; full unit 3191/3191.
+2. ✅ The readiness fold returns `Starting`, not `Ready`, when no authority runtime is held — and the
+   type no longer permits the readiness value to be constructed separately from the runtime, so the
+   case is closed by construction rather than by the assertion.
+3. ✅ A worker recorded as exited holds the fold at `Starting`, as does one whose heartbeat has aged
+   past the bound. The mutation exercise — replacing the roster fold with a monotone
+   "any worker was ever registered" test, which is what the deleted flag amounted to — fails four
+   cases (*folds the full input table*, *never admits before the workers have started*, *has exactly
+   one Ready cell*, and the Sprint 2.41 case), and the source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+4. ✅ Raw `withAsync` is not in scope in `src/Prodbox/Gateway/Daemon.hs`; `checkSupervisedWorkers`
+   fails the build if it returns, and also if `withSupervisedWorkers` itself disappears so the gate
+   cannot pass vacuously.
+5. ✅ `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-Everything above.
+None on this sprint's surface.
+
+**🧪 Live-proof: pending, and load-bearing here.** This changes readiness on the **deployed**
+`LegacyModelBEmitter` path: a gateway whose continuity runtime is cleared now un-readies, where
+before it stayed `Ready`. That is the defect being fixed, and it is also a behaviour change no fake
+fixture can qualify — a live gateway that clears its continuity runtime transiently will now leave
+ready endpoints where it previously did not. The fake-driven fold proves the projection; only a live
+run proves the operational consequence.
 
 ## Sprint 2.38: Reachable Shutdown Postcondition for the Bootstrap Broker [✅ Done]
 

@@ -1322,12 +1322,7 @@ waitForHttpStatus port path expectedStatus = do
 
 httpStatusRetryPolicy :: RetryPolicy
 httpStatusRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 50
-    , retryPolicyBaseDelayMicros = 100000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 100000
-    }
+  testRetryPolicy 50 100000 1 100000
 
 readHttp :: Int -> String -> IO HttpResponse
 readHttp port path = do

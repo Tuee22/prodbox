@@ -110,7 +110,7 @@ compareAndSwapAuthorityObjectCore core request = do
             Right maybeVersioned -> do
               observation <- authorityObservationFromVersioned maybeVersioned
               case disposition of
-                LogicalConditionalPutApplied ->
+                LogicalConditionalPutApplied _ ->
                   case observation of
                     AuthorityObjectMissing ->
                       Left "authority CAS applied but mandatory re-observation was missing"

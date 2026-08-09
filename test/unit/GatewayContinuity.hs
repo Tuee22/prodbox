@@ -136,7 +136,7 @@ gatewayContinuitySuite =
               { continuityBackendGet = const (pure (Right Nothing))
               , continuityBackendPutIfAbsent = \_ _ -> do
                   writeIORef initializeCount 1
-                  pure (Right LogicalConditionalPutApplied)
+                  pure (Right (LogicalConditionalPutApplied (ObjectVersion "initialized-v1")))
               , continuityBackendPutIfVersion = \_ _ _ ->
                   pure (Right LogicalConditionalPutConflict)
               }

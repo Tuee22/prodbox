@@ -48,8 +48,13 @@ data VersionedObject = VersionedObject
   }
   deriving (Eq, Show)
 
+-- | The outcome of a conditional put. Sprint 1.76: the applied arm carries the
+-- version the store returned for the write it just accepted — the receipt of a
+-- round trip that actually landed. Discarding it was what left every caller
+-- unable to distinguish "a write reached the store" from "I decided one had",
+-- so the receipt is threaded rather than dropped.
 data ConditionalPutResult
-  = ConditionalPutApplied
+  = ConditionalPutApplied !ObjectVersion
   | ConditionalPutConflict
   deriving (Eq, Show)
 

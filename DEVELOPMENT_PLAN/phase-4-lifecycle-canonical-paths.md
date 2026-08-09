@@ -10,6 +10,40 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-08 on Sprint `4.61`** — a second own-surface reopen the same day, closed the
+same day. Phase `5`'s Sprint `5.31` made a discarded refusal speak, and the sentence it produced
+named a Phase-`4` defect: `runAnchoredStepOrder` reset its admission set at every phase boundary, so
+a component whose readiness step is anchored in an earlier phase than its dependant's mutation step
+was refused unconditionally — `never observed ready in this run` said of a component observed ready
+earlier in that same run. Admissions are now threaded across the phases; staleness still expires and
+re-observes, so what widened is which evidence counts, not how long evidence lasts. A gate holding
+the threading is owed and is registered rather than claimed.
+
+✅ **Reclosed 2026-08-08 on Sprint `4.60`**, which gave the control-plane server a response
+obligation. `runControlPlaneServer` used to discard `forkFinally`'s `Either SomeException ()` with
+`const`, so any throw from the request read, the readiness resolver, or `interpreterHandle` closed
+the socket with zero bytes and no `500` — a known answer rendered indistinguishable from a network
+fault, which is the *Distinguishability* class committed at a conversion boundary
+([chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md), landed by
+governance Sprint `0.25`). The Bootstrap Broker had mapped an interpreter failure to a `500` since
+Sprint `2.33`; `Prodbox.Http.ResponseObligation` now serves both, and is the only module in the
+governed set permitted to import `Network.Socket.ByteString`. The reopen expanded this phase's own
+owned surface only (Standard A) and moved no Standard-P production-composition surface. Prior
+reclosures stand.
+
+✅ **Reclosed 2026-08-08 on Sprint `4.59`** — the 2026-08-05 own-surface reopen closes; Sprints
+`4.55`, `4.56`, and `4.59` are all Done on their code-owned surfaces and Phase `4` has no open
+sprints. `4.55` moved every control-plane role's readiness off the kubelet request path: the seam is
+now `STM`-typed cached facts, so a signed S3 LIST, a Vault read, or an `aws sts get-caller-identity`
+subprocess behind readiness does not type-check, and the `m Bool` seam is deleted. `4.56` stopped
+the repository minting an admission ticket and discarding it one line later — a mutating reconcile
+step now takes a `MutationAdmission` it cannot be invoked without, re-validated against a bound read
+from the graph. `4.59` deleted the superseded in-controller Target Agent write lane and the
+`TrustedTargetSink` CAS half it existed to serve. Each corrected sprint text that was false against
+source: `4.55`'s per-role backend-call counts were wrong for all five roles, and `4.59`'s
+implementation list named two deletions the compiler and this plan's own ledger both refused. No
+prior closure on this phase was falsified.
+
 ✅ **Reclosed 2026-08-04 on Sprint `4.54`** — own-surface reopen (Standard A/N) repairing this
 phase's own validation evidence. Sprint `4.53`'s Independent Validation cited a test module that
 Sprint `4.50` had deleted, and the three endpoint-readiness classifier cases it rested on were never
@@ -6105,6 +6139,11 @@ the live transient-MinIO recovery remains the non-blocking Standard-O proof abov
 
 **Engineering docs to create/update:**
 
+- Sprint `4.60`: `documents/engineering/lifecycle_control_plane_architecture.md` - the control-plane
+  server answers or refuses; it never closes an accepted connection silently.
+- Sprint `4.60`: `documents/engineering/integration_fixture_doctrine.md` - the same rule for a
+  fixture server (already authored by governance Sprint `0.25`; this sprint records the landed
+  mechanism against it).
 - ✅ `documents/engineering/bootstrap_readiness_doctrine.md` - §2.4 the transient-vs-persistent
   endpoint-unobservable distinction (SSoT).
 - `documents/engineering/lifecycle_reconciliation_doctrine.md` - none required beyond the existing
@@ -6180,11 +6219,24 @@ The store is gone and is not coming back; the seam it exercised survives in
 
 None.
 
-## Sprint 4.55: Control-Plane Readiness as Cached Facts [📋 Planned]
+## Sprint 4.55: Control-Plane Readiness as Cached Facts ✅
 
-**Status**: Planned — Phase `4` own-surface work (Standard A/N) on the lifecycle control-plane role
-runtimes this phase owns. Sprint `2.39` fixed this defect for the Bootstrap Broker; five roles carry
-it unfixed.
+**Status**: Done (2026-08-08) — Phase `4` own-surface work (Standard A/N) on the lifecycle
+control-plane role runtimes this phase owns. Sprint `2.39` fixed this defect for the Bootstrap
+Broker; five roles carried it unfixed. Both increments landed; the `m Bool` seam is deleted.
+**Implementation**: `src/Prodbox/Readiness/ObservationSchedule.hs` (new — `ObservationSchedule`
+extracted from the broker so one derivation is shared), `src/Prodbox/ControlPlane/RoleReadiness.hs`
+(new — the four-valued observation, the `STM`-typed `RoleReadinessSource`, the layering algebra, and
+the pure projection), `src/Prodbox/ControlPlane/RoleReadinessObserver.hs` (new — the background
+observer, its supervised loop, and the constant-time request-path resolver),
+`src/Prodbox/ControlPlane/Server.hs` (`interpreterReadiness` replaces `interpreterReadyz`;
+`RoleReadinessResolver`), `src/Prodbox/ControlPlane/AuthenticatedRoleInterpreter.hs`
+(`authenticatedHandlerReadiness` replaces `authenticatedHandlerReadyz`),
+`src/Prodbox/ControlPlane/Runtime.hs` (per-role observers for all five roles),
+`RoleInterpreters.hs`, `AuthenticatedRuntime.hs`, and the nine endpoint modules,
+`src/Prodbox/CheckCode.hs` (`checkRoleReadinessProjection`, and an exact-module allowlist on the
+Sprint `2.39` broker gate), `test/unit/RoleReadinessSuite.hs` (new), `test/support/TestSupport.hs`,
+five test modules, and `prodbox.cabal`.
 **Blocked by**: none.
 **Deployment qualification**: pending — readiness semantics and queueing/admission are Standard-P
 surfaces; both rows are already `pending`.
@@ -6197,11 +6249,30 @@ one snapshot at one instant.
 ### Objective
 
 The Bootstrap Broker was not special; it was the one that was measured. The Lifecycle Authority,
-Authority Backup, TLS Retention, Provider Worker, and Target Secret Agent each run six signed S3
-LISTs plus a Vault read plus a replay-projection read **on the kubelet request path**, against a
-chart-declared `timeoutSeconds: 1`. That is the same violation of
+Authority Backup, TLS Retention, Provider Worker, and Target Secret Agent each perform backend I/O
+**on the kubelet request path**, against a chart-declared `timeoutSeconds: 1`. That is the same
+violation of
 [bootstrap_readiness_doctrine.md § 0.7](../documents/engineering/bootstrap_readiness_doctrine.md)
 Sprint `2.39` exists to repair.
+
+**Count corrected against source, 2026-08-08 (Standard C).** This sprint originally said the five
+roles "each run six signed S3 LISTs plus a Vault read plus a replay-projection read". That is wrong
+for all five, and the corrected inventory is worth stating because the worst offenders were not the
+ones the sprint named:
+
+| Role | What its `/readyz` actually did |
+|---|---|
+| Lifecycle Authority | **five** signed S3 LISTs — the same `inClusterAuthorityReady store` reached from five separate handler layers, plus a custody record-path probe and a handoff-receipt read |
+| Authority Backup | one signed S3 probe |
+| TLS Retention | one signed S3 probe |
+| Provider Worker | **zero** S3 LISTs, and the worst call in the set: a Provider Vault KV read followed by an `aws sts get-caller-identity` **subprocess** |
+| Target Secret Agent | **zero** S3 LISTs, and up to **32 sequential Vault KV reads** — an `allM` over every registered target, which short-circuits only on failure, so the healthy path was the slowest |
+
+Every authenticated role additionally carried a shared layer adding a retained-authority-epoch read
+and a request-replay-projection read. The sixth `inClusterAuthorityReady` occurrence in
+`Runtime.hs` is inside a per-operation repository resolver, not a readiness slot — counting it was
+the grep-versus-trace error Sprint `4.58` recorded. The same wrong count appeared in this plan's own
+[legacy ledger](legacy-tracking-for-deletion.md) row and is corrected there too.
 
 Two aggravations. The role seam types readiness as `m Bool`, so *unreachable* and *not ready yet*
 are the same value — the § 0.5 prohibition, and the *Distinguishability* class of
@@ -6221,23 +6292,81 @@ short-circuit**: every layer's backend call runs on every probe regardless of an
   migrate the remaining four and delete the old seam in a second, separately-landed increment. The
   subtractive half is the 4.51-shaped one — land it alone.
 
-### Validation
+### What landed
 
-1. `prodbox test unit -p "Sprint 4.55"` passes.
-2. A role readiness handler that performs backend I/O is a **type error**.
-3. Unreachable and not-ready-yet resolve to distinct constructors; a mutation exercise collapsing
-   them fails the cases, and the source restores byte-exactly.
-4. Layered readiness performs exactly one snapshot read per probe, proven by a counting fake.
-5. `prodbox dev check` exit 0.
+**Increment A** — the mechanism, proven, wired for one role. `Prodbox.Readiness.ObservationSchedule`
+extracts Sprint `2.40`'s derived staleness bound so the broker and the five roles share one
+definition rather than two that can drift; `Prodbox.ControlPlane.RoleReadiness` carries the
+four-valued observation, the `STM`-typed source, the layering algebra, and the pure projection; and
+`Prodbox.ControlPlane.RoleReadinessObserver` owns the background pass. The **Provider Worker**
+migrated first — the role whose probe path shelled out to `aws sts get-caller-identity`.
+
+**Increment B** — the subtractive half, landed after A was green. `interpreterReadyz :: m Bool` and
+`authenticatedHandlerReadyz :: m Bool` are **deleted**; both seams now carry a
+`RoleReadinessSource`. All five roles have observers, the nine endpoint layers compose facts through
+`layerRoleReadinessSource`, and `serveControlPlaneRequest` resolves through an injected
+`RoleReadinessResolver` that reads one clock and one transaction.
+
+Three decisions worth recording:
+
+- **The Lifecycle Authority's five LISTs became one observation.** They were always the same store
+  reached from five layers, so the base layer contributes the dependency and the four outer layers
+  contribute nothing. The identity element `noRoleReadinessContribution` exists for exactly this,
+  and `composeRoleReadinessFacts` treats an empty dependency list as the identity so a pass-through
+  layer does not have to invent a timestamp.
+- **No observation was dropped in the move.** The custody record-path probe and the handoff-receipt
+  read lived inside repository constructors whose readiness fields disappeared; rather than losing
+  them, both are exported as labelled dependency observations
+  (`observeTargetChildCustodyDependency`, `observeBootstrapHandoffDependency`) and folded into the
+  Authority's background pass. The same observation, off the request path.
+- **The broker's own Sprint `2.39` gate needed care.** Its `impureImportViolations` check permits
+  only `Data.`/`Numeric.`/`GHC.Generics` prefixes, and sharing the schedule makes the projection
+  import a `Prodbox.` module. Adding `"Prodbox."` as a prefix would have put every boundary in the
+  repository back in scope — strictly worse than not sharing at all. The gate instead gained an
+  **exact-module** allowlist naming one module.
+
+### Validation (as run)
+
+1. `prodbox-unit -p "Sprint 4.55"` — 10/10. (Written in the sprint as
+   `prodbox test unit -p ...`; that flag does not exist on the `prodbox` surface. Pattern selection
+   is a flag on the built test binary.)
+2. **A role readiness handler that performs backend I/O is a type error.** The field is a
+   `RoleReadinessSource` over `STM`, and `inClusterAuthorityReady store :: IO Bool`, so the shape
+   that used to compile does not. This is carried by the seam's type; the suite records the exact
+   refuted shape rather than asserting it at runtime, and the `dev check` gate
+   (`checkRoleReadinessProjection`) additionally refuses any boundary import in the projection
+   module and fails if the seam declaration disappears.
+3. **Mutation exercise.** Collapsing `RoleDependencyIdentityRejected` into the non-terminal
+   unavailable arm makes the projection report `object-store: connection refused` where
+   `vault: role is not bound to this account` is expected — the absorbing case hidden inside a
+   generic not-ready, which is the § 0.5 defect. The source restored byte-exactly (`cmp` clean) and
+   10/10 returned.
+4. **Layered readiness performs exactly one snapshot read per probe**, proven by counting fakes:
+   three layers, one `atomically`, and after eleven probes each layer's observation count is still
+   `1`. A single unready layer decides the composite and names itself, with no layer asked again.
+5. `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs` exit 0, and
+   `prodbox test unit` exit 0 — 3215/3215 plus the dedicated 27/27, 33/33, and 27/27 suites.
 
 ### Remaining Work
 
-Everything above.
+None on this sprint's surface. The live proof — a role Pod reporting ready inside the chart's
+`timeoutSeconds: 1` budget, and a stalled observer evicting it after the derived 20-second bound —
+is a 🧪 Standard-O axis for the next `prodbox test all` on each substrate.
 
-## Sprint 4.56: Thread the Dependency Admission Proof to the Act [📋 Planned]
+## Sprint 4.56: Thread the Dependency Admission Proof to the Act ✅
 
-**Status**: Planned — Phase `4` own-surface work on the capability readiness barrier and anchored
-reconcile executor this phase owns.
+**Status**: Done (2026-08-08) — Phase `4` own-surface work on the capability readiness barrier and
+anchored reconcile executor this phase owns.
+**Implementation**: `src/Prodbox/Lifecycle/DependencyAdmission/Internal.hs` (new — the two
+constructors), `src/Prodbox/Lifecycle/DependencyAdmission.hs` (new — the sole minter, the admission
+set, the graph-derived bound, and the total re-validation),
+`src/Prodbox/Lifecycle/CapabilityReadinessBarrier.hs` (the barrier returns the admission it minted
+instead of discarding it), `src/Prodbox/Lifecycle/AnchoredReconcile.hs` (the executor threads an
+admission set and invokes a mutation through a callback that requires a `MutationAdmission`),
+`src/Prodbox/CLI/Rke2.hs` and `src/Prodbox/Lib/AwsSubstratePlatform.hs` (both drivers),
+`src/Prodbox/CheckCode.hs` (`checkDependencyAdmissionBoundary`),
+`test/unit/DependencyAdmissionSuite.hs` (new), `test/unit/CapabilityReadinessBarrierSuite.hs`,
+`test/unit/Main.hs`, and `prodbox.cabal`.
 **Blocked by**: none.
 **Deployment qualification**: pending — lifecycle orchestration is a Standard-P surface; both rows
 are already `pending`.
@@ -6270,19 +6399,513 @@ fix is the `ValidatedSettings` trick applied to ordering: make the proof a requi
 - A total re-validation at the mutating seam that refuses an admission older than a per-edge bound
   derived from the graph, not authored beside it.
 
-### Validation
+### Validation (as run)
 
-1. `prodbox test unit -p "Sprint 4.56"` passes.
-2. Invoking a mutating step without an admission is a **type error**.
-3. An admission older than its bound yields a typed refusal, not a run; a mutation exercise
-   restoring the discarded-ticket line fails that case, and the source restores byte-exactly.
-4. `prodbox dev check` exit 0.
+1. `prodbox-unit -p "Sprint 4.56"` — 8/8. (Written in the sprint as `prodbox test unit -p ...`;
+   that flag does not exist on the `prodbox` surface. Pattern selection is a flag on the built test
+   binary.)
+2. **Invoking a mutating step without an admission is a type error.** `runAnchoredStepOrder` takes
+   the `ComponentMutation` arm through a separate `MutationAdmission -> step -> IO ExitCode`
+   callback, so the mutating path is unreachable without a proof. The proof itself is opaque: its
+   constructors live in `DependencyAdmission.Internal`, and `checkDependencyAdmissionBoundary`
+   fails any other `src/` module that names that representation — a mutating step cannot mint its
+   own admission any more than it can skip one.
+3. **Mutation exercise.** Deriving the bound and then discarding it — the same shape as the
+   discarded ticket this sprint exists to fix — makes both the expiry case and the
+   exactly-at-the-bound boundary case pass an admission that is `bound + 1` microseconds old. The
+   source restored byte-exactly (`cmp` clean) and 8/8 returned.
+4. The admission chain is exercised end to end rather than from a hand-built ticket: the suite
+   drives `observationFromRef` → `classifyObservation` → `dependencyAdmissionFromVerdict`, because
+   `AdmissionTicket` has no exported constructor and therefore no test can forge one either.
+5. `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, and `prodbox test unit` exit 0 —
+   3224/3224 plus the dedicated 27/27, 33/33, and 27/27 suites.
+
+### Two things this does not claim
+
+- **The per-edge bound is a mechanism, not a set of numbers.** The bound is read from the
+  dependency's own resolved latency budget in the graph — genuinely derived, not authored beside
+  the call site. But `componentRequirementSpec` returns the same `specRequireLatencyMicros` literal
+  for every component today, so every edge currently derives the same value. The suite asserts that
+  fact directly (`length (dedupe bounds) == 1`) so the next evidence sweep reads the limitation
+  instead of inferring per-edge numbers that do not exist. When per-component budgets
+  differentiate, the bounds differentiate with no change to this code.
+- **It narrows the observe-to-act window; it does not make the pair atomic.** Only a fence does
+  that, and that is Sprint `3.31`'s and the cardinality work's surface.
+
+**Refusal-versus-retry, decided explicitly.** A hard refusal on an expired admission would have
+failed the first home `cluster reconcile` outright, because admissions cannot survive a reconcile
+phase boundary — `applyNativeInstallPlan` crosses federated Vault unseal and a settings reload
+between phases. The executor therefore **re-observes the one dependency whose admission aged out**
+and refuses only if the fresh observation also fails. That keeps the sprint's purpose (narrow the
+window) without converting a routine phase boundary into a run failure.
 
 ### Remaining Work
 
-Everything above. Note this narrows the observe-to-act window; it does not make the pair atomic.
-Only a fence does that, and that is Sprint `3.31`'s and the cardinality work's surface, not this
-one.
+None on this sprint's surface.
+
+## Sprint 4.57: Delete the Superseded Precondition Orphans ✅
+
+**Status**: Done (2026-08-05) — Phase `4` own-surface work on the precondition surface Sprint `4.11`
+introduced and the managed-resource registry superseded.
+**Implementation**: `src/Prodbox/Lifecycle/Preconditions.hs` (removed `noLiveClusterTaggedAws`,
+`noUndrainedK8sAwsResources`, `noLiveOperationalIamUser`, `checkAll`, `renderPreconditionFailures`)
+and the corresponding label-only cases in `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — zero call sites means zero runtime delta, so no Standard-P
+surface moves.
+**Independent Validation**: pure, no live cluster and no AWS credentials — every deleted export had
+zero production references before removal, so the change is behaviour-preserving by construction;
+`prodbox dev check` exit 0.
+
+### Objective
+
+Sprint `4.11` promised a composable precondition algebra. It shipped label-only tests as closure and
+was never wired. Three of five predicates had zero production call sites, and **both composition
+combinators — the module's entire stated reason to exist — had zero references anywhere, including
+tests.**
+
+`noLiveClusterTaggedAws` is the instructive one. It was not merely unused, it was **stale in a way
+that would have caused harm if wired**: `runCascadePostflightTagSweep` (`src/Prodbox/CLI/Rke2.hs`)
+already performs the identical check — same input, same discoverer, same renderer — and
+additionally applies `partitionRetainedLongLived` to carve out infrastructure retained by design.
+The orphan has no carve-out, so wiring it would have produced **false refusals on the state-backend
+bucket and `aws-ses`**. It also returned a hard failure where
+[lifecycle_reconciliation_doctrine.md § 6](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+calls for a non-fatal diagnostic.
+
+The doctrine already recorded the supersession: § 4 states these predicates were generalized into
+the registry's `reconcileAbsent`, which **is** wired as cascade step 3.
+
+### Validation
+
+1. Every deleted export had zero production references before removal.
+2. The cascade postflight tag sweep still runs, and remains the wired implementation of this check.
+3. `prodbox dev check` exit 0; the unit suite builds and runs with the label-only cases removed.
+
+### Remaining Work
+
+None. What survives is `StructuredError` plus `noLiveLongLivedPulumiStacks` /
+`noLiveLongLivedPulumiStacksPreflight`, which are genuinely wired through
+`src/Prodbox/Native.hs`.
+
+## Sprint 4.58: Close the Unconditional Object-Store Write Surface ✅
+
+**Status**: Done (Increment A 2026-08-05; Increment B 2026-08-06) — Phase `4` own-surface work on the
+object-store write surface, the Target Secret Agent workload shape, and the target-sink
+expected-version token this phase owns.
+**Implementation**: Increment A — `src/Prodbox/Minio/ObjectStore.hs` and
+`src/Prodbox/Minio/ObjectStoreNative.hs` (removed `putObject`, `putIfAbsent`, `putIfVersion` and
+their now-orphaned `putGuarded` / `putObjectWithArgs` code paths),
+`src/Prodbox/Minio/EncryptedObject.hs` (`putLogical`), `src/Prodbox/Vault/BootstrapBundle.hs`
+(`putBundleObject`), and `charts/target-secret-agent/templates/deployment.yaml`
+(`RollingUpdate` → `Recreate`). Increment B — new
+`src/Prodbox/Lifecycle/TargetSinkVersion.hs` and
+`src/Prodbox/Lifecycle/TargetSinkVersion/Internal.hs`,
+`src/Prodbox/Lifecycle/TargetCommitIntent.hs` (removed `mkTargetSinkVersion`,
+`targetSinkVersionText`, and the two now-unreachable `TargetCommitValueError` constructors),
+`src/Prodbox/ControlPlane/TrustedTargetSink.hs` (sole minter; the parse and its refusal path
+deleted), and `src/Prodbox/CheckCode.hs` (`checkTargetSinkVersionBoundary`).
+**Blocked by**: none.
+**Deployment qualification**: pending — the chart strategy change touches process topology, a
+Standard-P surface, so it invalidates no prior `proven` row (both are already `pending`) but must be
+named in any future one. Increment B moves no Standard-P surface: the Vault wire is unchanged,
+because the expected version travels in `options.cas` and never in the record body
+(`src/Prodbox/ControlPlane/TargetMaterialRecordCodec.hs` is untouched and names no version field).
+**Independent Validation**: pure plus chart-render, no live cluster. Increment A — the removed
+writers had zero external callers before removal, and the object-store modules now export **only**
+`putIfAbsentObserved` and `putIfVersionObserved`, so an unconditional write is no longer
+expressible. Increment B — `prodbox-unit -p "Sprint 4.58"` 8/8, plus the five suites whose fixtures
+moved (`Sprint 4.47` 87/87, `Sprint 4.50 production decommission boundaries` 5/5, `Sprint 4.50
+Target Agent generation tombstone` 13/13, `Sprint 4.50 authenticated decommission clients` 4/4,
+`Sprint 5.17 retained SES different-sink recovery` 2/2), and **two mutation exercises, each restored
+byte-exactly**: authoring a `TargetSinkVersion` outside the internal module fails to compile
+(`GHC-01928`, illegal term-level use of the type constructor), and a second `src/` module naming the
+internal representation fails `dev check` with the boundary message. `prodbox dev check` exit 0.
+
+### Objective
+
+Two findings, one of which corrects this plan's own ledger.
+
+**The write surface.** `putObject` was exported at the same type as `putIfAbsent`, so an unfenced
+authoritative write was expressible. The cleanup ledger recorded "11 unconditional call sites"; that
+was a count of textual occurrences of the identifier. The true number of live unfenced authoritative
+writes was **zero** — both leaf callers (`putLogical`, `putBundleObject`) were dead code. Removing
+the entry points orphaned the entire unconditional code path, because the conditional writers use
+separate helpers. This is the *Cardinality* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and with
+zero live offenders, closing the surface *is* the move that makes the illegal state
+unrepresentable — no permit needed threading to achieve it.
+
+**The workload shape, which is the more serious finding.**
+`charts/target-secret-agent/templates/deployment.yaml` declared `replicas: 1` with
+`strategy: RollingUpdate`. On a single replica the default `maxSurge: 25%` surges to two pods, and
+the pod carries a rollout-digest annotation implying routine rollouts — so the agent ran **two
+concurrent writers during every deploy**. Alone among the six single-writer roles its chart comment
+made no single-writer claim. `replicas: 1` is only a single-writer statement when the update
+strategy cannot surge past it, and no type-level permit helps while the scheduler is running two
+writers by design.
+
+### Validation
+
+1. The object-store modules export no unconditional writer; `putIfAbsentObserved` and
+   `putIfVersionObserved` are the only exported writes.
+2. Every removed function had zero external callers before removal, so the deletion is
+   behaviour-preserving.
+3. The rendered `target-secret-agent` Deployment carries `strategy.type: Recreate`.
+4. A target-sink expected version cannot be authored: `TargetSinkVersion`'s constructor lives in an
+   internal module with one permitted importer, and the mutation exercise confirms an attempt to
+   construct one elsewhere is a compile error rather than a lint finding.
+5. The boundary is enforced mechanically, not by convention: `checkTargetSinkVersionBoundary` fails
+   `dev check` when a second `src/` module names the internal representation, and permits the public
+   face to cross the boundary for the type while still refusing it the minter.
+6. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+**Increment B is closed, and this entry corrects what it said twice over (2026-08-06).**
+
+The sprint's first entry said `PreparedTargetWritePermit` was written but unwired, needing threading
+through one call site. Its 2026-08-05 correction replaced that with "a second writer routes around
+the permit" in `src/Prodbox/ControlPlane/TargetSecretAgentExecution.hs". **Both were wrong on the
+facts.** A source-level re-verification found four independent errors:
+
+1. **The "second writer" is not unfenced.** `executeVerifiedTargetIntent` is total on
+   `VerifiedTargetCommittedIntent`, exported abstractly and mintable only by
+   `verifySignedTargetCommittedIntent`, which enforces Ed25519 verification against the Lifecycle
+   Authority's issuer key plus issuer-generation, issuer-identity, authority-epoch, **fence-floor**,
+   agent-identity, target-binding, action-digest and deadline checks. Every fencing field written
+   into the record originates in those signed bytes, and the function re-reads agent-local trust,
+   re-checks the deadline, and observes before and after its single CAS. The `grep` the claim rested
+   on — "no `FencedCommitPermit` reference in that module" — measured the absence of *one*
+   mechanism and concluded the absence of *any*. It is a legitimately post-authorized agent action.
+2. **It is not production-reachable.** `executeVerifiedTargetIntent` has zero callers in `src/` or
+   `app/`. Its only caller is `test/unit/ControlPlaneTargetSecretAgentExecution.hs`, and that suite
+   is compiled but **not registered** in `test/unit/Main.hs`, so it never runs.
+3. **The recorded fix does not compile.** Making `decideTargetSinkWrite` the sole source of a
+   `TargetSinkCasRequest` would force that module to mint a `PreparedTargetWritePermit`, which needs
+   a `FencedCommitPermit`, a `RegisteredTargetSet` and a `ModelBObservation TargetIntentProjection`
+   — none of which it has, and none of which doctrine permits the Agent to hold. The export edit
+   breaks the build rather than redirecting the caller.
+4. **The class was wrong.** § 21 row C is a permit *"carrying the token the store itself checks"*.
+   Vault KV v2 receives only `{"data": …, "options": {"cas": N}}`; owner nonce, fencing token and
+   generation are opaque data fields it never inspects. On `TargetSinkCasRequest` the achievable
+   coordinate is **A (provenance)**, not C.
+
+**What was actually closed.** The one value on this path Vault itself checks is the expected
+version, and it was authorable from a string literal: `mkTargetSinkVersion` accepted any non-empty
+text, while its single legitimate minter round-tripped the store's own counter through
+`Text.pack . show`. That is the literal class-C surface, and it is now shut. `TargetSinkVersion`
+moves to its own module, abstract to every consumer, with the constructor confined to
+`Prodbox.Lifecycle.TargetSinkVersion.Internal` and one permitted importer — the target sink's Vault
+observation decoder. An expected version is now evidence that a store read happened. The retype from
+`Text` to the store's `Natural` also deletes a parse step and its refusal path from the write path,
+and corrects the type's `Ord` instance from lexicographic to numeric.
+
+**The remaining surface, honestly bounded.** The `TargetSinkCasRequest` and `TargetSinkRecord`
+constructors stay public. That is a real class-A representability gap and it is recorded in the
+cleanup ledger, but with the request protocol superseded (Sprint `4.59`) it has no live offender to
+close. Per [§ 22](../documents/engineering/chaos_hardening_doctrine.md), none of this proves
+at-most-one writer across processes: two holders of a validly-decoded version both produce legal
+requests, and Vault's version compare only makes the loser fail after the winner lands. That residue
+is ring-3 containment and is recorded `assumed`, not `proven`.
+
+Deliberately **not** in this sprint: collapsing `ModelBCasRequest`'s guarded and unguarded
+constructor pairs. That is the move that makes an unguarded authority CAS inexpressible, and it
+touches every `ModelBCasAdapter` consumer — the coupled shape the Sprint `4.51` revert warns about.
+
+## Sprint 4.59: Delete the Superseded In-Controller Target Agent Write Lane ✅
+
+**Status**: Done (2026-08-08) — Phase `4` own-surface work on the target write path this phase
+owns. Disposition decided by the operator; the sprint is the execution. **Implementation scope
+corrected against source (Standard C): two clauses of the original list were false and are not
+executed. See "Scope correction" below.**
+**Implementation**: `src/Prodbox/ControlPlane/TargetSecretAgentExecution.hs` (removed
+`TargetSecretAgentExecutionBoundary`, `mkTargetSecretAgentExecutionBoundary`,
+`TrustedTargetSecretMaterialSource`, `TargetAgentTrustRepository`, `TargetSecretMaterial`,
+`admitTargetCommittedIntent`, `executeVerifiedTargetIntent`, and their error/result types —
+230 lines, keeping the module for the signed-intent vocabulary five production modules import),
+`src/Prodbox/ControlPlane/TrustedTargetSink.hs` (the CAS half — `trustedTargetSinkAdapter`,
+`trustedRequestParts`, `compareAndSwapVaultTargetSink`, `vaultExpectedVersion`, and the
+`mkTrustedTargetSink` CAS parameter), `test/unit/ControlPlaneTargetSecretAgentExecution.hs`
+(deleted), the three registered decommission suites that constructed a trusted sink,
+`src/Prodbox/CheckCode.hs` (`retiredCitedSourcePaths`), and `prodbox.cabal`.
+
+### Scope correction (2026-08-08)
+
+Two clauses of the original Implementation line are false against source and were **not** executed:
+
+- **`src/Prodbox/Lifecycle/TargetCommitInterpreter.hs` is not deletable.** It has two importers,
+  both *registered* suites — `test/unit/RetainedSesTargetRecovery.hs` and
+  `test/unit/TargetCommitSmtp.hs` — which Sprints `4.47`, `4.49`, and `5.17` cite as evidence.
+  Deleting it would retire live coverage, and this plan's own
+  [legacy ledger](legacy-tracking-for-deletion.md) already says so in as many words: *"The
+  Authority-side call site survives Sprint `4.59`."* The sprint contradicted the ledger; the ledger
+  was right.
+- **The `TargetSinkCasAdapter` / `TargetSinkCasRequest` / `TargetSinkCasResult` vocabulary is not
+  orphaned.** `decideTargetSinkWrite` mints requests at
+  `src/Prodbox/Lifecycle/TargetCommitIntent.hs:896` and `:910`, and the adapter type is consumed by
+  the two registered suites above. Only the *binding* through `trustedTargetSinkAdapter` was
+  orphaned, and that is what was removed.
+
+Also corrected: the module itself survives. The original line reads as though
+`TargetSecretAgentExecution.hs` goes away entirely, but five production modules import its
+signed-intent vocabulary (`Cluster/FederationRegistration.hs`,
+`Lifecycle/CredentialProvisioner/PreparedTarget.hs`, `ControlPlane/TargetAuthorityTrust.hs`,
+`ControlPlane/TargetIntentAuthority.hs`, and the worker runtime). Deleting the file was attempted
+first and the compiler refused it — recorded here because the sprint text invited exactly that
+mistake.
+**Blocked by**: none.
+**Deployment qualification**: pending — the deleted lane has zero production callers, so this is a
+no-op at runtime.
+
+### Objective
+
+Two complete, mutually redundant write lanes exist against the same target Vault coordinate. Only
+one is deployed. `TargetSecretWorker.applyCas` → `targetWorkerCompareAndSwap` (bound at
+`src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs`) is the live writer, already gated by a
+required opaque `TargetWorkerAttestation`. The in-controller lane through
+`executeVerifiedTargetIntent` has **zero callers in `src/` or `app/`**, and three further facts say
+it is abandoned rather than pre-landed:
+
+- The standing Target Secret Agent Vault policy (`src/Prodbox/Vault/Reconcile.hs`) grants only
+  `secret/metadata/<logical>` read and delete, no `secret/data/<logical>` capability at all, so the
+  lane would fail authorization today.
+- Its unit suite is listed in `prodbox.cabal` `other-modules` but is **not registered** in
+  `test/unit/Main.hs`, so it compiles and never runs — the same evidence-integrity class Sprint
+  `4.54` corrected.
+- The deployed one-shot Job topology matches the doctrine requirement that plaintext-bearing
+  materialization run in a one-shot secret worker, which an in-controller lane would violate.
+
+Keep `verifySignedTargetCommittedIntent` and the signed-intent vocabulary: the live worker verifies
+the same envelope and depends on it.
+
+### Validation (as run)
+
+1. **Every deleted export has zero references after removal**, verified by name across `src/`,
+   `app/`, and `test/`: `executeVerifiedTargetIntent`, `admitTargetCommittedIntent`,
+   `mkTargetSecretAgentExecutionBoundary`, `TargetSecretAgentExecutionBoundary`,
+   `TrustedTargetSecretMaterialSource`, `trustedTargetSinkAdapter`, and
+   `compareAndSwapVaultTargetSink` all return 0.
+2. **The live worker's write path and its attestation gate are untouched.**
+   `TargetSecretWorker.applyCas` → `targetWorkerCompareAndSwap` and the required opaque
+   `TargetWorkerAttestation` are unchanged in
+   `src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs`.
+3. **The kept vocabulary is intact.** `verifySignedTargetCommittedIntent` and the signed-intent
+   types the live worker depends on remain exported.
+4. **The retired suite is registered as retired rather than silently forgotten.**
+   `retiredCitedSourcePaths` names it and why — the governed-document harmony lint failed the build
+   until it did, which is the gate working.
+5. `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, and `prodbox test unit` exit 0 —
+   3224/3224 plus the dedicated 27/27, 33/33, and 27/27 suites.
+
+The predicted blast radius held: `mkTrustedTargetSink`'s CAS parameter is dropped in the three
+registered decommission suites as well as the dead one. The production `TrustedTargetSink` survives
+as observe-only and is still consumed by the decommission inventory boundary.
+
+### Remaining Work
+
+None on this sprint's surface. Two items are deliberately **not** closed here and are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than absorbed: the
+`TargetSinkCasRequest`/`TargetSinkRecord` constructor exports (a Provenance-class row this sprint's
+deletion does not resolve, because the Authority-side minter survives), and the discarded
+target-sink CAS verdict at the surviving Authority call site.
+
+Note separately, and **not** owned by this sprint: the production observe path reads
+`secret/data/<logical>` while the role's policy grants only `secret/metadata/<logical>`, so the
+decommission-inventory observe would fail authorization under that role as policied. It degrades to
+an absorbing `TargetSinkUnobservable` rather than being mistaken for absence, so it is a
+functionality gap that fails closed, not a safety defect. It was not verified live.
+
+## Sprint 4.60: A Response Obligation for the Control-Plane Server ✅
+
+**Status**: Done (2026-08-08) — Phase `4` own-surface reopen (Standard A) on the control-plane role
+runtime this phase owns. The doctrine it implements is Sprint `0.25`.
+**Implementation**: `src/Prodbox/Http/ResponseObligation.hs` (new),
+`src/Prodbox/ControlPlane/Runtime.hs` (`serveControlPlaneConnection`,
+`controlPlaneResponseObligation`; `sendAll` removed from scope),
+`src/Prodbox/ControlPlane/ConfigClient.hs` (`ConfigClientHttpStatus` carries the bounded reason),
+`src/Prodbox/CheckCode.hs` (`responseObligationViolations`, `checkResponseObligation`),
+`test/integration/FixtureServer.hs`, `test/unit/ResponseObligationSuite.hs` (new),
+`test/unit/ControlPlaneServer.hs`, `test/unit/Main.hs`, `prodbox.cabal`.
+**Blocked by**: none.
+**Deployment qualification**: pending — and this sprint moves **no** Standard-P surface. It adds no
+process, thread, pool, deadline, or admission decision; it changes only *which bytes* an
+already-accepted connection receives before the same `close`. Both rows are already `pending`, so
+nothing is invalidated — but the next qualification run must exercise the post-change path.
+**Independent Validation**: pure and socket-pair driven, no live cluster — a throwing interpreter
+yields a complete `500` rather than a closed socket, and an async exception yields a `503` **and**
+still escapes.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/integration_fixture_doctrine.md`.
+
+### Objective
+
+`runControlPlaneServer` discards the outcome of the connection handler:
+
+```haskell
+void $ forkFinally (serve role client) (const (close client))
+```
+
+`const` throws away the `Either SomeException ()`. Only a framing refusal replies; any throw from
+the request read, the readiness resolver, or `interpreterHandle` closes the socket with zero bytes
+and no `500`. On the wire that is indistinguishable from a network fault — the *Distinguishability*
+class of [chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md)
+committed at a conversion boundary, which is
+[§ 23](../documents/engineering/chaos_hardening_doctrine.md).
+
+The Bootstrap Broker already solved this — `invokeInterpreter` maps a synchronous interpreter
+failure to `internalErrorReply` — so this sprint brings the control plane to a standard the Broker
+has held since Sprint `2.33`. Note the asymmetry with Sprint `5.30`, which is why the two are
+separate: the fixture's failure was *already* a typed value and the fix there is to stop discarding
+it, whereas no type can stop an arbitrary `IO` exception escaping `interpreterHandle`, so here a
+backstop is the right primary fix rather than a consolation.
+
+### Deliverables
+
+- **`Prodbox.Http.ResponseObligation`** — the only module in the governed set that may import
+  `Network.Socket.ByteString`. `withResponseObligation`'s handler has type `IO reply`, not `IO ()`,
+  so "handled the connection without answering" does not type-check, and at-most-once delivery is
+  structural rather than guarded by a flag.
+- **The fallback is a total function of a closed `ResponseRefusal`, not a constant reply.** That is
+  what lets production and the fixture share one helper under different disclosure policies:
+  production maps to `(500, "internal-error\n")` — it must not put `show e` on the wire, which is
+  why the Broker redacts its reply body from `Show` — while the fixture may name the exception,
+  because there the detail is the deliverable.
+- **`SomeAsyncException` is answered on a bounded best-effort write and then re-raised unchanged.**
+  Load-bearing, not tidiness: `System.Timeout.Timeout` is an async exception, so converting it to a
+  `500` would send a reply *and* make `timeout` return `Just ()`, silently defeating any future
+  per-request deadline.
+- **Adoption in `src/Prodbox/ControlPlane/Runtime.hs`**, with the request read moved *inside* the
+  obligation — that also closes the read-throws-first gap the Broker still has. Export
+  `serveControlPlaneConnection` so the `500` path is testable over a socket pair; today `serve` is a
+  `where`-closure under a `forever` loop on a hard-coded port.
+- **A `dev check` negative-space rule**: raw `sendAll`/`send`, including via a qualified alias, is
+  not in scope in a governed server, with a positive anchor on the helper's signature.
+
+### One deliverable added during validation
+
+`ConfigClientHttpStatus` carried only an `Int`. Running the suite after the server change turned the
+symptom from `NoResponseDataReceived` into `ConfigClientHttpStatus 500` — better, because a `500` is
+definitely a server-side answer rather than a network fault, but still naming nothing. **The client
+was performing the last conversion in the chain**, discarding a body the server had just been taught
+to fill. That is the same rule (§ 23: do not convert a typed failure into an untyped one) at the
+same sprint's own seam, so it was fixed here rather than registered: the constructor now carries a
+bounded reason.
+
+### Validation (as run)
+
+1. ✅ `prodbox-unit -p "Sprint 4.60"` — 12/12 (9 obligation cases over a socket pair, 3 end-to-end
+   control-plane cases). A throwing handler yields a complete, length-consistent `500`; a bottom
+   *inside the reply body* yields a `500`, proving the render happens inside the guarded region; a
+   bottom in the refusal renderer falls back to `lastResortInternalError`; a peer that closed first
+   does not throw.
+2. ✅ **End to end through the real accept path**: a `RoleInterpreter` whose `interpreterHandle`
+   throws produces `HTTP/1.1 500 Internal Server Error`, not a closed socket. A readiness cell that
+   is bottom does the same. The framing-refusal `400` is unchanged.
+3. ✅ **Mutation exercise M1** — re-adding `sendAll` to `Runtime.hs`'s import list fails `dev check`
+   with the response-obligation message. Restored byte-exactly (`cmp` clean).
+4. ✅ **Mutation exercise M2, the load-bearing one** — reordering the guards so an asynchronous
+   exception is treated as an ordinary handler failure makes the enclosing `timeout` return
+   `Just ()` instead of `Nothing`. That is the concrete proof that re-raising async exceptions is
+   what keeps a future per-request deadline composable, rather than a stylistic preference.
+   Restored byte-exactly.
+5. ✅ **The original symptom, negated.** Against the still-drifted fixture the integration suite now
+   reports `ConfigClientHttpStatus 500 "fixture handler failed: user error (Failed to decode Tier-0
+   prodbox.dhall \`parameters\` … public_edge_advertisement_mode : - < … > (a union type) + Text)"` —
+   the exact drifted field — where it previously reported `NoResponseDataReceived`. The twenty cases
+   still fail, because the drift itself is Sprint `5.30`'s surface; what changed is that the failure
+   now names its cause.
+6. ✅ `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs` exit 0,
+   and `prodbox test unit` exit 0 — 3245/3245 plus the dedicated 27/27, 33/33 and 27/27 suites.
+
+### Remaining Work
+
+None on this sprint's surface. Four things are deliberately **not** in it and are registered in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than folded in: the
+unbounded accept loop and missing read deadline (which *would* touch Standard-P admission); the
+closed reply-status ADT; gateway and Broker adoption; and the absent control-plane logger, which
+means the production `500`'s structured reason survives only as the `500`/`503` distinction — a
+partial honouring of `bootstrap_readiness_doctrine.md` § 0.5 named here rather than papered over.
+Note the asymmetry that justifies it: the *fixture* may name the exception on the wire, and does; a
+production role must not, so its reason needs a log rather than a body.
+
+## Sprint 4.61: Admissions Are Threaded Across Phases, Not Reset At Each One ✅
+
+**Status**: Done (2026-08-08) — Phase `4` own-surface reopen (Standard A) on the dependency-admission
+mechanism Sprint `4.56` introduced. Surfaced by Phase `5`'s Sprint `5.31`, which made the refusal
+speak; the defect it named is Phase `4`'s.
+**Implementation**: `src/Prodbox/Lifecycle/AnchoredReconcile.hs` (`runAnchoredStepOrder` takes an
+incoming `AdmissionSet` and returns the resulting one), `src/Prodbox/CLI/Rke2.hs`
+(`runAnchoredReconcileSteps`; `applyNativeInstallPlan` threads bootstrap → transition → steady, and
+the two interstitial `requireNativeComponentReadiness` observations record into the set instead of
+being discarded), `src/Prodbox/Lib/AwsSubstratePlatform.hs` (the post-port-forward slice inherits
+the pre-forward slice's admissions).
+**Blocked by**: none.
+**Deployment qualification**: pending — this is a lifecycle-orchestration surface, so Standard P
+applies and both rows are already `pending`. It does not add a process, thread, pool, or deadline;
+it changes which evidence a mutation is admitted on, in the direction of admitting mutations that
+were previously refused outright.
+**Independent Validation**: fake-host reconcile, no live substrate — the reconcile that previously
+exited 1 at `chart_authority_backup` now proceeds through the gateway chart and daemon-full
+readiness. `prodbox dev check` exit 0; `prodbox test unit` 3253/3253.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`
+
+### Objective
+
+`applyNativeInstallPlan` runs its phases as separate `runAnchoredStepOrder` calls, because each
+phase has a different step action. Each call started its fold at `noAdmissions`. A component whose
+`ComponentReadiness` step is anchored in an earlier phase than its dependant's `ComponentMutation`
+step was therefore **refused unconditionally**, and the message said so in words that were true of
+the phase and false of the run:
+
+```text
+mutating `chart_authority_backup` requires an admission for its declared
+dependency `registry`, which was never observed ready in this run
+```
+
+`registry` *was* observed ready in that run — `StepVerifyRegistryMinioEdge` is
+`ComponentReadiness ComponentRegistry` and is a `PhaseBootstrap` step, while
+`StepAuthorityBackupChartReady` is `ComponentMutation ComponentChartAuthorityBackup` in
+`PhaseTransition`. The evidence existed and the next phase could not see it.
+
+This is not a variant of § 23's conversion; it is a scope error with the same effect. "This run" was
+implemented as "this call", and nothing in the types said which one was meant.
+
+### What Landed
+
+- `runAnchoredStepOrder` takes the admissions carried in and returns the admissions carried out, so
+  the caller decides what "this run" spans instead of the function assuming it.
+- `applyNativeInstallPlan` threads the set through bootstrap → transition → steady, and the two
+  readiness observations that sit *between* phases — `ComponentVaultUnsealed` after the Vault
+  lifecycle transition, and `ComponentChartAuthorityBackup` before the steady phase — now record
+  into the set rather than being discarded through `fromLeft ExitSuccess`. They were already being
+  performed; only their evidence was being thrown away.
+- `runAwsSubstratePlatformOrder`'s second slice inherits the first's. Those two calls exist only
+  because the gateway port-forward has to be established between them, which is not a reason for the
+  evidence to reset.
+- Staleness is untouched and still does the work it was designed for: an admission that has aged
+  past its bound across a phase boundary is **not** silently trusted — it expires, triggers
+  re-observation of that one dependency, and is decided on the fresh evidence. Threading widens what
+  counts as evidence; it does not widen how long evidence lasts.
+
+### Validation
+
+1. The fake-host `cluster reconcile --with-edge` that exited 1 at `chart_authority_backup` now
+   proceeds through pulsar, the gateway chart, and daemon-full readiness — the refusal is gone and
+   the next failure was a different, further-along one.
+2. `prodbox dev check` exit 0 with `--enable-tests` in force; `prodbox test unit` 3253/3253.
+3. 🧪 Live: a home `cluster reconcile` is the Standard-O proof. Note what the code-local evidence
+   does and does not establish — it shows the cross-phase refusal is gone on the fake-host path. It
+   does not establish that a live reconcile ever reached this refusal, because no live reconcile has
+   been run since Sprint `4.56` landed the admission requirement.
+
+### Remaining Work
+
+**A gate is owed and is deliberately not claimed.** Nothing yet prevents a future phase split from
+reintroducing the reset — the threading is correct but not enforced, and `noAdmissions` is still
+constructible at any call site. The honest options are a `dev check` rule holding that
+`noAdmissions` appears exactly once per reconcile surface, or a type that distinguishes "the run's
+admissions" from "an empty set". Registered here rather than asserted as done.
 
 ## Related Documents
 

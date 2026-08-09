@@ -861,6 +861,14 @@ Use these commands for quick feedback that stays local:
 `dev check` is the canonical local quality gate. It runs the repository-owned policy scan,
 Fourmolu, HLint, a warning-clean Cabal build, and syncs the built executable to `./.build/prodbox`.
 
+The four commands above are **separate surfaces, not redundant ones**. `dev check` formats and lints
+`app src test`, but the build it runs covers the library and the `prodbox` executable — it does not
+compile the test suites. A type error in `test/` is caught by `test unit` (the four unit suites) or
+by `test integration cli` / `env` (the integration suite), and by nothing else. Run all four before
+calling a change validated; the scope rule and the outage that established it are recorded in
+[resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md) under "The
+region of Ring 2".
+
 ### Named Infrastructure-Backed Validation
 
 These commands run real native Haskell validation flows against the named environment:

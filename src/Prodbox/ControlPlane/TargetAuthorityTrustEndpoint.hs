@@ -92,7 +92,7 @@ targetAuthorityTrustAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 targetAuthorityTrustAuthenticatedHandler maximumBytes repository inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where

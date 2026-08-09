@@ -27,8 +27,14 @@ module Prodbox.Bootstrap.Broker.Readiness
   , BrokerReadinessFacts (..)
   , BrokerReadinessState (..)
   , unobservedBrokerReadinessFacts
-  , brokerReadinessObserverPeriodMicros
-  , brokerReadinessObservationBoundMicros
+  , ObservationSchedule
+  , ObservationScheduleError (..)
+  , renderObservationScheduleError
+  , mkObservationSchedule
+  , observerPeriodMicros
+  , observationBudgetMicros
+  , observationStalenessBoundMicros
+  , brokerReadinessSchedule
   , brokerReadinessDependencies
   , computeBrokerReadiness
   , brokerReadinessIsReady
@@ -40,6 +46,15 @@ where
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Readiness.ObservationSchedule
+  ( ObservationSchedule
+  , ObservationScheduleError (..)
+  , mkObservationSchedule
+  , observationBudgetMicros
+  , observationStalenessBoundMicros
+  , observerPeriodMicros
+  , renderObservationScheduleError
+  )
 
 -- | One dependency's cached observation.
 --
@@ -102,18 +117,21 @@ brokerReadinessDependencies facts =
   , ("controller-image", brokerFactControllerImage facts)
   ]
 
--- | How often the background observer refreshes the cached record.
-brokerReadinessObserverPeriodMicros :: Natural
-brokerReadinessObserverPeriodMicros = 5 * 1000 * 1000
-
--- | The maximum age a cached record may have and still be projected.
+-- | The shipped schedule: a 5-second observer period and a 5-second per-pass
+-- budget, so the derived staleness bound is 20 seconds.
 --
--- Derived from the observer period rather than independently authored, so the
--- staleness bound cannot drift away from the refresh rate. Three periods
--- tolerates one missed pass plus one slow pass; anything older means the
--- observer is not running and readiness fails closed.
-brokerReadinessObservationBoundMicros :: Natural
-brokerReadinessObservationBoundMicros = 3 * brokerReadinessObserverPeriodMicros
+-- Sprint 4.55 moved 'ObservationSchedule' itself to
+-- "Prodbox.Readiness.ObservationSchedule" so the five control-plane roles share
+-- one definition of the derivation rather than copying it. The constructor is
+-- still hidden and the bound is still computed, not authored; this module now
+-- names the two inputs and lets the smart constructor derive the third. The
+-- fallback arm is unreachable — both inputs are positive literals — and exists
+-- only because 'mkObservationSchedule' is honest about rejecting a zero.
+brokerReadinessSchedule :: ObservationSchedule
+brokerReadinessSchedule =
+  case mkObservationSchedule (5 * 1000 * 1000) (5 * 1000 * 1000) of
+    Right schedule -> schedule
+    Left err -> error (Text.unpack (renderObservationScheduleError err))
 
 -- | The projected readiness of the broker.
 --
@@ -135,8 +153,12 @@ data BrokerReadinessState
 -- first even when another dependency is also down, because retrying will never
 -- clear it. Staleness outranks the individual facts, because a stale record
 -- says nothing about any of them.
-computeBrokerReadiness :: Natural -> BrokerReadinessFacts -> BrokerReadinessState
-computeBrokerReadiness nowMicros facts =
+-- Sprint 2.40: the schedule is a parameter, so the staleness bound the
+-- projection enforces is the one the observer that fills the record was built
+-- with. Reading a free top-level constant is how the two drifted apart.
+computeBrokerReadiness
+  :: ObservationSchedule -> Natural -> BrokerReadinessFacts -> BrokerReadinessState
+computeBrokerReadiness schedule nowMicros facts =
   case rejections of
     (label, detail) : _ ->
       BrokerReadinessIdentityRejected (label <> ": " <> detail)
@@ -144,10 +166,10 @@ computeBrokerReadiness nowMicros facts =
       Nothing ->
         BrokerReadinessStarting "no dependency observation has completed yet"
       Just observedAt
-        | observationAge observedAt > brokerReadinessObservationBoundMicros ->
+        | observationAge observedAt > observationStalenessBoundMicros schedule ->
             BrokerReadinessStarting
               ( "the cached dependency observation is older than the "
-                  <> Text.pack (show (brokerReadinessObservationBoundMicros `div` 1000000))
+                  <> Text.pack (show (observationStalenessBoundMicros schedule `div` 1000000))
                   <> "s bound"
               )
         | otherwise -> case (unavailable, unobserved) of

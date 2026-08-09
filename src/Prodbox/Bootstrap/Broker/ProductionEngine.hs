@@ -130,7 +130,9 @@ import Prodbox.Bootstrap.Broker.Readiness
   ( BrokerDependencyObservation (..)
   , BrokerReadinessFacts (..)
   , BrokerReadinessState
+  , brokerReadinessSchedule
   , computeBrokerReadiness
+  , observationBudgetMicros
   , unobservedBrokerReadinessFacts
   )
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
@@ -981,7 +983,11 @@ runPhysical
   -> BrokerReadinessCache
   -> BrokerPhysicalCall operation result
   -> IO (Either EngineBoundaryError result)
-runPhysical capabilityRegistry settings store kubernetes clients provisionerTokens readinessCache call = case call of
+-- The capability registry no longer participates in the request path: since
+-- Sprint 2.39 the readiness arm folds the latched record instead of observing
+-- the registry inline. The parameter is retained so the caller's argument order
+-- is unchanged.
+runPhysical _capabilityRegistry settings store kubernetes clients provisionerTokens readinessCache call = case call of
   PhysicalHealth _ -> pure (Right True)
   PhysicalReadiness _ -> Right <$> productionReady readinessCache
   PhysicalObserveVaultStatus _ -> observeBootstrapStatus settings store
@@ -1948,7 +1954,7 @@ productionReady :: BrokerReadinessCache -> IO BrokerReadinessState
 productionReady cache = do
   now <- realMonotonicNow
   facts <- readTVarIO (brokerReadinessCacheFacts cache)
-  pure (computeBrokerReadiness (monotonicInstantMicros now) facts)
+  pure (computeBrokerReadiness brokerReadinessSchedule (monotonicInstantMicros now) facts)
 
 -- | The latched dependency facts plus the action that refreshes them. The
 -- record keeps the two halves together so no caller can acquire the cache
@@ -1957,12 +1963,6 @@ data BrokerReadinessCache = BrokerReadinessCache
   { brokerReadinessCacheFacts :: !(TVar BrokerReadinessFacts)
   , brokerReadinessCacheRefresh :: !(IO ())
   }
-
--- | The observation budget for one background readiness pass. It is bounded by
--- the observer period rather than by the kubelet probe budget, because nothing
--- on the probe path waits for it.
-readinessObservationBudgetMicros :: Natural
-readinessObservationBudgetMicros = 5 * 1000 * 1000
 
 -- | One background observation pass. Every boundary call in the readiness path
 -- lives here and nowhere else.
@@ -1979,7 +1979,7 @@ observeBrokerReadinessFacts capabilityRegistry settings kubernetes = do
   lease <-
     kubernetesObserveBootstrapLease
       kubernetes
-      (deadlineAtOffset now (RemainingDuration readinessObservationBudgetMicros))
+      (deadlineAtOffset now (RemainingDuration (observationBudgetMicros brokerReadinessSchedule)))
   image <-
     kubernetesObserveControllerImageDigest
       kubernetes
@@ -1987,7 +1987,7 @@ observeBrokerReadinessFacts capabilityRegistry settings kubernetes = do
       -- condition here is the circular dependency that made a cold bring-up
       -- unable to converge.
       ControllerObservedForOwnReadiness
-      (deadlineAtOffset now (RemainingDuration readinessObservationBudgetMicros))
+      (deadlineAtOffset now (RemainingDuration (observationBudgetMicros brokerReadinessSchedule)))
   observedAt <- realMonotonicNow
   pure
     BrokerReadinessFacts

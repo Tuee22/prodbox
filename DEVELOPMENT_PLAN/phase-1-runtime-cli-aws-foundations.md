@@ -1753,6 +1753,297 @@ A13 (library-first layout) per
 
 None.
 
+## Sprint 1.78: Delete the Unwired Host-Tool Enum and Correct Its Doctrine ✅
+
+**Status**: Done (2026-08-05) — Phase `1` own-surface work on the host-tool surface this phase owns.
+**Implementation**: deleted `src/Prodbox/Host/Tool.hs` and its `prodbox.cabal` stanza; removed the
+`test/unit/Main.hs` import and the "keeps host tools closed and invocation targets absolute" case;
+restated `documents/engineering/host_platform_doctrine.md` § 3 as a declared target with the gap
+named, per the `documents/engineering/README.md` rule that a document may define a target before
+cutover only when it says so explicitly.
+**Blocked by**: none.
+**Deployment qualification**: pending — no Standard-P production-composition surface is touched; the
+module had zero production importers, so this is a no-op at runtime.
+**Independent Validation**: pure, no live host — `grep -rl 'Prodbox.Host.Tool' src/ test/ app/`
+returned only the module itself and `test/unit/Main.hs` before removal, so deletion is provably
+behaviour-preserving; `prodbox dev check` exit 0 and the unit suite builds and runs unchanged.
+**Docs to update**: `documents/engineering/host_platform_doctrine.md`
+
+### Objective
+
+`host_platform_doctrine.md` § 3 asserted that *"the host binary never resolves a tool against the
+host's own `$PATH`"*. That was false for **100%** of production invocations. `Prodbox.Host.Tool`
+defined a closed nine-constructor enum with an `AbsExe` smart constructor and had **zero production
+importers**; ~160 host invocations across ~25 modules pass a bare command name as
+`Prodbox.Subprocess.subprocessPath`, which is a plain `FilePath` and therefore offers `AbsExe` no
+seam to occupy.
+
+The narrow repair was investigated and rejected on evidence. `sudo` is a bare literal at every one
+of its 25+ sites, and so is the tool it wraps, so resolving a single constructor would move `$PATH`
+resolution one argument to the right — under a privileged escalation — while forcing an integration
+fixture edit for no safety gain. The enum was also not a superset of what is actually shelled out
+to: `systemctl`, `mkdir`, `chown`, `rm`, and `curl` have no constructor at all.
+
+Deleting the module and correcting the doctrine leaves the repository honest. Leaving § 3 asserting
+an unenforced invariant is the defect; deleting the code while leaving the prose would have
+preserved it.
+
+### Validation
+
+1. The module has no importers before removal, so the change is behaviour-preserving by
+   construction rather than by test.
+2. `prodbox dev check` exit 0 (warning-clean build, fourmolu, HLint, conformance).
+3. `host_platform_doctrine.md` § 3 no longer asserts a property the worktree lacks.
+
+### Remaining Work
+
+None on this sprint's surface. Making § 3's target true is separate, unscheduled work: `Subprocess`
+would carry a resolved-absolute path by type, every call site would route through it, and a
+`dev check` rule would reject bare literals for enum members.
+
+## Sprint 1.79: Derive the In-Force Config Payload Instead of Hand-Writing It ✅
+
+**Status**: Done (2026-08-07) — Phase `1` own-surface work on the Tier-0 config
+surface this phase owns. Phase 1 is already 🔄 Active; this adds to that reopen rather than
+declaring a new one.
+**Implementation**: `src/Prodbox/Settings.hs` (`renderConfigDhall` derived from
+`Dhall.inject @ConfigFile`; the twelve hand-written `dhall*` emitter helpers deleted;
+`decodeConfigDhallBytes` schema materialization made best-effort), `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — the in-force config payload is a Standard-P
+production-composition surface; both substrate rows are already `pending`, so nothing is
+invalidated, but the next qualification run must exercise the derived renderer.
+**Independent Validation**: pure, no live infrastructure — the existing round-trip equality
+assertion, made able to fail first (see Validation step 1).
+**Docs to update**: `documents/engineering/config_doctrine.md`
+
+### Objective
+
+`renderConfigDhall` is a hand-written field-by-field renderer that emits `Config::{…}` and **never
+emits `components`**. Because record completion refills an omitted field from the schema default, an
+operator-authored component graph is silently replaced by `defaultComponentGraph` in the payload —
+and that payload is the canonical in-force config, submitted to the Lifecycle Authority by
+`reconcileInForceConfigFromFile` and read back by every runtime load.
+
+The asymmetry is the finding. The Tier-0 *file* path renders through `Dhall.inject` in
+`src/Prodbox/Config/Tier0.hs` and is total, and `configFileToTier0Parameters` carries `components`
+faithfully. So the binary-sibling `prodbox.dhall` preserves the authored graph while the in-force
+SSoT discards it — two renderers of one record disagreeing about what the record contains. Per
+[config_doctrine.md § 0](../documents/engineering/config_doctrine.md), the in-force config is the
+source of truth and the sibling `parameters` is a seed/propose input only, so the value survives
+exactly where it does not matter and is lost where it does.
+
+This is the *Totality* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md).
+
+**No prior sprint closure is falsified by this.** The evidence-level audit checked every candidate:
+Sprint `1.58`'s `decode . encode == id` claim is about the Tier-0 record and its `Dhall.inject`
+path, which is total; the Phase-7 drift guards state their scope as "a **default** config"; the
+Phase-5 sweep over `renderConfigDhall` is a SecretRef scan, which by construction cannot see a
+*missing* field. The defect sits in a gap no claim ever covered. Recording that is the point —
+manufacturing corrections where none are owed would be the same failure in the other direction.
+
+### Deliverables
+
+- ✅ `renderConfigDhall` derived from `Dhall.inject @ConfigFile`, the mechanism `Config/Tier0.hs`
+  already uses, so the renderer cannot omit a field again. The derived route was taken, not the
+  fallback: it removes the class rather than the instance.
+- ✅ The hand-written emitter is gone. Deriving orphaned all twelve helpers
+  (`dhallText`, `dhallTextList`, `dhallOptionalText`, `dhallSecretRef`, `dhallOptionalSecretRef`,
+  `dhallBool`, `dhallOptionalBool`, `dhallOptionalBgpPeers`, `dhallScalingPolicy`,
+  `dhallScalingPolicyBySubstrate`, `dhallCapacityBudget`, `dhallResourcePlan`,
+  `dhallRuntimeMemoryProfiles`, `dhallClusterTopology`, `scalingPolicyDhallType`) plus the
+  `injectedValue`/`DhallExpr` scaffolding, all removed; the warning-clean build surfaced each one.
+- ✅ A consequence handled rather than discovered later: the derived payload is self-contained and
+  no longer imports `./prodbox-config-types.dhall`, so `decodeConfigDhallBytes` now materializes
+  that schema **best-effort**. It is still materialized, deliberately — a payload stored by the
+  superseded renderer carries the import and must stay decodable — but a self-contained payload no
+  longer fails on the absence of a generated, git-ignored file it never needed.
+
+### Validation
+
+1. ✅ **The fixture was varied first, and the assertion failed.** `roundTripConfigFile` now carries a
+   deliberately non-default one-node `components` graph. With that change and the superseded
+   renderer still in place, **three** assertions failed — *decodes an in-force Dhall payload through
+   the repository import resolver*, *seed → read round-trips the in-force config to the same
+   ConfigFile*, and *round-trips: the in-force payload resolver decodes against the GENERATED
+   schema* — each reporting a decoded `components` of `defaultComponentGraph` where the fixture
+   carried one node. After landing the derived renderer all 36 in-force cases pass. A green test
+   that was already green would not have been evidence, and this one was: it had passed for as long
+   as the field it was meant to protect was silently discarded.
+2. ✅ Byte-compatibility, stated as what it can actually be. The emitted **bytes** necessarily change
+   — the derived renderer produces a self-contained value instead of `Config::{…}` over a schema
+   import, which is the fix — so what is pinned is the **record**: a default config renders,
+   decodes, and compares equal to itself, and the SecretRef sweep (10/10) and generated-schema
+   round-trip (8/8) suites are unchanged.
+3. ✅ `prodbox dev check` exit 0.
+4. ✅ `prodbox-unit -p "Sprint 1.79"` — 4/4, pinning that the authored graph is emitted, that a
+   non-default graph survives the round trip and is not `defaultComponentGraph`, that a default
+   config round-trips, and that the payload carries no schema import.
+
+### Remaining Work
+
+None on this sprint's surface. One live-facing note: in-force objects already stored by the
+superseded renderer are unaffected — they decode through the retained schema materialization — but
+the **next** proposal written by any binary carrying this change replaces the stored payload with
+the derived form, and an operator-authored component graph will start surviving where it previously
+did not. That is the intended repair; it is recorded here because it is a change in what the
+canonical in-force config contains, not only in how it is spelled.
+
+**🧪 Live-proof: pending** — a propose/read cycle against a real Lifecycle Authority carrying an
+operator-authored component graph.
+
+## Sprint 1.80: The Advertisement Mode Becomes a Union ✅
+
+**Status**: Done (2026-08-07) — Phase `1` own-surface work on the Tier-0 config type.
+**Implementation**: `src/Prodbox/Settings.hs` (`PublicEdgeAdvertisementMode`,
+`renderPublicEdgeAdvertisementMode`, `parsePublicEdgeAdvertisementMode`, the total
+`validateAdvertisementMode`), `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Host.hs`,
+`src/Prodbox/Aws.hs`, `prodbox-config-types.dhall` (regenerated by `prodbox config schema`).
+**Blocked by**: none.
+**Deployment qualification**: pending — the Tier-0 config type is a Standard-P surface.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter over the settings
+suite with an exact count, plus a mutation exercise confirming an out-of-set value no longer
+type-checks in Dhall rather than being rejected by a string comparison.
+**Docs to update**: `documents/engineering/config_doctrine.md`
+
+### Objective
+
+`deployment.public_edge_advertisement_mode` is a two-value enum — `l2` or `bgp` — carried as
+`Maybe Text` and decided by string comparison in `validatePublicEdgeDeployment`. It sits in the same
+record as eight properly-unioned scaling policies and beside `WorkerSubstrate`, `ClusterTopology`,
+and `ComponentId`, all closed Dhall unions. The legal set is closed, known, and small; nothing in
+the type says so.
+
+This is the *Distinguishability* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and it is
+the one field on this surface where the illegal state is closable **in Dhall** rather than merely
+detectable in Haskell — the generated schema gains a union and a misspelling stops type-checking.
+
+### Deliverables
+
+- ✅ A closed sum type for the mode — `PublicEdgeAdvertisementMode = AdvertiseLayer2 | AdvertiseBgp`
+  — with the schema regenerated by `prodbox config schema`, never hand-edited. The generated schema
+  now reads `public_edge_advertisement_mode : Optional < AdvertiseLayer2 | AdvertiseBgp >`.
+- ✅ Every string comparison deleted. Three sites decided the mode by comparing lowercased text:
+  `validateAdvertisementMode` in `Settings.hs`, `configuredPublicEdgeAdvertisementMode` in
+  `Rke2.hs`, and `configuredMetallbAdvertisementMode` in `Host.hs`. All three are now total over the
+  union, and the `"must be l2 or bgp when set"` refusal is gone because nothing is left for it to
+  reject. `parsePublicEdgeAdvertisementMode` is the single remaining string→mode boundary, used only
+  by the `config setup` prompt.
+- ✅ The `bgp ⇒ at least one peer` check stays in Haskell, for the stated reason: it is a
+  cross-field invariant and Dhall's `assert` operates on closed terms, so it cannot reach an
+  authored value. `prodbox-config-types.dhall` still contains zero asserts.
+
+### Validation
+
+1. ✅ The regenerated schema carries the union, and a misspelled constructor fails at **decode**
+   rather than at a comparison — pinned by rewriting a rendered payload's `AdvertiseLayer2` to
+   `AdvertiseLayerTwo` and observing the decoder refuse it. The rejection moved out of Ring 2 into
+   Ring 1, which is the whole point.
+2. ✅ The peer cross-check still refuses `bgp` with no peers, and with an empty peer list, naming
+   the field.
+3. ✅ `prodbox dev check` exit 0 — the schema is regenerated, not hand-edited.
+4. ✅ `prodbox-unit -p "Sprint 1.80"` — 5/5; the broader config suite is 161/161.
+
+### Remaining Work
+
+None on this sprint's surface. **One operator-facing consequence, verified rather than predicted**:
+a binary-sibling `prodbox.dhall` authored under the previous schema carries `Some "l2"` and no
+longer decodes against the union. The live `.build/prodbox.dhall` did exactly that, and the Sprint
+`0.24` drift gate reported it as the *malformed* disposition — which is the gate distinguishing "not
+generated by this binary" from "drifted from what it would generate", correctly. It was regenerated
+with `prodbox config generate`. Operators upgrading across this change must do the same; the
+requirement is recorded in `config_doctrine.md` § 4 rather than left to be discovered at bring-up.
+
+## Sprint 1.81: Make Tier-0 Validation Total Over the Record ✅
+
+**Status**: Done (2026-08-07) — Phase `1` own-surface work on the Ring-2 decode gate.
+**Implementation**: `src/Prodbox/Settings.hs` (`validateLocalConfig` as a positional constructor
+pattern, plus `validateAwsSubstrateSection`, `validateSesSection`, `validateStorageSection`,
+`validatePulumiStateBackendSection`, `validateComponentNodes`, `validateSafeRelativePath` and the
+field-shape helpers; `validateAwsBootstrapConfig` gains the AWS-tier hostname requirement),
+`src/Prodbox/PublicEdge.hs` (both `error` calls gone; the pure `substrateHostedZoneId` deleted),
+`src/Prodbox/CLI/Rke2.hs` (ACME runtime routed through the IO hosted-zone resolver; the
+zero-caller pure `acmeRuntimeManifest` deleted).
+**Blocked by**: none.
+**Deployment qualification**: pending — Standard-P config surface.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
+plus a mutation exercise that adds a field to the config record and confirms the build now objects
+where it previously stayed silent, restored byte-exactly.
+**Docs to update**: `documents/engineering/config_doctrine.md`
+
+### Objective
+
+`validateLocalConfig` is a flat list of named checks over field accessors. It never pattern-matches
+the config record, so `-Wall` has nothing to warn about and a newly added field is skipped by
+construction. Four sections are uncovered today — `ses`, `pulumi_state_backend`, `storage`, and
+`components` — and two config values are instead checked by partial `error` calls at their point of
+use in `src/Prodbox/PublicEdge.hs`, which turns a config mistake into a crash.
+
+Rewriting the validator as a record pattern match makes the compiler the forcing function: a new
+field produces an unused-binding warning at the one place that must decide whether it needs
+checking. This is the cheapest available mechanism and it needs no new machinery.
+
+This is the *Totality* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and the
+companion to Sprint `1.79` — the same record, the other partial fold.
+
+### Deliverables
+
+- ✅ `validateLocalConfig` as a total pattern over the record — **positional**, not the field-named
+  form the sprint proposed. The correction was established by measurement, not preference: with a
+  named record pattern in place, the mutation exercise (adding a field to `ConfigFile`) produced an
+  objection only at an unrelated *construction* site and **none at the validator**, because a named
+  record pattern silently ignores fields it does not mention and GHC has no warning for it. The
+  positional form makes the arity a compile error at exactly the place that must decide. The sprint's
+  stated mechanism did not work; the deliverable it was aiming at does.
+- ✅ Validation for the four uncovered sections — `ses`, `pulumi_state_backend`, `storage`,
+  `components` — plus `aws_substrate`, which was equally uncovered and is on the same record. This
+  includes a decode-time `validateComponentGraph` call (an ill-formed graph now fails at decode
+  rather than at bring-up) and a safe-relative-path check on `storage.manual_pv_host_root` before it
+  is joined onto the repository root, which is a path traversal expressed as config.
+  `route53` and `acme` are bound and explicitly recorded as having no purely-local invariant — their
+  required-ness belongs to the AWS tier — so the decision is visible rather than an omission.
+- ✅ Both `PublicEdge.hs` `error` calls are gone, and neither became a silent fallback:
+  - `substratePublicFqdn`'s crash is replaced by a **decode-time refusal on the AWS tier**:
+    `validateAwsBootstrapConfig` now requires `aws_substrate.subzone_name`. It is deliberately *not*
+    required by `validateLocalConfig`, because an empty value is the correct state for a home-only
+    host — which is exactly why the check could not simply move to the local gate.
+  - `substrateHostedZoneId` was **deleted outright**. Its crash arm existed because the pure reader
+    could not consult the live `aws-eks-subzone` stack snapshot, which the IO variant
+    `resolveSubstrateHostedZoneId` already does. Of its two callers, one (`acmeRuntimeManifest`) had
+    no callers at all and was removed, and the other is an IO context that now uses the resolver. A
+    function that crashes because it is in the wrong effect is better removed than guarded.
+
+### Validation
+
+1. ✅ The mutation exercise: adding `mutation_exercise_field :: Text` to `ConfigFile` makes the build
+   object **at `validateLocalConfig`** (`In an equation for 'validateLocalConfig'`, arity mismatch),
+   which is the point — under the named-pattern form the same mutation left the validator silent.
+   The source restored byte-exactly (`sha256sum -c`: `OK`).
+2. ✅ Each newly covered section has a rejecting case, and each also has an accepting case for the
+   unset state, so the checks cannot be satisfied by refusing everything: `prodbox-unit -p
+   "Sprint 1.81"` — 6/6.
+3. ✅ `prodbox dev check` exit 0; full `prodbox-unit` 3181/3181.
+
+### Remaining Work
+
+None on this sprint's surface. Two things recorded rather than left implicit:
+
+- **The residual on `substratePublicFqdn`.** With the AWS-tier refusal in place, an AWS-gated config
+  cannot reach the AWS arm with an empty hostname. A config validated only by the *local* tier still
+  can, and it now yields the empty string it configured rather than unwinding the process from
+  inside a pure renderer. Closing that completely needs `ValidatedSettings` to record which tier
+  validated it — a narrowed-type change the sprint explicitly excludes — so it is registered in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than claimed closed.
+- **Out of scope, unchanged**: replacing the ~30 `Text` and ~40 `Natural` fields that carry
+  invariants with narrowed types (`Fqdn`, `HostedZoneId`, `S3Bucket`, `AbsPath`, `EmailAddress`).
+  A total validator is a prerequisite for that, not a substitute, and neither makes Dhall express the
+  invariants, which it cannot.
+
+### Remaining Work
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -5243,10 +5534,22 @@ None on this sprint's surface. Two of the three policies Sprint `0.19` registere
 bootstrap-floor registry bijection and the chart-values literal scan — remain registered and
 unclosed, and are not owned here.
 
-## Sprint 1.76: Provenance-Carrying Readiness Evidence [📋 Planned]
+## Sprint 1.76: Provenance-Carrying Readiness Evidence ✅
 
-**Status**: Planned — Phase `1` own-surface work (Standard A/N) on the operation-indexed capability
-and readiness-evidence seam Sprint `1.61` owns.
+**Status**: Done (2026-08-07) — Phase `1` own-surface work (Standard A/N) on the operation-indexed
+capability and readiness-evidence seam Sprint `1.61` owns.
+**Implementation**: `src/Prodbox/ControlPlane/Observation/Internal.hs` (new; the sole minting
+surface), `src/Prodbox/ControlPlane/Observation.hs` (opaque re-export plus accessors),
+`src/Prodbox/Lifecycle/ReadinessObservation.hs` (`BackendRoundTripResult`, `RoundTripObserved`),
+`src/Prodbox/Lifecycle/CapabilityReadinessBarrier.hs` (`evidenceFor` consumes the witness;
+`evidenceInstant` carries the landed instant), `src/Prodbox/Lifecycle/RegistryBackendWitness.hs`
+(new), `src/Prodbox/Gateway/Client.hs` (`decodeBackendRoundTrip`, `queryBackendRoundTrip`),
+`src/Prodbox/Gateway/Daemon.hs` (`BackendRoundTripReceipt`, `recordBackendRoundTrip`, the
+`last_backend_round_trip` state projection), `src/Prodbox/Gateway/ContinuityStore.hs`
+(`continuityStoreObserveRoundTrip`), the object-store conditional-write path
+(`ObjectStoreTypes.hs`, `ObjectStoreNative.hs`, `ObjectStore.hs`, `EncryptedObject.hs`),
+`src/Prodbox/CLI/Rke2.hs` (both deep probes), `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
+`src/Prodbox/CheckCode.hs` (`checkRoundTripWitnessBoundary`).
 **Blocked by**: none.
 **Deployment qualification**: pending — capability wiring is a Standard-P surface and both rows are
 already `pending`.
@@ -5277,29 +5580,84 @@ the *Provenance* class of
 
 ### Deliverables
 
-- `RoundTripWitness` becomes opaque, minted only by the interpreter that performed the operation
-  and carrying the instant the write landed rather than a later clock read.
-- The probe result is parameterised by its witness type, so a deep target's action type differs by
-  construction from a shallow one's and the existing placeholder call site stops compiling.
-- Evidence classification consumes the witness instead of synthesising one.
+- ✅ `RoundTripWitness` is opaque. Its constructor and `mintRoundTripWitness` live in
+  `Prodbox.ControlPlane.Observation.Internal`, whose importers are an allowlist enforced by
+  `checkRoundTripWitnessBoundary` in `prodbox dev check` — the Sprint `4.58`-B `TargetSinkVersion`
+  pattern, applied to the value that claims a write happened. The allowlist admits only interpreters
+  that performed or authoritatively decoded a round trip; `Prodbox.Lifecycle.RegistryBackendWitness`
+  is a module of its own rather than a helper inside `Prodbox.CLI.Rke2` because an allowlist that
+  admits a ten-thousand-line module is a formality.
+- ✅ The witness carries the instant the write landed. `readingFromObservation` now stamps
+  `observedAt` from the witness for write-shaped evidence and from the post-probe clock only for
+  read-shaped evidence, which is what makes the existing freshness window bound the age of the
+  **proof** rather than the age of the question.
+- ✅ The deep slot is parameterised by its own result type. `BackendRoundTripTarget` holds
+  `IO (Either Text BackendRoundTripResult)`, so a shallow `ReadinessProbeResult` action does not
+  inhabit it. `readinessActionFor` resolves to an observation-producing action rather than a shared
+  probe result, and `ReadinessObservation` gains `RoundTripObserved` beside `ReadyObserved`.
+- ✅ Evidence classification consumes the witness. `evidenceFor`'s write-shaped arm is
+  `RoundTripObserved witness -> EvidenceRoundTripConfirmed witness`; the placeholder
+  `roundTripEvidence` that minted a witness from the string literal
+  `"readiness-observation-round-trip"` is deleted, and a read-shaped reading of a round-trip op is
+  now `EvidencePending`.
+- ✅ **The real gateway CAS lane the sprint budgeted for.** The gateway deep probe previously read a
+  constant-time `/readyz` latch — the exact object-GET case
+  [bootstrap_readiness_doctrine.md § 2.3](../documents/engineering/bootstrap_readiness_doctrine.md)
+  forbids. The lane now runs end to end: `ConditionalPutApplied` carries the version the store
+  returned (it had been discarded at every call site, native and subprocess alike),
+  `LogicalConditionalPutApplied` carries it through the envelope layer, the daemon's continuity
+  store reports it on exactly the applied arm, `recordBackendRoundTrip` stamps the landed instant,
+  `/v1/state` projects it as `last_backend_round_trip`, and the host decodes it through
+  `decodeBackendRoundTrip`. `/readyz` is retained as the liveness precondition it genuinely is. The
+  daemon writes on every heartbeat publication, so a healthy daemon refreshes the receipt
+  continuously and a wedged one stops — which is the distinction the freshness window exists to
+  make.
+- ✅ The registry deep probe likewise mints a real witness: the probe now requests the response
+  headers and uses the upload session the registry names, which the registry can only have created
+  by writing through to MinIO. A 2xx that names no session is `BackendRoundTripPending`, where
+  before any 201/202 was accepted and the receipt discarded.
 
 ### Validation
 
-1. `prodbox test unit -p "Sprint 1.76"` passes.
-2. A shallow probe placed in the deep slot is a **type error**, not a runtime rejection.
-3. A mutation exercise: restoring the literal-minted witness fails the evidence cases, and the
-   source restores byte-exactly afterward.
-4. `prodbox dev check` exit 0.
+1. ✅ `prodbox-unit -p "Sprint 1.76"` — 16/16, across the barrier fold, the gateway state decoder,
+   the registry response parse, the registry witness, and the minting boundary.
+2. ✅ A shallow probe placed in the deep slot is a **type error**. Recorded rather than asserted: on
+   first compilation after the type change, `test/unit/CapabilityReadinessBarrierSuite.hs:90` and
+   `test/unit/Main.hs:2997`/`3041` failed with
+   `Couldn't match expected type 'BackendRoundTripResult' with actual type 'ReadinessProbeResult'`,
+   and `test/unit/ControlPlaneCapability.hs:133` failed with
+   `Illegal term-level use of the type constructor 'RoundTripWitness'`. Those were the fixtures that
+   had been supplying read-shaped readings to a write-shaped slot.
+3. ✅ The mutation exercise, on both axes. Restoring the literal-minted `roundTripEvidence` fails the
+   behavioural case (`refuses to call a read-shaped reading a round trip`:
+   `expected: EvidencePending … but got: EvidenceRoundTripConfirmed (MkRoundTripWitness …
+   "readiness-observation-round-trip" … landedAt = 0)`) **and** fails `prodbox dev check` with the
+   boundary finding, exit 1. The source restored byte-exactly (`sha256sum -c`: `OK`).
+4. ✅ `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-Everything above. Note this forces a real gateway CAS lane to be written for the one call site that
-currently fakes its witness; budget for that rather than widening the type to accommodate it.
+None on this sprint's surface. One consequence is recorded rather than left implicit: the deep
+probes now demand evidence that did not previously have to exist, so a **live** bring-up is the
+Standard-O axis for this sprint — a gateway whose daemon has landed no continuity write, or a
+registry that answers 202 without naming an upload session, is now `NotReadyYet` where it was
+previously `Ready`. That is the intended behaviour and the reason the sprint exists, but it has not
+been exercised against a live cluster here.
 
-## Sprint 1.77: Indeterminate Outcomes and Jittered Retry [📋 Planned]
+**🧪 Live-proof: pending** — the deep readiness gates against a real gateway daemon and a real
+registry on both substrates.
 
-**Status**: Planned — Phase `1` own-surface work on the retry classifier and `RetryPolicy` this
-phase owns (Sprints `1.13`, `1.57`).
+## Sprint 1.77: Indeterminate Outcomes and Jittered Retry ✅
+
+**Status**: Done (2026-08-07) — Phase `1` own-surface work on the retry classifier and
+`RetryPolicy` this phase owns (Sprints `1.13`, `1.57`).
+**Implementation**: `src/Prodbox/Retry.hs` (rewritten: hidden constructor, `mkRetryPolicy`,
+`JitterFraction`, `jitteredDelayMicros`, `drawRetryDelayMicros`, `IdempotentOperation`, and the
+seven compiled schedules), `src/Prodbox/Service.hs` (`FailureDisposition`,
+`serviceErrorDisposition`, `retryIdempotentServiceAction`), `src/Prodbox/CheckCode.hs`
+(`checkSharedRetrySchedule`), and the six modules whose local policies and delay draws migrated
+(`Lifecycle/ReadinessObservation.hs`, `CLI/Rke2.hs`, `Gateway/Client.hs`, `Gateway/Daemon.hs`,
+`Gateway/PortForward.hs`, `Lib/ChartPlatform.hs`), plus `test/support/TestSupport.hs`.
 **Blocked by**: none.
 **Deployment qualification**: pending — retry behaviour bears on queueing and admission, both
 Standard-P surfaces; both rows are already `pending`.
@@ -5329,26 +5687,67 @@ model to copy is Sprint `2.10` item 4, which states its negative-space rule as a
 
 ### Deliverables
 
-- An indeterminate outcome constructor, distinct from transient and permanent.
-- An idempotence witness required to retry through the shared helper, so retrying a non-idempotent
-  operation after an indeterminate outcome is inexpressible.
-- `RetryPolicy` gains a hidden constructor and a jitter fraction; its smart constructor rejects a
-  zero or out-of-range fraction.
+- ✅ An indeterminate outcome, distinct from transient and permanent. `FailureDisposition` is
+  three-valued and `serviceErrorDisposition` is a total function of the constructor:
+  `SEConnectionFailed` / `SETimeout` / `SEInternalError` are `FailureIndeterminate`, `SEConflict` is
+  `FailureTransient` (the far side answered — it rejected the write, so the effect certainly did not
+  apply), and `SENotFound` / `SEPermissionDenied` are `FailurePermanent`. This **corrects a
+  documented choice** this module used to record: an unclassified failure was "treated as retryable
+  … the conservative default", which for a mutation is the least safe reading available.
+- ✅ An idempotence witness required to repeat an indeterminate outcome. `retryServiceAction`
+  repeats only `FailureTransient`; `retryIdempotentServiceAction` also repeats
+  `FailureIndeterminate` and takes an `IdempotentOperation`, whose constructor is hidden. Wrapping
+  an action is therefore an explicit, greppable claim rather than a comment.
+- ✅ `RetryPolicy` gains a hidden constructor and a jitter fraction. `mkRetryPolicy` rejects a
+  non-positive attempt budget, a negative base delay, a multiplier below one, a ceiling below the
+  base, and a jitter fraction of zero or above one whole. Jitter is held as an integral
+  part-per-million rather than a `Double`, for the same reason the capacity algebra is integral: a
+  schedule that depends on floating-point rounding is one nobody can reproduce.
+- ✅ Jitter reaches every retrier. `retryDelayMicros` remains the pure authored schedule;
+  `drawRetryDelayMicros` samples the system CSPRNG (`crypton`, no new dependency) and applies the
+  fraction. Jitter only **subtracts**, so a delay lands in `[scheduled * (1 - fraction), scheduled]`
+  and every existing attempt budget remains an upper bound — nothing gets slower.
+
+**Scope note, stated rather than left implicit**: the six locally-authored production policies moved
+into `Prodbox.Retry` as named values. That is what makes the hidden constructor total — the values
+are literals inside the module that owns the constructor, so no partial "compiled policy" builder
+and no silent fallback arm is needed anywhere. The schedules are unchanged; only their definition
+site moved.
 
 ### Validation
 
-1. `prodbox test unit -p "Sprint 1.77"` passes.
-2. Retrying a non-idempotent operation after an indeterminate outcome is a **type error**.
-3. A property test over generated policies shows successive delays are not identical across
-   independent retriers, and remain within the configured bounds.
-4. Constructing a `RetryPolicy` outside the smart constructor is impossible outside its module —
-   the Sprint `1.57` inline-classifier lint pattern extended to policy construction, which is what
-   Sprint `1.13` item 2 should have said.
-5. `prodbox dev check` exit 0.
+1. ✅ `prodbox-unit -p "Sprint 1.77"` — 11/11, across the disposition axis, policy-construction
+   rejection, the jitter bounds, and the negative-space lint.
+2. ✅ Retrying a non-idempotent operation after an indeterminate outcome is a **type error**.
+   Recorded from the compile-fail exercise, not asserted: passing a bare action to
+   `retryIdempotentServiceAction` fails with
+   `Couldn't match expected type: IdempotentOperation errorType0 valueType0 with actual type: IO (Either RedisError String)`,
+   and the source restored byte-exactly (`sha256sum -c`: `OK`).
+3. ✅ The delay properties hold: a jittered delay never exceeds the authored schedule and never goes
+   negative (including for an out-of-range sample), stays at or above the fraction's floor, three
+   distinct samples give three distinct delays — the lockstep case — and a zero-length fixture
+   schedule stays at zero.
+4. ✅ Constructing a `RetryPolicy` outside `Prodbox.Retry` is impossible. Recorded from the compile
+   errors the change produced at three fixture sites
+   (`Illegal term-level use of the type constructor 'RetryPolicy'`), plus
+   `checkSharedRetrySchedule`, which fails any production module that names the un-jittered
+   `retryDelayMicros` or imports `RetryPolicy (..)` — Sprint `1.13` item 2 as a rule that fails.
+5. ✅ `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-Everything above.
+None on this sprint's surface. Two facts worth recording rather than leaving to be rediscovered:
+
+- **`retryServiceAction` had no production callers** — only unit tests — so narrowing it to repeat
+  transient outcomes alone changed no deployed behaviour. Had it been wired, that narrowing would
+  have been a live reliability change requiring its own qualification; it was checked before the
+  narrowing, not assumed.
+- **Sprint `1.76` left two warnings that its own `dev check` did not surface**, because the two
+  affected modules were not recompiled in that run: an unused import and a non-exhaustive
+  `ReadinessObservation` match in `Prodbox.Lib.ChartPlatform` (the operator-availability gate, which
+  now refuses write-shaped evidence explicitly rather than falling through). Both were caught by
+  this sprint's build and fixed here. The lesson is the build-cache one: a warning-clean result is
+  only as complete as the set of modules the run actually compiled.
 
 ## Documentation Requirements
 

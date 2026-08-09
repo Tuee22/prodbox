@@ -14,6 +14,7 @@ where
 
 import Control.Monad (foldM, unless)
 import Data.List (elemIndex, nub)
+import Numeric.Natural (Natural)
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId
@@ -23,6 +24,14 @@ import Prodbox.Config.ComponentGraph
   , componentReconcileOrder
   , renderComponentGraphError
   , validateComponentGraph
+  )
+import Prodbox.Lifecycle.DependencyAdmission
+  ( AdmissionRefusal (AdmissionExpired)
+  , AdmissionSet
+  , DependencyAdmission
+  , MutationAdmission
+  , admitComponentMutation
+  , recordAdmission
   )
 import System.Exit (ExitCode (..))
 
@@ -220,30 +229,109 @@ validateReadinessBarriers spec dag order =
                   ++ show order
               )
 
+-- | Sprint 4.56: the executor threads the admissions the readiness barrier
+-- mints, and a step anchored at 'ComponentMutation' is invoked through a
+-- separate callback that __requires__ a 'MutationAdmission'. A mutation with no
+-- admission is therefore not expressible, rather than merely discouraged.
+--
+-- Two behaviours are worth stating because they are decisions, not accidents:
+--
+--   * __An expired admission re-observes once before it refuses.__ A hard
+--     refusal would fail the first home @cluster reconcile@ outright: admissions
+--     cannot survive a reconcile phase boundary, which crosses federated Vault
+--     unseal and a settings reload. The point of the sprint is to narrow the
+--     observe-to-act window, not to fail the run — so an expiry re-observes the
+--     dependency and refuses only if the fresh observation also fails.
+--   * __This narrows the window; it does not make the pair atomic.__ Only a
+--     fence does that, and that is Sprint @3.31@'s and the cardinality work's
+--     surface.
 runAnchoredStepOrder
-  :: (step -> ReconcileStepAnchor)
+  :: ComponentDag
+  -> IO Natural
+  -- ^ The reconcile clock, in microseconds.
+  -> (step -> ReconcileStepAnchor)
+  -> (MutationAdmission -> step -> IO ExitCode)
+  -- ^ A step anchored at 'ComponentMutation'. Cannot be invoked without a proof.
   -> (step -> IO ExitCode)
-  -> (ComponentId -> IO ExitCode)
+  -- ^ Every other step.
+  -> (ComponentId -> IO (Either ExitCode DependencyAdmission))
+  -> AdmissionSet
+  -- ^ Sprint 4.61: admissions carried in from earlier phases of the same run.
+  --
+  -- A reconcile runs its phases as separate calls, and this used to start each
+  -- one at 'noAdmissions'. A component whose readiness step is anchored in an
+  -- earlier phase than its dependant's mutation step was therefore refused
+  -- unconditionally — @never observed ready in this run@ was reported of a
+  -- component observed ready earlier in that same run. Threading the set makes
+  -- "this run" mean the run rather than the phase. An admission that has aged
+  -- out across the boundary is not silently trusted: it expires and is
+  -- re-observed, which is the behaviour the age bound already specified.
   -> [step]
-  -> IO ExitCode
-runAnchoredStepOrder stepAnchor runStep requireReadiness =
-  foldM runAnchoredStep ExitSuccess
+  -> IO (Either AdmissionRefusal (ExitCode, AdmissionSet))
+  -- ^ Sprint 5.31: a refusal leaves as itself, not as an exit code.
+  --
+  -- This used to end @refuse _ = ExitFailure 1@ — the refusal discarded with a
+  -- wildcard, on a path that emitted nothing, so a refused reconcile exited 1
+  -- having said no word about why. That is the conversion of
+  -- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)
+  -- at the step boundary: 'renderAdmissionRefusal' already existed and was
+  -- already exported — the crossing simply did not use it. @ExitCode@ carries
+  -- one bit and has no room for a reason, so lowering into it here can only
+  -- destroy one.
+  --
+  -- Returning the refusal moves the lowering to the caller, where a reason can
+  -- be rendered, and makes the silent version unrepresentable rather than
+  -- merely absent: there is no longer an @ExitCode@ to return in its place.
+runAnchoredStepOrder dag clock stepAnchor runMutation runStep requireReadiness carried steps = do
+  outcome <- foldM runAnchoredStep (Right ExitSuccess, carried) steps
+  pure $ case outcome of
+    (Left refusal, _) -> Left refusal
+    (Right exitCode, admissions) -> Right (exitCode, admissions)
  where
-  runAnchoredStep previous step =
+  runAnchoredStep (previous, admissions) step =
     case previous of
-      ExitFailure _ -> pure previous
-      ExitSuccess -> do
-        stepExit <- runStep step
-        case stepExit of
-          ExitFailure _ -> pure stepExit
-          ExitSuccess ->
-            case stepAnchor step of
-              ComponentReadiness component -> requireReadiness component
-              HostPrepBefore _ -> pure ExitSuccess
-              ComponentMutation _ -> pure ExitSuccess
-              HostPostAfter _ -> pure ExitSuccess
-              TransitionFor _ -> pure ExitSuccess
-              EdgeOnly -> pure ExitSuccess
+      Left _ -> pure (previous, admissions)
+      Right (ExitFailure _) -> pure (previous, admissions)
+      Right ExitSuccess -> case stepAnchor step of
+        ComponentMutation component -> do
+          admitted <- admitMutation component admissions
+          case admitted of
+            Left refused -> pure (refused, admissions)
+            Right (admission, refreshed) -> do
+              stepExit <- runMutation admission step
+              pure (Right stepExit, refreshed)
+        anchor -> do
+          stepExit <- runStep step
+          case stepExit of
+            ExitFailure _ -> pure (Right stepExit, admissions)
+            ExitSuccess -> case anchor of
+              ComponentReadiness component -> do
+                observed <- requireReadiness component
+                pure $ case observed of
+                  Left exitCode -> (Right exitCode, admissions)
+                  Right admission -> (Right ExitSuccess, recordAdmission admission admissions)
+              -- Every remaining anchor is non-mutating; the mutation anchor is
+              -- handled above, before the step runs at all.
+              _ -> pure (Right ExitSuccess, admissions)
+
+  admitMutation component admissions = do
+    now <- clock
+    case admitComponentMutation dag now component admissions of
+      Right admission -> pure (Right (admission, admissions))
+      Left refusal -> case refusal of
+        AdmissionExpired _ dependency _ _ -> do
+          -- Re-observe the one dependency whose admission aged out, then decide
+          -- on the fresh evidence.
+          observed <- requireReadiness dependency
+          case observed of
+            Left exitCode -> pure (Left (Right exitCode))
+            Right fresh -> do
+              let refreshed = recordAdmission fresh admissions
+              retryNow <- clock
+              case admitComponentMutation dag retryNow component refreshed of
+                Right admission -> pure (Right (admission, refreshed))
+                Left retryRefusal -> pure (Left (Left retryRefusal))
+        _ -> pure (Left (Left refusal))
 
 phaseRank :: ReconcilePhase -> Int
 phaseRank phase =

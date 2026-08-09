@@ -144,7 +144,7 @@ authorityProviderDispatchAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 authorityProviderDispatchAuthenticatedHandler maximumBytes boundary fallback =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz fallback
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness fallback
     , authenticatedHandlerHandle = handle
     }
  where

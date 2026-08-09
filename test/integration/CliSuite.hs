@@ -17,7 +17,11 @@ import Control.Concurrent.MVar
 import Control.Exception (SomeException, bracket, finally, try)
 import Control.Monad (void, when)
 import Data.ByteString.Char8 qualified as BS8
-import Data.List (find, findIndex, isInfixOf, sort)
+import Data.List (find, findIndex, intercalate, isInfixOf, sort)
+import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Time.Clock (nominalDiffTimeToSeconds)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import FixtureServer (withVaultFixtureServer)
 import Network.Socket
   ( Family (AF_INET)
@@ -42,12 +46,20 @@ import Prodbox.BuildSupport
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError (..)
   , defaultHttpConfig
   , httpGetText
   )
+import Prodbox.Settings qualified as Settings
+import Prodbox.Settings.SecretRef
+  ( SecretRef (SecretRefVault)
+  , VaultSecretRef (..)
+  )
+import Prodbox.TestValidation qualified as TestValidation
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -73,6 +85,11 @@ import System.Process
   , waitForProcess
   )
 import TestSupport
+import Tier0Fixture
+  ( tier0FixtureWithContext
+  , tier0FixtureWithParameters
+  , writeTier0Fixture
+  )
 
 integrationCliSuite :: SuiteBuilder ()
 integrationCliSuite = do
@@ -81,7 +98,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["config", "show"]
@@ -96,7 +113,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
@@ -148,7 +165,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-ses-ready" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
         seedFakeVaultAwsCredentials
           tmpDir
           lifecycleProviderVaultPath
@@ -165,8 +182,7 @@ integrationCliSuite = do
             ["host", "check-ses-readiness"]
             envVars
 
-        exitCode `shouldBe` ExitSuccess
-        stderrText `shouldBe` ""
+        (exitCode, stderrText) `shouldBe` (ExitSuccess, "")
         stdoutText `shouldContain` "Retained SES semantic readiness: Ready"
         commands <- readFile (tmpDir </> "fake-ses-readiness-aws.txt")
         commands `shouldBe` "--version\n"
@@ -179,7 +195,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-ses-failed" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
         seedFakeVaultAwsCredentials
           tmpDir
           lifecycleProviderVaultPath
@@ -235,7 +251,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         let outputPath = tmpDir </> "gateway.dhall"
 
         (exitCode, stdoutText, stderrText) <-
@@ -281,7 +297,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["vault", "status"]
@@ -295,7 +311,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         baseEnv <- getEnvironment
 
         (exitCode, stdoutText, stderrText) <-
@@ -314,7 +330,7 @@ integrationCliSuite = do
         withFakeVaultServer $ \vaultPort -> do
           binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           writeRepoMarkers tmpDir
-          writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+          writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
           (restPort, socketPort) <- allocateTwoLoopbackTcpPorts
           let tokenPath = tmpDir </> "gateway.jwt"
               ordersPath = tmpDir </> "orders.dhall"
@@ -462,13 +478,13 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
         createDirectoryIfMissing True (tmpDir </> ".build")
-        writeFile
-          (tmpDir </> ".build" </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          (tmpDir </> ".build")
+          (tier0FixtureWithParameters validConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
@@ -483,7 +499,8 @@ integrationCliSuite = do
 
         let output =
               unlines
-                [ "resource-guardrails stdout:"
+                [ "resource-guardrails exit: " <> show exitCode
+                , "resource-guardrails stdout:"
                 , stdoutText
                 , "resource-guardrails stderr:"
                 , stderrText
@@ -507,13 +524,13 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
         createDirectoryIfMissing True (tmpDir </> ".build")
-        writeFile
-          (tmpDir </> ".build" </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          (tmpDir </> ".build")
+          (tier0FixtureWithParameters validConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
@@ -547,13 +564,13 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
         createDirectoryIfMissing True (tmpDir </> ".build")
-        writeFile
-          (tmpDir </> ".build" </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          (tmpDir </> ".build")
+          (tier0FixtureWithParameters validConfig)
         baseEnv <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         let envVars =
               ("PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE", "2")
@@ -649,7 +666,7 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         envVars <- fakeChartEnvironment tmpDir
 
         (listExitCode, listStdout, listStderr) <-
@@ -796,7 +813,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         -- Sprint 4.31: the retained ordinal-0 host data lives at the unified
         -- `.data/<namespace>/<StatefulSet>/<ordinal>` path (no `<release>` /
         -- `<claim>` segment), so the restore-staging detects it here.
@@ -825,7 +842,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         envVars <- fakeChartEnvironment tmpDir
 
         (statusExitCode, _, statusStderr) <-
@@ -900,9 +917,9 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
         -- Sprint 1.42 Part B: with the Tier-0 prodbox.dhall floor present, the
         -- post-MinIO settings reload obtains the host Vault root token; supply
         -- the test seam so it does not try to decrypt an unlock bundle (none
@@ -1152,9 +1169,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph validConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars =
               ( "PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF"
@@ -1193,7 +1210,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars = ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1") : baseEnvVars
 
@@ -1243,7 +1260,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         baseEnvVars <- fakeRke2Environment tmpDir
         let envVars =
               ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1")
@@ -1272,9 +1289,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         envVars <- fakeRke2Environment tmpDir
 
         createDirectoryIfMissing True (tmpDir </> ".kube")
@@ -1308,9 +1325,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         baseEnvVars <- fakeRke2Environment tmpDir
         -- Even with the per-run backend forced unreachable, the default
         -- delete never queries, gates on, or destroys it — it is a pure
@@ -1339,9 +1356,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         -- Reproduce the real "cluster already gone" host: no RKE2 install AND an
         -- unreachable in-cluster MinIO state backend. The short-circuit must win
         -- over the residue gate's fail-closed refusal.
@@ -1364,9 +1381,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         envVars <- withNoRke2Install <$> fakeRke2Environment tmpDir
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
@@ -1392,7 +1409,7 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
 
         (exitCode, stdoutText, _) <-
           readCreateProcessWithExitCode
@@ -1409,7 +1426,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfigForNuke)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
         envVars <- fakeRke2Environment tmpDir
         let nukeEnv = ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1") : envVars
 
@@ -1433,7 +1450,7 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
         withFakeVaultLifecycleServer $ \vaultPort _stateRef -> do
           baseEnvVars <- fakeVaultLifecycleEnvironment vaultPort
@@ -1459,9 +1476,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         baseEnv <- fakeRke2Environment tmpDir
         withGatewayStateServer sealedVaultStatusJson $ \port _ -> do
           let envVars =
@@ -1487,7 +1504,12 @@ integrationCliSuite = do
         writeRepoMarkers tmpDir
         withFakeVaultLifecycleServer $ \vaultPort stateRef -> do
           modifyMVar stateRef $ \_ -> pure (FakeVaultLifecycleState True False 3, ())
-          writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfig
+          writeTier0Fixture
+            tmpDir
+            ( tier0FixtureWithContext
+                (\ctx -> ctx {Tier0.vault_address = Text.pack (fakeVaultAddress vaultPort)})
+                validConfig
+            )
           baseEnv <- fakeRke2Environment tmpDir
           let envVars =
                 ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-parent-root-token")
@@ -1542,7 +1564,12 @@ integrationCliSuite = do
               writeFile
                 (tmpDir </> "test-secrets.dhall")
                 (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
-              writeRootBasics tmpDir (fakeVaultAddress vaultPort) validConfigForNuke
+              writeTier0Fixture
+                tmpDir
+                ( tier0FixtureWithContext
+                    (\ctx -> ctx {Tier0.vault_address = Text.pack (fakeVaultAddress vaultPort)})
+                    validConfigForNuke
+                )
               createDirectoryIfMissing True (tmpDir </> ".kube")
               writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
               -- Step 1 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
@@ -1582,9 +1609,9 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0WithDefaultComponentGraph zeroSslConfig)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters zeroSslConfig)
         envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
 
         -- The refactor moved the ZeroSSL ACME ClusterIssuer (and the Route 53
@@ -1823,9 +1850,9 @@ integrationCliSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         writeFile
           (tmpDir </> "test-secrets.dhall")
           (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
@@ -1856,9 +1883,9 @@ integrationCliSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
         writeFile
           (tmpDir </> "test-secrets.dhall")
           (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
@@ -1912,9 +1939,9 @@ integrationCliSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         copySchema repoRoot tmpDir
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
         writeFile
           (tmpDir </> "test-secrets.dhall")
           ( testSecretsDhallWithAdminAndAcmeEab
@@ -2483,107 +2510,6 @@ writeFakeVaultToken path = writeFile path "fake-service-account-jwt\n"
 -- command that loads the operator config — federation register, nuke — reads it
 -- from the one Tier-0 file. @prodbox.dhall@ is self-contained (no imports), so
 -- this single record is sufficient.
-writeRootBasics :: FilePath -> String -> String -> IO ()
-writeRootBasics repoRoot vaultAddress configParameters =
-  writeFile
-    (repoRoot </> "prodbox.dhall")
-    ( unlines
-        -- Sprint 1.56: supply `components` as a left-biased default (empty graph)
-        -- so schema-less raw config fixtures decode; consumers fall back to the
-        -- built-in default graph when it is empty.
-        [ "{ parameters = { components = " ++ componentsDhallFragment ++ " } // (" ++ configParameters ++ ")"
-        , ", context ="
-        , "    { project = \"prodbox\""
-        , "    , binary = \"prodbox\""
-        , "    , context_kind = < HostOrchestrator | Daemon | ClusterService | OtherContext >.HostOrchestrator"
-        , "    , cluster_id = \"prodbox-home\""
-        , "    , vault_address = \"" ++ vaultAddress ++ "\""
-        , "    , minio_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
-        , "    , minio_bucket = \"prodbox-state\""
-        , "    , topology ="
-        , "        { seal_mode = < Tier0Shamir | Tier0Transit >.Tier0Shamir"
-        , "        , parent_ref ="
-        , "            None"
-        , "              { parent_cluster_id : Text"
-        , "              , parent_vault_address : Text"
-        , "              , parent_transit_key : Text"
-        , "              , parent_authority_endpoint : Text"
-        , "              }"
-        , "        }"
-        , "    , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
-        , "    }"
-        , ", witness = [] : List Text"
-        , "}"
-        ]
-    )
-
--- | Sprint 7.16: the test-harness cleartext fixture (@test-secrets.dhall@).
--- Carries the unlock-bundle password plus the EPHEMERAL admin AWS credential
--- the harness feeds into the same interactive admin prompt a real operator
--- would answer. Decoded structurally by @inputFile auto@, so no schema import
--- is required. This base value leaves the admin block empty (the vault
--- lifecycle test only needs the password).
-testSecretsDhall :: String
-testSecretsDhall = testSecretsDhallWithAdmin "" "" "" Nothing
-
--- | Sprint 5.10 follow-up: the deferred operator-id fields the harness injects
--- from @test-secrets.dhall@ (the Route 53 zone, the SES sending/receive/capture
--- identifiers, and the long-lived Pulumi state backend). A bare Dhall record
--- literal must carry every field the Haskell @TestSecrets@ decoder expects;
--- these CLI flows don't exercise those substrates, so the values are empty.
-testSecretsOperatorIdFields :: [String]
-testSecretsOperatorIdFields =
-  [ ", route53_zone_id = \"\""
-  , ", ses_sender_domain = \"\""
-  , ", ses_receive_subdomain = \"\""
-  , ", ses_capture_bucket = \"\""
-  , ", pulumi_state_backend_bucket_name = \"\""
-  , ", pulumi_state_backend_region = \"\""
-  ]
-
--- | A @test-secrets.dhall@ with a populated @aws_admin_for_test_simulation@
--- block, so the suite-level IAM harness acquires the ephemeral admin credential
--- non-interactively (the harness simulating the prompt).
-testSecretsDhallWithAdmin :: String -> String -> String -> Maybe String -> String
-testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
-  unlines $
-    ["{ vault_operator_password = \"test-vault-unlock-password\""]
-      ++ testSecretsOperatorIdFields
-      ++ [ ", aws_admin_for_test_simulation ="
-         , "    { access_key_id = " ++ show accessKeyId
-         , "    , secret_access_key = " ++ show secretAccessKey
-         , "    , session_token = "
-             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
-         , "    , region = " ++ show regionValue
-         , "    }"
-         , -- Sprint 7.18: the optional ACME EAB block. A bare Dhall record literal
-           -- must still carry every field the Haskell decoder expects, so the
-           -- Optional `acme_eab` is rendered explicitly as `None`. Tests that
-           -- exercise EAB seeding use `testSecretsDhallWithAdminAndAcmeEab`.
-           ", acme_eab = None { key_id : Text, hmac_key : Text }"
-         , "}"
-         ]
-
--- | Sprint 7.18: a @test-secrets.dhall@ that also populates the optional
--- @acme_eab@ block for the separate external-material ingress fixture.
--- Placeholder EAB values only — never real ZeroSSL credentials.
-testSecretsDhallWithAdminAndAcmeEab
-  :: String -> String -> String -> Maybe String -> String -> String -> String
-testSecretsDhallWithAdminAndAcmeEab accessKeyId secretAccessKey regionValue sessionTokenValue eabKeyId eabHmacKey =
-  unlines $
-    ["{ vault_operator_password = \"test-vault-unlock-password\""]
-      ++ testSecretsOperatorIdFields
-      ++ [ ", aws_admin_for_test_simulation ="
-         , "    { access_key_id = " ++ show accessKeyId
-         , "    , secret_access_key = " ++ show secretAccessKey
-         , "    , session_token = "
-             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
-         , "    , region = " ++ show regionValue
-         , "    }"
-         , ", acme_eab = Some { key_id = " ++ show eabKeyId ++ ", hmac_key = " ++ show eabHmacKey ++ " }"
-         , "}"
-         ]
-
 secretRefTypeDhall :: String
 secretRefTypeDhall =
   "< Vault : { mount : Text, path : Text, field : Text }"
@@ -2609,30 +2535,6 @@ lifecycleProviderVaultPath = "aws/lifecycle-provider"
 -- do not write ZeroSSL EAB material around the external-ingress protocol.
 acmeEabVaultPath :: String
 acmeEabVaultPath = "acme/eab"
-
--- | Sprint 7.15: a @Some SecretRef.Vault@ expression into @secret/acme/eab@
--- for the given field, in the schema-less inline-union style the integration
--- fixtures use. The EAB material now references Vault rather than carrying
--- plaintext.
-eabVaultRefDhall :: String -> String
-eabVaultRefDhall field =
-  "Some (" ++ vaultSecretRefDhall "secret" acmeEabVaultPath field ++ ")"
-
-awsCredentialRefDhall :: String -> String -> Bool -> String
-awsCredentialRefDhall path regionValue includeSessionToken =
-  concat
-    [ "{ access_key_id = "
-    , vaultSecretRefDhall "secret" path "access_key_id"
-    , ", secret_access_key = "
-    , vaultSecretRefDhall "secret" path "secret_access_key"
-    , ", session_token = "
-    , if includeSessionToken
-        then "Some (" ++ vaultSecretRefDhall "secret" path "session_token" ++ ")"
-        else "None (" ++ secretRefTypeDhall ++ ")"
-    , ", region = "
-    , show regionValue
-    , " }"
-    ]
 
 fakeVaultKvDir :: FilePath -> FilePath
 fakeVaultKvDir repoRoot = repoRoot </> "fake-vault-kv"
@@ -3268,8 +3170,12 @@ runInstalledWithAuthorityEnvironment repoRoot binary arguments environment =
 
 withFakeGatewayReadinessEnvironment
   :: [(String, String)] -> ([(String, String)] -> IO value) -> IO value
-withFakeGatewayReadinessEnvironment environment action =
-  withFakeGatewayDaemonServer readinessResponses $ \gatewayPort _requestsRef ->
+withFakeGatewayReadinessEnvironment environment action = do
+  -- Sprint 5.31: the receipt must be recent. `readinessFreshnessWindow` is 300s
+  -- and the run is well inside it, so one stamp taken at fixture setup is
+  -- honest evidence of a live daemon rather than a window the fixture widens.
+  nowMicros <- roundTripLandedAtMicros
+  withFakeGatewayDaemonServer (readinessResponses nowMicros) $ \gatewayPort _requestsRef ->
     withVaultFixtureServer $ \vaultPort ->
       action
         ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
@@ -3278,14 +3184,40 @@ withFakeGatewayReadinessEnvironment environment action =
         )
  where
   overridden key = key `elem` ["PRODBOX_TEST_GATEWAY_NODEPORT", "PRODBOX_TEST_HOST_VAULT_ADDR"]
-  readinessResponses =
+  readinessResponses nowMicros =
     [
       ( "/v1/bootstrap/vault/status"
       , 200
       , "{\"initialized\":true,\"sealed\":false,\"t\":3,\"n\":5,\"progress\":0}"
       )
     , ("/readyz", 200, "ready\n")
+    , -- Sprint 5.31: `/v1/state` carries the round-trip receipt the deep probe
+      -- reads. Sprint `1.76` stopped treating a constant-time `/readyz` GET as
+      -- proof of a backend write and moved the evidence here; this fixture was
+      -- never given the new route, so `ProbeBackendRoundTrip ComponentMinio`
+      -- observed a 404 and the component could never be admitted. Another
+      -- fixture that stopped matching a contract that tightened.
+
+      ( "/v1/state"
+      , 200
+      , "{\"last_backend_round_trip\":{\"object_version\":\""
+          ++ fixtureRoundTripObjectVersion
+          ++ "\",\"landed_at_micros\":"
+          ++ show nowMicros
+          ++ "}}"
+      )
     ]
+
+-- | An opaque object-store version string for the fixture's round-trip receipt.
+-- It has to satisfy `mkModelBObjectVersion`, so it is a value the production
+-- smart constructor accepts rather than arbitrary text.
+fixtureRoundTripObjectVersion :: String
+fixtureRoundTripObjectVersion = "fixture-round-trip-version"
+
+roundTripLandedAtMicros :: IO Integer
+roundTripLandedAtMicros = do
+  posix <- getPOSIXTime
+  pure (max 0 (floor (nominalDiffTimeToSeconds posix * 1000000)))
 
 writeFakeRke2Scripts :: FilePath -> IO FilePath
 writeFakeRke2Scripts repoRoot = do
@@ -3479,6 +3411,16 @@ fakeRke2CurlScript =
     , "if [[ \"$*\" == *'/blobs/uploads/'* ]]; then"
     , "  # Sprint 4.43 deep registry->MinIO gate: a POST blob-upload session"
     , "  # succeeds (202), modelling a registry that reached its MinIO S3 backend."
+    , "  #"
+    , "  # Sprint 5.30: Sprint `1.76` made that 202 insufficient on its own — the"
+    , "  # probe dumps headers with `-D -` and requires the registry to NAME the"
+    , "  # session it allocated, because the identifier is the receipt of the"
+    , "  # backend write. A 2xx naming no session is not a round trip. This fake"
+    , "  # emitted only the status, so it modelled a registry that cannot have"
+    , "  # written; the drift was invisible while the suite could not get here."
+    , "  printf 'HTTP/1.1 202 Accepted\\r\\n'"
+    , "  printf 'Docker-Upload-UUID: 00000000-0000-4000-8000-00000000fake\\r\\n'"
+    , "  printf '\\r\\n'"
     , "  printf '202'"
     , "  exit 0"
     , "fi"
@@ -3602,14 +3544,14 @@ fakeRke2KubectlScript =
     , "      resourcequota)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1430m\",\"limits.cpu\":\"2025m\",\"requests.memory\":\"2992Mi\",\"limits.memory\":\"4448Mi\",\"requests.ephemeral-storage\":\"4960Mi\",\"limits.ephemeral-storage\":\"9920Mi\",\"requests.storage\":\"6151Mi\"}}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"2030m\",\"limits.cpu\":\"2825m\",\"requests.memory\":\"4272Mi\",\"limits.memory\":\"6240Mi\",\"requests.ephemeral-storage\":\"6496Mi\",\"limits.ephemeral-storage\":\"12992Mi\",\"requests.storage\":\"8201Mi\"}}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"500m\",\"limits.cpu\":\"500m\",\"requests.memory\":\"512Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"1024Mi\",\"limits.ephemeral-storage\":\"1024Mi\",\"requests.storage\":\"2Mi\"}}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"300m\",\"limits.cpu\":\"450m\",\"requests.memory\":\"768Mi\",\"limits.memory\":\"768Mi\",\"requests.ephemeral-storage\":\"1536Mi\",\"limits.ephemeral-storage\":\"1536Mi\",\"requests.storage\":\"3Mi\"}}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-resource-quota\"},\"spec\":{\"hard\":{\"requests.cpu\":\"1000m\",\"limits.cpu\":\"1250m\",\"requests.memory\":\"1792Mi\",\"limits.memory\":\"3584Mi\",\"requests.ephemeral-storage\":\"2560Mi\",\"limits.ephemeral-storage\":\"5632Mi\",\"requests.storage\":\"4Mi\"}}}]}"
+    , renderFakeResourceQuotaItems
     , "JSON"
     , "        fi"
     , "        ;;"
     , "      limitrange)"
     , "        if [[ \"$*\" == *'-o json'* ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"600m\",\"memory\":\"1280Mi\",\"ephemeral-storage\":\"2048Mi\"}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"250m\",\"memory\":\"384Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"default\":{\"cpu\":\"150m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\",\"defaultRequest\":{\"cpu\":\"250m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"default\":{\"cpu\":\"500m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}]}}]}"
+    , renderFakeLimitRangeItems
     , "JSON"
     , "        fi"
     , "        ;;"
@@ -3823,7 +3765,13 @@ fakeRke2HelmScript =
     , "    ;;"
     , "  status)"
     , "    if [[ \"${2:-}\" == 'harbor' && ! -f \"$record_dir/harbor-uninstalled\" ]]; then"
-    , "      printf '{\"name\":\"harbor\",\"namespace\":\"harbor\"}\\n'"
+    , -- Sprint 5.30: Sprint `3.31` made `helm status --output json` decode
+      -- `.info.status` into a closed constructor set and fail closed on an
+      -- unrecognised shape. This fake omitted `.info` entirely, so it decoded
+      -- before that sprint and refuses after it — the same second-encoder drift
+      -- as the Tier-0 fixtures, one artifact over. It never surfaced because the
+      -- test could not get this far.
+      "      printf '{\"name\":\"harbor\",\"namespace\":\"harbor\",\"info\":{\"status\":\"deployed\"}}\\n'"
     , "    elif [[ \"${2:-}\" == 'harbor' ]]; then"
     , "      printf 'Error: release: not found\\n' >&2"
     , "      exit 1"
@@ -3899,9 +3847,25 @@ fakeRke2DockerScript =
     , "    if [[ -f \"$tag_file\" ]]; then"
     , "      source_ref=$(/bin/cat \"$tag_file\")"
     , "    fi"
-    , "    if [[ \"$source_ref\" == ghcr.io/coder/code-server:4.98.2 ]]; then"
-    , "      echo '429 Too Many Requests' >&2"
-    , "      exit 1"
+    , -- Sprint 5.30: the upstream code-server image is published from a
+      -- rate-limited registry, and `pushDockerImageWithRetry` classifies its 429
+      -- as RETRYABLE. Model it the way production treats it — transient: one 429,
+      -- then success. A fake that returns 429 forever models a permanent limit,
+      -- which refutes the very retry the two tests asserting "Retrying Harbor
+      -- publication …" plus `ExitSuccess` exist to exercise, and takes down every
+      -- other case that merely passes through the runbook on its way elsewhere.
+      "    if [[ \"$source_ref\" == ghcr.io/coder/code-server:4.98.2 ]]; then"
+    , "      attempt_file=\"$record_dir/push-attempts-$(target_key \"$target_ref\")\""
+    , "      attempts=0"
+    , "      if [[ -f \"$attempt_file\" ]]; then"
+    , "        attempts=$(/bin/cat \"$attempt_file\")"
+    , "      fi"
+    , "      attempts=$((attempts + 1))"
+    , "      printf '%s' \"$attempts\" > \"$attempt_file\""
+    , "      if [[ \"$attempts\" -le 1 ]]; then"
+    , "        echo '429 Too Many Requests' >&2"
+    , "        exit 1"
+    , "      fi"
     , "    fi"
     , "    : > \"$record_dir/pushed-$(target_key \"$target_ref\")\""
     , "    exit 0"
@@ -4623,328 +4587,252 @@ gatewayOrdersAtPorts restPort socketPort =
     , "}"
     ]
 
-validConfig :: String
+-- | Sprint 7.16: the test-harness cleartext fixture (@test-secrets.dhall@).
+-- Carries the unlock-bundle password plus the EPHEMERAL admin AWS credential
+-- the harness feeds into the same interactive admin prompt a real operator
+-- would answer. Decoded structurally by @inputFile auto@, so no schema import
+-- is required. This base value leaves the admin block empty (the vault
+-- lifecycle test only needs the password).
+-- | Sprint 5.10 follow-up: the deferred operator-id fields the harness injects
+-- from @test-secrets.dhall@ (the Route 53 zone, the SES sending/receive/capture
+-- identifiers, and the long-lived Pulumi state backend). A bare Dhall record
+-- literal must carry every field the Haskell @TestSecrets@ decoder expects;
+-- these CLI flows don't exercise those substrates, so the values are empty.
+testSecretsOperatorIdFields :: [String]
+testSecretsOperatorIdFields =
+  [ ", route53_zone_id = \"\""
+  , ", ses_sender_domain = \"\""
+  , ", ses_receive_subdomain = \"\""
+  , ", ses_capture_bucket = \"\""
+  , ", pulumi_state_backend_bucket_name = \"\""
+  , ", pulumi_state_backend_region = \"\""
+  ]
+
+-- | A @test-secrets.dhall@ with a populated @aws_admin_for_test_simulation@
+-- block, so the suite-level IAM harness acquires the ephemeral admin credential
+-- non-interactively (the harness simulating the prompt).
+testSecretsDhallWithAdmin :: String -> String -> String -> Maybe String -> String
+testSecretsDhallWithAdmin accessKeyId secretAccessKey regionValue sessionTokenValue =
+  unlines $
+    ["{ vault_operator_password = \"test-vault-unlock-password\""]
+      ++ testSecretsOperatorIdFields
+      ++ [ ", aws_admin_for_test_simulation ="
+         , "    { access_key_id = " ++ show accessKeyId
+         , "    , secret_access_key = " ++ show secretAccessKey
+         , "    , session_token = "
+             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+         , "    , region = " ++ show regionValue
+         , "    }"
+         , -- Sprint 7.18: the optional ACME EAB block. A bare Dhall record literal
+           -- must still carry every field the Haskell decoder expects, so the
+           -- Optional `acme_eab` is rendered explicitly as `None`. Tests that
+           -- exercise EAB seeding use `testSecretsDhallWithAdminAndAcmeEab`.
+           ", acme_eab = None { key_id : Text, hmac_key : Text }"
+         , "}"
+         ]
+
+-- | Sprint 7.18: a @test-secrets.dhall@ that also populates the optional
+-- @acme_eab@ block for the separate external-material ingress fixture.
+-- Placeholder EAB values only — never real ZeroSSL credentials.
+testSecretsDhallWithAdminAndAcmeEab
+  :: String -> String -> String -> Maybe String -> String -> String -> String
+testSecretsDhallWithAdminAndAcmeEab accessKeyId secretAccessKey regionValue sessionTokenValue eabKeyId eabHmacKey =
+  unlines $
+    ["{ vault_operator_password = \"test-vault-unlock-password\""]
+      ++ testSecretsOperatorIdFields
+      ++ [ ", aws_admin_for_test_simulation ="
+         , "    { access_key_id = " ++ show accessKeyId
+         , "    , secret_access_key = " ++ show secretAccessKey
+         , "    , session_token = "
+             ++ maybe "None Text" (\token -> "Some " ++ show token) sessionTokenValue
+         , "    , region = " ++ show regionValue
+         , "    }"
+         , ", acme_eab = Some { key_id = " ++ show eabKeyId ++ ", hmac_key = " ++ show eabHmacKey ++ " }"
+         , "}"
+         ]
+
+testSecretsDhall :: String
+testSecretsDhall = testSecretsDhallWithAdmin "" "" "" Nothing
+
+-- | Sprint 5.30: the integration fixtures are 'Settings.ConfigFile' values now,
+-- not hand-authored Dhall. They were one of four encoders of a record that has
+-- exactly one decoder, and Sprint `1.80`'s type tightening made three of them
+-- wrong rather than updating them
+-- (chaos_hardening_doctrine.md section 23). Every field not named here is the
+-- production default, which also retires a second, silent drift: the fixture
+-- capacity plan had diverged from `defaultResourcePlan`.
+validConfig :: Settings.ConfigFile
 validConfig =
   configWithAwsAndAcme
     lifecycleProviderVaultPath
     "us-east-1"
     True
     "https://acme.zerossl.com/v2/DV90"
-    (eabVaultRefDhall "key_id")
-    (eabVaultRefDhall "hmac_key")
 
-validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
+validConfigWithBlankOperationalAwsAndConfiguredAdmin :: Settings.ConfigFile
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-east-1" False
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
-        ++ eabVaultRefDhall "key_id"
-        ++ ", eab_hmac_key = "
-        ++ eabVaultRefDhall "hmac_key"
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
-    , "}"
-    ]
+  (fixtureBaseConfig lifecycleProviderVaultPath "us-east-1" False)
+    { Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+    }
 
--- | Sprint 8.8: like 'validConfigWithBlankOperationalAwsAndConfiguredAdmin'
--- but with a populated long-lived @pulumi_state_backend@ bucket, so the
--- @prodbox nuke@ step-5 state-bucket destroy (which removes the retained
--- public-edge certificate stored under that bucket) has a bucket to target.
-validConfigForNuke :: String
+validConfigForNuke :: Settings.ConfigFile
 validConfigForNuke =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-east-1" False
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"test.resolvefintech.com\", receive_subdomain = \"inbox.test.resolvefintech.com\", capture_bucket = \"prodbox-test-ses-capture\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
-        ++ eabVaultRefDhall "key_id"
-        ++ ", eab_hmac_key = "
-        ++ eabVaultRefDhall "hmac_key"
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"prodbox-test-pulumi-long-lived\", region = \"us-west-2\", key_prefix = \"pulumi/\" }"
-    , "}"
-    ]
+  (fixtureBaseConfig lifecycleProviderVaultPath "us-east-1" False)
+    { -- Sprint 5.30: the AWS-tier validator Sprint `1.81` introduced requires a
+      -- non-empty subzone, and the SES readiness command validates at that tier.
+      -- The pre-migration fixture left it empty; the fixture never decoded, so
+      -- no test could observe the refusal. Synthetic values, per the repository
+      -- value-hygiene rule.
+      Settings.aws_substrate =
+        Settings.AwsSubstrateSection
+          { Settings.hosted_zone_id = Text.pack "Z0987654321XYZ"
+          , Settings.subzone_name = Text.pack "aws.test.resolvefintech.com"
+          }
+    , Settings.ses =
+        Settings.SesSection
+          { Settings.sender_domain = Text.pack "test.resolvefintech.com"
+          , -- Sprint 5.30: a single DNS label, not an FQDN. The pre-migration fixture
+            -- carried "inbox.test.resolvefintech.com" here, which
+            -- `validateOptionalDnsLabelField` rejects — but the fixture never decoded,
+            -- so no test could observe it. Surfacing a latent invalid fixture value is
+            -- the migration working, not migration damage.
+            Settings.receive_subdomain = Text.pack "inbox"
+          , Settings.capture_bucket = Text.pack "prodbox-test-ses-capture"
+          }
+    , Settings.pulumi_state_backend =
+        fixturePulumiBackend "prodbox-test-pulumi-long-lived" "us-west-2"
+    }
 
-validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: String
+validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: Settings.ConfigFile
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall lifecycleProviderVaultPath "us-west-2" False
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
-        ++ eabVaultRefDhall "key_id"
-        ++ ", eab_hmac_key = "
-        ++ eabVaultRefDhall "hmac_key"
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
-    , "}"
+  (fixtureBaseConfig lifecycleProviderVaultPath "us-west-2" False)
+    { Settings.pulumi_state_backend = fixturePulumiBackend "" ""
+    }
+
+zeroSslConfig :: Settings.ConfigFile
+zeroSslConfig = validConfig
+
+configWithAwsAndAcme :: String -> String -> Bool -> String -> Settings.ConfigFile
+configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer =
+  (fixtureBaseConfig awsVaultPath regionValue includeSessionToken)
+    { Settings.acme = fixtureAcme {Settings.server = Text.pack acmeServer}
+    , Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+    }
+
+-- | The shared fixture shape: production defaults plus the handful of fields
+-- every integration fixture overrides.
+fixtureBaseConfig :: String -> String -> Bool -> Settings.ConfigFile
+fixtureBaseConfig awsVaultPath regionValue includeSessionToken =
+  Settings.defaultConfigFile
+    { Settings.aws = fixtureAwsCredentials awsVaultPath regionValue includeSessionToken
+    , Settings.route53 = Settings.Route53Section {Settings.zone_id = Text.pack "Z1234567890ABC"}
+    , Settings.domain =
+        (Settings.domain Settings.defaultConfigFile)
+          { Settings.demo_fqdn = Text.pack "test.resolvefintech.com"
+          }
+    , Settings.acme = fixtureAcme
+    , Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+    }
+
+fixtureAwsCredentials :: String -> String -> Bool -> Settings.AwsCredentialsRef
+fixtureAwsCredentials awsVaultPath regionValue includeSessionToken =
+  Settings.AwsCredentialsRef
+    { Settings.awsCredentialAccessKeyId = fixtureVaultRef vaultPath (Text.pack "access_key_id")
+    , Settings.awsCredentialSecretAccessKey = fixtureVaultRef vaultPath (Text.pack "secret_access_key")
+    , Settings.awsCredentialSessionToken =
+        if includeSessionToken
+          then Just (fixtureVaultRef vaultPath (Text.pack "session_token"))
+          else Nothing
+    , Settings.awsCredentialRegion = Text.pack regionValue
+    }
+ where
+  vaultPath = Text.pack awsVaultPath
+
+fixtureAcme :: Settings.AcmeSection
+fixtureAcme =
+  (Settings.acme Settings.defaultConfigFile)
+    { Settings.email = Text.pack "test@resolvefintech.com"
+    , Settings.eab_key_id = Just (fixtureVaultRef (Text.pack acmeEabVaultPath) (Text.pack "key_id"))
+    , Settings.eab_hmac_key = Just (fixtureVaultRef (Text.pack acmeEabVaultPath) (Text.pack "hmac_key"))
+    }
+
+fixturePulumiBackend :: String -> String -> Settings.PulumiStateBackendSection
+fixturePulumiBackend bucket regionValue =
+  Settings.PulumiStateBackendSection
+    { Settings.psbBucketName = Text.pack bucket
+    , Settings.psbRegion = Text.pack regionValue
+    , Settings.psbKeyPrefix = Text.pack "pulumi/"
+    }
+
+-- | Sprint 5.30: `Settings.vaultRef` is not exported, so the fixture builds the
+-- same shape from the exported constructors.
+fixtureVaultRef :: Text -> Text -> SecretRef
+fixtureVaultRef path field =
+  SecretRefVault
+    VaultSecretRef
+      { vaultSecretMount = Text.pack "secret"
+      , vaultSecretPath = path
+      , vaultSecretField = field
+      }
+
+-- | Sprint 5.31: the fake cluster's ResourceQuota objects, rendered from the
+-- same capacity projection the validator compares against.
+--
+-- These used to be a hand-written JSON literal restating the numbers — a second
+-- encoder of the production plan, and one that had already drifted: it declared
+-- the keycloak namespace at @1430m@ where the plan projects @1330m@. Deriving
+-- it makes the fixture agree with the plan by construction, so a capacity
+-- change is reflected rather than contradicted.
+renderFakeResourceQuotaItems :: String
+renderFakeResourceQuotaItems =
+  "{\"items\":[" ++ intercalate "," (map renderQuotaItem resourceGuardrailFakeNamespaces) ++ "]}"
+ where
+  renderQuotaItem namespace =
+    case TestValidation.namespaceResourceQuotaHardFields defaultResourcePlan namespace of
+      Left err ->
+        error ("fake ResourceQuota fixture cannot project namespace " ++ namespace ++ ": " ++ err)
+      Right fields ->
+        "{\"metadata\":{\"namespace\":\""
+          ++ namespace
+          ++ "\",\"name\":\""
+          ++ namespace
+          ++ "-resource-quota\"},\"spec\":{\"hard\":{"
+          ++ intercalate "," [renderField name value | (name, value) <- fields]
+          ++ "}}}"
+  renderField name value = "\"" ++ name ++ "\":\"" ++ value ++ "\""
+
+resourceGuardrailFakeNamespaces :: [String]
+resourceGuardrailFakeNamespaces = ["keycloak", "vscode", "api", "websocket", "gateway"]
+
+defaultResourcePlan :: Capacity.ResourcePlan
+defaultResourcePlan = Capacity.resource_plan (Settings.capacity Settings.defaultConfigFile)
+
+-- | The fake cluster's LimitRange objects, rendered from the same projection the
+-- validator compares against (Sprint 5.31). This is where the gateway's
+-- 250m × 3 versus 750m × 2 drift had been sitting.
+renderFakeLimitRangeItems :: String
+renderFakeLimitRangeItems =
+  "{\"items\":[" ++ intercalate "," (map renderLimitItem resourceGuardrailFakeNamespaces) ++ "]}"
+ where
+  renderLimitItem namespace =
+    case TestValidation.namespaceLimitRangeContainerFields defaultResourcePlan namespace of
+      Left err ->
+        error ("fake LimitRange fixture cannot project namespace " ++ namespace ++ ": " ++ err)
+      Right fields ->
+        "{\"metadata\":{\"namespace\":\""
+          ++ namespace
+          ++ "\",\"name\":\""
+          ++ namespace
+          ++ "-limit-range\"},\"spec\":{\"limits\":[{\"type\":\"Container\","
+          ++ intercalate "," (map renderGroup (groupFields fields))
+          ++ "}]}}"
+  groupFields fields =
+    [ (prefix, [(name, value) | (candidate, name, value) <- fields, candidate == prefix])
+    | prefix <- [["defaultRequest"], ["default"]]
     ]
-
-zeroSslConfig :: String
-zeroSslConfig =
-  configWithAwsAndAcme
-    lifecycleProviderVaultPath
-    "us-east-1"
-    True
-    "https://acme.zerossl.com/v2/DV90"
-    (eabVaultRefDhall "key_id")
-    (eabVaultRefDhall "hmac_key")
-
-deploymentDhallFragment :: String
-deploymentDhallFragment =
-  concat
-    [ "{ dev_mode = True"
-    , ", bootstrap_public_ip_override = None Text"
-    , ", pulumi_enable_dns_bootstrap = True"
-    , ", public_edge_advertisement_mode = None Text"
-    , ", public_edge_bgp_peers ="
-    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
-    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
-    , ", api_scaling = " ++ fixedScalingDhall 2
-    , ", websocket_scaling = " ++ fixedScalingDhall 2
-    , " }"
-    ]
-
-scalingPolicyTypeDhall :: String
-scalingPolicyTypeDhall =
-  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
-
-fixedScalingDhall :: Int -> String
-fixedScalingDhall count =
-  "{ home_local = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ ", aws = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ " }"
-
-capacityDhallFragment :: String
-capacityDhallFragment =
-  unlines
-    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
-    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
-    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
-    , ", resource_plan = " ++ resourcePlanDhallFragment
-    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
-    , "}"
-    ]
-
-runtimeMemoryProfilesDhallFragment :: String
-runtimeMemoryProfilesDhallFragment =
-  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
-
-resourcePlanDhallFragment :: String
-resourcePlanDhallFragment =
-  unlines
-    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
-    , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-replica-cert-copy"
-          "keycloak"
-          3
-          (10, 16, 32, 1)
-          (25, 32, 64, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-vault-secrets"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-secret-materializer"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
-    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
-    , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
-    , "  , " ++ guaranteedResourceProfileDhall "bootstrap-broker" "bootstrap-broker" (100, 128, 256, 0)
-    , "  , "
-        ++ guaranteedResourceProfileDhall "lifecycle-authority" "lifecycle-authority" (150, 128, 256, 1024)
-    , "  , " ++ guaranteedResourceProfileDhall "provider-worker" "provider-worker" (100, 112, 256, 0)
-    , "  , " ++ guaranteedResourceProfileDhall "authority-backup" "authority-backup" (60, 80, 256, 0)
-    , "  , " ++ guaranteedResourceProfileDhall "tls-retention" "tls-retention" (60, 80, 256, 0)
-    , "  , "
-        ++ guaranteedResourceProfileDhall "target-secret-agent" "target-secret-agent" (60, 80, 256, 0)
-    , "  ]"
-    , "}"
-    ]
-
-resourceProfileDhall
-  :: String
-  -> String
-  -> Int
-  -> (Int, Int, Int, Int)
-  -> (Int, Int, Int, Int)
-  -> String
-resourceProfileDhall profile namespace count req lim =
-  "{ profile_id = "
-    ++ show profile
-    ++ ", profile_namespace = "
-    ++ show namespace
-    ++ ", replicas = "
-    ++ show count
-    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
-    ++ ", surge = 0"
-    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
-    ++ ", workload_demand = "
-    ++ workloadDemandDhall profile req lim
-    ++ " }"
-
-guaranteedResourceProfileDhall :: String -> String -> (Int, Int, Int, Int) -> String
-guaranteedResourceProfileDhall profile namespace demand =
-  "{ profile_id = "
-    ++ show profile
-    ++ ", profile_namespace = "
-    ++ show namespace
-    ++ ", replicas = 1"
-    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
-    ++ ", surge = 0"
-    ++ ", workload_qos = < Guaranteed | Burstable >.Guaranteed"
-    ++ ", workload_demand = "
-    ++ workloadDemandDhallWithQos "Guaranteed" profile demand demand
-    ++ " }"
-
-workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
-workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
-  workloadDemandDhallWithQos
-    "Burstable"
-    profile
-    (reqCpu, reqMemory, reqEphemeral, 0)
-    (limCpu, limMemory, limEphemeral, limDurable)
-
-workloadDemandDhallWithQos
-  :: String
-  -> String
-  -> (Int, Int, Int, Int)
-  -> (Int, Int, Int, Int)
-  -> String
-workloadDemandDhallWithQos qos profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
-  "{ cpu_demand = { requests_per_second = "
-    ++ show reqCpu
-    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
-    ++ show (limCpu - reqCpu)
-    ++ ", calibration_profile_id = "
-    ++ show profile
-    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
-    ++ show reqMemory
-    ++ " ], bounded_memory_burst_mib = "
-    ++ show (limMemory - reqMemory)
-    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
-    ++ show reqEphemeral
-    ++ " ], bounded_ephemeral_burst_mib = "
-    ++ show (limEphemeral - reqEphemeral)
-    ++ " }, demanded_durable_storage_mib = "
-    ++ show limDurable
-    ++ ", demand_qos = < Guaranteed | Burstable >."
-    ++ qos
-    ++ " }"
-
-clusterTopologyDhallFragment :: String
-clusterTopologyDhallFragment =
-  clusterTopologyDhallType
-    ++ ".Rke2 { machines = [ "
-    ++ clusterTopologyMachineDhall
-    ++ " ] : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " }"
-
-clusterTopologyDhallType :: String
-clusterTopologyDhallType =
-  "< Kind : { machine : "
-    ++ clusterTopologyMachineTypeDhall
-    ++ ", node_count : Natural } | Rke2 : { machines : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
-    ++ workerSubstrateDhallType
-    ++ " } >"
-
-clusterTopologyMachineTypeDhall :: String
-clusterTopologyMachineTypeDhall =
-  "{ machine_id : Text, machine_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", compute_worker : { worker_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", manages_all_local_devices : Bool } }"
-
-clusterTopologyMachineDhall :: String
-clusterTopologyMachineDhall =
-  "{ machine_id = \"prodbox-home\", machine_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, manages_all_local_devices = True } }"
-
-workerSubstrateDhallType :: String
-workerSubstrateDhallType =
-  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
-
-configWithAwsAndAcme :: String -> String -> Bool -> String -> String -> String -> String
-configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer eabKeyIdValue eabHmacKeyValue =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall awsVaultPath regionValue includeSessionToken
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \""
-        ++ acmeServer
-        ++ "\", eab_key_id = "
-        ++ eabKeyIdValue
-        ++ ", eab_hmac_key = "
-        ++ eabHmacKeyValue
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"prodbox-fixture-state\", region = \"us-east-1\", key_prefix = \"pulumi/\" }"
-    , "}"
-    ]
+  renderGroup (prefix, entries) =
+    "\""
+      ++ concat prefix
+      ++ "\":{"
+      ++ intercalate "," ["\"" ++ name ++ "\":\"" ++ value ++ "\"" | (name, value) <- entries]
+      ++ "}"

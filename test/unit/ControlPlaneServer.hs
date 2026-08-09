@@ -3,7 +3,7 @@
 module ControlPlaneServer (controlPlaneServerSuite) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (bracket)
+import Control.Exception (SomeException, bracket, throwIO, try)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -22,7 +22,7 @@ import Network.Socket
   , socketPair
   , withSocketsDo
   )
-import Network.Socket.ByteString (sendAll)
+import Network.Socket.ByteString (recv, sendAll)
 import Prodbox.ControlPlane.ProjectionImportEndpoint (mkProjectionImportHandler)
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointHandler
@@ -33,8 +33,9 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , mkPulumiCheckpointHandler
   )
 import Prodbox.ControlPlane.RoleInterpreters (lifecycleAuthorityInterpreter)
+import Prodbox.ControlPlane.RoleReadiness (constantRoleReadinessSource)
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecycleMigrationApply))
-import Prodbox.ControlPlane.Runtime (receiveControlPlaneRequest)
+import Prodbox.ControlPlane.Runtime (receiveControlPlaneRequest, serveControlPlaneConnection)
 import Prodbox.ControlPlane.Server
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationCommand (RequestLegacyRollback, VerifyShadow)
@@ -184,7 +185,11 @@ controlPlaneServerSuite =
       classifyControlPlaneRequest ProviderWorkerRuntime "POST /v1/migration/apply HTTP/1.1\r\n\r\nbody"
         `shouldBe` DispositionNotOwned
     it "serves every disposition fail-closed until an interpreter is bound" $ do
-      let serve = serveControlPlaneRequest (failClosedInterpreter :: RoleInterpreter IO) LifecycleAuthorityRuntime
+      let serve =
+            serveControlPlaneRequest
+              fixtureRoleReadinessResolver
+              (failClosedInterpreter :: RoleInterpreter IO)
+              LifecycleAuthorityRuntime
       serve "GET /healthz HTTP/1.1\r\n\r\n" `shouldReturn` (200, "live\n")
       serve "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (503, "not-ready\n")
       serve "POST /v1/migration/apply HTTP/1.1\r\n\r\nbody"
@@ -192,7 +197,7 @@ controlPlaneServerSuite =
       serve "GET /nope HTTP/1.1\r\n\r\n" `shouldReturn` (404, "route-not-owned\n")
     it "dispatches an owned migration request through the library-built interpreter" $ do
       interpreter <- boundLifecycleAuthorityInterpreter
-      let serve = serveControlPlaneRequest interpreter LifecycleAuthorityRuntime
+      let serve = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter LifecycleAuthorityRuntime
       serve "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (200, "ready\n")
       accepted <- serve (migrationRequest (VerifyShadow digest))
       accepted `shouldBe` (200, "migration-accepted")
@@ -204,6 +209,35 @@ controlPlaneServerSuite =
     it "maps every emitted status code to a reason phrase" $
       fmap httpReasonPhrase [200, 400, 404, 409, 500, 503]
         `shouldBe` ["OK", "Bad Request", "Not Found", "Conflict", "Internal Server Error", "Service Unavailable"]
+    it "Sprint 4.60: a throwing interpreter answers 500 rather than closing silently" $ do
+      -- The production defect, end to end: `interpreterHandle` throwing used to
+      -- close the socket with zero bytes, which the client reported as a
+      -- transport failure naming nothing.
+      answered <-
+        serveOverSocketPair
+          RoleInterpreter
+            { interpreterReadiness = fixtureReadyRoleReadinessSource
+            , interpreterHandle = \_ _ -> throwIO (userError "interpreter exploded")
+            }
+          "POST /v1/migration/apply HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody"
+      Char8.unpack answered `shouldContain` "HTTP/1.1 500 Internal Server Error"
+      Char8.unpack answered `shouldContain` "internal-error"
+    it "Sprint 4.60: a throwing readiness resolver answers 500, not a bare close" $ do
+      answered <-
+        serveOverSocketPair
+          RoleInterpreter
+            { interpreterReadiness =
+                constantRoleReadinessSource (error "readiness cell is bottom")
+            , interpreterHandle = \_ _ -> pure Nothing
+            }
+          "GET /readyz HTTP/1.1\r\n\r\n"
+      Char8.unpack answered `shouldContain` "HTTP/1.1 500 Internal Server Error"
+    it "Sprint 4.60: the framing-refusal 400 is unchanged" $ do
+      answered <-
+        serveOverSocketPair
+          (failClosedInterpreter :: RoleInterpreter IO)
+          "POST /v1/migration/apply HTTP/1.1\r\n\r\nno-content-length"
+      Char8.unpack answered `shouldContain` "HTTP/1.1 400 Bad Request"
  where
   digest = fromJust (mkMigrationDigest "server-v1")
 
@@ -267,7 +301,7 @@ boundLifecycleAuthorityInterpreter = do
   pure
     ( lifecycleAuthorityInterpreter
         4096
-        (pure True)
+        fixtureReadyRoleReadinessSource
         "cluster-a"
         (pure (Right 123456))
         migrationRepository
@@ -302,3 +336,29 @@ freshMigrationRepository = do
               writeIORef stateRef (Just (StoredMigration next bytes))
               pure (Right True)
       }
+
+-- | Sprint 4.60: drive one connection through the real production accept path
+-- over a socket pair, and return every byte the peer saw. `serve` used to be a
+-- `where`-closure under a `forever` loop bound to port 8600, so the refusal
+-- path was unreachable from a test.
+serveOverSocketPair :: RoleInterpreter IO -> ByteString -> IO ByteString
+serveOverSocketPair interpreter request = withSocketsDo $ do
+  (client, peer) <- socketPair AF_UNIX Stream defaultProtocol
+  void $ forkIO $ do
+    sendAll peer request
+    shutdown peer ShutdownSend
+  void $ forkIO $ do
+    _ <-
+      try (serveControlPlaneConnection LifecycleAuthorityRuntime interpreter client)
+        :: IO (Either SomeException ())
+    close client
+  answered <- drainSocket peer ByteString.empty
+  close peer
+  pure answered
+
+drainSocket :: Socket -> ByteString -> IO ByteString
+drainSocket connection accumulated = do
+  chunk <- recv connection 4096
+  if ByteString.null chunk
+    then pure accumulated
+    else drainSocket connection (accumulated <> chunk)

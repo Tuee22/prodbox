@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- | Sprint 4.50: the pure request/dispatch/response seam shared by every
 -- standing control-plane role server.
@@ -25,6 +26,8 @@ module Prodbox.ControlPlane.Server
   , ControlPlaneDisposition (..)
   , classifyControlPlaneRequest
   , RoleInterpreter (..)
+  , RoleReadinessResolver (..)
+  , mkRoleReadinessResolver
   , failClosedInterpreter
   , serveControlPlaneRequest
   , renderHttpResponse
@@ -32,10 +35,21 @@ module Prodbox.ControlPlane.Server
   )
 where
 
+import Control.Concurrent.STM (STM)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as Char8
 import Data.Char (isAlphaNum, isDigit, toLower)
+import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , RoleReadinessState
+  , computeRoleReadiness
+  , constantRoleReadinessSource
+  , roleReadinessIsReady
+  , roleReadinessSnapshot
+  , unobservedRoleReadinessFacts
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneMethod (ControlPlaneGet, ControlPlanePost)
   , ControlPlaneRoute (..)
@@ -44,6 +58,7 @@ import Prodbox.ControlPlane.Route
   , controlPlaneRoutePath
   , decodeRoleRoute
   )
+import Prodbox.Readiness.ObservationSchedule (ObservationSchedule)
 import Prodbox.Runtime.Role (RuntimeRole)
 
 -- | The complete request header, including its terminating CRLFCRLF, is bounded
@@ -360,34 +375,70 @@ classifyControlPlaneRequest role raw =
 -- | A role's installed handlers. @interpreterHandle@ returns 'Nothing' for an
 -- owned-but-unbound route (served as @503 interpreter-unavailable@) and
 -- @Just (status, body)@ once the role binds a production handler.
+--
+-- Sprint 4.55: readiness is a 'RoleReadinessSource' — cached facts readable in
+-- one @STM@ transaction — and not an @m Bool@. The old field let a role put a
+-- signed S3 @LIST@, a Vault read, or an @aws sts get-caller-identity@
+-- subprocess on a @timeoutSeconds: 1@ kubelet probe path, and five roles did.
+-- @STM@ has no @IO@, so that no longer type-checks.
 data RoleInterpreter m = RoleInterpreter
-  { interpreterReadyz :: m Bool
+  { interpreterReadiness :: !RoleReadinessSource
   , interpreterHandle :: ControlPlaneRoute -> ByteString -> m (Maybe (Int, ByteString))
   }
 
--- | The default interpreter: liveness serves, readiness is false, and no owned
--- route is bound. Installed until a role supplies a production interpreter.
+-- | The default interpreter: liveness serves, readiness has observed nothing
+-- and therefore fails closed, and no owned route is bound. Installed until a
+-- role supplies a production interpreter.
 failClosedInterpreter :: (Applicative m) => RoleInterpreter m
 failClosedInterpreter =
   RoleInterpreter
-    { interpreterReadyz = pure False
+    { interpreterReadiness =
+        constantRoleReadinessSource (unobservedRoleReadinessFacts "role-interpreter")
     , interpreterHandle = \_ _ -> pure Nothing
+    }
+
+-- | How the request path turns a readiness source into a verdict: read the
+-- monotonic clock and the latched facts, then fold. Injected so that the server
+-- itself names no clock and no transaction runner, and a test can drive the
+-- staleness arm deterministically.
+newtype RoleReadinessResolver m = RoleReadinessResolver
+  { resolveRoleReadinessSource :: RoleReadinessSource -> m RoleReadinessState
+  }
+
+-- | Build a resolver from a monotonic clock and a way to run one transaction.
+mkRoleReadinessResolver
+  :: (Monad m)
+  => ObservationSchedule
+  -> m Natural
+  -> (forall a. STM a -> m a)
+  -> RoleReadinessResolver m
+mkRoleReadinessResolver schedule clock runTransaction =
+  RoleReadinessResolver
+    { resolveRoleReadinessSource = \source -> do
+        now <- clock
+        facts <- runTransaction (roleReadinessSnapshot source)
+        pure (computeRoleReadiness schedule now facts)
     }
 
 -- | Serve one request against a role's interpreter, returning the HTTP status and
 -- body. Monad-generic so a pure/fake interpreter drives every arm in a unit test.
 serveControlPlaneRequest
   :: (Monad m)
-  => RoleInterpreter m
+  => RoleReadinessResolver m
+  -> RoleInterpreter m
   -> RuntimeRole
   -> ByteString
   -> m (Int, ByteString)
-serveControlPlaneRequest interpreter role raw =
+serveControlPlaneRequest resolver interpreter role raw =
   case classifyControlPlaneRequest role raw of
     DispositionLive -> pure (200, "live\n")
     DispositionNotReady -> do
-      ready <- interpreterReadyz interpreter
-      pure (if ready then (200, "ready\n") else (503, "not-ready\n"))
+      state <- resolveRoleReadinessSource resolver (interpreterReadiness interpreter)
+      pure
+        ( if roleReadinessIsReady state
+            then (200, "ready\n")
+            else (503, "not-ready\n")
+        )
     DispositionNotOwned -> pure (404, "route-not-owned\n")
     DispositionOwnedRoute route body -> do
       handled <- interpreterHandle interpreter route body

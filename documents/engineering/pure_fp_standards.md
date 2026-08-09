@@ -142,6 +142,24 @@ renderLifecycleAction action =
 - Execution receives validated identities and coordinates rather than checking raw strings again.
 - Invalid, corrupt, missing, and unobservable are distinct when they imply different decisions.
 
+### 2.3a Encode at exactly one boundary
+
+§ 2.3 governs the read direction. The write direction needs the mirror rule, and its absence is what
+allowed a config type change to break twenty integration cases in 2026-08:
+
+- **A record has one decoder and must have exactly one encoder.** A second hand-maintained
+  serializer of the same type is a restatement that drifts silently — tightening the type does not
+  update it, it only makes it wrong. Derive every other rendering from the canonical one.
+- **Do not convert a typed failure into an untyped one.** A `Left`, a four-valued observation, or a
+  refusal constructor is the answer; `ioError`, `error`, and an escaping exception replace an answer
+  with its absence. This is the same rule as § 2.3's final bullet, applied on the way out.
+- **A value crossing out of the typed region carries none of its guarantees with it.** Say where the
+  region ends rather than assuming the type travels.
+
+The general statement, its worked instance, and the ring-region qualifier are in
+[chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) and
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md).
+
 ### 2.4 Durability-indexed coordinates
 
 When stored objects outlive different scopes — a chart release, the cluster, the fleet — the

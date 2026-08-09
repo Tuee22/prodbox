@@ -27,8 +27,10 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , TargetSinkRecord (..)
   , TargetSinkVersion
   , mkCredentialGeneration
-  , mkTargetSinkVersion
   , mkTargetValueDigest
+  )
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
   )
 import Prodbox.Vault.Reconcile
   ( VaultPolicySpec (..)
@@ -244,7 +246,7 @@ registryWith observations deletes initial deleteResult = do
         case values of
           [] -> pure (TargetSinkUnobservable "fixture observation exhausted")
           value : rest -> writeIORef remaining rest >> pure value
-      trusted = mkTrustedTargetSink targetSink observe (\_ _ -> pure (Left "CAS forbidden"))
+      trusted = mkTrustedTargetSink targetSink observe
       boundary =
         mkTargetGenerationTombstoneBoundary trusted $ do
           modifyIORef' deletes (+ 1)
@@ -255,7 +257,7 @@ registryWith observations deletes initial deleteResult = do
 boundaryFixture :: TargetGenerationTombstoneBoundary IO Text.Text
 boundaryFixture =
   mkTargetGenerationTombstoneBoundary
-    (mkTrustedTargetSink targetSink (pure TargetSinkMissing) (\_ _ -> pure (Left "unused")))
+    (mkTrustedTargetSink targetSink (pure TargetSinkMissing))
     (pure (Right ()))
 
 bindingFixture :: TargetGenerationTombstoneBinding IO Text.Text
@@ -273,7 +275,7 @@ otherGeneration :: CredentialGeneration
 otherGeneration = mustRight (mkCredentialGeneration 8)
 
 targetVersion :: TargetSinkVersion
-targetVersion = mustRight (mkTargetSinkVersion "7")
+targetVersion = mustJust (targetSinkVersionFromStoreVersion 7)
 
 targetRecord :: TargetSinkRecord Text.Text
 targetRecord = recordFor generation
@@ -356,6 +358,11 @@ showBindingResult
 showBindingResult result = case result of
   Left err -> show err
   Right _ -> "Right <binding>"
+
+mustJust :: Maybe value -> value
+mustJust result = case result of
+  Just value -> value
+  Nothing -> error "invalid target tombstone fixture"
 
 mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of

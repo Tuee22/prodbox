@@ -340,6 +340,33 @@ no-reference scans.
 
 ## 5. Relationship To Other Doctrine
 
+**Fixture code is compiled by the canonical gate, and still not run by it.** `prodbox dev check`
+runs `fourmolu` and `hlint` over `app src test`, and then a type-checking build scoped
+`all --enable-tests` — which since Sprint `5.30` resolves to `lib`, `exe:prodbox` and the eight test
+suites ([code_quality.md](./code_quality.md); the general rule is "The region of Ring 2" in
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md)). Before that flag a fixture was
+type-checked only when `prodbox test integration cli` / `env` compiled it, and nothing routine ran
+those. What remains outside the gate is fixture *behaviour*: a fixture that compiles against a
+changed type and asserts the wrong thing still needs the suite to run.
+
+Two consequences bind this doctrine:
+
+- **A fixture that hand-authors a serialized form of a production type is a second encoder of that
+  type**, and it drifts silently when the type is tightened — the defect class in
+  [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md). Derive the fixture from the
+  production value through the one canonical renderer instead, so a schema change is a compile error
+  rather than a runtime decode failure. On 2026-08-08 four hand-written Tier-0 encoders existed and
+  a one-field tightening broke twenty cases. Sprint `5.30` landed the subtractive fix:
+  `test/support/Tier0Fixture.hs` is the only module in the test tree that produces Tier-0 document
+  text, its type is opaque, and the escape hatch for text that genuinely cannot be a value carries a
+  *checked* reason — with no "not yet migrated" arm, because that state is the defect. The pairing
+  matters: a derived fixture makes drift a compile error, and `--enable-tests` makes something
+  compile it; neither half alone would have caught the tightening.
+- **A fixture server answers or refuses; it never closes silently.** Converting a typed failure into
+  an exception that escapes before any byte is written replaces a diagnosable answer with a network
+  error, and — if the accept loop does not guard it — takes every later request in the test with it.
+  Keep the failure a value and render it as a response carrying its reason.
+
 This document works with:
 
 - [Unit Testing Policy](./unit_testing_policy.md) for test-runner and phase-banner doctrine

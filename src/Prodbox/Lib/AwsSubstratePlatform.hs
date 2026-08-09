@@ -74,6 +74,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Char (isAsciiUpper, isSpace, toLower)
 import Data.List (isSuffixOf, nub)
 import Data.Text qualified as Text
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Numeric.Natural (Natural)
 import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
@@ -164,13 +166,20 @@ import Prodbox.Lifecycle.CapabilityReadinessBarrier
   ( newReadinessObservationClient
   , observeReadinessThroughCapability
   )
+import Prodbox.Lifecycle.DependencyAdmission
+  ( DependencyAdmission
+  , mutationAdmittedComponent
+  , noAdmissions
+  , renderAdmissionRefusal
+  )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , fetchPerRunStackOutputs
   )
 import Prodbox.Lifecycle.ReadinessObservation
-  ( ComponentReadinessTarget (..)
+  ( BackendRoundTripResult (..)
+  , ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
   )
@@ -1113,12 +1122,41 @@ runAwsSubstratePlatformOrder
 runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot payload = do
   let (beforeGatewayEndpoint, fromGatewayEndpoint) =
         break (== StepAwsGatewayPostVault) (awsPlatformStepOrder payload)
-      runSlice endpoint =
+      -- Sprint 5.31: a refusal arrives as itself and is rendered here. Lowering
+      -- it inside the runner discarded the reason on a path that printed
+      -- nothing, so a refused AWS platform order exited 1 in silence.
+      runSlice endpoint carried steps = do
+        outcome <- runOrder endpoint carried steps
+        case outcome of
+          Left refusal -> do
+            refused <- failWith (Text.unpack (renderAdmissionRefusal refusal))
+            pure (refused, carried)
+          Right result -> pure result
+      runOrder endpoint =
         runAnchoredStepOrder
+          (awsPlatformDag payload)
+          awsReconcileClockMicros
           awsStepAnchor
+          -- Sprint 4.56: the mutating arm requires the admission the executor
+          -- re-validated, so it stays a required argument all the way to the act.
+          ( \admission step ->
+              mutationAdmittedComponent admission `seq`
+                runAwsSubstratePlatformStep
+                  repoRoot
+                  settings
+                  prodboxId
+                  labelValue
+                  snapshot
+                  endpoint
+                  step
+          )
           (runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint)
           (requireAwsComponentReadiness repoRoot (awsPlatformDag payload) endpoint)
-  preGatewayExit <- runSlice Nothing beforeGatewayEndpoint
+  -- Sprint 4.61: the second slice inherits the first slice's admissions. They
+  -- are two calls only because the gateway port-forward has to be established
+  -- between them; a readiness observation from before the forward is still
+  -- evidence after it, until its age bound expires it.
+  (preGatewayExit, preGatewayAdmissions) <- runSlice Nothing noAdmissions beforeGatewayEndpoint
   case preGatewayExit of
     ExitFailure _ -> pure preGatewayExit
     ExitSuccess ->
@@ -1134,7 +1172,9 @@ runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot pay
                 , gatewayPortForwardEnvironment = Nothing
                 , gatewayPortForwardWorkingDirectory = Just repoRoot
                 }
-              (\endpoint -> runSlice (Just endpoint) fromGatewayEndpoint)
+              ( \endpoint ->
+                  fst <$> runSlice (Just endpoint) preGatewayAdmissions fromGatewayEndpoint
+              )
           case portForwardResult of
             Left err -> failWith (renderGatewayPortForwardError err)
             Right exitCode -> pure exitCode
@@ -1260,24 +1300,24 @@ requireAwsComponentReadiness
   -> ComponentDag
   -> Maybe PeerEndpoint
   -> ComponentId
-  -> IO ExitCode
+  -> IO (Either ExitCode DependencyAdmission)
 requireAwsComponentReadiness repoRoot dag endpoint component =
   case (lookupComponentNode component dag, componentCapabilityRequirement component dag) of
     (Nothing, _) ->
-      failWith
+      awsRefuseWith
         ( "AWS-substrate readiness has no graph node for component `"
             ++ componentIdText component
             ++ "`."
         )
     (_, Nothing) ->
-      failWith
+      awsRefuseWith
         ( "AWS-substrate readiness has no capability requirement for component `"
             ++ componentIdText component
             ++ "`."
         )
     (Just node, Just requirement) ->
       case awsComponentReadinessTarget repoRoot endpoint component of
-        Left reason -> failWith (Text.unpack reason)
+        Left reason -> awsRefuseWith (Text.unpack reason)
         Right target -> do
           -- Sprint 1.61: same shared capability-handle routing as the native
           -- driver (see 'Prodbox.CLI.Rke2.requireNativeComponentReadiness'); the
@@ -1288,11 +1328,15 @@ requireAwsComponentReadiness repoRoot dag endpoint component =
                   (readiness node)
                   target
           result <-
-            observeReadinessThroughCapability componentReadinessRetryPolicy client requirement
+            observeReadinessThroughCapability
+              componentReadinessRetryPolicy
+              client
+              component
+              requirement
           case result of
-            Right () -> pure ExitSuccess
+            Right admission -> pure (Right admission)
             Left detail ->
-              failWith
+              awsRefuseWith
                 ( "AWS-substrate component `"
                     ++ componentIdText component
                     ++ "` did not satisfy "
@@ -1346,7 +1390,7 @@ awsComponentReadinessTarget repoRoot endpoint component =
         ( BackendRoundTripTarget
             component
             ComponentMinio
-            ( observeKubernetesThen
+            ( observeKubernetesThenRoundTrip
                 repoRoot
                 [ DaemonSetReady
                     (mirrorNamespace defaultProdboxMirrorConfig)
@@ -1458,16 +1502,20 @@ unsupportedAwsReadiness component =
         )
     )
 
-observeKubernetesThen
+-- | Sprint 1.76: the deep-probe variant. The Kubernetes precondition is
+-- read-shaped and stays so; only the continuation may yield write-shaped
+-- evidence, and a pending precondition is lowered into the deep result type
+-- rather than being allowed to masquerade as a confirmed round trip.
+observeKubernetesThenRoundTrip
   :: FilePath
   -> [KubernetesReadinessCheck]
-  -> IO (Either Text.Text ReadinessProbeResult)
-  -> IO (Either Text.Text ReadinessProbeResult)
-observeKubernetesThen repoRoot checks next = do
+  -> IO (Either Text.Text BackendRoundTripResult)
+  -> IO (Either Text.Text BackendRoundTripResult)
+observeKubernetesThenRoundTrip repoRoot checks next = do
   observation <- observeKubernetesReadinessOnce repoRoot checks
   case observation of
     Right ReadinessProbeReady -> next
-    Right pending@(ReadinessProbePending _) -> pure (Right pending)
+    Right (ReadinessProbePending detail) -> pure (Right (BackendRoundTripPending detail))
     Left reason -> pure (Left reason)
 
 observeAwsClusterBaseOnce :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
@@ -1862,6 +1910,16 @@ runStreaming spec = do
   case result of
     Failure err -> failWith err
     Success exitCode -> pure exitCode
+
+-- | Sprint 4.56: a refused readiness barrier yields no admission.
+awsRefuseWith :: String -> IO (Either ExitCode admission)
+awsRefuseWith message = Left <$> failWith message
+
+-- | The reconcile clock an admission's age is measured against.
+awsReconcileClockMicros :: IO Natural
+awsReconcileClockMicros = do
+  posix <- getPOSIXTime
+  pure (fromInteger (max 0 (floor (toRational posix * 1000000) :: Integer)))
 
 failWith :: String -> IO ExitCode
 failWith message = do

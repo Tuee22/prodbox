@@ -13,7 +13,10 @@ where
 
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Text (Text)
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientProviders
@@ -54,7 +57,13 @@ data ConfigClient m = ConfigClient
 
 data ConfigClientError
   = ConfigClientTransportFailed !AuthenticatedClientError
-  | ConfigClientHttpStatus !Int
+  | -- | Sprint 4.60: the refused status AND the bounded reason the server sent
+    -- with it. Carrying only the status was the last conversion in the chain
+    -- this sprint removes — the server now answers a decode failure with a 500
+    -- naming the field, and dropping the body here would put the reason back
+    -- out of reach (chaos_hardening_doctrine.md section 23; a refusal retains
+    -- its structured reason, bootstrap_readiness_doctrine.md section 0.5).
+    ConfigClientHttpStatus !Int !Text
   | ConfigClientResponseInvalid !ControlPlaneResponseCodecError
   deriving stock (Eq, Show)
 
@@ -102,7 +111,12 @@ configClientWith call scope =
       ControlPlaneResponse status body <-
         first ConfigClientTransportFailed attempted
       if status /= 200
-        then Left (ConfigClientHttpStatus status)
+        then
+          Left
+            ( ConfigClientHttpStatus
+                status
+                (TextEncoding.decodeUtf8Lenient (ByteString.take configClientReasonMaximumBytes body))
+            )
         else
           first
             ConfigClientResponseInvalid
@@ -110,3 +124,8 @@ configClientWith call scope =
                 configEndpointResponseMaximumBytes
                 (LazyByteString.fromStrict body)
             )
+
+-- | How much of a refusal body reaches the operator. Bounded because the body
+-- is attacker-influenced in principle and an error string is not a transport.
+configClientReasonMaximumBytes :: Int
+configClientReasonMaximumBytes = 512

@@ -18,12 +18,16 @@ module TestSupport
   , shouldNotContain
   , shouldReturn
   , shouldSatisfy
+  , testRetryPolicy
+  , fixtureReadyRoleReadinessSource
+  , fixtureUnreadyRoleReadinessSource
+  , fixtureReadinessNowMicros
+  , fixtureRoleReadinessResolver
   , verifiedCallerSlotFixture
-  , wrapTier0
-  , wrapTier0WithDefaultComponentGraph
   )
 where
 
+import Control.Concurrent.STM (atomically)
 import Data.ByteString.Char8 qualified as StrictByteString8
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
@@ -44,12 +48,24 @@ import Prodbox.ControlPlane.RequestAuthentication
   , trustedRequestKeyFromSigner
   , verifiedRequestCallerSlot
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , constantRoleReadinessSource
+  , controlPlaneRoleReadinessSchedule
+  , readyRoleReadinessFacts
+  , unobservedRoleReadinessFacts
+  )
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecyclePulumiCheckpoint))
+import Prodbox.ControlPlane.Server
+  ( RoleReadinessResolver
+  , mkRoleReadinessResolver
+  )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.Lease
   ( authorityDurationFromMicros
   , authorityTimeFromMicros
   )
+import Prodbox.Retry qualified as Retry
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Directory
   ( copyFile
@@ -68,53 +84,6 @@ import Test.Tasty.HUnit
   , testCase
   )
 import Test.Tasty.QuickCheck (Testable, testProperty)
-
--- | Sprint 1.42 Part B: wrap a @ConfigFile@-shaped Dhall record (the legacy
--- @prodbox-config.dhall@ payload our fixtures emit) into a Tier-0
--- @prodbox.dhall@ @{ parameters, context, witness }@ record, so a fixture that
--- authors the operator's non-secret config writes the retired file's
--- replacement. The embedded @context@ is a valid @HostOrchestrator@ binary
--- context; because the temp repo has no Vault unlock bundle, the cluster is
--- "not established", so config loading reads the @parameters@ directly —
--- exactly as a host CLI command does before bring-up.
--- | Sprint 1.56: supply the Tier-0 @components@ field (the component
--- dependency/readiness graph) as a __left-biased default__, so schema-less raw
--- config fixtures that predate the field still decode (they get an empty graph —
--- these fixtures do not exercise graph validity), while a fixture that DOES
--- declare @components@ (e.g. a @Config::{ … }@ completion whose default carries
--- the real graph) keeps its own value. Dhall @//@ is right-biased, so
--- @{ components = … } // config@ means "config wins where it sets a field".
-wrapTier0 :: String -> String
-wrapTier0 = wrapTier0WithComponents componentsDhallFragment
-
--- | A Tier-0 wrapper for graph-consuming command fixtures. These commands must
--- exercise the same complete default graph as production; an empty compatibility
--- graph is correctly rejected by the fail-closed native-plan compiler.
-wrapTier0WithDefaultComponentGraph :: String -> String
-wrapTier0WithDefaultComponentGraph =
-  wrapTier0WithComponents defaultComponentsDhallFragment
-
-wrapTier0WithComponents :: String -> String -> String
-wrapTier0WithComponents componentFragment configRecord =
-  unlines
-    [ "{ parameters = { components = " ++ componentFragment ++ " } // (" ++ configRecord ++ ")"
-    , ", context ="
-    , "  { project = \"prodbox\""
-    , "  , binary = \"prodbox\""
-    , "  , context_kind = < HostOrchestrator | Daemon | ClusterService | OtherContext >.HostOrchestrator"
-    , "  , cluster_id = \"prodbox-home\""
-    , "  , vault_address = \"http://127.0.0.1:31820\""
-    , "  , minio_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
-    , "  , minio_bucket = \"prodbox-state\""
-    , "  , topology ="
-    , "    { seal_mode = < Tier0Shamir | Tier0Transit >.Tier0Shamir"
-    , "    , parent_ref = None { parent_cluster_id : Text, parent_vault_address : Text, parent_transit_key : Text, parent_authority_endpoint : Text }"
-    , "    }"
-    , "  , capabilities = [ < DurableStore | VaultAuth | PublicEdge | OtherCapability >.DurableStore, < DurableStore | VaultAuth | PublicEdge | OtherCapability >.VaultAuth ]"
-    , "  }"
-    , ", witness = [] : List Text"
-    , "}"
-    ]
 
 -- | An empty typed @components@ list in the schema-less inline-union style the
 -- fixtures use (Sprint 1.56).
@@ -299,3 +268,36 @@ appendTree tree = SuiteBuilder ((), [tree])
 
 suiteTrees :: SuiteBuilder () -> [TestTree]
 suiteTrees (SuiteBuilder (_, trees)) = trees
+
+-- | Sprint 1.77: a retry policy for a fixture.
+--
+-- 'Prodbox.Retry.RetryPolicy' hides its constructor, so a test builds one the
+-- same way production data does — through the validating smart constructor —
+-- and a fixture that authors an impossible schedule fails loudly here rather
+-- than quietly exercising one. The jitter fraction is the compiled default, so
+-- a fixture never accidentally pins a schedule to the un-jittered path.
+testRetryPolicy :: Int -> Int -> Int -> Int -> Retry.RetryPolicy
+testRetryPolicy maxAttempts baseDelay multiplier maxDelay =
+  case Retry.mkRetryPolicy maxAttempts baseDelay multiplier maxDelay Retry.defaultJitterFraction of
+    Right policy -> policy
+    Left err -> error ("test retry policy is not a policy: " ++ Retry.renderRetryPolicyError err)
+
+-- | Sprint 4.55: a fixture readiness source that has observed everything it
+-- needs, stamped at the fixture instant, plus the resolver a test serves with.
+fixtureReadyRoleReadinessSource :: RoleReadinessSource
+fixtureReadyRoleReadinessSource =
+  constantRoleReadinessSource (readyRoleReadinessFacts "fixture" fixtureReadinessNowMicros)
+
+fixtureUnreadyRoleReadinessSource :: RoleReadinessSource
+fixtureUnreadyRoleReadinessSource =
+  constantRoleReadinessSource (unobservedRoleReadinessFacts "fixture")
+
+fixtureReadinessNowMicros :: Natural
+fixtureReadinessNowMicros = 1000000000
+
+fixtureRoleReadinessResolver :: RoleReadinessResolver IO
+fixtureRoleReadinessResolver =
+  mkRoleReadinessResolver
+    controlPlaneRoleReadinessSchedule
+    (pure fixtureReadinessNowMicros)
+    atomically

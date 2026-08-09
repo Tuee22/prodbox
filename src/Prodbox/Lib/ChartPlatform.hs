@@ -188,6 +188,7 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   )
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.HelmRelease qualified as HelmRelease
 import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
 import Prodbox.Lifecycle.ReadinessObservation
   ( ComponentReadinessTarget (OperatorAvailableTarget)
@@ -232,8 +233,11 @@ import Prodbox.Result
   )
 import Prodbox.Retry
   ( PollOutcome (..)
-  , RetryPolicy (..)
+  , patroniClusterReadyRetryPolicy
+  , perconaPatroniClaimRetryPolicy
   , pollUntilReady
+  , retryPolicyBaseDelayMicros
+  , retryPolicyMaxAttempts
   )
 import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Service
@@ -958,9 +962,11 @@ deployChartPlan plan = do
                               Left err -> pure (Left err)
                               Right () -> finishStagedPatroniRelease release
 
-  -- Keycloak consumes the operator-owned pguser Secret directly through its
-  -- exact @postgres.passwordSecretName@ projection. No host or Target Agent
-  -- payload read/write is needed after Patroni becomes ready.
+  -- Keycloak consumes the PGO-adopted pguser Secret directly through its exact
+  -- @postgres.passwordSecretName@ projection. No host or Target Agent payload
+  -- read/write is needed after Patroni becomes ready. PGO controls that Secret
+  -- object; Vault owns the password value the chart hook materialized into it
+  -- (secret_derivation_doctrine.md 5.1).
   finishStagedPatroniRelease :: ChartReleasePlan -> IO (Either String ())
   finishStagedPatroniRelease = validateReleaseReady
 
@@ -1043,6 +1049,18 @@ operatorGateResult :: ComponentId -> ReadinessObservation -> Either String ()
 operatorGateResult gate observation =
   case observation of
     ReadyObserved -> Right ()
+    -- Sprint 1.76: this gate declares a shallow probe
+    -- ('ProbeOperatorAvailable'), so a write-shaped observation cannot arise
+    -- from it. Refusing rather than admitting keeps the arm honest if the
+    -- declaration ever changes: a round trip is not evidence that an operator
+    -- reported Available.
+    RoundTripObserved _ ->
+      Left
+        ( "Operator readiness for `"
+            ++ componentIdText gate
+            ++ "` was answered with backend round-trip evidence, which does not "
+            ++ "establish an operator Available condition."
+        )
     NotReadyYet detail -> Left (Text.unpack detail)
     Unreachable reason ->
       Left
@@ -1314,15 +1332,6 @@ dropSuffix :: (Eq a) => [a] -> [a] -> Maybe [a]
 dropSuffix suffix value =
   reverse <$> stripPrefix (reverse suffix) (reverse value)
 
-perconaPatroniClaimRetryPolicy :: RetryPolicy
-perconaPatroniClaimRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 60
-    , retryPolicyBaseDelayMicros = 5 * 1000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 5 * 1000000
-    }
-
 -- | Sprint 3.23 / 3.24: observe the Percona operator once. Authoritative
 -- absence or @Available=False@ is pending convergence; a failed kubectl
 -- observation is unreachable. The caller routes this through the shared
@@ -1491,15 +1500,6 @@ runPgExpectSuccess action arguments = do
     case processExitCode output of
       ExitSuccess -> Right ()
       ExitFailure _ -> Left (action ++ " failed: " ++ processStderr output ++ processStdout output)
-
-patroniClusterReadyRetryPolicy :: RetryPolicy
-patroniClusterReadyRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 180
-    , retryPolicyBaseDelayMicros = 10 * 1000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 10 * 1000000
-    }
 
 patroniClusterReadiness :: String -> Int -> IO (Either String PatroniClusterReadiness)
 patroniClusterReadiness namespace expectedReadyReplicas = do
@@ -3835,7 +3835,8 @@ ensureChartStorage plan = do
   --
   -- The old mismatch probe exported the Target password to the host. The
   -- mismatch state is now structurally removed: Keycloak consumes the same
-  -- operator-owned pguser Secret that PGO uses for the live role.
+  -- PGO-adopted pguser Secret that PGO uses for the live role, and Vault is the
+  -- one authority for the value inside it (secret_derivation_doctrine.md 5.1).
   resetPatroniStorageIfRequested :: IO (Either String ())
   resetPatroniStorageIfRequested = pure (Right ())
 
@@ -4560,24 +4561,7 @@ helmUpgradeInstall release =
           ExitSuccess -> pure (Right ())
           ExitFailure _ -> do
             diagnostics <- helmUpgradeFailureDiagnostics release
-            cleanupResult <-
-              runCaptured
-                ("helm uninstall " ++ chartReleasePlanReleaseName release)
-                "helm"
-                [ "uninstall"
-                , chartReleasePlanReleaseName release
-                , "--namespace"
-                , chartReleasePlanNamespace release
-                , "--wait"
-                ]
-            let cleanupDetail =
-                  case cleanupResult of
-                    Left err -> "\nFailed release cleanup diagnostic:\n" ++ err
-                    Right cleanupOutput
-                      | processExitCode cleanupOutput == ExitSuccess ->
-                          "\nFailed release cleanup: helm uninstall completed."
-                      | otherwise ->
-                          "\nFailed release cleanup diagnostic:\n" ++ renderProcessOutput cleanupOutput
+            cleanupDetail <- reconcileFailedReleaseAbsent release
             pure
               ( Left
                   ( "helm upgrade --install "
@@ -4588,6 +4572,42 @@ helmUpgradeInstall release =
                       ++ cleanupDetail
                   )
               )
+
+-- | Sprint 3.31: what a failed @helm upgrade --install@ does about the release
+-- it left behind.
+--
+-- It used to answer __any__ non-zero exit with @helm uninstall --wait@,
+-- fire-and-forget. Two consequences that made that wrong: Helm's
+-- @"another operation (install\/upgrade\/rollback) is in progress"@ is the
+-- concurrency error, so the recovery deleted the release another writer was
+-- mid-install on; and a @--wait --timeout 30m0s@ timeout is indistinguishable
+-- from a failure at the exit code, so a healthy-but-slow rollout was answered by
+-- deleting a working release.
+--
+-- It now routes through the shared absence reconciler, which __re-observes__
+-- before acting and refuses a release whose decoded status says another writer
+-- holds it. The refusal is reported; nothing is destroyed.
+reconcileFailedReleaseAbsent :: ChartReleasePlan -> IO String
+reconcileFailedReleaseAbsent release =
+  case HelmRelease.mkHelmReleaseCoordinate
+    (chartReleasePlanReleaseName release)
+    (chartReleasePlanNamespace release) of
+    Left err ->
+      pure ("\nFailed release cleanup diagnostic:\n" ++ show err)
+    Right coordinate -> do
+      -- `helmUpgradeInstall` runs helm with no working directory, inheriting
+      -- the process CWD; "." preserves exactly that for the reconciler.
+      outcome <- HelmRelease.reconcileHelmReleaseAbsent "." coordinate
+      pure $ case outcome of
+        Right HelmRelease.HelmReleaseAlreadyAbsent ->
+          "\nFailed release cleanup: the release was already absent."
+        Right HelmRelease.HelmReleaseRemovedAndVerified ->
+          "\nFailed release cleanup: helm uninstall completed and absence was verified."
+        Left (HelmRelease.HelmReleaseWriteRefused refusal) ->
+          "\nFailed release cleanup REFUSED: "
+            ++ HelmRelease.renderHelmWriteRefusal coordinate refusal
+        Left failure ->
+          "\nFailed release cleanup diagnostic:\n" ++ show failure
 
 helmUpgradeFailureDiagnostics :: ChartReleasePlan -> IO String
 helmUpgradeFailureDiagnostics release = do

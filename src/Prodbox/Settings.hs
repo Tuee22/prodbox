@@ -47,6 +47,9 @@ module Prodbox.Settings
   , supportedPublicHostname
   , renderTestTopologyError
   , validateAwsBootstrapConfig
+  , validateAwsSubstrateSection
+  , validateComponentNodes
+  , validateLocalConfig
   , validateAndLoadSettings
   , validateAndLoadSettingsAtPath
   , validateAndLoadBootstrapSettings
@@ -54,6 +57,9 @@ module Prodbox.Settings
   , certScopeSetForServedHost
   , validateConfiguredCertScope
   , validateOperationalAwsCredentials
+  , PublicEdgeAdvertisementMode (..)
+  , parsePublicEdgeAdvertisementMode
+  , renderPublicEdgeAdvertisementMode
   , validatePublicEdgeDeployment
   , validateTestTopology
   , validatedResourcePlan
@@ -65,7 +71,6 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Char qualified as Char
-import Data.List (intercalate)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -111,6 +116,8 @@ import Prodbox.Config.Basics
 import Prodbox.Config.ComponentGraph
   ( ComponentNode
   , defaultComponentGraph
+  , renderComponentGraphError
+  , validateComponentGraph
   )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
 import Prodbox.ControlPlane.ConfigClient
@@ -276,11 +283,47 @@ data AcmeSection = AcmeSection
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
+-- | Sprint 1.80: how the public edge advertises its addresses. The legal set is
+-- closed, known, and two elements wide; it used to be carried as free 'Text' and
+-- decided by string comparison, in the same record that already carries eight
+-- properly-unioned scaling policies plus 'WorkerSubstrate', 'ClusterTopology',
+-- and 'ComponentId' as real Dhall unions.
+--
+-- This is the one field on the Tier-0 surface where the illegal state is
+-- closable __in Dhall__ rather than merely detectable in Haskell: the generated
+-- schema carries the union, so a misspelling stops type-checking instead of
+-- reaching a Ring-2 comparison. The *Distinguishability* class of
+-- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md).
+--
+-- The @bgp ⇒ at least one peer@ rule deliberately stays in Haskell: it is a
+-- cross-field invariant, and Dhall's @assert@ operates on closed terms, so it
+-- cannot reach authored values. @prodbox-config-types.dhall@ contains zero
+-- asserts and this type does not change that.
+data PublicEdgeAdvertisementMode
+  = AdvertiseLayer2
+  | AdvertiseBgp
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | The operator-facing spelling of a mode.
+renderPublicEdgeAdvertisementMode :: PublicEdgeAdvertisementMode -> Text
+renderPublicEdgeAdvertisementMode mode = case mode of
+  AdvertiseLayer2 -> "l2"
+  AdvertiseBgp -> "bgp"
+
+-- | Parse an operator-supplied spelling. The one place a string becomes a mode,
+-- so the prompt surface can accept @l2@/@bgp@ without any other site comparing
+-- strings.
+parsePublicEdgeAdvertisementMode :: Text -> Maybe PublicEdgeAdvertisementMode
+parsePublicEdgeAdvertisementMode raw = case Text.toLower (Text.strip raw) of
+  "l2" -> Just AdvertiseLayer2
+  "bgp" -> Just AdvertiseBgp
+  _ -> Nothing
+
 data DeploymentSection = DeploymentSection
   { dev_mode :: Bool
   , bootstrap_public_ip_override :: Maybe Text
   , pulumi_enable_dns_bootstrap :: Bool
-  , public_edge_advertisement_mode :: Maybe Text
+  , public_edge_advertisement_mode :: Maybe PublicEdgeAdvertisementMode
   , public_edge_bgp_peers :: Maybe [MetallbBgpPeer]
   , envoy_gateway_controller_scaling :: ScalingPolicyBySubstrate
   , envoy_gateway_data_plane_scaling :: ScalingPolicyBySubstrate
@@ -642,7 +685,8 @@ renderSettingsDisplay settings =
     , "deployment.pulumi_enable_dns_bootstrap="
         ++ renderBool (pulumi_enable_dns_bootstrap (deployment config))
     , "deployment.public_edge_advertisement_mode="
-        ++ renderMaybeText (public_edge_advertisement_mode (deployment config))
+        ++ renderMaybeText
+          (fmap renderPublicEdgeAdvertisementMode (public_edge_advertisement_mode (deployment config)))
     , "deployment.public_edge_bgp_peers=" ++ renderBgpPeers (public_edge_bgp_peers (deployment config))
     , "deployment.envoy_gateway_controller_scaling="
         ++ renderScalingPolicyBySubstrate (envoy_gateway_controller_scaling (deployment config))
@@ -782,30 +826,27 @@ decodeConfigDhallBytes repoRoot payload =
         schemaPath = configSchemaPath paths
         tmpSchemaPath = tmpDir </> "prodbox-config-types.dhall"
         tmpConfigPath = tmpDir </> "prodbox-config.dhall"
-    schemaCopyResult <- try (copyFile schemaPath tmpSchemaPath) :: IO (Either SomeException ())
-    case schemaCopyResult of
+    -- Sprint 1.79: BEST-EFFORT. A payload rendered by the derived renderer is
+    -- self-contained and imports nothing, so requiring the schema to exist would
+    -- make the decode fail on a generated, git-ignored file it does not need.
+    -- The copy is retained because a payload stored by the superseded renderer
+    -- still carries `let Config = ./prodbox-config-types.dhall`; such a payload
+    -- fails at the Dhall import with its own message when the schema is absent,
+    -- which is the accurate error rather than a preparation error standing in
+    -- for it.
+    _ <- try (copyFile schemaPath tmpSchemaPath) :: IO (Either SomeException ())
+    payloadWriteResult <- try (BS.writeFile tmpConfigPath payload) :: IO (Either SomeException ())
+    case payloadWriteResult of
       Left err ->
         pure
           ( Left
-              ( "Failed to prepare Dhall schema for in-force config decode `"
-                  ++ schemaPath
+              ( "Failed to materialize in-force config payload `"
+                  ++ tmpConfigPath
                   ++ "`: "
                   ++ displayException err
               )
           )
-      Right () -> do
-        payloadWriteResult <- try (BS.writeFile tmpConfigPath payload) :: IO (Either SomeException ())
-        case payloadWriteResult of
-          Left err ->
-            pure
-              ( Left
-                  ( "Failed to materialize in-force config payload `"
-                      ++ tmpConfigPath
-                      ++ "`: "
-                      ++ displayException err
-                  )
-              )
-          Right () -> decodeConfigFileAtPath tmpConfigPath
+      Right () -> decodeConfigFileAtPath tmpConfigPath
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do
@@ -828,19 +869,201 @@ validateConfig repoRoot config = do
         , validatedAllocatedPlan = allocatedPlan
         }
 
--- | Purely-local config invariants: the supported public hostname, the
--- demo TTL bounds, the operational @aws.*@ SecretRef shape, and the
--- public-edge deployment knobs. No operational AWS credentials, Route 53
+-- | Purely-local config invariants. No operational AWS credentials, Route 53
 -- zone, or ACME account are required here, so a host with an empty @aws.*@
 -- block still decodes config for every local cluster command.
+--
+-- Sprint 1.81: this is a __positional__ constructor pattern, not a list of checks
+-- over field accessors. The distinction is the whole point. As a list it never
+-- mentioned the record, so @-Wall@ had nothing to warn about and a field added to
+-- 'ConfigFile' was skipped by construction — four sections (@ses@,
+-- @pulumi_state_backend@, @storage@, @components@) had in fact accumulated no
+-- coverage at all.
+--
+-- The pattern is positional rather than the field-named form the sprint first
+-- proposed, and the reason was established by trying it: a __named__ record
+-- pattern is not a forcing function at all. @ConfigFile{ aws = a, … }@ silently
+-- ignores fields it does not mention, and GHC has no warning for it — adding a
+-- field to the record produced an objection only at an unrelated /construction/
+-- site, never here. A positional pattern makes the arity a compile error at
+-- exactly the place that must decide whether the new field needs checking, which
+-- is what was actually wanted. The cost is that the bindings must stay in field
+-- order; that is why each is named after its field.
+--
+-- This is the *Totality* class of
+-- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md),
+-- and the companion to Sprint 1.79 — the same record, the other partial fold.
+--
+-- Note the bound honestly: making the fold total says every field is *visited*,
+-- not that every field is *well-typed*. The ~30 `Text` and ~40 `Natural` fields
+-- carrying unstated invariants are recorded in the deletion ledger as their own
+-- unowned row; a total validator is a prerequisite for narrowing them, not a
+-- substitute.
 validateLocalConfig :: ConfigFile -> Either String ()
-validateLocalConfig config = do
-  validateConfiguredCertScope (domain config) (aws_substrate config)
-  validateDemoTtl (demo_ttl (domain config))
-  validateAwsCredentialsRef "aws" (aws config)
-  validatePublicEdgeDeployment (deployment config)
-  validateCapacitySection (capacity config)
-  mapLeft renderTopologyError (validateClusterTopology (cluster_topology config))
+validateLocalConfig
+  ( ConfigFile
+      awsSection
+      route53Section
+      awsSubstrateSection
+      sesSection
+      domainSection
+      acmeSection
+      deploymentSection
+      capacitySection
+      clusterTopologySection
+      storageSection
+      pulumiStateBackendSection
+      componentNodes
+    ) = do
+    validateConfiguredCertScope domainSection awsSubstrateSection
+    validateDemoTtl (demo_ttl domainSection)
+    validateAwsCredentialsRef "aws" awsSection
+    validateAwsSubstrateSection awsSubstrateSection
+    validateSesSection sesSection
+    validatePublicEdgeDeployment deploymentSection
+    validateCapacitySection capacitySection
+    mapLeft renderTopologyError (validateClusterTopology clusterTopologySection)
+    validateStorageSection storageSection
+    validatePulumiStateBackendSection pulumiStateBackendSection
+    validateComponentNodes componentNodes
+    -- `route53` and `acme` carry no purely-local invariant: an empty zone id and
+    -- an empty ACME account are the correct state for a host that never touches
+    -- AWS. Their required-ness is the AWS tier's, and
+    -- 'validateAwsBootstrapConfig' checks it there. Bound and named here so the
+    -- decision is visible rather than an omission.
+    ignoreLocallyUnconstrained route53Section acmeSection
+
+-- | Sections with no purely-local invariant. Exists so 'validateLocalConfig' can
+-- bind every field of the record without an unused binding, which is what makes
+-- the compiler notice a field nobody decided about.
+ignoreLocallyUnconstrained :: Route53Section -> AcmeSection -> Either String ()
+ignoreLocallyUnconstrained _ _ = Right ()
+
+-- | Sprint 1.81: the AWS substrate coordinates. Both fields are legitimately
+-- empty on a home-only host — and @hosted_zone_id@ is legitimately empty even
+-- when @subzone_name@ is set, because 'Prodbox.PublicEdge.resolveSubstrateHostedZoneId'
+-- consults the live @aws-eks-subzone@ stack snapshot in that case. So this
+-- refuses only a value that is present and malformed; it deliberately does not
+-- require the two to be set together.
+validateAwsSubstrateSection :: AwsSubstrateSection -> Either String ()
+validateAwsSubstrateSection section = do
+  validateOptionalFqdnField
+    "aws_substrate.subzone_name"
+    (normalizeOptionalText (subzone_name section))
+  validateOptionalHostedZoneIdField
+    "aws_substrate.hosted_zone_id"
+    (normalizeOptionalText (hosted_zone_id section))
+
+-- | Sprint 1.81: the SES identity coordinates. Empty is the correct state for a
+-- host with no SES workflow, so each field is checked only when set.
+validateSesSection :: SesSection -> Either String ()
+validateSesSection section = do
+  validateOptionalFqdnField
+    "ses.sender_domain"
+    (normalizeOptionalText (sender_domain section))
+  validateOptionalDnsLabelField
+    "ses.receive_subdomain"
+    (normalizeOptionalText (receive_subdomain section))
+  validateOptionalS3BucketField
+    "ses.capture_bucket"
+    (normalizeOptionalText (capture_bucket section))
+
+-- | Sprint 1.81: the manual-PV host root is joined onto the repository root by
+-- 'validateConfig', so a value that escapes it is a path traversal expressed as
+-- config. It must be a safe relative path: non-empty, not absolute, and with no
+-- @..@ segment.
+validateStorageSection :: StorageSection -> Either String ()
+validateStorageSection section =
+  validateSafeRelativePath "storage.manual_pv_host_root" (manual_pv_host_root section)
+
+-- | Sprint 1.81: the long-lived Pulumi state backend. Bucket and region are
+-- empty until the backend is provisioned, so they are checked only when set; the
+-- key prefix is always present and must be a safe relative path, because it is
+-- concatenated into object keys.
+validatePulumiStateBackendSection :: PulumiStateBackendSection -> Either String ()
+validatePulumiStateBackendSection section = do
+  validateOptionalS3BucketField
+    "pulumi_state_backend.bucket_name"
+    (normalizeOptionalText (psbBucketName section))
+  validateSafeRelativePath "pulumi_state_backend.key_prefix" (psbKeyPrefix section)
+
+-- | Sprint 1.81: the component graph is validated at DECODE rather than only at
+-- projection. Before this, an authored graph with a cycle, a dangling edge, or a
+-- probe that cannot satisfy its declared edge decoded cleanly and failed later,
+-- at bring-up.
+validateComponentNodes :: [ComponentNode] -> Either String ()
+validateComponentNodes nodes =
+  case validateComponentGraph nodes of
+    Left err -> Left ("components: " ++ renderComponentGraphError err)
+    Right _ -> Right ()
+
+-- | A path that may be joined onto a trusted root without leaving it.
+validateSafeRelativePath :: String -> Text -> Either String ()
+validateSafeRelativePath fieldName rawValue
+  | Text.null value = Left (fieldName ++ " must not be empty")
+  | Text.isPrefixOf "/" value = Left (fieldName ++ " must be a relative path, not absolute")
+  | ".." `elem` segments = Left (fieldName ++ " must not contain a `..` segment")
+  | otherwise = Right ()
+ where
+  value = Text.strip rawValue
+  segments = Text.splitOn "/" value
+
+validateOptionalFqdnField :: String -> Maybe Text -> Either String ()
+validateOptionalFqdnField _ Nothing = Right ()
+validateOptionalFqdnField fieldName (Just value)
+  | isValidFqdnText value = Right ()
+  | otherwise = Left (fieldName ++ " must be a valid fully qualified domain name")
+
+validateOptionalDnsLabelField :: String -> Maybe Text -> Either String ()
+validateOptionalDnsLabelField _ Nothing = Right ()
+validateOptionalDnsLabelField fieldName (Just value)
+  | isValidDnsLabel value = Right ()
+  | otherwise = Left (fieldName ++ " must be a single DNS label")
+
+validateOptionalHostedZoneIdField :: String -> Maybe Text -> Either String ()
+validateOptionalHostedZoneIdField _ Nothing = Right ()
+validateOptionalHostedZoneIdField fieldName (Just value)
+  | Text.isPrefixOf "Z" value
+  , Text.length value >= 2
+  , Text.all (\character -> Char.isAsciiUpper character || Char.isDigit character) value =
+      Right ()
+  | otherwise = Left (fieldName ++ " must look like a Route 53 hosted-zone id (for example Z1234)")
+
+validateOptionalS3BucketField :: String -> Maybe Text -> Either String ()
+validateOptionalS3BucketField _ Nothing = Right ()
+validateOptionalS3BucketField fieldName (Just value)
+  | Text.length value >= 3
+  , Text.length value <= 63
+  , Text.all
+      ( \character -> Char.isAsciiLower character || Char.isDigit character || character `elem` ("-." :: String)
+      )
+      value
+  , not (Text.isPrefixOf "-" value)
+  , not (Text.isSuffixOf "-" value) =
+      Right ()
+  | otherwise = Left (fieldName ++ " must be a valid S3 bucket name")
+
+-- | A dotted name with at least two labels, each a valid DNS label.
+isValidFqdnText :: Text -> Bool
+isValidFqdnText value =
+  length labels >= 2 && all isValidDnsLabel labels
+ where
+  labels = Text.splitOn "." value
+
+isValidDnsLabel :: Text -> Bool
+isValidDnsLabel label =
+  not (Text.null label)
+    && Text.length label <= 63
+    && Text.all
+      ( \character ->
+          Char.isAsciiLower character
+            || Char.isAsciiUpper character
+            || Char.isDigit character
+            || character == '-'
+      )
+      label
+    && not (Text.isPrefixOf "-" label)
+    && not (Text.isSuffixOf "-" label)
 
 mapLeft :: (left -> left') -> Either left right -> Either left' right
 mapLeft f value = case value of
@@ -858,6 +1081,12 @@ validateAwsBootstrapConfig config = do
   requireNonEmpty "acme.email" (email (acme config))
   requireNonEmpty "acme.server" (server (acme config))
   validateAcmeBinding (acme config)
+  -- Sprint 1.81: the AWS-substrate public hostname is required on THIS tier and
+  -- only on this tier. It used to be checked by a partial `error` at its point of
+  -- use in 'Prodbox.PublicEdge.substratePublicFqdn', which turned a config
+  -- mistake into a crash. It is not checked in 'validateLocalConfig' because an
+  -- empty `subzone_name` is the correct state for a home-only host.
+  requireNonEmpty "aws_substrate.subzone_name" (subzone_name (aws_substrate config))
 
 -- | Operational AWS credentials gate. Local commands never call this;
 -- AWS-credential-consuming flows (edge reconcile, the Route 53 checks,
@@ -884,17 +1113,19 @@ validatePublicEdgeDeployment deploymentSection = do
     "deployment.websocket_scaling"
     (websocket_scaling deploymentSection)
  where
-  normalizedMode =
-    fmap (Text.toLower . Text.strip) (public_edge_advertisement_mode deploymentSection)
   validateBootstrapOverride =
     validateOptionalIpAddressField
       "deployment.bootstrap_public_ip_override"
       (normalizeMaybeText (bootstrap_public_ip_override deploymentSection))
+  -- Sprint 1.80: a total match over the union. The "must be l2 or bgp when set"
+  -- arm is gone because there is nothing left for it to reject — Dhall refuses a
+  -- misspelling at type-check. What remains is the cross-field rule Dhall cannot
+  -- express.
   validateAdvertisementMode =
-    case normalizedMode of
+    case public_edge_advertisement_mode deploymentSection of
       Nothing -> Right ()
-      Just "l2" -> Right ()
-      Just "bgp" ->
+      Just AdvertiseLayer2 -> Right ()
+      Just AdvertiseBgp ->
         case public_edge_bgp_peers deploymentSection of
           Just peers
             | not (null peers) ->
@@ -902,7 +1133,6 @@ validatePublicEdgeDeployment deploymentSection = do
           _ ->
             Left
               "deployment.public_edge_bgp_peers must contain at least one non-empty peer when deployment.public_edge_advertisement_mode is bgp"
-      _ -> Left "deployment.public_edge_advertisement_mode must be l2 or bgp when set"
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -1298,7 +1528,7 @@ defaultConfigFile =
           { dev_mode = True
           , bootstrap_public_ip_override = Nothing
           , pulumi_enable_dns_bootstrap = True
-          , public_edge_advertisement_mode = Just "l2"
+          , public_edge_advertisement_mode = Just AdvertiseLayer2
           , public_edge_bgp_peers = Nothing
           , envoy_gateway_controller_scaling = fixedScalingPolicyBySubstrate 1
           , envoy_gateway_data_plane_scaling = fixedScalingPolicyBySubstrate 1
@@ -1317,208 +1547,42 @@ defaultConfigFile =
     , components = defaultComponentGraph
     }
 
+-- | Render the canonical in-force config payload from the Haskell record.
+--
+-- Sprint 1.79: derived through @'Dhall.inject' \@'ConfigFile'@ — the same
+-- mechanism "Prodbox.Config.Tier0" already uses for the Tier-0 file — rather
+-- than a hand-written field-by-field emitter.
+--
+-- The emitter it replaces produced @Config::{…}@ and __never emitted
+-- @components@__. Because Dhall record completion refills an omitted field from
+-- the schema default, an operator-authored component graph was silently replaced
+-- by @defaultComponentGraph@ in the payload — and that payload is the canonical
+-- in-force config, submitted by 'reconcileInForceConfigFromFile' and read back by
+-- every runtime load. The Tier-0 /file/ path renders the same record through
+-- 'Dhall.inject' and is total, so two renderers of one record disagreed about
+-- what the record contains, and the value survived exactly where it did not
+-- matter and was lost where it did.
+--
+-- Deriving it removes the class rather than the instance: a field added to
+-- 'ConfigFile' is emitted because the instance is generic, not because someone
+-- remembered a line.
+--
+-- Two consequences worth stating:
+--
+--   * The emitted payload no longer imports @./prodbox-config-types.dhall@; an
+--     injected value is self-contained. 'decodeConfigDhallBytes' still
+--     materializes the schema beside the payload, deliberately — a payload
+--     stored by the superseded renderer still carries that import, and dropping
+--     the materialization would make already-stored in-force objects
+--     undecodable.
+--   * The bytes change. That is the fix, not a regression: what must be stable
+--     is the /record/, and the round-trip assertion pins exactly that.
 renderConfigDhall :: ConfigFile -> String
 renderConfigDhall config =
-  unlines
-    [ "let Config = ./prodbox-config-types.dhall"
-    , ""
-    , "in  Config::{"
-    , "    , aws = Config.default.aws // {"
-    , "        , access_key_id = " ++ dhallSecretRef (awsCredentialAccessKeyId (aws config))
-    , "        , secret_access_key = " ++ dhallSecretRef (awsCredentialSecretAccessKey (aws config))
-    , "        , session_token = " ++ dhallOptionalSecretRef (awsCredentialSessionToken (aws config))
-    , "        , region = " ++ dhallText (awsCredentialRegion (aws config))
-    , "        }"
-    , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
-    , "    , aws_substrate = Config.default.aws_substrate // {"
-    , "        , hosted_zone_id = " ++ dhallText (hosted_zone_id (aws_substrate config))
-    , "        , subzone_name = " ++ dhallText (subzone_name (aws_substrate config))
-    , "        }"
-    , "    , ses = Config.default.ses // {"
-    , "        , sender_domain = " ++ dhallText (sender_domain (ses config))
-    , "        , receive_subdomain = " ++ dhallText (receive_subdomain (ses config))
-    , "        , capture_bucket = " ++ dhallText (capture_bucket (ses config))
-    , "        }"
-    , "    , domain = Config.default.domain // {"
-    , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
-    , "        , demo_ttl = " ++ show (demo_ttl (domain config))
-    , "        , cert_scopes = " ++ dhallTextList (cert_scopes (domain config))
-    , "        }"
-    , "    , acme = Config.default.acme // {"
-    , "        , email = " ++ dhallText (email (acme config))
-    , "        , server = " ++ dhallText (server (acme config))
-    , "        , eab_key_id = " ++ dhallOptionalSecretRef (eab_key_id (acme config))
-    , "        , eab_hmac_key = " ++ dhallOptionalSecretRef (eab_hmac_key (acme config))
-    , "        }"
-    , "    , deployment = Config.default.deployment // {"
-    , "        , dev_mode = " ++ dhallBool (dev_mode (deployment config))
-    , "        , bootstrap_public_ip_override = "
-        ++ dhallOptionalText (bootstrap_public_ip_override (deployment config))
-    , "        , pulumi_enable_dns_bootstrap = "
-        ++ dhallBool (pulumi_enable_dns_bootstrap (deployment config))
-    , "        , public_edge_advertisement_mode = "
-        ++ dhallOptionalText (public_edge_advertisement_mode (deployment config))
-    , "        , public_edge_bgp_peers = "
-        ++ dhallOptionalBgpPeers (public_edge_bgp_peers (deployment config))
-    , "        , envoy_gateway_controller_scaling = "
-        ++ dhallScalingPolicyBySubstrate (envoy_gateway_controller_scaling (deployment config))
-    , "        , envoy_gateway_data_plane_scaling = "
-        ++ dhallScalingPolicyBySubstrate (envoy_gateway_data_plane_scaling (deployment config))
-    , "        , api_scaling = " ++ dhallScalingPolicyBySubstrate (api_scaling (deployment config))
-    , "        , websocket_scaling = "
-        ++ dhallScalingPolicyBySubstrate (websocket_scaling (deployment config))
-    , "        }"
-    , "    , capacity = Config.default.capacity // {"
-    , "        , node_budget = " ++ dhallCapacityBudget (node_budget (capacity config))
-    , "        , workload_budget = " ++ dhallCapacityBudget (workload_budget (capacity config))
-    , "        , region_quota = " ++ dhallCapacityBudget (region_quota (capacity config))
-    , "        , resource_plan = " ++ dhallResourcePlan (resource_plan (capacity config))
-    , "        , runtime_memory_profiles = "
-        ++ dhallRuntimeMemoryProfiles (runtime_memory_profiles (capacity config))
-    , "        }"
-    , "    , cluster_topology = " ++ dhallClusterTopology (cluster_topology config)
-    , "    , storage = Config.default.storage // {"
-    , "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config))
-    , "        }"
-    , "    , pulumi_state_backend = Config.default.pulumi_state_backend // {"
-    , "        , bucket_name = " ++ dhallText (psbBucketName (pulumi_state_backend config))
-    , "        , region = " ++ dhallText (psbRegion (pulumi_state_backend config))
-    , "        , key_prefix = " ++ dhallText (psbKeyPrefix (pulumi_state_backend config))
-    , "        }"
-    , "    }"
-    , ""
-    ]
-
-dhallText :: Text -> String
-dhallText = show . Text.unpack
-
--- | Render a @List Text@ Dhall literal; an empty list needs its type annotation.
-dhallTextList :: [Text] -> String
-dhallTextList [] = "([] : List Text)"
-dhallTextList values = "[ " ++ intercalate ", " (map dhallText values) ++ " ]"
-
-dhallOptionalText :: Maybe Text -> String
-dhallOptionalText maybeValue =
-  case maybeValue of
-    Nothing -> "None Text"
-    Just value -> "Some " ++ dhallText value
-
-dhallSecretRef :: SecretRef -> String
-dhallSecretRef ref =
-  case ref of
-    SecretRefVault vault ->
-      "Config.SecretRef.Vault { mount = "
-        ++ dhallText (vaultSecretMount vault)
-        ++ ", path = "
-        ++ dhallText (vaultSecretPath vault)
-        ++ ", field = "
-        ++ dhallText (vaultSecretField vault)
-        ++ " }"
-    SecretRefTransitKey name ->
-      "Config.SecretRef.TransitKey " ++ dhallText name
-    SecretRefPrompt spec ->
-      "Config.SecretRef.Prompt { name = "
-        ++ dhallText (promptSpecName spec)
-        ++ ", purpose = "
-        ++ dhallText (promptSpecPurpose spec)
-        ++ " }"
-    SecretRefTestPlaintext value ->
-      "Config.SecretRef.TestPlaintext " ++ dhallText value
-
-dhallOptionalSecretRef :: Maybe SecretRef -> String
-dhallOptionalSecretRef maybeValue =
-  case maybeValue of
-    Nothing -> "None Config.SecretRef"
-    Just value -> "Some (" ++ dhallSecretRef value ++ ")"
-
-dhallScalingPolicyBySubstrate :: ScalingPolicyBySubstrate -> String
-dhallScalingPolicyBySubstrate policies =
-  "{ home_local = "
-    ++ dhallScalingPolicy (scalingHomeLocal policies)
-    ++ ", aws = "
-    ++ dhallScalingPolicy (scalingAws policies)
-    ++ " }"
-
-dhallScalingPolicy :: ScalingPolicy -> String
-dhallScalingPolicy policy =
-  case policy of
-    ScalingPolicyFixed count ->
-      scalingPolicyDhallType ++ ".Fixed " ++ show count
-    ScalingPolicyElastic bounds ->
-      scalingPolicyDhallType
-        ++ ".Elastic { min = "
-        ++ show (elasticMin bounds)
-        ++ ", max = "
-        ++ show (elasticMax bounds)
-        ++ " }"
-
-scalingPolicyDhallType :: String
-scalingPolicyDhallType =
-  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
-
-dhallCapacityBudget :: CapacityBudget -> String
-dhallCapacityBudget budget =
-  "{ cpu = "
-    ++ show (budgetCpu budget)
-    ++ ", memory = "
-    ++ show (budgetMemory budget)
-    ++ ", storage = "
-    ++ show (budgetStorage budget)
-    ++ " }"
-
-dhallResourcePlan :: ResourcePlan -> String
-dhallResourcePlan =
-  Text.unpack . Core.pretty . injectedValue (Dhall.inject @ResourcePlan)
-
-dhallRuntimeMemoryProfiles :: [RuntimeMemoryProfile] -> String
-dhallRuntimeMemoryProfiles =
-  Text.unpack . Core.pretty . injectedValue (Dhall.inject @[RuntimeMemoryProfile])
-
-type DhallExpr = Core.Expr Src Void
-
-dhallClusterTopology :: ClusterTopology -> String
-dhallClusterTopology topology =
-  Text.unpack (Core.pretty (injectedValue (Dhall.inject @ClusterTopology) topology))
-
-injectedValue :: Dhall.Encoder a -> a -> DhallExpr
-injectedValue encoder value = Core.denote (Dhall.embed encoder value)
-
-dhallOptionalBgpPeers :: Maybe [MetallbBgpPeer] -> String
-dhallOptionalBgpPeers maybePeers =
-  case maybePeers of
-    Nothing ->
-      "None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    Just [] ->
-      "Some ([] : List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    Just peers ->
-      "Some [ "
-        ++ foldr1
-          (\left right -> left ++ ", " ++ right)
-          (map dhallBgpPeer peers)
-        ++ " ]"
+  Text.unpack (Core.pretty injected) ++ "\n"
  where
-  dhallBgpPeer peer =
-    "{ peer_name = "
-      ++ dhallText (peer_name peer)
-      ++ ", peer_address = "
-      ++ dhallText (peer_address peer)
-      ++ ", peer_asn = "
-      ++ show (peer_asn peer)
-      ++ ", my_asn = "
-      ++ show (my_asn peer)
-      ++ ", ebgp_multi_hop = "
-      ++ dhallOptionalBool (ebgp_multi_hop peer)
-      ++ " }"
-
-dhallOptionalBool :: Maybe Bool -> String
-dhallOptionalBool maybeValue =
-  case maybeValue of
-    Nothing -> "None Bool"
-    Just value -> "Some " ++ dhallBool value
-
-dhallBool :: Bool -> String
-dhallBool True = "True"
-dhallBool False = "False"
+  injected :: Core.Expr Src Void
+  injected = Core.denote (Dhall.embed (Dhall.inject @ConfigFile) config)
 
 missingConfigMessage :: FilePath -> String
 missingConfigMessage configPath =

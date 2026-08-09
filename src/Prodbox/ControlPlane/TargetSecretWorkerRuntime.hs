@@ -67,6 +67,7 @@ import Prodbox.ControlPlane.BootstrapCustodyEndpoint
 import Prodbox.ControlPlane.RetainedMaterialEnvelope
   ( openRetainedDestinationOpeningForGeneration
   )
+import Prodbox.ControlPlane.RoleReadiness (noRoleReadinessContribution)
 import Prodbox.ControlPlane.ServiceSessionJournal
   ( serviceSessionBindingFence
   )
@@ -584,7 +585,7 @@ executeOperation session rewrap attestation operation = case operation of
         | selectedAgent == targetWorkerIntentAgentIdentity intent -> do
             committed <-
               commitTargetChildCustody
-                (vaultTargetChildCustodyRepository session)
+                (vaultTargetChildCustodyRepository session noRoleReadinessContribution)
                 (childCustodyExportReceipt (federationRegistrationExport validated))
             pure $ case committed of
               Left _ -> Left TargetSecretWorkerOperationRefused
@@ -620,7 +621,7 @@ executeOperation session rewrap attestation operation = case operation of
  where
   intent = targetWorkerAttestedIntent attestation
   transit = tlsDekVaultBoundary session
-  custody = vaultTargetChildCustodyRepository session
+  custody = vaultTargetChildCustodyRepository session noRoleReadinessContribution
   operationRefused = pure (Left TargetSecretWorkerOperationRefused)
 
   materialize payload = do

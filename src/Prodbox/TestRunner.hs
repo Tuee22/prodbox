@@ -724,7 +724,8 @@ runLintFirst repoRoot environment = do
       runCommandForExitCode
         Subprocess
           { subprocessPath = "cabal"
-          , subprocessArguments = ["build", "--builddir=.build", "all"]
+          , -- Sprint 5.30: match the canonical gate's region.
+            subprocessArguments = ["build", "--builddir=.build", "all", "--enable-tests"]
           , subprocessEnvironment = Just environment
           , subprocessWorkingDirectory = Just repoRoot
           }
@@ -1236,7 +1237,31 @@ runbookActions repoRoot environment suitePlan =
     [] -> []
     commands ->
       emitLineAction phaseOnePointFiveMessage
-        : map (runNativeCliCommandForExitCode repoRoot environment) commands
+        : map (runRunbookCommand repoRoot environment) commands
+
+-- | Sprint 5.30: a runbook step that fails says which step and with what code.
+--
+-- It used to return the child's exit code bare, so a failing @cluster
+-- reconcile@ ended the run with no line of its own. When the child also fails
+-- quietly the whole run reports nothing at all — the operator sees the phase
+-- banner and then an exit status, which is the response-obligation defect of
+-- [chaos_hardening_doctrine.md § 23](../../documents/engineering/chaos_hardening_doctrine.md)
+-- in the runbook rather than on a socket. The step cannot supply the child's
+-- reason, but it can always supply its own.
+runRunbookCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
+runRunbookCommand repoRoot environment cliArgs = do
+  exitCode <- runNativeCliCommandForExitCode repoRoot environment cliArgs
+  case exitCode of
+    ExitSuccess -> pure exitCode
+    ExitFailure code -> do
+      writeOutputLine
+        ( "Integration runbook step failed: prodbox "
+            ++ unwords cliArgs
+            ++ " (exit "
+            ++ show code
+            ++ ")"
+        )
+      pure exitCode
 
 integrationRunbookCommandArgs :: NativeSuitePlan -> [[String]]
 integrationRunbookCommandArgs suitePlan

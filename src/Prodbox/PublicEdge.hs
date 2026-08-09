@@ -16,7 +16,6 @@ module Prodbox.PublicEdge
   , renderHelmRouteInventory
   , sharedPublicHostFqdns
   , resolveSubstrateHostedZoneId
-  , substrateHostedZoneId
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
   , substratePublicRouteUrl
@@ -114,15 +113,15 @@ substratePublicFqdn :: ValidatedSettings -> Substrate -> String
 substratePublicFqdn settings substrate =
   case substrate of
     SubstrateHomeLocal -> publicFqdn settings
+    -- Sprint 1.81: no crash arm. `aws_substrate.subzone_name` is required by
+    -- 'Prodbox.Settings.validateAwsBootstrapConfig' — the AWS tier, and only
+    -- that tier, because an empty value is the correct state for a home-only
+    -- host — so an AWS-gated config cannot reach here empty. A config that never
+    -- passed that gate gets the empty string it configured, which every consumer
+    -- then fails on visibly, rather than an `error` unwinding the process from
+    -- inside a pure renderer.
     SubstrateAws ->
-      let stripped = Text.strip (subzone_name (aws_substrate (validatedConfig settings)))
-       in if Text.null stripped
-            then
-              error
-                "substratePublicFqdn: aws_substrate.subzone_name is empty; \
-                \--substrate aws runs require aws_substrate.subzone_name per \
-                \development_plan_standards.md \xc2\xa7 M (no fallback)"
-            else Text.unpack stripped
+      Text.unpack (Text.strip (subzone_name (aws_substrate (validatedConfig settings))))
 
 substratePublicRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
 substratePublicRouteUrl settings substrate route =
@@ -173,24 +172,7 @@ substrateIdentityIssuerUrl :: ValidatedSettings -> Substrate -> String
 substrateIdentityIssuerUrl settings substrate =
   substratePublicRouteUrl settings substrate PublicRouteAuth ++ "/realms/prodbox"
 
-substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text
-substrateHostedZoneId settings substrate =
-  case substrate of
-    SubstrateHomeLocal -> zone_id (route53 (validatedConfig settings))
-    SubstrateAws ->
-      let stripped = Text.strip (hosted_zone_id (aws_substrate (validatedConfig settings)))
-       in if Text.null stripped
-            then
-              error
-                "substrateHostedZoneId: aws_substrate.hosted_zone_id is empty; \
-                \--substrate aws runs require aws_substrate.hosted_zone_id per \
-                \development_plan_standards.md \xc2\xa7 M (no fallback). Either \
-                \set it in prodbox.dhall or call resolveSubstrateHostedZoneId \
-                \from an IO context to consult the live aws-eks-subzone Pulumi stack \
-                \snapshot."
-            else stripped
-
--- | IO-context variant of 'substrateHostedZoneId' that, for the AWS substrate,
+-- | IO-context resolver for the hosted zone. For the AWS substrate this
 -- falls back to the live aws-eks-subzone Pulumi stack snapshot when the
 -- operator has not populated @aws_substrate.hosted_zone_id@ in
 -- @prodbox.dhall@. The Pulumi snapshot is written by

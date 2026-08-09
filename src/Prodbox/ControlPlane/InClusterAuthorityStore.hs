@@ -689,7 +689,7 @@ confirmPrimaryCheckpointPut store objectKey ciphertextDigest ciphertext attempte
 putAttemptDetail :: Either String ConditionalPutResult -> Text
 putAttemptDetail attempted = case attempted of
   Left detail -> "primary checkpoint PUT failed: " <> Text.pack detail
-  Right ConditionalPutApplied -> "primary checkpoint PUT was not visible"
+  Right (ConditionalPutApplied _) -> "primary checkpoint PUT was not visible"
   Right ConditionalPutConflict ->
     "primary checkpoint object conflicted and was not visible"
 

@@ -21,11 +21,8 @@ module Prodbox.Minio.ObjectStore
   , objectStoreDeleteObjectArgs
   , objectStoreHeadBucketArgs
   , objectStoreListKeysArgs
-  , putIfAbsent
   , putIfAbsentObserved
-  , putIfVersion
   , putIfVersionObserved
-  , putObject
   )
 where
 
@@ -170,16 +167,6 @@ getObjectVersionedSubprocess config key =
               version <- parseObjectVersion (processStdout output)
               Right (Just (VersionedObject bytes version))
 
-putObject :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
-putObject config key bytes =
-  dispatchBackend (putObjectWithArgs config key bytes id) (Native.putObject config key bytes)
-
-putIfAbsent :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
-putIfAbsent config key bytes =
-  dispatchBackend
-    (putObjectWithArgs config key bytes (++ ["--if-none-match", "*"]))
-    (Native.putIfAbsent config key bytes)
-
 putIfAbsentObserved
   :: ObjectStoreConfig
   -> Text
@@ -189,25 +176,6 @@ putIfAbsentObserved config key bytes =
   dispatchBackend
     (putObjectConditional config key bytes (++ ["--if-none-match", "*"]))
     (Native.putIfAbsentObserved config key bytes)
-
--- | Replace an object only when its current store generation is the one the
--- caller observed.  A conflict is returned as a structured 'Left'; callers
--- must re-read rather than retrying an unobserved write blindly.
-putIfVersion
-  :: ObjectStoreConfig
-  -> Text
-  -> ObjectVersion
-  -> ByteString
-  -> IO (Either String ())
-putIfVersion config key version bytes =
-  dispatchBackend
-    ( putObjectWithArgs
-        config
-        key
-        bytes
-        (++ ["--if-match", Text.unpack (objectVersionEtag version)])
-    )
-    (Native.putIfVersion config key version bytes)
 
 putIfVersionObserved
   :: ObjectStoreConfig
@@ -257,47 +225,17 @@ putObjectConditional config key bytes adjustArgs = do
               Left err -> Left ("failed to conditionally store object: " ++ renderMinIOError err)
               Right output ->
                 case processExitCode output of
-                  ExitSuccess -> Right ConditionalPutApplied
+                  ExitSuccess ->
+                    -- Sprint 1.76: the applied arm carries the version the store
+                    -- returned. `aws s3api put-object` reports it as `ETag` in the
+                    -- same JSON shape `parseObjectVersion` already reads on the GET
+                    -- path, so a success with no reported version fails closed here
+                    -- rather than becoming an unwitnessed "applied".
+                    ConditionalPutApplied <$> parseObjectVersion (processStdout output)
                   ExitFailure _
                     | isConditionalConflictOutput output -> Right ConditionalPutConflict
                     | otherwise ->
                         Left ("aws s3api conditional put-object failed: " ++ trim (processStderr output))
-
-putObjectWithArgs
-  :: ObjectStoreConfig
-  -> Text
-  -> ByteString
-  -> ([String] -> [String])
-  -> IO (Either String ())
-putObjectWithArgs config key bytes adjustArgs =
-  do
-    bucketResult <- ensureObjectStoreBucketSubprocess config
-    case bucketResult of
-      Left err -> pure (Left err)
-      Right () ->
-        withSystemTempDirectory "prodbox-object-store" $ \tmpDir -> do
-          let inputPath = tmpDir </> "object.enc"
-          writeResult <- try (BS.writeFile inputPath bytes) :: IO (Either IOException ())
-          case writeResult of
-            Left err -> pure (Left ("failed to stage object-store object: " ++ show err))
-            Right () -> do
-              result <-
-                runMinIOWithEnv
-                  (Just (objectStoreEnv config))
-                  ( adjustArgs
-                      ( minioPutObjectArgs
-                          (objectStoreEndpoint config)
-                          (objectStoreBucket config)
-                          (Text.unpack key)
-                          inputPath
-                      )
-                  )
-              pure $ case result of
-                Left err -> Left ("failed to store object-store object: " ++ renderMinIOError err)
-                Right output ->
-                  case processExitCode output of
-                    ExitFailure _ -> Left ("aws s3api put-object failed: " ++ trim (processStderr output))
-                    ExitSuccess -> Right ()
 
 ensureObjectStoreBucket :: ObjectStoreConfig -> IO (Either String ())
 ensureObjectStoreBucket config =

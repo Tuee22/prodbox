@@ -35,6 +35,10 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , layerRoleReadinessSource
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (..)
   )
@@ -69,7 +73,7 @@ data TargetOneShotOperationBoundary m = TargetOneShotOperationBoundary
   { runTargetOneShotOperation
       :: TargetWorkerOperationInput
       -> m (Either Text TargetWorkerOperationResult)
-  , targetOneShotOperationBoundaryReady :: m Bool
+  , targetOneShotOperationBoundaryReadiness :: !RoleReadinessSource
   }
 
 targetOneShotOperationAuthenticatedHandler
@@ -80,10 +84,10 @@ targetOneShotOperationAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = do
-        localReady <- targetOneShotOperationBoundaryReady boundary
-        downstreamReady <- authenticatedHandlerReadyz inner
-        pure (localReady && downstreamReady)
+    { authenticatedHandlerReadiness =
+        layerRoleReadinessSource
+          (targetOneShotOperationBoundaryReadiness boundary)
+          (authenticatedHandlerReadiness inner)
     , authenticatedHandlerHandle = handle
     }
  where

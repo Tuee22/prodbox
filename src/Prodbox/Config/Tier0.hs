@@ -62,6 +62,7 @@ module Prodbox.Config.Tier0
 
     -- * Schema-from-Haskell render (pure)
   , renderProjectConfigDhall
+  , renderProdboxContextDhall
 
     -- * Floor projection (pure)
   , projectBasics
@@ -567,6 +568,18 @@ renderProjectConfigDhall config =
     Left _ -> tier0Header <> plainConfigBody config
  where
   plan = resource_plan (capacity (parameters config))
+
+-- | Sprint 5.30: the @context@ sub-record rendered by the same generic encoder
+-- the whole document uses.
+--
+-- Exported so a test fixture that must author its own @parameters@ expression as
+-- text still derives the envelope around it, instead of restating
+-- 'ProdboxContext' as a second hand-maintained encoder — the shape that made
+-- Sprint @1.80@'s tightening a silent breakage
+-- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+renderProdboxContextDhall :: ProdboxContext -> Text
+renderProdboxContextDhall =
+  Core.pretty . injectedValue (Dhall.inject @ProdboxContext)
 
 -- | The historical body: the injected config record rendered directly. Used only
 -- as the totality fallback for a plan that cannot compile (which the Haskell

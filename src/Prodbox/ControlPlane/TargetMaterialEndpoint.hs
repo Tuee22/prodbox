@@ -15,6 +15,7 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint
   , TargetMaterialObserveResponse (..)
   , TargetMaterialRepository (..)
   , vaultTargetMaterialRepository
+  , observeVaultTargetMaterialDependencies
   , targetMaterialObservationAuthenticatedHandler
   , targetMaterialResponseMaximumBytes
   , targetMaterialMetadataGenerationField
@@ -29,6 +30,7 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint
 where
 
 import Codec.Serialise (Serialise)
+import Control.Monad (void)
 import Data.Bifunctor qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -45,6 +47,11 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleDependencyObservation
+  , RoleReadinessSource
+  , roleDependencyFromOutcome
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (TargetMaterialObserve)
   )
@@ -52,6 +59,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
   , allTargetMaterialIds
   , compiledTargetSecretSink
+  , targetSecretIdToken
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -100,7 +108,7 @@ data TargetMaterialRepository m = TargetMaterialRepository
   { observeTargetMaterial
       :: TargetSecretId
       -> m (Either Text (Maybe TargetMaterialObservation))
-  , targetMaterialRepositoryReady :: m Bool
+  , targetMaterialRepositoryReadiness :: !RoleReadinessSource
   }
 
 targetMaterialResponseMaximumBytes :: Int
@@ -113,7 +121,7 @@ targetMaterialObservationAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 targetMaterialObservationAuthenticatedHandler maximumBytes repository =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = targetMaterialRepositoryReady repository
+    { authenticatedHandlerReadiness = targetMaterialRepositoryReadiness repository
     , authenticatedHandlerHandle = handle
     }
  where
@@ -133,15 +141,29 @@ targetMaterialObservationAuthenticatedHandler maximumBytes repository =
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
 
-vaultTargetMaterialRepository :: VaultSession -> TargetMaterialRepository IO
-vaultTargetMaterialRepository session =
+vaultTargetMaterialRepository
+  :: VaultSession -> RoleReadinessSource -> TargetMaterialRepository IO
+vaultTargetMaterialRepository session readiness =
   TargetMaterialRepository
     { observeTargetMaterial = observeVaultTargetMaterialMetadata session
-    , targetMaterialRepositoryReady =
-        allM
-          (fmap (either (const False) (const True)) . observeVaultTargetMaterialMetadata session)
-          allTargetMaterialIds
+    , targetMaterialRepositoryReadiness = readiness
     }
+
+-- | Sprint 4.55: this used to run on the kubelet request path, once per probe,
+-- as an `allM` over every registered target — up to 32 sequential Vault KV
+-- reads against a `timeoutSeconds: 1` budget, with the healthy path the slowest
+-- because `allM` short-circuits only on failure. It is now one background pass.
+observeVaultTargetMaterialDependencies
+  :: VaultSession -> IO [(Text, RoleDependencyObservation)]
+observeVaultTargetMaterialDependencies session =
+  traverse observeOne allTargetMaterialIds
+ where
+  observeOne target = do
+    observed <- observeVaultTargetMaterialMetadata session target
+    pure
+      ( "target-material:" <> targetSecretIdToken target
+      , roleDependencyFromOutcome (void observed)
+      )
 
 observeVaultTargetMaterialMetadata
   :: VaultSession
@@ -246,15 +268,6 @@ requiredBounded label field maximumLength fields = do
 
 readNatural :: Text -> Maybe Natural
 readNatural = readMaybe . Text.unpack
-
-allM :: (Monad m) => (value -> m Bool) -> [value] -> m Bool
-allM predicate = go
- where
-  go [] = pure True
-  go (value : rest) = do
-    accepted <- predicate value
-    if accepted then go rest else pure False
-
 targetMaterialMetadataGenerationField :: Text
 targetMaterialMetadataGenerationField = "prodbox_generation"
 

@@ -48,17 +48,18 @@ import Prodbox.ControlPlane.RequestReplay
   , replayResponseStatus
   , runReplayProtectedRequest
   )
+import Prodbox.ControlPlane.RoleReadiness (RoleReadinessSource)
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (..)
   )
 import Prodbox.ControlPlane.Server
-  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadyz)
+  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
 import Prodbox.Lifecycle.Lease (AuthorityDuration)
 import Prodbox.Runtime.Role (RuntimeRole)
 
 data AuthenticatedRoleHandler m = AuthenticatedRoleHandler
-  { authenticatedHandlerReadyz :: !(m Bool)
+  { authenticatedHandlerReadiness :: !RoleReadinessSource
   , authenticatedHandlerHandle
       :: VerifiedCallerSlot
       -> ControlPlaneRoute
@@ -73,7 +74,7 @@ contextFreeAuthenticatedRoleHandler
   :: RoleInterpreter m -> AuthenticatedRoleHandler m
 contextFreeAuthenticatedRoleHandler interpreter =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = interpreterReadyz interpreter
+    { authenticatedHandlerReadiness = interpreterReadiness interpreter
     , authenticatedHandlerHandle = \_ route body ->
         interpreterHandle interpreter route body
     }
@@ -113,7 +114,7 @@ authenticatedRoleInterpreter
   replayRepository
   inner =
     RoleInterpreter
-      { interpreterReadyz = authenticatedHandlerReadyz inner
+      { interpreterReadiness = authenticatedHandlerReadiness inner
       , interpreterHandle = handle
       }
    where

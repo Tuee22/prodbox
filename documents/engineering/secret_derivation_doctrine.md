@@ -182,6 +182,33 @@ that prompt in tests and is never a Vault object (see
 [vault_doctrine.md §12](./vault_doctrine.md#12-in-cluster-service-auth) and
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
+### 5.1 Ownership direction for the Patroni role credentials
+
+Every row above has one authority and one direction of flow. The three Patroni rows are worth
+stating explicitly, because a reader who meets the Kubernetes Secret first can reasonably conclude
+that the Percona operator owns the value, and the conclusion is backwards:
+
+- **Vault is the authority.** `Prodbox.Secret.VaultInventory` declares all three passwords as
+  `generatedField "password" "patroni-password"`, and `generateVaultSecretFieldValue` mints them
+  from 32 random bytes. Percona PGO v2 does not generate them.
+- **Exactly one mirror exists, and it is chart-local.** The `keycloak-postgres`
+  `pre-install,pre-upgrade` hook Job reads `vault kv get -field=password` under its own
+  Kubernetes-auth role and creates (`201`) or merge-patches (`409`) the three named Kubernetes
+  Secrets. On an upgrade against an existing cluster it takes the patch arm, so the Vault value is
+  re-asserted over whatever the Secret currently holds — which is what enforcing an authority
+  means, not a race with one.
+- **PGO adopts rather than generates.** The `PerconaPGCluster` pins `spec.users[].secretName` to
+  those pre-created Secrets, which is the operator's custom-user-secret adoption path. The
+  operator owns the Secret *object*; it does not own the password *value*.
+- **There is no reverse path.** No Haskell or chart path reads a Kubernetes Secret and writes it
+  to Vault. The only `vault write` calls in the chart tree are Kubernetes-auth logins.
+
+The direction rule is therefore satisfied by there being exactly one mirror running in the
+canonical direction, not by there being no mirror. Adding a second writer of any of these three
+Secrets, or any path that reads one back into Vault, breaks the rule stated here — this is the
+*Direction* class of
+[chaos_hardening_doctrine.md § 21](./chaos_hardening_doctrine.md).
+
 `Prodbox.Secret.VaultInventory` is the typed KV-path, policy, ServiceAccount, and Kubernetes-auth
 role inventory. The Bootstrap Broker's bounded baseline capability reconciles its mounts,
 policies, and roles; it is not a generic KV writer. Generated static seed objects use explicit

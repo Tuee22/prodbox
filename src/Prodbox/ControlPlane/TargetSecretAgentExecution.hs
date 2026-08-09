@@ -81,16 +81,6 @@ module Prodbox.ControlPlane.TargetSecretAgentExecution
   , verifiedTargetIntentActionDigest
   , TargetIntentVerificationError (..)
   , verifySignedTargetCommittedIntent
-  , TargetAgentTrustRepository (..)
-  , TargetSecretMaterial (..)
-  , TrustedTargetSecretMaterialSource (..)
-  , TargetSecretAgentExecutionBoundary
-  , mkTargetSecretAgentExecutionBoundary
-  , TargetIntentAdmissionError (..)
-  , admitTargetCommittedIntent
-  , TargetIntentExecutionResult (..)
-  , TargetIntentExecutionError (..)
-  , executeVerifiedTargetIntent
   )
 where
 
@@ -111,16 +101,9 @@ import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
-  , TargetSecretPayload
   , compiledTargetSecretSink
   , targetSecretIdForSink
   , targetSecretIdToken
-  , targetSecretPayloadId
-  )
-import Prodbox.ControlPlane.TrustedTargetSink
-  ( TrustedTargetSink
-  , trustedTargetSinkAdapter
-  , trustedTargetSinkCoordinate
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( TargetClusterSecretSink
@@ -139,10 +122,6 @@ import Prodbox.Lifecycle.Lease
   )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
-  , TargetSinkCasAdapter (..)
-  , TargetSinkCasRequest (..)
-  , TargetSinkObservation (..)
-  , TargetSinkRecord (..)
   , TargetValueDigest
   , credentialGenerationValue
   , mkCredentialGeneration
@@ -908,245 +887,6 @@ verifySignedTargetCommittedIntent accepted now expectedAgentIdentity expectedSin
  where
   unsigned = internalSignedTargetUnsigned signed
 
-newtype TargetAgentTrustRepository m = TargetAgentTrustRepository
-  { readAcceptedTargetAuthority :: m (Either Text AcceptedTargetAuthority)
-  }
-
--- | Plaintext recovered inside the Agent from one exact sealed-receipt
--- coordinate.  The receipt digest is repeated so a response for a substitute
--- receipt is rejected before the target sink is observed or mutated.
-data TargetSecretMaterial = TargetSecretMaterial
-  { targetSecretMaterialReceiptDigest :: !TargetValueDigest
-  , targetSecretMaterialPayload :: !TargetSecretPayload
-  }
-
--- | Agent-local sealed-receipt/decryption capability.  It is intentionally
--- distinct from the Authority trust repository and the target-Vault sink.
-newtype TrustedTargetSecretMaterialSource m = TrustedTargetSecretMaterialSource
-  { readTrustedTargetSecretMaterial
-      :: TargetValueDigest
-      -> m (Either Text TargetSecretMaterial)
-  }
-
-data TargetSecretAgentExecutionBoundary m = TargetSecretAgentExecutionBoundary
-  { targetExecutionAgentIdentity :: !TargetAgentIdentity
-  , targetExecutionTrustRepository :: !(TargetAgentTrustRepository m)
-  , targetExecutionAuthorityNow :: m (Either Text AuthorityTime)
-  , targetExecutionMaterialSource :: !(TrustedTargetSecretMaterialSource m)
-  , targetExecutionTrustedSink :: !(TrustedTargetSink m TargetSecretPayload)
-  }
-
-mkTargetSecretAgentExecutionBoundary
-  :: TargetAgentIdentity
-  -> TargetAgentTrustRepository m
-  -> m (Either Text AuthorityTime)
-  -> TrustedTargetSecretMaterialSource m
-  -> TrustedTargetSink m TargetSecretPayload
-  -> TargetSecretAgentExecutionBoundary m
-mkTargetSecretAgentExecutionBoundary agentIdentity trust now materialSource sink =
-  TargetSecretAgentExecutionBoundary
-    { targetExecutionAgentIdentity = agentIdentity
-    , targetExecutionTrustRepository = trust
-    , targetExecutionAuthorityNow = now
-    , targetExecutionMaterialSource = materialSource
-    , targetExecutionTrustedSink = sink
-    }
-
-data TargetIntentAdmissionError
-  = TargetIntentAdmissionCodecFailed !TargetCommittedIntentCodecError
-  | TargetIntentAdmissionTrustUnavailable !Text
-  | TargetIntentAdmissionClockUnavailable !Text
-  | TargetIntentAdmissionRefused !TargetIntentVerificationError
-  deriving stock (Eq, Show)
-
--- | Stage one: decode and authenticate a secret-free intent.  Malformed bytes
--- are rejected before either trusted repository or clock is consulted.
-admitTargetCommittedIntent
-  :: (Monad m)
-  => Int
-  -> TargetSecretAgentExecutionBoundary m
-  -> ByteString
-  -> m (Either TargetIntentAdmissionError VerifiedTargetCommittedIntent)
-admitTargetCommittedIntent maximumBytes boundary bytes =
-  case decodeSignedTargetCommittedIntent maximumBytes bytes of
-    Left err -> pure (Left (TargetIntentAdmissionCodecFailed err))
-    Right signed -> do
-      acceptedResult <-
-        readAcceptedTargetAuthority
-          (targetExecutionTrustRepository boundary)
-      case acceptedResult of
-        Left detail -> pure (Left (TargetIntentAdmissionTrustUnavailable detail))
-        Right accepted -> do
-          nowResult <- targetExecutionAuthorityNow boundary
-          pure $ case nowResult of
-            Left detail -> Left (TargetIntentAdmissionClockUnavailable detail)
-            Right now ->
-              firstVerification
-                ( verifySignedTargetCommittedIntent
-                    accepted
-                    now
-                    (targetExecutionAgentIdentity boundary)
-                    (trustedTargetSinkCoordinate (targetExecutionTrustedSink boundary))
-                    signed
-                )
-
-data TargetIntentExecutionResult
-  = TargetIntentExecutionApplied !CredentialGeneration
-  | TargetIntentExecutionAlreadyApplied !CredentialGeneration
-  deriving stock (Eq, Show)
-
-data TargetIntentExecutionError
-  = TargetIntentExecutionTrustUnavailable !Text
-  | TargetIntentExecutionTrustChanged
-  | TargetIntentExecutionClockUnavailable !Text
-  | TargetIntentExecutionDeadlineReached !AuthorityTime !AuthorityTime
-  | TargetIntentExecutionMaterialUnavailable !Text
-  | TargetIntentExecutionMaterialReceiptMismatch !TargetValueDigest !TargetValueDigest
-  | TargetIntentExecutionMaterialTargetMismatch !TargetSecretId !TargetSecretId
-  | TargetIntentExecutionTargetRetired
-  | TargetIntentExecutionTargetUnavailable !Text
-  | TargetIntentExecutionTargetUnbounded !Natural !Natural
-  | TargetIntentExecutionTargetChanging !Text
-  | TargetIntentExecutionGenerationNewer !CredentialGeneration !CredentialGeneration
-  | TargetIntentExecutionGenerationCollision !CredentialGeneration
-  | TargetIntentExecutionMutationNotConfirmed !Text
-  deriving stock (Eq, Show)
-
--- | Stage two: revalidate the Agent-local trust/time boundary, bind the
--- exact signed receipt to Agent-local material, observe before mutation,
--- execute at most one exact sink CAS, and require fresh authoritative
--- read-back.  No plaintext or unkeyed secret hash appears in the signed wire
--- envelope.
-executeVerifiedTargetIntent
-  :: (Monad m)
-  => TargetSecretAgentExecutionBoundary m
-  -> VerifiedTargetCommittedIntent
-  -> m (Either TargetIntentExecutionError TargetIntentExecutionResult)
-executeVerifiedTargetIntent boundary verified = do
-  acceptedResult <-
-    readAcceptedTargetAuthority
-      (targetExecutionTrustRepository boundary)
-  case acceptedResult of
-    Left detail -> pure (Left (TargetIntentExecutionTrustUnavailable detail))
-    Right currentAccepted
-      | currentAccepted /= internalVerifiedAcceptedAuthority verified ->
-          pure (Left TargetIntentExecutionTrustChanged)
-      | otherwise -> do
-          nowResult <- targetExecutionAuthorityNow boundary
-          case nowResult of
-            Left detail -> pure (Left (TargetIntentExecutionClockUnavailable detail))
-            Right now -> executeAt now
- where
-  unsigned = internalVerifiedTargetUnsigned verified
-  spec = internalTargetCommittedIntentSpec unsigned
-  sink = targetIntentSink spec
-  sinkAdapter = trustedTargetSinkAdapter (targetExecutionTrustedSink boundary)
-  expectedRecord payload =
-    TargetSinkRecord
-      { targetSinkRecordOwnerNonce = targetIntentOwnerNonce spec
-      , targetSinkRecordFencingToken = targetIntentFencingToken spec
-      , targetSinkRecordGeneration = targetIntentGeneration spec
-      , targetSinkRecordDigest = internalTargetCommittedActionDigest unsigned
-      , targetSinkRecordPayload = payload
-      }
-
-  executeAt now
-    | authorityTimeMicros now >= authorityTimeMicros (targetIntentDeadline spec) =
-        pure (Left (TargetIntentExecutionDeadlineReached now (targetIntentDeadline spec)))
-    | otherwise = do
-        before <- targetSinkObserve sinkAdapter sink
-        case before of
-          TargetSinkMissing -> resolveMaterialAndMutate Nothing
-          TargetSinkObserved version current
-            | targetRecordMatchesIntent current ->
-                pure
-                  ( Right
-                      (TargetIntentExecutionAlreadyApplied (targetIntentGeneration spec))
-                  )
-            | targetSinkRecordGeneration current > targetIntentGeneration spec ->
-                pure
-                  ( Left
-                      ( TargetIntentExecutionGenerationNewer
-                          (targetSinkRecordGeneration current)
-                          (targetIntentGeneration spec)
-                      )
-                  )
-            | targetSinkRecordGeneration current == targetIntentGeneration spec ->
-                pure
-                  ( Left
-                      ( TargetIntentExecutionGenerationCollision
-                          (targetIntentGeneration spec)
-                      )
-                  )
-            | otherwise -> resolveMaterialAndMutate (Just version)
-          TargetSinkRetired -> pure (Left TargetIntentExecutionTargetRetired)
-          TargetSinkUnobservable detail ->
-            pure (Left (TargetIntentExecutionTargetUnavailable detail))
-          TargetSinkUnbounded actual maximumCardinality ->
-            pure
-              ( Left
-                  (TargetIntentExecutionTargetUnbounded actual maximumCardinality)
-              )
-          TargetSinkChanging detail ->
-            pure (Left (TargetIntentExecutionTargetChanging detail))
-
-  targetRecordMatchesIntent record =
-    targetSinkRecordOwnerNonce record == targetIntentOwnerNonce spec
-      && targetSinkRecordFencingToken record == targetIntentFencingToken spec
-      && targetSinkRecordGeneration record == targetIntentGeneration spec
-      && targetSinkRecordDigest record == internalTargetCommittedActionDigest unsigned
-
-  resolveMaterialAndMutate expectedVersion = do
-    materialResult <-
-      readTrustedTargetSecretMaterial
-        (targetExecutionMaterialSource boundary)
-        (targetIntentCommitReceiptDigest spec)
-    case materialResult of
-      Left detail -> pure (Left (TargetIntentExecutionMaterialUnavailable detail))
-      Right material
-        | targetSecretMaterialReceiptDigest material
-            /= targetIntentCommitReceiptDigest spec ->
-            pure
-              ( Left
-                  ( TargetIntentExecutionMaterialReceiptMismatch
-                      (targetIntentCommitReceiptDigest spec)
-                      (targetSecretMaterialReceiptDigest material)
-                  )
-              )
-        | targetSecretPayloadId (targetSecretMaterialPayload material)
-            /= internalTargetCommittedTarget unsigned ->
-            pure
-              ( Left
-                  ( TargetIntentExecutionMaterialTargetMismatch
-                      (internalTargetCommittedTarget unsigned)
-                      (targetSecretPayloadId (targetSecretMaterialPayload material))
-                  )
-              )
-        | otherwise ->
-            let record = expectedRecord (targetSecretMaterialPayload material)
-                request = case expectedVersion of
-                  Nothing -> TargetSinkInitialize sink record
-                  Just version -> TargetSinkReplace sink version record
-             in mutate record request
-
-  mutate expectedRecordValue request = do
-    _ <- targetSinkCompareAndSwap sinkAdapter request
-    confirmed <- targetSinkObserve sinkAdapter sink
-    pure $ case confirmed of
-      TargetSinkObserved _ actual
-        | actual == expectedRecordValue ->
-            Right (TargetIntentExecutionApplied (targetIntentGeneration spec))
-      other -> Left (TargetIntentExecutionMutationNotConfirmed (observationToken other))
-
-observationToken :: TargetSinkObservation payload -> Text
-observationToken observation = case observation of
-  TargetSinkMissing -> "missing"
-  TargetSinkObserved _ _ -> "different-record"
-  TargetSinkRetired -> "retired"
-  TargetSinkUnobservable _ -> "unobservable"
-  TargetSinkUnbounded _ _ -> "unbounded"
-  TargetSinkChanging _ -> "changing"
-
 authorityEpochValue :: AuthorityEpoch -> Natural
 authorityEpochValue (AuthorityEpoch value) = value
 
@@ -1208,11 +948,6 @@ parseTargetIntentSignature
 parseTargetIntentSignature bytes = case Ed25519.signature bytes of
   CryptoFailed _ -> Left TargetIntentSignatureInvalid
   CryptoPassed signature -> Right signature
-
-firstVerification
-  :: Either TargetIntentVerificationError value
-  -> Either TargetIntentAdmissionError value
-firstVerification = either (Left . TargetIntentAdmissionRefused) Right
 
 mapAcceptedValue
   :: (Show errorValue)

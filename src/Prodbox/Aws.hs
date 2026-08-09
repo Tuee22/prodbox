@@ -214,12 +214,14 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , DomainSection (..)
   , MetallbBgpPeer (..)
+  , PublicEdgeAdvertisementMode (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
   , SesSection (..)
   , StorageSection (..)
   , defaultConfigFile
   , loadConfigFile
+  , parsePublicEdgeAdvertisementMode
   , supportedPublicHostname
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
@@ -516,7 +518,7 @@ data ConfigSetupInput = ConfigSetupInput
   , configSetupDevModeInput :: Bool
   , configSetupBootstrapPublicIpOverrideInput :: Maybe Text
   , configSetupPulumiEnableDnsBootstrapInput :: Bool
-  , configSetupPublicEdgeAdvertisementModeInput :: Maybe Text
+  , configSetupPublicEdgeAdvertisementModeInput :: Maybe PublicEdgeAdvertisementMode
   , configSetupPublicEdgeBgpPeersInput :: Maybe [MetallbBgpPeer]
   , configSetupEnvoyGatewayControllerScalingInput :: ScalingPolicyBySubstrate
   , configSetupEnvoyGatewayDataPlaneScalingInput :: ScalingPolicyBySubstrate
@@ -1654,7 +1656,11 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
       normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
       normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
-      normalizedAdvertisementMode = normalizeOptionalText (Text.toLower (Text.strip (Text.pack advertisementModeRaw)))
+      -- Sprint 1.80: the one place a string becomes a mode. Every other site
+      -- consumes the union, so no downstream comparison decides what the
+      -- operator meant.
+      normalizedAdvertisementMode =
+        parsePublicEdgeAdvertisementMode (Text.pack advertisementModeRaw)
       normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
       normalizedDeployment =
         DeploymentSection

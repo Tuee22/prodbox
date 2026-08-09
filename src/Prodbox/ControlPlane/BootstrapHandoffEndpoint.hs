@@ -13,10 +13,12 @@ module Prodbox.ControlPlane.BootstrapHandoffEndpoint
   , bootstrapHandoffMaximumBytes
   , bootstrapHandoffAuthenticatedHandler
   , vaultBootstrapHandoffRepository
+  , observeBootstrapHandoffDependency
   )
 where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Control.Monad (void)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -48,6 +50,12 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleDependencyObservation
+  , RoleReadinessSource
+  , layerRoleReadinessSource
+  , roleDependencyFromOutcome
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
       ( LifecycleBootstrapHandoffAccept
@@ -76,7 +84,7 @@ data BootstrapHandoffRepository m = BootstrapHandoffRepository
       :: RootInitBinding
       -> PostUnsealConsumer
       -> m (Either Text (Maybe PostUnsealHandoffReceipt))
-  , bootstrapHandoffRepositoryReady :: m Bool
+  , bootstrapHandoffRepositoryReadiness :: !RoleReadinessSource
   }
 
 data BootstrapHandoffRequest = BootstrapHandoffRequest
@@ -105,10 +113,10 @@ bootstrapHandoffAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 bootstrapHandoffAuthenticatedHandler maximumBytes repository inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = do
-        localReady <- bootstrapHandoffRepositoryReady repository
-        downstreamReady <- authenticatedHandlerReadyz inner
-        pure (localReady && downstreamReady)
+    { authenticatedHandlerReadiness =
+        layerRoleReadinessSource
+          (bootstrapHandoffRepositoryReadiness repository)
+          (authenticatedHandlerReadiness inner)
     , authenticatedHandlerHandle = handle
     }
  where
@@ -163,14 +171,12 @@ bootstrapHandoffField :: Text
 bootstrapHandoffField = "receipt_base64"
 
 vaultBootstrapHandoffRepository
-  :: VaultSession -> BootstrapHandoffRepository IO
-vaultBootstrapHandoffRepository session =
+  :: VaultSession -> RoleReadinessSource -> BootstrapHandoffRepository IO
+vaultBootstrapHandoffRepository session readiness =
   BootstrapHandoffRepository
     { acceptBootstrapHandoff = accept
     , observeBootstrapHandoff = observe
-    , bootstrapHandoffRepositoryReady = do
-        observed <- readReceipt session
-        pure (either (const False) (const True) observed)
+    , bootstrapHandoffRepositoryReadiness = readiness
     }
  where
   accept binding consumer = go 8
@@ -290,3 +296,15 @@ lowerHex = Text.pack . concatMap renderByte . ByteString.unpack
   renderByte byte = case showHex byte "" of
     [single] -> ['0', single]
     pair -> pair
+
+-- | Sprint 4.55: the handoff-receipt read this repository used to run inline on
+-- @\/readyz@, now one labelled dependency in the Lifecycle Authority's
+-- background observation pass.
+observeBootstrapHandoffDependency
+  :: VaultSession -> IO (Text, RoleDependencyObservation)
+observeBootstrapHandoffDependency session = do
+  observed <- readReceipt session
+  pure
+    ( "bootstrap-handoff-receipt"
+    , roleDependencyFromOutcome (void observed)
+    )

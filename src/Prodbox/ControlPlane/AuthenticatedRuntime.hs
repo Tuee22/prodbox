@@ -68,6 +68,10 @@ import Prodbox.ControlPlane.RequestReplay
   , RequestReplayLimits
   , RequestReplayRepository
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( constantRoleReadinessSource
+  , unobservedRoleReadinessFacts
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
   , allControlPlaneRoutes
@@ -75,7 +79,7 @@ import Prodbox.ControlPlane.Route
   , controlPlaneRouteRole
   )
 import Prodbox.ControlPlane.Server
-  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadyz)
+  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
 import Prodbox.Lifecycle.Lease (AuthorityDuration)
 import Prodbox.Runtime.Role (RuntimeRole)
@@ -376,7 +380,9 @@ authenticatedRuntimeUnavailableInterpreter
   -> RoleInterpreter m
 authenticatedRuntimeUnavailableInterpreter gap =
   RoleInterpreter
-    { interpreterReadyz = pure False
+    { interpreterReadiness =
+        constantRoleReadinessSource
+          (unobservedRoleReadinessFacts "authenticated-runtime")
     , interpreterHandle = \_ _ -> pure (Just (503, provisioningGapBody gap))
     }
 

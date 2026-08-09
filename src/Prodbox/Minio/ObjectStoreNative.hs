@@ -18,10 +18,7 @@
 module Prodbox.Minio.ObjectStoreNative
   ( getObject
   , getObjectVersioned
-  , putObject
-  , putIfAbsent
   , putIfAbsentObserved
-  , putIfVersion
   , putIfVersionObserved
   , deleteObject
   , deleteIfVersionObserved
@@ -249,19 +246,9 @@ getObjectVersioned config key = do
       | isAbsent status -> Right Nothing
       | otherwise -> Left ("object-store GET failed (" ++ show status ++ "): " ++ shortBody body)
 
-putObject :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
-putObject config key bytes = putGuarded config key bytes []
-
-putIfAbsent :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ())
-putIfAbsent config key bytes = putGuarded config key bytes [("If-None-Match", "*")]
-
 putIfAbsentObserved
   :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ConditionalPutResult)
 putIfAbsentObserved config key bytes = putConditional config key bytes [("If-None-Match", "*")]
-
-putIfVersion :: ObjectStoreConfig -> Text -> ObjectVersion -> ByteString -> IO (Either String ())
-putIfVersion config key version bytes =
-  putGuarded config key bytes [("If-Match", ifMatchValue version)]
 
 putIfVersionObserved
   :: ObjectStoreConfig -> Text -> ObjectVersion -> ByteString -> IO (Either String ConditionalPutResult)
@@ -270,22 +257,6 @@ putIfVersionObserved config key version bytes =
 
 ifMatchValue :: ObjectVersion -> ByteString
 ifMatchValue version = "\"" <> TextEncoding.encodeUtf8 (objectVersionEtag version) <> "\""
-
--- | An unconditional-or-guarded put that treats a precondition failure as a
--- 'Left' error (the non-observed variants).
-putGuarded
-  :: ObjectStoreConfig -> Text -> ByteString -> [(ByteString, ByteString)] -> IO (Either String ())
-putGuarded config key bytes extraHeaders = do
-  ensured <- ensureObjectStoreBucket config
-  case ensured of
-    Left err -> pure (Left err)
-    Right () -> do
-      result <- performS3 config "PUT" (objectPath config key) [] bytes extraHeaders
-      pure $ case result of
-        Left err -> Left err
-        Right (status, _, body)
-          | status >= 200 && status < 300 -> Right ()
-          | otherwise -> Left ("object-store PUT failed (" ++ show status ++ "): " ++ shortBody body)
 
 -- | A conditional put that maps a precondition failure to
 -- 'ConditionalPutConflict' (the observed variants).
@@ -303,8 +274,12 @@ putConditional config key bytes extraHeaders = do
       result <- performS3 config "PUT" (objectPath config key) [] bytes extraHeaders
       pure $ case result of
         Left err -> Left err
-        Right (status, _, body)
-          | status >= 200 && status < 300 -> Right ConditionalPutApplied
+        Right (status, headers, body)
+          | status >= 200 && status < 300 ->
+              case etagOf headers of
+                Nothing ->
+                  Left "object-store conditional PUT succeeded but returned no ETag version"
+                Just version -> Right (ConditionalPutApplied version)
           | isConditionalConflict status -> Right ConditionalPutConflict
           | otherwise ->
               Left ("object-store conditional PUT failed (" ++ show status ++ "): " ++ shortBody body)

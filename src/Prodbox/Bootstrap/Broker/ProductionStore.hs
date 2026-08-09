@@ -999,7 +999,7 @@ createValue config key valid value =
       attempted <- Native.putIfAbsentObserved config key encoded
       case attempted of
         Left _ -> pure (Left BootstrapStoreUnavailable)
-        Right ConditionalPutApplied -> confirmWrite config key valid (StoreVersion 1) value
+        Right (ConditionalPutApplied _) -> confirmWrite config key valid (StoreVersion 1) value
         Right ConditionalPutConflict -> conflictResult config key valid
 
 casValue
@@ -1025,7 +1025,7 @@ casValue config key valid expected value = do
                   attempted <- Native.putIfVersionObserved config key etag encoded
                   case attempted of
                     Left _ -> pure (Left BootstrapStoreUnavailable)
-                    Right ConditionalPutApplied -> confirmWrite config key valid proposed value
+                    Right (ConditionalPutApplied _) -> confirmWrite config key valid proposed value
                     Right ConditionalPutConflict -> conflictResult config key valid
 
 deleteValue
@@ -1357,7 +1357,7 @@ writeFencePhysical config key physical proposed = do
       case attempted of
         Left _ -> pure (Left BootstrapStoreUnavailable)
         Right ConditionalPutConflict -> pure (Left BootstrapStoreVersionConflict)
-        Right ConditionalPutApplied -> do
+        Right (ConditionalPutApplied _) -> do
           readBack <- observeFence config key
           pure $ case readBack of
             Right actual | actual == proposed -> Right actual

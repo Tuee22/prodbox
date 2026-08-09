@@ -253,8 +253,8 @@ deliberate about which ring actually makes over-commitment unrepresentable:
 
 | Ring | Mechanism | Truly unrepresentable? |
 |------|-----------|------------------------|
-| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously). The config generator (`renderProjectConfigDhall`, Sprint `1.72`) **implements** the `assertPlanValid` shim by *lean-emit*: it emits the precomputed concurrent draws as data and inlines the `lessOrEq`/`vectorFitsWithin`/`vectorPlus` operators so the file recomputes `allocatable` from its **own** host/reservation numbers and carries `let _ = assert : planFits === True in cfg`. An over-committed emitted file — reservation exceeding host, or Σ draws exceeding allocatable — then fails Dhall type-check and no longer loads through `decodeProjectConfigDhall`; the lemmas and assert normalize away for `Dhall.auto` extraction, so a valid file round-trips unchanged (`test/unit/Tier0PlanAssert.hs`). | **No.** Dhall has no refinement/dependent types and cannot re-derive the draws (no `Natural` division, no `Text` equality) or observe the host, so it *trusts* the emitted draws and only fails a *specific evaluated file*; `prodbox.dhall` is binary-generated (no human Dhall authoring surface). Value (now realized): a baked-in cross-check that catches a host-shrinking hand-edit and a regressed generator's over-committed file, one ring ahead of the Ring-2 gate. |
-| **2 — Pure Haskell decode gate (the guarantee)** | `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (hidden constructor) only when host reservations, workload draws, and durable claims all fit under a non-saturating budget — a sibling of `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan` (§2D). The proof is a **required field of `ValidatedSettings`**, built in `validateConfig` over the **decoded in-force** plan; the write-side renderers accept the proof, not raw settings. | **Yes.** No proof ⇒ no `ValidatedSettings` ⇒ no renderer input, so an over-committed *decoded* config has no representation any command can consume. This — not Dhall — is where "unrepresentable" is delivered. A `dev check` gate additionally fails the build if `defaultResourcePlan` over-commits. |
+| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously). The config generator (`renderProjectConfigDhall`, Sprint `1.72`) **implements** the `assertPlanValid` shim by *lean-emit*: it emits the precomputed concurrent draws as data and inlines the `lessOrEq`/`vectorFitsWithin`/`vectorPlus` operators so the file recomputes `allocatable` from its **own** host/reservation numbers and carries `let _ = assert : planFits === True in cfg`. An over-committed emitted file — reservation exceeding host, or Σ draws exceeding allocatable — then fails Dhall type-check and no longer loads through `decodeProjectConfigDhall`; the lemmas and assert normalize away for `Dhall.auto` extraction, so a valid file round-trips unchanged (`test/unit/Tier0PlanAssert.hs`). | **No.** Dhall has no refinement/dependent types and cannot re-derive the draws (no `Natural` division, no `Text` equality) or observe the host, so it *trusts* the emitted draws and only fails a *specific evaluated file*. **Correction (2026-08-07)**: this cell previously added "`prodbox.dhall` is binary-generated (no human Dhall authoring surface)", which is false and contradicted its own next sentence — the value claimed for the shim is catching a *hand-edit*. `prodbox.dhall` is normally binary-generated but **is** a hand-editable surface: `config generate` tells the operator to edit it directly (`src/Prodbox/Native.hs`), `CLAUDE.md` lists editing it against the generated schema as the *automation* path, and the `ses.*` / `pulumi_state_backend.*` / `aws_substrate.*` sections have no generator path at all. Nothing detects drift from what the generator would emit, and a hand edit survives a `config setup` re-run. Value (now realized, and correctly scoped): a baked-in cross-check that catches a host-shrinking hand-edit and a regressed generator's over-committed file, one ring ahead of the Ring-2 gate — over the resource-plan arithmetic **only**, and trusting its own emitted draws. Every other hand-edited field is unguarded until Ring 2 — and unguarded again *after* Ring 2, at every boundary where a typed value is written back out as text ([chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md)). |
+| **2 — Pure Haskell decode gate (the guarantee)** | `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (hidden constructor) only when host reservations, workload draws, and durable claims all fit under a non-saturating budget — a sibling of `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan` (§2D). The proof is a **required field of `ValidatedSettings`**, built in `validateConfig` over the **decoded in-force** plan; the write-side renderers accept the proof, not raw settings. | **Yes — within its compiled region** (see "The region of Ring 2" below). No proof ⇒ no `ValidatedSettings` ⇒ no renderer input, so an over-committed *decoded* config has no representation any command in that region can consume. This — not Dhall — is where "unrepresentable" is delivered. A `dev check` gate additionally fails the build if `defaultResourcePlan` over-commits. |
 | **3 — Runtime cgroup/Kubernetes (observed host)** | `prodbox cluster reconcile` re-compiles the plan against an `ObservedHostRoot` (`compileResourcePlanAgainstObserved`), closing invariant (b) `cluster <= host` against the **observed** machine across all four axes — durable vs ephemeral observed on distinct devices, with a single shared-device joint budget when they coincide — then writes RKE2/kubelet guardrails, reconciles the derived namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is `BestEffort`. | **No — inherently runtime.** The host is discovered by IO; the strongest achievable is folding the observation into the same opaque proof so no guardrail writes without the observed proof (superseding the late `hostCapacityCoversPlan` boolean). |
 
 This three-ring model is intentionally redundant, but honest about its ceiling: the **Haskell decode
@@ -263,6 +263,34 @@ refinement-type guarantee), and Kubernetes/systemd *contain* runtime runaway wit
 or service instead of letting it consume the host. A cgroup OOM kill is therefore evidence that
 containment worked and the workload's runtime contract failed; it is never evidence that the authored
 limit proved sufficient.
+
+### The region of Ring 2
+
+A ring is not a property of a type. It is a property of a type **over a set of compiled modules**,
+and that set is whatever the build command selects — not the repository. This doctrine owns the ring
+vocabulary, so it owns the region too, and every other document citing "Ring 2" inherits the
+qualifier from here.
+
+**Measured 2026-08-08.** `prodbox dev check` runs `cabal build --builddir=.build all`
+(`src/Prodbox/CheckCode.hs`), and `cabal.project` sets no `tests:` stanza. That command resolves to
+`lib` and `exe:prodbox` and **no test suite**; adding `--enable-tests` resolves to those plus all
+eight. So the region of every Ring-2 claim recorded against this repository has been `src/` and
+`app/` — never `test/`.
+
+The consequence is not hypothetical. Sprint `1.80` tightened a config field into a closed union — a
+Ring-1 win, and a Ring-2 type change — and the integration fixtures that hand-authored the old shape
+were outside the region, so what should have been a compile error was a runtime decode failure in a
+suite nothing routinely compiled. Twenty cases broke and the symptom was a network error.
+
+Two rules follow, and they are cheap:
+
+1. **State the region whenever you state the ring.** "Ring 2 delivers unrepresentable" without a
+   region is a claim about a different set of files than the reader will assume.
+2. **A gate's region must cover the surface that carries its evidence.** A build that omits `test/`
+   cannot support a claim whose proof lives in `test/`. See
+   [chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md) for the same point stated as
+   the fourth honest consequence of a ring-2 gate, and
+   [code_quality.md](./code_quality.md) for the per-command scope of the lint stack.
 
 A cgroup can correctly contain repeated OOMs while a replacement process later appears healthy.
 Likewise, a process can remain within its memory ceiling while a CPU cap prevents it from meeting

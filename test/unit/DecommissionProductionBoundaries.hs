@@ -36,8 +36,10 @@ import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetSinkObservation (..)
   , TargetSinkRecord (..)
   , mkCredentialGeneration
-  , mkTargetSinkVersion
   , mkTargetValueDigest
+  )
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
   )
 import TestSupport
 
@@ -50,11 +52,10 @@ decommissionProductionBoundariesSuite =
               targetSink
               ( pure
                   ( TargetSinkObserved
-                      (mustRight (mkTargetSinkVersion "17"))
+                      (mustJust (targetSinkVersionFromStoreVersion 17))
                       targetRecord
                   )
               )
-              (\_ _ -> pure (Left "inventory is read-only"))
       observed <-
         observeTargetDecommissionInventory
           (targetDecommissionInventoryBoundary trusted)

@@ -46,7 +46,7 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
-import Network.Socket.ByteString (recv, sendAll)
+import Network.Socket.ByteString (recv)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
   ( AuthorityBackupBlobClass (AuthorityAggregateEnvelope)
@@ -87,6 +87,13 @@ import Prodbox.ControlPlane.TlsDekExchange
   )
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityResponse (TlsAuthorityObserved)
+  )
+import Prodbox.Http.ResponseObligation
+  ( ResponseObligation
+  , ResponseRefusal (ResponseCancelled, ResponseHandlerFailed)
+  , mkResponseObligation
+  , responseWriteBudgetMicrosDefault
+  , withResponseObligation
   )
 import Prodbox.Lifecycle.Authority.Config
   ( ConfigDigest (..)
@@ -210,29 +217,60 @@ acceptForever listener responseBody = go
         bracket (pure connection) close (serve responseBody)
         go
 
+-- | Sprint 4.60: the fixture answers or refuses; it never closes an accepted
+-- connection silently.
+--
+-- Before this, an exception anywhere in @responseBody@ escaped before any byte
+-- was written and was re-raised by the caller's @bracket@, so the client saw a
+-- bare close (reported as @NoResponseDataReceived@) and the accept loop died,
+-- taking every later request in the test with it. A schema drift in a Tier-0
+-- fixture therefore presented as a network fault.
 serve
   :: (ByteString8.ByteString -> String -> IO ByteString.ByteString)
   -> Socket
   -> IO ()
-serve responseBody connection = do
-  request <- recvRequest connection ByteString8.empty
-  let path = case words (ByteString8.unpack (ByteString8.takeWhile (/= '\r') request)) of
-        _method : rawPath : _ -> rawPath
-        _ -> ""
-  body <- responseBody request path
-  let status
-        | path == "/v1/target-tls/retain" = "404 Not Found"
-        | otherwise = "200 OK"
-  let response =
-        ByteString8.pack
-          ( "HTTP/1.1 "
-              ++ status
-              ++ "\r\nContent-Type: application/json\r\nContent-Length: "
-              ++ show (ByteString.length body)
-              ++ "\r\nConnection: close\r\n\r\n"
-          )
-          <> body
-  sendAll connection response
+serve responseBody connection =
+  withResponseObligation fixtureResponseObligation connection $ do
+    request <- recvRequest connection ByteString8.empty
+    let path = case words (ByteString8.unpack (ByteString8.takeWhile (/= '\r') request)) of
+          _method : rawPath : _ -> rawPath
+          _ -> ""
+    body <- responseBody request path
+    let status
+          | path == "/v1/target-tls/retain" = "404 Not Found"
+          | otherwise = "200 OK"
+    pure (status, body)
+
+-- | The fixture's obligation. Unlike the production control-plane server, the
+-- refusal body carries the exception text: a fixture's job is to name the
+-- failure, and `renderHttpError` truncates at 200 characters, so the summary
+-- goes first.
+fixtureResponseObligation :: ResponseObligation (String, ByteString.ByteString)
+fixtureResponseObligation =
+  mkResponseObligation
+    renderFixtureResponse
+    fixtureRefusalReply
+    responseWriteBudgetMicrosDefault
+
+fixtureRefusalReply :: ResponseRefusal -> (String, ByteString.ByteString)
+fixtureRefusalReply refusal = case refusal of
+  ResponseHandlerFailed err ->
+    ( "500 Internal Server Error"
+    , ByteString8.pack ("fixture handler failed: " ++ show err)
+    )
+  ResponseCancelled _ ->
+    ("503 Service Unavailable", "fixture shutting down")
+
+renderFixtureResponse :: (String, ByteString.ByteString) -> ByteString.ByteString
+renderFixtureResponse (status, body) =
+  ByteString8.pack
+    ( "HTTP/1.1 "
+        ++ status
+        ++ "\r\nContent-Type: application/json\r\nContent-Length: "
+        ++ show (ByteString.length body)
+        ++ "\r\nConnection: close\r\n\r\n"
+    )
+    <> body
 
 pureBody
   :: (ByteString8.ByteString -> String -> String)

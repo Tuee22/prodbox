@@ -780,14 +780,14 @@ bounded `/v1/state` endpoint over HTTP on the configured REST port.
 `prodbox gateway start` takes a single startup-time knob — `--config <path>` — plus the
 universal `--dry-run` / `--plan-file` plan renderers, per
 [config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance)
-and §3B's [Daemon-launching flags](#daemon-launching-flags) contract. Sprint 2.24 removed
+and §4's [Daemon-launching flags](#daemon-launching-flags) contract. Sprint 2.24 removed
 the legacy `--log-level`, `--port`, and `--foreground` override flags (and the `workload
 start` equivalents) along with their daemon threading; the daemon now sources `log_level`
 from the mounted Dhall (`live.log_level`, defaulting to `info`) and its REST port from the
 Orders file exclusively (see
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
 Every value the daemon needs already lives in the Dhall file, so the override flags were
-redundant, not load-bearing. This matrix row and the §3B prose are now the same
+redundant, not load-bearing. This matrix row and the §4 prose are now the same
 single-`--config` contract.
 
 This `gateway` command group refers to the Haskell distributed gateway daemon, not to the

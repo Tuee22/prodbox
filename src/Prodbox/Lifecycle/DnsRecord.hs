@@ -8,6 +8,11 @@
 -- owner, and ownership epoch. Mutation is interpreted only through the owner
 -- bound to that coordinate and closes with authoritative read-back; there is no
 -- generic Route 53 or fallback-writer constructor.
+--
+-- A destroy additionally requires the 'DnsOwnerAuthority' the running process
+-- holds ("Prodbox.Lifecycle.DnsRecord.Owner"), because the coordinate-versus-
+-- boundary comparison the interpreter already performed proves only that one
+-- caller supplied the same owner twice.
 module Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
   , HostedZoneId
@@ -15,6 +20,10 @@ module Prodbox.Lifecycle.DnsRecord
   , KubernetesUid
   , DnsRecordType (..)
   , DnsRecordOwner (..)
+  , DnsOwnerAuthority
+  , allDnsRecordOwners
+  , dnsOwnerAuthorityForProcess
+  , authorizedDnsOwner
   , DnsRecordCoordinate
   , DnsRecordValue
   , DnsRecordSet
@@ -30,6 +39,8 @@ module Prodbox.Lifecycle.DnsRecord
   , mkKubernetesUid
   , mkPublicARecordCoordinate
   , mkDns01ChallengeRegistration
+  , mkDns01ChallengeCoordinate
+  , dns01ChallengeRecordName
   , mkDnsRecordValue
   , mkDnsRecordSet
   , awsAccountIdText
@@ -61,6 +72,13 @@ import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityEpoch
   , authorityEpochValue
   )
+import Prodbox.Lifecycle.DnsRecord.Owner
+  ( DnsOwnerAuthority
+  , DnsRecordOwner (..)
+  , allDnsRecordOwners
+  , authorizedDnsOwner
+  , dnsOwnerAuthorityForProcess
+  )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 import Prodbox.Tls.CertScope (Fqdn, fqdnText, mkFqdn)
 import Text.Read (readMaybe)
@@ -78,13 +96,6 @@ newtype KubernetesUid = KubernetesUid Text
   deriving stock (Eq, Ord, Show)
 
 data DnsRecordType = DnsRecordA | DnsRecordTxt
-  deriving stock (Eq, Ord, Show)
-
-data DnsRecordOwner
-  = HomeGatewayDnsOwner
-  | AwsLifecycleProviderDnsOwner
-  | HomeCertManagerDns01Owner
-  | AwsCertManagerDns01Owner
   deriving stock (Eq, Ord, Show)
 
 data DnsRecordCoordinate = DnsRecordCoordinate
@@ -129,7 +140,9 @@ data DnsRecordObservation
 data DnsRecordProgram result where
   ObserveDnsRecord :: DnsRecordProgram DnsRecordObservation
   EnsureDnsRecord :: DnsRecordSet -> DnsRecordProgram DnsProgramResult
-  DestroyDnsRecord :: DnsRecordProgram DnsProgramResult
+  -- | The authority is the running process's, not a second copy of the
+  -- coordinate's owner; see "Prodbox.Lifecycle.DnsRecord.Owner".
+  DestroyDnsRecord :: DnsOwnerAuthority -> DnsRecordProgram DnsProgramResult
 
 data DnsRecordBoundary m = DnsRecordBoundary
   { dnsBoundaryCoordinate :: !DnsRecordCoordinate
@@ -144,6 +157,10 @@ data DnsProgramResult
   | DnsDestroyAlreadyAbsent
   | DnsDestroyAppliedAndReadBack
   | DnsProgramOwnerMismatch !DnsRecordOwner !DnsRecordOwner
+  | -- | The running process holds the first owner and the coordinate is bound
+    -- to the second.  Distinct from 'DnsProgramOwnerMismatch', which compares
+    -- two caller-supplied coordinates and so cannot see this case at all.
+    DnsProgramOwnerUnauthorized !DnsRecordOwner !DnsRecordOwner
   | DnsProgramCoordinateMismatch !DnsRecordCoordinate !DnsRecordCoordinate
   | DnsProgramInitialObservationRefused !DnsRecordObservation
   | DnsProgramMutationFailed !Text !DnsRecordObservation
@@ -191,6 +208,40 @@ mkPublicARecordCoordinate account zone rawFqdn owner epoch = do
   fqdn <- mapFqdnError rawFqdn
   pure (DnsRecordCoordinate account zone (DnsRecordName (fqdnText fqdn)) DnsRecordA owner epoch)
 
+-- | Sprint 5.29: the __pre-issuance__ half of a DNS01 challenge coordinate.
+--
+-- 'mkDns01ChallengeRegistration' demands two Kubernetes UIDs, and cert-manager
+-- mints the Challenge object only after the ACME Order — i.e. after the
+-- mutation. A coordinate that must be registered /before/ the record exists
+-- therefore cannot carry them, and pretending otherwise is what made the
+-- registration unbuildable in practice. The UIDs attach afterwards, as
+-- evidence, through 'mkDns01ChallengeRegistration'.
+mkDns01ChallengeCoordinate
+  :: AwsAccountId
+  -> HostedZoneId
+  -> Text
+  -> DnsRecordOwner
+  -> OwnershipEpoch
+  -> Either DnsCoordinateError DnsRecordCoordinate
+mkDns01ChallengeCoordinate account zone rawCertificateFqdn owner epoch = do
+  ensureOwnerType owner DnsRecordTxt
+  certificateFqdn <- mapFqdnError rawCertificateFqdn
+  pure
+    ( DnsRecordCoordinate
+        account
+        zone
+        (DnsRecordName (dns01ChallengeRecordName certificateFqdn))
+        DnsRecordTxt
+        owner
+        epoch
+    )
+
+-- | The exact record name a DNS01 solver writes for a certificate FQDN. One
+-- definition, so the pre-issuance registration, the deletion node, and the
+-- absence read-back cannot disagree about which name they mean.
+dns01ChallengeRecordName :: Fqdn -> Text
+dns01ChallengeRecordName certificateFqdn = "_acme-challenge." <> fqdnText certificateFqdn
+
 mkDns01ChallengeRegistration
   :: AwsAccountId
   -> HostedZoneId
@@ -203,7 +254,7 @@ mkDns01ChallengeRegistration
 mkDns01ChallengeRegistration account zone rawCertificateFqdn owner epoch certificateUid challengeUid = do
   ensureOwnerType owner DnsRecordTxt
   certificateFqdn <- mapFqdnError rawCertificateFqdn
-  let challengeName = DnsRecordName ("_acme-challenge." <> fqdnText certificateFqdn)
+  let challengeName = DnsRecordName (dns01ChallengeRecordName certificateFqdn)
   pure
     ( Dns01ChallengeRegistration
         certificateUid
@@ -333,7 +384,7 @@ runDnsRecordProgram boundary coordinate program = case program of
     | coordinateMatches -> dnsBoundaryObserve boundary
     | otherwise -> pure (DnsRecordUnobservable "DNS boundary coordinate mismatch")
   EnsureDnsRecord values -> runEnsure values
-  DestroyDnsRecord -> runDestroy
+  DestroyDnsRecord authority -> runDestroy authority
  where
   boundCoordinate = dnsBoundaryCoordinate boundary
   ownerMatches = internalDnsOwner boundCoordinate == internalDnsOwner coordinate
@@ -360,7 +411,13 @@ runDnsRecordProgram boundary coordinate program = case program of
                   | observationMatches values final -> DnsEnsureAppliedAndReadBack
                   | otherwise -> DnsProgramPostconditionFailed final
 
-  runDestroy
+  runDestroy authority
+    | authorizedDnsOwner authority /= internalDnsOwner coordinate =
+        pure
+          ( DnsProgramOwnerUnauthorized
+              (authorizedDnsOwner authority)
+              (internalDnsOwner coordinate)
+          )
     | not ownerMatches =
         pure (DnsProgramOwnerMismatch (internalDnsOwner coordinate) (internalDnsOwner boundCoordinate))
     | not coordinateMatches =

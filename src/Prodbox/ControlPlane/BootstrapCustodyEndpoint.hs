@@ -19,10 +19,12 @@ module Prodbox.ControlPlane.BootstrapCustodyEndpoint
   , bootstrapCustodyMaximumBytes
   , bootstrapCustodyAuthenticatedHandler
   , vaultTargetChildCustodyRepository
+  , observeTargetChildCustodyDependency
   )
 where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Control.Monad (void)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -67,6 +69,12 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleDependencyObservation
+  , RoleReadinessSource
+  , layerRoleReadinessSource
+  , roleDependencyFromOutcome
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
       ( TargetChildCustodyCommit
@@ -103,7 +111,7 @@ data TargetChildCustodyRepository m = TargetChildCustodyRepository
   , commitTargetChildRecoveryConsumption
       :: ChildRecoveryDelivery
       -> m (Either Text ChildRecoveryConsumptionObservation)
-  , targetChildCustodyRepositoryReady :: m Bool
+  , targetChildCustodyRepositoryReadiness :: !RoleReadinessSource
   }
 
 newtype ChildCustodyCommitRequest = ChildCustodyCommitRequest
@@ -165,10 +173,10 @@ bootstrapCustodyAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 bootstrapCustodyAuthenticatedHandler maximumBytes repository inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = do
-        localReady <- targetChildCustodyRepositoryReady repository
-        downstreamReady <- authenticatedHandlerReadyz inner
-        pure (localReady && downstreamReady)
+    { authenticatedHandlerReadiness =
+        layerRoleReadinessSource
+          (targetChildCustodyRepositoryReadiness repository)
+          (authenticatedHandlerReadiness inner)
     , authenticatedHandlerHandle = handle
     }
  where
@@ -251,16 +259,14 @@ data TargetChildCustodyRecord = TargetChildCustodyRecord
   deriving anyclass (Serialise)
 
 vaultTargetChildCustodyRepository
-  :: VaultSession -> TargetChildCustodyRepository IO
-vaultTargetChildCustodyRepository session =
+  :: VaultSession -> RoleReadinessSource -> TargetChildCustodyRepository IO
+vaultTargetChildCustodyRepository session readiness =
   TargetChildCustodyRepository
     { commitTargetChildCustody = commitReceipt
     , prepareTargetChildRecovery = prepareDelivery
     , observeTargetChildRecovery = observeConsumption
     , commitTargetChildRecoveryConsumption = commitConsumption
-    , targetChildCustodyRepositoryReady = do
-        attempted <- opaqueRecordPath session readinessBindingBytes
-        pure (either (const False) (const True) attempted)
+    , targetChildCustodyRepositoryReadiness = readiness
     }
  where
   commitReceipt receipt = do
@@ -515,3 +521,16 @@ lowerHex = Text.pack . concatMap renderByte . ByteString.unpack
 
 readinessBindingBytes :: ByteString
 readinessBindingBytes = "bootstrap-custody-readiness-v1"
+
+-- | Sprint 4.55: the custody record-path probe this repository used to run
+-- inline on @\/readyz@. It is now one labelled dependency in the Lifecycle
+-- Authority's background observation pass — the same observation, off the
+-- request path.
+observeTargetChildCustodyDependency
+  :: VaultSession -> IO (Text, RoleDependencyObservation)
+observeTargetChildCustodyDependency session = do
+  attempted <- opaqueRecordPath session readinessBindingBytes
+  pure
+    ( "target-child-custody-record-path"
+    , roleDependencyFromOutcome (void attempted)
+    )

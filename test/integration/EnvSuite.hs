@@ -4,10 +4,18 @@ module EnvSuite
 where
 
 import CliSuite (runInstalledWithFakeAuthority)
+import Data.Text (Text)
+import Data.Text qualified as Text
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
+  )
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Settings qualified as Settings
+import Prodbox.Settings.SecretRef
+  ( SecretRef (SecretRefVault)
+  , VaultSecretRef (..)
   )
 import System.Directory
   ( createDirectoryIfMissing
@@ -24,6 +32,7 @@ import System.Process
   , readCreateProcessWithExitCode
   )
 import TestSupport
+import Tier0Fixture (tier0FixtureWithParameters, writeTier0Fixture)
 
 integrationEnvSuite :: SuiteBuilder ()
 integrationEnvSuite = do
@@ -32,7 +41,7 @@ integrationEnvSuite = do
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         (exitCode, stdoutText, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["config", "show"]
@@ -47,7 +56,7 @@ integrationEnvSuite = do
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters invalidConfig)
 
         (exitCode, _, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
@@ -59,7 +68,7 @@ integrationEnvSuite = do
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidResourceConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters invalidResourceConfig)
 
         (exitCode, _, stderrText) <-
           runInstalledWithFakeAuthority tmpDir binary ["config", "validate"]
@@ -73,7 +82,7 @@ integrationEnvSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         let nestedDir = tmpDir </> "nested"
         writeRepoMarkers tmpDir
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         createDirectoryIfMissing True nestedDir
 
         (exitCode, _, stderrText) <-
@@ -113,284 +122,63 @@ writeRepoMarkers repoRoot = do
   createDirectoryIfMissing True (repoRoot </> "DEVELOPMENT_PLAN")
   writeFile (repoRoot </> "DEVELOPMENT_PLAN/README.md") "# temp\n"
 
-secretRefTypeDhall :: String
-secretRefTypeDhall =
-  "< Vault : { mount : Text, path : Text, field : Text }"
-    ++ " | TransitKey : Text"
-    ++ " | Prompt : { name : Text, purpose : Text }"
-    ++ " | TestPlaintext : Text"
-    ++ " >"
+-- | Sprint 5.30: typed fixtures rendered through the one canonical Tier-0
+-- encoder. Both "invalid" fixtures below are Dhall-VALID and Haskell-invalid,
+-- so they are expressible as well-typed values — the raw-text escape is for
+-- fixtures that must not type-check at all, which these are not.
+validConfig :: Settings.ConfigFile
+validConfig = envFixtureConfig
 
-vaultSecretRefDhall :: String -> String -> String
-vaultSecretRefDhall path field =
-  unlines
-    [ secretRefTypeDhall ++ ".Vault"
-    , "  { mount = \"secret\""
-    , "  , path = " ++ show path
-    , "  , field = " ++ show field
-    , "  }"
-    ]
-
--- | Sprint 7.15: a @Some SecretRef.Vault@ expression into @secret/acme/eab@
--- for the given field (the EAB material now references Vault, not plaintext).
-eabVaultRefDhall :: String -> String
-eabVaultRefDhall field =
-  "Some (" ++ vaultSecretRefDhall "acme/eab" field ++ ")"
-
-awsCredentialRefDhall :: String -> String -> Bool -> String
-awsCredentialRefDhall path regionValue includeSessionToken =
-  concat
-    [ "{ access_key_id = "
-    , vaultSecretRefDhall path "access_key_id"
-    , ", secret_access_key = "
-    , vaultSecretRefDhall path "secret_access_key"
-    , ", session_token = "
-    , if includeSessionToken
-        then "Some (" ++ vaultSecretRefDhall path "session_token" ++ ")"
-        else "None (" ++ secretRefTypeDhall ++ ")"
-    , ", region = "
-    , show regionValue
-    , " }"
-    ]
-
-validConfig :: String
-validConfig =
-  configWithDomainAndCapacity "test.resolvefintech.com" capacityDhallFragment
-
-invalidConfig :: String
+-- | Refused by `validateLocalConfig`: an empty served hostname.
+invalidConfig :: Settings.ConfigFile
 invalidConfig =
-  configWithDomainAndCapacity "" capacityDhallFragment
+  envFixtureConfig
+    { Settings.domain = (Settings.domain envFixtureConfig) {Settings.demo_fqdn = Text.pack ""}
+    }
 
-invalidResourceConfig :: String
+-- | Refused by the capacity compile: reservations exceed the host.
+--
+-- Note the property this depends on, which Sprint 5.30 pins with a unit test:
+-- because the plan does not compile, `renderProjectConfigDhall` takes its
+-- totality fallback and emits NO Ring-1 `assert`, so the file still loads and
+-- the refusal still comes from the Haskell validator — which is what this case
+-- asserts.
+invalidResourceConfig :: Settings.ConfigFile
 invalidResourceConfig =
-  configWithDomainAndCapacity "test.resolvefintech.com" overReservedCapacityDhallFragment
+  envFixtureConfig
+    { Settings.capacity =
+        Capacity.defaultCapacitySection
+          { Capacity.resource_plan =
+              Capacity.defaultResourcePlan
+                { Capacity.rke2_reserved = Capacity.ResourceVector 64000 131072 1000000 1000000
+                }
+          }
+    }
 
-configWithDomainAndCapacity :: String -> String -> String
-configWithDomainAndCapacity domainName capacityFragment =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1" True
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = "
-        ++ show domainName
-        ++ ", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = "
-        ++ eabVaultRefDhall "key_id"
-        ++ ", eab_hmac_key = "
-        ++ eabVaultRefDhall "hmac_key"
-        ++ " }"
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
-    , "}"
-    ]
+envFixtureConfig :: Settings.ConfigFile
+envFixtureConfig =
+  Settings.defaultConfigFile
+    { Settings.aws =
+        (Settings.aws Settings.defaultConfigFile)
+          { Settings.awsCredentialSessionToken =
+              Just (envVaultRef (Text.pack "aws/lifecycle-provider") (Text.pack "session_token"))
+          }
+    , Settings.route53 = Settings.Route53Section {Settings.zone_id = Text.pack "Z1234567890ABC"}
+    , Settings.domain =
+        (Settings.domain Settings.defaultConfigFile)
+          { Settings.demo_fqdn = Text.pack "test.resolvefintech.com"
+          }
+    , Settings.acme =
+        (Settings.acme Settings.defaultConfigFile)
+          { Settings.email = Text.pack "test@resolvefintech.com"
+          }
+    }
 
-deploymentDhallFragment :: String
-deploymentDhallFragment =
-  concat
-    [ "{ dev_mode = True"
-    , ", bootstrap_public_ip_override = None Text"
-    , ", pulumi_enable_dns_bootstrap = True"
-    , ", public_edge_advertisement_mode = None Text"
-    , ", public_edge_bgp_peers ="
-    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
-    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
-    , ", api_scaling = " ++ fixedScalingDhall 2
-    , ", websocket_scaling = " ++ fixedScalingDhall 2
-    , " }"
-    ]
-
-scalingPolicyTypeDhall :: String
-scalingPolicyTypeDhall =
-  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
-
-fixedScalingDhall :: Int -> String
-fixedScalingDhall count =
-  "{ home_local = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ ", aws = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ " }"
-
-capacityDhallFragment :: String
-capacityDhallFragment =
-  capacityWithResourcePlan resourcePlanDhallFragment
-
-overReservedCapacityDhallFragment :: String
-overReservedCapacityDhallFragment =
-  capacityWithResourcePlan overReservedResourcePlanDhallFragment
-
-capacityWithResourcePlan :: String -> String
-capacityWithResourcePlan resourcePlanFragment =
-  unlines
-    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
-    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
-    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
-    , ", resource_plan = " ++ resourcePlanFragment
-    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
-    , "}"
-    ]
-
-runtimeMemoryProfilesDhallFragment :: String
-runtimeMemoryProfilesDhallFragment =
-  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
-
-resourcePlanDhallFragment :: String
-resourcePlanDhallFragment =
-  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (1000, 2048, 10240, 1024))
-
-overReservedResourcePlanDhallFragment :: String
-overReservedResourcePlanDhallFragment =
-  resourcePlanDhallFragmentWithReserved (resourceVectorDhall (8000, 2048, 10240, 1024))
-
-resourcePlanDhallFragmentWithReserved :: String -> String
-resourcePlanDhallFragmentWithReserved reservedVector =
-  unlines
-    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
-    , ", rke2_reserved = " ++ reservedVector
-    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-replica-cert-copy"
-          "keycloak"
-          3
-          (10, 16, 32, 1)
-          (25, 32, 64, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-vault-secrets"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-secret-materializer"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
-    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
-    , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
-    , "  ]"
-    , "}"
-    ]
-
-resourceProfileDhall
-  :: String
-  -> String
-  -> Int
-  -> (Int, Int, Int, Int)
-  -> (Int, Int, Int, Int)
-  -> String
-resourceProfileDhall profile namespace count req lim =
-  "{ profile_id = "
-    ++ show profile
-    ++ ", profile_namespace = "
-    ++ show namespace
-    ++ ", replicas = "
-    ++ show count
-    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
-    ++ ", surge = 0"
-    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
-    ++ ", workload_demand = "
-    ++ workloadDemandDhall profile req lim
-    ++ " }"
-
-workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
-workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
-  "{ cpu_demand = { requests_per_second = "
-    ++ show reqCpu
-    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
-    ++ show (limCpu - reqCpu)
-    ++ ", calibration_profile_id = "
-    ++ show profile
-    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
-    ++ show reqMemory
-    ++ " ], bounded_memory_burst_mib = "
-    ++ show (limMemory - reqMemory)
-    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
-    ++ show reqEphemeral
-    ++ " ], bounded_ephemeral_burst_mib = "
-    ++ show (limEphemeral - reqEphemeral)
-    ++ " }, demanded_durable_storage_mib = "
-    ++ show limDurable
-    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
-
-resourceVectorDhall :: (Int, Int, Int, Int) -> String
-resourceVectorDhall (cpuMilli, memoryMib, ephemeralMib, durableMib) =
-  "{ milli_cpu = "
-    ++ show cpuMilli
-    ++ ", memory_mib = "
-    ++ show memoryMib
-    ++ ", ephemeral_storage_mib = "
-    ++ show ephemeralMib
-    ++ ", durable_storage_mib = "
-    ++ show durableMib
-    ++ " }"
-
-clusterTopologyDhallFragment :: String
-clusterTopologyDhallFragment =
-  clusterTopologyDhallType
-    ++ ".Rke2 { machines = [ "
-    ++ clusterTopologyMachineDhall
-    ++ " ] : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " }"
-
-clusterTopologyDhallType :: String
-clusterTopologyDhallType =
-  "< Kind : { machine : "
-    ++ clusterTopologyMachineTypeDhall
-    ++ ", node_count : Natural } | Rke2 : { machines : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
-    ++ workerSubstrateDhallType
-    ++ " } >"
-
-clusterTopologyMachineTypeDhall :: String
-clusterTopologyMachineTypeDhall =
-  "{ machine_id : Text, machine_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", compute_worker : { worker_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", manages_all_local_devices : Bool } }"
-
-clusterTopologyMachineDhall :: String
-clusterTopologyMachineDhall =
-  "{ machine_id = \"prodbox-home\", machine_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, manages_all_local_devices = True } }"
-
-workerSubstrateDhallType :: String
-workerSubstrateDhallType =
-  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
+envVaultRef :: Text -> Text -> SecretRef
+envVaultRef path field =
+  SecretRefVault
+    VaultSecretRef
+      { vaultSecretMount = Text.pack "secret"
+      , vaultSecretPath = path
+      , vaultSecretField = field
+      }

@@ -52,6 +52,13 @@ data ContinuityStoreMaterial = ContinuityStoreMaterial
   , continuityStoreHmacKey :: ByteString
   , continuityStoreClusterId :: Text
   , continuityStoreObserveDurationMillis :: Natural -> IO ()
+  , continuityStoreObserveRoundTrip :: ObjectVersion -> IO ()
+  -- ^ Sprint 1.76: invoked with the version the store returned, at the moment
+  -- a conditional write of the continuity object is accepted. This is the one
+  -- place in the daemon that knows a round trip to the shared object store
+  -- actually landed, so it is the only place permitted to record the receipt
+  -- the deep readiness probe later reads
+  -- (bootstrap_readiness_doctrine.md § 2.3).
   }
 
 -- | Injected logical Model-B boundary.  Production closes these callbacks
@@ -90,14 +97,14 @@ productionBackend material =
             (continuityStoreHmacKey material)
             (continuityStoreClusterId material)
     , continuityBackendPutIfAbsent =
-        timed2 $
+        witnessed . timed2 $
           putLogicalIfAbsent
             (continuityStoreObjectStore material)
             (continuityStoreCipher material)
             (continuityStoreHmacKey material)
             (continuityStoreClusterId material)
     , continuityBackendPutIfVersion =
-        timed3 $
+        witnessed3 . timed3 $
           putLogicalIfVersion
             (continuityStoreObjectStore material)
             (continuityStoreCipher material)
@@ -108,6 +115,18 @@ productionBackend material =
   observeDuration started = do
     finished <- getMonotonicTimeNSec
     continuityStoreObserveDurationMillis material (fromIntegral ((finished - started) `div` 1000000))
+
+  -- Record the receipt on exactly the applied arm, and only after the
+  -- interpreter has it in hand. A conflict or an error records nothing, so a
+  -- refused write can never refresh the round-trip evidence.
+  recordApplied result = do
+    case result of
+      Right (LogicalConditionalPutApplied version) ->
+        continuityStoreObserveRoundTrip material version
+      _ -> pure ()
+    pure result
+  witnessed operation first second = operation first second >>= recordApplied
+  witnessed3 operation first second third = operation first second third >>= recordApplied
   timed operation first = do
     started <- getMonotonicTimeNSec
     result <- operation first
@@ -153,7 +172,7 @@ modelBContinuityAuthorityWithBackend backend scope =
         (encodeVersionedAuthorityRecord versioned)
     pure $ case result of
       Left err -> mapWriteError err
-      Right LogicalConditionalPutApplied -> AuthorityCasApplied versioned
+      Right (LogicalConditionalPutApplied _) -> AuthorityCasApplied versioned
       Right LogicalConditionalPutConflict -> AuthorityCasConflict Nothing
 
   compareAndSwap expected desired = do
@@ -180,7 +199,7 @@ modelBContinuityAuthorityWithBackend backend scope =
                 (encodeVersionedAuthorityRecord next)
             pure $ case result of
               Left err -> mapWriteError err
-              Right LogicalConditionalPutApplied -> AuthorityCasApplied next
+              Right (LogicalConditionalPutApplied _) -> AuthorityCasApplied next
               Right LogicalConditionalPutConflict ->
                 AuthorityCasConflict (Just (versionedAuthorityVersion current))
 

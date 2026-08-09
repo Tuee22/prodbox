@@ -13,6 +13,8 @@ import Prodbox.Lifecycle.Authority.Genesis
   )
 import Prodbox.Lifecycle.DnsRecord
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Runtime.Role (RuntimeRole (..))
+import Prodbox.Substrate (Substrate (..))
 import TestSupport
 
 dnsRecordSuite :: SuiteBuilder ()
@@ -68,7 +70,10 @@ dnsRecordSuite =
       observations <- newIORef [DnsRecordObserved recordSet, DnsRecordMissing]
       calls <- newIORef ([] :: [String])
       result <-
-        runDnsRecordProgram (boundary calls observations homeA) homeA DestroyDnsRecord
+        runDnsRecordProgram
+          (boundary calls observations homeA)
+          homeA
+          (DestroyDnsRecord homeGatewayAuthority)
       result `shouldBe` DnsDestroyAppliedAndReadBack
       readIORef calls `shouldReturn` ["observe", "destroy", "observe"]
 
@@ -78,7 +83,7 @@ dnsRecordSuite =
         runDnsRecordProgram
           (boundary wrongOwnerCalls wrongOwnerObservations awsA)
           homeA
-          DestroyDnsRecord
+          (DestroyDnsRecord homeGatewayAuthority)
       refused
         `shouldBe` DnsProgramOwnerMismatch HomeGatewayDnsOwner AwsLifecycleProviderDnsOwner
       readIORef wrongOwnerCalls `shouldReturn` []
@@ -117,7 +122,10 @@ dnsRecordSuite =
             calls <- newIORef ([] :: [String])
             observations <- newIORef [observation]
             result <-
-              runDnsRecordProgram (boundary calls observations homeA) homeA DestroyDnsRecord
+              runDnsRecordProgram
+                (boundary calls observations homeA)
+                homeA
+                (DestroyDnsRecord homeGatewayAuthority)
             result `shouldBe` DnsProgramInitialObservationRefused observation
             readIORef calls `shouldReturn` ["observe"]
         )
@@ -129,7 +137,7 @@ dnsRecordSuite =
         runDnsRecordProgram
           (boundaryWithMutation calls observations homeA (Left "delete failed"))
           homeA
-          DestroyDnsRecord
+          (DestroyDnsRecord homeGatewayAuthority)
       result
         `shouldBe` DnsProgramMutationFailed "delete failed" (DnsRecordUnobservable "api down")
       readIORef calls `shouldReturn` ["observe", "destroy", "observe"]
@@ -174,6 +182,12 @@ epoch = mkOwnershipEpoch authorityEpochGenesis
 
 homeA :: DnsRecordCoordinate
 homeA = accepted (mkPublicARecordCoordinate account zone "prodbox.example.com" HomeGatewayDnsOwner epoch)
+
+homeGatewayAuthority :: DnsOwnerAuthority
+homeGatewayAuthority =
+  case dnsOwnerAuthorityForProcess GatewayRuntime SubstrateHomeLocal of
+    Just authority -> authority
+    Nothing -> error "the home gateway holds its own DNS ownership"
 
 awsA :: DnsRecordCoordinate
 awsA =

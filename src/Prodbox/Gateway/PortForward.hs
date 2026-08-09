@@ -44,7 +44,7 @@ import Network.Socket
 import Prodbox.Error (errorMsg)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Types (PeerEndpoint)
-import Prodbox.Retry (retryDelayMicros)
+import Prodbox.Retry (drawRetryDelayMicros)
 import Prodbox.Subprocess
   ( Subprocess (..)
   , startBackgroundProcess
@@ -193,7 +193,7 @@ withGatewayServicePortForward spec action =
       Right process -> do
         _ <- waitBackgroundProcess process
         threadDelay
-          (retryDelayMicros GatewayClient.daemonRestartBridgeRetryPolicy 0)
+          =<< drawRetryDelayMicros GatewayClient.daemonRestartBridgeRetryPolicy 0
         pure True
 
   cleanupPortForward startResult =

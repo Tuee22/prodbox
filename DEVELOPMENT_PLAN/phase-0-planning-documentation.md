@@ -2208,10 +2208,331 @@ and the Sprint `1.61` Standard-G bullet instructing a back-link addition is mark
 
 None.
 
+## Sprint 0.22: Doctrine Section-Citation Existence Gate ✅
+
+**Status**: Done (2026-08-05) — a governance addition on the same already-reclosed Phase 0
+documentation surface as Sprints `0.18`–`0.21`. It neither re-closes nor reopens the phase.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`documentSectionNumbers`, `headingSectionNumber`,
+`boundSectionCitationsInLine`, `stripHaddockMarkup`, `boundDocumentName`,
+`checkDoctrineSectionCitations`, wired into `runGovernedDocChecks`), `test/unit/Main.hs` (12 cases),
+and the one broken citation it exists to prevent recurring, in
+`documents/engineering/cli_command_surface.md`.
+**Blocked by**: none.
+**Deployment qualification**: pending — no Standard-P production-composition surface is touched.
+**Independent Validation**: pure plus a repo-wide scan, no live infrastructure —
+`prodbox test unit -p "Sprint 0.22"` 12/12; the gate reports zero findings across the tree (the
+false-positive test); and a probe document citing a nonexistent
+section 99 of `config_doctrine.md` is rejected, while a citation of its real § 7 passes (the false-negative test). `prodbox dev check` exit 0.
+**Docs to update**: `documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Code and documentation cite doctrine sections by number — 1,714 numeric citations across 114 files,
+with `vault_doctrine.md` (229), `config_doctrine.md` (139), and
+`lifecycle_reconciliation_doctrine.md` (114) the heaviest targets. Nothing verified that any of them
+resolved to a real heading. `src/Prodbox/CheckCode.hs` is itself the sixth-heaviest citing file, and
+~25 sites emit section citations into operator-facing output.
+
+### Deliverables
+
+- A heading-number reader over the uniform grammar the doctrine set already uses (`## 7.`,
+  `### 3.1`, `## 2C.`, `### 5a.1.`).
+- A citation binder that pairs a `§` marker with a document only when the pairing is lexically
+  unambiguous, and refuses to bind across a letter, `;`, or `.`.
+- Exclusions with a measured reason: external standards (`RFC 8949 § 4.2`), the three-or-more-digit
+  line-number convention used in four phase files, and Haddock `@`/`\` markup, which would
+  otherwise make `@…md § 3@` tokenize as section `3@`.
+
+### Validation
+
+1. `prodbox test unit -p "Sprint 0.22"` 12/12.
+2. Zero findings across the tree — 774 of 777 bound citations already resolved, and the remaining
+   two are deliberate absolute paths into a sibling repository, which the gate skips because it
+   only resolves documents present in this repo.
+3. A probe document citing a nonexistent section 99 of `config_doctrine.md` is rejected, while a
+   citation of that document's real § 7 passes.
+4. `prodbox dev check` exit 0.
+
+### Honest scope — what this gate does NOT cover
+
+**It cannot catch the defect that motivated it.** `cli_command_surface.md` cited `§3B`, a section
+that exists nowhere; the heading it pointed at lives under `§4`. That is a **self-reference** — no
+document name appears near the marker — and self-references are not safely checkable. Measured over
+`documents/engineering/`, treating a bare `§N` as a self-reference leaves 63 of 639 unresolved
+(9.9%), and spot-checking shows most of those are cross-document references whose target is named
+earlier in the sentence. A gate with a one-in-ten false-positive rate would be turned off, so the
+937 bare citations tree-wide are deliberately out of scope. The `§3B` defect was repaired by hand in
+this sprint; a recurrence of that specific class would not be caught.
+
+**So this gate catches nothing today.** Its value is regression protection for an operation this
+repository actually performs: Sprint `0.21` renumbered six doctrine sections and swept 43 anchor
+citations by hand. Renumbering a section silently breaks every bound citation to it, and that is
+precisely what this now refuses to let through. It is insurance against a future sweep being
+incomplete, not a discovery tool — and the plan's earlier claim that it "finds one real defect
+today" was falsified by the mutation test and is corrected here.
+
+### Remaining Work
+
+None. Extending coverage to self-references would need a binding signal stronger than adjacency;
+none was identified at an acceptable false-positive rate.
+
+## Sprint 0.23: Correct the Tier-0 Config Doctrine Against Source ✅
+
+**Status**: Done (2026-08-07) — a governance correction on the same already-reclosed Phase 0
+documentation surface as Sprints `0.18`–`0.22`. It neither re-closes nor reopens the phase.
+**Implementation**: `documents/engineering/resource_scaling_doctrine.md` (§ 2C Ring-1 cell),
+`documents/engineering/config_doctrine.md` (the version-control inventory claim, its section
+heading, and a new "What decoding does and does not validate" subsection under § 4),
+`documents/engineering/code_quality.md` (§ 3 guard coverage), and
+`documents/engineering/chaos_hardening_doctrine.md` (§ 21 worked instances).
+**Blocked by**: none.
+**Deployment qualification**: not applicable — documentation only; no production-composition
+surface is touched.
+**Independent Validation**: pure, no live infrastructure. Each corrected claim was checked against
+source before rewriting: `git ls-files "*.dhall"` returns five tracked files;
+`grep -c assert prodbox-config-types.dhall` returns zero;
+`git ls-files --error-unmatch prodbox-config-types.dhall` fails and the path appears nowhere in
+`src/Prodbox/CheckCode.hs`. `prodbox dev check`, `dev docs check`, and `dev lint docs` exit 0, which
+is also the mechanical proof that the new text satisfies Sprint `0.21`'s cited-source-path gate and
+Sprint `0.22`'s section-citation gate.
+**Docs to update**: the four listed above.
+
+### Objective
+
+Three governed-document claims about the Tier-0 config surface were false against source. All three
+were load-bearing — each one made a reader believe a guarantee that is not in force.
+
+1. **`resource_scaling_doctrine.md` § 2C** defended the Dhall enforcement ring with *"`prodbox.dhall`
+   is binary-generated (no human Dhall authoring surface)"*. The cell contradicted itself one
+   sentence later by claiming value for catching *"a host-shrinking hand-edit"*. `prodbox.dhall` is
+   hand-editable: `config generate` tells the operator to edit it directly, `CLAUDE.md` lists
+   editing it against the generated schema as the **automation** path, and the `ses.*`,
+   `pulumi_state_backend.*`, and `aws_substrate.*` sections have no generator path at all.
+2. **`config_doctrine.md`** asserted *"Net: zero version-controlled `.dhall`"* under a heading
+   making the same claim. Five `.dhall` files are tracked — four hand-authored algebra schemas under
+   `dhall/` and one golden fixture. They are tracked by design; the claim was meant to scope to the
+   config surface and did not say so.
+3. **`code_quality.md` § 3** listed `prodbox-config-types.dhall` as *"a tracked generated path
+   regenerated by `prodbox config generate`"*. Both halves were wrong: the file is git-ignored, and
+   it appears nowhere in `CheckCode.hs`, so no registry entry and no gate covers it.
+
+### Validation
+
+1. Every corrected claim was verified against source first; the commands are listed under
+   Independent Validation above and each is reproducible.
+2. § 2C keeps the shim's real value while naming its true scope — the resource-plan arithmetic only,
+   trusting its own emitted draws, with every other hand-edited field unguarded until Ring 2.
+3. `config_doctrine.md` § 4 now states what decoding does **not** validate: the gate is not total
+   over the record, and `ValidatedSettings` carries the raw record with the capacity plan as its one
+   required proof.
+4. `chaos_hardening_doctrine.md` § 21 gains the config surface as worked instances of classes **D**
+   and **G** by thin cross-reference only, per its own § 1 DRY rule — no new doctrine, and the
+   `ValidatedSettings` worked example above it is unchanged because the required-field mechanism it
+   describes does hold.
+5. `prodbox dev check`, `dev docs check`, `dev lint docs` all exit 0.
+6. **`system-components.md` deliberately does not change** (Standard F wants the decision recorded,
+   not silently skipped). Its capacity row states that over-commit is unrepresentable at the Haskell
+   decode gate because the proof is a required field of `ValidatedSettings` — the audit confirmed
+   that mechanism holds, since `AllocatedResourcePlan` has a hidden constructor and one minter. The
+   corrections above narrow what *else* `ValidatedSettings` proves, which the inventory never
+   claimed. No component, control surface, or authority boundary moved.
+
+### Remaining Work
+
+None on this sprint's surface. The code changes these corrections describe are owned by Sprints
+`1.79`–`1.81`; the missing drift gate is Sprint `0.24`.
+
+## Sprint 0.24: Tier-0 Drift Gate for the Binary-Sibling Config ✅
+
+**Status**: Done (2026-08-07) — a governance addition on the same Phase 0 enforcement
+surface as Sprints `0.21`/`0.22`. It neither re-closes nor reopens the phase.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`checkTier0SiblingDrift`, `tier0DriftFindings`,
+`tier0DriftLocation`, `tier0MalformedFinding`, `trackRecordScope`, `fieldAssignmentInLine`;
+`runConformanceTierChecks` now gates on it and delegates the registry chain to
+`runConformanceTierRegistryChecks`), `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — no production-composition surface is touched; the gate is a
+developer-tooling check that only reads the sibling file.
+**Independent Validation**: pure plus a filesystem read, no live infrastructure — a named `-p`
+filter with an exact count, plus a mutation exercise that hand-edits a generated sibling config,
+confirms the gate fires, and restores byte-exactly.
+**Docs to update**: ✅ `documents/engineering/code_quality.md`, ✅ `documents/engineering/config_doctrine.md`
+
+### Objective
+
+Nothing detects drift between the binary-sibling `prodbox.dhall` and what the generator would emit.
+A hand edit persists silently and survives a `config setup` re-run, because `configFromSetupInput`
+carries every unprompted field forward from the existing file. The only mechanical ring over a hand
+edit today is the Ring-1 Dhall `assert`, which covers the resource-plan arithmetic and nothing else
+— it is blind to a hand-edited `route53.zone_id`, `acme.server`, `domain.cert_scopes`, `ses.*`, or
+the component graph.
+
+**The constraint that shapes the design**: the existing tracked-generated-path registry and the
+credential scan are deliberately scoped to version-controlled content — `src/Prodbox/CheckCode.hs`
+states that scope is tracked content, not a filesystem walk — and `prodbox.dhall` is git-ignored. So
+this gate cannot reuse that machinery. It must read the binary-sibling path directly, and it must
+tolerate the file being absent, since a fresh worktree has no sibling config until
+`config generate` runs.
+
+### Deliverables
+
+- ✅ A drift check that re-renders the parameters from the decoded record and compares, reporting the
+  differing field rather than a whole-file diff. `checkTier0SiblingDrift` resolves the sibling path
+  through `resolveTier0ConfigPath` (never a filesystem walk, never the repo root), decodes it with
+  `decodeProjectConfigDhall`, and compares `renderProjectConfigDhall` of the decoded record against
+  the bytes on disk. The reported field is recovered from the canonical rendering's own indentation
+  by an indentation-keyed scope stack, so the message names `parameters.domain.demo_ttl`, not a byte
+  offset. Type annotations and `let` bindings — of which the emitted Ring-1 preamble is full — are
+  rejected as field names, and the pretty-printer's dotted single-field shorthand
+  (`, route53.zone_id = ""`) is recovered as one name.
+- ✅ Absence is not a finding. A malformed file is a finding distinct from a drifted one:
+  `tier0MalformedFinding` says the file does not decode and names no field, because an undecodable
+  file has no record to re-render.
+- ✅ An error-message contract matching the § 3 convention: the path, what drifted (line plus field
+  path), and the remedy (`prodbox config generate`, or `prodbox config setup` for the operator
+  sections).
+
+### Validation
+
+1. ✅ A generated config passes; a hand-edited one fails naming the drifted field; an absent one is
+   silent. All four dispositions were exercised against the live `.build/prodbox.dhall`:
+   - unchanged generated config → `dev check` exit 0;
+   - hand edit to `capacity.resource_plan.workload_profiles[keycloak].memory_demand.steady_memory_terms_mib`
+     (`[ 1024 ]` → `[ 512 ]`) → exit 1 with
+     `.build/prodbox.dhall has drifted from the generator's canonical rendering at line 4215, field `memory_mib``;
+   - a file replaced by `let x = y in x` → the malformed finding, not a drift finding;
+   - the file removed entirely → exit 0, silent.
+2. ✅ The mutation exercise restores byte-exactly (`sha256sum -c` against the pre-mutation digest:
+   `OK`), and `dev check` returns to exit 0 afterward.
+3. ✅ `prodbox dev check` exit 0.
+4. ✅ `prodbox-unit -p "Sprint 0.24"` — 8/8, covering the silent, drifted, dotted-shorthand,
+   sibling-scope-close, truncated, appended, preamble-rejection, and malformed cases.
+
+### Remaining Work
+
+None on this sprint's surface. The honest bound is now stated in the two governed documents rather
+than only here, because the first mutation attempted proved it: a drift gate detects divergence from
+the generator's **output**, so it closes representational drift — a hand edit that changes the
+emitted text, a file left by an older schema, and (the sharp case) a hand-edited resource plan whose
+emitted `concurrentDraws` witness goes stale, which is the Ring-1 `assert`'s own input and had been
+letting Ring 1 prove the fit of draws the plan no longer implied. It does **not** close a hand edit
+to a primitive that round-trips: a re-typed `route53.zone_id` decodes to that value and re-renders to
+that value, so the edited file *is* the generator's output for the record it carries, and no text
+comparison can separate the two. That was verified, not assumed — the first mutation exercise edited
+`route53.zone_id` and `dev check` correctly stayed at exit 0.
+
+Closing the residual class needs a generator-stamped witness over the record (the Tier-0 `witness`
+field exists for exactly that). That is deliberately **not** absorbed here: it changes the content of
+every generated `prodbox.dhall`, which is a Standard-P generated-config-identity change, and this
+sprint's declared scope is a developer-tooling check that touches no production-composition surface.
+It is registered as a scheduled gap in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than closed silently
+([Standard L](development_plan_standards.md#l-cli-doctrine-alignment)).
+
+## Sprint 0.25: Conversions, and the Region of a Ring ✅
+
+**Status**: Done (2026-08-08) — a governance correction on the same already-reclosed Phase 0
+documentation surface as Sprints `0.18`–`0.24`. **It neither re-closes nor reopens the phase.**
+**Implementation**: `documents/engineering/chaos_hardening_doctrine.md` (new § 23; § 22 ring cell and
+a fourth honest consequence; § 21's sufficiency claim corrected; a § 12 ledger row),
+`documents/engineering/resource_scaling_doctrine.md` (§ 2C Ring-2 cell, Ring-1 cell, and the new
+"The region of Ring 2" subsection), `documents/engineering/code_quality.md`,
+`documents/engineering/config_doctrine.md`, `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/pure_fp_standards.md` (new § 2.3a),
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, and the root `README.md`.
+**Blocked by**: none.
+**Deployment qualification**: not applicable — documentation only. No production-composition
+surface moves.
+**Independent Validation**: every claim added was measured, not asserted. The two load-bearing ones:
+`cabal build --builddir=.build all --dry-run` lists two components (`lib`, `exe:prodbox`) where
+`--enable-tests --dry-run` lists ten, which is the region finding; and the three-conversion trace
+was read end to end from `test/integration/CliSuite.hs` through `src/Prodbox/Http/Client.hs` to
+`src/Prodbox/Settings.hs`. `prodbox dev docs check`, `prodbox dev lint docs`, and `prodbox dev check`
+exit 0.
+**Docs to update**: the ten files named above.
+
+### Objective
+
+Two claims the governed corpus made are incomplete, and closing a MISU gap exposed both.
+
+Sprint `1.80` retyped `deployment.public_edge_advertisement_mode` into a closed Dhall union —
+precisely the class-D move `chaos_hardening_doctrine.md` § 21 prescribes, on the field § 21 names as
+its own worked example. Applying it broke twenty integration cases and the failure surfaced as
+`NoResponseDataReceived`, a transport error naming nothing. Five minting-boundary gates, a Ring-1
+`assert`, a Ring-2 decode gate and the Sprint `0.24` drift gate were all in force; none fired.
+
+### Deliverables
+
+- ✅ **`chaos_hardening_doctrine.md` § 23 — "Conversions — where the moves stop."** Every § 21 move
+  constrains what a value can be *inside* a region and says nothing about what happens when it
+  leaves. The rule: *a typed value crossing out of a region must be reconstructed by exactly one
+  derived encoder, or the region's proofs end at the crossing.* Three corollaries — count the
+  encoders; do not convert a typed failure into an untyped one; remove the conversion before adding
+  a proof. Appended after § 22 rather than added as a ninth § 21 row, because a conversion is not a
+  missing coordinate — it is where all eight are discarded at once.
+- ✅ **§ 22 gains a fourth honest consequence: a ring has a region.** The Ring-2 cell now reads
+  "**Yes — within its compiled region**".
+- ✅ **§ 21's "Neither needs new doctrine" is corrected in place.** That sentence was written about
+  the two config-surface instances; closing one of them produced this outage. The table was right
+  about the coordinate and wrong about the sufficiency, and the correction says so rather than
+  quietly amending.
+- ✅ **§ 12 gains a ledger row.** *Type tightening inside a region* → **Proven for the compiled
+  region only** → does not establish anything at a conversion out of it.
+- ✅ **`resource_scaling_doctrine.md` § 2C owns the region**, per § 22's own delegation of the ring
+  vocabulary. New subsection "The region of Ring 2" carries the measurement and two rules: state the
+  region whenever you state the ring; a gate's region must cover the surface carrying its evidence.
+  A fourth table column was deliberately not added — the existing cells run past a thousand
+  characters and a column would have cost more legibility than it bought.
+- ✅ **`code_quality.md` names the asymmetry sitting in its own step list.** Steps 3 and 4 are scoped
+  `app src test`; step 5 is scoped `all`, which is `lib` plus `exe:prodbox`. Three consecutive lines,
+  previously unremarked.
+- ✅ **`config_doctrine.md` records the repository consequence of Sprint `1.80`**, which had recorded
+  only the operator one (regenerate the sibling file). Four hand-written Tier-0 encoders existed;
+  one was updated.
+- ✅ **`unit_testing_policy.md` and `integration_fixture_doctrine.md` state what the canonical gate
+  does not compile**, and the fixture doctrine gains two binding consequences: a fixture that
+  hand-authors a serialized production type is a second encoder, and a fixture server answers or
+  refuses but never closes silently.
+- ✅ **`pure_fp_standards.md` § 2.3a — "Encode at exactly one boundary."** § 2.3 governed the read
+  direction and had no mirror; that absence is what let four encoders of one record coexist.
+- ✅ **Root `README.md`** says the four fast-validation commands are separate surfaces, not
+  redundant ones.
+
+### Validation
+
+1. ✅ `prodbox dev docs check` exit 0 — governed-doc harmony, relative links, `**Status**:` values,
+   cited source paths, and doctrine section citations.
+2. ✅ `prodbox dev lint docs` exit 0 (identical coverage; run explicitly).
+3. ✅ `prodbox dev check` exit 0.
+4. ✅ **The section-citation gate did its job during authoring** and is worth recording as evidence
+   rather than as a footnote: a first draft of the `bootstrap_readiness_doctrine.md` cross-reference
+   placed `§ 0.5` directly after a link to `chaos_hardening_doctrine.md`, and
+   `checkDoctrineSectionCitations` bound the number to the wrong document and failed the build. The
+   citation was rewritten to name its own section in prose.
+5. ✅ No section was renumbered. § 23 is appended, so the ~40 bound `§ 21` / `§ 22` citations across
+   `documents/`, `DEVELOPMENT_PLAN/` and `src/` Haddock — plus the ~9 unbound ones in
+   `legacy-tracking-for-deletion.md` that no gate protects — are untouched.
+
+### Remaining Work
+
+None on this sprint's surface. The code that closes the two defect classes is Sprints `5.30` and
+`4.60`; this sprint states the doctrine they implement and does not depend on them.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
+- ✅ Sprint `0.25`: `documents/engineering/chaos_hardening_doctrine.md` - new § 23 "Conversions —
+  where the moves stop" (SSoT for the conversion-boundary rule); § 22 fourth honest consequence and
+  Ring-2 cell; § 21's sufficiency claim corrected in place; a § 12 ledger row.
+- ✅ Sprint `0.25`: `documents/engineering/resource_scaling_doctrine.md` - § 2C gains "The region of
+  Ring 2" (SSoT for the ring-region rule, per § 22's delegation of the ring vocabulary).
+- ✅ Sprint `0.25`: `documents/engineering/code_quality.md`, `config_doctrine.md`,
+  `unit_testing_policy.md`, `integration_fixture_doctrine.md`, `pure_fp_standards.md` (new § 2.3a),
+  `haskell_code_guide.md`, `bootstrap_readiness_doctrine.md` - each inherits the two rules by
+  reference rather than restatement (documentation_standards.md § 5, non-duplication).
 - ✅ `documents/documentation_standards.md` - § 3 header block reduced to three fields; § 4
   `Bidirectional Links` replaced by `Back-Links Are Derived, Never Authored`; the § 1 and § 10
   co-owned statement reworded (SSoT).

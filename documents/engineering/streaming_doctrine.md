@@ -311,7 +311,13 @@ processEvents conn handler = do
   bears directly on § 9 here: a timeout or connection failure on a **mutating** call is
   *indeterminate*, not transient, because the effect may have been applied and only the response
   lost. Retrying one is safe exactly when the operation carries an idempotence witness, which makes
-  retryability a property of the (operation, error) pair rather than of the error alone.
+  retryability a property of the (operation, error) pair rather than of the error alone. **Sprint
+  `1.77` implements this**: `Prodbox.Service.serviceErrorDisposition` is three-valued
+  (`FailurePermanent` / `FailureTransient` / `FailureIndeterminate`), `retryServiceAction` repeats
+  only outcomes that certainly did not apply, and `retryIdempotentServiceAction` — the one that
+  repeats an indeterminate outcome — takes a hidden-constructor `IdempotentOperation`, so the unsafe
+  combination does not type-check. See
+  [haskell_code_guide.md → Retry Policy as First-Class Values](./haskell_code_guide.md#retry-policy-as-first-class-values).
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Effect Interpreter Runtime Contract](./effect_interpreter.md)
 - [CLI Command Surface § 2A — Operator Vocabulary Contract](./cli_command_surface.md#2a-operator-vocabulary-contract)

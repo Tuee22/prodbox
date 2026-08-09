@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Executable boundary for the physically separated control-plane roles. The
 -- Lifecycle Authority, Authority Backup Adapter, and TLS Retention Adapter install
@@ -35,10 +36,12 @@ module Prodbox.ControlPlane.Runtime
   , tlsRetentionRuntimeInterpreter
   , receiveControlPlaneRequest
   , runControlPlaneRole
+  , serveControlPlaneConnection
   )
 where
 
 import Control.Concurrent (forkFinally)
+import Control.Concurrent.STM (atomically)
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad (forever, void)
 import Crypto.Random (getRandomBytes)
@@ -52,7 +55,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Dhall qualified
 import GHC.Generics (Generic)
 import Network.Socket
-import Network.Socket.ByteString (recv, sendAll)
+import Network.Socket.ByteString (recv)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Bootstrap.Broker.Types (renderArtifactDigest)
@@ -140,8 +143,10 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   , awsAdminProvisionerMaximumBytes
   )
 import Prodbox.ControlPlane.BootstrapCustodyClient qualified as BootstrapCustody
+import Prodbox.ControlPlane.BootstrapCustodyEndpoint (observeTargetChildCustodyDependency)
 import Prodbox.ControlPlane.BootstrapHandoffEndpoint
   ( bootstrapHandoffAuthenticatedHandler
+  , observeBootstrapHandoffDependency
   , vaultBootstrapHandoffRepository
   )
 import Prodbox.ControlPlane.CallerPrincipal
@@ -170,6 +175,7 @@ import Prodbox.ControlPlane.ConfigProductionStore
   )
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
+import Prodbox.ControlPlane.Deadline (monotonicInstantMicros)
 import Prodbox.ControlPlane.DecommissionClient
   ( requestTargetDecommissionInventory
   )
@@ -210,6 +216,7 @@ import Prodbox.ControlPlane.InClusterAuthorityStore
   , mkInClusterAuthorityStoreConfig
   , newInClusterAuthorityStore
   )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( mkProjectionImportHandlerWithApplicator
   , resolvingProjectionImportHandler
@@ -313,6 +320,19 @@ import Prodbox.ControlPlane.RoleInterpreters
   , targetSecretAgentDecommissionAuthenticatedHandler
   , tlsRetentionInterpreter
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleDependencyObservation (RoleDependencyReady, RoleDependencyUnavailable)
+  , controlPlaneRoleReadinessSchedule
+  , layerRoleReadinessSource
+  , noRoleReadinessContribution
+  , roleDependencyFromOutcome
+  )
+import Prodbox.ControlPlane.RoleReadinessObserver
+  ( RoleReadinessObserver
+  , newRoleReadinessObserver
+  , roleReadinessObserverSource
+  , withRoleReadinessObservers
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleOperationSubmit, ProviderWorkApply)
   , routesForRole
@@ -320,10 +340,12 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.Server
   ( ControlPlaneFramingError
   , ControlPlaneFramingProgress (..)
-  , RoleInterpreter
+  , RoleInterpreter (interpreterReadiness)
+  , RoleReadinessResolver
   , controlPlaneMaximumBodyBytes
   , finishControlPlaneRequestFraming
   , inspectControlPlaneRequestFraming
+  , mkRoleReadinessResolver
   , renderHttpResponse
   , serveControlPlaneRequest
   )
@@ -350,7 +372,8 @@ import Prodbox.ControlPlane.TargetMaterialClient
   , targetWorkerReceiptFromMaterialObservation
   )
 import Prodbox.ControlPlane.TargetMaterialEndpoint
-  ( targetMaterialObservationAuthenticatedHandler
+  ( observeVaultTargetMaterialDependencies
+  , targetMaterialObservationAuthenticatedHandler
   , vaultTargetMaterialRepository
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
@@ -431,6 +454,13 @@ import Prodbox.ControlPlane.VaultSession
   , readProjectedServiceAccountJwt
   )
 import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.ResponseObligation
+  ( ResponseObligation
+  , ResponseRefusal (ResponseCancelled, ResponseHandlerFailed)
+  , mkResponseObligation
+  , responseWriteBudgetMicrosDefault
+  , withResponseObligation
+  )
 import Prodbox.Lifecycle.AdminAction.Authority
   ( AdminActionAuthorityBoundary (..)
   , modelBAdminActionAuthorityRepository
@@ -788,8 +818,37 @@ lifecycleAuthorityRuntimeInterpreter
   -> InClusterAuthorityStore
   -> LifecycleAuthorityCoordinates
   -> TargetAgentIdentity
-  -> IO (Either Text (RoleInterpreter IO))
+  -> IO (Either Text (RoleInterpreter IO, RoleReadinessObserver))
 lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clientSigner store coordinates registeredAgentIdentity = do
+  -- Sprint 4.55: five layers of this role's handler stack each took
+  -- `inClusterAuthorityReady store` — a signed S3 LIST through the dedicated
+  -- principal — and composed them with `&&`, so a single kubelet probe against
+  -- a `timeoutSeconds: 1` budget performed five sequential signed LISTs and none
+  -- of them short-circuited. The store is one dependency; it is observed once,
+  -- in the background, and the four outer layers contribute nothing of their own.
+  readinessObserver <-
+    newRoleReadinessObserver
+      controlPlaneRoleReadinessSchedule
+      "lifecycle-authority-dependencies"
+      monotonicNowMicros
+      ( do
+          observed <- inClusterAuthorityReady store
+          custodyDependency <- observeTargetChildCustodyDependency vaultSession
+          handoffDependency <- observeBootstrapHandoffDependency vaultSession
+          pure
+            [
+              ( "authority-object-store"
+              , if observed
+                  then RoleDependencyReady
+                  else
+                    RoleDependencyUnavailable
+                      "the retained Authority object store did not answer a signed list"
+              )
+            , custodyDependency
+            , handoffDependency
+            ]
+      )
+  let authorityReadiness = roleReadinessObserverSource readinessObserver
   let registeredClientsResult = registeredClientTableFromTrustRegistry trustRegistry
   initialAdmissionResult <- case registeredClientsResult of
     Left detail -> pure (Left detail)
@@ -1048,7 +1107,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             baseAuthenticatedHandler =
               lifecycleAuthorityAdmissionAuthenticatedHandler
                 controlPlaneMaximumBodyBytes
-                (inClusterAuthorityReady store)
+                authorityReadiness
                 (checkpointAuthorityClusterId authority)
                 currentAuthorityTimeMicros
                 (first Text.pack . encodeModelBValue admissionCodec)
@@ -1325,7 +1384,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   controlPlaneMaximumBodyBytes
                   lifecycleAuthorityExternalMaterialCasAttempts
                   currentAuthorityTime
-                  (inClusterAuthorityReady store)
+                  noRoleReadinessContribution
                   externalMaterialRepository
                   manifestSigner
                   baseAuthenticatedHandler
@@ -1347,7 +1406,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               awsAdminHandler =
                 awsAdminProvisionerAuthenticatedHandler
                   awsAdminProvisionerMaximumBytes
-                  (inClusterAuthorityReady store)
+                  noRoleReadinessContribution
                   currentAuthorityTime
                   awsAdminRepositoryResolver
                   awsAdminTargetLifecycle
@@ -1356,7 +1415,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               adminActionHandler =
                 adminActionAuthenticatedHandler
                   adminActionEndpointMaximumBytes
-                  (inClusterAuthorityReady store)
+                  noRoleReadinessContribution
                   adminActionRepositoryResolver
                   adminActionBoundary
                   awsAdminHandler
@@ -1403,7 +1462,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               handoffHandler =
                 bootstrapHandoffAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
-                  (vaultBootstrapHandoffRepository vaultSession)
+                  (vaultBootstrapHandoffRepository vaultSession noRoleReadinessContribution)
                   tlsAuthenticatedHandler
               federationBoundary =
                 FederationRegistrationBoundary
@@ -1428,7 +1487,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                 )
                             )
                             coordinate
-                            (inClusterAuthorityReady store)
+                            noRoleReadinessContribution
                         )
                   , prepareFederationParentEnvelope = \_ _ ->
                       pure (Left "federation parent-envelope worker is not installed")
@@ -1444,7 +1503,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                 (BootstrapCustody.bootstrapCustodyClient targetTransport)
                                 intent
                             )
-                  , federationRegistrationBoundaryReady = inClusterAuthorityReady store
+                  , federationRegistrationBoundaryReadiness = noRoleReadinessContribution
                   }
               federationHandler =
                 federationRegistrationAuthenticatedHandler
@@ -1464,10 +1523,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   retainedDeliveryHandler
           mapLeft
             (Text.pack . show)
-            ( installAuthenticatedRuntimeInterpreter
-                LifecycleAuthorityRuntime
-                runtimeInputs
-                authenticatedHandler
+            ( fmap
+                (,readinessObserver)
+                ( installAuthenticatedRuntimeInterpreter
+                    LifecycleAuthorityRuntime
+                    runtimeInputs
+                    authenticatedHandler
+                )
             )
  where
   authority = lifecycleCheckpointAuthority coordinates
@@ -1955,21 +2017,57 @@ currentAuthorityTimeMicros = do
 
 authorityBackupRuntimeInterpreter
   :: DedicatedAdapterBinding 'AuthorityBackupAdapter
-  -> RoleInterpreter IO
-authorityBackupRuntimeInterpreter binding =
-  authorityBackupInterpreter
-    controlPlaneMaximumBodyBytes
-    (authorityBackupAdapterReady binding)
-    (authorityBackupRepository binding)
+  -> IO (RoleInterpreter IO, RoleReadinessObserver)
+authorityBackupRuntimeInterpreter binding = do
+  observer <-
+    dedicatedAdapterReadinessObserver
+      "authority-backup-store"
+      (authorityBackupAdapterReady binding)
+  pure
+    ( authorityBackupInterpreter
+        controlPlaneMaximumBodyBytes
+        (roleReadinessObserverSource observer)
+        (authorityBackupRepository binding)
+    , observer
+    )
 
 tlsRetentionRuntimeInterpreter
   :: DedicatedAdapterBinding 'TlsRetentionAdapter
-  -> RoleInterpreter IO
-tlsRetentionRuntimeInterpreter binding =
-  tlsRetentionInterpreter
-    controlPlaneMaximumBodyBytes
-    (tlsRetentionAdapterReady binding)
-    (tlsRetentionRepository binding)
+  -> IO (RoleInterpreter IO, RoleReadinessObserver)
+tlsRetentionRuntimeInterpreter binding = do
+  observer <-
+    dedicatedAdapterReadinessObserver
+      "tls-retention-store"
+      (tlsRetentionAdapterReady binding)
+  pure
+    ( tlsRetentionInterpreter
+        controlPlaneMaximumBodyBytes
+        (roleReadinessObserverSource observer)
+        (tlsRetentionRepository binding)
+    , observer
+    )
+
+-- | Sprint 4.55: both dedicated adapters answer readiness with one authenticated
+-- S3 probe against their own registered prefix. It runs in the background now,
+-- and a refusal is a labelled non-terminal observation rather than a bare
+-- 'False' the projection cannot describe.
+dedicatedAdapterReadinessObserver :: Text -> IO Bool -> IO RoleReadinessObserver
+dedicatedAdapterReadinessObserver label observe =
+  newRoleReadinessObserver
+    controlPlaneRoleReadinessSchedule
+    label
+    monotonicNowMicros
+    ( do
+        observed <- observe
+        pure
+          [
+            ( label
+            , if observed
+                then RoleDependencyReady
+                else RoleDependencyUnavailable "the dedicated adapter store did not answer"
+            )
+          ]
+    )
 
 validateControlPlaneConfig
   :: RuntimeRole
@@ -2215,15 +2313,20 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
                     agentIdentity
                 case interpreterResult of
                   Left _ -> pure (ExitFailure 1)
-                  Right interpreter -> runControlPlaneServer role interpreter
+                  Right (interpreter, readinessObserver) ->
+                    withRoleReadinessObservers
+                      [readinessObserver]
+                      (runControlPlaneServer role interpreter)
     (AuthorityBackupRuntime, ValidatedAuthorityBackupStore storeConfig) -> do
       bindingResult <- newAuthorityBackupAdapterBinding vaultSession storeConfig
       case bindingResult of
         Left _ -> pure (ExitFailure 1)
-        Right binding ->
-          runAuthenticatedContextFree
+        Right binding -> do
+          (interpreter, readinessObserver) <- authorityBackupRuntimeInterpreter binding
+          runAuthenticatedContextFreeObserving
+            [readinessObserver]
             authentication
-            (authorityBackupRuntimeInterpreter binding)
+            interpreter
             largeAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
             standardReplayCapacity
@@ -2232,10 +2335,12 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
       bindingResult <- newTlsRetentionAdapterBinding vaultSession storeConfig
       case bindingResult of
         Left _ -> pure (ExitFailure 1)
-        Right binding ->
-          runAuthenticatedContextFree
+        Right binding -> do
+          (interpreter, readinessObserver) <- tlsRetentionRuntimeInterpreter binding
+          runAuthenticatedContextFreeObserving
+            [readinessObserver]
             authentication
-            (tlsRetentionRuntimeInterpreter binding)
+            interpreter
             standardAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
             standardReplayCapacity
@@ -2247,8 +2352,10 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
         (resolvedAuthenticationTrustRegistry authentication)
         (resolvedAuthenticationClientSigner authentication) of
         Left _ -> pure (ExitFailure 1)
-        Right handler ->
-          runAuthenticatedHandler
+        Right buildHandler -> do
+          (handler, readinessObserver) <- buildHandler
+          runAuthenticatedHandlerObserving
+            [readinessObserver]
             authentication
             handler
             standardAuthenticatedFrameMaximumBytes
@@ -2265,8 +2372,9 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
           (resolvedAuthenticationClientSigner authentication)
       case handlerResult of
         Left _ -> pure (ExitFailure 1)
-        Right handler ->
-          runAuthenticatedHandler
+        Right (handler, readinessObserver) ->
+          runAuthenticatedHandlerObserving
+            [readinessObserver]
             authentication
             handler
             standardAuthenticatedFrameMaximumBytes
@@ -2275,14 +2383,16 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             standardReplayMaximumEncodedBytes
     _ -> pure (ExitFailure 1)
 
-  runAuthenticatedContextFree
+  runAuthenticatedContextFreeObserving
+    observers
     authentication
     inner
     frameMaximum
     responseMaximum
     replayCapacity
     replayMaximumEncoded =
-      runAuthenticatedHandler
+      runAuthenticatedHandlerObserving
+        observers
         authentication
         (contextFreeAuthenticatedRoleHandler inner)
         frameMaximum
@@ -2290,7 +2400,12 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
         replayCapacity
         replayMaximumEncoded
 
-  runAuthenticatedHandler
+  -- Sprint 4.55: a role that has migrated its readiness to cached facts passes
+  -- the observers that own those facts; they run for exactly the lifetime of
+  -- the server. A role still resolving readiness on the request path passes
+  -- none, which is the pre-4.55 behaviour unchanged.
+  runAuthenticatedHandlerObserving
+    observers
     authentication
     handler
     frameMaximum
@@ -2308,7 +2423,11 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
         replayCapacity
         replayMaximumEncoded of
         Left _ -> pure (ExitFailure 1)
-        Right interpreter -> runControlPlaneServer role interpreter
+        Right buildInterpreter -> do
+          (interpreter, commonObserver) <- buildInterpreter
+          withRoleReadinessObservers
+            (commonObserver : observers)
+            (runControlPlaneServer role interpreter)
 
 -- | Complete Provider Worker production composition. The outer request is
 -- authenticated as Lifecycle Authority; the independently signed inner intent
@@ -2319,7 +2438,7 @@ providerWorkerRuntimeHandler
   -> Text
   -> RouteTrustRegistry
   -> RequestSigningCapability IO
-  -> Either Text (AuthenticatedRoleHandler IO)
+  -> Either Text (IO (AuthenticatedRoleHandler IO, RoleReadinessObserver))
 providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner = do
   scope <- mapLeft (Text.pack . show) (mkAuthorityScope clusterId)
   transportBounds <-
@@ -2418,20 +2537,63 @@ providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner =
           currentAuthorityTime
           (providerProductionNarrowSession vaultSession authorityTransport)
           providerProductionCapabilities
-      fallback =
-        AuthenticatedRoleHandler
-          { authenticatedHandlerReadyz = do
-              trusted <- acceptedAuthority
-              providerReady <- providerProductionReady vaultSession
-              pure (either (const False) (const providerReady) trusted)
-          , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
-          }
-  Right
-    ( providerWorkerExecutionAuthenticatedHandler
-        providerCommittedIntentMaximumEncodedBytes
-        boundary
-        fallback
-    )
+      -- Sprint 4.55: readiness used to read the retained Authority epoch and
+      -- then run `providerProductionReady`, which reads the Provider Vault KV
+      -- object and shells out to `aws sts get-caller-identity` — inline, on a
+      -- `timeoutSeconds: 1` kubelet probe path, and with the two outcomes
+      -- collapsed into one `Bool`. Both observations are now one background pass
+      -- over a labelled inventory, and the request path reads the latched record
+      -- and folds it.
+      observePass = do
+        trusted <- acceptedAuthority
+        providerReady <- providerProductionReady vaultSession
+        pure
+          [
+            ( "accepted-provider-authority"
+            , roleDependencyFromOutcome (void trusted)
+            )
+          ,
+            ( "provider-credential-identity"
+            , if providerReady
+                then RoleDependencyReady
+                else
+                  RoleDependencyUnavailable
+                    "the Provider credential did not complete an STS identity round trip"
+            )
+          ]
+  Right $ do
+    observer <-
+      newRoleReadinessObserver
+        controlPlaneRoleReadinessSchedule
+        "provider-worker-dependencies"
+        monotonicNowMicros
+        observePass
+    let fallback =
+          AuthenticatedRoleHandler
+            { authenticatedHandlerReadiness = roleReadinessObserverSource observer
+            , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
+            }
+    pure
+      ( providerWorkerExecutionAuthenticatedHandler
+          providerCommittedIntentMaximumEncodedBytes
+          boundary
+          fallback
+      , observer
+      )
+
+-- | The monotonic clock a readiness observer stamps with and a readiness
+-- projection is evaluated against. One reader, so the observer's stamp and the
+-- projection's @now@ cannot come from different clocks.
+monotonicNowMicros :: IO Natural
+monotonicNowMicros = fmap monotonicInstantMicros realMonotonicNow
+
+-- | The production readiness resolver: one monotonic clock read, one @STM@
+-- transaction over the layered facts, and the pure projection. It names no
+-- backend, which is the property the seam type now guarantees rather than
+-- merely documents.
+productionRoleReadinessResolver :: RoleReadinessResolver IO
+productionRoleReadinessResolver =
+  mkRoleReadinessResolver controlPlaneRoleReadinessSchedule monotonicNowMicros atomically
 
 -- | Production Target Secret Agent binding. Secret-bearing TLS and
 -- post-initialization federation operations are authorized by the Lifecycle
@@ -2443,15 +2605,46 @@ targetSecretAgentRuntimeHandler
   -> Text
   -> TargetAgentIdentity
   -> RequestSigningCapability IO
-  -> IO (Either Text (AuthenticatedRoleHandler IO))
-targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity clientSigner =
-  case (buildBoundaries, targetOneShotRuntimeBoundary) of
+  -> IO (Either Text (AuthenticatedRoleHandler IO, RoleReadinessObserver))
+targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity clientSigner = do
+  -- Sprint 4.55: the agent's readiness used to run an `allM` over every
+  -- registered target — up to 32 sequential Vault KV reads, and `allM`
+  -- short-circuits only on failure, so the healthy path was the slowest — plus
+  -- an authority clock read and a projected-token read, all inline on a
+  -- `timeoutSeconds: 1` probe path. One background pass owns them now, and the
+  -- observer is built before the boundaries so its source is the one every
+  -- layer reads.
+  readinessObserver <-
+    newRoleReadinessObserver
+      controlPlaneRoleReadinessSchedule
+      "target-secret-agent-dependencies"
+      monotonicNowMicros
+      ( do
+          materialDependencies <- observeVaultTargetMaterialDependencies vaultSession
+          observedTime <- currentAuthorityTime
+          projectedJwt <-
+            readProjectedServiceAccountJwt targetSecretControllerAuditorTokenFile
+          pure
+            ( materialDependencies
+                ++ [
+                     ( "authority-clock"
+                     , roleDependencyFromOutcome (void observedTime)
+                     )
+                   ,
+                     ( "projected-service-account-token"
+                     , roleDependencyFromOutcome (void projectedJwt)
+                     )
+                   ]
+            )
+      )
+  let agentReadiness = roleReadinessObserverSource readinessObserver
+  case (buildBoundaries, targetOneShotRuntimeBoundary agentReadiness) of
     (Left detail, _) -> pure (Left detail)
     (_, Left detail) -> pure (Left detail)
     (Right (registry, inventory, custody), Right oneShotBoundary) -> do
       let signer = vaultAuthorityManifestSigner vaultSession
       signerResult <- readAuthorityManifestPublicKey signer
-      pure $ do
+      pure $ fmap (,readinessObserver) $ do
         (_, publicKey) <- signerResult
         let decommissionInputs =
               TargetSecretAgentDecommissionProvisioned
@@ -2462,7 +2655,7 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
             metadataOnlyFallback =
               targetMaterialObservationAuthenticatedHandler
                 controlPlaneMaximumBodyBytes
-                (vaultTargetMaterialRepository vaultSession)
+                (vaultTargetMaterialRepository vaultSession agentReadiness)
             retainedMaterialHandler =
               targetRetainedMaterialRewrapAuthenticatedHandler
                 controlPlaneMaximumBodyBytes
@@ -2498,7 +2691,7 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
               oneShotHandler
           )
  where
-  targetOneShotRuntimeBoundary = do
+  targetOneShotRuntimeBoundary oneShotReadiness = do
     scope <- mapLeft (Text.pack . show) (mkAuthorityScope clusterId)
     transportBounds <-
       mapLeft
@@ -2625,15 +2818,11 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
     Right
       TargetOneShotOperationBoundary
         { runTargetOneShotOperation = runOperation
-        , targetOneShotOperationBoundaryReady = do
-            observedTime <- currentAuthorityTime
-            projectedJwt <-
-              readProjectedServiceAccountJwt
-                targetSecretControllerAuditorTokenFile
-            pure
-              ( either (const False) (const True) observedTime
-                  && either (const False) (const True) projectedJwt
-              )
+        , -- Sprint 4.55: the authority clock read and the projected
+          -- ServiceAccount-token read used to run inline on the probe path,
+          -- composed with `&&`. The Target Secret Agent's observer owns both;
+          -- see 'observeTargetSecretAgentDependencies'.
+          targetOneShotOperationBoundaryReadiness = oneShotReadiness
         }
 
   operationTarget operation = case targetWorkerOperationInputSchema operation of
@@ -2687,7 +2876,7 @@ installVaultAuthenticatedHandler
   -> Int
   -> Natural
   -> Int
-  -> Either Text (RoleInterpreter IO)
+  -> Either Text (IO (RoleInterpreter IO, RoleReadinessObserver))
 installVaultAuthenticatedHandler
   role
   vaultSession
@@ -2727,18 +2916,24 @@ installVaultAuthenticatedHandler
             role
             replayMaximumEncoded
             replayLimits
-        authenticatedHandler =
-          inner
-            { authenticatedHandlerReadyz = do
-                innerReady <- authenticatedHandlerReadyz inner
-                epochReady <- readRetainedAuthorityEpoch vaultSession
-                replayReady <- readRequestReplayProjection replayRepository
-                pure
-                  ( innerReady
-                      && either (const False) (const True) epochReady
-                      && either (const False) (const True) replayReady
-                  )
-            }
+        -- Sprint 4.55: every authenticated role used to add these two backend
+        -- reads to its own probe path, composed with `&&` so neither
+        -- short-circuited on the other's failure. They are now one background
+        -- pass layered over whatever the role itself contributes.
+        observeAuthenticatedRuntime = do
+          epochObserved <- readRetainedAuthorityEpoch vaultSession
+          replayObserved <- readRequestReplayProjection replayRepository
+          pure
+            [
+              ( "retained-authority-epoch"
+              , roleDependencyFromOutcome (void epochObserved)
+              )
+            ,
+              ( "request-replay-projection"
+              , roleDependencyFromOutcome
+                  (either (Left . Text.pack . show) (const (Right ())) replayObserved)
+              )
+            ]
         runtimeInputs =
           AuthenticatedRuntimeInputs
             role
@@ -2759,9 +2954,26 @@ installVaultAuthenticatedHandler
             casAttempts
             replayLimits
             replayRepository
-    mapLeft
-      (Text.pack . show)
-      (installAuthenticatedRuntimeInterpreter role runtimeInputs authenticatedHandler)
+    interpreter <-
+      mapLeft
+        (Text.pack . show)
+        (installAuthenticatedRuntimeInterpreter role runtimeInputs inner)
+    pure $ do
+      observer <-
+        newRoleReadinessObserver
+          controlPlaneRoleReadinessSchedule
+          "authenticated-runtime-dependencies"
+          monotonicNowMicros
+          observeAuthenticatedRuntime
+      pure
+        ( interpreter
+            { interpreterReadiness =
+                layerRoleReadinessSource
+                  (roleReadinessObserverSource observer)
+                  (interpreterReadiness interpreter)
+            }
+        , observer
+        )
 
 authenticationMetadataMaximumBytes :: Int
 authenticationMetadataMaximumBytes = 1024
@@ -2804,7 +3016,14 @@ runControlPlaneServer role interpreter =
     bracket open close $ \listener ->
       forever $ do
         (client, _) <- accept listener
-        void $ forkFinally (serve role client) (const (close client))
+        -- Sprint 4.60: the connection's outcome used to be discarded by
+        -- `const`, so any throw inside `serve` closed the socket with zero
+        -- bytes. `serveControlPlaneConnection` now owns the guarantee that
+        -- exactly one reply is attempted; this binder closes the socket and
+        -- deliberately ignores an outcome that has already been answered.
+        void $
+          forkFinally (serveControlPlaneConnection role interpreter client) $
+            \_answered -> close client
  where
   open = do
     listener <- socket AF_INET Stream defaultProtocol
@@ -2812,10 +3031,48 @@ runControlPlaneServer role interpreter =
     bind listener (SockAddrInet 8600 (tupleToHostAddress (0, 0, 0, 0)))
     listen listener 32
     pure listener
-  serve activeRole client = do
+
+-- | Serve one accepted connection through the response obligation.
+--
+-- Sprint 4.60 exports this so the answered-or-refused guarantee is testable
+-- over a socket pair; it was previously a @where@-closure under a @forever@ loop
+-- bound to a fixed port, which made the refusal path unreachable from a test.
+--
+-- The request read runs __inside__ the obligation on purpose: a socket that
+-- throws while being read is exactly as owed a reply as an interpreter that
+-- throws, and putting the read outside would leave the gap the Bootstrap
+-- Broker still has.
+serveControlPlaneConnection
+  :: RuntimeRole
+  -> RoleInterpreter IO
+  -> Socket
+  -> IO ()
+serveControlPlaneConnection activeRole interpreter client =
+  withResponseObligation controlPlaneResponseObligation client $ do
     framed <- receiveControlPlaneRequest client
     case framed of
-      Left _ -> sendAll client (renderHttpResponse 400 "bad-request\n")
-      Right request -> do
-        (status, body) <- serveControlPlaneRequest interpreter activeRole request
-        sendAll client (renderHttpResponse status body)
+      Left _ -> pure (400, "bad-request\n")
+      Right request ->
+        serveControlPlaneRequest
+          productionRoleReadinessResolver
+          interpreter
+          activeRole
+          request
+
+-- | The production obligation. Both refusal statuses are ones
+-- 'httpReasonPhrase' already maps, so a refusal renders a complete status line.
+--
+-- The refusal body carries no exception text. That is a deliberate asymmetry
+-- with the integration fixture server, which does carry it: a fixture's job is
+-- to name the failure, a production control-plane role's is not to leak it.
+controlPlaneResponseObligation :: ResponseObligation (Int, ByteString.ByteString)
+controlPlaneResponseObligation =
+  mkResponseObligation
+    (uncurry renderHttpResponse)
+    controlPlaneRefusalReply
+    responseWriteBudgetMicrosDefault
+
+controlPlaneRefusalReply :: ResponseRefusal -> (Int, ByteString.ByteString)
+controlPlaneRefusalReply refusal = case refusal of
+  ResponseHandlerFailed _ -> (500, "internal-error\n")
+  ResponseCancelled _ -> (503, "shutting-down\n")

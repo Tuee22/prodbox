@@ -2,6 +2,8 @@
 
 module Prodbox.TestValidation
   ( runNativeValidation
+  , namespaceResourceQuotaHardFields
+  , namespaceLimitRangeContainerFields
   , runNativeValidationWithGatewayStability
   , GatewayRuntimeStabilityRecorder
   , GatewayRuntimeStabilityMonitor
@@ -1930,21 +1932,36 @@ resourceGuardrailQuotaNamespaces plan payload = do
 requireResourceQuotaForNamespace
   :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
 requireResourceQuotaForNamespace plan items namespace = do
-  admission <- Placement.planNamespaceAdmission SubstrateHomeLocal (Text.pack namespace) plan
+  expected <- namespaceResourceQuotaHardFields plan namespace
   quotaObject <- requireK8sObjectInNamespace "ResourceQuota" namespace items
-  let requested = Capacity.request admission
-      limited = Capacity.limit admission
-      expected =
-        [ ("requests.cpu", cpuQuantity (Capacity.milli_cpu requested))
-        , ("limits.cpu", cpuQuantity (Capacity.milli_cpu limited))
-        , ("requests.memory", memoryQuantity (Capacity.memory_mib requested))
-        , ("limits.memory", memoryQuantity (Capacity.memory_mib limited))
-        , ("requests.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib requested))
-        , ("limits.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limited))
-        , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib requested))
-        ]
   mapM_ (requireQuantityEquals ("ResourceQuota " ++ namespace) ["spec", "hard"] quotaObject) expected
   Right namespace
+
+-- | Sprint 5.31: the @spec.hard@ a namespace's ResourceQuota must carry,
+-- projected from the capacity plan.
+--
+-- Exported so the integration fixture's /observed/ cluster state is rendered
+-- from the same projection this validator compares against, rather than being a
+-- second hand-maintained copy of the numbers. A fake that restates a production
+-- value is an encoder of it
+-- ([chaos_hardening_doctrine.md § 23](../../documents/engineering/chaos_hardening_doctrine.md)),
+-- and this one had already drifted: the fixture declared the gateway at
+-- 250m × 3 replicas where the plan declares 750m × 2.
+namespaceResourceQuotaHardFields
+  :: Capacity.ResourcePlan -> String -> Either String [(String, String)]
+namespaceResourceQuotaHardFields plan namespace = do
+  admission <- Placement.planNamespaceAdmission SubstrateHomeLocal (Text.pack namespace) plan
+  let requested = Capacity.request admission
+      limited = Capacity.limit admission
+  Right
+    [ ("requests.cpu", cpuQuantity (Capacity.milli_cpu requested))
+    , ("limits.cpu", cpuQuantity (Capacity.milli_cpu limited))
+    , ("requests.memory", memoryQuantity (Capacity.memory_mib requested))
+    , ("limits.memory", memoryQuantity (Capacity.memory_mib limited))
+    , ("requests.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib requested))
+    , ("limits.ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limited))
+    , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib requested))
+    ]
 
 resourceGuardrailLimitRangeNamespaces :: Capacity.ResourcePlan -> Value -> Either String [String]
 resourceGuardrailLimitRangeNamespaces plan payload = do
@@ -1953,24 +1970,10 @@ resourceGuardrailLimitRangeNamespaces plan payload = do
 
 requireLimitRangeForNamespace :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
 requireLimitRangeForNamespace plan items namespace = do
-  envelope <- Placement.planNamespaceLimits SubstrateHomeLocal (Text.pack namespace) plan
   limitRangeObject <- requireK8sObjectInNamespace "LimitRange" namespace items
   limits <- jsonArrayAt ["spec", "limits"] limitRangeObject
   containerLimit <- requireContainerLimitRange namespace limits
-  let requestVector = Capacity.request envelope
-      limitVector = Capacity.limit envelope
-      expected =
-        [ (["defaultRequest"], "cpu", cpuQuantity (Capacity.milli_cpu requestVector))
-        , (["defaultRequest"], "memory", memoryQuantity (Capacity.memory_mib requestVector))
-        ,
-          ( ["defaultRequest"]
-          , "ephemeral-storage"
-          , memoryQuantity (Capacity.ephemeral_storage_mib requestVector)
-          )
-        , (["default"], "cpu", cpuQuantity (Capacity.milli_cpu limitVector))
-        , (["default"], "memory", memoryQuantity (Capacity.memory_mib limitVector))
-        , (["default"], "ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limitVector))
-        ]
+  expected <- namespaceLimitRangeContainerFields plan namespace
   mapM_
     ( \(prefix, fieldName, expectedQuantity) ->
         requireQuantityEquals
@@ -1981,6 +1984,29 @@ requireLimitRangeForNamespace plan items namespace = do
     )
     expected
   Right namespace
+
+-- | Sprint 5.31: the Container @LimitRange@ fields a namespace must carry,
+-- projected from the capacity plan. Exported for the same reason as
+-- 'namespaceResourceQuotaHardFields': the fixture's observed cluster state is
+-- rendered from this projection rather than restating its numbers.
+namespaceLimitRangeContainerFields
+  :: Capacity.ResourcePlan -> String -> Either String [([String], String, String)]
+namespaceLimitRangeContainerFields plan namespace = do
+  envelope <- Placement.planNamespaceLimits SubstrateHomeLocal (Text.pack namespace) plan
+  let requestVector = Capacity.request envelope
+      limitVector = Capacity.limit envelope
+  Right
+    [ (["defaultRequest"], "cpu", cpuQuantity (Capacity.milli_cpu requestVector))
+    , (["defaultRequest"], "memory", memoryQuantity (Capacity.memory_mib requestVector))
+    ,
+      ( ["defaultRequest"]
+      , "ephemeral-storage"
+      , memoryQuantity (Capacity.ephemeral_storage_mib requestVector)
+      )
+    , (["default"], "cpu", cpuQuantity (Capacity.milli_cpu limitVector))
+    , (["default"], "memory", memoryQuantity (Capacity.memory_mib limitVector))
+    , (["default"], "ephemeral-storage", memoryQuantity (Capacity.ephemeral_storage_mib limitVector))
+    ]
 
 requireK8sObjectInNamespace :: String -> String -> [Value] -> Either String Value
 requireK8sObjectInNamespace kind namespace items = do

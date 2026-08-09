@@ -78,8 +78,10 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , TargetSinkRecord (..)
   , TargetSinkVersion
   , mkCredentialGeneration
-  , mkTargetSinkVersion
   , mkTargetValueDigest
+  )
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
   )
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, TargetSecretAgentRuntime)
@@ -341,6 +343,7 @@ targetRoleTransport observedUrls interpreter method _headers url body = do
   let path = drop (length targetEndpointPrefix) url
   response <-
     serveControlPlaneRequest
+      fixtureRoleReadinessResolver
       interpreter
       TargetSecretAgentRuntime
       ( ByteString.concat
@@ -369,6 +372,7 @@ servingTransport role route observeUrl interpreter method _headers url body = do
   observeUrl url
   response <-
     serveControlPlaneRequest
+      fixtureRoleReadinessResolver
       interpreter
       role
       ( ByteString.concat
@@ -423,7 +427,6 @@ targetRegistry observations deletes = do
         mkTrustedTargetSink
           targetSink
           observe
-          (\_ _ -> pure (Left "CAS forbidden"))
       boundary =
         mkTargetGenerationTombstoneBoundary trusted $ do
           modifyIORef' deletes (+ 1)
@@ -438,7 +441,6 @@ fixtureTargetInventory =
     ( mkTrustedTargetSink
         targetSink
         (pure TargetSinkMissing)
-        (\_ _ -> pure (Left "inventory fixture is read-only"))
     )
 
 fixtureRetainedCustodyBoundary :: RetainedCustodyBoundary IO
@@ -542,7 +544,7 @@ uniqueBytes prefix counter =
 availableBaseHandler :: AuthenticatedRoleHandler IO
 availableBaseHandler =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = pure True
+    { authenticatedHandlerReadiness = fixtureReadyRoleReadinessSource
     , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
     }
 
@@ -667,7 +669,7 @@ targetSink :: TargetClusterSecretSink
 targetSink = mustRight (compiledTargetSecretSink TargetSesSmtp)
 
 targetVersion :: TargetSinkVersion
-targetVersion = mustRight (mkTargetSinkVersion "7")
+targetVersion = mustJust (targetSinkVersionFromStoreVersion 7)
 
 targetRecord :: TargetSinkRecord TargetSecretPayload
 targetRecord =
@@ -710,7 +712,11 @@ serveReadyz
   -> RuntimeRole
   -> IO (Int, ByteString.ByteString)
 serveReadyz interpreter role =
-  serveControlPlaneRequest interpreter role "GET /readyz HTTP/1.1\r\n\r\n"
+  serveControlPlaneRequest
+    fixtureRoleReadinessResolver
+    interpreter
+    role
+    "GET /readyz HTTP/1.1\r\n\r\n"
 
 isPresent :: ResidueStatus -> Bool
 isPresent status = case status of

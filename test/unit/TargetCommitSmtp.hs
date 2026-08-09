@@ -56,6 +56,9 @@ import Prodbox.Lifecycle.Lease
 import Prodbox.Lifecycle.SmtpKeyRepair
 import Prodbox.Lifecycle.TargetCommitIntent
 import Prodbox.Lifecycle.TargetCommitInterpreter
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
+  )
 import TestSupport
 
 targetCommitSmtpSuite :: SuiteBuilder ()
@@ -712,7 +715,7 @@ payloadDigest :: ByteString -> TargetValueDigest
 payloadDigest _ = digestA
 
 sinkVersion :: TargetSinkVersion
-sinkVersion = expectRight (mkTargetSinkVersion "sink-v1")
+sinkVersion = expectJust (targetSinkVersionFromStoreVersion 1)
 
 firstPrepared :: TargetClusterSecretSink -> (TargetIntentProjection, TargetCommitIntent)
 firstPrepared target =
@@ -957,6 +960,11 @@ fakeTargetRecoveryInterpreter events global now globalVersion homeRecord =
     }
  where
   record event = modifyIORef' events (++ [event])
+
+expectJust :: Maybe value -> value
+expectJust result = case result of
+  Nothing -> error "unexpected Nothing"
+  Just value -> value
 
 expectRight :: (Show errorValue) => Either errorValue value -> value
 expectRight result = case result of

@@ -27,7 +27,11 @@ module Prodbox.CheckCode
   , inlineRetrySubstringListViolations
   , isCitedSourcePath
   , isRelativeLinkTarget
+  , boundSectionCitationsInLine
+  , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
+  , documentSectionNumbers
+  , headingSectionNumber
   , governedDocStatusValues
   , governedDocStatusViolations
   , inlineCodeSpansInLine
@@ -53,11 +57,24 @@ module Prodbox.CheckCode
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
   , secretPayloadInternalSourceViolations
+  , roundTripWitnessInternalSourceViolations
+  , dnsOwnerAuthorityInternalSourceViolations
+  , dependencyAdmissionInternalSourceViolations
+  , responseObligationViolations
+  , tier0EncoderViolations
+  , brokerReadinessProjectionViolations
+  , roleReadinessProjectionViolations
+  , supervisedWorkerViolations
+  , sharedRetryScheduleViolations
+  , targetSinkVersionInternalSourceViolations
   , runDocsCommand
   , runLintCommand
   , substrateImagePinningViolations
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
+  , tier0DriftFindings
+  , tier0DriftLocation
+  , tier0MalformedFinding
   , TrackedGeneratedPath (..)
   , trackingGeneratedPaths
   )
@@ -98,6 +115,10 @@ import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
+import Prodbox.Config.Tier0
+  ( decodeProjectConfigDhall
+  , renderProjectConfigDhall
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Probe (renderGatewayProbeDefaultsYaml)
@@ -126,6 +147,7 @@ import Prodbox.Lint
   , styleToolsBinDir
   )
 import Prodbox.PublicEdge (renderHelmRouteInventory)
+import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Secret.VaultInventory (vaultIdentityRegistryViolations)
 import Prodbox.Subprocess qualified as Subprocess
@@ -419,7 +441,12 @@ runCheckCode repoRoot = do
           repoRoot
           environment
           "cabal"
-          ["build", "--builddir=.build", "all", "--ghc-options=-Werror"]
+          -- Sprint 5.30: `--enable-tests` is what gives this gate a region that
+          -- covers the evidence surface. Without it `all` resolves to the library
+          -- and the executable only, so `test/` was linted here and type-checked
+          -- nowhere routine — see "The region of Ring 2" in
+          -- resource_scaling_doctrine.md section 2C.
+          ["build", "--builddir=.build", "all", "--enable-tests", "--ghc-options=-Werror"]
       case buildExit of
         ExitFailure _ -> pure buildExit
         ExitSuccess -> do
@@ -513,11 +540,13 @@ runGovernedDocChecks repoRoot = do
   linkViolations <- checkGovernedDocRelativeLinks repoRoot
   statusViolations <- checkGovernedDocStatusValues repoRoot
   citedPathViolations <- checkPlanCitedSourcePaths repoRoot
+  sectionCitationViolations <- checkDoctrineSectionCitations repoRoot
   pure
     ( harmonyViolations
         ++ linkViolations
         ++ statusViolations
         ++ citedPathViolations
+        ++ sectionCitationViolations
     )
 
 runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
@@ -569,6 +598,180 @@ resourcePlanOverCommitViolations =
 
 runConformanceTierChecks :: FilePath -> IO ExitCode
 runConformanceTierChecks repoRoot = do
+  tier0Violations <- checkTier0SiblingDrift repoRoot
+  case tier0Violations of
+    (_ : _) ->
+      failWith
+        ( unlines
+            ( ( "Tier-0 sibling-config drift gate failed. The binary-sibling "
+                  ++ "prodbox.dhall is GENERATED and must equal what the generator "
+                  ++ "emits for the record it decodes to (config_doctrine.md § 3, "
+                  ++ "code_quality.md § 3, Sprint 0.24):"
+              )
+                : map ("- " ++) tier0Violations
+            )
+        )
+    [] -> runConformanceTierRegistryChecks repoRoot
+
+-- | Sprint 0.24: the binary-sibling Tier-0 @prodbox.dhall@ is GENERATED and
+-- git-ignored, so neither the tracked-generated-path registry nor the committed
+-- credential scan can reach it — both are deliberately scoped to
+-- version-controlled content. This gate reads the binary-sibling path directly
+-- ('resolveTier0ConfigPath'), decodes it, re-renders the decoded record through
+-- the one canonical generator ('renderProjectConfigDhall' — the sole writer
+-- behind @config generate@, @config setup@, the @vault init@ floor stamp, and the
+-- test harness), and compares.
+--
+-- Three dispositions, deliberately distinct:
+--
+--   * __absent__ is not a finding. A fresh worktree has no sibling config until
+--     @prodbox config generate@ runs, and @dev check@ must not require one.
+--   * __malformed__ is a finding that says the file does not decode, separate
+--     from drift: an undecodable file has no record to re-render.
+--   * __drifted__ is a finding naming the record field whose canonical rendering
+--     the file does not carry.
+--
+-- Honest bound: this detects divergence from the generator's __output__ — a hand
+-- edit that changes the emitted text, a file left behind by an older schema, or a
+-- derived block (the emitted @concurrentDraws@ Ring-1 witness) that no longer
+-- matches the plan it was computed from. A hand-edited primitive that round-trips
+-- unchanged through decode and re-render is textually indistinguishable from
+-- generated output and is __not__ caught; Ring 1 cannot constrain those values
+-- either. The gate closes the silence, not the representability gap.
+checkTier0SiblingDrift :: FilePath -> IO [String]
+checkTier0SiblingDrift repoRoot = do
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  present <- doesFileExist tier0Path
+  if not present
+    then pure []
+    else do
+      decoded <- decodeProjectConfigDhall tier0Path
+      case decoded of
+        Left err -> pure [tier0MalformedFinding tier0Path err]
+        Right config -> do
+          onDisk <- readFileStrict tier0Path
+          pure
+            ( tier0DriftFindings
+                tier0Path
+                (Text.unpack (renderProjectConfigDhall config))
+                onDisk
+            )
+
+-- | The malformed-file finding. Distinct from a drift finding because there is
+-- no decoded record to re-render, so no field can be named.
+tier0MalformedFinding :: FilePath -> String -> String
+tier0MalformedFinding path err =
+  path
+    ++ " does not decode as a Tier-0 record, so it cannot be compared with the "
+    ++ "generator's output: "
+    ++ err
+    ++ ". Regenerate it with `prodbox config generate`."
+
+-- | Pure core of the drift gate: the generator's canonical rendering versus the
+-- bytes on disk. Reports the differing field rather than a whole-file diff, per
+-- the @code_quality.md@ § 3 error-message contract (path, what drifted, remedy).
+tier0DriftFindings
+  :: FilePath
+  -- ^ The binary-sibling path, reported verbatim.
+  -> String
+  -- ^ What the generator emits for the record decoded from the file.
+  -> String
+  -- ^ What is on disk.
+  -> [String]
+tier0DriftFindings path expected actual
+  | expected == actual = []
+  | otherwise =
+      [ path
+          ++ " has drifted from the generator's canonical rendering at "
+          ++ tier0DriftLocation expected actual
+          ++ ". Regenerate it with `prodbox config generate` (or re-author the "
+          ++ "operator sections with `prodbox config setup`); the binary-sibling "
+          ++ "prodbox.dhall is generated, never hand-edited."
+      ]
+
+-- | The 1-based line at which the canonical rendering and the on-disk text first
+-- diverge, qualified by the record-field path enclosing that line. The field path
+-- is recovered from the canonical rendering's own indentation, so it names a
+-- field of the Tier-0 record (@parameters.route53.zone_id@) rather than a byte
+-- offset.
+tier0DriftLocation :: String -> String -> String
+tier0DriftLocation expected actual =
+  case tier0FirstDivergence (lines expected) (lines actual) of
+    (lineNumber, []) -> "line " ++ show lineNumber
+    (lineNumber, fields) ->
+      "line " ++ show lineNumber ++ ", field `" ++ intercalate "." fields ++ "`"
+
+-- | Walk both renderings in step, maintaining the enclosing-field stack from the
+-- canonical side, and stop at the first divergence (including one text running
+-- out before the other).
+tier0FirstDivergence :: [String] -> [String] -> (Int, [String])
+tier0FirstDivergence = go 1 []
+ where
+  go lineNumber stack expectedLines actualLines =
+    case (expectedLines, actualLines) of
+      ([], []) -> (lineNumber, fieldPath stack)
+      ([], _ : _) -> (lineNumber, fieldPath stack)
+      (expectedLine : _, []) ->
+        (lineNumber, fieldPath (trackRecordScope expectedLine stack))
+      (expectedLine : restExpected, actualLine : restActual)
+        | expectedLine == actualLine ->
+            go
+              (lineNumber + 1)
+              (trackRecordScope expectedLine stack)
+              restExpected
+              restActual
+        | otherwise ->
+            (lineNumber, fieldPath (trackRecordScope expectedLine stack))
+
+  fieldPath = map snd . reverse
+
+-- | Maintain an indentation-keyed stack of open record fields: a field opened at
+-- column @c@ closes every field opened at column @c@ or deeper, and a line whose
+-- first token closes a record or list closes every field opened at or inside its
+-- own column. Without the closer arm the stack would keep naming the last field
+-- it saw for text that has already left it.
+trackRecordScope :: String -> [(Int, String)] -> [(Int, String)]
+trackRecordScope line stack =
+  case fieldAssignmentInLine line of
+    Just entry@(column, _) -> entry : closeAt column
+    Nothing -> maybe stack closeAt (recordCloserColumn line)
+ where
+  closeAt column = dropWhile ((>= column) . fst) stack
+
+-- | The column of a line that opens with a record\/list\/parenthesis closer.
+recordCloserColumn :: String -> Maybe Int
+recordCloserColumn line
+  | any (`isPrefixOf` dropWhile (== ' ') line) ["}", "]", ")"] =
+      Just (length (takeWhile (== ' ') line))
+  | otherwise = Nothing
+
+-- | The record-field assignment a Dhall-pretty-printed line opens, if any: an
+-- identifier bound with @=@, optionally behind the @{@ or @,@ the pretty-printer
+-- puts at the head of a record line. The dotted single-field shorthand the
+-- pretty-printer emits (@, route53.zone_id = ""@) is one name. A type annotation
+-- (@field : Natural@) and a @let@ binding are both rejected, so only fields of
+-- the emitted record enter the path.
+fieldAssignmentInLine :: String -> Maybe (Int, String)
+fieldAssignmentInLine line
+  | not (null name)
+  , "=" `isPrefixOf` afterName
+  , not ("==" `isPrefixOf` afterName) =
+      Just (column, name)
+  | otherwise = Nothing
+ where
+  column = length (takeWhile (== ' ') line)
+  trimmed = dropWhile (== ' ') line
+  body
+    | "{ " `isPrefixOf` trimmed = drop 2 trimmed
+    | ", " `isPrefixOf` trimmed = drop 2 trimmed
+    | otherwise = trimmed
+  isNameCharacter character =
+    isAlphaNum character || character == '_' || character == '.'
+  name = takeWhile isNameCharacter body
+  afterName = dropWhile (== ' ') (drop (length name) body)
+
+runConformanceTierRegistryChecks :: FilePath -> IO ExitCode
+runConformanceTierRegistryChecks repoRoot = do
   escapeViolations <- checkLegacyEscapeRegistry repoRoot
   case escapeViolations of
     (_ : _) ->
@@ -1221,6 +1424,16 @@ haskellStyleViolations repoRoot = do
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
   secretPayloadInternalViolations <- checkSecretPayloadInternalBoundary repoRoot
+  targetSinkVersionViolations <- checkTargetSinkVersionBoundary repoRoot
+  roundTripWitnessViolations <- checkRoundTripWitnessBoundary repoRoot
+  dnsOwnerAuthorityViolations <- checkDnsOwnerAuthorityBoundary repoRoot
+  dependencyAdmissionViolations <- checkDependencyAdmissionBoundary repoRoot
+  responseObligationFindings <- checkResponseObligation repoRoot
+  tier0EncoderFindings <- checkTier0FixtureEncoder repoRoot
+  sharedRetryViolations <- checkSharedRetrySchedule repoRoot
+  brokerReadinessViolations <- checkBrokerReadinessProjection repoRoot
+  roleReadinessViolations <- checkRoleReadinessProjection repoRoot
+  supervisedWorkerViolationsFound <- checkSupervisedWorkers repoRoot
   committedValueViolations <- checkCommittedValueHygiene repoRoot
   pure
     ( either pure (const []) thinMainResult
@@ -1237,6 +1450,16 @@ haskellStyleViolations repoRoot = do
         ++ testSuiteTypeViolations
         ++ forbidDotProdboxStateViolations
         ++ secretPayloadInternalViolations
+        ++ targetSinkVersionViolations
+        ++ roundTripWitnessViolations
+        ++ dnsOwnerAuthorityViolations
+        ++ dependencyAdmissionViolations
+        ++ responseObligationFindings
+        ++ tier0EncoderFindings
+        ++ sharedRetryViolations
+        ++ brokerReadinessViolations
+        ++ roleReadinessViolations
+        ++ supervisedWorkerViolationsFound
         ++ committedValueViolations
     )
 
@@ -1324,6 +1547,723 @@ secretPayloadInternalSourceViolations (path, contents) =
         ++ "the PgpBoundary primitive adapter."
     | eliminatorName `isInfixOf` contents
     , path `notElem` eliminatorAllowedPaths
+    ]
+
+-- | Vault KV v2 checks exactly one token when it accepts a conditional write:
+-- the expected version.  A 'TargetSinkVersion' is therefore meant to be
+-- evidence that a store read happened, which holds only while one module can
+-- mint one.  Scoped to @src/@: a test fixture standing in for a store may
+-- mint, and a test module cannot be imported by production code.
+checkTargetSinkVersionBoundary :: FilePath -> IO [String]
+checkTargetSinkVersionBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (targetSinkVersionInternalSourceViolations (path, contents))
+      )
+
+-- | Sprint 1.76: a 'RoundTripWitness' asserts that a conditional WRITE reached
+-- a store. That claim is only worth anything while the set of modules able to
+-- make it is exactly the set that performed or authoritatively decoded one.
+-- Scoped to @src\/@ for the same reason as the target-sink boundary: a test
+-- fixture standing in for a store may mint, and a test module cannot be
+-- imported by production code.
+checkRoundTripWitnessBoundary :: FilePath -> IO [String]
+checkRoundTripWitnessBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (roundTripWitnessInternalSourceViolations (path, contents))
+      )
+
+-- | Sprint 3.32: a 'DnsOwnerAuthority' asserts that the running process /is/
+-- the named DNS owner.  A destroy consumes it instead of comparing two
+-- caller-supplied copies of the coordinate's owner, which is why the assertion
+-- must be unforgeable: the newtype constructor lives in the package-internal
+-- module and only the module exporting the minter may name it.  Scoped to
+-- @src\/@ for the same reason as the round-trip witness — a test may mint, and
+-- a test module cannot be imported by production code.
+checkDnsOwnerAuthorityBoundary :: FilePath -> IO [String]
+checkDnsOwnerAuthorityBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (dnsOwnerAuthorityInternalSourceViolations (path, contents))
+      )
+
+-- | Sprint 4.56: the admission minting boundary, same shape and same reason.
+checkDependencyAdmissionBoundary :: FilePath -> IO [String]
+checkDependencyAdmissionBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (dependencyAdmissionInternalSourceViolations (path, contents))
+      )
+
+-- | Sprint 2.41: a long-lived gateway worker is spawned only through
+-- 'withSupervisedWorkers', which links the handle and records the worker's exit
+-- on every path. Eight workers used to be spawned through raw @withAsync@ with
+-- their handles discarded, so a worker that died was invisible to readiness and
+-- its exception reached nobody.
+--
+-- This is the negative-space check pattern Sprint 2.10 established for
+-- module-local mutable counters: the rule is that the raw primitive is not in
+-- scope, and the check is what makes it fail.
+checkSupervisedWorkers :: FilePath -> IO [String]
+checkSupervisedWorkers repoRoot = do
+  let relativePath = "src/Prodbox/Gateway/Daemon.hs"
+      absolutePath = repoRoot </> relativePath
+  exists <- doesFileExist absolutePath
+  contents <- if exists then readFileStrict absolutePath else pure ""
+  pure (supervisedWorkerViolations (relativePath, if exists then Just contents else Nothing))
+
+supervisedWorkerViolations :: (FilePath, Maybe String) -> [String]
+supervisedWorkerViolations (path, Nothing) =
+  [path ++ " is missing; the supervised-worker gate cannot run (Sprint 2.41)."]
+supervisedWorkerViolations (path, Just contents) =
+  unqualifiedImport ++ missingSupervisor
+ where
+  unqualifiedImport =
+    [ path
+        ++ " imports `withAsync` unqualified. A long-lived daemon worker is"
+        ++ " spawned only through `withSupervisedWorkers`, which links the handle"
+        ++ " and records the worker's exit on every path (Sprint 2.41)."
+    | sourceLine <- lines contents
+    , "import " `isPrefixOf` dropWhile isSpace sourceLine
+    , "Control.Concurrent.Async" `isInfixOf` sourceLine
+    , "withAsync" `isInfixOf` sourceLine
+    ]
+  missingSupervisor =
+    [ path
+        ++ " no longer defines `withSupervisedWorkers`; the supervised-worker"
+        ++ " gate has nothing to protect (Sprint 2.41)."
+    | not ("withSupervisedWorkers ::" `isInfixOf` contents)
+    ]
+
+-- | Sprint 2.39 deliverable 3: assert that the Bootstrap Broker's @\/readyz@
+-- performs no boundary I/O in its request path.
+--
+-- The chart's @probeTiming@ comment has always asserted this, and the runtime
+-- did not honour it: @productionReady@ used to perform a MinIO @listKeys@ plus a
+-- generation read, a Vault seal call, and two Kubernetes reads each with a
+-- five-second deadline, inline, against a @timeoutSeconds: 1@ probe budget. The
+-- measured consequence was @\/healthz@ at 0.19 ms and @\/readyz@ at 5.003 s, so
+-- the Deployment never reported available and @cluster reconcile@ exited 1
+-- before Vault was initialized. The projection was rewritten; nothing stopped it
+-- from being un-rewritten, and this is that gate.
+--
+-- It makes two structural claims rather than looking for known-bad calls:
+--
+--   * the projection module imports only pure modules, so no boundary is even in
+--     scope where the fold is defined;
+--   * the request-path function's body draws from an exact token allowlist, so a
+--     NEW call — not merely a previously-seen one — fails the gate. A
+--     forbidden-substring list would have to be extended every time somebody
+--     invents a way to reach a backend; an allowlist does not.
+checkBrokerReadinessProjection :: FilePath -> IO [String]
+checkBrokerReadinessProjection repoRoot = do
+  sources <-
+    forM
+      [ brokerReadinessModulePath
+      , brokerReadinessRequestPath
+      ]
+      ( \relativePath -> do
+          let absolutePath = repoRoot </> relativePath
+          exists <- doesFileExist absolutePath
+          contents <- if exists then readFileStrict absolutePath else pure ""
+          pure (relativePath, if exists then Just contents else Nothing)
+      )
+  pure (brokerReadinessProjectionViolations sources)
+
+brokerReadinessModulePath :: FilePath
+brokerReadinessModulePath = "src/Prodbox/Bootstrap/Broker/Readiness.hs"
+
+brokerReadinessRequestPath :: FilePath
+brokerReadinessRequestPath = "src/Prodbox/Bootstrap/Broker/ProductionEngine.hs"
+
+-- | Sprint 4.55: the same structural claim as the broker's, for the five
+-- control-plane roles.
+--
+-- The role readiness projection folds boundary-owned cached facts, so it must
+-- have no boundary in scope. It is allowed one thing the broker's is not:
+-- @Control.Concurrent.STM@. That is the deliverable rather than an exception —
+-- @STM@ cannot perform @IO@, so a seam typed as an @STM@ read is a seam a
+-- signed S3 @LIST@, a Vault read, or an @aws sts get-caller-identity@
+-- subprocess cannot hide behind. Everything effectful lives in
+-- "Prodbox.ControlPlane.RoleReadinessObserver", which runs off the request
+-- path.
+checkRoleReadinessProjection :: FilePath -> IO [String]
+checkRoleReadinessProjection repoRoot = do
+  let relativePath = roleReadinessModulePath
+      absolutePath = repoRoot </> relativePath
+  exists <- doesFileExist absolutePath
+  contents <- if exists then readFileStrict absolutePath else pure ""
+  pure
+    ( roleReadinessProjectionViolations
+        (relativePath, if exists then Just contents else Nothing)
+    )
+
+roleReadinessModulePath :: FilePath
+roleReadinessModulePath = "src/Prodbox/ControlPlane/RoleReadiness.hs"
+
+roleReadinessProjectionViolations :: (FilePath, Maybe String) -> [String]
+roleReadinessProjectionViolations (path, Nothing) =
+  [ path
+      ++ " is missing; the control-plane role readiness projection gate cannot"
+      ++ " run (Sprint 4.55)."
+  ]
+roleReadinessProjectionViolations (path, Just contents) =
+  impureImports ++ missingSeam
+ where
+  impureImports =
+    [ path
+        ++ " imports `"
+        ++ moduleName
+        ++ "`, which is not a pure module and is not `Control.Concurrent.STM`."
+        ++ " A role readiness projection folds cached facts and must have no"
+        ++ " boundary in scope; the observation belongs in"
+        ++ " Prodbox.ControlPlane.RoleReadinessObserver (Sprint 4.55)."
+    | moduleName <- importedModuleNames contents
+    , not (any (`isPrefixOf` moduleName) pureModulePrefixes)
+    , moduleName `notElem` pureProdboxModules
+    , moduleName `notElem` roleReadinessAllowedEffectModules
+    ]
+  missingSeam =
+    [ path
+        ++ " no longer defines the `RoleReadinessSource` newtype over `STM`;"
+        ++ " the seam that makes backend I/O on a probe path a type error has"
+        ++ " nothing to protect (Sprint 4.55)."
+    | not ("newtype RoleReadinessSource = RoleReadinessSource (STM " `isInfixOf` contents)
+    ]
+
+-- | The one non-pure module the role readiness projection may name. @STM@ has
+-- no @IO@; that is the entire point of typing the seam with it.
+roleReadinessAllowedEffectModules :: [String]
+roleReadinessAllowedEffectModules =
+  [ "Control.Concurrent.STM"
+  ]
+
+brokerReadinessProjectionViolations :: [(FilePath, Maybe String)] -> [String]
+brokerReadinessProjectionViolations sources =
+  concatMap check sources
+ where
+  check (path, Nothing) =
+    [ path
+        ++ " is missing; the broker readiness projection gate cannot run"
+        ++ " (Sprint 2.39)."
+    ]
+  check (path, Just contents)
+    | path == brokerReadinessModulePath = impureImportViolations path contents
+    | path == brokerReadinessRequestPath = requestPathViolations path contents
+    | otherwise = []
+
+  impureImportViolations path contents =
+    [ path
+        ++ " imports `"
+        ++ moduleName
+        ++ "`, which is not a pure module. The broker readiness projection folds"
+        ++ " boundary-owned cached facts and must have no boundary in scope"
+        ++ " (bootstrap_readiness_doctrine.md § 0.7, Sprint 2.39)."
+    | moduleName <- importedModuleNames contents
+    , not (any (`isPrefixOf` moduleName) pureModulePrefixes)
+    , moduleName `notElem` pureProdboxModules
+    ]
+
+  requestPathViolations path contents =
+    case functionBodyTokens "productionReady" contents of
+      Nothing ->
+        [ path
+            ++ " no longer defines `productionReady`; the broker readiness"
+            ++ " request-path gate has nothing to check (Sprint 2.39)."
+        ]
+      Just tokens ->
+        [ path
+            ++ ": `productionReady` names `"
+            ++ token
+            ++ "`, which is not one of the reads the constant-time readiness"
+            ++ " projection is allowed to perform. The request path may read the"
+            ++ " monotonic clock and the latched record and fold them, and"
+            ++ " nothing else (Sprint 2.39)."
+        | token <- tokens
+        , token `notElem` brokerReadinessRequestPathAllowedTokens
+        ]
+
+-- | Module prefixes with no I/O. Deliberately narrow: widening it is how a
+-- boundary gets back into scope.
+pureModulePrefixes :: [String]
+pureModulePrefixes =
+  [ "Data."
+  , "Numeric."
+  , "GHC.Generics"
+  ]
+
+-- | Repository modules a readiness projection may import, named __exactly__.
+--
+-- Sprint 4.55 shares one 'ObservationSchedule' between the Bootstrap Broker and
+-- the five control-plane roles instead of copying the derivation, which means
+-- the projection modules now import a @Prodbox.@ module. Listing the one module
+-- by name keeps the gate's strength: adding @\"Prodbox.\"@ to
+-- 'pureModulePrefixes' would put every boundary in the repository back in
+-- scope, which is strictly worse than not sharing the schedule at all. A module
+-- earns a place here only by importing nothing but 'pureModulePrefixes' itself.
+pureProdboxModules :: [String]
+pureProdboxModules =
+  [ "Prodbox.Readiness.ObservationSchedule"
+  ]
+
+-- | Everything @productionReady@ may name. A clock read, a latched-record read,
+-- the pure fold, and the binders that join them.
+brokerReadinessRequestPathAllowedTokens :: [String]
+brokerReadinessRequestPathAllowedTokens =
+  [ "productionReady"
+  , "cache"
+  , "do"
+  , "now"
+  , "realMonotonicNow"
+  , "facts"
+  , "readTVarIO"
+  , "brokerReadinessCacheFacts"
+  , "pure"
+  , "computeBrokerReadiness"
+  , "brokerReadinessSchedule"
+  , "monotonicInstantMicros"
+  ]
+
+-- | The module names an import list mentions.
+importedModuleNames :: String -> [String]
+importedModuleNames contents =
+  [ moduleName
+  | sourceLine <- lines contents
+  , "import " `isPrefixOf` sourceLine
+  , let afterImport = dropWhile isSpace (drop (length "import") sourceLine)
+  , let withoutQualified =
+          if "qualified " `isPrefixOf` afterImport
+            then drop (length "qualified ") afterImport
+            else afterImport
+  , let moduleName =
+          takeWhile
+            (\character -> isAlphaNum character || character `elem` ("._'" :: String))
+            withoutQualified
+  , not (null moduleName)
+  ]
+
+-- | The identifier tokens in a top-level function's equation, excluding its type
+-- signature, comments, and string literals. Returns 'Nothing' when the function
+-- is not defined at all, so a deletion is a finding rather than a vacuous pass.
+functionBodyTokens :: String -> String -> Maybe [String]
+functionBodyTokens functionName contents =
+  case equationLines of
+    [] -> Nothing
+    body -> Just (nub (concatMap tokenizeSource body))
+ where
+  sourceLines = lines contents
+  isEquationStart sourceLine =
+    (functionName ++ " ") `isPrefixOf` sourceLine
+      && not ((functionName ++ " ::") `isPrefixOf` sourceLine)
+  equationLines =
+    case dropWhile (not . isEquationStart) sourceLines of
+      [] -> []
+      (first : rest) ->
+        first : takeWhile (\sourceLine -> null sourceLine || " " `isPrefixOf` sourceLine) rest
+
+-- | Sprint 1.77: Sprint 1.13 validation item 2 said "the retry surface is
+-- consumed only through the @RetryPolicy@ API" and named no lint, no gate, and
+-- no scan, so it could not be checked. This is that sentence as a rule that
+-- fails, in the shape Sprint 2.10 item 4 established.
+--
+-- Two claims, both negative-space:
+--
+--   * no production module reaches the __un-jittered__ schedule
+--     ('retryDelayMicros'); every delay is drawn through
+--     'drawRetryDelayMicros', so a new retrier cannot reintroduce the lockstep
+--     the sprint removed;
+--   * no production module imports 'RetryPolicy' with its constructor, so a
+--     schedule cannot be authored around 'mkRetryPolicy' by re-exporting it.
+checkSharedRetrySchedule :: FilePath -> IO [String]
+checkSharedRetrySchedule repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (sharedRetryScheduleViolations (path, contents))
+      )
+
+sharedRetryScheduleViolations :: (FilePath, String) -> [String]
+sharedRetryScheduleViolations (path, contents) =
+  scheduleViolations ++ constructorViolations
+ where
+  retryModulePath = "src/Prodbox/Retry.hs"
+  scheduleViolations =
+    [ path
+        ++ " names the un-jittered retry schedule `retryDelayMicros`; production "
+        ++ "delays are drawn through `drawRetryDelayMicros` so independent "
+        ++ "retriers do not share one schedule (Sprint 1.77)."
+    | path /= retryModulePath
+    , "retryDelayMicros" `isInfixOf` withoutDrawSites
+    ]
+  -- `drawRetryDelayMicros` contains `RetryDelayMicros`, not `retryDelayMicros`,
+  -- so the two do not collide; the blanking is belt-and-braces for a future
+  -- rename that would make them overlap.
+  withoutDrawSites = blankOut "drawRetryDelayMicros" contents
+  constructorViolations =
+    [ path
+        ++ " imports RetryPolicy with its constructor; a schedule is a named "
+        ++ "value in Prodbox.Retry or the result of `mkRetryPolicy` (Sprint 1.77)."
+    | path /= retryModulePath
+    , "RetryPolicy (..)" `isInfixOf` contents
+    ]
+
+-- | Replace every occurrence of @needle@ with spaces, so a longer identifier
+-- cannot satisfy a search for the shorter one it contains.
+blankOut :: String -> String -> String
+blankOut needle = go
+ where
+  go [] = []
+  go remaining@(character : rest)
+    | needle `isPrefixOf` remaining = map (const ' ') needle ++ go (drop (length needle) remaining)
+    | otherwise = character : go rest
+
+roundTripWitnessInternalSourceViolations :: (FilePath, String) -> [String]
+roundTripWitnessInternalSourceViolations (path, contents) =
+  internalModuleViolations ++ minterViolations
+ where
+  internalModuleName = "Prodbox.ControlPlane.Observation.Internal"
+  minterName = "mintRoundTripWitness"
+  internalModuleAllowedPaths =
+    [ "src/Prodbox/ControlPlane/Observation.hs"
+    , "src/Prodbox/ControlPlane/Observation/Internal.hs"
+    , "src/Prodbox/Gateway/Client.hs"
+    , "src/Prodbox/Lifecycle/RegistryBackendWitness.hs"
+    ]
+  minterAllowedPaths =
+    [ "src/Prodbox/ControlPlane/Observation/Internal.hs"
+    , "src/Prodbox/Gateway/Client.hs"
+    , "src/Prodbox/Lifecycle/RegistryBackendWitness.hs"
+    ]
+  internalModuleViolations =
+    [ path
+        ++ " imports or names the package-internal RoundTripWitness "
+        ++ "representation; only Observation, the gateway state decoder, and the "
+        ++ "registry storage-backend witness may cross that boundary."
+    | internalModuleName `isInfixOf` contents
+    , path `notElem` internalModuleAllowedPaths
+    ]
+  minterViolations =
+    [ path
+        ++ " mints a round-trip witness outside its definition, the gateway "
+        ++ "state decoder, or the registry storage-backend witness; a witness "
+        ++ "must be evidence that a conditional write landed, not an authored "
+        ++ "value (bootstrap_readiness_doctrine.md § 2.3)."
+    | minterName `isInfixOf` contents
+    , path `notElem` minterAllowedPaths
+    ]
+
+-- | Sprint 5.30: a Tier-0 test fixture is a rendered value, not authored Dhall.
+--
+-- The rule is on the /write/, not on the mention: a test may name
+-- @prodbox.dhall@ freely in a comment, in an expected error message, or as the
+-- argument of the production path helper it is asserting about. What it may not
+-- do is hand a @String@ of its own to `writeFile` at that path, because that is
+-- the only shape a second hand-maintained encoder can take. Four such encoders
+-- of a record with one decoder is how Sprint `1.80`'s type tightening broke
+-- twenty integration cases while updating only one of them
+-- (chaos_hardening_doctrine.md section 23).
+--
+-- @writeTier0AtPath@ is deliberately not banned: it is the production writer,
+-- it renders through the canonical encoder, and tests of it are tests of the
+-- encoder rather than rivals to it.
+--
+-- Bound, stated rather than implied: this is a line-local check, so binding the
+-- path first and writing to the binding on a later line escapes it. The
+-- structural guarantee is the one that carries the weight — a fixture is a
+-- typed value, so a schema change is a compile error — and this rule only keeps
+-- the shortest road back from being taken by accident.
+--
+-- The last two arms are positive anchors: if the fixture module stops routing
+-- through `renderProjectConfigDhall`, or stops offering the reasoned raw escape,
+-- the rule would pass vacuously.
+tier0EncoderViolations :: [(FilePath, Maybe String)] -> [String]
+tier0EncoderViolations = concatMap check
+ where
+  check (path, Nothing) =
+    [path ++ " is missing; the Tier-0 encoder gate cannot run (Sprint 5.30)."]
+  check (path, Just contents)
+    | path == tier0FixtureModulePath = anchorViolations path contents
+    | otherwise = writeSiteViolations path contents
+
+  anchorViolations path contents =
+    [ path
+        ++ " no longer renders through `renderProjectConfigDhall`; the Tier-0"
+        ++ " fixture encoder gate has nothing to protect, and a second"
+        ++ " hand-maintained encoder becomes expressible again (Sprint 5.30)."
+    | not ("renderProjectConfigDhall" `isInfixOf` contents)
+    ]
+      ++ [ path
+             ++ " no longer defines `rawTier0Fixture`; the reasoned escape for a"
+             ++ " fixture that cannot be a typed value is gone, which pushes such"
+             ++ " fixtures back to unreasoned hand-authored text (Sprint 5.30)."
+         | not ("rawTier0Fixture" `isInfixOf` contents)
+         ]
+
+  writeSiteViolations path contents =
+    [ path
+        ++ ":"
+        ++ show lineNumber
+        ++ " writes hand-authored text to a Tier-0 `"
+        ++ tier0SiblingFileName
+        ++ "`. Write it with `Tier0Fixture.writeTier0Fixture`, whose value is"
+        ++ " rendered by the one canonical encoder, so a schema change is a"
+        ++ " compile error rather than a runtime decode failure (Sprint 5.30)."
+    | (lineNumber, line) <- zip [1 :: Int ..] (lines contents)
+    , "writeFile" `isInfixOf` line
+    , tier0SiblingFileName `isInfixOf` line
+    ]
+
+tier0FixtureModulePath :: FilePath
+tier0FixtureModulePath = "test/support/Tier0Fixture.hs"
+
+tier0SiblingFileName :: String
+tier0SiblingFileName = "prodbox.dhall"
+
+checkTier0FixtureEncoder :: FilePath -> IO [String]
+checkTier0FixtureEncoder repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  sources <-
+    forM
+      ( tier0FixtureModulePath
+          : [ path
+            | path <- repoPaths
+            , "test/" `isPrefixOf` path
+            , ".hs" `isSuffixOf` path
+            , path /= tier0FixtureModulePath
+            ]
+      )
+      ( \relativePath -> do
+          let absolutePath = repoRoot </> relativePath
+          exists <- doesFileExist absolutePath
+          contents <- if exists then readFileStrict absolutePath else pure ""
+          pure (relativePath, if exists then Just contents else Nothing)
+      )
+  pure (tier0EncoderViolations sources)
+
+-- | Sprint 4.60: a server answers an accepted connection through
+-- 'withResponseObligation', or not at all.
+--
+-- Negative space, the Sprint 2.10 / 2.41 pattern: the rule is that the raw
+-- socket write is not in scope in a governed server module, and this check is
+-- what makes it fail. A server holding `sendAll` can always reach the state
+-- this sprint removed — accept, throw, close, say nothing — no matter what the
+-- helper guarantees.
+--
+-- The last three arms are positive anchors. Without them the gate passes
+-- vacuously the moment somebody deletes the thing it protects, which is the
+-- failure mode Sprint 2.41 named when it added the same shape for
+-- `withSupervisedWorkers`.
+--
+-- Deliberately not yet governed, each by named sprint rather than by omission:
+-- the Bootstrap Broker (its own equivalent plus deadline and backpressure), the
+-- gateway daemon, and the CliSuite fake servers. Client-side writers
+-- (`Prodbox.Workload`, `Prodbox.Pulsar.Client`, request-writing tests) are out
+-- of scope permanently — they send requests, not responses.
+responseObligationViolations :: [(FilePath, Maybe String)] -> [String]
+responseObligationViolations = concatMap check
+ where
+  check (path, Nothing) =
+    [ path
+        ++ " is missing; the response-obligation gate cannot run (Sprint 4.60)."
+    ]
+  check (path, Just contents)
+    | path == responseObligationModulePath = helperAnchorViolations path contents
+    | otherwise = rawWriteViolations path contents ++ adoptionViolations path contents
+
+  helperAnchorViolations path contents =
+    [ path
+        ++ " no longer defines `"
+        ++ anchor
+        ++ "`; the response-obligation gate has nothing to protect (Sprint 4.60)."
+    | anchor <- ["withResponseObligation", "mkResponseObligation"]
+    , not (definesTopLevel anchor contents)
+    ]
+      ++ [ path
+             ++ " no longer defines the closed `ResponseRefusal` type; a refusal"
+             ++ " renderer stops being a total function and a new refusal kind"
+             ++ " becomes a silent bare close (Sprint 4.60)."
+         | not ("data ResponseRefusal" `isInfixOf` contents)
+         ]
+
+  -- The formatter wraps a long signature onto its own line, so anchoring on the
+  -- literal `name ::` would make this gate fail the moment somebody reformats
+  -- the module it protects. Match a top-level binding instead: the bare name on
+  -- its own line (a wrapped signature) or the name in leading position.
+  definesTopLevel name contents =
+    any matchesLine (lines contents)
+   where
+    matchesLine sourceLine =
+      sourceLine == name
+        || (name ++ " ") `isPrefixOf` sourceLine
+
+  rawWriteViolations path contents =
+    [ path
+        ++ " imports the raw socket write from `Network.Socket.ByteString`. An"
+        ++ " accepted connection is answered through `withResponseObligation`"
+        ++ " (Prodbox.Http.ResponseObligation), which carries a required refusal"
+        ++ " renderer and catches a handler's synchronous exception into it; a"
+        ++ " raw `sendAll` re-admits \"accepted a connection and answered"
+        ++ " nothing\" (Sprint 4.60)."
+    | sourceLine <- lines contents
+    , "import " `isPrefixOf` dropWhile isSpace sourceLine
+    , "Network.Socket.ByteString" `isInfixOf` sourceLine
+    , any (`elem` rawSocketWriteNames) (tokenizeSource sourceLine)
+        || "qualified" `elem` tokenizeSource sourceLine
+    ]
+
+  adoptionViolations path contents =
+    [ path
+        ++ " no longer names `withResponseObligation`; its accept path is"
+        ++ " outside the response-obligation gate, which would then pass"
+        ++ " vacuously (Sprint 4.60)."
+    | not ("withResponseObligation" `isInfixOf` contents)
+    ]
+
+-- | The raw write names a governed server may not bring into scope. A qualified
+-- import of the module is refused separately, because an alias reaches all of
+-- them at once.
+rawSocketWriteNames :: [String]
+rawSocketWriteNames = ["sendAll", "send", "sendMany", "sendTo"]
+
+responseObligationModulePath :: FilePath
+responseObligationModulePath = "src/Prodbox/Http/ResponseObligation.hs"
+
+-- | The servers this gate governs. Adding one is how a new accept loop opts in.
+responseObligationGovernedServers :: [FilePath]
+responseObligationGovernedServers =
+  [ "src/Prodbox/ControlPlane/Runtime.hs"
+  , "test/integration/FixtureServer.hs"
+  ]
+
+checkResponseObligation :: FilePath -> IO [String]
+checkResponseObligation repoRoot = do
+  sources <-
+    forM (responseObligationModulePath : responseObligationGovernedServers) $ \relativePath -> do
+      let absolutePath = repoRoot </> relativePath
+      exists <- doesFileExist absolutePath
+      contents <- if exists then readFileStrict absolutePath else pure ""
+      pure (relativePath, if exists then Just contents else Nothing)
+  pure (responseObligationViolations sources)
+
+-- | Sprint 4.56: a 'DependencyAdmission' asserts that a graph-declared
+-- dependency was observed ready, and a 'MutationAdmission' that every one of
+-- them was, recently enough to act on. Both are worth something only while the
+-- set of modules able to construct one is exactly the module that folds a ready
+-- verdict into one.
+dependencyAdmissionInternalSourceViolations :: (FilePath, String) -> [String]
+dependencyAdmissionInternalSourceViolations (path, contents) =
+  internalModuleViolations
+ where
+  internalModuleName = "Prodbox.Lifecycle.DependencyAdmission.Internal"
+  internalModuleAllowedPaths =
+    [ "src/Prodbox/Lifecycle/DependencyAdmission.hs"
+    , "src/Prodbox/Lifecycle/DependencyAdmission/Internal.hs"
+    ]
+  internalModuleViolations =
+    [ path
+        ++ " imports or names the package-internal DependencyAdmission "
+        ++ "representation; an admission must be evidence that a readiness "
+        ++ "barrier passed, not a value a mutating step constructed for itself "
+        ++ "(Sprint 4.56)."
+    | internalModuleName `isInfixOf` contents
+    , path `notElem` internalModuleAllowedPaths
+    ]
+
+dnsOwnerAuthorityInternalSourceViolations :: (FilePath, String) -> [String]
+dnsOwnerAuthorityInternalSourceViolations (path, contents) =
+  internalModuleViolations
+ where
+  internalModuleName = "Prodbox.Lifecycle.DnsRecord.Owner.Internal"
+  internalModuleAllowedPaths =
+    [ "src/Prodbox/Lifecycle/DnsRecord/Owner.hs"
+    , "src/Prodbox/Lifecycle/DnsRecord/Owner/Internal.hs"
+    ]
+  internalModuleViolations =
+    [ path
+        ++ " imports or names the package-internal DnsOwnerAuthority "
+        ++ "representation; a DNS ownership authority is minted only by "
+        ++ "`dnsOwnerAuthorityForProcess` from the role and substrate the "
+        ++ "process actually runs as, never constructed from an owner a caller "
+        ++ "already had (Sprint 3.32)."
+    | internalModuleName `isInfixOf` contents
+    , path `notElem` internalModuleAllowedPaths
+    ]
+
+targetSinkVersionInternalSourceViolations :: (FilePath, String) -> [String]
+targetSinkVersionInternalSourceViolations (path, contents) =
+  internalModuleViolations ++ minterViolations
+ where
+  internalModuleName = "Prodbox.Lifecycle.TargetSinkVersion.Internal"
+  minterName = "targetSinkVersionFromStoreVersion"
+  internalModuleAllowedPaths =
+    [ "src/Prodbox/Lifecycle/TargetSinkVersion.hs"
+    , "src/Prodbox/Lifecycle/TargetSinkVersion/Internal.hs"
+    , "src/Prodbox/ControlPlane/TrustedTargetSink.hs"
+    ]
+  minterAllowedPaths =
+    [ "src/Prodbox/Lifecycle/TargetSinkVersion/Internal.hs"
+    , "src/Prodbox/ControlPlane/TrustedTargetSink.hs"
+    ]
+  internalModuleViolations =
+    [ path
+        ++ " imports or names the package-internal TargetSinkVersion "
+        ++ "representation; only TargetSinkVersion and the target sink's Vault "
+        ++ "observation decoder may cross that boundary."
+    | internalModuleName `isInfixOf` contents
+    , path `notElem` internalModuleAllowedPaths
+    ]
+  minterViolations =
+    [ path
+        ++ " mints a target sink expected version outside its definition or the "
+        ++ "target sink's Vault observation decoder; an expected version must be "
+        ++ "evidence of a store read, not an authored value."
+    | minterName `isInfixOf` contents
+    , path `notElem` minterAllowedPaths
     ]
 
 verifyThinMainEntrypoint :: FilePath -> IO (Either String ())
@@ -2742,7 +3682,8 @@ checkGovernedDocStatusValues repoRoot = do
 retiredCitedSourcePaths :: [FilePath]
 retiredCitedSourcePaths =
   removedLegacyTransportSourcePaths
-    ++ [ "src/Prodbox/StateMachine.hs" -- retired by Sprint 1.32
+    ++ [ "src/Prodbox/Host/Tool.hs" -- retired by Sprint 1.78 (zero production importers)
+       , "src/Prodbox/StateMachine.hs" -- retired by Sprint 1.32
        , "src/Prodbox/SupportedRuntime.hs" -- retired by Sprints 6.3/7.3
        , "src/Prodbox/Secret/Derive.hs" -- retired by Sprint 3.19 (master-seed removal)
        , "src/Prodbox/Secret/EnsureNamespace.hs" -- retired by Sprint 3.19
@@ -2755,6 +3696,12 @@ retiredCitedSourcePaths =
          -- suite to test/unit/ModelBCasTransportAdapter.hs, whose own header
          -- records the replacement.
          "test/unit/HostDirectModelBAdapter.hs"
+       , -- Deleted by Sprint 4.59 together with the in-controller Target Agent
+         -- write lane it covered. No coverage moved with it: the suite was
+         -- listed in `other-modules` and never registered in test/unit/Main.hs,
+         -- so it compiled and never ran. The deployed writer's coverage is
+         -- unaffected — it lives on the TargetSecretWorker path.
+         "test/unit/ControlPlaneTargetSecretAgentExecution.hs"
        ]
 
 -- | Sprint 0.21 (pure). The inline-code spans on one line, WITHOUT their
@@ -2844,6 +3791,167 @@ checkPlanCitedSourcePaths repoRoot = do
             ++ "(development_plan_standards.md Standard C: status must describe reality)."
         | missingPath <- missingPaths
         ]
+
+-- | Sprint 0.22 (pure). The section numbers a document actually defines, read
+-- from its headings. The grammar is uniform across the doctrine set:
+-- @## 7. Title@, @### 3.1 Title@, @## 2C. Title@, @### 5a.1. Title@.
+-- Exposed for unit tests.
+documentSectionNumbers :: String -> [String]
+documentSectionNumbers contents =
+  dedupeSorted
+    [ number
+    | lineText <- stripFencedCodeBlocks (lines contents)
+    , Just number <- [headingSectionNumber lineText]
+    ]
+
+-- | Sprint 0.22 (pure). The section number a heading line declares, if any.
+-- Exposed for unit tests.
+headingSectionNumber :: String -> Maybe String
+headingSectionNumber lineText =
+  case span (== '#') lineText of
+    ([], _) -> Nothing
+    (_, afterHashes)
+      | not (startsWithSpace afterHashes) -> Nothing
+      | otherwise ->
+          let body = dropWhile (== '*') (trimLeft afterHashes)
+              token = takeWhile isSectionNumberChar body
+              rest = drop (length token) body
+              trimmed = dropTrailingDot token
+           in case trimmed of
+                (firstChar : _) | isDigit firstChar && validSectionRest rest -> Just trimmed
+                _ -> Nothing
+ where
+  startsWithSpace (c : _) = c == ' '
+  startsWithSpace [] = False
+  validSectionRest rest = case rest of
+    [] -> True
+    (c : _) -> isSpace c
+
+-- | Sprint 0.22 (pure). Characters legal inside a section number.
+isSectionNumberChar :: Char -> Bool
+isSectionNumberChar c = isDigit c || isAlpha c || c == '.'
+
+-- | Sprint 0.22 (pure). Drop one trailing @.@ from a heading's number token.
+dropTrailingDot :: String -> String
+dropTrailingDot token
+  | not (null token) && last token == '.' = init token
+  | otherwise = token
+
+-- | Sprint 0.22 (pure). Section citations on one line that are LEXICALLY BOUND
+-- to a named document — a @doc.md@ token close enough before the @\<section\>@
+-- marker that the pairing is unambiguous. Returns @(docBasename, number)@ pairs.
+--
+-- Bare citations are deliberately not returned. 937 of them exist, and the
+-- obvious "a bare number in a markdown file means this file" heuristic
+-- false-positives at 29%, because the plan documents narrate about doctrine
+-- across whole paragraphs. Under-covering is the correct failure mode here.
+--
+-- Rejected on purpose: a gap containing a letter, @;@ or @.@ (the doc named is
+-- then something else — @[README.md](…); §4.1@ is a self-reference, not a
+-- README one); a number of three or more digits (a line-number convention used
+-- in four phase files); and an external-standard citation such as @RFC 6455
+-- §1.3@. Exposed for unit tests.
+boundSectionCitationsInLine :: String -> [(String, String)]
+boundSectionCitationsInLine rawLine = go (stripHaddockMarkup rawLine) ""
+ where
+  go [] _ = []
+  go ('\167' : rest) seen =
+    let afterMarkers = dropWhile (\c -> c == '\167' || c == ' ') rest
+        number = dropTrailingDot (takeWhile isSectionNumberChar afterMarkers)
+        remaining = drop (length (takeWhile isSectionNumberChar afterMarkers)) afterMarkers
+     in case boundDocumentName seen of
+          Just doc
+            | plausibleSectionNumber number
+            , not (externalStandardCitation seen) ->
+                (doc, number) : go remaining ('\167' : seen)
+          _ -> go remaining ('\167' : seen)
+  go (c : rest) seen = go rest (c : seen)
+
+-- | Sprint 0.22 (pure). Is a citation's number plausibly a section rather than
+-- a line number? Three or more leading digits is the line-number convention.
+plausibleSectionNumber :: String -> Bool
+plausibleSectionNumber number = case number of
+  (firstChar : _) -> isDigit firstChar && length (takeWhile isDigit number) < 3
+  [] -> False
+
+-- | Sprint 0.22 (pure). Was the text immediately before the marker an external
+-- standard rather than a repository document? @seen@ is reversed.
+externalStandardCitation :: String -> Bool
+externalStandardCitation seen =
+  -- @seen@ is reversed, so an "RFC 6455 " prefix arrives as " 5546 CFR".
+  -- Drop the reversed standard number and spaces, then match the reversed tag.
+  let afterNumber = dropWhile (\c -> isDigit c || isSpace c || c == '.') seen
+   in any (`isPrefixOf` map toLower afterNumber) ["cfr", "osi", "tsin"]
+
+-- | Sprint 0.22 (pure). Strip Haddock code-span and escape markup so
+-- @\@…md \<section\> 3\@@ tokenizes as a plain citation. Exposed for unit tests.
+stripHaddockMarkup :: String -> String
+stripHaddockMarkup = filter (\c -> c /= '@' && c /= '\\')
+
+-- | Sprint 0.22 (pure). Read the document basename bound to a marker, given the
+-- REVERSED text preceding it. The gap between the @.md@ token and the marker
+-- must contain no letter, @;@ or @.@.
+boundDocumentName :: String -> Maybe String
+boundDocumentName seen =
+  let gap = takeWhile (/= 'd') (take 8 seen)
+   in if any (\c -> isAlpha c || c == ';' || c == '.') gap
+        then Nothing
+        else case stripPrefix' "dm." (drop (length gap) seen) of
+          Nothing -> Nothing
+          Just afterSuffix ->
+            let nameRev = takeWhile (\c -> isAlphaNum c || c == '_' || c == '-') afterSuffix
+             in if null nameRev then Nothing else Just (reverse nameRev ++ ".md")
+ where
+  stripPrefix' p s = if p `isPrefixOf` s then Just (drop (length p) s) else Nothing
+
+-- | Sprint 0.22 (IO). Every bound section citation resolves to a heading that
+-- exists in the document it names.
+--
+-- This is the doctrine analogue of 'checkPlanCitedSourcePaths'. It scans the
+-- whole tree rather than only @DEVELOPMENT_PLAN\/@, because @CheckCode.hs@ is
+-- itself among the heaviest citing files and ~25 sites emit section citations
+-- into operator-facing output, where they are least likely to be proofread. A
+-- broken citation has already shipped inside a @dev check@ error message once.
+--
+-- A citation naming a document that is not in this repository is skipped: some
+-- doctrine deliberately cites an absolute path into a sibling repository.
+checkDoctrineSectionCitations :: FilePath -> IO [String]
+checkDoctrineSectionCitations repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let docPaths = [path | path <- repoPaths, ".md" `isSuffixOf` path]
+      scanPaths =
+        [ path
+        | path <- repoPaths
+        , ".md" `isSuffixOf` path || ".hs" `isSuffixOf` path
+        ]
+  sectionsByDoc <-
+    forM docPaths $ \path -> do
+      contents <- readFileStrict (repoRoot </> path)
+      pure (takeFileNameSimple path, documentSectionNumbers contents)
+  let lookupSections basename =
+        [ numbers
+        | (name, numbers) <- sectionsByDoc
+        , name == basename
+        ]
+  fmap concat $
+    forM scanPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure
+        [ relativePath
+            ++ " cites `"
+            ++ doc
+            ++ " section "
+            ++ number
+            ++ "`, which is not a heading in that document (documentation_standards.md § 4)."
+        | lineText <- stripFencedCodeBlocks (lines contents)
+        , (doc, number) <- boundSectionCitationsInLine lineText
+        , numbers <- take 1 (lookupSections doc)
+        , number `notElem` numbers
+        ]
+
+-- | Sprint 0.22 (pure). The final path component. Total.
+takeFileNameSimple :: FilePath -> String
+takeFileNameSimple = reverse . takeWhile (/= '/') . reverse
 
 checkCreateCallSiteCoverage :: FilePath -> IO [String]
 checkCreateCallSiteCoverage repoRoot = do

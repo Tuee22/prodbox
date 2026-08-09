@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Rke2
-  ( acmeRuntimeManifest
-  , acmeRuntimeManifestWith
+  ( acmeRuntimeManifestWith
   , ensureAcmeRuntimeForSubstrate
   , acmeClusterIssuerSpec
   , awaitAcmeMaterialization
@@ -58,6 +57,8 @@ module Prodbox.CLI.Rke2
   , observeGatewayReadyzOnceAt
   , observeKubernetesReadinessOnce
   , observeRegistryBackendRoundTripOnce
+  , RegistryStorageEdgeObservation (..)
+  , parseRegistryStorageEdgeResponse
   , observeVaultUnsealedOnce
   , classifyBrokerVaultUnsealedStatus
   , renderInotifySysctlDropIn
@@ -107,6 +108,7 @@ import Data.Char
   , isSpace
   , toLower
   )
+import Data.Either (fromLeft)
 import Data.List
   ( intercalate
   , isInfixOf
@@ -325,6 +327,14 @@ import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   )
+import Prodbox.Lifecycle.DependencyAdmission
+  ( AdmissionSet
+  , DependencyAdmission
+  , mutationAdmittedComponent
+  , noAdmissions
+  , recordAdmission
+  , renderAdmissionRefusal
+  )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
   ( FederatedVaultLifecycle (..)
@@ -335,7 +345,7 @@ import Prodbox.Lifecycle.FederatedVault
   , vaultLifecycleHelmSealArgs
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
-import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros)
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
@@ -348,10 +358,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderReadinessProbe (ProviderReadinessStsIdentity)
   )
 import Prodbox.Lifecycle.ReadinessObservation
-  ( ComponentReadinessTarget (..)
+  ( BackendRoundTripResult (..)
+  , ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
   )
+import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
@@ -368,15 +380,17 @@ import Prodbox.PublicEdge
   , minioPathPrefix
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
-  , substrateHostedZoneId
+  , resolveSubstrateHostedZoneId
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
   , substratePublicRouteUrl
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
-  ( RetryPolicy (..)
-  , retryDelayMicros
+  ( customImagePushRetryPolicy
+  , drawRetryDelayMicros
+  , helmTransientRetryPolicy
+  , retryPolicyMaxAttempts
   )
 import Prodbox.Service (isRetryableTransientFailure)
 import Prodbox.Settings
@@ -386,6 +400,7 @@ import Prodbox.Settings
   , Credentials (..)
   , DeploymentSection (..)
   , MetallbBgpPeer (..)
+  , PublicEdgeAdvertisementMode (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
@@ -402,6 +417,7 @@ import Prodbox.Settings
   , pulumi_state_backend
   , reconcileInForceConfigFromFile
   , region
+  , renderPublicEdgeAdvertisementMode
   , renderSeedInForceOutcome
   , server
   , storage
@@ -1770,12 +1786,17 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
   -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
   -- `PhaseBootstrap` steps, the Vault-init transition runs its dedicated control
   -- flow, and the post-Vault steady phase runs the `PhaseSteady` steps.
-  bootstrapExit <-
+  -- Sprint 4.61: admissions are threaded across the phase boundaries rather
+  -- than reset at each one. The phases are separate calls only because their
+  -- step actions differ; they are one run, and a readiness observation made in
+  -- an earlier phase is evidence in a later one until its age bound expires it.
+  (bootstrapExit, bootstrapAdmissions) <-
     runAnchoredReconcileSteps
       repoRoot
       bootstrapSettings
       dag
       bootstrapStepAction
+      noAdmissions
       [step | step <- order, reconcileStepPhase step == PhaseBootstrap]
   case bootstrapExit of
     ExitFailure _ -> pure bootstrapExit
@@ -1784,24 +1805,31 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
       case vaultLifecycleExitCode vaultLifecycleResult of
         ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
         ExitSuccess -> do
-          vaultReadyExit <-
+          vaultReadyObserved <-
             requireNativeComponentReadiness
               repoRoot
               bootstrapSettings
               dag
               ComponentVaultUnsealed
+          let vaultReadyExit = fromLeft ExitSuccess vaultReadyObserved
+              vaultAdmissions =
+                either
+                  (const bootstrapAdmissions)
+                  (`recordAdmission` bootstrapAdmissions)
+                  vaultReadyObserved
           case vaultReadyExit of
             ExitFailure _ -> pure vaultReadyExit
             ExitSuccess -> do
               -- MinIO, Vault, and Broker are ready.  The remaining transition
               -- deliberately still uses Tier-0 settings: home Agent -> frozen
               -- Authority -> Backup Adapter -> backup admission -> config CAS.
-              transitionExit <-
+              (transitionExit, transitionAdmissions) <-
                 runAnchoredReconcileSteps
                   repoRoot
                   bootstrapSettings
                   dag
                   transitionStepAction
+                  vaultAdmissions
                   [ step
                   | step <- order
                   , reconcileStepPhase step == PhaseTransition
@@ -1817,12 +1845,18 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
                     Right settings -> do
                       -- Loading the observed projection is the final readiness
                       -- barrier of the Authority-backup component group.
-                      inForceAuthorityReady <-
+                      authorityObserved <-
                         requireNativeComponentReadiness
                           repoRoot
                           settings
                           dag
                           ComponentChartAuthorityBackup
+                      let inForceAuthorityReady = fromLeft ExitSuccess authorityObserved
+                          authorityAdmissions =
+                            either
+                              (const transitionAdmissions)
+                              (`recordAdmission` transitionAdmissions)
+                              authorityObserved
                       case inForceAuthorityReady of
                         ExitFailure _ -> pure inForceAuthorityReady
                         ExitSuccess -> do
@@ -1830,12 +1864,13 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
                           case lanDefaultsResult of
                             Left err -> failWith err
                             Right lanDefaults -> do
-                              steadyExit <-
+                              (steadyExit, _steadyAdmissions) <-
                                 runAnchoredReconcileSteps
                                   repoRoot
                                   settings
                                   dag
                                   (steadyStepAction settings lanDefaults)
+                                  authorityAdmissions
                                   [step | step <- order, reconcileStepPhase step == PhaseSteady]
                               case steadyExit of
                                 ExitFailure _ -> pure steadyExit
@@ -2077,33 +2112,61 @@ runAnchoredReconcileSteps
   -> ValidatedSettings
   -> ComponentDag
   -> (ReconcileStepId -> IO ExitCode)
+  -> AdmissionSet
   -> [ReconcileStepId]
-  -> IO ExitCode
-runAnchoredReconcileSteps repoRoot settings dag runStep =
-  runAnchoredStepOrder
-    reconcileStepAnchor
-    runStep
-    (requireNativeComponentReadiness repoRoot settings dag)
+  -> IO (ExitCode, AdmissionSet)
+runAnchoredReconcileSteps repoRoot settings dag runStep carried steps = do
+  -- Sprint 5.31: the refusal arrives as itself and is rendered here. Lowering
+  -- it to an exit code inside the runner discarded the reason on a path that
+  -- printed nothing, so a refused reconcile exited 1 in silence.
+  outcome <- runOrder carried steps
+  case outcome of
+    Left refusal -> do
+      refused <- failWith (Text.unpack (renderAdmissionRefusal refusal))
+      pure (refused, carried)
+    Right result -> pure result
+ where
+  runOrder =
+    runAnchoredStepOrder
+      dag
+      reconcileClockMicros
+      reconcileStepAnchor
+      -- Sprint 4.56: the mutating arm cannot be reached without the admission the
+      -- executor re-validated; it is bound here rather than ignored so the proof
+      -- stays a required argument all the way to the act.
+      (\admission step -> mutationAdmittedComponent admission `seq` runStep step)
+      runStep
+      (requireNativeComponentReadiness repoRoot settings dag)
+
+-- | The reconcile clock an admission's age is measured against.
+reconcileClockMicros :: IO Natural
+reconcileClockMicros = do
+  posix <- getPOSIXTime
+  pure (fromInteger (max 0 (floor (toRational posix * 1000000) :: Integer)))
 
 requireNativeComponentReadiness
-  :: FilePath -> ValidatedSettings -> ComponentDag -> ComponentId -> IO ExitCode
+  :: FilePath
+  -> ValidatedSettings
+  -> ComponentDag
+  -> ComponentId
+  -> IO (Either ExitCode DependencyAdmission)
 requireNativeComponentReadiness repoRoot settings dag component =
   case (lookupComponentNode component dag, componentCapabilityRequirement component dag) of
     (Nothing, _) ->
-      failWith
+      refuseWith
         ( "Native reconcile readiness has no graph node for component `"
             ++ componentIdText component
             ++ "`."
         )
     (_, Nothing) ->
-      failWith
+      refuseWith
         ( "Native reconcile readiness has no capability requirement for component `"
             ++ componentIdText component
             ++ "`."
         )
     (Just node, Just requirement) ->
       case nativeComponentReadinessTarget repoRoot settings component of
-        Left reason -> failWith (Text.unpack reason)
+        Left reason -> refuseWith (Text.unpack reason)
         Right target -> do
           -- Sprint 1.61: drive the barrier through the single capability handle
           -- and the shared runCapability boundary. The actual probe I/O
@@ -2116,11 +2179,15 @@ requireNativeComponentReadiness repoRoot settings dag component =
                   (readiness node)
                   target
           readinessResult <-
-            observeReadinessThroughCapability componentReadinessRetryPolicy client requirement
+            observeReadinessThroughCapability
+              componentReadinessRetryPolicy
+              client
+              component
+              requirement
           case readinessResult of
-            Right () -> pure ExitSuccess
+            Right admission -> pure (Right admission)
             Left detail ->
-              failWith
+              refuseWith
                 ( "Component `"
                     ++ componentIdText component
                     ++ "` did not satisfy "
@@ -2410,31 +2477,75 @@ classifyBrokerVaultUnsealedStatus observed = case observed of
         Right (ReadinessProbePending "Bootstrap Broker reports Vault sealed")
     | otherwise -> Right ReadinessProbeReady
 
+-- | Sprint 1.76: the registry deep probe now mints a real witness. The probe
+-- POSTs a blob-upload session, which the registry can only create by writing
+-- through to its MinIO storage backend; the session identifier the registry
+-- returns is the receipt of that write. A 2xx that names no session is NOT a
+-- round trip and fails closed, where before any 201/202 was accepted and the
+-- receipt discarded.
 observeRegistryBackendRoundTripOnce
-  :: FilePath -> IO (Either Text.Text ReadinessProbeResult)
+  :: FilePath -> IO (Either Text.Text BackendRoundTripResult)
 observeRegistryBackendRoundTripOnce repoRoot = do
-  result <- classifyRegistryStorageEdgeProbe <$> probeRegistryStorageBackendEdge repoRoot
+  probed <- probeRegistryStorageBackendEdge repoRoot
+  landedAt <- readinessWallClockNow
   pure $
-    case result of
-      RegistryEdgeReady -> Right ReadinessProbeReady
-      RegistryEdgeNotReady detail -> Right (ReadinessProbePending (Text.pack detail))
+    case classifyRegistryStorageEdgeProbe (fmap registryProbeStatus probed) of
+      RegistryEdgeNotReady detail -> Right (BackendRoundTripPending (Text.pack detail))
       RegistryEdgeUnreachable detail -> Left (Text.pack detail)
+      RegistryEdgeReady ->
+        case probed of
+          Left detail -> Left (Text.pack detail)
+          Right observation ->
+            case registryBackendWitness
+              (Text.pack (registryProbeUploadSession observation))
+              landedAt of
+              Nothing ->
+                Right
+                  ( BackendRoundTripPending
+                      "registry accepted the upload but named no storage-backend session"
+                  )
+              Just witness -> Right (BackendRoundTripConfirmed witness)
 
-observeGatewayBackendRoundTripOnce :: IO (Either Text.Text ReadinessProbeResult)
+observeGatewayBackendRoundTripOnce :: IO (Either Text.Text BackendRoundTripResult)
 observeGatewayBackendRoundTripOnce = do
   endpoint <- gatewayEndpointFromEnv
   observeGatewayBackendRoundTripOnceAt endpoint
 
+-- | Sprint 1.76: the gateway deep probe stops treating a constant-time
+-- @\/readyz@ GET as proof of a backend write.
+--
+-- @\/readyz@ is kept as the liveness precondition it genuinely is — a daemon
+-- that is draining or still starting has nothing to say about the backend edge —
+-- and the EVIDENCE now comes from the receipt the daemon recorded when its own
+-- conditional continuity write was accepted by the shared object store. The
+-- daemon performs that write on every heartbeat publication, so a healthy daemon
+-- refreshes the receipt continuously and a wedged one stops, which is exactly
+-- the distinction the freshness window is there to make.
 observeGatewayBackendRoundTripOnceAt
-  :: PeerEndpoint -> IO (Either Text.Text ReadinessProbeResult)
+  :: PeerEndpoint -> IO (Either Text.Text BackendRoundTripResult)
 observeGatewayBackendRoundTripOnceAt endpoint = do
   result <- probeGatewayFullModeOnceAt endpoint
-  pure $
-    case result of
-      GatewayFullModeHealthy -> Right ReadinessProbeReady
-      GatewayFullModeNotReady detail ->
-        Right (ReadinessProbePending (Text.pack ("gateway continuity is not ready: " ++ detail)))
-      GatewayFullModeTransient detail -> Left (Text.pack detail)
+  case result of
+    GatewayFullModeNotReady detail ->
+      pure
+        ( Right
+            ( BackendRoundTripPending
+                (Text.pack ("gateway continuity is not ready: " ++ detail))
+            )
+        )
+    GatewayFullModeTransient detail -> pure (Left (Text.pack detail))
+    GatewayFullModeHealthy -> do
+      observed <- GatewayClient.queryBackendRoundTrip endpoint
+      pure $
+        case observed of
+          Left err -> Left (Text.pack (GatewayClient.renderGatewayError err))
+          Right GatewayClient.GatewayBackendRoundTripAbsent ->
+            Right
+              ( BackendRoundTripPending
+                  "gateway has not yet landed an object-store round trip"
+              )
+          Right (GatewayClient.GatewayBackendRoundTripWitnessed witness) ->
+            Right (BackendRoundTripConfirmed witness)
 
 -- | Sprint 2.34: observe the daemon's kubelet @/readyz@ once, as the lifecycle
 -- gate's precheck. A 200 is ready; a 503 (@draining@/@starting@) is
@@ -4841,7 +4952,27 @@ classifyRegistryStorageEdgeProbe result =
 -- | Open a blob-upload session against the registry NodePort — the real
 -- registry→MinIO S3 write round-trip the deep gate needs (see
 -- 'RegistryStorageEdgeReadiness').
-probeRegistryStorageBackendEdge :: FilePath -> IO (Either String String)
+-- | Sprint 1.76: what one registry storage-backend probe observed — the HTTP
+-- status the registry answered with, and the upload session it named. The
+-- session is the receipt of the write-through to MinIO; before this sprint the
+-- probe requested only the status and discarded the receipt, which is why the
+-- deep gate had nothing to carry as evidence.
+data RegistryStorageEdgeObservation = RegistryStorageEdgeObservation
+  { registryProbeStatus :: String
+  , registryProbeUploadSession :: String
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 1.76: the instant a deep probe observed its round trip land. Read
+-- immediately after the probe returns, so the witness carries the write's
+-- instant rather than the instant somebody later folded the evidence.
+readinessWallClockNow :: IO AuthorityTime
+readinessWallClockNow = do
+  posix <- getPOSIXTime
+  pure (authorityTimeFromMicros (fromInteger (max 0 (floor (toRational posix * 1000000) :: Integer))))
+
+probeRegistryStorageBackendEdge
+  :: FilePath -> IO (Either String RegistryStorageEdgeObservation)
 probeRegistryStorageBackendEdge repoRoot = do
   outputResult <-
     captureToolOutput
@@ -4854,8 +4985,10 @@ probeRegistryStorageBackendEdge repoRoot = do
       , "POST"
       , "-o"
       , "/dev/null"
+      , "-D"
+      , "-"
       , "-w"
-      , "%{http_code}"
+      , "\n%{http_code}"
       , "http://"
           ++ harborRegistryEndpoint
           ++ "/v2/"
@@ -4867,8 +5000,41 @@ probeRegistryStorageBackendEdge repoRoot = do
       Left err -> Left err
       Right output ->
         case processExitCode output of
-          ExitSuccess -> Right (trimWhitespace (processStdout output))
+          ExitSuccess -> Right (parseRegistryStorageEdgeResponse (processStdout output))
           ExitFailure _ -> Left (outputDetail output)
+
+-- | Split a @curl -D - -w "\n%{http_code}"@ response into the status the probe
+-- asked for and the upload session the registry named. Pure, so the parse is
+-- exercised without a live registry.
+parseRegistryStorageEdgeResponse :: String -> RegistryStorageEdgeObservation
+parseRegistryStorageEdgeResponse raw =
+  RegistryStorageEdgeObservation
+    { registryProbeStatus = status
+    , registryProbeUploadSession = session
+    }
+ where
+  responseLines = map trimWhitespace (lines raw)
+  nonEmpty = [entry | entry <- responseLines, not (null entry)]
+  status = case reverse nonEmpty of
+    (final : _) -> final
+    [] -> ""
+  session =
+    case headerValues "docker-upload-uuid" ++ headerValues "location" of
+      (value : _) -> value
+      [] -> ""
+
+  -- The registry names the session it created in `Docker-Upload-UUID`, and
+  -- names where to continue it in `Location`. Either identifies the write the
+  -- registry performed; the UUID is preferred deterministically because it is
+  -- the identifier the registry itself allocated rather than a URL it composed.
+  headerValues wanted =
+    [ value
+    | entry <- responseLines
+    , (name, ':' : rest) <- [break (== ':') entry]
+    , map toLower (trimWhitespace name) == wanted
+    , let value = trimWhitespace rest
+    , not (null value)
+    ]
 
 -- | Sprint 4.43: poll the deep registry→MinIO edge gate until it proves the S3
 -- write path, refusing (gating closed) on exhaustion. This is the registry
@@ -4889,7 +5055,7 @@ ensureRegistryStorageBackendEdgeReady repoRoot =
           )
     | otherwise = do
         probeResult <- probeRegistryStorageBackendEdge repoRoot
-        case classifyRegistryStorageEdgeProbe probeResult of
+        case classifyRegistryStorageEdgeProbe (fmap registryProbeStatus probeResult) of
           RegistryEdgeReady -> pure ExitSuccess
           RegistryEdgeNotReady detail -> retry attemptsRemaining detail
           RegistryEdgeUnreachable detail -> retry attemptsRemaining ("unreachable: " ++ detail)
@@ -5968,11 +6134,16 @@ envoyGatewayRuntimeManifest settings prodboxId labelValue edgeLbIp =
       ]
   ]
 
+-- | Sprint 1.80: a total projection of the union onto the MetalLB spelling. No
+-- string comparison decides it any more; an unset mode is Layer 2, which is the
+-- behaviour the superseded string fallback had and is now stated rather than
+-- reached by falling off the end of a comparison.
 configuredPublicEdgeAdvertisementMode :: ValidatedSettings -> String
 configuredPublicEdgeAdvertisementMode settings =
-  case fmap (map toLower . trimWhitespace . Text.unpack) (public_edge_advertisement_mode deploymentSection) of
-    Just "bgp" -> "bgp"
-    _ -> "l2"
+  Text.unpack
+    ( renderPublicEdgeAdvertisementMode
+        (fromMaybe AdvertiseLayer2 (public_edge_advertisement_mode deploymentSection))
+    )
  where
   deploymentSection = deployment (validatedConfig settings)
 
@@ -6104,48 +6275,57 @@ ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue =
       case substrate of
         SubstrateHomeLocal -> reconcileAcmeEabFixture LifecycleAuthorityOperator repoRoot
         SubstrateAws -> pure ()
-      withTemporaryJsonManifest
-        "prodbox-acme-runtime"
-        ( acmeRuntimeManifestWith
-            substrate
-            settings
-            (substrateHostedZoneId settings substrate)
-            prodboxId
-            labelValue
-        )
-        ( \manifestPath -> do
-            applyExit <-
-              runCommand
-                Subprocess
-                  { subprocessPath = "kubectl"
-                  , subprocessArguments = ["apply", "-f", manifestPath]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
-            case applyExit of
-              ExitFailure _ -> pure applyExit
-              ExitSuccess -> do
-                dnsMaterialized <- awaitDns01Materialization repoRoot dnsMaterializerName
-                case dnsMaterialized of
-                  ExitFailure _ -> pure dnsMaterialized
+      -- Sprint 1.81: resolve the hosted zone through the IO resolver rather than
+      -- the pure reader. This is an IO context, and the IO resolver is the one
+      -- that can consult the live aws-eks-subzone stack snapshot when
+      -- `aws_substrate.hosted_zone_id` is empty — which the pure reader answered
+      -- with a crash.
+      hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
+      case hostedZoneResult of
+        Left detail -> failWith detail
+        Right hostedZoneId ->
+          withTemporaryJsonManifest
+            "prodbox-acme-runtime"
+            ( acmeRuntimeManifestWith
+                substrate
+                settings
+                hostedZoneId
+                prodboxId
+                labelValue
+            )
+            ( \manifestPath -> do
+                applyExit <-
+                  runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments = ["apply", "-f", manifestPath]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                case applyExit of
+                  ExitFailure _ -> pure applyExit
                   ExitSuccess -> do
-                    eabMaterialized <- awaitAcmeMaterialization repoRoot settings
-                    case eabMaterialized of
-                      ExitFailure _ -> pure eabMaterialized
-                      ExitSuccess ->
-                        runCommand
-                          Subprocess
-                            { subprocessPath = "kubectl"
-                            , subprocessArguments =
-                                [ "wait"
-                                , "--for=condition=Ready"
-                                , "clusterissuer/" ++ publicEdgeClusterIssuerName
-                                , "--timeout=300s"
-                                ]
-                            , subprocessEnvironment = Nothing
-                            , subprocessWorkingDirectory = Just repoRoot
-                            }
-        )
+                    dnsMaterialized <- awaitDns01Materialization repoRoot dnsMaterializerName
+                    case dnsMaterialized of
+                      ExitFailure _ -> pure dnsMaterialized
+                      ExitSuccess -> do
+                        eabMaterialized <- awaitAcmeMaterialization repoRoot settings
+                        case eabMaterialized of
+                          ExitFailure _ -> pure eabMaterialized
+                          ExitSuccess ->
+                            runCommand
+                              Subprocess
+                                { subprocessPath = "kubectl"
+                                , subprocessArguments =
+                                    [ "wait"
+                                    , "--for=condition=Ready"
+                                    , "clusterissuer/" ++ publicEdgeClusterIssuerName
+                                    , "--timeout=300s"
+                                    ]
+                                , subprocessEnvironment = Nothing
+                                , subprocessWorkingDirectory = Just repoRoot
+                                }
+            )
  where
   dnsMaterializerName = case substrate of
     SubstrateHomeLocal -> homeDns01MaterializerName
@@ -6353,11 +6533,6 @@ observeMaterializedSecretMetadata repoRoot namespace secretName label = do
       | notElem ':' (trimWhitespace (processStdout output)) ->
           failWith (label ++ " Secret metadata read-back was incomplete.")
       | otherwise -> pure ExitSuccess
-
-acmeRuntimeManifest
-  :: Substrate -> ValidatedSettings -> String -> String -> [Value]
-acmeRuntimeManifest substrate settings =
-  acmeRuntimeManifestWith substrate settings (substrateHostedZoneId settings substrate)
 
 -- | Sprint 7.5.c.v follow-up: variant of 'acmeRuntimeManifest' that takes
 -- an externally-resolved hosted-zone ID so the IO caller can fall back to
@@ -7047,10 +7222,9 @@ runHelmCommandWithRetries repoRoot arguments = go (retryPolicyMaxAttempts helmTr
                       ++ outputDetail output
                   )
                 threadDelay
-                  ( retryDelayMicros
-                      helmTransientRetryPolicy
-                      (retryPolicyMaxAttempts helmTransientRetryPolicy - attemptsRemaining)
-                  )
+                  =<< drawRetryDelayMicros
+                    helmTransientRetryPolicy
+                    (retryPolicyMaxAttempts helmTransientRetryPolicy - attemptsRemaining)
                 go (attemptsRemaining - 1)
             | otherwise -> do
                 emitCapturedProcessOutput output
@@ -7590,10 +7764,9 @@ pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttem
                       ++ outputDetail output
                   )
                 threadDelay
-                  ( retryDelayMicros
-                      customImagePushRetryPolicy
-                      (retryPolicyMaxAttempts customImagePushRetryPolicy - attemptsRemaining)
-                  )
+                  =<< drawRetryDelayMicros
+                    customImagePushRetryPolicy
+                    (retryPolicyMaxAttempts customImagePushRetryPolicy - attemptsRemaining)
                 go (attemptsRemaining - 1)
             | otherwise -> do
                 emitCapturedProcessOutput output
@@ -8880,24 +9053,6 @@ harborEndpointStabilitySuccesses = 6
 harborEndpointStabilityDelayMicroseconds :: Int
 harborEndpointStabilityDelayMicroseconds = 5000000
 
-helmTransientRetryPolicy :: RetryPolicy
-helmTransientRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 3
-    , retryPolicyBaseDelayMicros = 10000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 10000000
-    }
-
-customImagePushRetryPolicy :: RetryPolicy
-customImagePushRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 3
-    , retryPolicyBaseDelayMicros = 5000000
-    , retryPolicyMultiplier = 1
-    , retryPolicyMaxDelayMicros = 5000000
-    }
-
 runCommand :: Subprocess -> IO ExitCode
 runCommand spec = do
   result <- runSubprocessStreaming spec
@@ -8915,3 +9070,10 @@ failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
+
+-- | Sprint 4.56: a readiness barrier that refuses yields no admission, so its
+-- refusal is a 'Left' rather than a bare exit code. Same operator-facing
+-- message; the difference is that the caller now cannot mistake a refusal for
+-- an admission it never received.
+refuseWith :: String -> IO (Either ExitCode admission)
+refuseWith message = Left <$> failWith message

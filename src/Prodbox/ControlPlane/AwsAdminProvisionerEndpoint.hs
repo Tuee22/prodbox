@@ -46,6 +46,10 @@ import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , layerRoleReadinessSource
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleAwsAdminProvisioner)
   )
@@ -201,7 +205,7 @@ awsAdminProvisionerResponseMaximumBytes = 256 * 1024
 awsAdminProvisionerAuthenticatedHandler
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> m (Either Text AuthorityTime)
   -> AwsAdminAuthorityRepositoryResolver m revision
   -> AwsAdminPreparedTargetLifecycle m
@@ -210,17 +214,15 @@ awsAdminProvisionerAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 awsAdminProvisionerAuthenticatedHandler
   maximumBytes
-  readyz
+  readiness
   observeNow
   resolveRepository
   targetLifecycle
   signer
   fallback =
     AuthenticatedRoleHandler
-      { authenticatedHandlerReadyz = do
-          baseReady <- authenticatedHandlerReadyz fallback
-          endpointReady <- readyz
-          pure (baseReady && endpointReady)
+      { authenticatedHandlerReadiness =
+          layerRoleReadinessSource readiness (authenticatedHandlerReadiness fallback)
       , authenticatedHandlerHandle = handle
       }
    where

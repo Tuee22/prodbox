@@ -84,7 +84,7 @@ providerWorkerExecutionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz fallback
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness fallback
     , authenticatedHandlerHandle = handle
     }
  where

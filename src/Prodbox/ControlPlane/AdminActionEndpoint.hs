@@ -33,6 +33,10 @@ import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , layerRoleReadinessSource
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleAdminAction)
   )
@@ -85,17 +89,15 @@ adminActionEndpointResponseMaximumBytes = 256 * 1024
 adminActionAuthenticatedHandler
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> AdminActionRepositoryResolver m revision
   -> AdminActionAuthorityBoundary m
   -> AuthenticatedRoleHandler m
   -> AuthenticatedRoleHandler m
-adminActionAuthenticatedHandler maximumBytes readyz resolveRepository boundary fallback =
+adminActionAuthenticatedHandler maximumBytes readiness resolveRepository boundary fallback =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = do
-        baseReady <- authenticatedHandlerReadyz fallback
-        adminReady <- readyz
-        pure (baseReady && adminReady)
+    { authenticatedHandlerReadiness =
+        layerRoleReadinessSource readiness (authenticatedHandlerReadiness fallback)
     , authenticatedHandlerHandle = handle
     }
  where

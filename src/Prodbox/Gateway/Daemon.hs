@@ -15,7 +15,8 @@ module Prodbox.Gateway.Daemon
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (concurrently, race, replicateConcurrently, withAsync)
+import Control.Concurrent.Async (race, replicateConcurrently)
+import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.STM
   ( STM
   , TBQueue
@@ -87,7 +88,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word64)
 import GHC.Conc (threadWaitRead)
@@ -155,6 +156,7 @@ import Prodbox.ControlPlane.Deadline
   , deadlineAdmission
   , deadlineAtOffset
   , deadlineObservation
+  , monotonicInstantMicros
   )
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Crypto.Envelope (DekCipher)
@@ -352,8 +354,11 @@ import Prodbox.Gateway.Readiness
   , EmitterAuthorityStatus (..)
   , ReadinessInputs (..)
   , ReadinessState (..)
-  , WorkersStatus (..)
+  , WorkerRoster
+  , WorkerState (..)
   , computeReadiness
+  , pendingWorkerRoster
+  , recordWorkerState
   )
 import Prodbox.Gateway.Routes
   ( GatewayRoute (..)
@@ -388,13 +393,16 @@ import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.DnsRecord qualified as DnsRecord
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
+  , ObjectVersion
   , defaultObjectStoreBucket
+  , objectVersionEtag
   )
 import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
-  ( RetryPolicy (..)
-  , retryDelayMicros
+  ( daemonWorkerRetryPolicy
+  , drawRetryDelayMicros
+  , retryPolicyMaxAttempts
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -510,8 +518,15 @@ data DaemonEnv = DaemonEnv
   , envChildPermit :: TMVar ()
   , envTargetOperationPermits :: Map TargetOperation (TMVar ())
   , envFramePermits :: TBQueue ()
-  , envContinuity :: TVar (Maybe ContinuityRuntime)
-  , envEmitterRuntime :: TVar (Maybe EmitterRuntime)
+  , envEmitterAuthority :: TVar EmitterAuthority
+  -- ^ Sprint 2.41: the emitter's readiness and the runtime that asserts it, as
+  -- ONE value. It replaces @envContinuity@, @envEmitterRuntime@, and
+  -- @envEmitterAuthorityStatus@, which were three cells that could disagree —
+  -- five sites cleared the continuity runtime and touched readiness on none of
+  -- them, under a comment describing the readiness cell as a monotone latch, so
+  -- @Ready@ with no runtime was reachable on the __deployed__ path. Clearing
+  -- the runtime is now clearing readiness, on every path including ones not yet
+  -- written, because there is nothing else to clear.
   , envEmitterMountGeneration :: TVar Word64
   , envEmitterLeasePermit :: TMVar ()
   , envEmitterRecoveryRequested :: TVar Bool
@@ -519,11 +534,17 @@ data DaemonEnv = DaemonEnv
   , -- Readiness is a pure projection over cached boundary facts. Emitter
     -- authority is cleared immediately when Lease renewal fails.
     envDrainPhase :: TVar DrainPhase
-  , envEmitterAuthorityStatus :: TVar EmitterAuthorityStatus
-  , envWorkersStatus :: TVar WorkersStatus
+  , envWorkerRoster :: TVar WorkerRoster
   , envLiveConfig :: TVar LiveConfig
   , envLiveConfigReloads :: TChan LiveConfig
   , envMetrics :: MetricsRegistry
+  , envLastBackendRoundTrip :: TVar (Maybe BackendRoundTripReceipt)
+  -- ^ Sprint 1.76: the receipt of the most recent conditional write of the
+  -- continuity object that the shared object store ACCEPTED, stamped at the
+  -- instant it landed. This is the daemon's only write-shaped evidence of the
+  -- gateway->MinIO backend edge; the deep readiness probe reads it through
+  -- @\/v1\/state@ rather than inferring a round trip from a constant-time
+  -- @\/readyz@ latch (bootstrap_readiness_doctrine.md 2.3).
   , envDrainSignals :: TQueue DrainSignal
   , envReloadSignals :: TQueue ()
   , envHooks :: DaemonHooks
@@ -549,6 +570,75 @@ data ContinuityRuntime = ContinuityRuntime
   { continuityRuntimeAuthority :: Continuity.GatewayContinuityAuthority IO
   , continuityRuntimeCurrent :: TVar Continuity.CurrentContinuity
   }
+
+-- | Sprint 2.41: the emitter's authority, as one value.
+--
+-- Two cells used to carry this: a runtime (@Maybe ContinuityRuntime@ or
+-- @Maybe EmitterRuntime@) and a separate @EmitterAuthorityStatus@. They could
+-- disagree, and did: the readiness cell was documented as a monotone latch, so
+-- the five sites that cleared the continuity runtime deliberately left readiness
+-- alone and @Ready@ with no runtime was reachable on the deployed path.
+--
+-- Collapsing them makes that state unrepresentable rather than merely
+-- discouraged. Note what is __not__ collapsed: the journal topology genuinely
+-- needs "runtime installed, not currently authoritative" while recovery is
+-- outstanding, so that is its own constructor rather than a second cell. The
+-- distinction the type keeps is the one the runtime actually has; the
+-- distinction it removes is the one nothing needed.
+data EmitterAuthority
+  = -- | No runtime is installed. Not ready, and there is no other way to say so.
+    EmitterAuthorityAbsent
+  | -- | A legacy Model-B continuity runtime is installed. Holding it __is__ the
+    -- authority; there is no separate readiness fact to forget to clear.
+    EmitterAuthorityContinuity !ContinuityRuntime
+  | -- | A journal\/lease emitter runtime is installed but is not currently
+    -- authoritative: recovery is outstanding, or the lease witness was lost.
+    EmitterAuthorityRecovering !EmitterRuntime
+  | -- | A journal\/lease emitter runtime is installed and authoritative, subject
+    -- to its lease witness still being current at the instant readiness is
+    -- folded.
+    EmitterAuthorityJournal !EmitterRuntime
+
+-- | The continuity runtime, if this authority is the legacy one.
+emitterAuthorityContinuityRuntime :: EmitterAuthority -> Maybe ContinuityRuntime
+emitterAuthorityContinuityRuntime authority = case authority of
+  EmitterAuthorityContinuity runtime -> Just runtime
+  EmitterAuthorityAbsent -> Nothing
+  EmitterAuthorityRecovering _ -> Nothing
+  EmitterAuthorityJournal _ -> Nothing
+
+-- | The journal runtime, if one is installed — authoritative or recovering.
+emitterAuthorityJournalRuntime :: EmitterAuthority -> Maybe EmitterRuntime
+emitterAuthorityJournalRuntime authority = case authority of
+  EmitterAuthorityJournal runtime -> Just runtime
+  EmitterAuthorityRecovering runtime -> Just runtime
+  EmitterAuthorityAbsent -> Nothing
+  EmitterAuthorityContinuity _ -> Nothing
+
+-- | The journal runtime only while it is authoritative.
+emitterAuthorityAuthoritativeJournalRuntime :: EmitterAuthority -> Maybe EmitterRuntime
+emitterAuthorityAuthoritativeJournalRuntime authority = case authority of
+  EmitterAuthorityJournal runtime -> Just runtime
+  EmitterAuthorityRecovering _ -> Nothing
+  EmitterAuthorityAbsent -> Nothing
+  EmitterAuthorityContinuity _ -> Nothing
+
+-- | Move an installed journal runtime out of authority without discarding it.
+-- Total over the union, so a topology that gains a constructor must decide here.
+emitterAuthorityRecovering :: EmitterAuthority -> EmitterAuthority
+emitterAuthorityRecovering authority = case authority of
+  EmitterAuthorityJournal runtime -> EmitterAuthorityRecovering runtime
+  EmitterAuthorityRecovering runtime -> EmitterAuthorityRecovering runtime
+  EmitterAuthorityAbsent -> EmitterAuthorityAbsent
+  EmitterAuthorityContinuity _ -> EmitterAuthorityAbsent
+
+-- | Promote an installed journal runtime into authority.
+emitterAuthorityAuthoritative :: EmitterAuthority -> EmitterAuthority
+emitterAuthorityAuthoritative authority = case authority of
+  EmitterAuthorityRecovering runtime -> EmitterAuthorityJournal runtime
+  EmitterAuthorityJournal runtime -> EmitterAuthorityJournal runtime
+  EmitterAuthorityAbsent -> EmitterAuthorityAbsent
+  EmitterAuthorityContinuity runtime -> EmitterAuthorityContinuity runtime
 
 -- | Revision-scoped single-writer selection. The production wrapper remains
 -- on the rollback topology until Standard-P deployment qualification proves
@@ -657,6 +747,16 @@ productionEmitterRuntimeDependencies config =
     , emitterDependencyObserveEvent = const (pure ())
     , emitterDependencyLegacyChildSlotInitiallyOccupied = False
     }
+
+-- | Sprint 1.76: the receipt of one conditional continuity write the shared
+-- object store accepted. Held as the store's own version text plus the POSIX
+-- microsecond instant it landed, both stamped by the interpreter that issued
+-- the write.
+data BackendRoundTripReceipt = BackendRoundTripReceipt
+  { backendRoundTripVersion :: !Text.Text
+  , backendRoundTripLandedAtMicros :: !Natural
+  }
+  deriving (Eq, Show)
 
 data ContinuityDiagnostic
   = ContinuityDiagnosticUnavailable
@@ -817,8 +917,8 @@ runGatewayDaemonWithRuntimeDependencies
                                 }
                         stateVar <- newTVarIO initialDaemonState
                         drainPhaseVar <- newTVarIO PhaseServing
-                        emitterAuthorityVar <- newTVarIO EmitterAuthorityUnavailable
-                        workersStatusVar <- newTVarIO WorkersPending
+                        emitterAuthorityVar <- newTVarIO EmitterAuthorityAbsent
+                        workerRosterVar <- newTVarIO (pendingWorkerRoster daemonWorkerNames)
                         liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
                         -- Broadcast (not a plain TChan): with no active dupTChan
                         -- reader, writes are discarded rather than retained, so
@@ -839,13 +939,12 @@ runGatewayDaemonWithRuntimeDependencies
                           replicateM_
                             (gatewayMaxInFlightFrames gatewayBounds)
                             (writeTBQueue framePermits ())
-                        continuityVar <- newTVarIO Nothing
-                        emitterRuntimeVar <- newTVarIO Nothing
                         emitterMountGenerationVar <- newTVarIO 0
                         emitterLeasePermit <- newTMVarIO ()
                         emitterRecoveryRequestedVar <- newTVarIO False
                         signalCount <- newTVarIO (0 :: Int)
                         objectStoreDurations <- newTVarIO []
+                        lastBackendRoundTripVar <- newTVarIO Nothing
                         let env =
                               DaemonEnv
                                 { envConfigPath = maybeConfigPath
@@ -859,18 +958,17 @@ runGatewayDaemonWithRuntimeDependencies
                                 , envChildPermit = childPermit
                                 , envTargetOperationPermits = targetOperationPermits
                                 , envFramePermits = framePermits
-                                , envContinuity = continuityVar
-                                , envEmitterRuntime = emitterRuntimeVar
+                                , envEmitterAuthority = emitterAuthorityVar
                                 , envEmitterMountGeneration = emitterMountGenerationVar
                                 , envEmitterLeasePermit = emitterLeasePermit
                                 , envEmitterRecoveryRequested = emitterRecoveryRequestedVar
                                 , envState = stateVar
                                 , envDrainPhase = drainPhaseVar
-                                , envEmitterAuthorityStatus = emitterAuthorityVar
-                                , envWorkersStatus = workersStatusVar
+                                , envWorkerRoster = workerRosterVar
                                 , envLiveConfig = liveConfigVar
                                 , envLiveConfigReloads = reloadBroadcast
                                 , envMetrics = MetricsRegistry "gateway" objectStoreDurations
+                                , envLastBackendRoundTrip = lastBackendRoundTripVar
                                 , envDrainSignals = drainSignals
                                 , envReloadSignals = reloadSignals
                                 , envHooks = noopDaemonHooks
@@ -1094,6 +1192,8 @@ bootstrapContinuity env = do
                                 , continuityStoreClusterId = daemonPulumiClusterId material
                                 , continuityStoreObserveDurationMillis =
                                     recordObjectStoreDuration (envMetrics env)
+                                , continuityStoreObserveRoundTrip =
+                                    recordBackendRoundTrip env
                                 }
                               scope
                           admission =
@@ -1233,8 +1333,9 @@ installContinuityRecovery env localNode continuityBounds authority recovery =
     -- never cleared: a later transient object-store blip that resets
     -- 'envContinuity' does not un-ready the Pod (monotone latch).
     atomically $ do
-      writeTVar (envContinuity env) (Just (ContinuityRuntime authority currentVar))
-      writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityReady
+      writeTVar
+        (envEmitterAuthority env)
+        (EmitterAuthorityContinuity (ContinuityRuntime authority currentVar))
     pure (Right ())
 
   restoreCommittedAnchor current = do
@@ -1399,7 +1500,7 @@ installContinuityRecovery env localNode continuityBounds authority recovery =
 
 continuityLoop :: DaemonEnv -> IO ()
 continuityLoop env = forever $ do
-  runtime <- readTVarIO (envContinuity env)
+  runtime <- emitterAuthorityContinuityRuntime <$> readTVarIO (envEmitterAuthority env)
   case runtime of
     Nothing -> do
       result <- bootstrapContinuity env
@@ -1417,19 +1518,19 @@ continuityLoop env = forever $ do
           pure (either (Left . show) Right result)
       case observed of
         Left err -> do
-          atomically (writeTVar (envContinuity env) Nothing)
+          atomically (writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent)
           logForEnv env Warn "gateway_continuity_lost" [field "detail" err]
         Right (Continuity.StartupCurrent current) ->
           atomically (writeTVar (continuityRuntimeCurrent active) current)
         Right recovery@(Continuity.StartupRepublish _) ->
           case localBoundedNode env of
             Left err -> do
-              atomically (writeTVar (envContinuity env) Nothing)
+              atomically (writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent)
               logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
             Right localNode ->
               case continuityScopeFor env localNode of
                 Left err -> do
-                  atomically (writeTVar (envContinuity env) Nothing)
+                  atomically (writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent)
                   logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
                 Right (continuityBounds, _) -> do
                   installed <-
@@ -1441,7 +1542,7 @@ continuityLoop env = forever $ do
                       recovery
                   case installed of
                     Left err -> do
-                      atomically (writeTVar (envContinuity env) Nothing)
+                      atomically (writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent)
                       logForEnv env Warn "gateway_continuity_recovery_failed" [field "detail" err]
                     Right () ->
                       logForEnv env Info "gateway_continuity_republished" []
@@ -1571,10 +1672,9 @@ runMountedEmitter env inputs admission session recovery = do
                               -- enqueue ahead of ReqRecover, and /readyz can
                               -- never expose a merely acquired-but-unrecovered
                               -- journal/Lease mount.
-                              writeTVar (envEmitterRuntime env) (Just runtime)
                               writeTVar
-                                (envEmitterAuthorityStatus env)
-                                EmitterAuthorityReady
+                                (envEmitterAuthority env)
+                                (EmitterAuthorityJournal runtime)
                               writeTVar (envEmitterRecoveryRequested env) False
                           )
                         logForEnv
@@ -2774,8 +2874,8 @@ installEmitterCompletion env runtime (EmitterCommitted record) = do
 clearEmitterRuntime :: DaemonEnv -> IO ()
 clearEmitterRuntime env =
   atomically $ do
-    writeTVar (envEmitterRuntime env) Nothing
-    writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+    -- Sprint 2.41: one write. Clearing the runtime IS clearing readiness.
+    writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent
     writeTVar (envEmitterRecoveryRequested env) False
 
 renderEmitterActorError :: EmitterActorError -> String
@@ -2783,14 +2883,11 @@ renderEmitterActorError = show
 
 emitterLeaseLoop :: DaemonEnv -> IO ()
 emitterLeaseLoop env = forever $ do
-  maybeRuntime <- readTVarIO (envEmitterRuntime env)
+  maybeRuntime <- emitterAuthorityJournalRuntime <$> readTVarIO (envEmitterAuthority env)
   case maybeRuntime of
-    Nothing ->
-      atomically $ do
-        current <- readTVar (envEmitterRuntime env)
-        case current of
-          Nothing -> writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
-          Just _ -> pure ()
+    -- Sprint 2.41: with one value there is nothing to reconcile here. No
+    -- runtime already means not ready.
+    Nothing -> pure ()
     Just runtime -> do
       (_, deadline) <- mintEmitterTicket env
       renewed <-
@@ -2824,7 +2921,7 @@ emitterLeaseLoop env = forever $ do
             current <- emitterRuntimeGenerationCurrent env runtime
             when current $ do
               writeTVar (emitterRuntimeLeaseWitness runtime) Nothing
-              writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+              modifyTVar' (envEmitterAuthority env) emitterAuthorityRecovering
           logForEnv env Error "gateway_emitter_lease_lost" [field "detail" (renderLeaseError err)]
         Just (reacquiring, Right witness) -> do
           (installed, needsRecovery) <- atomically $ do
@@ -2832,13 +2929,16 @@ emitterLeaseLoop env = forever $ do
             if current
               then do
                 writeTVar (emitterRuntimeLeaseWitness runtime) (Just witness)
-                authority <- readTVar (envEmitterAuthorityStatus env)
-                let shouldRecover =
-                      reacquiring || authority == EmitterAuthorityUnavailable
+                authority <- readTVar (envEmitterAuthority env)
+                let alreadyRecovering =
+                      case authority of
+                        EmitterAuthorityJournal _ -> False
+                        _ -> True
+                    shouldRecover = reacquiring || alreadyRecovering
                 when shouldRecover $ do
                   -- Reacquisition restores only the effect fence. The one
                   -- recovery supervisor owns ReqRecover and readiness restore.
-                  writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+                  modifyTVar' (envEmitterAuthority env) emitterAuthorityRecovering
                   writeTVar (envEmitterRecoveryRequested env) True
                 pure (True, shouldRecover)
               else pure (False, False)
@@ -2864,7 +2964,7 @@ emitterRecoveryLoop :: DaemonEnv -> IO ()
 emitterRecoveryLoop env = forever $ do
   runtime <- atomically $ do
     requested <- readTVar (envEmitterRecoveryRequested env)
-    maybeRuntime <- readTVar (envEmitterRuntime env)
+    maybeRuntime <- emitterAuthorityJournalRuntime <$> readTVar (envEmitterAuthority env)
     case (requested, maybeRuntime) of
       (True, Just active) -> do
         writeTVar (envEmitterRecoveryRequested env) False
@@ -2910,7 +3010,7 @@ emitterRecoveryLoop env = forever $ do
             let leaseIsCurrent = either (const False) (const True) witnessCurrent
             if stillCurrent && leaseIsCurrent && not moreRecovery
               then do
-                writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityReady
+                modifyTVar' (envEmitterAuthority env) emitterAuthorityAuthoritative
                 pure True
               else pure False
           when restored $
@@ -2928,7 +3028,7 @@ requestEmitterRecovery env runtime err = do
   requested <- atomically $ do
     current <- emitterRuntimeGenerationCurrent env runtime
     when current $ do
-      writeTVar (envEmitterAuthorityStatus env) EmitterAuthorityUnavailable
+      modifyTVar' (envEmitterAuthority env) emitterAuthorityRecovering
       writeTVar (envEmitterRecoveryRequested env) True
     pure current
   when requested $
@@ -2944,7 +3044,7 @@ requestEmitterRecovery env runtime err = do
 
 emitterRuntimeGenerationCurrent :: DaemonEnv -> EmitterRuntime -> STM Bool
 emitterRuntimeGenerationCurrent env expected = do
-  current <- readTVar (envEmitterRuntime env)
+  current <- emitterAuthorityJournalRuntime <$> readTVar (envEmitterAuthority env)
   pure $ case current of
     Just runtime ->
       emitterRuntimeGeneration runtime == emitterRuntimeGeneration expected
@@ -2976,7 +3076,7 @@ emitLegacyLocalAssertion
   -> BoundedState.AssertionKind
   -> IO (Either String SignedAssertion)
 emitLegacyLocalAssertion env kind = do
-  continuityRuntime <- readTVarIO (envContinuity env)
+  continuityRuntime <- emitterAuthorityContinuityRuntime <$> readTVarIO (envEmitterAuthority env)
   case continuityRuntime of
     Nothing -> pure (Left "retained continuity authority is unavailable")
     Just runtime ->
@@ -3042,7 +3142,7 @@ emitLegacyLocalAssertion env kind = do
                                           pure (either (Left . show) Right result)
                                       case committed of
                                         Left err -> do
-                                          atomically (writeTVar (envContinuity env) Nothing)
+                                          atomically (writeTVar (envEmitterAuthority env) EmitterAuthorityAbsent)
                                           pure (Left err)
                                         Right current' -> do
                                           atomically
@@ -3097,16 +3197,15 @@ emitActorLocalSemanticAssertion
   -> BoundedState.AssertionKind
   -> IO (Either String SignedAssertion)
 emitActorLocalSemanticAssertion env kind = do
-  (authority, maybeRuntime) <-
-    atomically $
-      (,)
-        <$> readTVar (envEmitterAuthorityStatus env)
-        <*> readTVar (envEmitterRuntime env)
-  case (authority, maybeRuntime) of
-    (EmitterAuthorityUnavailable, _) ->
+  -- Sprint 2.41: one read. An authoritative journal runtime is a single
+  -- constructor, so "authority says ready but no runtime is installed" is not a
+  -- case anybody has to handle.
+  maybeRuntime <-
+    emitterAuthorityAuthoritativeJournalRuntime <$> readTVarIO (envEmitterAuthority env)
+  case maybeRuntime of
+    Nothing ->
       pure (Left "journal/Lease emitter authority is unavailable or recovering")
-    (_, Nothing) -> pure (Left "journal/Lease emitter authority is unavailable")
-    (EmitterAuthorityReady, Just runtime) ->
+    Just runtime ->
       case assertionKindToEmitterRequest kind of
         Left err -> pure (Left err)
         Right request -> do
@@ -3491,32 +3590,99 @@ serveGatewayDaemon localPeer env =
 
 daemonWorkers :: PeerEndpoint -> DaemonEnv -> IO ()
 daemonWorkers localPeer env = do
-  -- Monotone worker-started latch: recorded before the REST listener that
-  -- serves @/readyz@ is spawned, so an observable ready projection structurally
-  -- implies the workers are up.
-  atomically (writeTVar (envWorkersStatus env) WorkersStarted)
-  withAsync (worker authorityWorkerName authorityWorker) $ \_ ->
-    withAsync (worker "emitter_recovery" recoveryWorker) $ \_ ->
-      withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
-        withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
-          withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
-            withAsync (worker "rest_server" (restServerLoop localPeer env)) $ \_ ->
-              withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
-                withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
-                  void $
-                    concurrently
-                      (worker "peer_dialer" (peerDialerLoop env))
-                      (worker "config_reload" (reloadLoop env))
- where
-  worker = runWorkerWithRetry env
-  (authorityWorkerName, authorityWorker) =
+  -- Sprint 2.41: no monotone "started" latch. Each worker enters the roster when
+  -- its bracket runs and leaves it when the bracket exits, so a worker that dies
+  -- removes the Pod from ready endpoints instead of being invisible to readiness.
+  withSupervisedWorkers
+    env
+    [ (name, runWorkerWithRetry env (Text.unpack name) (daemonWorkerAction name env localPeer))
+    | name <- daemonWorkerNames
+    ]
+
+-- | Every long-lived daemon worker, by name. The roster and the spawn set are
+-- the same list, so a worker cannot exist without a readiness entry.
+daemonWorkerNames :: [Text.Text]
+daemonWorkerNames =
+  [ "emitter_authority"
+  , "emitter_recovery"
+  , "heartbeat"
+  , "gateway_ownership"
+  , "dns_write"
+  , "rest_server"
+  , "peer_listener"
+  , "config_watch"
+  , "peer_dialer"
+  , "config_reload"
+  ]
+
+-- | The action each named worker runs.
+daemonWorkerAction :: Text.Text -> DaemonEnv -> PeerEndpoint -> IO ()
+daemonWorkerAction name env localPeer = case name of
+  "emitter_authority" ->
     case envEmitterTopology env of
-      LegacyModelBEmitter -> ("continuity", continuityLoop env)
-      JournalLeaseEmitter -> ("emitter_lease", emitterLeaseLoop env)
-  recoveryWorker =
+      LegacyModelBEmitter -> continuityLoop env
+      JournalLeaseEmitter -> emitterLeaseLoop env
+  "emitter_recovery" ->
     case envEmitterTopology env of
       LegacyModelBEmitter -> atomically retry
       JournalLeaseEmitter -> emitterRecoveryLoop env
+  "heartbeat" -> heartbeatLoop env
+  "gateway_ownership" -> gatewayLoop env
+  "dns_write" -> dnsWriteLoop env
+  "rest_server" -> restServerLoop localPeer env
+  "peer_listener" -> peerListenerLoop localPeer env
+  "config_watch" -> configFileWatchLoop env
+  "peer_dialer" -> peerDialerLoop env
+  "config_reload" -> reloadLoop env
+  _ -> atomically retry
+
+-- | How often a supervised worker beats, and how stale a beat may be before
+-- readiness stops counting the worker as running. The bound is derived from the
+-- interval rather than authored beside it, for the reason Sprint 2.40 records.
+daemonWorkerHeartbeatIntervalMicros :: Natural
+daemonWorkerHeartbeatIntervalMicros = 2 * 1000 * 1000
+
+daemonWorkerHeartbeatBoundMicros :: Natural
+daemonWorkerHeartbeatBoundMicros = 3 * daemonWorkerHeartbeatIntervalMicros
+
+-- | Sprint 2.41: the only way to run a long-lived daemon worker.
+--
+-- It links the 'Async' so a worker's exception reaches the supervisor rather
+-- than being swallowed by an unlinked handle, records the worker as running with
+-- a heartbeat, and records its exit __on every path__ — including an exception —
+-- so the roster cannot claim a dead worker is running. Eight workers used to be
+-- spawned through raw 'withAsync' with their handles discarded; @prodbox dev
+-- check@ now refuses raw 'withAsync' in this module.
+withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()
+withSupervisedWorkers env = go
+ where
+  go [] = forever (threadDelay 1000000)
+  go ((name, action) : rest) =
+    Async.withAsync (supervise name action) $ \handle -> do
+      Async.link handle
+      go rest
+
+  supervise name action =
+    finally
+      ( do
+          beat name
+          Async.withAsync (heartbeatFor name) $ \beater -> do
+            Async.link beater
+            action
+      )
+      (recordExit name)
+
+  heartbeatFor name = forever $ do
+    threadDelay (fromIntegral daemonWorkerHeartbeatIntervalMicros)
+    beat name
+
+  beat name = do
+    now <- monotonicInstantMicros <$> realMonotonicNow
+    atomically (modifyTVar' (envWorkerRoster env) (recordWorkerState name (WorkerRunning now)))
+
+  recordExit name =
+    atomically
+      (modifyTVar' (envWorkerRoster env) (recordWorkerState name (WorkerExited "worker exited")))
 
 -- | File-watch worker: subscribes to events on the parent directory of the
 -- daemon's `--config` Dhall path so kubelet `..data` symlink swaps trigger
@@ -3604,7 +3770,7 @@ runWorkerWithRetry env workerName action = go 0
                     , field "attempt" (attemptIndex + 1)
                     , field "detail" (displayException exc)
                     ]
-                  threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+                  drawRetryDelayMicros daemonWorkerRetryPolicy attemptIndex >>= threadDelay
                   go (attemptIndex + 1)
                 AppError {errorKind = Fatal} -> do
                   logForEnv
@@ -3628,15 +3794,6 @@ classifyWorkerFailure attemptIndex exc =
         )
         (Text.pack (displayException exc))
         (Just exc)
-
-daemonWorkerRetryPolicy :: RetryPolicy
-daemonWorkerRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 5
-    , retryPolicyBaseDelayMicros = 500000
-    , retryPolicyMultiplier = 2
-    , retryPolicyMaxDelayMicros = 5000000
-    }
 
 reloadLoop :: DaemonEnv -> IO ()
 reloadLoop env = forever $ do
@@ -4007,23 +4164,19 @@ currentEmitterAuthorityAnchor
 currentEmitterAuthorityAnchor env =
   case envEmitterTopology env of
     LegacyModelBEmitter -> do
-      runtime <- readTVarIO (envContinuity env)
+      runtime <- emitterAuthorityContinuityRuntime <$> readTVarIO (envEmitterAuthority env)
       case runtime of
         Nothing -> pure (Left "retained continuity authority is unavailable")
         Just active ->
           Right . Continuity.currentContinuityAnchor
             <$> readTVarIO (continuityRuntimeCurrent active)
     JournalLeaseEmitter -> do
-      (authority, runtime) <-
-        atomically $
-          (,)
-            <$> readTVar (envEmitterAuthorityStatus env)
-            <*> readTVar (envEmitterRuntime env)
-      case (authority, runtime) of
-        (EmitterAuthorityUnavailable, _) ->
+      maybeActive <-
+        emitterAuthorityAuthoritativeJournalRuntime <$> readTVarIO (envEmitterAuthority env)
+      case maybeActive of
+        Nothing ->
           pure (Left "journal/Lease emitter authority is unavailable or recovering")
-        (_, Nothing) -> pure (Left "journal/Lease emitter authority is unavailable")
-        (EmitterAuthorityReady, Just active) -> do
+        Just active -> do
           current <-
             requireEmitterLease
               (emitterRuntimeLeaseWitness active)
@@ -4048,7 +4201,7 @@ reobserveAndWriteDns env awsCreds gate currentIp = do
   (_, deadline) <- mintEmitterTicket env
   case envEmitterTopology env of
     LegacyModelBEmitter -> do
-      runtime <- readTVarIO (envContinuity env)
+      runtime <- emitterAuthorityContinuityRuntime <$> readTVarIO (envEmitterAuthority env)
       case runtime of
         Nothing -> pure (Left "retained continuity authority is unavailable")
         Just active -> do
@@ -4063,7 +4216,7 @@ reobserveAndWriteDns env awsCreds gate currentIp = do
               atomically (writeTVar (continuityRuntimeCurrent active) current)
               writeDnsWithCurrentAuthority deadline env awsCreds gate currentIp
     JournalLeaseEmitter -> do
-      runtime <- readTVarIO (envEmitterRuntime env)
+      runtime <- emitterAuthorityJournalRuntime <$> readTVarIO (envEmitterAuthority env)
       case runtime of
         Nothing -> pure (Left "journal/Lease emitter authority is unavailable")
         Just active -> do
@@ -4337,7 +4490,9 @@ dispatchGatewayRoute sock env now route = case route of
         ReadinessInputs
           <$> readTVar (envDrainPhase env)
           <*> currentEmitterReadinessAuthority env monotonicNow
-          <*> readTVar (envWorkersStatus env)
+          <*> readTVar (envWorkerRoster env)
+          <*> pure (monotonicInstantMicros monotonicNow)
+          <*> pure daemonWorkerHeartbeatBoundMicros
     case computeReadiness inputs of
       Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
       Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
@@ -4355,37 +4510,38 @@ dispatchGatewayRoute sock env now route = case route of
     state <- readTVarIO (envState env)
     dnsReady <- gatewayDnsWriteReady env state
     continuityDiagnostic <- readContinuityDiagnostic env
+    lastRoundTrip <- readTVarIO (envLastBackendRoundTrip env)
     sendLazyHttpResponse
       sock
       200
       "application/json"
-      (renderStateJson now env dnsReady continuityDiagnostic state)
+      (renderStateJson now env dnsReady continuityDiagnostic lastRoundTrip state)
 
 currentEmitterReadinessAuthority
   :: DaemonEnv
   -> MonotonicInstant
   -> STM EmitterAuthorityStatus
-currentEmitterReadinessAuthority env now =
-  case envEmitterTopology env of
-    LegacyModelBEmitter -> readTVar (envEmitterAuthorityStatus env)
-    JournalLeaseEmitter -> do
-      authority <- readTVar (envEmitterAuthorityStatus env)
-      maybeRuntime <- readTVar (envEmitterRuntime env)
-      case (authority, maybeRuntime) of
-        (EmitterAuthorityUnavailable, _) -> pure EmitterAuthorityUnavailable
-        (_, Nothing) -> pure EmitterAuthorityUnavailable
-        (EmitterAuthorityReady, Just runtime) -> do
-          maybeWitness <- readTVar (emitterRuntimeLeaseWitness runtime)
-          pure $ case maybeWitness of
-            Just witness
-              | leaseWitnessCurrent
-                  now
-                  (emitterRuntimeLeaseName runtime)
-                  (emitterRuntimeLeaseDuration runtime)
-                  (emitterRuntimeLeaseBinding runtime)
-                  witness ->
-                  EmitterAuthorityReady
-            _ -> EmitterAuthorityUnavailable
+-- Sprint 2.41: topology-free. The fold is over the authority value, so no arm
+-- can be the one that forgets — the legacy arm used to be a bare `readTVar` of a
+-- readiness cell that nothing cleared when its runtime went away.
+currentEmitterReadinessAuthority env now = do
+  authority <- readTVar (envEmitterAuthority env)
+  case authority of
+    EmitterAuthorityAbsent -> pure EmitterAuthorityUnavailable
+    EmitterAuthorityRecovering _ -> pure EmitterAuthorityUnavailable
+    EmitterAuthorityContinuity _ -> pure EmitterAuthorityReady
+    EmitterAuthorityJournal runtime -> do
+      maybeWitness <- readTVar (emitterRuntimeLeaseWitness runtime)
+      pure $ case maybeWitness of
+        Just witness
+          | leaseWitnessCurrent
+              now
+              (emitterRuntimeLeaseName runtime)
+              (emitterRuntimeLeaseDuration runtime)
+              (emitterRuntimeLeaseBinding runtime)
+              witness ->
+              EmitterAuthorityReady
+        _ -> EmitterAuthorityUnavailable
 
 sendHttpResponse :: Socket -> Int -> String -> String -> IO ()
 sendHttpResponse sock statusCode contentType responseBody =
@@ -4454,7 +4610,7 @@ resolveDaemonPulumiObjectMaterial env = go 0
               Warn
               "daemon_object_store_material_retry"
               [field "attempt" (attemptIndex + 1), field "detail" err]
-            threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+            drawRetryDelayMicros daemonWorkerRetryPolicy attemptIndex >>= threadDelay
             go (attemptIndex + 1)
         | otherwise -> pure (Left err)
 
@@ -4606,6 +4762,30 @@ recordObjectStoreDuration registry duration =
     modifyTVar'
       (metricsObjectStoreDurationsMillis registry)
       (take 1024 . (duration :))
+
+-- | Sprint 1.76: record the receipt of a conditional continuity write the
+-- object store just accepted. The instant is read HERE, immediately after the
+-- interpreter observed the store's acceptance, so the value the deep readiness
+-- probe later consumes carries the instant the write landed rather than the
+-- instant somebody asked about it.
+recordBackendRoundTrip :: DaemonEnv -> ObjectVersion -> IO ()
+recordBackendRoundTrip env version = do
+  landedAt <- backendRoundTripWallClockMicros
+  atomically
+    ( writeTVar
+        (envLastBackendRoundTrip env)
+        ( Just
+            BackendRoundTripReceipt
+              { backendRoundTripVersion = objectVersionEtag version
+              , backendRoundTripLandedAtMicros = landedAt
+              }
+        )
+    )
+
+backendRoundTripWallClockMicros :: IO Natural
+backendRoundTripWallClockMicros = do
+  posix <- getPOSIXTime
+  pure (fromInteger (max 0 (floor (toRational posix * 1000000) :: Integer)))
 
 currentHeapLiveBytes :: IO Natural
 currentHeapLiveBytes = do
@@ -5406,18 +5586,14 @@ acknowledgeActorPeerResponse env peer response =
                 Left err -> refuse (show err)
                 Right Nothing -> pure (Right ())
                 Right (Just point) -> do
-                  (authority, maybeRuntime) <-
-                    atomically $
-                      (,)
-                        <$> readTVar (envEmitterAuthorityStatus env)
-                        <*> readTVar (envEmitterRuntime env)
-                  case (authority, maybeRuntime, mkEmitterPeer (Text.pack (peerNodeId peer))) of
-                    (EmitterAuthorityUnavailable, _, _) ->
+                  maybeRuntime <-
+                    emitterAuthorityAuthoritativeJournalRuntime
+                      <$> readTVarIO (envEmitterAuthority env)
+                  case (maybeRuntime, mkEmitterPeer (Text.pack (peerNodeId peer))) of
+                    (Nothing, _) ->
                       refuse "journal/Lease emitter authority is unavailable"
-                    (_, Nothing, _) ->
-                      refuse "journal/Lease emitter runtime is unavailable"
-                    (_, _, Nothing) -> refuse "peer identity is empty"
-                    (EmitterAuthorityReady, Just runtime, Just emitterPeer) -> do
+                    (_, Nothing) -> refuse "peer identity is empty"
+                    (Just runtime, Just emitterPeer) -> do
                       acknowledged <-
                         acknowledgeEmitterPeerThrough
                           (emitterRuntimeActor runtime)
@@ -5550,14 +5726,14 @@ readContinuityDiagnostic :: DaemonEnv -> IO ContinuityDiagnostic
 readContinuityDiagnostic env =
   case envEmitterTopology env of
     LegacyModelBEmitter -> do
-      runtime <- readTVarIO (envContinuity env)
+      runtime <- emitterAuthorityContinuityRuntime <$> readTVarIO (envEmitterAuthority env)
       case runtime of
         Nothing -> pure ContinuityDiagnosticUnavailable
         Just active -> do
           current <- readTVarIO (continuityRuntimeCurrent active)
           pure (ContinuityDiagnosticReady (Continuity.currentContinuityAnchor current))
     JournalLeaseEmitter -> do
-      runtime <- readTVarIO (envEmitterRuntime env)
+      runtime <- emitterAuthorityJournalRuntime <$> readTVarIO (envEmitterAuthority env)
       case runtime of
         Nothing -> pure ContinuityDiagnosticUnavailable
         Just active ->
@@ -5568,9 +5744,10 @@ renderStateJson
   -> DaemonEnv
   -> Bool
   -> ContinuityDiagnostic
+  -> Maybe BackendRoundTripReceipt
   -> DaemonState
   -> BL.ByteString
-renderStateJson now env dnsReady continuityDiagnostic state =
+renderStateJson now env dnsReady continuityDiagnostic lastRoundTrip state =
   encode $
     object
       [ "node_id" .= daemonNodeId config
@@ -5600,6 +5777,7 @@ renderStateJson now env dnsReady continuityDiagnostic state =
             (BoundedState.gatewayStateDiagnosticHashes (stateBoundedGateway state))
       , "peer_receive_cursors" .= renderPeerReceiveCursors env state
       , "continuity_authority" .= renderContinuityDiagnostic continuityDiagnostic
+      , "last_backend_round_trip" .= renderBackendRoundTrip lastRoundTrip
       , "last_public_ip_observed" .= stateLastPublicIp state
       , "last_dns_write_ip" .= stateLastDnsWriteIp state
       , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
@@ -5652,6 +5830,18 @@ renderPeerReceiveCursors env state =
                 (BoundedState.emitterCursorHash cursor)
             )
       ]
+
+-- | Sprint 1.76: the write-shaped half of the gateway's readiness evidence.
+-- @null@ until the daemon has landed a conditional continuity write, so a
+-- consumer can distinguish "no round trip yet" from "a round trip that is now
+-- too old" instead of collapsing both into a boolean.
+renderBackendRoundTrip :: Maybe BackendRoundTripReceipt -> Value
+renderBackendRoundTrip Nothing = Null
+renderBackendRoundTrip (Just receipt) =
+  object
+    [ "object_version" .= backendRoundTripVersion receipt
+    , "landed_at_micros" .= backendRoundTripLandedAtMicros receipt
+    ]
 
 renderContinuityDiagnostic :: ContinuityDiagnostic -> Value
 renderContinuityDiagnostic diagnostic =

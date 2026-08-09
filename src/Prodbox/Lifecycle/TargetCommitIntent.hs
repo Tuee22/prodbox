@@ -54,7 +54,6 @@ module Prodbox.Lifecycle.TargetCommitIntent
   , mkCredentialGeneration
   , mkRegisteredTargetSet
   , mkTargetIntentCoordinate
-  , mkTargetSinkVersion
   , mkTargetValueDigest
   , prepareTargetWrite
   , proveStableTargetReadback
@@ -79,7 +78,7 @@ module Prodbox.Lifecycle.TargetCommitIntent
   , targetProjectionEntryCommitted
   , targetProjectionEntryIntent
   , targetProjectionEntryTargetIdentity
-  , targetSinkVersionText
+  , targetSinkVersionValue
   , targetValueDigestText
   )
 where
@@ -142,6 +141,10 @@ import Prodbox.Lifecycle.Lease
   , ownerNonceText
   , successorNotBefore
   )
+import Prodbox.Lifecycle.TargetSinkVersion
+  ( TargetSinkVersion
+  , targetSinkVersionValue
+  )
 
 newtype CredentialGeneration = CredentialGeneration
   { internalCredentialGenerationValue :: Natural
@@ -153,16 +156,9 @@ newtype TargetValueDigest = TargetValueDigest
   }
   deriving (Eq, Ord, Show)
 
-newtype TargetSinkVersion = TargetSinkVersion
-  { internalTargetSinkVersionText :: Text
-  }
-  deriving (Eq, Ord, Show)
-
 data TargetCommitValueError
   = CredentialGenerationMustBePositive
   | TargetValueDigestMustBeLowerHexSha256 !Text
-  | TargetSinkVersionEmpty
-  | TargetSinkVersionTooLong !Int !Int
   deriving (Eq, Show)
 
 mkCredentialGeneration
@@ -202,19 +198,6 @@ sha256TargetValueDigest =
   renderHexByte byte
     | byte < 16 = '0' : showHex byte ""
     | otherwise = showHex byte ""
-
-mkTargetSinkVersion :: Text -> Either TargetCommitValueError TargetSinkVersion
-mkTargetSinkVersion raw
-  | Text.null value = Left TargetSinkVersionEmpty
-  | Text.length value > maximumLength =
-      Left (TargetSinkVersionTooLong (Text.length value) maximumLength)
-  | otherwise = Right (TargetSinkVersion value)
- where
-  value = Text.strip raw
-  maximumLength = 512
-
-targetSinkVersionText :: TargetSinkVersion -> Text
-targetSinkVersionText = internalTargetSinkVersionText
 
 data TargetRegistrationError
   = TargetRegistrationCapacityMustBePositive

@@ -373,10 +373,11 @@ controlPlaneRoleInterpretersSuite =
       (tlsSealedEnvelopeDigest tlsEnvelope)
       src
   backupCiphertext = either (error . Text.unpack) id (mkAuthorityBackupCiphertext "backup-ciphertext")
-  serveLA interpreter request = serveControlPlaneRequest interpreter LifecycleAuthorityRuntime request
-  serveTls interpreter request = serveControlPlaneRequest interpreter TlsRetentionRuntime request
-  serveBackup interpreter request = serveControlPlaneRequest interpreter AuthorityBackupRuntime request
-  serveProvider interpreter request = serveControlPlaneRequest interpreter ProviderWorkerRuntime request
+  serveLA interpreter request =
+    serveControlPlaneRequest fixtureRoleReadinessResolver interpreter LifecycleAuthorityRuntime request
+  serveTls interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter TlsRetentionRuntime request
+  serveBackup interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter AuthorityBackupRuntime request
+  serveProvider interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter ProviderWorkerRuntime request
   submitReconcile =
     ProviderWorkApplyPayload
       { applyCommandKind = SubmitCommand
@@ -429,7 +430,7 @@ freshLifecycleInterpreter ready = do
   pure
     ( lifecycleAuthorityInterpreter
         4096
-        (pure ready)
+        (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
         "cluster-a"
         (pure (Right 123456))
         migrationRepository
@@ -461,7 +462,7 @@ freshAggregateLifecycleInterpreter ready = do
       interpreter =
         lifecycleAuthorityAdmissionInterpreter
           4096
-          (pure ready)
+          (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
           "cluster-a"
           (pure (Right 123456))
           (const (Right "fixture-authority-envelope"))
@@ -536,7 +537,12 @@ freshTlsInterpreter initial ready = do
                         )
                 _ -> Right TlsEnvelopeMissing
           }
-  pure (tlsRetentionInterpreter 4096 (pure ready) repository)
+  pure
+    ( tlsRetentionInterpreter
+        4096
+        (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
+        repository
+    )
 
 freshBackupInterpreter :: Bool -> IO (RoleInterpreter IO)
 freshBackupInterpreter ready = do
@@ -561,7 +567,12 @@ freshBackupInterpreter ready = do
                       Right (AuthorityBackupBlobPresent ciphertext receipt)
                 _ -> Right AuthorityBackupBlobMissing
           }
-  pure (authorityBackupInterpreter 4096 (pure ready) repository)
+  pure
+    ( authorityBackupInterpreter
+        4096
+        (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
+        repository
+    )
 
 freshProviderInterpreter :: ProviderWorkState -> Bool -> IO (RoleInterpreter IO)
 freshProviderInterpreter initial ready = do
@@ -578,7 +589,12 @@ freshProviderInterpreter initial ready = do
               writeIORef stateRef state
               pure (Right ())
           }
-  pure (providerWorkerInterpreter 4096 (pure ready) repository)
+  pure
+    ( providerWorkerInterpreter
+        4096
+        (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
+        repository
+    )
 
 freshMigrationRepository :: IO (MigrationRepository IO Word)
 freshMigrationRepository = do

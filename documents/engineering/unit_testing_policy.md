@@ -98,6 +98,20 @@ single-sourced in a compiled value; the conformance tier proves every projection
 still agrees with its source. Cross-artifact drift fails the canonical quality gate
 (`prodbox dev check`) in seconds; it is not deferred to the multi-hour aggregate suite.
 
+**What the canonical gate covers, and what it still does not.** `prodbox dev check` formats and
+lints `app src test`, and since Sprint `5.30` its type-checking build is
+`cabal build --builddir=.build all --enable-tests`, which resolves to `lib`, `exe:prodbox` **and the
+eight test suites** ([code_quality.md](./code_quality.md); the general rule is "The region of Ring 2"
+in [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md)). Before that flag, bare `all`
+compiled no test suite, which is how a 2026-08-07 config type change broke twenty integration cases
+and was recorded as `Done`.
+
+The gate now proves the suites **compile**. It still does not **run** them, and a conformance suite
+proves agreement only once something runs it: `prodbox test unit` for the four unit suites,
+`prodbox test integration cli` / `env` for the integration suite. **A sprint that records `dev check`
+and `prodbox test unit` as its validation has still not exercised the integration suite**, and a
+sprint touching a contract that suite exercises must name that command in its Validation section.
+
 Conformance suites use only pure values and interpreter-boundary fakes. They prove, at minimum:
 
 - route-registry non-overlap and route round-trip;

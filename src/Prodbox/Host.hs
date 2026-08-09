@@ -32,7 +32,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bits (shiftL, xor, (.&.), (.|.))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -73,9 +73,11 @@ import Prodbox.PublicEdge
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( DeploymentSection (..)
+  , PublicEdgeAdvertisementMode (..)
   , ValidatedSettings (..)
   , deployment
   , public_edge_advertisement_mode
+  , renderPublicEdgeAdvertisementMode
   , validateAndLoadSettings
   , validatedConfig
   )
@@ -1326,13 +1328,17 @@ fallbackLanAddressing =
 boolText :: Bool -> String
 boolText value = if value then "true" else "false"
 
+-- | Sprint 1.80: the same total projection as the RKE2 renderer, over the union
+-- rather than over free text.
 configuredMetallbAdvertisementMode :: ValidatedSettings -> String
 configuredMetallbAdvertisementMode settings =
-  case fmap
-    (map toLowerAscii . Text.unpack)
-    (public_edge_advertisement_mode (deployment (validatedConfig settings))) of
-    Just "bgp" -> "bgp"
-    _ -> "l2"
+  Text.unpack
+    ( renderPublicEdgeAdvertisementMode
+        ( fromMaybe
+            AdvertiseLayer2
+            (public_edge_advertisement_mode (deployment (validatedConfig settings)))
+        )
+    )
 
 commaSeparated :: [String] -> String
 commaSeparated values =

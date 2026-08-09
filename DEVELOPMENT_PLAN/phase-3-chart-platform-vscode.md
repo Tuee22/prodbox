@@ -10,6 +10,19 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-07 on Sprint `3.32`** — the 2026-08-05 own-surface reopen (Standard A/N,
+Sprint `0.21` topology sweep) closes. Sprint `3.31` made all eight Helm statuses decode to distinct
+constructors and put a `HelmWritePermit` in front of every mutating helper; Sprint `3.32` makes a
+typed DNS destroy consume the `DnsOwnerAuthority` the running process holds instead of comparing
+two caller-supplied copies of the coordinate's owner, and — the part worth stating — puts neither
+cert-manager owner in the minter's range at all, so a prodbox process cannot name one. Its
+documentation half corrected the ownership direction the sprint text had backwards: Vault, not
+Percona PGO, is the authority for the three Patroni passwords, and exactly one chart-local mirror
+runs Vault → Secret with no reverse path
+([secret_derivation_doctrine.md § 5.1](../documents/engineering/secret_derivation_doctrine.md)).
+Phase `3` has no open sprints on this reopen. Neither sprint moves a Standard-P
+production-composition surface, and no prior closure on this phase was falsified.
+
 ✅ **Reclosed 2026-08-03 on Sprint `3.30`** — own-surface reopen (Standard A/N) declaring the
 RFC 6455 WebSocket handshake GUID a real, required constant and pointing the MinIO chart
 credential default at its actual registration in
@@ -3120,10 +3133,15 @@ that no longer registers it.
 None. Migration of the MinIO bootstrap credential from a compiled constant to a per-install generated
 value remains scheduled and is not closed here.
 
-## Sprint 3.31: Typed Helm Release State and a Chart Write Permit [📋 Planned]
+## Sprint 3.31: Typed Helm Release State and a Chart Write Permit ✅
 
-**Status**: Planned — Phase `3` own-surface work (Standard A/N) on the chart platform this phase
-owns.
+**Status**: Done (2026-08-07) — Phase `3` own-surface work (Standard A/N) on the chart platform this
+phase owns.
+**Implementation**: `src/Prodbox/Lifecycle/HelmRelease.hs` (`HelmReleaseStatus`,
+`parseHelmReleaseStatus`, `helmReleaseStatusPermitsWrite`, `HelmWritePermit`, `HelmWriteRefusal`,
+`helmWritePermit`; `HelmReleasePresent` now carries the decoded status; the absence reconciler
+refuses a concurrently-held release), `src/Prodbox/Lib/ChartPlatform.hs`
+(`reconcileFailedReleaseAbsent` replaces the fire-and-forget `helm uninstall --wait`).
 **Blocked by**: none.
 **Deployment qualification**: pending — chart delivery is a Standard-P lifecycle-orchestration
 surface; both rows are already `pending`.
@@ -3150,34 +3168,67 @@ is answered by deleting a working release.
 
 ### Deliverables
 
-- A full `HelmReleaseStatus` decoded from `.info.status`, with an unrecognised status failing closed
-  rather than defaulting.
-- The failure path routes through the existing absence reconciler, which re-observes before acting,
-  instead of a fire-and-forget uninstall.
-- A `HelmWritePermit` on the mutating helpers, so the concurrency error resolves to a typed refusal
-  that cannot be answered by a destroy.
+- ✅ A full `HelmReleaseStatus` decoded from `.info.status` — all eight statuses, each its own
+  constructor. `--output json` was already being requested and the field discarded; presence came
+  from the **exit code**, which cannot distinguish `deployed` from `pending-upgrade`, and that
+  distinction is the difference between a release this process may write and one another writer
+  holds. An unrecognised status, a missing `.info.status`, and an unparseable body all fail closed to
+  `HelmReleaseUnobservable` rather than defaulting to present.
+- ✅ The failure path routes through the existing absence reconciler.
+  `reconcileFailedReleaseAbsent` replaces the unconditional `helm uninstall --wait`, so the recovery
+  **re-observes** before acting and reports a refusal instead of destroying.
+- ✅ A `HelmWritePermit` whose constructor is hidden and whose sole producer is `helmWritePermit`,
+  so a mutating helper cannot be reached without an observation that said the release is not being
+  written by somebody else. The four pending/uninstalling statuses yield
+  `HelmWriteConcurrentOperation`, and an unobservable release yields `HelmWriteUnobservable` — a
+  refusal that **cannot** be answered by a destroy, because a destroy needs the permit it was
+  refused.
 
 ### Validation
 
-1. `prodbox test unit -p "Sprint 3.31"` passes, including one case per Helm status.
-2. The concurrency error produces a refusal; a mutation exercise restoring the unconditional
-   uninstall fails that case, and the source restores byte-exactly.
-3. An unrecognised status string fails closed rather than mapping to present or absent.
-4. `prodbox dev check` exit 0.
+1. ✅ `prodbox-unit -p "Sprint 3.31"` — 4/4, including one case per Helm status (all eight decode to
+   distinct constructors); full unit 3199/3199.
+2. ✅ The concurrency error produces a refusal, and the reconciler observes exactly once and never
+   uninstalls (asserted on the recorded call list, so "did not destroy" is checked rather than
+   assumed). The mutation exercise restoring the unconditional uninstall fails
+   *the absence reconciler refuses rather than uninstalling*, and the source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+3. ✅ An unrecognised status string fails closed rather than mapping to present or absent, as do a
+   missing field and a non-JSON body.
+4. ✅ `prodbox dev check` exit 0.
 
 ### Remaining Work
 
-Everything above.
+None on this sprint's surface. Recorded rather than left implicit: the second half of the original
+defect — that a `--wait --timeout 30m0s` timeout is indistinguishable from a failure at the exit
+code — is now **mitigated but not eliminated**. A timeout still reaches the failure path; what
+changed is that the failure path re-observes and will find the release `pending-upgrade`, so it
+refuses instead of deleting a healthy-but-slow rollout. Distinguishing timeout from failure at the
+`helm upgrade` call itself would need Helm to report it, which it does not.
 
-## Sprint 3.32: Canonical Ownership Direction for Mirrored Secrets [📋 Planned]
+## Sprint 3.32: Canonical Ownership Direction for Mirrored Secrets ✅
 
-**Status**: Planned — Phase `3` own-surface work on the workload secret-delivery path this phase
-owns.
+**Status**: Done (2026-08-07) — Phase `3` own-surface work on the workload secret-delivery path
+this phase owns. **Scope corrected twice against source (Standard C): the 2026-08-07 correction
+below refuted both of the sprint's original premises, and closing the sprint refuted the first
+correction's own replacement premise as well. What landed is stated in Deliverables (as landed).**
+**Implementation**: `src/Prodbox/Lifecycle/DnsRecord/Owner/Internal.hs` (new — the
+`DnsOwnerAuthority` constructor), `src/Prodbox/Lifecycle/DnsRecord/Owner.hs` (new — the sole
+minter `dnsOwnerAuthorityForProcess` and the total role×substrate table),
+`src/Prodbox/Lifecycle/DnsRecord.hs` (`DestroyDnsRecord` takes the authority;
+`DnsProgramOwnerUnauthorized`), `src/Prodbox/CheckCode.hs`
+(`checkDnsOwnerAuthorityBoundary`), `documents/engineering/secret_derivation_doctrine.md` § 5.1,
+`documents/engineering/helm_chart_platform_doctrine.md`, `src/Prodbox/Lib/ChartPlatform.hs`
+(two comments), `test/unit/DnsOwnerAuthoritySuite.hs` (new), `test/unit/DnsRecord.hs`,
+`test/unit/Main.hs`, `prodbox.cabal`.
 **Blocked by**: none.
-**Deployment qualification**: pending — persistence protocol is a Standard-P surface; both rows are
-already `pending`.
-**Independent Validation**: pure, no live cluster — the non-canonical mirror direction has no
-inhabitant, proven by a compile-fail exercise rather than a runtime assertion.
+**Deployment qualification**: pending — but this sprint moves **no** Standard-P
+production-composition surface: `DestroyDnsRecord` has zero production construction sites, so the
+arity change is a no-op at runtime. See "What this does not claim" below.
+**Independent Validation**: pure, no live cluster — the totality of the minting table, the absence
+of both cert-manager owners from its range, and a fail-closed destroy under a *matching*
+program/boundary pair, plus a `dev check` source gate proving no other production module can name
+the minting representation.
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md`,
 `documents/engineering/helm_chart_platform_doctrine.md`
 
@@ -3195,26 +3246,117 @@ This is the *Direction* class of
 [chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md): a
 reconciler that can run backwards.
 
-### Deliverables
+### Premise corrections (2026-08-07)
 
-- Canonical ownership expressed as a class whose instance set is deliberately incomplete, so the
-  mirror helper has no inhabitant in the non-canonical direction — `Vault → Secret` for `pguser`
-  becomes unwritable rather than rejected at runtime.
-- The DNS record owner witness is consumed at the delete site, so cross-substrate deletion of
-  another owner's TXT record is likewise inexpressible.
+Both premises were checked against source before any code was written, and neither holds as stated.
+Recording that is the point; working the sprint as specified would have produced a class
+constraining a helper that does not exist and a check that already exists.
 
-### Validation
+- **The `pguser` ownership direction is the reverse of what the Objective states, and the first
+  correction was also wrong.** The Objective says "Percona PGO v2 owns the `pguser` password. The
+  sync must run Secret → Vault and **never** the reverse." Source says the opposite:
+  `src/Prodbox/Secret/VaultInventory.hs:485,489,493` declares all three Patroni passwords as
+  `generatedField "password" "patroni-password"`, and `generateVaultSecretFieldValue` (:553-559)
+  mints them from 32 random bytes — **prodbox generates them into Vault KV**. The
+  `PerconaPGCluster` pins `spec.users[].secretName`
+  (`charts/keycloak-postgres/templates/postgresql.yaml:12-18`) to the pre-created Secrets, which is
+  PGO's custom-user-secret *adoption* path: the operator owns the Secret object, not the value.
 
-1. `prodbox test unit -p "Sprint 3.32"` passes.
-2. A mirror in the non-canonical direction does not compile; the exercise records the compile
-   failure rather than asserting a runtime rejection.
-3. Deleting a challenge record whose observed owner does not match the caller's witness fails
-   closed.
-4. `prodbox dev check` exit 0.
+  The first correction then claimed "no process copies the value", and that is false too. Exactly
+  one mirror exists and it is **chart-local, not Haskell**:
+  `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml` is a
+  `helm.sh/hook: pre-install,pre-upgrade` Job (:16) that reads
+  `vault kv get -field=password` (:65-66) and creates (`201`) or merge-patches (`409`, :128-140)
+  the three named Secrets. Tracing the three secret-name helpers found nothing because the mirror
+  is not in Haskell — which is the *same* lesson Sprint `4.58` recorded, applied one level up:
+  tracing every use of a Haskell symbol proves the absence of a Haskell mirror, never the absence
+  of the behaviour.
 
-### Remaining Work
+  The rule the doctrine states is therefore satisfied — but by **exactly one mirror running in the
+  canonical direction with no reverse path**, which is a different fact from "no mirror exists",
+  and the one worth recording. No path anywhere reads a Kubernetes Secret back into Vault; the only
+  `vault write` calls in the chart tree are Kubernetes-auth logins. Both governed doctrine tables
+  already described the correct direction; it was the sprint text, and two `ChartPlatform.hs`
+  comments saying "operator-owned pguser Secret", that invited the inverted reading.
 
-Everything above.
+- **The DNS owner witness is already consumed at the delete site, but it proves the wrong thing.**
+  The sprint says "nothing consumes the distinction". `runDnsRecordProgram`'s `runDestroy` does
+  check it — `ownerMatches` guards the destroy and yields `DnsProgramOwnerMismatch`. The real gap is
+  narrower and different: that check compares the **program's** coordinate owner against the
+  **boundary's** coordinate owner, and the same caller supplies both. It is a self-consistency
+  check, not a proof that the running process is the owner it claims. A home process that builds
+  both values with `AwsCertManagerDns01Owner` passes it.
+
+### Deliverables (as landed)
+
+- **`DestroyDnsRecord` consumes a `DnsOwnerAuthority`.** The authority is opaque, its constructor
+  lives in `Prodbox.Lifecycle.DnsRecord.Owner.Internal`, and its sole minter
+  `dnsOwnerAuthorityForProcess` is a total function of the two facts that identify a running
+  prodbox process: the `RuntimeRole` it selected before decoding configuration and the `Substrate`
+  that configuration declares. `runDestroy` refuses with the new `DnsProgramOwnerUnauthorized`
+  before it observes anything.
+- **Neither cert-manager owner is in the minter's range.** cert-manager is not a prodbox process
+  and has no `RuntimeRole`, so no `(role, substrate)` pair yields `HomeCertManagerDns01Owner` or
+  `AwsCertManagerDns01Owner`. The sprint's named scenario — a home process deleting an AWS
+  cert-manager `_acme-challenge` record by naming that owner on both sides — is not refused at
+  runtime, it is **unconstructible**. A prodbox process removes such a record by deleting the
+  Kubernetes object that owns it and proving absence by read-back, which is the contract Sprint
+  `5.29` builds on.
+- **The table is total and written pair by pair.** All 14 `RuntimeRole × Substrate` pairs are
+  enumerated with no wildcard, so a new role or substrate is a compile error at the table rather
+  than a silent `Nothing`. `(GatewayRuntime, SubstrateAws)` mints nothing, matching the target
+  architecture's disabled EKS DNS mutation.
+- **A `dev check` gate makes the boundary structural.** `checkDnsOwnerAuthorityBoundary` fails any
+  `src/` module other than the two owner modules that names the package-internal representation,
+  in the same idiom as the Sprint `1.76` `RoundTripWitness` and Sprint `4.58` `TargetSinkVersion`
+  boundaries.
+- **The `pguser` direction rule is recorded with its true mechanism.**
+  `secret_derivation_doctrine.md` § 5.1 states the four facts with source citations — Vault is the
+  authority, exactly one chart-local mirror runs Vault → Secret, PGO adopts rather than generates,
+  and no reverse path exists — and `helm_chart_platform_doctrine.md` disambiguates "operator-owned"
+  as naming the Secret object's controller. The two `ChartPlatform.hs` comments that invited the
+  inverted reading now say `PGO-adopted` and cite § 5.1. Rendered chart output is unchanged.
+
+### Validation (as run)
+
+1. `prodbox-unit -p "Sprint 3.32"` — 7/7. (The sprint originally wrote this as
+   `prodbox test unit -p "Sprint 3.32"`; that flag does not exist on the `prodbox` surface, which
+   accepts only `--coverage`, `--cov-fail-under`, and `--substrate`. Pattern selection is a flag on
+   the built test binary.)
+2. `prodbox-unit -p "DNS record"` — 8/8, the pre-existing suite unbroken by the arity change.
+3. **Mutation exercise.** Disabling the authority guard in `runDestroy` makes a home-gateway
+   process destroy an `AwsLifecycleProviderDnsOwner` record and read back absence
+   (`DnsDestroyAppliedAndReadBack` where `DnsProgramOwnerUnauthorized` is expected) — the exact
+   defect, reproduced. The source restored byte-exactly (`cmp` clean) and 7/7 returned.
+4. The `dev check` gate is exercised as a pure function over synthetic paths in the same suite:
+   the two owner modules are permitted, two other production paths are refused, and importing the
+   public module is permitted.
+5. `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs` exit 0,
+   and `prodbox test unit` exit 0 — 3206/3206 plus the dedicated 27/27 admission, 33/33
+   authentication, and 27/27 transport suites.
+
+The sprint's original Independent Validation promised "a compile-fail exercise rather than a
+runtime assertion". No compile-fail harness exists in this repository, so that line named a
+mechanism the tree does not have; it is replaced above by the ring-2 mechanism the tree does have —
+a `dev check` source gate plus a totality proof. Recorded rather than quietly substituted.
+
+### What this does not claim
+
+- **It changes no live behaviour.** `DestroyDnsRecord` has zero production construction sites
+  (declaration, interpreter arm, and four test sites are its only occurrences), and the one typed
+  DNS writer is reachable only under the undeployed `JournalLeaseEmitter` topology. This makes the
+  state unconstructible *before* the destroy path is wired, which is the right order; it is not a
+  fix to a running system.
+- **It does not bound Route 53.** Two untyped Route 53 writers exist in
+  `src/Prodbox/ControlPlane/ProviderProduction.hs` with no owner value at all. The claim this
+  sprint supports is narrow: no process can interpret a typed DNS destroy program against a
+  coordinate whose owner it does not hold. Recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **`EnsureDnsRecord` is still unwitnessed.** An ensure is a mutation too and is the same Direction
+  class; it is recorded as an unowned ledger row rather than widened into this sprint, because
+  scheduling gap-closure through a sprint block rather than silently is Standard L.
+- Per [chaos_hardening_doctrine.md § 22](../documents/engineering/chaos_hardening_doctrine.md), a
+  ring-2 gate bounds a process, not a protocol.
 
 ## Documentation Requirements
 

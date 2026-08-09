@@ -17,38 +17,16 @@
 module Prodbox.Lifecycle.Preconditions
   ( StructuredError (..)
   , Precondition (..)
-  , checkAll
-  , noLiveClusterTaggedAws
-  , noLiveOperationalIamUser
   , noLiveLongLivedPulumiStacks
   , noLiveLongLivedPulumiStacksPreflight
-  , noUndrainedK8sAwsResources
-  , renderPreconditionFailures
   )
 where
 
-import Data.List (intercalate)
-import Data.Text qualified as Text
-import Prodbox.Aws
-  ( operationalIamUserExists
-  , prodboxIamUserName
-  )
-import Prodbox.Lifecycle.K8sDrain
-  ( K8sDrainEnv
-  , collectSurvivors
-  )
 import Prodbox.Lifecycle.LiveResidue
   ( queryAwsSesResidueStatus
   , queryPublicEdgeTlsResidueStatus
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
-import Prodbox.Lifecycle.TagSweep
-  ( TagSweepInput (..)
-  , TaggedResource (..)
-  , discoverClusterTaggedAwsResources
-  , renderTagSweepRefusal
-  )
-import Prodbox.Settings (Credentials)
 
 -- | Structured error reported when a 'Precondition' fails. Carries
 -- the failing predicate's class label, a one-line summary, the
@@ -78,28 +56,6 @@ data Precondition = Precondition
   { preconditionLabel :: String
   , preconditionCheck :: IO (Either StructuredError ())
   }
-
--- | Compose preconditions. Discovery runs sequentially (so subsequent
--- discoveries see the side effects of earlier discoveries, which
--- matters when an earlier discover modifies the cluster). Returns
--- @Right ()@ when every precondition succeeds, or @Left errors@
--- with every failed precondition's structured error.
-checkAll :: [Precondition] -> IO (Either [StructuredError] ())
-checkAll preconditions = do
-  results <- mapM preconditionCheck preconditions
-  let failures = [err | Left err <- results]
-  pure $ case failures of
-    [] -> Right ()
-    _ -> Left failures
-
--- | Render a list of structured precondition failures into a
--- multi-line stderr block. The single-failure rendering is identical
--- to the doctrine's `--destroy-pulumi-residue` refusal; the multi-
--- failure rendering stacks each narrative block separated by blank
--- lines.
-renderPreconditionFailures :: [StructuredError] -> String
-renderPreconditionFailures failures =
-  intercalate "\n" (map errorNarrative failures)
 
 -- | Long-lived cross-substrate shared resources: the @aws-ses@ Pulumi
 -- stack and (Sprint 4.24) the retained public-edge production TLS
@@ -169,167 +125,3 @@ renderLongLivedRefusal live =
       ]
         ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) live
     )
-
--- | Sprint 4.11: K8s LoadBalancer Services or Ingresses still exist
--- (read-only listing variant of `drainAwsAffectingK8sResources`).
--- Used by `prodbox aws teardown` and `prodbox nuke` to refuse when
--- the cluster still owns AWS-affecting resources whose deletion
--- would orphan AWS objects (ALBs, EBS volumes, DNS01 records).
-noUndrainedK8sAwsResources :: K8sDrainEnv -> Precondition
-noUndrainedK8sAwsResources env =
-  Precondition
-    { preconditionLabel = "noUndrainedK8sAwsResources"
-    , preconditionCheck = do
-        result <- collectSurvivors env
-        case result of
-          Left err ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noUndrainedK8sAwsResources"
-                    , errorSummaryLine = "K8s drain survivors probe failed: " ++ err
-                    , errorOffendingItems = []
-                    , errorNarrative =
-                        "Could not inspect surviving K8s LoadBalancer Services or Ingresses: "
-                          ++ err
-                          ++ "\n"
-                    }
-              )
-          Right [] -> pure (Right ())
-          Right survivors ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noUndrainedK8sAwsResources"
-                    , errorSummaryLine =
-                        "K8s LoadBalancer Services or Ingresses still exist on the cluster."
-                    , errorOffendingItems =
-                        [ ( s
-                          , "kubectl delete --wait=false the resource and confirm AWS-side unwind"
-                          )
-                        | s <- survivors
-                        ]
-                    , errorNarrative = renderUndrainedK8sRefusal survivors
-                    }
-              )
-    }
-
-renderUndrainedK8sRefusal :: [String] -> String
-renderUndrainedK8sRefusal survivors =
-  unlines
-    ( [ "Refused: K8s LoadBalancer Services or Ingresses still exist."
-      , ""
-      , "Deleting the cluster now would orphan their AWS-side resources"
-      , "(ALBs, target groups, cert-manager DNS01 records). Run"
-      , "`prodbox cluster delete --cascade` to drain them automatically,"
-      , "or delete each manually before proceeding:"
-      , ""
-      ]
-        ++ map (\survivor -> "  - " ++ survivor) survivors
-    )
-
--- | Sprint 4.11: the dedicated operational @prodbox@ IAM user still
--- exists in AWS. Used by `prodbox nuke` to confirm `applyAwsTeardown`
--- actually deleted the user, and by any future operator command
--- that wants to refuse when the user is still present.
-noLiveOperationalIamUser :: FilePath -> Credentials -> Precondition
-noLiveOperationalIamUser repoRoot adminCredentials =
-  Precondition
-    { preconditionLabel = "noLiveOperationalIamUser"
-    , preconditionCheck = do
-        result <- operationalIamUserExists repoRoot adminCredentials
-        case result of
-          Left err ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLiveOperationalIamUser"
-                    , errorSummaryLine = "IAM `get-user` probe failed: " ++ err
-                    , errorOffendingItems = []
-                    , errorNarrative =
-                        "Could not query AWS IAM for the operational `prodbox` user: "
-                          ++ err
-                          ++ "\n"
-                    }
-              )
-          Right False -> pure (Right ())
-          Right True ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLiveOperationalIamUser"
-                    , errorSummaryLine =
-                        "Operational IAM user `"
-                          ++ Text.unpack prodboxIamUserName
-                          ++ "` still exists."
-                    , errorOffendingItems =
-                        [
-                          ( Text.unpack prodboxIamUserName
-                          , "prodbox aws teardown"
-                          )
-                        ]
-                    , errorNarrative =
-                        unlines
-                          [ "Refused: the dedicated operational `"
-                              ++ Text.unpack prodboxIamUserName
-                              ++ "` IAM user still exists in AWS."
-                          , ""
-                          , "Run `prodbox aws teardown` to delete the user and its"
-                          , "access keys before proceeding."
-                          ]
-                    }
-              )
-    }
-
--- | Sprint 4.11: AWS resources carrying a prodbox-owned or
--- cluster-owned tag still exist after the upstream destructive
--- command completed. Wraps 'discoverClusterTaggedAwsResources' from
--- @Prodbox.Lifecycle.TagSweep@. Used by @prodbox nuke@ step 4 and by
--- any future destructive command that has admin AWS credentials in
--- scope.
---
--- This predicate requires AWS read permission for
--- @resourcegroupstaggingapi:GetResources@; the operational @prodbox@
--- IAM user does NOT have this grant after the Sprint 7.5.c.v.d
--- policy compaction, so the predicate must be invoked with admin
--- credentials in the supplied environment.
-noLiveClusterTaggedAws :: TagSweepInput -> Precondition
-noLiveClusterTaggedAws input =
-  Precondition
-    { preconditionLabel = "noLiveClusterTaggedAws"
-    , preconditionCheck = do
-        result <- discoverClusterTaggedAwsResources input
-        case result of
-          Left err ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLiveClusterTaggedAws"
-                    , errorSummaryLine =
-                        "AWS tag-sweep query failed: " ++ err
-                    , errorOffendingItems = []
-                    , errorNarrative =
-                        "Postflight AWS tag sweep could not complete: "
-                          ++ err
-                          ++ "\n"
-                    }
-              )
-          Right [] -> pure (Right ())
-          Right resources ->
-            pure
-              ( Left
-                  StructuredError
-                    { errorPreconditionLabel = "noLiveClusterTaggedAws"
-                    , errorSummaryLine =
-                        "AWS resources carrying prodbox or cluster tags still exist."
-                    , errorOffendingItems =
-                        [ ( taggedResourceArn resource
-                          , "aws resourcegroupstaggingapi untag-resources --resource-arn-list "
-                              ++ taggedResourceArn resource
-                          )
-                        | resource <- resources
-                        ]
-                    , errorNarrative = renderTagSweepRefusal resources
-                    }
-              )
-    }

@@ -26,7 +26,8 @@ import Prodbox.Bootstrap.Broker.ProductionSecretWorker
   ( runProductionSecretWorker
   )
 import Prodbox.Bootstrap.Broker.Readiness
-  ( brokerReadinessObserverPeriodMicros
+  ( brokerReadinessSchedule
+  , observerPeriodMicros
   )
 import Prodbox.Bootstrap.Broker.Server
   ( renderBrokerServerError
@@ -154,7 +155,7 @@ applyBootstrapBrokerStart settings = do
 -- server call it brackets, so a returning or failing server reclaims it.
 readinessObserverLoop :: BrokerReadinessCache -> IO ()
 readinessObserverLoop cache = forever $ do
-  threadDelay (fromIntegral brokerReadinessObserverPeriodMicros)
+  threadDelay (fromIntegral (observerPeriodMicros brokerReadinessSchedule))
   brokerReadinessCacheRefresh cache
 
 failWith :: String -> IO ExitCode

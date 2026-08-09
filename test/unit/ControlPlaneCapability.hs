@@ -49,6 +49,7 @@ import Prodbox.ControlPlane.Interpreter
   , QueueAdmission (Admitted, Saturated)
   , runCapability
   )
+import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
 import Prodbox.ControlPlane.SCapability
   ( SomeSCapability (SomeSCapability)
   , opToSCapability
@@ -129,8 +130,14 @@ readingWith evidence =
     , readingEvidence = evidence
     }
 
+-- Sprint 1.76: the witness is opaque and minted only by an interpreter that
+-- performed a conditional write. A fixture standing in for such an interpreter
+-- may mint one (the boundary lint is scoped to src/); production code may not,
+-- which is what stopped the readiness barrier from synthesising this value.
 roundTripEvidence :: ExternalEvidence
-roundTripEvidence = EvidenceRoundTripConfirmed (RoundTripWitness (ver "cas-etag-1"))
+roundTripEvidence =
+  EvidenceRoundTripConfirmed
+    (mintRoundTripWitness (ver "cas-etag-1") (authorityTimeFromMicros 0))
 
 verdictTag :: ReadinessVerdict k -> String
 verdictTag verdict = case verdict of

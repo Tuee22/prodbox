@@ -90,6 +90,25 @@ node-pinned claim, the static retained EKS `ReadWriteOncePod` claim, and exact L
 and rendered RBAC. Production-default and deployment-qualification status remain owned only by the
 Development Plan.
 
+## 1Z. Release State Is Decoded, and a Mutation Needs a Permit (Sprint `3.31`)
+
+A Helm release's presence is decoded from `.info.status`, never from `helm status`'s exit code. All
+eight statuses — `deployed`, `failed`, `pending-install`, `pending-upgrade`, `pending-rollback`,
+`uninstalling`, `uninstalled`, `superseded` — are distinct constructors, and an unrecognised status
+fails closed to unobservable rather than defaulting to present. An exit code cannot distinguish
+`deployed` from `pending-upgrade`, and that distinction is the difference between a release this
+process may write and one another writer holds.
+
+A mutating chart helper requires a `HelmWritePermit`, whose only producer takes an observation. The
+four pending/uninstalling statuses refuse it. This matters because Helm's
+`"another operation (install/upgrade/rollback) is in progress"` is the **concurrency** error: the
+superseded recovery answered *any* non-zero `helm upgrade --install` exit with `helm uninstall
+--wait`, so it deleted the release another writer was mid-install on, and answered a
+`--wait --timeout 30m0s` timeout — indistinguishable from failure at the exit code — by deleting a
+healthy-but-slow rollout. A concurrency refusal now resolves to a typed value that cannot be
+answered by a destroy, because a destroy needs the permit it was refused, and the failure path
+routes through the shared absence reconciler, which re-observes before acting.
+
 ## 1A. Chart Lint and Route Inventory Generation
 
 The supported chart-maintenance surface is split between `prodbox dev lint chart` and
@@ -765,6 +784,14 @@ Kubernetes auth and materialized only at the consuming workload boundary per
 | `patroni_app_password` | `prodbox-<root-chart>-pg-pguser-keycloak` | Vault KV, fetched by the `prodbox-<namespace>-pg` materializer hook |
 | `patroni_superuser_password` | `prodbox-<root-chart>-pg-pguser-postgres` | Vault KV, fetched by the `prodbox-<namespace>-pg` materializer hook |
 | `patroni_standby_password` | `prodbox-<root-chart>-pg-primaryuser` | Vault KV, fetched by the `prodbox-<namespace>-pg` materializer hook |
+
+The three Patroni rows flow **Vault → Secret** and never the reverse. The `PerconaPGCluster` pins
+`spec.users[].secretName` to the Secrets the pre-install hook already materialized, so the operator
+adopts a named Secret rather than generating a password into one: PGO owns the Secret *object*, and
+Vault owns the *value*. Where this doctrine and the chart comments say a Patroni Secret is
+"operator-owned", that names the object's controller only. The full direction rule, its source
+citations, and the absence of any Secret → Vault path are recorded in
+[secret_derivation_doctrine.md § 5.1](./secret_derivation_doctrine.md).
 | `keycloak_vscode_client_secret` | Keycloak Vault-init env file; `vscode` Envoy consumer still being migrated | Vault KV, fetched via Vault k8s auth |
 | `keycloak_api_client_secret` | Keycloak Vault-init env file | Vault KV, fetched via Vault k8s auth |
 | `keycloak_websocket_client_secret` | Keycloak Vault-init env file; websocket `SecretRef.Vault` for its app-side consumer | Vault KV, fetched via Vault k8s auth |

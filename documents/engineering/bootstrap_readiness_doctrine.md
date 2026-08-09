@@ -33,6 +33,14 @@ constructor carrying a stronger label. The interpreter resolves one `CapabilityR
 it for all three. This is observation of that requested operation's service/session/queue
 capability; a separate read-only domain observation never authorizes a mutation kind.
 
+**Sprint `1.76` closes the gap between that statement and the implementation.** The declaration side
+was enforced — the component graph's pure depth check refuses a shallow probe declared against a
+`BackendWriteEdge` — but the *adapter* side was not: the deep slot of `ComponentReadinessTarget`
+held an arbitrary action carrying no evidence of what it had done, so the declaration constrained a
+graph and never a probe. The deep slot now has its own result type, `BackendRoundTripResult`, whose
+ready arm carries a `RoundTripWitness`. A shallow probe action therefore does not inhabit the deep
+slot: it is a type error, not a runtime classification something downstream has to catch.
+
 ### 0.3 Ordering is derived from pure requirements
 
 The component graph contains capability requirements as data. It contains no executable callback. A
@@ -187,6 +195,53 @@ MinIO health endpoint, or an absent-object GET is not interchangeable evidence.
 Read-only prerequisites remain read-only. A mutating canary is a visible preparation or
 reconciliation step, not a hidden prerequisite effect. Long-running work does not run a canary and
 then open an unrelated transaction; it submits the idempotent durable operation directly.
+
+#### A staleness bound is computed, never authored (Sprint `2.40`)
+
+A cached readiness projection fails closed when its record is older than a staleness bound. That
+bound is not free to be authored beside the observer that fills the record: the observer stamps its
+record **after** a pass, so its inter-stamp interval is `period + passDuration`, and a bound that
+tolerates one missed pass must be at least `2 * (period + budget)`.
+
+The Bootstrap Broker's bound was authored as `3 * observerPeriod` = 15 s against a 5 s period and a
+5 s budget, where the arithmetic requires 20 s. The failure mode is worth naming because it is not a
+slow one: a broker whose dependencies are all `Ready` projects `Starting` for most of every cycle,
+and `failureThreshold: 6` at `periodSeconds: 10` removes the Pod after 60 s. A healthy system evicts
+itself because two constants were authored separately.
+
+`Prodbox.Bootstrap.Broker.Readiness.ObservationSchedule` hides its constructor and derives the bound
+in its smart constructor, so a bound the observer cannot meet is not constructible, and
+`computeBrokerReadiness` takes the schedule rather than reading free top-level constants — the
+projection enforces the bound belonging to the observer that filled the record it is folding.
+
+#### Write-shaped evidence is minted, never asserted (Sprint `1.76`)
+
+The rule above says an object GET cannot satisfy a conditional-write operation. Enforcing it
+requires the write-shaped evidence to be unforgeable, so `RoundTripWitness` is opaque and its
+constructor lives in a package-internal module whose importers are an allowlist `prodbox dev check`
+enforces. The allowlist admits only interpreters that performed or authoritatively decoded a round
+trip:
+
+- the object-store conditional-write path, which now carries the version the store returned for the
+  write it issued (`ConditionalPutApplied` had been discarding it) rather than reporting a bare
+  "applied";
+- `Prodbox.Gateway.Client`, which decodes the receipt the gateway daemon records at the instant its
+  own conditional continuity write is accepted;
+- `Prodbox.Lifecycle.RegistryBackendWitness`, which decodes the upload session the registry can only
+  have created by writing through to its storage backend.
+
+Two consequences are worth stating because the superseded implementation had neither:
+
+- **A witness carries the instant the write landed, not a later clock read.** Without that the
+  freshness window is inert — it bounds the age of the question rather than the age of the proof, so
+  a decade-old round trip and a current one produce identical observations. The gateway daemon
+  stamps the instant at the point its interpreter observes the store's acceptance, and the host's
+  evidence fold uses that instant as `observedAt`.
+- **A daemon that is up is not a daemon that is writing.** The gateway deep probe previously read a
+  constant-time `/readyz` latch, which is exactly the object-GET case this section forbids. `/readyz`
+  is retained as the liveness precondition it genuinely is, and the evidence now comes from the
+  daemon's recorded round-trip receipt, refreshed on every heartbeat publication. A daemon that
+  stops writing stops satisfying the edge, which is the distinction the window exists to make.
 
 ### 2.4 Dependency Readiness vs Runtime Stability
 
@@ -387,6 +442,10 @@ linked SSoTs.
   admission ticket. Its evidence constructors are the *Provenance* class in
   [§ 21](./chaos_hardening_doctrine.md) — a witness must be returned by performing the operation,
   never synthesized from a description of it.
+- [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) — the rule that a refusal
+  retains its structured reason (stated in section 0.5 above) does not stop at a region edge. A
+  typed refusal converted into an exception, and then into an unanswered socket, is the same
+  collapse this doctrine forbids at an observation seam, committed one layer out.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) — capability
   GADT, same-reference rule, physical service split, deadlines, and durable operations.
 - [Pure FP Standards](./pure_fp_standards.md) — external `decide`/`evolve` folds and interpreter

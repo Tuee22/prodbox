@@ -86,14 +86,14 @@ fakeCore ref =
           Just _ -> pure (Right LogicalConditionalPutConflict)
           Nothing -> do
             writeIORef ref (Map.insert obj (payload, ObjectVersion "v1") objects)
-            pure (Right LogicalConditionalPutApplied)
+            pure (Right (LogicalConditionalPutApplied (ObjectVersion "v1")))
     , authPutIfVersion = \obj (ObjectVersion expected) payload -> do
         objects <- readIORef ref
         case Map.lookup obj objects of
           Just (_, ObjectVersion current)
             | current == expected -> do
                 writeIORef ref (Map.insert obj (payload, ObjectVersion (Text.snoc current '*')) objects)
-                pure (Right LogicalConditionalPutApplied)
+                pure (Right (LogicalConditionalPutApplied (ObjectVersion (Text.snoc current '*'))))
           _ -> pure (Right LogicalConditionalPutConflict)
     , authNow = pure fixedNow
     }

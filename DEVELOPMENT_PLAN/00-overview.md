@@ -804,6 +804,21 @@ than restated here as a fresh rerun log.
 - Run the named Haskell-owned validation flows owned by `src/Prodbox/TestValidation.hs`.
 - Run the aggregate reruns `prodbox test integration all` and `prodbox test all`.
 
+**These gates have different regions, and the differences are load-bearing.** `prodbox dev check`
+formats and lints `app src test`, and since Sprint `5.30` its type-checking build is scoped
+`all --enable-tests`, which resolves to the library, the `prodbox` executable, **and the eight test
+suites**. Before `5.30` it was scoped `all` alone — the library and the executable only — so a type
+error in `test/` was caught by `prodbox test unit` or `prodbox test integration cli` / `env` and by
+nothing else. That is how a 2026-08-07 config type change broke twenty integration cases and was
+recorded as `Done`: a sprint whose Validation section named only `dev check` and `prodbox test unit`
+had not exercised the integration suite, and could not have.
+
+The widening closes the *compile* gap, not the *behaviour* gap. `dev check` now proves the test tree
+type-checks; it still runs no test. A fixture that compiles against a changed type and asserts the
+wrong thing is caught by the suites and by nothing else, so the commands above are still run
+individually rather than inferred from the first one. The general rule is "The region of Ring 2" in
+[resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md).
+
 ### Interpretation
 
 The unaffected baseline remains Haskell-only and retains the AWS stack surface, in-cluster
@@ -839,21 +854,117 @@ illegal-state topology it accompanies
 ([chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md)) reopened
 four phases on their own surfaces, each on verified evidence rather than intent:
 
-- **Phase `1` 🔄 Active** — Sprints `1.76`/`1.77`. Readiness evidence for a conditional-write
-  capability is constructible from a string literal, and no retry jitter exists anywhere in the
-  tree.
-- **Phase `2` 🔄 Active** — Sprint `2.39` corrected from `📋 Planned` to `🔄 Active` (its fix was
-  already in the tree while the block said none had been attempted), plus Sprints `2.40` (the
-  landed staleness bound fails its own arithmetic, so a healthy broker evicts itself) and `2.41`.
-- **Phase `3` 🔄 Active** — Sprints `3.31`/`3.32`.
-- **Phase `4` 🔄 Active** — Sprints `4.55`/`4.56`. Five control-plane roles carry the same probe-path
-  defect Sprint `2.39` repairs for the Bootstrap Broker.
-- **Phase `5` 🔄 Active** (unchanged) — Sprint `5.18`'s one never-built deliverable is split out as
-  Sprint `5.29`, which is now the sole reason this phase is open.
+- **Phase `1` 🔄 Active** — Sprint `1.76` ✅ **Done (2026-08-07)**; Sprint `1.77` open. Readiness
+  evidence for a conditional-write capability was constructible from a string literal. It no longer
+  is: the witness is opaque behind a `dev check`-enforced minting allowlist, the deep readiness slot
+  has its own result type so a shallow probe is a type error rather than a runtime rejection, and
+  the witness carries the instant the write landed so the freshness window bounds the proof rather
+  than the question. The gateway CAS lane that had been faking its witness now exists end to end —
+  the conditional-put version the store returns, discarded at every call site, reaches the daemon,
+  which projects it for the host to read. Sprint `1.77` ✅ **Done (2026-08-07)** likewise: retryability is now a
+  property of the (operation, error) pair — a timeout on a mutating call is *indeterminate*, not
+  transient, and repeating one requires an idempotence witness the type system demands — and jitter
+  exists, where before every retrier in the tree shared one deterministic schedule and N clients
+  failing against one dependency re-collided on every attempt.
+- **Phase `2`** — Sprints `2.39`, `2.40`, and `2.41` are all ✅ **Done (2026-08-07)**. `2.39`'s last deliverable, the conformance gate, now enforces the constant-time `/readyz`
+  contract structurally instead of describing it, and its live reproducer stays 🧪 Standard-O.
+  `2.40` replaces the authored `3 * period` staleness bound — which failed its own arithmetic, so a
+  healthy broker projected `Starting` for most of every cycle and evicted itself — with a bound
+  *derived* from the observer period and the per-pass budget by a hidden-constructor schedule.
+  `2.41` ✅ **Done (2026-08-07)** collapses the emitter's three disagreeing cells into one value —
+  `Ready` with no runtime was reachable on the *deployed* path — and replaces the monotone
+  workers-started flag, written once before any worker existed, with a heartbeat-bounded roster whose
+  supervisor is the only way to run a worker.
+- **Phase `3`** — Sprints `3.31` and `3.32` are both ✅ **Done (2026-08-07)** and the reopen closes.
+  `3.32` makes a typed DNS destroy consume the ownership authority the running process holds rather
+  than compare two copies of the coordinate's owner a single caller supplied; the authority's minter
+  is a total `RuntimeRole × Substrate` table, and neither cert-manager owner is in its range, so the
+  cross-substrate deletion the sprint named cannot be expressed at all. Its documentation half
+  refuted the sprint's premise for a second time: prodbox — not Percona PGO — is the authority for
+  the three Patroni passwords, and the one mirror that exists is chart-local and runs Vault →
+  Secret.
+- **Phase `4`** — Sprints `4.55`, `4.56`, and `4.59` are all ✅ **Done (2026-08-08)** and the reopen
+  closes. `4.55` gives the five control-plane roles the treatment Sprint `2.39` gave the Bootstrap
+  Broker: readiness is `STM`-typed cached facts, so backend I/O on a `timeoutSeconds: 1` probe path
+  no longer type-checks, and the `m Bool` seam is gone. Its stated counts were wrong for every role
+  and are corrected — the worst offenders were the two the sprint said ran nothing: an
+  `aws sts get-caller-identity` subprocess, and up to 32 sequential Vault KV reads whose healthy path
+  was the slowest. `4.56` makes the admission ticket the repository already minted a required
+  argument of the act instead of a value discarded one line later. `4.59` deletes the superseded
+  in-controller Target write lane — minus two clauses of its own implementation list that source
+  refuted.
+- **Phase `5`** — Sprint `5.29` is ✅ **Done (2026-08-08)** and the phase closes. The DNS01 challenge
+  record is registered before issuance, removed by an always-run cleanup node, and proven absent by
+  an exact read-back in which "cannot observe" is not "absent". Its two premises were corrected
+  against source: prodbox never writes the record, and the Challenge UID does not exist when the
+  registration must happen.
 
 No later phase blocks any earlier one; every entry above expands the phase's own owned surface, and
 Phases `6`, `7`, and `8` remain closed. Deployment qualification is unchanged and still `pending` on
 both substrates.
+
+**Conversions and gate regions, 2026-08-08 (Standard C).** Twenty of 55
+`prodbox test integration cli` / `env` cases were failing, and the cause reframes the four sprints
+above rather than adding to them. Sprint `1.80` had made
+`deployment.public_edge_advertisement_mode` a closed Dhall union — the § 21 class-D move, on the
+field § 21 names as its own worked example — and applying it broke the twenty cases, surfacing as
+`NoResponseDataReceived`. **This is a failure of MISU, not an absence of it**: five
+minting-boundary gates, a Ring-1 `assert`, a Ring-2 decode gate and the `0.24` drift gate were all
+in force, and each constrains a value *inside* `src/` while the defect lived at three conversions
+out of it — a `ConfigFile` hand-authored as a Dhall string, a typed `Left` thrown as `ioError`, and
+that exception escaping a socket handler before any byte was written.
+
+Governance Sprint `0.25` ✅ **Done** records the doctrine on the already-reclosed Phase 0 surface
+(no reclose event): `chaos_hardening_doctrine.md` gains **§ 23, "Conversions — where the moves
+stop"**, § 22 gains a fourth honest consequence, § 21's "Neither needs new doctrine" is corrected in
+place, and `resource_scaling_doctrine.md` § 2C gains **"The region of Ring 2"** — a ring is a
+property of a type over a *compiled region*, and this repository's region excluded `test/`
+entirely. **Phases `4` and `5` reopened on their own surfaces** for the code: Sprint `4.60` ✅ (a
+response obligation, so "accepted a connection and answered nothing" stops being expressible) and
+Sprint `5.30` ✅ (one Tier-0 encoder, the fixture decode failure kept as a value, `--enable-tests`).
+Neither moves a Standard-P production-composition surface.
+
+Phase `5` remains 🔄 Active on Sprint `5.31`; the integration suite went **20 of 55 failing → 8 →
+4**. The chain `5.31` uncovered is worth the space, because each link was invisible until the one
+above it was fixed: a typed `AdmissionRefusal` discarded with a wildcard made eight cases exit 1 in
+silence (§ 23 at the *step* boundary — `ExitCode` has no room for a reason, and the renderer already
+existed); returning the refusal instead of lowering it named a Phase-`4` production defect in one
+run (admissions reset at every phase boundary, closed as Sprint `4.61`); and under that sat three
+fixture drifts ending in the capacity drift Phase 5 had registered as silent — the fake LimitRange
+declared the gateway at 250m where the plan projects 750m. The fixture's observed cluster state now
+renders from the same projection the validator compares against. Four cases remain, each a distinct
+named question.
+
+**Tier-0 config audit, 2026-08-07 (Standard C).** An audit of the Dhall config surface asked whether
+the design makes illegal state unrepresentable. For categorical state it largely does — closed unions wherever the legal set is a fixed
+vocabulary — substrate, component identity, dependency-edge kind, readiness-probe kind, QoS
+class, scaling policy, and secret-reference shape. For value-level state it does not, which is expected: Dhall has
+no refinement types, and [resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md)
+already names Ring 2 rather than Ring 1 as the ring that delivers the guarantee. Three governed
+documents nonetheless carried claims that were false against source, corrected under governance
+Sprint `0.23` on the already-reclosed Phase-0 documentation surface (no reclose event, as with
+`0.18`–`0.22`). **Phase `1` gained Sprints `1.79`–`1.81`** on the surface it already had open, and all three are
+✅ **Done (2026-08-07)**: the in-force config payload renderer omitted a field the Tier-0 renderer
+preserves and is now derived from the same `Dhall.inject` mechanism; the two-value advertisement
+enum carried as free text is now a closed Dhall union, so a misspelling fails the type check rather
+than a string comparison; and the validator, a flat list that never mentioned the record, is now
+total over it — as a positional pattern, because the field-named form the audit proposed turned out
+not to force anything.
+Sprint `0.24` ✅ closes the missing Tier-0 drift gate: `prodbox dev check` now decodes the
+binary-sibling `prodbox.dhall` and holds it to the canonical re-render of the record it decodes to,
+naming the drifted field. Absence stays silent and a malformed file is a distinct finding. The
+mutation exercise established both halves of its reach — a hand-edited resource plan is caught,
+because the emitted `concurrentDraws` list it leaves stale is the Ring-1 `assert`'s own input, and a
+round-tripping primitive edit is not, which is registered as an unowned follow-up carrying a
+Standard-P generated-config-identity consequence rather than folded in silently.
+
+**No phase reopens on this account, and no prior closure was falsified.** Each candidate claim was
+read against its cited evidence: the `decode . encode == id` claim covers the Tier-0 record's total
+`Dhall.inject` path; the Phase-7 drift guards state their scope as a *default* config; the Phase-5
+sweep over the payload renderer is a SecretRef scan that by construction cannot observe a missing
+field. Every claim held within its stated scope. The defects sit in gaps no claim covered, which is
+a coverage failure rather than a false-evidence failure — and recording that distinction matters,
+because manufacturing corrections where none are owed is the same dishonesty in the other direction.
 
 As of the 2026-07-26 forced-shutdown counterexample, Phases `0` and `1` are reclosed and Phase `2`
 is reopened on Sprint `2.36`. Sprints `1.61`–`1.67`,

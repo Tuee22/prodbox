@@ -639,6 +639,7 @@ assumed result and report it as proven. Keep this ledger explicitly:
 | **Simulate** (optional) | The *real code* upholds the invariant under the schedules explored | **Tested** (sampled schedules, not exhaustive) | Schedules not explored; anything outside the simulated subsystem |
 | **Inject** — live fault injection | The deployed system survived the injected faults | **Tested** (the faults you chose), never proven | Faults/interleavings not injected; that the invariant is *sound* |
 | Synchrony / real-time assumption (R8) | The timing premise the live system relies on (clock-skew bound, lease, heartbeat) is named, bounded, and monitored | **Assumed** — monitored at runtime, never proven by any move | Behaviour when the bound is exceeded; that the premise actually holds in the field |
+| Type tightening inside a region (§ 23) | Values of that type in the compiled region cannot take the excluded shape | **Proven for the compiled region only** — and the region is whatever the build command selects, not the repository (§ 22) | Anything at a conversion out of the region: a hand-authored serialization, a typed failure thrown as an exception, an unanswered socket. Tightening a type does not update a second encoder; it only makes it wrong |
 
 (Three further rows — the cross-boundary consistency premise, the failover budget, and the
 invariant-confluence classification — belong to systems that cross a storage boundary, and are recorded in
@@ -1068,6 +1069,32 @@ composes with, and
 [bootstrap_readiness_doctrine.md § 0.5](./bootstrap_readiness_doctrine.md) for the
 distinguishability rule stated as doctrine.
 
+**The Tier-0 config surface is where D and G are easiest to see.** `ValidatedSettings` above is the
+worked example of the mechanism succeeding; the same record is the worked example of its limits,
+because only the capacity plan is a required proof and every other field rides along as the
+primitive it decoded as. Two instances, both Phase-1-owned:
+
+- **D (Distinguishability)** — `deployment.public_edge_advertisement_mode` is a two-value enum
+  carried as free `Text` and decided by string comparison, sitting beside eight properly-unioned
+  scaling policies in the same record. The legal set is closed and known; nothing in the type says so.
+- **G (Totality)** — two folds over the config record are partial by construction. The validator is
+  a list of named checks rather than a record pattern match, so an added field is skipped silently;
+  and the in-force payload renderer is hand-maintained rather than derived, so it omits a field the
+  type carries and record completion refills it with the default. Both are the same shape as the
+  cross-seam rule above: **cross-seam values derive from one source**, and here two renderers of one
+  record disagree about what the record contains.
+
+Both need the moves this table already names, applied at the config boundary — see
+[config_doctrine.md § 4](./config_doctrine.md) for what decoding does and does not validate.
+
+**"Neither needs new doctrine" is what this passage used to say, and closing D falsified it.**
+Sprint `1.80` made the advertisement mode a closed union exactly as prescribed, and the change broke
+twenty integration cases whose fixtures hand-authored the old shape — a defect none of this table's
+moves addresses, because it lives at a conversion out of the typed region rather than at a missing
+coordinate on a value. What was actually missing is stated in § 23. The correction is recorded here
+rather than quietly amended: the table was right about the coordinate and wrong about the
+sufficiency.
+
 **One prohibition carries over unchanged.** Externally-authoritative state — readiness, leases,
 provider state, ownership, residue — stays a flat exhaustive ADT computed by pure projection. The
 GADT rule in [pure_fp_standards.md § 7](./pure_fp_standards.md#7-gadt-indexed-state-machines)
@@ -1084,10 +1111,10 @@ inventing a second vocabulary:
 | Ring | Mechanism | Delivers "unrepresentable"? |
 |---|---|---|
 | 1 | Static Dhall `assert` | **No** — no refinement types; it trusts the emitted draw |
-| 2 | Haskell decode/compile gate | **Yes** — this is the only ring that does |
+| 2 | Haskell decode/compile gate | **Yes — within its compiled region.** See § 2C for the region column and the fourth consequence below |
 | 3 | Runtime cgroup / Kubernetes / transport | **No** — inherently runtime; containment only |
 
-Three honest consequences.
+Four honest consequences.
 
 **Ring 2 proves a property of a process, not of a protocol.** It proves this process cannot
 construct an illegal value. Cross-process safety — at-most-one under partition, authority handoff,
@@ -1104,6 +1131,68 @@ boundary, precisely so validation can refuse it.
 **A containment event is not a sufficiency proof.** As § 2C puts it, a cgroup OOM kill is evidence
 that containment worked and the workload's runtime contract failed. It is never evidence that the
 authored limit was adequate.
+
+**A ring has a region, and the region is whatever the build command selects.** "Ring 2 delivers
+unrepresentable" is a claim about a type *over a set of compiled modules*, and the set is not the
+repository — it is the argument list. Measured 2026-08-08:
+`cabal build --builddir=.build all`, the build `prodbox dev check` runs, resolves to `lib` and
+`exe:prodbox` and **no test suite**; `--enable-tests` resolves to those plus all eight. So for
+`test/` — where every sprint's evidence lives — this repository sat at Ring 0 while recording
+Ring-2 claims, and a type tightening that should have been a compile error was instead a runtime
+decode failure in a suite nothing routinely compiled. The region is owned by
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md); state it there, cite it here.
+A ring stated without its region is not a weaker claim than intended — it is a claim about a
+different set of files than the reader will assume.
+
+---
+
+## 23. Conversions — where the moves stop
+
+Every move in § 21 constrains what a value can be *inside* a region. None of them says anything
+about what happens when the value leaves. That gap is not a coordinate a value is missing; it is a
+place where all eight are discarded at once, and it is where this project's MISU work has actually
+failed.
+
+**The worked instance is a MISU move that caused an outage.** Sprint `1.80` retyped
+`deployment.public_edge_advertisement_mode` from free `Text` to a closed Dhall union — precisely the
+class-D move § 21 prescribes, and § 21 named this exact field as its worked example. Applying it
+broke twenty integration cases, and the failure arrived as a network error. Five minting-boundary
+gates, a Ring-1 `assert`, a Ring-2 decode gate and a Tier-0 drift gate were all in force and none of
+them fired, because the defect was in none of their regions. Three conversions, chained:
+
+| # | Conversion | What survived |
+|---|---|---|
+| 1 | a `ConfigFile` written as a **hand-authored Dhall string** in a test fixture | nothing — the string does not know the field is a union |
+| 2 | a decode failure's typed `Left detail` thrown as `ioError` | the text; not that it was a decode failure |
+| 3 | that exception escaping a socket handler before any byte was written | nothing — a closed socket is indistinguishable from a network fault |
+
+Read the second column downward: this is a value losing its type three times, and the reported
+symptom was step 3's — a transport enum stringified into a test log.
+
+**The rule.** *A typed value crossing out of a region must be reconstructed by exactly one derived
+encoder, or the region's proofs end at the crossing.* Three corollaries, each falsifiable:
+
+- **Count the encoders.** If a record has one decoder and more than one encoder, the extra encoders
+  are hand-maintained restatements of a type, and they drift silently — § 21's class-G rule
+  (*cross-seam values derive from one source*) applied to the write direction. Tightening the type
+  does not update them; it only makes them wrong.
+- **Do not convert a typed failure into an untyped one.** A `Left`, a four-valued observation, or a
+  refusal constructor is the answer. `ioError`, `error`, and an escaping exception all replace an
+  answer with its absence. § 0.5 of
+  [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) already requires refusals to
+  retain their structured reason; that requirement does not stop at a region edge.
+- **Remove the conversion before adding a proof.** The instinct on discovering a conversion defect
+  is to add a gate. Prefer deleting the second encoder and keeping the typed failure a value; a
+  catch-all is a backstop for what cannot be typed away, not a fix for what can. Adding an
+  n+1-th opaque wrapper to a repository whose n existing wrappers did not fire is answering the
+  wrong question.
+
+**This is not new doctrine so much as § 21's own framing applied where it was not.** § 21 already
+says the work "moves the purity *boundary*, not the purity *quantity*" — that the effectful layer
+must be constrained to produce only values the pure layer's types demand. The failure above is that
+proofs kept being added *inside* regions while the boundaries between them stayed ungoverned. Where
+a conversion is unavoidable — a file format, a wire protocol, a socket — the honest position is
+§ 22's: name the region, say the proofs end at its edge, and put one derived encoder there.
 
 ---
 

@@ -70,7 +70,6 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , mkCredentialGeneration
   , mkRegisteredTargetSet
   , mkTargetIntentCoordinate
-  , mkTargetSinkVersion
   , mkTargetValueDigest
   , targetCommitDisposition
   , targetIntentCoordinateLeaseObject
@@ -86,6 +85,9 @@ import Prodbox.Lifecycle.TargetCommitInterpreter
   , TargetRecoveryRun (..)
   , runPreparedTargetCommit
   , runSuccessorTargetRecoveryAfter
+  )
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
   )
 import TestSupport
 
@@ -333,7 +335,7 @@ fakeSinkAdapter state =
         current <- readSink state identity
         if sinkCasMatches expectedVersion current
           then do
-            let version = sinkVersion identity expectedVersion
+            let version = sinkVersion expectedVersion
                 observation = TargetSinkObserved version sinkRecord
             record state (SinkWritten identity)
             setSink state identity observation
@@ -350,12 +352,10 @@ sinkCasMatches expectedVersion current = case (expectedVersion, current) of
   (Just expected, TargetSinkObserved actual _) -> expected == actual
   _ -> False
 
-sinkVersion :: Text -> Maybe TargetSinkVersion -> TargetSinkVersion
-sinkVersion identity expectedVersion =
-  expectRight
-    ( mkTargetSinkVersion
-        (identity <> case expectedVersion of Nothing -> "-v1"; Just _ -> "-v2")
-    )
+sinkVersion :: Maybe TargetSinkVersion -> TargetSinkVersion
+sinkVersion expectedVersion =
+  expectJust
+    (targetSinkVersionFromStoreVersion (case expectedVersion of Nothing -> 1; Just _ -> 2))
 
 readSink :: FakeState -> Text -> IO (TargetSinkObservation ByteString)
 readSink state identity = do
@@ -530,6 +530,11 @@ recoveryBoundary = at 3000
 
 at :: Natural -> AuthorityTime
 at = authorityTimeFromMicros
+
+expectJust :: Maybe value -> value
+expectJust result = case result of
+  Nothing -> error "unexpected Nothing"
+  Just value -> value
 
 expectRight :: (Show errorValue) => Either errorValue value -> value
 expectRight result = case result of

@@ -12,12 +12,15 @@ module Prodbox.Service
   , PgError (..)
   , RedisError (..)
   , ServiceError (..)
+  , FailureDisposition (..)
   , TransientFailureClass (..)
   , classifyServiceError
   , isRetryableTransientFailure
   , serviceErrorMessage
+  , serviceErrorDisposition
   , serviceErrorRetryable
   , retryServiceAction
+  , retryIdempotentServiceAction
   )
 where
 
@@ -28,8 +31,11 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Error (AppError, errorMsg)
 import Prodbox.Retry
-  ( RetryPolicy (..)
-  , retryDelayMicros
+  ( IdempotentOperation
+  , RetryPolicy
+  , drawRetryDelayMicros
+  , retryPolicyMaxAttempts
+  , runIdempotentOperation
   )
 import Prodbox.Subprocess
   ( ProcessOutput
@@ -133,16 +139,46 @@ serviceErrorMessage = \case
   SEPermissionDenied message -> message
   SEInternalError message -> message
 
--- | Whether a 'ServiceError' is retryable. A total function of the
+-- | Sprint 1.77: what a failure says about whether the effect happened.
+--
+-- Permanent-versus-transient is the wrong axis for a mutation, and it was the
+-- only axis this module had. A timeout or a dropped connection on a __mutating__
+-- call is neither: the request may have been applied and only the response lost.
+-- Repeating it is safe exactly when the operation is idempotent, so retryability
+-- is a property of the (operation, error) pair, not of the error alone.
+data FailureDisposition
+  = -- | Retrying cannot help.
+    FailurePermanent
+  | -- | The effect certainly did not happen; repeating is safe for any
+    -- operation.
+    FailureTransient
+  | -- | The effect may have happened and only the response was lost. Repeating
+    -- is safe only for an idempotent operation.
+    FailureIndeterminate
+  deriving (Bounded, Enum, Eq, Show)
+
+-- | The disposition of a classified failure. A total function of the
 -- constructor — never a stored field, never asserted by a caller.
+--
+-- 'SEConflict' is transient rather than indeterminate because the far side
+-- answered: it rejected the write. 'SEInternalError' is indeterminate rather
+-- than transient, correcting the documented choice this module used to record —
+-- an unclassified failure was "treated as retryable ... the conservative
+-- default", which is the least safe reading available for a mutation.
+serviceErrorDisposition :: ServiceError -> FailureDisposition
+serviceErrorDisposition = \case
+  SEConnectionFailed _ -> FailureIndeterminate
+  SETimeout _ -> FailureIndeterminate
+  SEInternalError _ -> FailureIndeterminate
+  SEConflict _ -> FailureTransient
+  SENotFound _ -> FailurePermanent
+  SEPermissionDenied _ -> FailurePermanent
+
+-- | Whether a 'ServiceError' may be retried __for an idempotent operation__.
+-- That qualification is the whole content of Sprint 1.77: the unqualified
+-- question this function used to answer has no answer.
 serviceErrorRetryable :: ServiceError -> Bool
-serviceErrorRetryable = \case
-  SEConnectionFailed _ -> True
-  SETimeout _ -> True
-  SEConflict _ -> True
-  SEInternalError _ -> True
-  SENotFound _ -> False
-  SEPermissionDenied _ -> False
+serviceErrorRetryable = (/= FailurePermanent) . serviceErrorDisposition
 
 -- | The single classification boundary. Given the spawn-failure
 -- 'AppError' observed when 'capture' could not run (or could not finish)
@@ -230,20 +266,46 @@ instance HasRedis IO where
 instance HasPg IO where
   runPg = runServiceSubprocess PgError "kubectl"
 
+-- | Retry an operation whose idempotence is unknown.
+--
+-- Sprint 1.77: this repeats only 'FailureTransient' outcomes — the ones that
+-- certainly did not apply. An indeterminate outcome stops the loop and is
+-- returned, because repeating it could apply the effect twice. To repeat an
+-- indeterminate outcome, say why it is safe: use
+-- 'retryIdempotentServiceAction', which requires the witness.
 retryServiceAction
   :: (AsServiceError errorType)
   => RetryPolicy
   -> IO (Either errorType valueType)
   -> IO (Either errorType valueType)
-retryServiceAction policy action = go 0
+retryServiceAction policy = retryOn (== FailureTransient) policy
+
+-- | Retry an operation that has been claimed idempotent, repeating an
+-- indeterminate outcome as well as a transient one.
+retryIdempotentServiceAction
+  :: (AsServiceError errorType)
+  => RetryPolicy
+  -> IdempotentOperation errorType valueType
+  -> IO (Either errorType valueType)
+retryIdempotentServiceAction policy operation =
+  retryOn (/= FailurePermanent) policy (runIdempotentOperation operation)
+
+retryOn
+  :: (AsServiceError errorType)
+  => (FailureDisposition -> Bool)
+  -> RetryPolicy
+  -> IO (Either errorType valueType)
+  -> IO (Either errorType valueType)
+retryOn repeatable policy action = go 0
  where
   go attemptIndex = do
     result <- action
     case result of
       Left err
-        | serviceErrorRetryable (toServiceError err)
+        | repeatable (serviceErrorDisposition (toServiceError err))
             && attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
-            threadDelay (retryDelayMicros policy attemptIndex)
+            delay <- drawRetryDelayMicros policy attemptIndex
+            threadDelay delay
             go (attemptIndex + 1)
       _ -> pure result
 

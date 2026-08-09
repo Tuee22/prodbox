@@ -45,6 +45,10 @@ import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , layerRoleReadinessSource
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleExternalMaterialIngress)
   )
@@ -274,7 +278,7 @@ externalMaterialIngressAuthenticatedHandler
   => Int
   -> Natural
   -> m (Either Text AuthorityTime)
-  -> m Bool
+  -> RoleReadinessSource
   -> ExternalMaterialIngressRepository m revision
   -> AuthorityManifestSigner m
   -> AuthenticatedRoleHandler m
@@ -283,15 +287,13 @@ externalMaterialIngressAuthenticatedHandler
   maximumBytes
   casAttempts
   observeNow
-  readyz
+  readiness
   repository
   signer
   fallback =
     AuthenticatedRoleHandler
-      { authenticatedHandlerReadyz = do
-          baseReady <- authenticatedHandlerReadyz fallback
-          externalReady <- readyz
-          pure (baseReady && externalReady)
+      { authenticatedHandlerReadiness =
+          layerRoleReadinessSource readiness (authenticatedHandlerReadiness fallback)
       , authenticatedHandlerHandle = handle
       }
    where

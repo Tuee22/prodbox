@@ -85,6 +85,10 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , layerRoleReadinessSource
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleFederationRegister)
   )
@@ -156,7 +160,7 @@ data FederationRegistrationRepository m revision = FederationRegistrationReposit
       :: revision
       -> FederationRegistrationCompletion
       -> m (Either Text ())
-  , federationRegistrationRepositoryReady :: m Bool
+  , federationRegistrationRepositoryReadiness :: !RoleReadinessSource
   }
 
 data FederationRegistrationBoundary m revision = FederationRegistrationBoundary
@@ -175,7 +179,7 @@ data FederationRegistrationBoundary m revision = FederationRegistrationBoundary
       :: TargetAgentIdentity
       -> FederationRegistrationIntent
       -> m (Either Text ParentCustodyAcknowledgement)
-  , federationRegistrationBoundaryReady :: m Bool
+  , federationRegistrationBoundaryReadiness :: !RoleReadinessSource
   }
 
 federationRegistrationMaximumBytes :: Int
@@ -195,10 +199,10 @@ federationRegistrationAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 federationRegistrationAuthenticatedHandler maximumBytes boundary fallback =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = do
-        localReady <- federationRegistrationBoundaryReady boundary
-        downstreamReady <- authenticatedHandlerReadyz fallback
-        pure (localReady && downstreamReady)
+    { authenticatedHandlerReadiness =
+        layerRoleReadinessSource
+          (federationRegistrationBoundaryReadiness boundary)
+          (authenticatedHandlerReadiness fallback)
     , authenticatedHandlerHandle = handle
     }
  where
@@ -653,7 +657,7 @@ modelBFederationRegistrationRepository
   :: (Monad m)
   => ModelBCasAdapter 'ClusterRetained m FederationRegistrationState
   -> ModelBObjectCoordinate 'ClusterRetained
-  -> m Bool
+  -> RoleReadinessSource
   -> FederationRegistrationRepository m ModelBObjectVersion
 modelBFederationRegistrationRepository adapter coordinate ready =
   FederationRegistrationRepository
@@ -698,7 +702,7 @@ modelBFederationRegistrationRepository adapter coordinate ready =
         replaceFrom
           (Just revision)
           (FederationRegistrationCompleted <$> validateFederationRegistrationCompletion value)
-    , federationRegistrationRepositoryReady = ready
+    , federationRegistrationRepositoryReadiness = ready
     }
  where
   replaceFrom maybeRevision validated = case validated of

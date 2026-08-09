@@ -149,6 +149,11 @@ import Prodbox.ControlPlane.RetainedSesLeaseEndpoint
   , retainedSesLeaseResponseHttpStatus
   , runRetainedSesLeaseHandler
   )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , constantRoleReadinessSource
+  , unobservedRoleReadinessFacts
+  )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
       ( AuthorityBackupCopy
@@ -188,7 +193,7 @@ import Prodbox.ControlPlane.Route
       )
   )
 import Prodbox.ControlPlane.Server
-  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadyz)
+  ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretPayload
@@ -277,7 +282,7 @@ import Prodbox.Lifecycle.Lease (AuthorityTime)
 lifecycleAuthorityAdmissionInterpreter
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> Text
   -> m (Either Text Natural)
   -> (AuthorityAdmissionAggregate -> Either Text ByteString)
@@ -288,7 +293,7 @@ lifecycleAuthorityAdmissionInterpreter
   -> RoleInterpreter m
 lifecycleAuthorityAdmissionInterpreter
   maximumBytes
-  readyz
+  readiness
   authorityScope
   observeNow
   encodeAggregate
@@ -297,7 +302,7 @@ lifecycleAuthorityAdmissionInterpreter
   retainedSesLeaseHandler
   _pulumiCheckpointHandler =
     RoleInterpreter
-      { interpreterReadyz = readyz
+      { interpreterReadiness = readiness
       , interpreterHandle = handle
       }
    where
@@ -379,7 +384,7 @@ lifecycleAuthorityAdmissionInterpreter
 lifecycleAuthorityAdmissionAuthenticatedHandler
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> Text
   -> m (Either Text Natural)
   -> (AuthorityAdmissionAggregate -> Either Text ByteString)
@@ -392,7 +397,7 @@ lifecycleAuthorityAdmissionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 lifecycleAuthorityAdmissionAuthenticatedHandler
   maximumBytes
-  readyz
+  readiness
   authorityScope
   observeNow
   encodeAggregate
@@ -403,14 +408,14 @@ lifecycleAuthorityAdmissionAuthenticatedHandler
   pulumiCheckpointHandler
   cleanupRunProvider =
     AuthenticatedRoleHandler
-      { authenticatedHandlerReadyz = readyz
+      { authenticatedHandlerReadiness = readiness
       , authenticatedHandlerHandle = handle
       }
    where
     contextFree =
       lifecycleAuthorityAdmissionInterpreter
         maximumBytes
-        readyz
+        readiness
         authorityScope
         observeNow
         encodeAggregate
@@ -522,10 +527,15 @@ lifecycleAuthorityDecommissionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 lifecycleAuthorityDecommissionAuthenticatedHandler maximumBytes inputs inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = case inputs of
-        LifecycleAuthorityDecommissionUnprovisioned _ -> pure False
+    { authenticatedHandlerReadiness = case inputs of
+        -- An unprovisioned decommission subsystem is a dependency that has not
+        -- reported, not one that is absent: it fails closed with a label rather
+        -- than a bare False.
+        LifecycleAuthorityDecommissionUnprovisioned _ ->
+          constantRoleReadinessSource
+            (unobservedRoleReadinessFacts "lifecycle-authority-decommission")
         LifecycleAuthorityDecommissionProvisioned {} ->
-          authenticatedHandlerReadyz inner
+          authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where
@@ -576,7 +586,7 @@ lifecycleAuthorityTlsRetentionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where
@@ -618,7 +628,7 @@ lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
   resolveAuthorityRepository
   inner =
     AuthenticatedRoleHandler
-      { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+      { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
       , authenticatedHandlerHandle = handle
       }
    where
@@ -651,11 +661,11 @@ lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
 -- @migration/apply@ → 'serveMigrationApply', @migration/import@ → the fully
 -- bound 'ProjectionImportHandler', @authority/observe@ →
 -- 'serveLifecycleAuthorityObserveRequest'. @maximumBytes@ bounds each request
--- body and @readyz@ is the injected readiness probe.
+-- body and @readiness@ is the injected cached-facts source.
 lifecycleAuthorityInterpreter
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> Text
   -> m (Either Text Natural)
   -> MigrationRepository m revision
@@ -664,14 +674,14 @@ lifecycleAuthorityInterpreter
   -> RoleInterpreter m
 lifecycleAuthorityInterpreter
   maximumBytes
-  readyz
+  readiness
   authorityScope
   observeNow
   migrationRepository
   projectionImportHandler
   _pulumiCheckpointHandler =
     RoleInterpreter
-      { interpreterReadyz = readyz
+      { interpreterReadiness = readiness
       , interpreterHandle = handle
       }
    where
@@ -709,12 +719,12 @@ lifecycleAuthorityInterpreter
 tlsRetentionInterpreter
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> TlsRetentionRepository m
   -> RoleInterpreter m
-tlsRetentionInterpreter maximumBytes readyz repository =
+tlsRetentionInterpreter maximumBytes readiness repository =
   RoleInterpreter
-    { interpreterReadyz = readyz
+    { interpreterReadiness = readiness
     , interpreterHandle = handle
     }
  where
@@ -735,12 +745,12 @@ tlsRetentionInterpreter maximumBytes readyz repository =
 authorityBackupInterpreter
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> AuthorityBackupRepository m
   -> RoleInterpreter m
-authorityBackupInterpreter maximumBytes readyz repository =
+authorityBackupInterpreter maximumBytes readiness repository =
   RoleInterpreter
-    { interpreterReadyz = readyz
+    { interpreterReadiness = readiness
     , interpreterHandle = handle
     }
  where
@@ -766,12 +776,12 @@ authorityBackupInterpreter maximumBytes readyz repository =
 providerWorkerInterpreter
   :: (Monad m)
   => Int
-  -> m Bool
+  -> RoleReadinessSource
   -> ProviderWorkRepository m
   -> RoleInterpreter m
-providerWorkerInterpreter maximumBytes readyz repository =
+providerWorkerInterpreter maximumBytes readiness repository =
   RoleInterpreter
-    { interpreterReadyz = readyz
+    { interpreterReadiness = readiness
     , interpreterHandle = handle
     }
  where
@@ -797,7 +807,7 @@ targetSecretAgentTlsAuthenticatedHandler
   -> AuthenticatedRoleHandler IO
 targetSecretAgentTlsAuthenticatedHandler maximumBytes secretBoundary transit inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where
@@ -870,10 +880,12 @@ targetSecretAgentDecommissionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
 targetSecretAgentDecommissionAuthenticatedHandler maximumBytes inputs inner =
   AuthenticatedRoleHandler
-    { authenticatedHandlerReadyz = case inputs of
-        TargetSecretAgentDecommissionUnprovisioned _ -> pure False
+    { authenticatedHandlerReadiness = case inputs of
+        TargetSecretAgentDecommissionUnprovisioned _ ->
+          constantRoleReadinessSource
+            (unobservedRoleReadinessFacts "target-secret-agent-decommission")
         TargetSecretAgentDecommissionProvisioned {} ->
-          authenticatedHandlerReadyz inner
+          authenticatedHandlerReadiness inner
     , authenticatedHandlerHandle = handle
     }
  where
@@ -952,7 +964,7 @@ targetSecretAgentAdminActionAuthenticatedHandler
   custody
   inner =
     AuthenticatedRoleHandler
-      { authenticatedHandlerReadyz = authenticatedHandlerReadyz inner
+      { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
       , authenticatedHandlerHandle = handle
       }
    where

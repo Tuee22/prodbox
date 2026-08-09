@@ -12,6 +12,24 @@
 
 ## 0. Canonical Doctrine Statements
 
+> **Sprint `2.41` — one emitter authority value, and a supervised worker roster.** The daemon used
+> to keep the emitter's readiness in `envEmitterAuthorityStatus` and the runtime it asserts in
+> `envContinuity` / `envEmitterRuntime`. Five sites cleared the continuity runtime and touched
+> readiness on none of them, deliberately, under a comment calling the readiness cell a monotone
+> latch — so `Ready` while no runtime was held was reachable, and reachable on the **deployed**
+> `LegacyModelBEmitter` path whose authority arm was a bare `readTVar`. They are now one
+> `EmitterAuthority` value: clearing the runtime is clearing readiness, and the readiness fold is
+> topology-free, so no arm can be the one that forgets. The journal topology's genuine
+> "installed but recovering" state is kept as its own constructor rather than collapsed, because
+> that is a distinction the runtime actually has.
+>
+> Separately, `WorkersStatus` was a monotone flag written once at `daemonWorkers` entry — before any
+> worker existed — so a worker that died never un-readied the Pod, and eight long-lived children
+> were spawned through raw `withAsync` with their handles discarded. `withSupervisedWorkers` is now
+> the only way to run one: it links the `Async`, stamps a heartbeat, and records exit on every path
+> including an exception. Readiness folds the roster against a heartbeat bound derived from the beat
+> interval, and `prodbox dev check` refuses raw `withAsync` in `src/Prodbox/Gateway/Daemon.hs`.
+
 Partition semantics for gateway leadership and DNS write gating must be formally verified by TLA+ before implementation changes are accepted.
 
 For this Byzantine-generals-class failure mode, TLA+ model checking is the primary completeness tool; runtime tests validate model-to-code fidelity but are not exhaustive proofs.

@@ -14,7 +14,7 @@
 --     envelope — its body is exactly the bytes
 --     'Prodbox.Vault.UnlockBundle.encryptUnlockBundle' produces.
 --
---   * 'putBundleObject' \/ 'getBundleObject' over an 'ObjectStoreConfig' built
+--   * 'getBundleObject' over an 'ObjectStoreConfig' built
 --     from the STATIC MinIO root credential ('bootstrapObjectStoreConfig'), the
 --     durable bucket, and a local MinIO endpoint (the caller supplies the
 --     port-forwarded local port via 'Prodbox.Infra.MinioBackend.withMinioPortForward').
@@ -41,8 +41,7 @@ module Prodbox.Vault.BootstrapBundle
   , bootstrapObjectStoreConfig
   , bootstrapObjectStoreConfigWithEndpoint
 
-    -- * Bundle-object put/get over the durable bucket
-  , putBundleObject
+    -- * Bundle-object read over the durable bucket (Sprint 4.58)
   , getBundleObject
   )
 where
@@ -53,7 +52,6 @@ import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , defaultObjectStoreBucket
   , getObject
-  , putObject
   )
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 
@@ -84,13 +82,6 @@ bootstrapObjectStoreConfigWithEndpoint endpoint =
     , objectStoreAccessKey = minioRootUser
     , objectStoreSecretKey = minioRootPassword
     }
-
--- | Write the password-AEAD-sealed bundle bytes (exactly the
--- 'Prodbox.Vault.UnlockBundle.encryptUnlockBundle' output) to the fixed
--- bootstrap key in the durable bucket.
-putBundleObject :: ObjectStoreConfig -> ByteString -> IO (Either String ())
-putBundleObject config envelopeBytes =
-  putObject config bootstrapUnlockBundleKey envelopeBytes
 
 -- | Read the password-AEAD-sealed bundle bytes from the fixed bootstrap key.
 -- @Right Nothing@ means the object is absent (the bucket has no bundle yet);

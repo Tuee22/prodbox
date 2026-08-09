@@ -67,7 +67,22 @@ classifyHost osName rawArch gpu = case map toLower osName of
 smart-constructor discipline of [pure_fp_standards.md](./pure_fp_standards.md) applied to host
 classification, where an invalid host is a `Left`, not a warning.
 
-## 3. Host Tools Are a Closed Enum Resolved to Absolute Paths
+## 3. Host Tools Are a Closed Enum Resolved to Absolute Paths — **TARGET, not in force**
+
+> **Status of this section (Sprint `1.78`, 2026-08-05).** This is a declared target, not a
+> description of the worktree, and it is stated as such per
+> [engineering/README.md](./README.md). It previously read as though it were in force. It was not:
+> a `HostTool` module existed with a closed enum and an `AbsExe` smart constructor, and it had
+> **zero production importers** — every one of ~160 host invocations across ~25 modules passes a
+> bare command name as `Prodbox.Subprocess.subprocessPath`, which is a plain `FilePath` and so
+> offers `AbsExe` no seam to occupy. `sudo` itself is a bare literal at every site, and so is the
+> tool it wraps, so resolving any single constructor would only move `$PATH` resolution one
+> argument to the right — under a privileged escalation. Sprint `1.78` deleted the unused module
+> rather than leave a type that read as enforcement and performed none. Reaching this target means
+> `Subprocess` carrying a resolved-absolute path by type, every call site routed through it, and a
+> `dev check` rule rejecting bare literals for enum members; the Development Plan owns that
+> scheduling. Until then, the closed enum below describes where this is going, and the sentence
+> after the code block describes a property the binary **does not yet have**.
 
 Every external tool the host binary shells out to is a constructor of a closed `HostTool` type, and
 every invocation reads an absolute path. Windows-only tools are `CPP`-gated so they do not exist as
@@ -92,7 +107,9 @@ mkAbsExe fp
 ```
 
 A bare command name is used only for discovery, never as an invocation target — the host binary
-never resolves a tool against the host's own `$PATH`.
+never resolves a tool against the host's own `$PATH`. **This is the target property. It does not
+hold today** — see the status note at the head of this section; the gap is scheduled, not silently
+tolerated.
 
 ## 4. The Lift: Everything Docker-Inward Is OS-Agnostic Linux
 

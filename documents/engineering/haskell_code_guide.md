@@ -611,39 +611,54 @@ data RetryPolicy = RetryPolicy
     , retryPolicyBaseDelayMicros :: Int
     , retryPolicyMultiplier :: Int
     , retryPolicyMaxDelayMicros :: Int
+    , retryPolicyJitterFraction :: JitterFraction
     }
     deriving (Eq, Show)
 
-defaultRetryPolicy :: RetryPolicy
-defaultRetryPolicy = RetryPolicy
-    { retryPolicyMaxAttempts = 5
-    , retryPolicyBaseDelayMicros = 500000
-    , retryPolicyMultiplier = 2
-    , retryPolicyMaxDelayMicros = 30000000
-    }
-
-retryDelayMicros :: RetryPolicy -> Int -> Int
-retryDelayMicros policy attemptIndex =
-    min
-        (retryPolicyMaxDelayMicros policy)
-        ( retryPolicyBaseDelayMicros policy
-            * retryPolicyMultiplier policy ^ max 0 attemptIndex
-        )
+mkRetryPolicy
+    :: Int -> Int -> Int -> Int -> JitterFraction
+    -> Either RetryPolicyError RetryPolicy
 ```
 
-`retryDelayMicros` is the shared pure backoff calculation. With the default policy it yields
-`[500000, 1000000, 2000000, 4000000, 8000000]` microseconds (0.5 s → 8 s, capped at 30 s).
+**The constructor is hidden (Sprint `1.77`).** A schedule is either one of the named compiled
+values in `Prodbox.Retry` — `componentReadinessRetryPolicy`, `helmTransientRetryPolicy`,
+`customImagePushRetryPolicy`, `daemonRestartBridgeRetryPolicy`,
+`perconaPatroniClaimRetryPolicy`, `patroniClusterReadyRetryPolicy`, `daemonWorkerRetryPolicy` —
+or the result of `mkRetryPolicy`, which rejects a non-positive attempt budget, a negative delay, a
+multiplier below one, a ceiling below the base, and a jitter fraction outside `(0, 1]`. That is
+Sprint `1.13` validation item 2 (*"the retry surface is consumed only through the `RetryPolicy`
+API"*) restated as a rule that fails: it named no lint, no gate, and no scan, so nothing could
+check it.
+
+**Every delay is jittered.** Before Sprint `1.77` no jitter existed anywhere in the tree, so N
+clients failing against one dependency retried in permanent lockstep and re-collided on every
+attempt. `retryDelayMicros` remains the pure authored schedule; production callers draw through
+`drawRetryDelayMicros`, which samples the system CSPRNG and applies the fraction. Jitter only ever
+**subtracts**, so a delay lands in `[scheduled * (1 - fraction), scheduled]` and an attempt budget
+computed against the authored schedule remains an upper bound. `prodbox dev check` fails any
+production module that names the un-jittered `retryDelayMicros` or imports `RetryPolicy (..)`.
 
 ### Two distinct retry shapes — keep them separate
 
 There are two callers of `retryDelayMicros`, and they answer different questions. Sprint 1.30
 keeps these split rather than collapsing them into one loop:
 
-- **The retrier** (`retryAppError` in `Retry.hs`, `retryServiceAction` in `Service.hs`) re-runs
-  a *failing* action while its error is classified retryable: `retryAppError` retries on an
-  `AppError` whose `errorKind` is `Recoverable`; `retryServiceAction` retries on a `ServiceError`
-  whose constructor is retryable. Both stop as soon as the action succeeds or the error is
-  non-retryable, and are bounded by `retryPolicyMaxAttempts`.
+- **The retrier** (`retryAppError` in `Retry.hs`, `retryServiceAction` /
+  `retryIdempotentServiceAction` in `Service.hs`) re-runs a *failing* action while its error
+  permits repetition. Both stop as soon as the action succeeds or the error forbids repetition, and
+  are bounded by `retryPolicyMaxAttempts`.
+
+  **Retryability is a property of the (operation, error) pair, not of the error (Sprint `1.77`).**
+  Permanent-versus-transient is the wrong axis for a mutation: a timeout or dropped connection on a
+  mutating call is *indeterminate* — the effect may have been applied and only the response lost.
+  `serviceErrorDisposition` therefore returns `FailurePermanent`, `FailureTransient`, or
+  `FailureIndeterminate`. `retryServiceAction` repeats only `FailureTransient` outcomes, which
+  certainly did not apply. `retryIdempotentServiceAction` also repeats `FailureIndeterminate`, and
+  it takes an `IdempotentOperation` — a hidden-constructor wrapper — so repeating a non-idempotent
+  operation after an indeterminate outcome does not type-check rather than being forbidden by a
+  comment. Note the correction this makes to the previous default: an unclassified failure
+  (`SEInternalError`) used to be documented as *"treated as retryable ... the conservative
+  default"*, which for a mutation is the least safe reading available; it is now indeterminate.
 - **The readiness poller** waits for a *not-yet-true* external condition to become true (a Pod
   reporting Ready, a DNS record propagating, a stack converging). It loops on a *successful*
   observation that reports "not ready yet", which is the opposite control-flow shape from
@@ -704,7 +719,11 @@ stays an `uncertified-until-first-profile` measured seam.
 The [Development Plan](../../DEVELOPMENT_PLAN/README.md) sequences and carries status for the rest of
 the family; each item below is a forward reference, not a landed claim. The proof is threaded onto
 `ValidatedSettings` as the required `validatedAllocatedPlan` field — the **decode gate**, where no
-proof means no validated settings and therefore no renderer input (Sprint `1.69`).
+proof means no validated settings and therefore no renderer input (Sprint `1.69`). Read "not a
+constructible value" with its region attached: it holds over the modules the gate compiles, and it
+ends wherever the value is written back out as text — see "The region of Ring 2" in
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md) and
+[chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md).
 `Prodbox.Capacity.Render` is the one shared `ResourceQuota`/`LimitRange`/runtime-vector renderer that
 consumes the proof (Sprint `3.28`). `Prodbox.Capacity.Placement` owns `renderedNamespace`,
 `planNamespaceQuota`, and the `WorkloadConcurrency` (`Steady | ExclusiveWindow`) that makes namespace

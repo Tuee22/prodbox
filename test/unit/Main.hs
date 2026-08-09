@@ -103,6 +103,7 @@ import Data.List
   , find
   , isInfixOf
   , isPrefixOf
+  , nub
   , sort
   )
 import Data.List.NonEmpty (NonEmpty (..))
@@ -127,8 +128,11 @@ import DecommissionReceipt (decommissionReceiptSuite)
 import DecommissionRunner (decommissionRunnerSuite)
 import DecommissionTargetTombstone (decommissionTargetTombstoneSuite)
 import DecommissionVerifier (decommissionVerifierSuite)
+import DependencyAdmissionSuite (dependencyAdmissionSuite)
 import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
+import Dns01ChallengeSuite (dns01ChallengeSuite)
+import DnsOwnerAuthoritySuite (dnsOwnerAuthoritySuite)
 import DnsRecord (dnsRecordSuite)
 import EksClientAuthProjection (eksClientAuthProjectionSuite)
 import EscapeRegistry (escapeRegistrySuite)
@@ -241,6 +245,19 @@ import Prodbox.AwsEnvironment
   , overlayAwsCredentials
   , sealedAwsEnvironment
   )
+import Prodbox.Bootstrap.Broker.Readiness
+  ( BrokerDependencyObservation (..)
+  , BrokerReadinessFacts (..)
+  , BrokerReadinessState (..)
+  , ObservationScheduleError (..)
+  , brokerReadinessSchedule
+  , computeBrokerReadiness
+  , mkObservationSchedule
+  , observationBudgetMicros
+  , observationStalenessBoundMicros
+  , observerPeriodMicros
+  , unobservedBrokerReadinessFacts
+  )
 import Prodbox.Bootstrap.Broker.Settings qualified as BrokerSettings
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
@@ -322,6 +339,7 @@ import Prodbox.CLI.Rke2
   , ReconcileStepId (..)
   , RedirectPolicy (..)
   , RegistryStorageBackend (..)
+  , RegistryStorageEdgeObservation (..)
   , RegistryStorageEdgeReadiness (..)
   , RetainedStorageInventoryEntry (..)
   , acmeClusterIssuerSpec
@@ -344,6 +362,7 @@ import Prodbox.CLI.Rke2
   , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
+  , parseRegistryStorageEdgeResponse
   , registryConfigYaml
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
@@ -379,14 +398,18 @@ import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , awsCreateSiteViolations
   , awsCreateVerbs
+  , boundSectionCitationsInLine
+  , brokerReadinessProjectionViolations
   , citedSourcePathsInDoc
   , destructivePlanOptionsArms
   , doctrineViolationsInPaths
+  , documentSectionNumbers
   , extractMarkdownLinkTargets
   , extractStringLiterals
   , generatedSectionsReconcilerViolations
   , governedDocStatusValues
   , governedDocStatusViolations
+  , headingSectionNumber
   , iamCreateSiteViolations
   , inlineCodeSpansInLine
   , inlineRetrySubstringListViolations
@@ -408,6 +431,10 @@ import Prodbox.CheckCode
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , substrateImagePinningViolations
+  , targetSinkVersionInternalSourceViolations
+  , tier0DriftFindings
+  , tier0DriftLocation
+  , tier0MalformedFinding
   )
 import Prodbox.CheckCode qualified
 import Prodbox.Cluster.Federation
@@ -530,6 +557,13 @@ import Prodbox.ControlPlane.CapabilityRequirement
   , resolveRequirement
   )
 import Prodbox.ControlPlane.Client (controlPlaneEndpointText)
+import Prodbox.ControlPlane.Observation
+  ( ExternalEvidence (..)
+  , RoundTripWitness
+  , roundTripWitnessLandedAt
+  , roundTripWitnessVersion
+  )
+import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
 import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
 import Prodbox.ControlPlane.TargetMaterialFixture
   ( seedAcmeEabFromTestSecrets
@@ -573,6 +607,7 @@ import Prodbox.Gateway
   , renderGatewayStatusReport
   )
 import Prodbox.Gateway.Client qualified
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon
   ( daemonBootFieldsChanged
   )
@@ -626,12 +661,6 @@ import Prodbox.Host.Substrate
   ( HostSubstrate (..)
   , classifyHost
   , hostSubstrateNeedsLift
-  )
-import Prodbox.Host.Tool
-  ( HostTool (..)
-  , absExePath
-  , hostToolCommandName
-  , mkAbsExe
   )
 import Prodbox.Host.Wsl2
   ( defaultWsl2VM
@@ -713,6 +742,11 @@ import Prodbox.Lib.Storage
   , storageBinding
   , testManualPvHostRootEnv
   )
+import Prodbox.Lifecycle.CapabilityReadinessBarrier (evidenceFor)
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( mkModelBObjectVersion
+  , modelBObjectVersionText
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( consumeExternalAcmeEabIngressFrame
   , withExternalAcmeEabIngressFrame
@@ -729,16 +763,17 @@ import Prodbox.Lifecycle.FederatedVault
 import Prodbox.Lifecycle.K8sDrain
   ( CascadeDecision (..)
   , DrainResult (..)
-  , K8sDrainEnv (..)
   , cascadeDecisionFromDrainResult
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
   )
+import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ReadinessObservation
-  ( ComponentReadinessTarget (..)
+  ( BackendRoundTripResult (..)
+  , ComponentReadinessTarget (..)
   , ReadinessObservation (..)
   , ReadinessProbeResult (..)
   , observationPollOutcome
@@ -746,10 +781,15 @@ import Prodbox.Lifecycle.ReadinessObservation
   , readinessGateOpen
   , waitForComponentReadiness
   )
+import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as Residue
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Lifecycle.TargetSinkVersion (targetSinkVersionValue)
+import Prodbox.Lifecycle.TargetSinkVersion.Internal
+  ( targetSinkVersionFromStoreVersion
+  )
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
   , LogicalObject (..)
@@ -817,19 +857,34 @@ import Prodbox.Pulumi.EncryptedBackend
 import Prodbox.Result qualified as Result
 import Prodbox.Retry
   ( PollOutcome (..)
-  , RetryPolicy (..)
+  , RetryPolicyError (..)
+  , compiledRetryPolicies
+  , customImagePushRetryPolicy
+  , defaultJitterFraction
+  , idempotentOperation
+  , jitterFractionPartsPerMillion
+  , jitterSampleBound
+  , jitteredDelayMicros
+  , mkJitterFraction
+  , mkRetryPolicy
   , pollUntilReady
   , retryDelayMicros
+  , retryPolicyBaseDelayMicros
+  , retryPolicyJitterFraction
+  , retryPolicyMaxAttempts
   )
 import Prodbox.Scaling.Autoscaler qualified as Autoscaler
 import Prodbox.Scaling.Spot qualified as Spot
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
 import Prodbox.Service
-  ( RedisError (..)
+  ( FailureDisposition (..)
+  , RedisError (..)
   , ServiceError (..)
   , classifyServiceError
   , isRetryableTransientFailure
+  , retryIdempotentServiceAction
   , retryServiceAction
+  , serviceErrorDisposition
   , serviceErrorMessage
   , serviceErrorRetryable
   )
@@ -845,9 +900,11 @@ import Prodbox.Settings
   , FailoverScenario (..)
   , FixtureId (..)
   , MetallbBgpPeer (..)
+  , PublicEdgeAdvertisementMode (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
   , RunVariant (..)
+  , SesSection (..)
   , StorageSection (..)
   , TestBudget (..)
   , TestSuite (..)
@@ -863,11 +920,16 @@ import Prodbox.Settings
   , loadConfigForSettingsWith
   , loadTestTopologyAtPath
   , loadUnencryptedBasicsAtPath
+  , parsePublicEdgeAdvertisementMode
   , renderConfigDhall
+  , renderPublicEdgeAdvertisementMode
   , renderSettingsDisplay
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
+  , validateAwsSubstrateSection
+  , validateComponentNodes
   , validateConfiguredCertScope
+  , validateLocalConfig
   , validatePublicEdgeDeployment
   , validateTestTopology
   )
@@ -1078,9 +1140,11 @@ import Prodbox.Workload.Settings qualified as WorkloadSettings
 import QualificationEvidence (qualificationEvidenceSuite)
 import QualificationFrozenCounterexample (qualificationFrozenCounterexampleSuite)
 import QualificationSourceIdentity (qualificationSourceIdentitySuite)
+import ResponseObligationSuite (responseObligationSuite)
 import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
+import RoleReadinessSuite (roleReadinessSuite)
 import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
@@ -1113,6 +1177,14 @@ import System.IO.Unsafe (unsafePerformIO)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TemporalQualification (temporalQualificationSuite)
 import TestSupport
+import Tier0Fixture
+  ( RawTier0Reason (ExercisesGeneratedSchemaImport)
+  , rawTier0Parameters
+  , tier0Fixture
+  , tier0FixtureWithParameters
+  , writeTier0Fixture
+  )
+import Tier0FixtureSuite (tier0FixtureSuite)
 import Tier0PlanAssert (tier0PlanAssertSuite)
 import VaultSession (vaultSessionSuite)
 import VaultSessionSafety (vaultSessionSafetySuite)
@@ -1433,6 +1505,11 @@ unitSuite = do
   controlPlaneDeadlineSuite
   desiredPresentReconciliationSuite
   dnsRecordSuite
+  dnsOwnerAuthoritySuite
+  dns01ChallengeSuite
+  dependencyAdmissionSuite
+  roleReadinessSuite
+  responseObligationSuite
   escapeRegistrySuite
   fencedCheckpointSuite
   gatewayAuthoritySuite
@@ -1517,6 +1594,7 @@ unitSuite = do
   storeLifetimeWitnessSuite
   targetCommitSmtpSuite
   tier0PlanAssertSuite
+  tier0FixtureSuite
   vaultSessionSuite
   describe "vault unlock bundle (Sprint 1.36)" $ do
     it "round-trips through encrypt/decrypt with the same password" $ do
@@ -2944,7 +3022,19 @@ unitSuite = do
         `shouldBe` PollPending "unreachable: connection refused"
     it "dispatches every declared readiness probe to its dedicated adapter" $ do
       callsRef <- newIORef ([] :: [String])
-      let record label result = do
+      let record
+            :: String -> Either Text.Text ReadinessProbeResult -> IO (Either Text.Text ReadinessProbeResult)
+          record label result = do
+            modifyIORef' callsRef (++ [label])
+            pure result
+          -- Sprint 1.76: the deep slot has its own result type, so it needs its
+          -- own recorder. That the shallow recorder no longer typechecks here is
+          -- the separation working.
+          recordDeep
+            :: String
+            -> Either Text.Text BackendRoundTripResult
+            -> IO (Either Text.Text BackendRoundTripResult)
+          recordDeep label result = do
             modifyIORef' callsRef (++ [label])
             pure result
           probeTargets =
@@ -2989,14 +3079,25 @@ unitSuite = do
               , BackendRoundTripTarget
                   ComponentGatewayDaemonFull
                   ComponentMinio
-                  (record "backend:ComponentMinio" (Right ReadinessProbeReady))
+                  ( recordDeep
+                      "backend:ComponentMinio"
+                      (Right (BackendRoundTripConfirmed fixtureRoundTripWitness))
+                  )
               )
             ]
       observations <-
         mapM
           (\(probe, target) -> observeComponentReadiness target probe)
           probeTargets
-      observations `shouldBe` replicate (length probeTargets) ReadyObserved
+      -- Sprint 1.76: the deep slot yields WRITE-shaped evidence, so the expected
+      -- observations are not uniform any more: every shallow probe is
+      -- `ReadyObserved` and the backend round trip is `RoundTripObserved`
+      -- carrying its witness. A uniform expectation here would be the same
+      -- read-for-write substitution the sprint removed.
+      observations
+        `shouldBe` ( replicate (length probeTargets - 1) ReadyObserved
+                       ++ [RoundTripObserved fixtureRoundTripWitness]
+                   )
       readIORef callsRef
         `shouldReturn` [ "resource"
                        , "front-door"
@@ -3019,12 +3120,7 @@ unitSuite = do
               modifyIORef' callsRef (+ 1)
               pure (Right ReadinessProbeReady)
           policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 3
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 3 0 1 0
       result <- waitForComponentReadiness policy target (ProbeBackendRoundTrip ComponentMinio)
       result `shouldSatisfy` either (Text.isInfixOf "does not implement") (const False)
       readIORef callsRef `shouldReturn` 0
@@ -3033,7 +3129,7 @@ unitSuite = do
             BackendRoundTripTarget
               ComponentRegistry
               ComponentMinio
-              (pure (Right ReadinessProbeReady))
+              (pure (Right (BackendRoundTripConfirmed fixtureRoundTripWitness)))
       observation <-
         observeComponentReadiness target (ProbeBackendRoundTrip ComponentVaultWorkload)
       case observation of
@@ -3066,12 +3162,7 @@ unitSuite = do
               [] -> pure (Left "observation fixture exhausted")
           target = RolloutCompleteTarget ComponentGatewayDaemonPreVault observeNext
           policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 3
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 3 0 1 0
       waitForComponentReadiness policy target ProbeRolloutComplete
         `shouldReturn` Right ()
       readIORef observationsRef `shouldReturn` []
@@ -3079,12 +3170,7 @@ unitSuite = do
       pendingCallsRef <- newIORef (0 :: Int)
       unreachableCallsRef <- newIORef (0 :: Int)
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 2
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 2 0 1 0
           pendingTarget =
             RolloutCompleteTarget
               ComponentGatewayDaemonPreVault
@@ -3564,7 +3650,7 @@ unitSuite = do
       -- is a no-op that leaves it byte-for-byte untouched — the supplied Vault
       -- address is ignored because the existing floor is already valid.
       withSystemTempDirectory "prodbox-floor-selfheal-tier0" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox.dhall") (Text.unpack (renderProjectConfigDhall sampleTier0Child))
+        writeTier0Fixture tmpDir (tier0Fixture sampleTier0Child)
         before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         before `shouldBe` Right (projectBasics sampleTier0Child)
         let tier0Path = tmpDir </> "prodbox.dhall"
@@ -3917,9 +4003,10 @@ unitSuite = do
         -- on-disk file), then author a config that imports it and overrides
         -- nothing — it must decode back to `defaultConfigFile`.
         writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          (wrapTier0 (unlines ["let Config = ./prodbox-config-types.dhall", "in  Config.default"]))
+        writeTier0Fixture tmpDir $
+          rawTier0Parameters
+            ExercisesGeneratedSchemaImport
+            (unlines ["let Config = ./prodbox-config-types.dhall", "in  Config.default"])
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         result `shouldBe` Right defaultConfigFile
     it "round-trips: a config that overrides via Config::{ ... } + SecretRef.Vault decodes" $
@@ -3928,22 +4015,21 @@ unitSuite = do
         -- Exercise the operator-facing affordances the schema must expose:
         -- the `::` completion operator, `Config.default.<section>`, and the
         -- `Config.SecretRef.Vault {...}` constructor.
-        writeFile
-          (tmpDir </> "prodbox.dhall")
-          ( wrapTier0
-              ( unlines
-                  [ "let Config = ./prodbox-config-types.dhall"
-                  , "in  Config::{"
-                  , "    , aws = Config.default.aws // {"
-                  , "        , access_key_id ="
-                  , "            Config.SecretRef.Vault"
-                  , "              { mount = \"secret\", path = \"aws/lifecycle-provider\", field = \"access_key_id\" }"
-                  , "        }"
-                  , "    , route53 = { zone_id = \"Z1234567890ABC\" }"
-                  , "    }"
-                  ]
-              )
-          )
+        writeTier0Fixture tmpDir $
+          rawTier0Parameters
+            ExercisesGeneratedSchemaImport
+            ( unlines
+                [ "let Config = ./prodbox-config-types.dhall"
+                , "in  Config::{"
+                , "    , aws = Config.default.aws // {"
+                , "        , access_key_id ="
+                , "            Config.SecretRef.Vault"
+                , "              { mount = \"secret\", path = \"aws/lifecycle-provider\", field = \"access_key_id\" }"
+                , "        }"
+                , "    , route53 = { zone_id = \"Z1234567890ABC\" }"
+                , "    }"
+                ]
+            )
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         case result of
           Left err -> expectationFailure ("decode failed: " ++ err)
@@ -4037,12 +4123,7 @@ unitSuite = do
         unless (null actual) (expectationFailure "expected no seeded target material")
   describe "Gateway retry (post-bootstrap transient restart bridge)" $ do
     let fastRetryPolicy =
-          RetryPolicy
-            { retryPolicyMaxAttempts = 4
-            , retryPolicyBaseDelayMicros = 1000
-            , retryPolicyMultiplier = 1
-            , retryPolicyMaxDelayMicros = 1000
-            }
+          testRetryPolicy 4 1000 1 1000
     it "gatewayErrorIsTransient: only dropped connections / timeouts are bridgeable transients" $ do
       Prodbox.Gateway.Client.gatewayErrorIsTransient
         ( Prodbox.Gateway.Client.GatewayTransport
@@ -4231,7 +4312,7 @@ unitSuite = do
         copyFile
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters roundTripConfigFile)
         -- Pure seed-decode layer (Sprint 1.48): the not-established branch reads
         -- the Tier-0 `parameters` seed via `loadConfigFile`, exercised here
         -- through its path seam (`loadConfigFileAtPath`). The not-established
@@ -6838,9 +6919,14 @@ unitSuite = do
       repoRoot <- getCurrentDirectory
       rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
-      rke2Source `shouldContain` "customImagePushRetryPolicy :: RetryPolicy"
-      rke2Source `shouldContain` "retryPolicyMaxAttempts = 3"
-      rke2Source `shouldContain` "retryPolicyBaseDelayMicros = 5000000"
+      -- Sprint 1.77 moved every compiled schedule into `Prodbox.Retry` so the
+      -- hidden constructor could stay total, so the schedule is asserted as a
+      -- VALUE rather than scanned for as source text in the module that consumes
+      -- it. Scanning source for a record literal is what made this assertion
+      -- follow the definition around in the first place.
+      retryPolicyMaxAttempts customImagePushRetryPolicy `shouldBe` 3
+      retryPolicyBaseDelayMicros customImagePushRetryPolicy `shouldBe` 5000000
+      rke2Source `shouldContain` "customImagePushRetryPolicy"
       rke2Source `shouldContain` "pushDockerImageWithRetry"
       rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
       rke2Source `shouldContain` "Retrying Harbor publication for "
@@ -7424,7 +7510,7 @@ unitSuite = do
         copyFile
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 (renderConfigDhall roundTripConfigFile))
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters roundTripConfigFile)
 
         loadConfigFileAtPath (tmpDir </> "prodbox.dhall") `shouldReturn` Right roundTripConfigFile
 
@@ -7493,45 +7579,55 @@ unitSuite = do
 
     it "computes exponential retry delays from a first-class policy" $ do
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 5
-              , retryPolicyBaseDelayMicros = 100
-              , retryPolicyMultiplier = 2
-              , retryPolicyMaxDelayMicros = 1000
-              }
+            testRetryPolicy 5 100 2 1000
       map (retryDelayMicros policy) [0, 1, 2, 3, 4]
         `shouldBe` [100, 200, 400, 800, 1000]
 
-    it "retries retryable service actions through the shared service helper" $ do
+    it "repeats an indeterminate outcome only for a claimed-idempotent operation" $ do
+      -- Sprint 1.77: a dropped connection is INDETERMINATE — the request may
+      -- have been applied and only the response lost. The plain retrier stops;
+      -- the idempotent retrier repeats, and the difference is the witness. This
+      -- case previously asserted that the plain retrier repeated a dropped
+      -- connection, which is the reading the sprint removes.
+      let flaky attemptsRef = do
+            modifyIORef' attemptsRef (+ 1)
+            attempts <- readIORef attemptsRef
+            pure $
+              if attempts < 3
+                then Left (RedisError (SEConnectionFailed "transient"))
+                else Right ("ready" :: String)
+          policy = testRetryPolicy 3 0 1 0
+
+      plainRef <- newIORef (0 :: Int)
+      plainResult <- retryServiceAction policy (flaky plainRef)
+      plainResult `shouldBe` Left (RedisError (SEConnectionFailed "transient"))
+      readIORef plainRef `shouldReturn` 1
+
+      idempotentRef <- newIORef (0 :: Int)
+      idempotentResult <-
+        retryIdempotentServiceAction policy (idempotentOperation (flaky idempotentRef))
+      idempotentResult `shouldBe` Right "ready"
+      readIORef idempotentRef `shouldReturn` 3
+
+    it "repeats a transient outcome without any witness at all" $ do
+      -- A conflict is the far side ANSWERING with a rejection, so the effect
+      -- certainly did not apply and repeating is safe for any operation.
       attemptsRef <- newIORef (0 :: Int)
-      let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 3
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
       result <-
-        retryServiceAction policy $ do
+        retryServiceAction (testRetryPolicy 3 0 1 0) $ do
           modifyIORef' attemptsRef (+ 1)
           attempts <- readIORef attemptsRef
           pure $
             if attempts < 3
-              then Left (RedisError (SEConnectionFailed "transient"))
+              then Left (RedisError (SEConflict "version conflict"))
               else Right ("ready" :: String)
-      attempts <- readIORef attemptsRef
       result `shouldBe` Right "ready"
-      attempts `shouldBe` 3
+      readIORef attemptsRef `shouldReturn` 3
 
     it "short-circuits a non-retryable classified service error" $ do
       attemptsRef <- newIORef (0 :: Int)
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 5
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 5 0 1 0
       result <-
         retryServiceAction policy $ do
           modifyIORef' attemptsRef (+ 1)
@@ -7683,12 +7779,7 @@ unitSuite = do
     it "polls a readiness predicate until ready without treating pending as failure" $ do
       observationsRef <- newIORef (0 :: Int)
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 5
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 5 0 1 0
       result <-
         pollUntilReady policy $ do
           modifyIORef' observationsRef (+ 1)
@@ -7703,12 +7794,7 @@ unitSuite = do
 
     it "surfaces the last pending detail when the readiness poll times out" $ do
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 2
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 2 0 1 0
       result <-
         pollUntilReady policy (pure (PollPending "still converging" :: PollOutcome ()))
       result `shouldBe` Left "still converging"
@@ -7716,12 +7802,7 @@ unitSuite = do
     it "stops the readiness poll immediately on a hard observation failure" $ do
       observationsRef <- newIORef (0 :: Int)
       let policy =
-            RetryPolicy
-              { retryPolicyMaxAttempts = 5
-              , retryPolicyBaseDelayMicros = 0
-              , retryPolicyMultiplier = 1
-              , retryPolicyMaxDelayMicros = 0
-              }
+            testRetryPolicy 5 0 1 0
       result <-
         pollUntilReady policy $ do
           modifyIORef' observationsRef (+ 1)
@@ -9123,7 +9204,7 @@ unitSuite = do
 
     it "renders gateway config templates with dns_write_gate" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         result <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
 
@@ -10535,12 +10616,6 @@ unitSuite = do
         `shouldBe` HostDispatch
           "wsl"
           ["-d", "prodbox-ubuntu-2404", "--", "/opt/prodbox/prodbox", "cluster", "status"]
-
-    it "keeps host tools closed and invocation targets absolute" $ do
-      hostToolCommandName Docker `shouldBe` "docker"
-      hostToolCommandName Limactl `shouldBe` "limactl"
-      fmap absExePath (mkAbsExe "/usr/bin/docker") `shouldBe` Right "/usr/bin/docker"
-      mkAbsExe "docker" `shouldBe` Left "not an absolute path: docker"
 
     it "gates host-frame docker to native Linux substrates" $ do
       DockerConfig.hostFrameDockerSupported LinuxCpu `shouldBe` Right ()
@@ -13225,6 +13300,58 @@ unitSuite = do
       rendered `shouldNotContain` "NoSuchKey"
       rendered `shouldNotContain` "public-edge-tls"
 
+  describe "Sprint 4.58 target sink expected-version provenance" $ do
+    let internalImport =
+          "import Prodbox.Lifecycle.TargetSinkVersion.Internal\n  ( targetSinkVersionFromStoreVersion\n  )\n"
+
+    it "rejects zero, which no live Vault KV v2 version ever is" $
+      targetSinkVersionFromStoreVersion 0 `shouldBe` Nothing
+
+    it "carries the store version it was minted from" $
+      fmap targetSinkVersionValue (targetSinkVersionFromStoreVersion 7)
+        `shouldBe` Just 7
+
+    it "orders numerically rather than by rendering" $ do
+      let versionFor value = targetSinkVersionFromStoreVersion value
+      (versionFor 9 < versionFor 10) `shouldBe` True
+
+    it "fires when an unlisted src module imports the internal representation" $
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/ControlPlane/TargetSecretWorker.hs", internalImport)
+        `shouldSatisfy` (not . null)
+
+    it "fires when an unlisted src module mints an expected version" $
+      targetSinkVersionInternalSourceViolations
+        ( "src/Prodbox/Lifecycle/TargetCommitIntent.hs"
+        , "  version = targetSinkVersionFromStoreVersion 1\n"
+        )
+        `shouldSatisfy` (not . null)
+
+    it "is silent for the observation decoder, which may mint" $
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/ControlPlane/TrustedTargetSink.hs", internalImport)
+        `shouldBe` []
+
+    it "lets the public face cross the boundary for the type but not to mint" $ do
+      let typeOnlyImport =
+            "import Prodbox.Lifecycle.TargetSinkVersion.Internal\n  ( TargetSinkVersion (..)\n  )\n"
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/Lifecycle/TargetSinkVersion.hs", typeOnlyImport)
+        `shouldBe` []
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/Lifecycle/TargetSinkVersion.hs", internalImport)
+        `shouldSatisfy` (not . null)
+
+    it "the live decoder and public face are clean" $ do
+      decoderSource <- readFile "src/Prodbox/ControlPlane/TrustedTargetSink.hs"
+      publicSource <- readFile "src/Prodbox/Lifecycle/TargetSinkVersion.hs"
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/ControlPlane/TrustedTargetSink.hs", decoderSource)
+        `shouldBe` []
+      targetSinkVersionInternalSourceViolations
+        ("src/Prodbox/Lifecycle/TargetSinkVersion.hs", publicSource)
+        `shouldBe` []
+
   describe "Sprint 4.50 non-exporting DNS observation" $ do
     let stateFor zone fqdn writable observedIp =
           object
@@ -13979,6 +14106,155 @@ unitSuite = do
         filter (`notElem` retiredCitedSourcePaths) removedLegacyTransportSourcePaths
           `shouldBe` []
 
+    describe "Sprint 0.22 headingSectionNumber / documentSectionNumbers" $ do
+      it "reads a plain numbered heading" $
+        headingSectionNumber "## 7. Testing Implications" `shouldBe` Just "7"
+
+      it "reads a dotted sub-heading" $
+        headingSectionNumber "### 3.1 The managed-resource registry" `shouldBe` Just "3.1"
+
+      it "reads a letter-suffixed heading" $
+        headingSectionNumber "## 2C. Enforcement Rings" `shouldBe` Just "2C"
+
+      it "ignores an unnumbered heading" $
+        headingSectionNumber "## Cross-References" `shouldBe` Nothing
+
+      it "ignores prose that merely starts with a digit" $
+        headingSectionNumber "7. not a heading" `shouldBe` Nothing
+
+      it "collects a document's section numbers outside fenced blocks" $
+        documentSectionNumbers
+          (unlines ["## 1. A", "```", "## 9. Fenced", "```", "### 1.2 B"])
+          `shouldBe` ["1", "1.2"]
+
+    describe "Sprint 0.22 boundSectionCitationsInLine" $ do
+      it "binds a citation to an adjacent document name" $
+        boundSectionCitationsInLine "see config_doctrine.md \167 7 for detail"
+          `shouldBe` [("config_doctrine.md", "7")]
+
+      it "binds inside a markdown link label" $
+        boundSectionCitationsInLine "[config_doctrine.md \167 1a](./config_doctrine.md)"
+          `shouldBe` [("config_doctrine.md", "1a")]
+
+      it "leaves a bare citation unbound, because the document is ambiguous" $
+        boundSectionCitationsInLine "and \167 3B's contract applies" `shouldBe` []
+
+      it "rejects an external-standard citation" $
+        boundSectionCitationsInLine "pulsar_messaging_doctrine.md RFC 8949 \167 4.2"
+          `shouldBe` []
+
+      it "rejects a line-number-style reference" $
+        boundSectionCitationsInLine "doctrine.md \167 1834" `shouldBe` []
+
+      it "refuses to bind across a semicolon" $
+        boundSectionCitationsInLine "[README.md](./README.md); \167 4.1 is retained"
+          `shouldBe` []
+
+    describe "Sprint 0.24 Tier-0 sibling drift gate" $ do
+      -- The gate compares the generator's canonical rendering of the record a
+      -- file decodes to against the bytes on disk. These cases pin the pure
+      -- core; absence is exercised by the IO wrapper, which never reaches here.
+      let generated =
+            unlines
+              [ "{ parameters ="
+              , "  { route53.zone_id = \"\""
+              , "  , domain ="
+              , "    { demo_fqdn = \"test.resolvefintech.com\""
+              , "    , demo_ttl = 60"
+              , "    }"
+              , "  }"
+              , "}"
+              ]
+
+      it "an unchanged generated config is silent" $
+        tier0DriftFindings ".build/prodbox.dhall" generated generated `shouldBe` []
+
+      it "names the drifted field, not a whole-file diff" $ do
+        let handEdited =
+              unlines
+                [ "{ parameters ="
+                , "  { route53.zone_id = \"\""
+                , "  , domain ="
+                , "    { demo_fqdn = \"test.resolvefintech.com\""
+                , "    , demo_ttl = 900"
+                , "    }"
+                , "  }"
+                , "}"
+                ]
+        tier0DriftLocation generated handEdited
+          `shouldBe` "line 5, field `parameters.domain.demo_ttl`"
+        case tier0DriftFindings ".build/prodbox.dhall" generated handEdited of
+          [finding] -> do
+            finding `shouldSatisfy` (".build/prodbox.dhall" `isPrefixOf`)
+            finding `shouldSatisfy` ("parameters.domain.demo_ttl" `isInfixOf`)
+            finding `shouldSatisfy` ("prodbox config generate" `isInfixOf`)
+          findings -> expectationFailure ("expected exactly one finding: " ++ show findings)
+
+      it "recovers the dotted single-field shorthand as one name" $
+        tier0DriftLocation
+          generated
+          ( unlines
+              [ "{ parameters ="
+              , "  { route53.zone_id = \"Z0HANDEDITED\""
+              , "  , domain ="
+              , "    { demo_fqdn = \"test.resolvefintech.com\""
+              , "    , demo_ttl = 60"
+              , "    }"
+              , "  }"
+              , "}"
+              ]
+          )
+          `shouldBe` "line 2, field `parameters.route53.zone_id`"
+
+      it "closes an enclosing field when a sibling opens at the same column" $
+        -- `domain` must not still be on the stack once `capacity` opens beside
+        -- it; the indentation-keyed pop is what makes the reported path exact.
+        tier0DriftLocation
+          ( unlines
+              [ "{ parameters ="
+              , "  { domain = { demo_ttl = 60 }"
+              , "  , capacity ="
+              , "    { host_capacity = 1"
+              , "    }"
+              , "  }"
+              , "}"
+              ]
+          )
+          ( unlines
+              [ "{ parameters ="
+              , "  { domain = { demo_ttl = 60 }"
+              , "  , capacity ="
+              , "    { host_capacity = 2"
+              , "    }"
+              , "  }"
+              , "}"
+              ]
+          )
+          `shouldBe` "line 4, field `parameters.capacity.host_capacity`"
+
+      it "reports a truncated file at the line where it runs out" $
+        tier0DriftLocation generated (unlines ["{ parameters ="])
+          `shouldBe` "line 2, field `parameters.route53.zone_id`"
+
+      it "reports an appended trailing line" $
+        tier0DriftLocation generated (generated ++ "-- hand-added\n")
+          `shouldBe` "line 9"
+
+      it "a type annotation and a `let` binding never enter the field path" $
+        -- The Ring-1 preamble the generator prepends is full of both; neither is
+        -- a field of the record, so neither may be named as one.
+        tier0DriftLocation
+          (unlines ["let RV", "    : Type", "    = { milli_cpu : Natural }", "in  1"])
+          (unlines ["let RV", "    : Type", "    = { milli_cpu : Natural }", "in  2"])
+          `shouldBe` "line 4"
+
+      it "the malformed finding is distinct from a drift finding" $ do
+        let finding = tier0MalformedFinding ".build/prodbox.dhall" "unbound variable `x`"
+        finding `shouldSatisfy` ("does not decode as a Tier-0 record" `isInfixOf`)
+        finding `shouldSatisfy` ("unbound variable `x`" `isInfixOf`)
+        finding `shouldSatisfy` ("prodbox config generate" `isInfixOf`)
+        finding `shouldSatisfy` (not . ("drifted" `isInfixOf`))
+
     describe "generatedSectionsReconcilerViolations" $ do
       it "agrees: registered + declared + marked yields no violations" $
         generatedSectionsReconcilerViolations
@@ -14174,6 +14450,578 @@ unitSuite = do
     it "registers the zone in the lifecycle-class SSoT as per-run" $
       lookup "dns-aws-validation-hosted-zone" ResourceClass.resourceLifecycleClasses
         `shouldBe` Just ResourceClass.PerRun
+
+  describe "Sprint 2.41 supervised-worker negative space" $ do
+    let daemonPath = "src/Prodbox/Gateway/Daemon.hs"
+        supervised =
+          unlines
+            [ "import Control.Concurrent.Async qualified as Async"
+            , "import Control.Concurrent.Async (race, replicateConcurrently)"
+            , "withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()"
+            ]
+
+    it "admits the daemon as it actually stands" $
+      Prodbox.CheckCode.supervisedWorkerViolations (daemonPath, Just supervised) `shouldBe` []
+
+    it "refuses raw withAsync brought back into scope" $
+      -- Eight workers used to be spawned this way with their handles discarded,
+      -- so a worker that died was invisible to readiness and its exception
+      -- reached nobody.
+      Prodbox.CheckCode.supervisedWorkerViolations
+        ( daemonPath
+        , Just
+            ( unlines
+                [ "import Control.Concurrent.Async (race, withAsync)"
+                , "withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()"
+                ]
+            )
+        )
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses a daemon that no longer has a supervisor at all" $
+      Prodbox.CheckCode.supervisedWorkerViolations
+        (daemonPath, Just "import Control.Concurrent.Async qualified as Async\n")
+        `shouldSatisfy` ((== 1) . length)
+
+    it "treats a missing daemon module as a finding" $
+      Prodbox.CheckCode.supervisedWorkerViolations (daemonPath, Nothing)
+        `shouldSatisfy` ((== 1) . length)
+
+  describe "Sprint 2.40 derived readiness staleness bound" $ do
+    it "derives a bound the observer can actually meet" $ do
+      -- The unsoundness this replaces: the bound was authored as
+      -- `3 * observerPeriod` = 15s, independently of the per-pass budget. The
+      -- observer stamps `observedAt` AFTER a pass, so its inter-stamp interval
+      -- is `period + passDuration`; with a 5s period and a 5s budget that
+      -- reaches 10s, and tolerating one missed pass needs at least 20s.
+      observationStalenessBoundMicros brokerReadinessSchedule
+        `shouldSatisfy` ( >=
+                            2
+                              * ( observerPeriodMicros brokerReadinessSchedule
+                                    + observationBudgetMicros brokerReadinessSchedule
+                                )
+                        )
+      observationStalenessBoundMicros brokerReadinessSchedule `shouldBe` (20 * 1000 * 1000)
+      -- And the superseded arithmetic would not have satisfied it.
+      observationStalenessBoundMicros brokerReadinessSchedule
+        `shouldSatisfy` (> 3 * observerPeriodMicros brokerReadinessSchedule)
+
+    it "refuses a zero period and a zero budget" $ do
+      mkObservationSchedule 0 1 `shouldBe` Left ObservationPeriodZero
+      mkObservationSchedule 1 0 `shouldBe` Left ObservationBudgetZero
+      fmap observationStalenessBoundMicros (mkObservationSchedule 3 7) `shouldBe` Right 20
+
+    it "holds the projection at Starting once the record passes the derived bound" $ do
+      let observedFacts =
+            unobservedBrokerReadinessFacts
+              { brokerFactCapabilityInventory = BrokerDependencyReady
+              , brokerFactBootstrapStore = BrokerDependencyReady
+              , brokerFactVaultSeal = BrokerDependencyReady
+              , brokerFactOpenPgp = BrokerDependencyReady
+              , brokerFactBootstrapLease = BrokerDependencyReady
+              , brokerFactControllerImage = BrokerDependencyReady
+              , brokerFactObservedAtMicros = Just 0
+              }
+          bound = observationStalenessBoundMicros brokerReadinessSchedule
+      -- A record at exactly one full inter-stamp interval — the age a healthy
+      -- observer routinely produces — must still project Ready. Under the
+      -- superseded 15s bound this is where a healthy broker began evicting
+      -- itself.
+      computeBrokerReadiness brokerReadinessSchedule (10 * 1000 * 1000) observedFacts
+        `shouldBe` BrokerReadinessReady
+      computeBrokerReadiness brokerReadinessSchedule bound observedFacts
+        `shouldBe` BrokerReadinessReady
+      computeBrokerReadiness brokerReadinessSchedule (bound + 1) observedFacts
+        `shouldSatisfy` isBrokerReadinessStarting
+
+  describe "Sprint 2.39 broker readiness projection gate" $ do
+    let readinessPath = "src/Prodbox/Bootstrap/Broker/Readiness.hs"
+        requestPath = "src/Prodbox/Bootstrap/Broker/ProductionEngine.hs"
+        pureProjection =
+          unlines
+            [ "module Prodbox.Bootstrap.Broker.Readiness where"
+            , "import Data.Text (Text)"
+            , "import Data.Text qualified as Text"
+            , "import Numeric.Natural (Natural)"
+            ]
+        constantTimeRequestPath =
+          unlines
+            [ "productionReady :: BrokerReadinessCache -> IO BrokerReadinessState"
+            , "productionReady cache = do"
+            , "  now <- realMonotonicNow"
+            , "  facts <- readTVarIO (brokerReadinessCacheFacts cache)"
+            , "  pure (computeBrokerReadiness brokerReadinessSchedule (monotonicInstantMicros now) facts)"
+            ]
+
+    it "passes the projection as it actually stands" $
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Just pureProjection)
+        , (requestPath, Just constantTimeRequestPath)
+        ]
+        `shouldBe` []
+
+    it "refuses a boundary brought into scope beside the fold" $
+      -- The projection folds boundary-owned cached facts. If a boundary is in
+      -- scope where the fold is defined, the next edit can reach it.
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Just (pureProjection ++ "import Prodbox.Minio.ObjectStore (listKeys)\n"))
+        , (requestPath, Just constantTimeRequestPath)
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses a NEW call on the request path, not merely a known-bad one" $ do
+      -- The exact regression this gate exists to stop: the superseded
+      -- `productionReady` performed a MinIO listKeys, a Vault seal call, and two
+      -- Kubernetes reads with five-second deadlines, inline, against a
+      -- `timeoutSeconds: 1` probe budget. An allowlist catches a call nobody has
+      -- thought of yet; a forbidden-substring list would not.
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Just pureProjection)
+        , (requestPath, Just (constantTimeRequestPath ++ "\n"))
+        ]
+        `shouldBe` []
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Just pureProjection)
+        ,
+          ( requestPath
+          , Just
+              ( unlines
+                  [ "productionReady :: BrokerReadinessCache -> IO BrokerReadinessState"
+                  , "productionReady cache = do"
+                  , "  now <- realMonotonicNow"
+                  , "  seal <- someBrandNewBoundaryCall cache"
+                  , "  facts <- readTVarIO (brokerReadinessCacheFacts cache)"
+                  , "  pure (computeBrokerReadiness brokerReadinessSchedule (monotonicInstantMicros now) facts)"
+                  ]
+              )
+          )
+        ]
+        `shouldSatisfy` (not . null)
+
+    it "treats a deleted request path as a finding, never a vacuous pass" $
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Just pureProjection)
+        , (requestPath, Just "-- the function is gone\n")
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "treats a missing file as a finding" $
+      brokerReadinessProjectionViolations
+        [ (readinessPath, Nothing)
+        , (requestPath, Just constantTimeRequestPath)
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+  describe "Sprint 1.81 total Tier-0 validation" $ do
+    describe "sections that had no coverage at all" $ do
+      let withSes section = defaultConfigFile {ses = section}
+          withStorage section = defaultConfigFile {storage = section}
+          withBackend section = defaultConfigFile {pulumi_state_backend = section}
+          withSubstrate section = defaultConfigFile {aws_substrate = section}
+          withComponents nodes = defaultConfigFile {components = nodes}
+          refusedWith fragment = either (isInfixOf fragment) (const False)
+
+      it "refuses a malformed ses identity, and tolerates an unset one" $ do
+        validateLocalConfig (withSes (SesSection "" "" "")) `shouldBe` Right ()
+        validateLocalConfig (withSes (SesSection "not a domain" "" ""))
+          `shouldSatisfy` refusedWith "ses.sender_domain"
+        validateLocalConfig (withSes (SesSection "" "two.labels" ""))
+          `shouldSatisfy` refusedWith "ses.receive_subdomain"
+        validateLocalConfig (withSes (SesSection "" "" "Capture_Bucket"))
+          `shouldSatisfy` refusedWith "ses.capture_bucket"
+
+      it "refuses a manual-PV root that escapes the repository root" $ do
+        -- The value is joined onto the repository root by `validateConfig`, so a
+        -- traversal here is a traversal expressed as config.
+        validateLocalConfig (withStorage (StorageSection ".data")) `shouldBe` Right ()
+        validateLocalConfig (withStorage (StorageSection "/etc"))
+          `shouldSatisfy` refusedWith "must be a relative path"
+        validateLocalConfig (withStorage (StorageSection "../outside"))
+          `shouldSatisfy` refusedWith "must not contain a `..` segment"
+        validateLocalConfig (withStorage (StorageSection ""))
+          `shouldSatisfy` refusedWith "must not be empty"
+
+      it "refuses a malformed state-backend bucket and an unsafe key prefix" $ do
+        validateLocalConfig (withBackend (PulumiStateBackendSection "" "" "pulumi/"))
+          `shouldBe` Right ()
+        validateLocalConfig (withBackend (PulumiStateBackendSection "Bad_Bucket" "" "pulumi/"))
+          `shouldSatisfy` refusedWith "pulumi_state_backend.bucket_name"
+        validateLocalConfig (withBackend (PulumiStateBackendSection "" "" "../pulumi"))
+          `shouldSatisfy` refusedWith "pulumi_state_backend.key_prefix"
+
+      it "refuses an ill-formed component graph at decode, not at bring-up" $ do
+        -- An EMPTY graph is well-formed (no nodes, no cycles), so the ill-formed
+        -- case has to be a real defect: a node declaring the same id twice.
+        validateLocalConfig (withComponents defaultComponentGraph) `shouldBe` Right ()
+        validateComponentNodes [] `shouldBe` Right ()
+        validateComponentNodes (roundTripComponentGraph ++ roundTripComponentGraph)
+          `shouldSatisfy` refusedWith "components:"
+        validateLocalConfig
+          (withComponents (roundTripComponentGraph ++ roundTripComponentGraph))
+          `shouldSatisfy` refusedWith "components:"
+
+      it "refuses malformed aws_substrate values while keeping an unset one legal" $ do
+        -- Both fields are legitimately empty on a home-only host, and
+        -- `hosted_zone_id` is legitimately empty even when `subzone_name` is set,
+        -- because the IO resolver consults the live subzone stack in that case.
+        -- So this refuses only a value that is present and malformed. Asserted on
+        -- the section validator so the cert-scope rule, which also reads this
+        -- section, cannot stand in for the check under test.
+        validateAwsSubstrateSection (AwsSubstrateSection "" "") `shouldBe` Right ()
+        validateAwsSubstrateSection (AwsSubstrateSection "" "sub.example.test")
+          `shouldBe` Right ()
+        validateAwsSubstrateSection (AwsSubstrateSection "Z1234567890ABC" "")
+          `shouldBe` Right ()
+        validateAwsSubstrateSection (AwsSubstrateSection "not-a-zone-id" "")
+          `shouldSatisfy` refusedWith "aws_substrate.hosted_zone_id"
+        validateAwsSubstrateSection (AwsSubstrateSection "" "no-dots")
+          `shouldSatisfy` refusedWith "aws_substrate.subzone_name"
+        validateLocalConfig (withSubstrate (AwsSubstrateSection "" "")) `shouldBe` Right ()
+
+    describe "the crash that became a decode-time refusal" $ do
+      it "requires the AWS-substrate hostname on the AWS tier only" $ do
+        -- The check that used to be a partial `error` inside a pure renderer.
+        -- It belongs on the AWS tier: an empty subzone name is the correct state
+        -- for a home-only host, and `validateLocalConfig` still accepts it.
+        validateLocalConfig defaultConfigFile `shouldBe` Right ()
+        validateAwsBootstrapConfig awsTierConfigFile `shouldBe` Right ()
+        validateAwsBootstrapConfig
+          awsTierConfigFile {aws_substrate = AwsSubstrateSection "Z123" ""}
+          `shouldSatisfy` either (isInfixOf "aws_substrate.subzone_name") (const False)
+
+  describe "Sprint 1.80 advertisement mode as a Dhall union" $ do
+    it "validates the mode by pattern match, with no string comparison left" $ do
+      -- The Ring-2 arm that read "must be l2 or bgp when set" is gone, because
+      -- there is nothing left for it to reject: a misspelling cannot decode.
+      -- What remains is the cross-field rule Dhall cannot express.
+      let withMode mode peers =
+            validDeploymentSection
+              { public_edge_advertisement_mode = mode
+              , public_edge_bgp_peers = peers
+              }
+      validatePublicEdgeDeployment (withMode Nothing Nothing) `shouldBe` Right ()
+      validatePublicEdgeDeployment (withMode (Just AdvertiseLayer2) Nothing) `shouldBe` Right ()
+
+    it "still refuses bgp with no peers, in Haskell, and says why" $ do
+      -- Dhall's `assert` operates on closed terms, so it cannot reach an
+      -- authored value; this cross-field invariant stays where it can be
+      -- decided.
+      let refused =
+            validatePublicEdgeDeployment
+              validDeploymentSection
+                { public_edge_advertisement_mode = Just AdvertiseBgp
+                , public_edge_bgp_peers = Nothing
+                }
+      refused `shouldSatisfy` either (isInfixOf "at least one non-empty peer") (const False)
+      validatePublicEdgeDeployment
+        validDeploymentSection
+          { public_edge_advertisement_mode = Just AdvertiseBgp
+          , public_edge_bgp_peers = Just []
+          }
+        `shouldSatisfy` either (isInfixOf "at least one non-empty peer") (const False)
+
+    it "round-trips both constructors through the operator spelling" $ do
+      map renderPublicEdgeAdvertisementMode [AdvertiseLayer2, AdvertiseBgp]
+        `shouldBe` ["l2", "bgp"]
+      map parsePublicEdgeAdvertisementMode ["l2", "BGP", " bgp ", "layer2", ""]
+        `shouldBe` [Just AdvertiseLayer2, Just AdvertiseBgp, Just AdvertiseBgp, Nothing, Nothing]
+
+    it "refuses a misspelled constructor at DECODE, not at a comparison" $ do
+      -- The point of the sprint: the rejection moves from a Haskell string
+      -- comparison into the Dhall type checker. A misspelled constructor is a
+      -- type error in the payload, so it never reaches Ring 2 at all.
+      decoded <- withSystemTempDirectory "prodbox-sprint-1-80" $ \tmpDir ->
+        decodeConfigDhallBytes tmpDir (misspelledAdvertisementModePayload defaultConfigFile)
+      decoded `shouldSatisfy` either (const True) (const False)
+
+    it "emits the union in the payload rather than a bare string" $ do
+      let payload = renderConfigDhall defaultConfigFile
+      payload `shouldSatisfy` isInfixOf "AdvertiseLayer2"
+      payload `shouldSatisfy` isInfixOf "AdvertiseBgp"
+
+  describe "Sprint 1.79 derived in-force config payload" $ do
+    it "emits the authored component graph instead of dropping it" $ do
+      -- The defect, stated directly: the superseded renderer emitted
+      -- `Config::{…}` and no `components` field at all, so Dhall record
+      -- completion refilled it from the schema default and the authored graph
+      -- never reached the canonical in-force config.
+      let payload = renderConfigDhall roundTripConfigFile
+      payload `shouldSatisfy` isInfixOf "components"
+      payload `shouldSatisfy` isInfixOf "ClusterBase"
+
+    it "survives the round trip for a NON-default graph" $ do
+      -- The assertion that could not fail before the fixture was varied: with
+      -- `components` left at `defaultComponentGraph`, dropping the field and
+      -- emitting it produce the same decoded record.
+      decoded <- withSystemTempDirectory "prodbox-sprint-1-79" $ \tmpDir ->
+        decodeConfigDhallBytes tmpDir (renderInForcePayload roundTripConfigFile)
+      fmap components decoded `shouldBe` Right roundTripComponentGraph
+      fmap ((== defaultComponentGraph) . components) decoded `shouldBe` Right False
+
+    it "round-trips a default config unchanged" $ do
+      -- Byte-compatibility, stated as what it can actually be. The emitted
+      -- BYTES change — the derived renderer produces a self-contained value
+      -- rather than `Config::{…}` over a schema import, which is the fix — so
+      -- the stable thing is the RECORD, and that is what this pins.
+      decoded <- withSystemTempDirectory "prodbox-sprint-1-79-default" $ \tmpDir ->
+        decodeConfigDhallBytes tmpDir (renderInForcePayload defaultConfigFile)
+      decoded `shouldBe` Right defaultConfigFile
+
+    it "emits a self-contained payload with no schema import" $
+      -- Consequence worth pinning rather than discovering: the payload no
+      -- longer depends on `prodbox-config-types.dhall` resolving, which is a
+      -- generated, git-ignored file. `decodeConfigDhallBytes` still materializes
+      -- it, deliberately, so payloads written by the superseded renderer stay
+      -- decodable.
+      renderConfigDhall defaultConfigFile
+        `shouldSatisfy` (not . isInfixOf "./prodbox-config-types.dhall")
+
+  describe "Sprint 1.77 indeterminate outcomes and jittered retry" $ do
+    describe "failure disposition" $ do
+      it "separates indeterminate from transient and permanent" $
+        map
+          serviceErrorDisposition
+          [ SEConnectionFailed "x"
+          , SETimeout "x"
+          , SEInternalError "x"
+          , SEConflict "x"
+          , SENotFound "x"
+          , SEPermissionDenied "x"
+          ]
+          `shouldBe` [ FailureIndeterminate
+                     , FailureIndeterminate
+                     , FailureIndeterminate
+                     , FailureTransient
+                     , FailurePermanent
+                     , FailurePermanent
+                     ]
+
+      it "keeps the unclassified failure on the safe side of the new axis" $
+        -- The superseded module recorded the opposite as a deliberate choice:
+        -- an unclassified failure was "treated as retryable ... the
+        -- conservative default". For a mutation that is the least safe reading
+        -- available, so it is now indeterminate and needs the witness.
+        serviceErrorDisposition (SEInternalError "unclassified")
+          `shouldBe` FailureIndeterminate
+
+    describe "policy construction" $ do
+      it "rejects a zero and an out-of-range jitter fraction" $ do
+        mkJitterFraction 0 `shouldBe` Left RetryPolicyJitterZero
+        mkJitterFraction (jitterSampleBound + 1)
+          `shouldBe` Left (RetryPolicyJitterTooLarge (jitterSampleBound + 1))
+        fmap jitterFractionPartsPerMillion (mkJitterFraction jitterSampleBound)
+          `shouldBe` Right jitterSampleBound
+
+      it "rejects every schedule it cannot honour" $ do
+        let build a b m x = mkRetryPolicy a b m x defaultJitterFraction
+        build 0 0 1 0 `shouldBe` Left (RetryPolicyAttemptsNotPositive 0)
+        build 1 (-1) 1 0 `shouldBe` Left (RetryPolicyNegativeBaseDelay (-1))
+        build 1 0 0 0 `shouldBe` Left (RetryPolicyMultiplierBelowOne 0)
+        build 1 100 1 50 `shouldBe` Left (RetryPolicyMaxDelayBelowBase 50 100)
+        fmap retryPolicyMaxAttempts (build 3 100 2 1000) `shouldBe` Right 3
+
+      it "carries a positive jitter fraction on every compiled schedule" $
+        -- The negative-space claim: no shipped schedule is the lockstep one.
+        map
+          (jitterFractionPartsPerMillion . retryPolicyJitterFraction)
+          compiledRetryPolicies
+          `shouldSatisfy` all (> 0)
+
+    describe "jitter" $ do
+      let policy = testRetryPolicy 5 1000 1 1000
+
+      it "never exceeds the authored schedule, and never goes negative" $
+        -- Jitter subtracts only, so an attempt budget computed against the
+        -- authored schedule stays an upper bound.
+        all
+          ( \sample ->
+              let delay = jitteredDelayMicros policy 0 sample
+               in delay <= retryDelayMicros policy 0 && delay >= 0
+          )
+          [0, 1, 250_000, 500_000, 999_999, jitterSampleBound + 5]
+          `shouldBe` True
+
+      it "stays inside the fraction it was given" $ do
+        -- 20% of 1000 is 200, so the floor is 800.
+        jitteredDelayMicros policy 0 0 `shouldBe` 1000
+        jitteredDelayMicros policy 0 (jitterSampleBound - 1) `shouldBe` 801
+        all
+          ((>= 800) . jitteredDelayMicros policy 0)
+          [0, 1, 250_000, 500_000, 999_999]
+          `shouldBe` True
+
+      it "gives independent retriers different schedules" $ do
+        -- The defect: with no jitter, N clients failing against one dependency
+        -- retry in permanent lockstep and re-collide on every attempt. Two
+        -- distinct samples must produce two distinct delays.
+        let delays = map (jitteredDelayMicros policy 0) [0, 400_000, 999_999]
+        length (nub delays) `shouldBe` 3
+
+      it "leaves a zero-length schedule at zero" $
+        -- A fixture policy with no delay must not acquire one.
+        map (jitteredDelayMicros (testRetryPolicy 3 0 1 0) 0) [0, 500_000, 999_999]
+          `shouldBe` [0, 0, 0]
+
+    describe "shared-schedule negative space" $ do
+      it "admits the retry module and refuses every other production module" $ do
+        Prodbox.CheckCode.sharedRetryScheduleViolations
+          ("src/Prodbox/Retry.hs", "retryDelayMicros policy attemptIndex")
+          `shouldBe` []
+        Prodbox.CheckCode.sharedRetryScheduleViolations
+          ("src/Prodbox/Gateway/Daemon.hs", "threadDelay (retryDelayMicros p i)")
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.sharedRetryScheduleViolations
+          ("src/Prodbox/Gateway/Daemon.hs", "drawRetryDelayMicros p i >>= threadDelay")
+          `shouldBe` []
+
+      it "refuses a re-exported RetryPolicy constructor" $ do
+        Prodbox.CheckCode.sharedRetryScheduleViolations
+          ("src/Prodbox/Lib/ChartPlatform.hs", "import Prodbox.Retry (RetryPolicy (..))")
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.sharedRetryScheduleViolations
+          ("src/Prodbox/Lib/ChartPlatform.hs", "import Prodbox.Retry (RetryPolicy)")
+          `shouldBe` []
+
+  describe "Sprint 1.76 provenance-carrying readiness evidence" $ do
+    describe "evidence fold" $ do
+      it "refuses to call a read-shaped reading a round trip" $ do
+        -- The exact substitution the superseded implementation performed. This
+        -- is the behavioural anchor of the mutation exercise: restoring the
+        -- literal-minted `roundTripEvidence` placeholder makes this case fail.
+        evidenceFor OpLifecycleCas ReadyObserved
+          `shouldBe` EvidencePending
+            "a read-shaped readiness probe cannot prove a write/CAS round trip"
+        evidenceFor OpRegistryPublication ReadyObserved
+          `shouldBe` EvidencePending
+            "a read-shaped readiness probe cannot prove a write/CAS round trip"
+
+      it "still admits a read-shaped reading for an availability op" $
+        evidenceFor OpProcessAvailability ReadyObserved `shouldBe` EvidencePresentReady
+
+      it "carries the interpreter's witness through unchanged" $
+        evidenceFor OpLifecycleCas (RoundTripObserved fixtureRoundTripWitness)
+          `shouldBe` EvidenceRoundTripConfirmed fixtureRoundTripWitness
+
+    describe "gateway state decoder" $ do
+      let stateBody version landed =
+            object
+              [ "node_id" .= ("gateway-node-a" :: String)
+              , "last_backend_round_trip"
+                  .= object
+                    [ "object_version" .= (version :: String)
+                    , "landed_at_micros" .= (landed :: Integer)
+                    ]
+              ]
+
+      it "mints a witness carrying the version and the landed instant" $
+        case GatewayClient.decodeBackendRoundTrip (stateBody "etag-9" 1_700_000_000_000_000) of
+          Right (GatewayClient.GatewayBackendRoundTripWitnessed witness) -> do
+            modelBObjectVersionText (roundTripWitnessVersion witness) `shouldBe` "etag-9"
+            roundTripWitnessLandedAt witness
+              `shouldBe` authorityTimeFromMicros 1_700_000_000_000_000
+          other -> expectationFailure ("expected a witnessed round trip, got " ++ show other)
+
+      it "reports an explicit absence rather than inventing one" $
+        GatewayClient.decodeBackendRoundTrip
+          ( object
+              [ "node_id" .= ("gateway-node-a" :: String)
+              , "last_backend_round_trip" .= Null
+              ]
+          )
+          `shouldBe` Right GatewayClient.GatewayBackendRoundTripAbsent
+
+      it "fails closed on every malformed shape, and never as an absence" $ do
+        -- A missing field is not an absence: the daemon that would report
+        -- absence reports it as null. A field that is absent entirely means the
+        -- daemon predates the receipt or is not the daemon we think it is.
+        let missingField =
+              object ["node_id" .= ("gateway-node-a" :: String)]
+        GatewayClient.decodeBackendRoundTrip missingField `shouldSatisfy` isLeftResult
+        GatewayClient.decodeBackendRoundTrip (stateBody "" 1) `shouldSatisfy` isLeftResult
+        GatewayClient.decodeBackendRoundTrip (stateBody "etag-9" (-1))
+          `shouldSatisfy` isLeftResult
+        GatewayClient.decodeBackendRoundTrip (String "not an object")
+          `shouldSatisfy` isLeftResult
+
+    describe "registry storage-backend probe response" $ do
+      it "recovers the status and the upload session the registry named" $ do
+        let response =
+              unlines
+                [ "HTTP/1.1 202 Accepted"
+                , "Docker-Upload-UUID: 9f2c-upload"
+                , "Location: /v2/prodbox/probe/blobs/uploads/9f2c-upload"
+                , "Content-Length: 0"
+                , ""
+                , "202"
+                ]
+        parseRegistryStorageEdgeResponse response
+          `shouldBe` RegistryStorageEdgeObservation
+            { registryProbeStatus = "202"
+            , registryProbeUploadSession = "9f2c-upload"
+            }
+
+      it "prefers the registry-allocated identifier over the URL it composed" $
+        -- Deterministically, and regardless of header order: the UUID is the
+        -- identifier the registry itself allocated for the write.
+        registryProbeUploadSession
+          ( parseRegistryStorageEdgeResponse
+              ( unlines
+                  [ "HTTP/1.1 202 Accepted"
+                  , "Location: /v2/prodbox/probe/blobs/uploads/abc"
+                  , "Docker-Upload-UUID: abc"
+                  , ""
+                  , "202"
+                  ]
+              )
+          )
+          `shouldBe` "abc"
+
+      it "names no session when the registry named none" $
+        parseRegistryStorageEdgeResponse
+          (unlines ["HTTP/1.1 202 Accepted", "Content-Length: 0", "", "202"])
+          `shouldBe` RegistryStorageEdgeObservation
+            { registryProbeStatus = "202"
+            , registryProbeUploadSession = ""
+            }
+
+    describe "registry storage-backend witness" $ do
+      it "mints from the upload session the registry named" $
+        case registryBackendWitness "upload-session-7" (authorityTimeFromMicros 42) of
+          Just witness -> do
+            modelBObjectVersionText (roundTripWitnessVersion witness)
+              `shouldBe` "upload-session-7"
+            roundTripWitnessLandedAt witness `shouldBe` authorityTimeFromMicros 42
+          Nothing -> expectationFailure "expected a minted registry witness"
+
+      it "refuses to mint when the registry named no session" $
+        -- A 2xx that creates no storage-backend session is not a round trip.
+        -- Admitting it would restore exactly the "an affirmative status proves a
+        -- write" reasoning this sprint removes.
+        registryBackendWitness "" (authorityTimeFromMicros 42) `shouldBe` Nothing
+
+    describe "witness minting boundary" $ do
+      it "admits the interpreters that performed or decoded a round trip" $ do
+        Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
+          ( "src/Prodbox/Gateway/Client.hs"
+          , "import Prodbox.ControlPlane.Observation.Internal\nmintRoundTripWitness x y"
+          )
+          `shouldBe` []
+        Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
+          ("src/Prodbox/Lifecycle/RegistryBackendWitness.hs", "mintRoundTripWitness x y")
+          `shouldBe` []
+
+      it "refuses any other production module, for the import and for the mint" $ do
+        Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
+          ("src/Prodbox/Lifecycle/CapabilityReadinessBarrier.hs", "mintRoundTripWitness version now")
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
+          ( "src/Prodbox/CLI/Rke2.hs"
+          , "import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)"
+          )
+          `shouldSatisfy` ((== 2) . length)
+        Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
+          ("src/Prodbox/Gateway/Daemon.hs", "-- no witness here")
+          `shouldBe` []
 
   describe "Sprint 1.75 committed-value mechanical outer ring" $ do
     -- Every fixture below is assembled at run time from fragments.
@@ -14516,41 +15364,6 @@ unitSuite = do
             ]
         )
         `shouldSatisfy` leftContains "email mismatch"
-
-  describe "Sprint 4.11 predicate-library labels" $ do
-    it "noLiveClusterTaggedAws exposes its label" $
-      Preconditions.preconditionLabel
-        ( Preconditions.noLiveClusterTaggedAws
-            TagSweep.TagSweepInput
-              { TagSweep.tagSweepEnvironment = []
-              , TagSweep.tagSweepClusterName = Nothing
-              , TagSweep.tagSweepWorkingDirectory = Nothing
-              }
-        )
-        `shouldBe` "noLiveClusterTaggedAws"
-
-    it "noUndrainedK8sAwsResources exposes its label" $
-      Preconditions.preconditionLabel
-        ( Preconditions.noUndrainedK8sAwsResources
-            K8sDrainEnv
-              { drainEnvironment = []
-              , drainWorkingDirectory = Nothing
-              }
-        )
-        `shouldBe` "noUndrainedK8sAwsResources"
-
-    it "noLiveOperationalIamUser exposes its label" $
-      Preconditions.preconditionLabel
-        ( Preconditions.noLiveOperationalIamUser
-            "/tmp/repo"
-            Credentials
-              { access_key_id = "AKIA"
-              , secret_access_key = "secret"
-              , session_token = Nothing
-              , region = "us-west-2"
-              }
-        )
-        `shouldBe` "noLiveOperationalIamUser"
 
   describe "Sprint 4.10 admin-credential predicate" $ do
     it "adminCredentialsConfigured accepts a fully populated credential block" $
@@ -15412,7 +16225,7 @@ unitSuite = do
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 validConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
 
         result <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
 
@@ -15440,7 +16253,7 @@ unitSuite = do
     it "fails fast on invalid BGP peer IP literals" $
       validatePublicEdgeDeployment
         validDeploymentSection
-          { public_edge_advertisement_mode = Just "bgp"
+          { public_edge_advertisement_mode = Just AdvertiseBgp
           , public_edge_bgp_peers =
               Just
                 [ MetallbBgpPeer
@@ -15567,7 +16380,7 @@ unitSuite = do
       validatePublicEdgeDeployment
         validDeploymentSection
           { bootstrap_public_ip_override = Just "2001:db8::10"
-          , public_edge_advertisement_mode = Just "bgp"
+          , public_edge_advertisement_mode = Just AdvertiseBgp
           , public_edge_bgp_peers =
               Just
                 [ MetallbBgpPeer
@@ -15672,7 +16485,7 @@ unitSuite = do
       -- local decode path ('validateAndLoadSettings') accepts it; only the
       -- AWS tier ('validateAwsBootstrapConfig') enforces it.
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 invalidZeroSslConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters invalidZeroSslConfig)
 
         localResult <- validateAndLoadSettingsAtPath (tmpDir </> "prodbox.dhall") tmpDir
         case localResult of
@@ -15693,7 +16506,7 @@ unitSuite = do
     -- never inline in prodbox.dhall.
     it "rejects a plaintext ACME EAB reference at the AWS tier" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        writeFile (tmpDir </> "prodbox.dhall") (wrapTier0 plaintextEabZeroSslConfig)
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters plaintextEabZeroSslConfig)
 
         configResult <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         case configResult of
@@ -15952,114 +16765,66 @@ hasCycle visited prerequisiteId
         Just node ->
           any (hasCycle (Set.insert prerequisiteId visited)) (effectNodePrerequisites node)
 
-validConfig :: String
+-- | Sprint 5.30: the fixtures below are typed values rendered through the one
+-- canonical encoder, not hand-authored Dhall. They used to be three separate
+-- text encoders of a record with a single decoder; Sprint @1.80@ retyped a
+-- field, updated the decoder, and every one of them silently became wrong
+-- (chaos_hardening_doctrine.md section 23).
+validConfig :: ConfigFile
 validConfig =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = " ++ acmeSectionDhall (eabRefDhall "key_id") (eabRefDhall "hmac_key")
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
-    , ", components = " ++ componentsDhallFragment
-    , "}"
-    ]
-invalidZeroSslConfig :: String
-invalidZeroSslConfig =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = "
-        ++ acmeSectionDhall
-          ("None (" ++ secretRefTypeDhall ++ ")")
-          ("None (" ++ secretRefTypeDhall ++ ")")
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
-    , ", components = " ++ componentsDhallFragment
-    , "}"
-    ]
+  defaultConfigFile
+    { aws = fixtureAwsCredentials
+    , route53 = Route53Section {zone_id = "Z1234567890ABC"}
+    , domain =
+        DomainSection
+          { demo_fqdn = "test.resolvefintech.com"
+          , demo_ttl = 60
+          , cert_scopes = []
+          }
+    , acme = fixtureAcme (Just (fixtureEabRef "key_id")) (Just (fixtureEabRef "hmac_key"))
+    , storage = StorageSection {manual_pv_host_root = ".data"}
+    }
 
--- | Sprint 7.15 leak-guard fixture: a ZeroSSL config whose EAB references
--- carry plaintext @TestPlaintext@ values instead of @SecretRef.Vault@. The
--- AWS-tier validator must reject it.
-plaintextEabZeroSslConfig :: String
+-- | The ZeroSSL ACME server with no EAB material. The AWS-tier validator must
+-- reject it: ZeroSSL requires external account binding.
+invalidZeroSslConfig :: ConfigFile
+invalidZeroSslConfig = validConfig {acme = fixtureAcme Nothing Nothing}
+
+-- | Sprint 7.15 leak-guard fixture: EAB references carrying plaintext
+-- @TestPlaintext@ values instead of @SecretRef.Vault@. The AWS-tier validator
+-- must reject it.
+plaintextEabZeroSslConfig :: ConfigFile
 plaintextEabZeroSslConfig =
-  unlines
-    [ "{ aws = " ++ awsCredentialRefDhall "aws/lifecycle-provider" "us-east-1"
-    , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
-    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
-    , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60, cert_scopes = ([] : List Text) }"
-    , ", acme = "
-        ++ acmeSectionDhall
-          ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-key-id\")")
-          ("Some (" ++ secretRefTypeDhall ++ ".TestPlaintext \"test-eab-hmac-key\")")
-    , ", deployment = " ++ deploymentDhallFragment
-    , ", capacity = " ++ capacityDhallFragment
-    , ", cluster_topology = " ++ clusterTopologyDhallFragment
-    , ", storage = { manual_pv_host_root = \".data\" }"
-    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
-    , ", components = " ++ componentsDhallFragment
-    , "}"
-    ]
+  validConfig
+    { acme =
+        fixtureAcme
+          (Just (SecretRefTestPlaintext "test-eab-key-id"))
+          (Just (SecretRefTestPlaintext "test-eab-hmac-key"))
+    }
 
--- | Sprint 7.15: an @acme@ section with the given Optional SecretRef
--- expressions for @eab_key_id@ / @eab_hmac_key@ (the EAB material now
--- references Vault rather than carrying plaintext).
-acmeSectionDhall :: String -> String -> String
-acmeSectionDhall eabKeyIdExpr eabHmacKeyExpr =
-  "{ email = \"test@resolvefintech.com\""
-    ++ ", server = \"https://acme.zerossl.com/v2/DV90\""
-    ++ ", eab_key_id = "
-    ++ eabKeyIdExpr
-    ++ ", eab_hmac_key = "
-    ++ eabHmacKeyExpr
-    ++ " }"
+fixtureAwsCredentials :: AwsCredentialsRef
+fixtureAwsCredentials =
+  AwsCredentialsRef
+    { awsCredentialAccessKeyId =
+        SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
+    , awsCredentialSecretAccessKey =
+        SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
+    , awsCredentialSessionToken =
+        Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
+    , awsCredentialRegion = "us-east-1"
+    }
 
--- | A @Some SecretRef.Vault@ expression into @secret/acme/eab@ for the
--- given field, in the schema-less inline-union style the unit fixtures use.
-eabRefDhall :: String -> String
-eabRefDhall fieldValue =
-  "Some (" ++ vaultSecretRefDhall "acme/eab" fieldValue ++ ")"
+fixtureEabRef :: Text.Text -> SecretRef
+fixtureEabRef field = SecretRefVault (VaultSecretRef "secret" "acme/zerossl" field)
 
-awsCredentialRefDhall :: String -> String -> String
-awsCredentialRefDhall pathValue regionValue =
-  "{ access_key_id = "
-    ++ vaultSecretRefDhall pathValue "access_key_id"
-    ++ ", secret_access_key = "
-    ++ vaultSecretRefDhall pathValue "secret_access_key"
-    ++ ", session_token = None ("
-    ++ secretRefTypeDhall
-    ++ "), region = "
-    ++ show regionValue
-    ++ " }"
-
-vaultSecretRefDhall :: String -> String -> String
-vaultSecretRefDhall pathValue fieldValue =
-  secretRefTypeDhall
-    ++ ".Vault { mount = \"secret\", path = "
-    ++ show pathValue
-    ++ ", field = "
-    ++ show fieldValue
-    ++ " }"
-
-secretRefTypeDhall :: String
-secretRefTypeDhall =
-  "< Vault : { mount : Text, path : Text, field : Text } | TransitKey : Text | Prompt : { name : Text, purpose : Text } | TestPlaintext : Text >"
-
--- Sprint 1.56: 'componentsDhallFragment' (the inline empty @components@ field the
--- schema-less fixtures carry) is shared from "TestSupport".
+fixtureAcme :: Maybe SecretRef -> Maybe SecretRef -> AcmeSection
+fixtureAcme eabKeyId eabHmacKey =
+  AcmeSection
+    { email = "test@resolvefintech.com"
+    , server = "https://acme.zerossl.com/v2/DV90"
+    , eab_key_id = eabKeyId
+    , eab_hmac_key = eabHmacKey
+    }
 
 -- | Sprint 4.15 helper: assert that a 'DrainResult' maps to a
 -- 'CascadeContinue' arm. Extracted to a named helper to satisfy the
@@ -16133,159 +16898,6 @@ categorizePulumiResidue perRun sesStatus =
         ++ ResourceRegistry.pairAwsSesResidue sesStatus
     )
 
-pulumiStateBackendDhallFragment :: String
-pulumiStateBackendDhallFragment =
-  "{ bucket_name = \"\", region = \"\", key_prefix = \"pulumi/\" }"
-
-deploymentDhallFragment :: String
-deploymentDhallFragment =
-  concat
-    [ "{ dev_mode = True"
-    , ", bootstrap_public_ip_override = None Text"
-    , ", pulumi_enable_dns_bootstrap = True"
-    , ", public_edge_advertisement_mode = None Text"
-    , ", public_edge_bgp_peers ="
-    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
-    , ", envoy_gateway_controller_scaling = " ++ fixedScalingDhall 1
-    , ", envoy_gateway_data_plane_scaling = " ++ fixedScalingDhall 1
-    , ", api_scaling = " ++ fixedScalingDhall 2
-    , ", websocket_scaling = " ++ fixedScalingDhall 2
-    , " }"
-    ]
-
-scalingPolicyTypeDhall :: String
-scalingPolicyTypeDhall =
-  "< Fixed : Natural | Elastic : { min : Natural, max : Natural } >"
-
-fixedScalingDhall :: Int -> String
-fixedScalingDhall count =
-  "{ home_local = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ ", aws = "
-    ++ scalingPolicyTypeDhall
-    ++ ".Fixed "
-    ++ show count
-    ++ " }"
-
-capacityDhallFragment :: String
-capacityDhallFragment =
-  unlines
-    [ "{ node_budget = { cpu = 8, memory = 16, storage = 100 }"
-    , ", workload_budget = { cpu = 4, memory = 8, storage = 40 }"
-    , ", region_quota = { cpu = 32, memory = 64, storage = 500 }"
-    , ", resource_plan = " ++ resourcePlanDhallFragment
-    , ", runtime_memory_profiles = " ++ runtimeMemoryProfilesDhallFragment
-    , "}"
-    ]
-
-runtimeMemoryProfilesDhallFragment :: String
-runtimeMemoryProfilesDhallFragment =
-  "[ { runtime_profile_id = \"gateway\", bounded_application_state_bytes = 67108864, bounded_pending_persistence_state_bytes = 16777216, bounded_in_heap_transport_decode_bytes = 67108864, other_heap_reserve_bytes = 50331648, heap_cap_bytes = 268435456, native_non_heap_reserve_bytes = 67108864, child_process_budget = { permit_capacity = Some 1, action_deadline_milliseconds = Some 30000, simultaneous_peak_bytes = [ 67108864 ] }, kernel_cgroup_reserve_bytes = 33554432, safety_margin_bytes = 67108864 } ]"
-
-resourcePlanDhallFragment :: String
-resourcePlanDhallFragment =
-  unlines
-    [ "{ host_capacity = { milli_cpu = 8000, memory_mib = 15872, ephemeral_storage_mib = 100000, durable_storage_mib = 180000 }"
-    , ", rke2_reserved = { milli_cpu = 1000, memory_mib = 2048, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", eviction_floor = { milli_cpu = 500, memory_mib = 1024, ephemeral_storage_mib = 10240, durable_storage_mib = 1024 }"
-    , ", workload_profiles ="
-    , "  [ " ++ resourceProfileDhall "keycloak" "keycloak" 1 (500, 1024, 1024, 1) (600, 1280, 2048, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-vault-secrets" "keycloak" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "keycloak-postgres" "keycloak" 3 (250, 512, 1024, 1024) (350, 768, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-replica-cert-copy"
-          "keycloak"
-          3
-          (10, 16, 32, 1)
-          (25, 32, 64, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-vault-secrets"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall
-          "keycloak-postgres-secret-materializer"
-          "keycloak"
-          1
-          (50, 128, 256, 1)
-          (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "vscode" "vscode" 1 (500, 1024, 1024, 1024) (600, 1280, 2048, 2048)
-    , "  , "
-        ++ resourceProfileDhall "vscode-vault-secrets" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , "
-        ++ resourceProfileDhall "vscode-secret-materializer" "vscode" 1 (50, 128, 256, 1) (100, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "api" "api" 2 (250, 256, 512, 1) (250, 384, 512, 1)
-    , "  , " ++ resourceProfileDhall "websocket" "websocket" 2 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "redis" "websocket" 1 (100, 256, 512, 1) (150, 256, 512, 1)
-    , "  , " ++ resourceProfileDhall "gateway" "gateway" 3 (250, 256, 512, 1) (250, 512, 512, 1)
-    , "  , " ++ resourceProfileDhall "pulsar" "gateway" 1 (250, 1024, 1024, 1) (500, 2048, 4096, 1)
-    , "  , " ++ resourceProfileDhall "minio" "prodbox" 1 (250, 512, 1024, 1024) (500, 1024, 2048, 2048)
-    , "  , " ++ resourceProfileDhall "harbor" "prodbox" 1 (200, 256, 512, 1024) (300, 512, 1024, 2048)
-    , "  , "
-        ++ resourceProfileDhall "percona-postgres-operator" "prodbox" 1 (100, 128, 512, 1) (150, 256, 1024, 1)
-    , "  , " ++ resourceProfileDhall "vault" "vault" 1 (200, 256, 1024, 1) (250, 512, 1024, 1)
-    , "  ]"
-    , "}"
-    ]
-
-resourceProfileDhall
-  :: String
-  -> String
-  -> Int
-  -> (Int, Int, Int, Int)
-  -> (Int, Int, Int, Int)
-  -> String
-resourceProfileDhall profile namespace count req lim =
-  "{ profile_id = "
-    ++ show profile
-    ++ ", profile_namespace = "
-    ++ show namespace
-    ++ ", replicas = "
-    ++ show count
-    ++ ", workload_concurrency = < Steady | ExclusiveWindow : Text >.Steady"
-    ++ ", surge = 0"
-    ++ ", workload_qos = < Guaranteed | Burstable >.Burstable"
-    ++ ", workload_demand = "
-    ++ workloadDemandDhall profile req lim
-    ++ " }"
-
-workloadDemandDhall :: String -> (Int, Int, Int, Int) -> (Int, Int, Int, Int) -> String
-workloadDemandDhall profile (reqCpu, reqMemory, reqEphemeral, _reqDurable) (limCpu, limMemory, limEphemeral, limDurable) =
-  "{ cpu_demand = { requests_per_second = "
-    ++ show reqCpu
-    ++ ", service_cpu_micros = 1000, cpu_headroom_ppm = 0, bounded_cpu_burst_milli = "
-    ++ show (limCpu - reqCpu)
-    ++ ", calibration_profile_id = "
-    ++ show profile
-    ++ " }, memory_demand = { steady_memory_terms_mib = [ "
-    ++ show reqMemory
-    ++ " ], bounded_memory_burst_mib = "
-    ++ show (limMemory - reqMemory)
-    ++ " }, ephemeral_demand = { ephemeral_terms_mib = [ "
-    ++ show reqEphemeral
-    ++ " ], bounded_ephemeral_burst_mib = "
-    ++ show (limEphemeral - reqEphemeral)
-    ++ " }, demanded_durable_storage_mib = "
-    ++ show limDurable
-    ++ ", demand_qos = < Guaranteed | Burstable >.Burstable }"
-
-clusterTopologyDhallFragment :: String
-clusterTopologyDhallFragment =
-  clusterTopologyDhallType
-    ++ ".Rke2 { machines = [ "
-    ++ clusterTopologyMachineDhall
-    ++ " ] : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " }"
-
 testTopologyDhallDocument :: FilePath -> String
 testTopologyDhallDocument repoRoot =
   unlines
@@ -16317,36 +16929,6 @@ testTopologyDhallDocument repoRoot =
     , "    , fixtures = [ TestTopology.FixtureId.AwsAdminForTestSimulation ] : List TestTopology.FixtureId"
     , "    }"
     ]
-
-clusterTopologyDhallType :: String
-clusterTopologyDhallType =
-  "< Kind : { machine : "
-    ++ clusterTopologyMachineTypeDhall
-    ++ ", node_count : Natural } | Rke2 : { machines : List "
-    ++ clusterTopologyMachineTypeDhall
-    ++ " } | Eks : { node_group_size : Natural, eks_substrate : "
-    ++ workerSubstrateDhallType
-    ++ " } >"
-
-clusterTopologyMachineTypeDhall :: String
-clusterTopologyMachineTypeDhall =
-  "{ machine_id : Text, machine_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", compute_worker : { worker_substrate : "
-    ++ workerSubstrateDhallType
-    ++ ", manages_all_local_devices : Bool } }"
-
-clusterTopologyMachineDhall :: String
-clusterTopologyMachineDhall =
-  "{ machine_id = \"prodbox-home\", machine_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, compute_worker = { worker_substrate = "
-    ++ workerSubstrateDhallType
-    ++ ".LinuxCpu, manages_all_local_devices = True } }"
-
-workerSubstrateDhallType :: String
-workerSubstrateDhallType =
-  "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
 
 resourceGuardrailPodsFixture :: Value
 resourceGuardrailPodsFixture =
@@ -16522,7 +17104,7 @@ validDeploymentSection =
     { dev_mode = True
     , bootstrap_public_ip_override = Nothing
     , pulumi_enable_dns_bootstrap = True
-    , public_edge_advertisement_mode = Just "l2"
+    , public_edge_advertisement_mode = Just AdvertiseLayer2
     , public_edge_bgp_peers = Nothing
     , envoy_gateway_controller_scaling = fixedScalingPolicyBySubstrate 1
     , envoy_gateway_data_plane_scaling = fixedScalingPolicyBySubstrate 1
@@ -16672,7 +17254,7 @@ sampleConfigSetupInput =
     , configSetupDevModeInput = True
     , configSetupBootstrapPublicIpOverrideInput = Just "203.0.113.10"
     , configSetupPulumiEnableDnsBootstrapInput = True
-    , configSetupPublicEdgeAdvertisementModeInput = Just "bgp"
+    , configSetupPublicEdgeAdvertisementModeInput = Just AdvertiseBgp
     , configSetupPublicEdgeBgpPeersInput =
         Just
           [ MetallbBgpPeer
@@ -16714,7 +17296,7 @@ roundTripConfigFile =
     , deployment =
         validDeploymentSection
           { bootstrap_public_ip_override = Just "203.0.113.10"
-          , public_edge_advertisement_mode = Just "bgp"
+          , public_edge_advertisement_mode = Just AdvertiseBgp
           , public_edge_bgp_peers =
               Just
                 [ MetallbBgpPeer
@@ -16727,7 +17309,26 @@ roundTripConfigFile =
                 ]
           }
     , storage = StorageSection {manual_pv_host_root = ".data"}
+    , -- Sprint 1.79: a NON-default component graph, deliberately. With the
+      -- fixture left at `defaultComponentGraph`, a renderer that drops the field
+      -- and a renderer that emits it are indistinguishable — record completion
+      -- refills the omitted field with exactly the value the fixture carried —
+      -- which is why the round-trip assertion passed over a renderer that never
+      -- emitted `components` at all.
+      components = roundTripComponentGraph
     }
+
+-- | A one-node graph that is not 'defaultComponentGraph'. Kept minimal on
+-- purpose: the claim under test is that the field survives the payload, not
+-- that any particular graph is well-formed.
+roundTripComponentGraph :: [ComponentNode]
+roundTripComponentGraph =
+  [ ComponentNode
+      { component_id = ComponentClusterBase
+      , depends_on = []
+      , readiness = ProbeServiceActive
+      }
+  ]
 
 samplePeerEndpoint :: PeerEndpoint
 samplePeerEndpoint =
@@ -16919,3 +17520,48 @@ testChartSecrets =
     , ("patroni_standby_password", "patronistandbypassword")
     , ("patroni_superuser_password", "patronisuperuserpassword")
     ]
+
+-- | Sprint 1.76: a round-trip witness the way an interpreter mints one — a
+-- store-reported version plus the instant its conditional write landed. Test
+-- fixtures stand in for the store, so they may mint; the @dev check@ boundary
+-- is scoped to @src/@ precisely so production code cannot.
+fixtureRoundTripWitness :: RoundTripWitness
+fixtureRoundTripWitness =
+  mintRoundTripWitness
+    (either (error . show) id (mkModelBObjectVersion "fixture-round-trip-etag"))
+    (authorityTimeFromMicros 1_700_000_000_000_000)
+
+-- | Sprint 1.76: a decode that failed closed. Named rather than inlined so the
+-- malformed-shape case reads as one claim per shape.
+isLeftResult :: Either err value -> Bool
+isLeftResult = either (const True) (const False)
+
+-- | Sprint 1.80: a rendered payload whose advertisement-mode constructor is
+-- misspelled. Built by rewriting the derived payload rather than by hand, so the
+-- only thing that differs from a valid payload is the constructor name.
+misspelledAdvertisementModePayload :: ConfigFile -> BS.ByteString
+misspelledAdvertisementModePayload config =
+  TextEncoding.encodeUtf8
+    (Text.replace "AdvertiseLayer2" "AdvertiseLayerTwo" (Text.pack (renderConfigDhall config)))
+
+-- | Sprint 1.81: a config that satisfies the AWS tier. The AWS tier requires the
+-- Route 53 zone, the ACME account, and the substrate hostname; the local tier
+-- requires none of them.
+awsTierConfigFile :: ConfigFile
+awsTierConfigFile =
+  defaultConfigFile
+    { route53 = Route53Section {zone_id = "Z1234567890ABC"}
+    , acme =
+        (acme defaultConfigFile)
+          { email = "operator@resolvefintech.com"
+          , server = "https://acme.zerossl.com/v2/DV90"
+          }
+    , aws_substrate = AwsSubstrateSection "Z1234567890ABC" "sub.resolvefintech.com"
+    }
+
+-- | Sprint 2.40: named rather than an inline lambda-case, per the repository's
+-- nested-case rule.
+isBrokerReadinessStarting :: BrokerReadinessState -> Bool
+isBrokerReadinessStarting state = case state of
+  BrokerReadinessStarting _ -> True
+  _ -> False

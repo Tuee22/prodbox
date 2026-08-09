@@ -17,11 +17,21 @@ module Prodbox.Gateway.Client
   , defaultGatewayNodePort
   , hostLoopbackGatewayEndpoint
   , hostLoopbackGatewayEndpointFromEnv
+
+    -- * Write-shaped backend evidence (Sprint 1.76)
+  , GatewayBackendRoundTrip (..)
+  , decodeBackendRoundTrip
+  , queryBackendRoundTrip
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Data.Aeson (Value)
+import Data.Aeson (Value (..))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Scientific (floatingOrInteger)
+import Prodbox.ControlPlane.Observation (RoundTripWitness)
+import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
 import Prodbox.Gateway.Routes
   ( GatewayRoute (..)
   , routePattern
@@ -35,7 +45,14 @@ import Prodbox.Http.Client
   , httpGetText
   , renderHttpError
   )
-import Prodbox.Retry (RetryPolicy (..), retryDelayMicros)
+import Prodbox.Lifecycle.CheckpointAuthority (mkModelBObjectVersion)
+import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Retry
+  ( RetryPolicy
+  , daemonRestartBridgeRetryPolicy
+  , drawRetryDelayMicros
+  , retryPolicyMaxAttempts
+  )
 import System.Environment (lookupEnv)
 
 -- | Errors that surface from a gateway-client call.
@@ -79,22 +96,10 @@ retryGatewayTransient policy action = go 0
       Left err
         | gatewayErrorIsTransient err
         , attemptIndex + 1 < retryPolicyMaxAttempts policy -> do
-            threadDelay (retryDelayMicros policy attemptIndex)
+            delay <- drawRetryDelayMicros policy attemptIndex
+            threadDelay delay
             go (attemptIndex + 1)
         | otherwise -> pure result
-
--- | Backoff for bridging a gateway-daemon restart window on the host side:
--- ~1+2+4+8+8s ≈ 23s across five retries — enough to ride out a Deployment
--- rollout (widened by host memory pressure) without hanging forever on a
--- genuinely-down daemon.
-daemonRestartBridgeRetryPolicy :: RetryPolicy
-daemonRestartBridgeRetryPolicy =
-  RetryPolicy
-    { retryPolicyMaxAttempts = 6
-    , retryPolicyBaseDelayMicros = 1000000
-    , retryPolicyMultiplier = 2
-    , retryPolicyMaxDelayMicros = 8000000
-    }
 
 -- | Single compiled NodePort used by the host firewall, chart, and typed
 -- loopback clients.
@@ -173,3 +178,77 @@ queryState endpoint = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right value -> Right value
+
+-- | Sprint 1.76: what the daemon reports about the gateway->object-store write
+-- edge. Three states, kept distinct on purpose: the daemon has landed a
+-- conditional write and reports its receipt; the daemon is up but has landed
+-- none yet; or the field is unreadable, which is a decode failure and never an
+-- absence.
+data GatewayBackendRoundTrip
+  = -- | The store accepted a conditional continuity write; the witness carries
+    -- the version it returned and the instant it landed.
+    GatewayBackendRoundTripWitnessed !RoundTripWitness
+  | -- | The daemon answered, and reports no landed write yet.
+    GatewayBackendRoundTripAbsent
+  deriving (Eq, Show)
+
+-- | Decode the @last_backend_round_trip@ field of a @\/v1\/state@ body.
+--
+-- This is one of the two places allowed to mint a 'RoundTripWitness', and the
+-- reason is worth stating: the daemon performed the write, so the receipt is
+-- evidence rather than an assertion, and this function is the authoritative
+-- decoder of that receipt. It fails closed on every malformed shape — a missing
+-- field, a non-object value, a version the store coordinate validator rejects,
+-- or a non-integral instant — because a witness that cannot be decoded is not a
+-- witness.
+decodeBackendRoundTrip :: Value -> Either String GatewayBackendRoundTrip
+decodeBackendRoundTrip body =
+  case body of
+    Object root ->
+      case KeyMap.lookup (Key.fromString "last_backend_round_trip") root of
+        Nothing ->
+          Left "gateway /v1/state carries no last_backend_round_trip field"
+        Just Null -> Right GatewayBackendRoundTripAbsent
+        Just (Object receipt) -> witnessFrom receipt
+        Just _ ->
+          Left "gateway last_backend_round_trip is neither null nor an object"
+    _ -> Left "gateway /v1/state body is not a JSON object"
+ where
+  witnessFrom receipt = do
+    versionText <- textField receipt "object_version"
+    landedMicros <- naturalField receipt "landed_at_micros"
+    version <-
+      case mkModelBObjectVersion versionText of
+        Left err ->
+          Left ("gateway reported an unusable round-trip object version: " ++ show err)
+        Right value -> Right value
+    Right
+      ( GatewayBackendRoundTripWitnessed
+          (mintRoundTripWitness version (authorityTimeFromMicros landedMicros))
+      )
+
+  textField receipt name =
+    case KeyMap.lookup (Key.fromString name) receipt of
+      Just (String value) -> Right value
+      _ -> Left ("gateway round-trip receipt field `" ++ name ++ "` is not a string")
+
+  naturalField receipt name =
+    case KeyMap.lookup (Key.fromString name) receipt of
+      Just (Number value) ->
+        case floatingOrInteger value :: Either Double Integer of
+          Right integral | integral >= 0 -> Right (fromInteger integral)
+          _ ->
+            Left
+              ("gateway round-trip receipt field `" ++ name ++ "` is not a non-negative integer")
+      _ -> Left ("gateway round-trip receipt field `" ++ name ++ "` is not a number")
+
+-- | Read the daemon's write-shaped backend evidence off @\/v1\/state@.
+queryBackendRoundTrip :: PeerEndpoint -> IO (Either GatewayError GatewayBackendRoundTrip)
+queryBackendRoundTrip endpoint = do
+  stateResult <- queryState endpoint
+  pure $ case stateResult of
+    Left err -> Left err
+    Right value ->
+      case decodeBackendRoundTrip value of
+        Left detail -> Left (GatewayPayload detail)
+        Right observed -> Right observed

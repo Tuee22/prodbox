@@ -7,6 +7,7 @@
 module Main (main) where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Control.Concurrent.STM (atomically)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -72,6 +73,15 @@ import Prodbox.ControlPlane.RetainedSesLeaseEndpoint
   )
 import Prodbox.ControlPlane.RoleInterpreters
   ( lifecycleAuthorityAdmissionAuthenticatedHandler
+  )
+import Prodbox.ControlPlane.RoleReadiness
+  ( RoleReadinessSource
+  , RoleReadinessState (RoleReadinessStarting)
+  , computeRoleReadiness
+  , constantRoleReadinessSource
+  , controlPlaneRoleReadinessSchedule
+  , readyRoleReadinessFacts
+  , roleReadinessSnapshot
   )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (..)
@@ -497,7 +507,7 @@ authenticatedRoleInterpreterTests =
               _ -> pure Nothing
             inner =
               AuthenticatedRoleHandler
-                { authenticatedHandlerReadyz = pure True
+                { authenticatedHandlerReadiness = transportReadyReadinessSource
                 , authenticatedHandlerHandle = handleInner
                 }
             wrapped =
@@ -617,7 +627,7 @@ authenticatedRoleInterpreterTests =
               _ -> pure Nothing
             inner =
               AuthenticatedRoleHandler
-                { authenticatedHandlerReadyz = pure True
+                { authenticatedHandlerReadiness = transportReadyReadinessSource
                 , authenticatedHandlerHandle = handleInner
                 }
             firstWrapper =
@@ -797,7 +807,12 @@ authenticatedRuntimeTests =
                 ( AuthenticatedRuntimeRetainedReplayAndEpochProvisioningMissing
                     ProviderWorkerRuntime
                 )
-        interpreterReadyz unavailable >>= (@?= False)
+        -- Sprint 4.55: readiness is cached facts now, so an unprovisioned
+        -- runtime is an unobserved dependency rather than a bare `False`.
+        atomically (roleReadinessSnapshot (interpreterReadiness unavailable))
+          >>= \facts ->
+            computeRoleReadiness controlPlaneRoleReadinessSchedule 1000000000 facts
+              @?= RoleReadinessStarting "no dependency observation has completed yet"
         interpreterHandle unavailable ProviderWorkApply "ignored"
           >>= ( @?=
                   Just
@@ -897,7 +912,7 @@ freshProductionAuthorityHandler = do
       handler =
         lifecycleAuthorityAdmissionAuthenticatedHandler
           4096
-          (pure True)
+          transportReadyReadinessSource
           "cluster-a"
           (pure (Right 1000))
           (const (Right "fixture-authority-envelope"))
@@ -967,7 +982,7 @@ fixturePulumiCheckpointHandler =
 countingInterpreter :: IORef Int -> RoleInterpreter IO
 countingInterpreter effects =
   RoleInterpreter
-    { interpreterReadyz = pure True
+    { interpreterReadiness = transportReadyReadinessSource
     , interpreterHandle = \_ _ -> do
         modifyIORef' effects (+ 1)
         pure (Just (200, "inner-response"))
@@ -976,7 +991,7 @@ countingInterpreter effects =
 countingInterpreterDiscarded :: RoleInterpreter IO
 countingInterpreterDiscarded =
   RoleInterpreter
-    { interpreterReadyz = pure True
+    { interpreterReadiness = transportReadyReadinessSource
     , interpreterHandle = \_ _ -> pure (Just (200, "inner-response"))
     }
 
@@ -1370,3 +1385,9 @@ mustRightIO :: (Show err) => Either err value -> IO value
 mustRightIO value = case value of
   Left err -> fail (show err)
   Right result -> pure result
+
+-- | Sprint 4.55: a fixture readiness source that has observed everything, so a
+-- transport test exercises authentication rather than readiness.
+transportReadyReadinessSource :: RoleReadinessSource
+transportReadyReadinessSource =
+  constantRoleReadinessSource (readyRoleReadinessFacts "transport-fixture" 1000000000)

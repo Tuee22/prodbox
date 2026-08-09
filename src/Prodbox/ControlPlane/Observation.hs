@@ -21,7 +21,9 @@
 module Prodbox.ControlPlane.Observation
   ( -- * Evidence and status
     FreshnessWindow (..)
-  , RoundTripWitness (..)
+  , RoundTripWitness
+  , roundTripWitnessVersion
+  , roundTripWitnessLandedAt
   , ExternalEvidence (..)
   , ObservationStatus (..)
   , classifyEvidence
@@ -66,6 +68,9 @@ import Prodbox.ControlPlane.Coordinate
   , coordGeneration
   , coordService
   )
+import Prodbox.ControlPlane.Observation.Internal
+  ( RoundTripWitness (..)
+  )
 import Prodbox.Lifecycle.CheckpointAuthority (ModelBObjectVersion)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Lifecycle.TargetCommitIntent (CredentialGeneration)
@@ -75,10 +80,15 @@ import Prodbox.Lifecycle.TargetCommitIntent (CredentialGeneration)
 newtype FreshnessWindow = FreshnessWindow Natural
   deriving (Eq, Ord, Show)
 
--- | Proof that a write/CAS round trip actually reached the store — the Model-B
--- object version it produced (read back after the conditional put).
-newtype RoundTripWitness = RoundTripWitness ModelBObjectVersion
-  deriving (Eq, Show)
+-- | The store version the witnessed write produced.
+roundTripWitnessVersion :: RoundTripWitness -> ModelBObjectVersion
+roundTripWitnessVersion = internalRoundTripVersion
+
+-- | The instant the witnessed write landed, stamped by the interpreter that
+-- performed it. This is what makes the freshness window bound the age of the
+-- __write__ rather than the age of a later clock read.
+roundTripWitnessLandedAt :: RoundTripWitness -> AuthorityTime
+roundTripWitnessLandedAt = internalRoundTripLandedAt
 
 -- | The one flat exhaustive external reading. Read-shaped and write-shaped
 -- evidence are distinct constructors; "cannot observe" is never folded into

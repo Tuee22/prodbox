@@ -71,6 +71,7 @@ module Prodbox.CLI.Rke2
   , registryConfigYaml
   , rke2InstallPresent
   , operationalAwsCredentialGateFromResult
+  , runAnchoredReconcileSteps
   , runEdgeCommand
   , runNativeDeleteCascade
   , runCascadeDrainResult

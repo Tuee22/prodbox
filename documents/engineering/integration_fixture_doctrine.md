@@ -349,7 +349,7 @@ type-checked only when `prodbox test integration cli` / `env` compiled it, and n
 those. What remains outside the gate is fixture *behaviour*: a fixture that compiles against a
 changed type and asserts the wrong thing still needs the suite to run.
 
-Two consequences bind this doctrine:
+Four consequences bind this doctrine:
 
 - **A fixture that hand-authors a serialized form of a production type is a second encoder of that
   type**, and it drifts silently when the type is tightened — the defect class in
@@ -366,6 +366,16 @@ Two consequences bind this doctrine:
   an exception that escapes before any byte is written replaces a diagnosable answer with a network
   error, and — if the accept loop does not guard it — takes every later request in the test with it.
   Keep the failure a value and render it as a response carrying its reason.
+- **Positive fake observations derive from the production projection they are compared against.**
+  A fake `ResourceQuota`, `LimitRange`, replica set, or other observed object must not restate the
+  production projection as hand-maintained literals. Render the positive fixture from that
+  projection. A scenario that deliberately violates the projection remains explicit: construct a
+  named invalid value or perturbation so the test states which invariant it breaks instead of
+  disguising the invalid value as ordinary fixture state.
+- **A fixture reaches the boundary named by its test.** Every unrelated prerequisite fixture must
+  be valid enough for execution to reach that boundary. A test of a Credential Provisioner refusal,
+  for example, must not stop first on an empty substrate coordinate. Deliberately invalid
+  prerequisite values belong only in a case that names and asserts that prerequisite refusal.
 
 This document works with:
 

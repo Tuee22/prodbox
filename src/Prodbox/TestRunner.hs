@@ -21,6 +21,7 @@ module Prodbox.TestRunner
   , gatewayRuntimeValidationBoundary
   , publicEdgeCertificateReissueStatusPatch
   , renderTestRefusal
+  , runRunbookCommand
   , supportedRuntimeBootstrapNeedsReconcile
   , supportedRuntimeBootstrapRestorePlan
   , supportedRuntimePostflightRestorePlan
@@ -1254,7 +1255,7 @@ runRunbookCommand repoRoot environment cliArgs = do
   case exitCode of
     ExitSuccess -> pure exitCode
     ExitFailure code -> do
-      writeOutputLine
+      writeDiagnosticLine
         ( "Integration runbook step failed: prodbox "
             ++ unwords cliArgs
             ++ " (exit "

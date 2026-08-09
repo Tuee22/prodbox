@@ -470,7 +470,7 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
 | 3 | Chart Platform and Public Workload Delivery | ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
 | 4 | Lifecycle Hardening and Pulumi Decoupling | ✅ Reclosed on Sprints `4.50`/`4.53` (2026-08-01). Retained Authority admission/checkpoints, authenticated five-role clients, Broker/Target/Provider execution, exact TLS retention, encrypted EKS client auth, Provider-native SES/Route53 reconciliation, crash-safe decommission, legacy transport deletion, and the authenticated S3 witness are independently validated; live qualification remains Standard O/P. | Warning-clean builds, 2972/2972 unit tests plus focused retained-admission/authenticated-transport suites, negative scans, and `dev check` exit 0. |
-| 5 | Canonical Test Suite | ✅ Reclosed on Sprint `5.22` (2026-08-02). Durable cleanup, the temporal/fault oracle, secret-safe qualification evidence, fail-closed calibration recording, and exact presented-certificate SAN validation are code-locally complete; deployment qualification remains Standards P/O. | Unit 3018/3018, installed-binary command proof, generated registries, cleanup/fault tables, and exact-SAN/retention-coordinate tests. |
+| 5 | Canonical Test Suite | ✅ Reclosed on Sprint `5.31` (2026-08-09). The final fixture drifts are corrected and the installed integration surface is green; clean-room deployment qualification remains pending under Standards O/P. | Installed `cli`/`env` integration **55/55** and canonical `prodbox test unit` exit 0 with main Hspec **3255/3255**, using fake/local proof with no later-phase or live-infrastructure dependency. |
 | 6 | Final Clean-Room Rerun and Handoff | ✅ Reclosed on Sprint `6.4` (2026-08-02): exact-prefix cutover/restore/cleanup, rollback refusal, installed-binary plan, and retired-transport absence are validated; destructive aggregates remain qualification. | Focused 8/8, installed command exit 0, unit 3028/3028, generated docs, and `dev check` exit 0. |
 | 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic ownership, target DNS01, public-A Provider intents, and fault dispositions are code-locally complete. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ✅ Reclosed on Sprint `8.12` (2026-08-02): the durable SES workflow and non-partial invite fault/qualification artifact are code-locally complete; live qualification remains Standards O/P. | Invite 8/8, daemon lifecycle 27/27, unit 3067/3067, installed CLI/environment 55/55 twice, and `prodbox dev check` exit 0. |
@@ -482,7 +482,19 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-08-03 — all code-owned phases are closed):**
+**Current head state (2026-08-09 — all code-owned phases are closed):**
+
+- Sprint `5.31` is ✅ Done and Phase `5` is reclosed on its own surface. Installed `cli` and `env`
+  integration pass **55/55**; canonical `prodbox test unit` exits 0 with main Hspec **3255/3255**.
+- The last four failures were fixture drift: the fake cluster observed three gateway Pods against
+  the typed exact projection of two; the transient primary image push retries and succeeds without
+  selecting the fallback; config setup is asserted through the derived Dhall union constructor and
+  structural decode; and a valid fixture AWS subzone lets the AWS-IAM teardown fixture reach its
+  already-specified unavailable-Credential-Provisioner refusal.
+- Every code-owned phase `0`–`8` is closed. Clean-room deployment qualification remains `pending`
+  on both substrates as the separate Standards O/P axis, with no deployment-ready or cutover claim.
+
+**Prior head state (2026-08-03 — all code-owned phases are closed):**
 
 - Sprints `0.19`/`0.20` add repository secret hygiene and then repository value hygiene as governance
   additions on Phase `0`'s already-reclosed documentation surface (no further reclose event).
@@ -619,8 +631,10 @@ The Haskell-only baseline remains implemented, but its gateway-backed lifecycle 
 nominal deep-readiness target, subprocess object-store path, synchronous retained SES bracket, and
 first-failure restore sequence are superseded. Phase `0` is reclosed on the corrected doctrine;
 Phases `1`–`8` are reclosed on their expanded code-owned surfaces after the numerical completion
-pass through Sprint `8.12`. The live home/AWS aggregate and fault records remain pending only on
-the distinct deployment-qualification axis.
+pass through Sprint `8.12`, with Phase `5` most recently reclosed on Sprint `5.31` (2026-08-09).
+Installed `cli`/`env` integration passes **55/55**, and canonical `prodbox test unit` exits 0 with
+main Hspec **3255/3255**. The live home/AWS aggregate and fault records remain pending only on the
+distinct deployment-qualification axis.
 
 Sprints `1.60`, `2.31`, `3.25`, `4.47`, `5.16`, `5.17`, and `8.10` remain complete historical work
 for their stated surfaces. They do not qualify the expanded process topology. The supported
@@ -924,16 +938,27 @@ response obligation, so "accepted a connection and answered nothing" stops being
 Sprint `5.30` ✅ (one Tier-0 encoder, the fixture decode failure kept as a value, `--enable-tests`).
 Neither moves a Standard-P production-composition surface.
 
-Phase `5` remains 🔄 Active on Sprint `5.31`; the integration suite went **20 of 55 failing → 8 →
-4**. The chain `5.31` uncovered is worth the space, because each link was invisible until the one
-above it was fixed: a typed `AdmissionRefusal` discarded with a wildcard made eight cases exit 1 in
-silence (§ 23 at the *step* boundary — `ExitCode` has no room for a reason, and the renderer already
+At that checkpoint, Phase `5` remained 🔄 Active on Sprint `5.31`; the integration suite had gone
+**20 of 55 failing → 8 → 4**. The chain `5.31` uncovered is worth the space, because each link was
+invisible until the one above it was fixed: a typed `AdmissionRefusal` discarded with a wildcard
+made eight cases exit 1 in silence (§ 23 at the *step* boundary — `ExitCode` has no room for a
+reason, and the renderer already
 existed); returning the refusal instead of lowering it named a Phase-`4` production defect in one
 run (admissions reset at every phase boundary, closed as Sprint `4.61`); and under that sat three
 fixture drifts ending in the capacity drift Phase 5 had registered as silent — the fake LimitRange
 declared the gateway at 250m where the plan projects 750m. The fixture's observed cluster state now
-renders from the same projection the validator compares against. Four cases remain, each a distinct
+renders from the same projection the validator compares against. Four cases remained, each a distinct
 named question.
+
+**Sprint `5.31` closure, 2026-08-09 (Standard C).** Sprint `5.31` is ✅ **Done**, Phase `5` is
+reclosed, and all code-owned phases `0`–`8` are closed. The four questions resolved as fixture
+expectation drift: the fake cluster exposed three gateway Pods against an exact typed projection of
+two; the transient primary image push retries and succeeds without selecting its fallback; config
+setup is asserted through the derived Dhall union constructor and structural decoded value; and a
+valid fixture subzone lets the AWS-IAM teardown case reach its intended refusal when the
+authenticated Credential Provisioner is unavailable. Evidence: installed `cli`/`env` integration
+**55/55** and canonical `prodbox test unit` exit 0 with main Hspec **3255/3255**. Clean-room home
+and AWS deployment qualification remains `pending` on the separate Standards O/P axis.
 
 **Tier-0 config audit, 2026-08-07 (Standard C).** An audit of the Dhall config surface asked whether
 the design makes illegal state unrepresentable. For categorical state it largely does — closed unions wherever the legal set is a fixed

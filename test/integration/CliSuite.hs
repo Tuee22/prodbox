@@ -1,6 +1,8 @@
 module CliSuite
   ( integrationCliSuite
   , runInstalledWithFakeAuthority
+  , runRke2AdmissionRefusalFixture
+  , runRunbookFailureFixture
   )
 where
 
@@ -46,7 +48,10 @@ import Prodbox.BuildSupport
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
+import Prodbox.CLI.Rke2 qualified as Rke2
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
+import Prodbox.Config.ComponentGraph qualified as ComponentGraph
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.Http.Client
   ( HttpConfig (..)
@@ -54,11 +59,13 @@ import Prodbox.Http.Client
   , defaultHttpConfig
   , httpGetText
   )
+import Prodbox.Lifecycle.DependencyAdmission (noAdmissions)
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
   ( SecretRef (SecretRefVault)
   , VaultSecretRef (..)
   )
+import Prodbox.TestRunner qualified as TestRunner
 import Prodbox.TestValidation qualified as TestValidation
 import System.Directory
   ( Permissions (..)
@@ -73,6 +80,7 @@ import System.Directory
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (takeDirectory, (</>))
+import System.IO qualified as IO
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process
   ( CreateProcess (cwd, env)
@@ -1134,8 +1142,12 @@ integrationCliSuite = do
         dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
         dockerRecord
           `shouldContain` "tag|ghcr.io/coder/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+        countRecordLines
+          "push|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+          dockerRecord
+          `shouldBe` 2
         dockerRecord
-          `shouldContain` "tag|docker.io/codercom/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+          `shouldNotContain` "tag|docker.io/codercom/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
         -- One union runtime image built from the single Dockerfile, consumed by
         -- the gateway daemon + api/websocket workloads (role chosen by chart args).
         dockerRecord
@@ -1164,6 +1176,34 @@ integrationCliSuite = do
 
         pulumiRecordExists <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
         pulumiRecordExists `shouldBe` False
+
+        -- Sprint 5.31 closure evidence: exercise both process-facing crossings
+        -- in isolated helper processes so the assertion observes the real file
+        -- descriptors rather than an injected writer. The RKE2 caller renders
+        -- the exact typed refusal to stderr; the runbook wrapper then names a
+        -- silent failing child on stderr without contaminating stdout.
+        integrationExecutable <- getExecutablePath
+        (admissionExitCode, admissionStdout, admissionStderr) <-
+          readCreateProcessWithExitCode
+            (proc integrationExecutable ["--fixture-rke2-admission-refusal", tmpDir])
+            ""
+        admissionExitCode `shouldBe` ExitFailure 1
+        admissionStdout `shouldBe` ""
+        admissionStderr `shouldContain` "mutating `chart_authority_backup` requires an admission"
+        admissionStderr `shouldContain` "which was never observed ready in this run"
+
+        let runbookFixtureRoot = tmpDir </> "runbook-diagnostic"
+            silentFailingOperator = runbookFixtureRoot </> ".build" </> "prodbox"
+        createDirectoryIfMissing True (runbookFixtureRoot </> ".build")
+        writeExecutable silentFailingOperator "#!/bin/sh\nexit 23\n"
+        (runbookExitCode, runbookStdout, runbookStderr) <-
+          readCreateProcessWithExitCode
+            (proc integrationExecutable ["--fixture-runbook-failure", runbookFixtureRoot])
+            ""
+        runbookExitCode `shouldBe` ExitFailure 23
+        runbookStdout `shouldBe` ""
+        runbookStderr
+          `shouldContain` "Integration runbook step failed: prodbox cluster reconcile --with-edge (exit 23)"
 
     it "falls back to mirror.gcr when Docker Hub rate-limits a supported Percona image" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1824,7 +1864,14 @@ integrationCliSuite = do
         configText `shouldNotContain` "AKIAFAKESETUP"
         configText `shouldContain` "zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
-        configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
+        configText `shouldContain` ".AdvertiseLayer2"
+        configText `shouldNotContain` "public_edge_advertisement_mode = Some \"l2\""
+        decodedConfig <- Settings.loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
+        case decodedConfig of
+          Left err -> expectationFailure ("generated prodbox.dhall did not decode: " <> err)
+          Right config ->
+            Settings.public_edge_advertisement_mode (Settings.deployment config)
+              `shouldBe` Just Settings.AdvertiseLayer2
         -- EAB references are non-secret schema coordinates only. Config setup
         -- neither prompts for nor writes either EAB field.
         configText `shouldContain` "eab_hmac_key = Some"
@@ -2012,6 +2059,47 @@ integrationCliSuite = do
         requestStdout `shouldContain` "Requested AWS Quotas"
         requestStdout `shouldContain` "PENDING"
         requestStdout `shouldContain` "Running On-Demand Standard vCPU"
+
+-- | Isolated helper mode for the process-level diagnostic assertion in the
+-- RKE2 integration case. A mutation is deliberately selected without carrying
+-- any of its declared dependency admissions, so the production caller must
+-- render the typed refusal to stderr before returning an exit code.
+runRke2AdmissionRefusalFixture :: FilePath -> IO ExitCode
+runRke2AdmissionRefusalFixture repoRoot = do
+  validated <-
+    Settings.validateAndLoadSettingsAtPath
+      (repoRoot </> "prodbox.dhall")
+      repoRoot
+  case validated of
+    Left err -> fixtureSetupFailure err
+    Right settings ->
+      case ComponentGraph.validateComponentGraph
+        (Settings.components (Settings.validatedConfig settings)) of
+        Left err -> fixtureSetupFailure (show err)
+        Right dag ->
+          fst
+            <$> Rke2.runAnchoredReconcileSteps
+              repoRoot
+              settings
+              dag
+              (const (pure ExitSuccess))
+              noAdmissions
+              [Rke2.StepAuthorityBackupChartReady]
+ where
+  fixtureSetupFailure detail = do
+    BS8.hPutStrLn IO.stderr (BS8.pack ("admission-refusal fixture setup failed: " ++ detail))
+    pure (ExitFailure 2)
+
+-- | Isolated helper mode for the runbook diagnostic assertion. The test owns
+-- a silent failing fake at the canonical child-binary path; this function runs
+-- the production wrapper unchanged so stdout/stderr remain process-observable.
+runRunbookFailureFixture :: FilePath -> IO ExitCode
+runRunbookFailureFixture repoRoot = do
+  environment <- getEnvironment
+  TestRunner.runRunbookCommand
+    repoRoot
+    environment
+    ["cluster", "reconcile", "--with-edge"]
 
 resolveBinaryPath :: IO FilePath
 resolveBinaryPath = do
@@ -3634,11 +3722,11 @@ fakeRke2KubectlScript =
     , "            gateway_pods_sample=$(next_gateway_pods_sample)"
     , "            if [[ \"${PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE:-0}\" == \"$gateway_pods_sample\" ]]; then"
     , "              /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\",\"uid\":\"gateway-uid-0\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":1,\"lastState\":{\"terminated\":{\"reason\":\"OOMKilled\",\"exitCode\":137,\"finishedAt\":\"2026-07-11T00:00:00Z\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-1\",\"uid\":\"gateway-uid-1\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-2\",\"uid\":\"gateway-uid-2\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}}]}"
+    , renderFakeGatewayPodItems True
     , "JSON"
     , "            else"
     , "              /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\",\"uid\":\"gateway-uid-0\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-1\",\"uid\":\"gateway-uid-1\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-2\",\"uid\":\"gateway-uid-2\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":0,\"lastState\":{}}]}}]}"
+    , renderFakeGatewayPodItems False
     , "JSON"
     , "            fi"
     , "          else"
@@ -3655,7 +3743,7 @@ fakeRke2KubectlScript =
     , "        ;;"
     , "      --raw)"
     , "        /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"gateway-0\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]},{\"metadata\":{\"name\":\"gateway-1\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]},{\"metadata\":{\"name\":\"gateway-2\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]}]}"
+    , renderFakeGatewayMetricItems
     , "JSON"
     , "        ;;"
     , "      *)"
@@ -4412,6 +4500,9 @@ findRecordLineIndex needle haystack =
     Just indexValue -> indexValue
     Nothing -> error ("missing record line containing " ++ show needle)
 
+countRecordLines :: String -> String -> Int
+countRecordLines expected = length . filter (== expected) . lines
+
 bootstrapBrokerConfig :: String
 bootstrapBrokerConfig =
   unlines
@@ -4683,11 +4774,7 @@ validConfigForNuke =
       -- The pre-migration fixture left it empty; the fixture never decoded, so
       -- no test could observe the refusal. Synthetic values, per the repository
       -- value-hygiene rule.
-      Settings.aws_substrate =
-        Settings.AwsSubstrateSection
-          { Settings.hosted_zone_id = Text.pack "Z0987654321XYZ"
-          , Settings.subzone_name = Text.pack "aws.test.resolvefintech.com"
-          }
+      Settings.aws_substrate = fixtureAwsSubstrate
     , Settings.ses =
         Settings.SesSection
           { Settings.sender_domain = Text.pack "test.resolvefintech.com"
@@ -4706,7 +4793,18 @@ validConfigForNuke =
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: Settings.ConfigFile
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
   (fixtureBaseConfig lifecycleProviderVaultPath "us-west-2" False)
-    { Settings.pulumi_state_backend = fixturePulumiBackend "" ""
+    { -- This fixture drives the AWS-tier IAM harness. Keep its substrate
+      -- coordinates valid so the named unavailable-Credential-Provisioner
+      -- refusal is the first failure, rather than an unrelated config refusal.
+      Settings.aws_substrate = fixtureAwsSubstrate
+    , Settings.pulumi_state_backend = fixturePulumiBackend "" ""
+    }
+
+fixtureAwsSubstrate :: Settings.AwsSubstrateSection
+fixtureAwsSubstrate =
+  Settings.AwsSubstrateSection
+    { Settings.hosted_zone_id = Text.pack "Z0987654321XYZ"
+    , Settings.subzone_name = Text.pack "aws.test.resolvefintech.com"
     }
 
 zeroSslConfig :: Settings.ConfigFile
@@ -4836,3 +4934,59 @@ renderFakeLimitRangeItems =
       ++ "\":{"
       ++ intercalate "," ["\"" ++ name ++ "\":\"" ++ value ++ "\"" | (name, value) <- entries]
       ++ "}"
+
+-- | The gateway stability fake represents the same complete replica set the
+-- production stability policy expects. Derive its cardinality through that
+-- policy's projection so a capacity-plan change cannot leave a second authored
+-- replica count behind in the fixture.
+gatewayRuntimeFakeReplicaIndices :: [Int]
+gatewayRuntimeFakeReplicaIndices =
+  case TestValidation.gatewayRuntimeExpectedReplicas defaultResourcePlan of
+    Left err -> error ("fake gateway fixture cannot project replica count: " ++ err)
+    Right replicas -> [0 .. fromIntegral replicas - 1]
+
+gatewayRuntimeFakeMemoryLimitQuantity :: String
+gatewayRuntimeFakeMemoryLimitQuantity =
+  case Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection (Text.pack "gateway") of
+    Left err -> error ("fake gateway fixture cannot project memory limit: " ++ err)
+    Right runtimePlan ->
+      show
+        ( RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.runtimeMemoryContainerLimitBytes runtimePlan)
+        )
+
+renderFakeGatewayPodItems :: Bool -> String
+renderFakeGatewayPodItems firstPodOomKilled =
+  "{\"items\":[" ++ intercalate "," (map renderPod gatewayRuntimeFakeReplicaIndices) ++ "]}"
+ where
+  renderPod index =
+    "{\"metadata\":{\"namespace\":\"gateway\",\"name\":\""
+      ++ podName
+      ++ "\",\"uid\":\""
+      ++ podUid
+      ++ "\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"limits\":{\"memory\":\""
+      ++ gatewayRuntimeFakeMemoryLimitQuantity
+      ++ "\"}}}]},\"status\":{\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"containerStatuses\":[{\"name\":\"gateway\",\"restartCount\":"
+      ++ show restartCount
+      ++ ",\"lastState\":"
+      ++ lastState
+      ++ "}]}}"
+   where
+    podName = "gateway-" ++ show index
+    podUid = "gateway-uid-" ++ show index
+    isOomKilled = firstPodOomKilled && index == 0
+    restartCount = if isOomKilled then (1 :: Int) else 0
+    lastState =
+      if isOomKilled
+        then
+          "{\"terminated\":{\"reason\":\"OOMKilled\",\"exitCode\":137,\"finishedAt\":\"2026-07-11T00:00:00Z\"}}"
+        else "{}"
+
+renderFakeGatewayMetricItems :: String
+renderFakeGatewayMetricItems =
+  "{\"items\":[" ++ intercalate "," (map renderMetric gatewayRuntimeFakeReplicaIndices) ++ "]}"
+ where
+  renderMetric index =
+    "{\"metadata\":{\"name\":\"gateway-"
+      ++ show index
+      ++ "\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]}"

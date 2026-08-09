@@ -4,6 +4,7 @@ module Prodbox.TestValidation
   ( runNativeValidation
   , namespaceResourceQuotaHardFields
   , namespaceLimitRangeContainerFields
+  , gatewayRuntimeExpectedReplicas
   , runNativeValidationWithGatewayStability
   , GatewayRuntimeStabilityRecorder
   , GatewayRuntimeStabilityMonitor

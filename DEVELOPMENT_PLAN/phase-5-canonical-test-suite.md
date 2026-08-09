@@ -11,8 +11,10 @@
 
 ## Phase Status
 
-🔄 **Active (own-surface reopen 2026-08-08)** on Sprint `5.31`. Integration went **20 of 55 failing
-→ 8 → 4** across Sprints `5.30` ✅ and `5.31`.
+✅ **Reclosed 2026-08-09 on Sprint `5.31`.** Integration went **20 of 55 failing → 8 → 4 →
+0**, and the installed `cli`/`env` suite now passes **55/55**. The canonical `prodbox test unit`
+command exits 0 with the main Hspec inventory at **3255/3255**. Clean-room home and AWS
+deployment qualification remains pending on the separate Standards O/P axis.
 
 `5.30` landed the fixture half: four hand-written Tier-0 Dhall encoders reduced to the one canonical
 `renderProjectConfigDhall` (a record with one decoder and four encoders is three hand-maintained
@@ -22,18 +24,17 @@ fixture decode failure kept as a typed value instead of an `ioError` escaping be
 written, and `--enable-tests` on the canonical build so its region covers this phase's evidence
 surface.
 
-`5.31` is the chain underneath, and each link was invisible until the one above it was fixed. A
+`5.31` closed the chain underneath, whose links were invisible until the one above each was fixed. A
 discarded `AdmissionRefusal` (`refuse _ = ExitFailure 1`) made eight cases exit 1 in silence; the
 refusal now leaves as itself, which is § 23 at the step boundary. Making it speak named a Phase-`4`
 production defect in one run — admissions reset at every phase boundary, closed as Sprint `4.61`.
 Three fixture drifts sat under that, ending in the capacity drift this phase had registered as
 "currently silent": the fake LimitRange declared the gateway at 250m where the plan projects 750m.
 The fixture's observed cluster state now renders from the same projection the validator compares
-against, so that class cannot recur.
-
-Four cases remain, each a distinct named question rather than one defect, and one of them needs a
-decision rather than an edit. The reopen expands this phase's own owned surface only (Standard A).
-Prior reclosures stand.
+against. The final four failures were corrected against their actual source-level causes: exact
+gateway replica cardinality, primary-image retry semantics, the derived Dhall union shape, and a
+valid prerequisite fixture for the named Credential-Provisioner refusal. The own-surface reopen is
+closed (Standard A), and prior reclosures stand.
 
 ✅ **Reclosed 2026-08-08 on Sprint `5.29`** — the last Sprint-`5.18` deliverable that had been
 recorded as complete and never built is now built. The DNS01 challenge coordinate is a registered
@@ -2739,21 +2740,25 @@ four recorded under the investigation that opened this sprint), and this is what
 Registered as Sprint `5.31`. It is deliberately **not** absorbed into this sprint: the failure is in
 the reconcile step chain, not in a fixture, and this sprint's surface is fixtures and gate region.
 
-## Sprint 5.31: A Reconcile Step's Failure Reaches the Operator 🔄
+## Sprint 5.31: A Reconcile Step's Failure Reaches the Operator ✅
 
-**Status**: Active (2026-08-08) — Phase `5` own-surface reopen (Standard A), continuing from Sprint
-`5.30`. The diagnosis deliverable is complete and the type change has landed; four of the original
-55 integration cases remain, each now individually named.
-**Blocked by**: none. The failure reproduces in the fake-host fixture environment in ~44 seconds; no
-live cluster is needed.
+**Status**: Done (2026-08-09) — Phase `5` own-surface reopen and reclosure (Standard A), continuing
+from Sprint `5.30`. The typed refusal crossing, its direct regression, and the four remaining
+fixture/expectation corrections are implemented; installed integration passes 55/55.
+**Implementation**: `src/Prodbox/Lifecycle/AnchoredReconcile.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lib/AwsSubstratePlatform.hs`, `src/Prodbox/TestRunner.hs`,
+`src/Prodbox/TestValidation.hs`, `test/integration/CliSuite.hs`, `test/integration/Main.hs`, and
+`test/unit/DependencyAdmissionSuite.hs`.
 **Deployment qualification**: pending — a diagnostic that was previously absent cannot have been
 relied on, so adding it invalidates nothing. The admission-threading change in Sprint `4.61` is the
 one with a qualification consequence, and it is recorded there.
-**Independent Validation**: `prodbox test integration cli` + `env` — **4 of 55 failing, down from
-20**; `prodbox dev check` exit 0; `prodbox test unit` 3253/3253.
-**Docs to update**: `documents/engineering/chaos_hardening_doctrine.md` § 23 (an `ExitCode` crossing
-out of a step is the same conversion as an exception crossing out of a handler),
-`documents/engineering/integration_fixture_doctrine.md`.
+**Independent Validation**: installed `prodbox test integration cli` + `env` — **55/55**;
+`prodbox test unit` exit 0 with main Hspec **3255/3255**; `prodbox dev check`, `prodbox dev docs
+check`, and `prodbox dev lint docs` exit 0.
+**Docs updated**: `documents/engineering/chaos_hardening_doctrine.md` § 23 (an `ExitCode` crossing
+out of a step is the same conversion as an exception crossing out of a handler) and
+`documents/engineering/integration_fixture_doctrine.md` (production-projected positive
+observations and boundary-valid prerequisites).
 
 ### Objective
 
@@ -2772,10 +2777,11 @@ reason, so lowering into it can only destroy one.
 
 ### What Landed
 
-- **The runbook step names itself.** `runRunbookCommand` (`src/Prodbox/TestRunner.hs`, landed under
-  Sprint `5.30`) reports which command failed and with what code. That turned "the phase banner and
-  then nothing" into `Integration runbook step failed: prodbox cluster reconcile --with-edge
-  (exit 1)`.
+- **The runbook step names itself on the diagnostic stream.** `runRunbookCommand`
+  (`src/Prodbox/TestRunner.hs`, landed under Sprint `5.30`) reports to stderr which command failed
+  and with what code. That turned "the phase banner and then nothing" into `Integration runbook
+  step failed: prodbox cluster reconcile --with-edge (exit 1)` without mixing the diagnostic into
+  command stdout.
 - **The refusal leaves as itself.** `runAnchoredStepOrder`
   (`src/Prodbox/Lifecycle/AnchoredReconcile.hs`) ended in `refuse _ = ExitFailure 1` — the typed
   `AdmissionRefusal` discarded with a wildcard. `renderAdmissionRefusal` already existed and was
@@ -2784,6 +2790,12 @@ reason, so lowering into it can only destroy one.
   refusal's place and the silent version is **unrepresentable rather than merely absent**. Both
   callers — `runAnchoredReconcileSteps` in `src/Prodbox/CLI/Rke2.hs` and `runSlice` in
   `src/Prodbox/Lib/AwsSubstratePlatform.hs` — render it at the boundary where a reason belongs.
+  `test/unit/DependencyAdmissionSuite.hs` calls the executor itself and proves that an unavailable
+  admission returns the exact typed `AdmissionMissing` refusal without starting the mutation. The
+  installed integration executable then exercises the real RKE2 caller in an isolated helper
+  process and proves the rendered refusal is on stderr with empty stdout; a second isolated process
+  gives `runRunbookCommand` a silent exit-23 child and proves the command identity is likewise on
+  stderr, not stdout.
 
   Making it speak produced the real defect in one run:
 
@@ -2806,39 +2818,38 @@ reason, so lowering into it can only destroy one.
   validator compares against them, and the fixture's *observed* state is rendered from them. A fake
   that restates a production value is an encoder of it, and this one had already drifted — the same
   § 23 finding as the Tier-0 encoders, at the observed-state boundary instead of the config one.
+- **The final four cases close against their named behavior (Standard C correction, 2026-08-09).**
+  The gateway stability sampler never needed a daemon route: it reads fake `kubectl` Pods, events,
+  and metrics, and the fake exposed three gateway Pods while the capacity projection requires
+  exactly two. The fake Pod and metric observations now derive their cardinality from
+  `gatewayRuntimeExpectedReplicas`; the positive Pod limit also derives from the validated gateway
+  runtime-memory plan rather than restating `512Mi`. The RKE2 case did not assert an exact Docker
+  sequence; its stale substring expected the fallback image even though the transient `429` is
+  followed by a successful second push of the primary image, so it now proves exactly two primary
+  pushes and no fallback tag.
+  Config setup now checks the derived `.AdvertiseLayer2` Dhall union and structurally decodes the
+  generated file. The AWS-IAM teardown case was never an undecided empty-subzone test: its name and
+  assertions target an unavailable authenticated Credential Provisioner, so its unrelated AWS
+  subzone prerequisite is now a valid fixture value and execution reaches that intended refusal.
 
 ### Validation
 
-1. `prodbox test integration cli` + `env` — **4 of 55 failing, down from 20** at the start of this
-   work and 8 after Sprint `5.30`.
-2. `prodbox dev check` exit 0; `prodbox test unit` 3253/3253.
-3. `runs native resource-guardrails validation through fake Kubernetes resource JSON` — the case
+1. `./.build/prodbox test integration cli` + `env` — **55/55**, including the gateway stability,
+   RKE2 reconcile/delete, config-setup, and AWS-IAM teardown cases that were previously failing;
+   the RKE2 case also proves the typed refusal and generic runbook identity reach stderr while
+   stdout remains empty.
+2. `./.build/prodbox test unit` — exit 0; the main Hspec inventory is **3255/3255**, including the
+   direct typed-refusal executor regression.
+3. `./.build/prodbox dev check`, `./.build/prodbox dev docs check`, and
+   `./.build/prodbox dev lint docs` — exit 0; `git diff --check` reports no whitespace errors.
+4. `runs native resource-guardrails validation through fake Kubernetes resource JSON` — the case
    that drove the diagnosis — passes end to end, through the runbook, the deep readiness probe, and
    the derived quota/limit-range comparison.
 
 ### Remaining Work
 
-Four cases, no longer one defect — each is now a distinct, named question, which is the difference
-between this state and the one this sprint opened in. Stated individually rather than as a count:
-
-- **`runs gateway-pods through the bounded runtime-stability oracle`** — `NotStableYet
-  stable_samples=0 required_samples=3`. The stability oracle samples something the fake gateway
-  daemon does not serve. Same class as the `/v1/state` gap above; needs the sampled route
-  identified rather than guessed.
-- **`runs native rke2 reconcile and delete …`** — asserts an exact fake-Docker command sequence,
-  which changed when Sprint `5.30` made the upstream registry's `429` transient rather than
-  permanent. The push now succeeds on the second attempt, so the recorded sequence differs. The
-  assertion has to be re-derived from what the retry actually does; it must not be edited to match
-  whatever is observed.
-- **`runs native config setup through the built frontend with a fake AWS CLI`** — asserts the
-  generated `prodbox.dhall` text. The fixture is now rendered through the canonical generator, so
-  the expected text is the generator's output; the assertion still carries the hand-written form.
-- **`refuses native aws-iam credential teardown …`** — expects `aws_substrate.subzone_name must not
-  be empty`. That emptiness was itself one of the four drifts fixed on the way into this sprint, so
-  the fixture no longer produces the refusal the case is written around. **This one needs a
-  decision, not an edit**: either the case is about the refusal (and needs its own deliberately
-  empty fixture) or it is about the teardown path (and its assertion is stale). Recorded rather than
-  resolved by whichever change makes it green.
+None on Sprint `5.31`'s code-owned surface. Clean-room home and AWS deployment qualification remains
+pending in the global Standards O/P ledger and does not reopen this phase.
 
 ## Related Documents
 

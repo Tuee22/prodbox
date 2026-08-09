@@ -1187,6 +1187,13 @@ encoder, or the region's proofs end at the crossing.* Three corollaries, each fa
   n+1-th opaque wrapper to a repository whose n existing wrappers did not fire is answering the
   wrong question.
 
+**The reconcile-step boundary follows that rule literally.** `runAnchoredStepOrder` carries an
+`AdmissionRefusal` intact to its caller as `Either AdmissionRefusal (ExitCode, AdmissionSet)`; it
+must not lower the refusal to `ExitFailure` or discard it with a wildcard. The command-surface
+caller renders `renderAdmissionRefusal` to stderr first and only then selects the process
+`ExitCode`. Rendering after exit-code selection is too late: the typed reason has already been
+destroyed, and an operator sees an otherwise unexplained status 1.
+
 **This is not new doctrine so much as § 21's own framing applied where it was not.** § 21 already
 says the work "moves the purity *boundary*, not the purity *quantity*" — that the effectful layer
 must be constrained to produce only values the pure layer's types demand. The failure above is that

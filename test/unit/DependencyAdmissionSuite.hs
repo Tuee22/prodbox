@@ -7,6 +7,7 @@
 -- invoked without.
 module DependencyAdmissionSuite (dependencyAdmissionSuite) where
 
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Maybe (isJust, isNothing)
 import Data.Text qualified as Text
@@ -35,8 +36,13 @@ import Prodbox.ControlPlane.Observation
   , observationFromRef
   )
 import Prodbox.ControlPlane.SCapability (SCapability, withKnownCapability)
+import Prodbox.Lifecycle.AnchoredReconcile
+  ( ReconcileStepAnchor (ComponentMutation)
+  , runAnchoredStepOrder
+  )
 import Prodbox.Lifecycle.DependencyAdmission
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
 
 dependencyAdmissionSuite :: SuiteBuilder ()
@@ -70,6 +76,28 @@ dependencyAdmissionSuite =
             other -> expectationFailure ("unexpected refusal: " <> show other)
           Text.unpack (renderAdmissionRefusal refusal)
             `shouldSatisfy` isInfixOf "never observed ready in this run"
+
+    it "returns the typed refusal instead of lowering it to a bare exit code" $ do
+      mutationStarted <- newIORef False
+      outcome <-
+        runAnchoredStepOrder
+          dag
+          (pure now)
+          (const (ComponentMutation mutatedComponent))
+          (\_ _ -> writeIORef mutationStarted True >> pure ExitSuccess)
+          (const (pure ExitSuccess))
+          (const (pure (Left (ExitFailure 99))))
+          noAdmissions
+          [()]
+      readIORef mutationStarted `shouldReturn` False
+      case outcome of
+        Left (AdmissionMissing component dependency) -> do
+          component `shouldBe` mutatedComponent
+          dependency `shouldBe` firstDependency
+        Left other -> expectationFailure ("unexpected refusal: " <> show other)
+        Right result ->
+          expectationFailure
+            ("the refusal was lowered to an executable result: " <> show (fst result))
 
     it "refuses an admission older than the bound its edge derives" $ do
       let bound = requiredBound

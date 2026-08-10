@@ -51,6 +51,7 @@ import Prodbox.ControlPlane.Codec
   , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent
@@ -349,18 +350,18 @@ rebuildIntent payload = case applyIntentKind payload of
 -- idempotent already-in-flight, clean close, recover, resolve) is @200@; a refused
 -- command is @409@; a failed durable commit is @503@; a malformed or invalid body is
 -- @400@.
-providerWorkApplyHttpStatus :: ProviderWorkEndpointResult -> Int
+providerWorkApplyHttpStatus :: ProviderWorkEndpointResult -> ReplyStatus
 providerWorkApplyHttpStatus result = case result of
-  ProviderWorkBadRequest _ -> 400
-  ProviderWorkFieldRejected _ -> 400
-  ProviderWorkWriteFailed _ -> 503
+  ProviderWorkBadRequest _ -> ReplyBadRequest
+  ProviderWorkFieldRejected _ -> ReplyBadRequest
+  ProviderWorkWriteFailed _ -> ReplyServiceUnavailable
   ProviderWorkDecided decision -> case decision of
-    ProviderWorkAdmitted _ -> 200
-    ProviderWorkAlreadyInFlight _ -> 200
-    ProviderWorkClosed _ -> 200
-    ProviderWorkRecovering _ -> 200
-    ProviderWorkResolved _ -> 200
-    ProviderWorkRefused _ -> 409
+    ProviderWorkAdmitted _ -> ReplyOk
+    ProviderWorkAlreadyInFlight _ -> ReplyOk
+    ProviderWorkClosed _ -> ReplyOk
+    ProviderWorkRecovering _ -> ReplyOk
+    ProviderWorkResolved _ -> ReplyOk
+    ProviderWorkRefused _ -> ReplyConflict
 
 -- | Stable single-line summary for an @apply@ result.
 providerWorkApplySummary :: ProviderWorkEndpointResult -> Text
@@ -391,8 +392,8 @@ refusalToken refusal = case refusal of
 
 -- | Total HTTP status for an @observe@ read. A read never fails at this layer, so
 -- the observed state is always @200@.
-providerWorkObserveStatus :: ProviderWorkState -> Int
-providerWorkObserveStatus _ = 200
+providerWorkObserveStatus :: ProviderWorkState -> ReplyStatus
+providerWorkObserveStatus _ = ReplyOk
 
 -- | Stable single-line summary naming the observed session phase. Exhaustive over
 -- 'ProviderWorkState'.

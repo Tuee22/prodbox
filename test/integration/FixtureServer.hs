@@ -92,6 +92,7 @@ import Prodbox.Http.ResponseObligation
   ( ResponseObligation
   , ResponseRefusal (ResponseCancelled, ResponseHandlerFailed)
   , mkResponseObligation
+  , renderResponseRefusalReason
   , responseWriteBudgetMicrosDefault
   , withResponseObligation
   )
@@ -130,6 +131,7 @@ import Prodbox.Test.CleanupRun
   , recordPrimaryOutcome
   )
 import System.Environment (lookupEnv)
+import System.IO qualified as IO
 
 data FixtureAuthenticatedFrameWire = FixtureAuthenticatedFrameWire
   { fixtureFrameVersion :: !Word16
@@ -250,7 +252,20 @@ fixtureResponseObligation =
   mkResponseObligation
     renderFixtureResponse
     fixtureRefusalReply
+    observeFixtureRefusal
     responseWriteBudgetMicrosDefault
+
+-- | Sprint 4.65: the fixture observes its refusals too.
+--
+-- It already puts the reason in the reply body, so this is not where the
+-- fixture's diagnosis comes from. It exists because a fixture that opted out
+-- would be the counterexample to the required argument — the moment one server
+-- passes a no-op is the moment the field stops meaning "every refusal is
+-- observed". The destination differs from production's on purpose: a test's
+-- stderr is read by whoever is running the test.
+observeFixtureRefusal :: ResponseRefusal -> IO ()
+observeFixtureRefusal refusal =
+  IO.hPutStrLn IO.stderr ("fixture-server refusal: " ++ renderResponseRefusalReason refusal)
 
 fixtureRefusalReply :: ResponseRefusal -> (String, ByteString.ByteString)
 fixtureRefusalReply refusal = case refusal of

@@ -41,8 +41,10 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityObserveRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
+  , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseMaximumBytes
   )
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
@@ -144,18 +146,17 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
               tlsAuthorityResponseMaximumBytes
               (LazyByteString.fromStrict body)
           )
-      if status == expectedStatus response
+      -- Sprint 4.67: the expected status comes from the server's own
+      -- projection. This `where` clause used to hold a second, verbatim copy of
+      -- `tlsAuthorityResponseHttpStatus` — a restatement that a change to the
+      -- server would have made wrong rather than updated
+      -- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+      -- The peer's status stays an `Int` because it is a byte off the wire and
+      -- no type here bounds what a peer may send (§ 22); the comparison
+      -- projects the expected value down to meet it.
+      if status == replyStatusCode (tlsAuthorityResponseHttpStatus response)
         then Right response
         else Left (TlsRetentionAuthorityClientHttpStatus status)
-
-  expectedStatus response = case response of
-    TlsAuthorityObserved _ -> 200
-    TlsAuthorityPromotionApplied _ -> 200
-    TlsAuthorityPromotionNoop _ -> 200
-    TlsAuthorityPromotionRefused _ -> 409
-    TlsAuthorityConcurrentWrite -> 409
-    TlsAuthorityUnavailable -> 503
-    TlsAuthorityRequestRefused -> 400
 
 remoteError :: TlsAuthorityResponse -> TlsRetentionAuthorityClientError
 remoteError response = case response of

@@ -29,6 +29,7 @@
 module Prodbox.Lib.AwsSubstratePlatform
   ( AwsPlatformPayload (..)
   , AwsPlatformStepId (..)
+  , runReconcileSlices
   , applyEksContainerdMirrorDaemonSet
   , applyEksImageMirrorJob
   , awsComponentReadinessTarget
@@ -161,15 +162,16 @@ import Prodbox.Lifecycle.AnchoredReconcile
   , anchoredOrderRespectsGraph
   , compileAnchoredOrder
   , runAnchoredStepOrder
+  , runFirstAnchoredStepOrder
   )
 import Prodbox.Lifecycle.CapabilityReadinessBarrier
   ( newReadinessObservationClient
   , observeReadinessThroughCapability
   )
 import Prodbox.Lifecycle.DependencyAdmission
-  ( DependencyAdmission
+  ( AdmissionSet
+  , DependencyAdmission
   , mutationAdmittedComponent
-  , noAdmissions
   , renderAdmissionRefusal
   )
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
@@ -1125,13 +1127,45 @@ runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot pay
       -- Sprint 5.31: a refusal arrives as itself and is rendered here. Lowering
       -- it inside the runner discarded the reason on a path that printed
       -- nothing, so a refused AWS platform order exited 1 in silence.
-      runSlice endpoint carried steps = do
+      --
+      -- Sprint 4.69: this answers the same `Either ExitCode AdmissionSet` the
+      -- opening slice answers. It used to answer a pair whose second component
+      -- the final call site dropped with `fst <$>` — correct only because that
+      -- call was last, and silently wrong the moment a third slice appeared.
+      runSlice endpoint steps carried = do
         outcome <- runOrder endpoint carried steps
         case outcome of
-          Left refusal -> do
-            refused <- failWith (Text.unpack (renderAdmissionRefusal refusal))
-            pure (refused, carried)
-          Right result -> pure result
+          Left refusal -> Left <$> failWith (Text.unpack (renderAdmissionRefusal refusal))
+          Right (ExitFailure code, _) -> pure (Left (ExitFailure code))
+          Right (ExitSuccess, admissions) -> pure (Right admissions)
+      -- Sprint 4.64: the first slice begins the run, so it takes the executor's
+      -- own empty set rather than naming one. On any failure there is no
+      -- admission set worth carrying, which is why every slice answers
+      -- `Either`.
+      runFirstSlice endpoint steps = do
+        outcome <-
+          runFirstAnchoredStepOrder
+            (awsPlatformDag payload)
+            awsReconcileClockMicros
+            awsStepAnchor
+            (mutatingStepAction endpoint)
+            (runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint)
+            (requireAwsComponentReadiness repoRoot (awsPlatformDag payload) endpoint)
+            steps
+        case outcome of
+          Left refusal -> Left <$> failWith (Text.unpack (renderAdmissionRefusal refusal))
+          Right (ExitFailure code, _) -> pure (Left (ExitFailure code))
+          Right (ExitSuccess, admissions) -> pure (Right admissions)
+      mutatingStepAction endpoint admission step =
+        mutationAdmittedComponent admission `seq`
+          runAwsSubstratePlatformStep
+            repoRoot
+            settings
+            prodboxId
+            labelValue
+            snapshot
+            endpoint
+            step
       runOrder endpoint =
         runAnchoredStepOrder
           (awsPlatformDag payload)
@@ -1156,28 +1190,64 @@ runAwsSubstratePlatformOrder repoRoot settings prodboxId labelValue snapshot pay
   -- are two calls only because the gateway port-forward has to be established
   -- between them; a readiness observation from before the forward is still
   -- evidence after it, until its age bound expires it.
-  (preGatewayExit, preGatewayAdmissions) <- runSlice Nothing noAdmissions beforeGatewayEndpoint
-  case preGatewayExit of
-    ExitFailure _ -> pure preGatewayExit
-    ExitSuccess ->
-      case fromGatewayEndpoint of
-        [] -> failWith "AWS-substrate platform graph has no post-Vault Gateway convergence step."
-        _ -> do
-          portForwardResult <-
-            withGatewayServicePortForward
-              GatewayServicePortForward
-                { gatewayPortForwardNamespace = gatewayNamespace
-                , gatewayPortForwardServiceName = gatewayRestServiceName
-                , gatewayPortForwardRemotePort = gatewayRestServicePort
-                , gatewayPortForwardEnvironment = Nothing
-                , gatewayPortForwardWorkingDirectory = Just repoRoot
-                }
-              ( \endpoint ->
-                  fst <$> runSlice (Just endpoint) preGatewayAdmissions fromGatewayEndpoint
-              )
-          case portForwardResult of
-            Left err -> failWith (renderGatewayPortForwardError err)
-            Right exitCode -> pure exitCode
+  case fromGatewayEndpoint of
+    [] -> failWith "AWS-substrate platform graph has no post-Vault Gateway convergence step."
+    _ ->
+      runReconcileSlices
+        (runFirstSlice Nothing beforeGatewayEndpoint)
+        [ \carried -> do
+            portForwarded <-
+              withGatewayServicePortForward
+                GatewayServicePortForward
+                  { gatewayPortForwardNamespace = gatewayNamespace
+                  , gatewayPortForwardServiceName = gatewayRestServiceName
+                  , gatewayPortForwardRemotePort = gatewayRestServicePort
+                  , gatewayPortForwardEnvironment = Nothing
+                  , gatewayPortForwardWorkingDirectory = Just repoRoot
+                  }
+                (\endpoint -> runSlice (Just endpoint) fromGatewayEndpoint carried)
+            case portForwarded of
+              Left err -> Left <$> failWith (renderGatewayPortForwardError err)
+              Right sliceOutcome -> pure sliceOutcome
+        ]
+
+-- | Run a reconcile as an opening slice followed by continuing slices, carrying
+-- the admission set between them.
+--
+-- Sprint 4.69. The two slices used to be hand-written calls, and the last one
+-- dropped the 'AdmissionSet' it returned with @fst \<$\>@ — correct only because
+-- it happened to be last. Sprint 4.64 made a slice that starts from /no/
+-- admissions unnameable; it did nothing about a slice that starts from a
+-- /stale/ set because an intervening slice's admissions were thrown away, and
+-- adding a third slice would have reintroduced Sprint 4.61's defect with no
+-- compile error and no lint.
+--
+-- Threading is now the fold's job. A continuing slice cannot be written without
+-- taking the carrier, because it /is/ a function of the carrier, and the run's
+-- final admissions are discarded in exactly one place — here, where the run
+-- ends and there is nothing left to hand them to.
+--
+-- The shape is deliberately asymmetric. Only the opening slice may start from
+-- the executor's own empty set, so it is a separate argument rather than the
+-- head of the list: a list of uniform slices would need a starting
+-- 'AdmissionSet' from somewhere, and the only honest source of an empty one is
+-- package-internal by construction.
+runReconcileSlices
+  :: IO (Either ExitCode AdmissionSet)
+  -> [AdmissionSet -> IO (Either ExitCode AdmissionSet)]
+  -> IO ExitCode
+runReconcileSlices opening continuing = do
+  opened <- opening
+  case opened of
+    Left exitCode -> pure exitCode
+    Right admissions -> continue admissions continuing
+ where
+  continue _ [] = pure ExitSuccess
+  continue carried (slice : remaining) = do
+    outcome <- slice carried
+    case outcome of
+      Left exitCode -> pure exitCode
+      Right admissions -> continue admissions remaining
 
 runAwsSubstratePlatformStep
   :: FilePath

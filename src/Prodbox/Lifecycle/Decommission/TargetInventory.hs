@@ -40,6 +40,7 @@ import Prodbox.ControlPlane.TrustedTargetSink
   , observeTrustedTargetSink
   , trustedTargetSinkCoordinate
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( targetSecretSinkIdentity
   )
@@ -148,13 +149,13 @@ serveTargetDecommissionInventoryRequest maximumBytes boundary body =
     Right ObserveTargetDecommissionInventory ->
       observeTargetDecommissionInventory boundary
 
-targetDecommissionInventoryHttpStatus :: TargetDecommissionInventoryResult -> Int
+targetDecommissionInventoryHttpStatus :: TargetDecommissionInventoryResult -> ReplyStatus
 targetDecommissionInventoryHttpStatus result = case result of
-  TargetDecommissionInventoryObserved _ -> 200
+  TargetDecommissionInventoryObserved _ -> ReplyOk
   TargetDecommissionInventoryRefused err -> case err of
-    TargetDecommissionInventoryBadRequest _ -> 400
-    TargetDecommissionInventoryUnavailable _ -> 503
-    TargetDecommissionInventoryGenerationInvalid -> 500
+    TargetDecommissionInventoryBadRequest _ -> ReplyBadRequest
+    TargetDecommissionInventoryUnavailable _ -> ReplyServiceUnavailable
+    TargetDecommissionInventoryGenerationInvalid -> ReplyInternalError
 
 targetDecommissionInventoryResponseBody
   :: TargetDecommissionInventoryResult

@@ -89,6 +89,7 @@ import Prodbox.ControlPlane.TlsRetentionEndpoint
   , mkTlsSealedEnvelope
   , tlsSealedEnvelopeDigest
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
@@ -161,16 +162,17 @@ controlPlaneRoleInterpretersSuite =
     describe "Lifecycle Authority interpreter (migration + operations through the seam)" $ do
       it "serves liveness and the injected readiness probe" $ do
         ready <- freshLifecycleInterpreter True
-        serveLA ready "GET /healthz HTTP/1.1\r\n\r\n" `shouldReturn` (200, "live\n")
-        serveLA ready "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (200, "ready\n")
+        serveLA ready "GET /healthz HTTP/1.1\r\n\r\n" `shouldReturn` (ReplyOk, "live\n")
+        serveLA ready "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (ReplyOk, "ready\n")
         notReady <- freshLifecycleInterpreter False
-        serveLA notReady "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (503, "not-ready\n")
+        serveLA notReady "GET /readyz HTTP/1.1\r\n\r\n"
+          `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
       it "dispatches migration accept and refuse to the migration handler" $ do
         interpreter <- freshLifecycleInterpreter True
         serveLA interpreter (post "/v1/migration/apply" (migrationBody (VerifyShadow digest)))
-          `shouldReturn` (200, "migration-accepted")
+          `shouldReturn` (ReplyOk, "migration-accepted")
         serveLA interpreter (post "/v1/migration/apply" (migrationBody RequestLegacyRollback))
-          `shouldReturn` (409, "migration-refused:legacy-rollback-forbidden")
+          `shouldReturn` (ReplyConflict, "migration-refused:legacy-rollback-forbidden")
       it "dispatches a closed projection import to the verified import handler" $ do
         interpreter <- freshLifecycleInterpreter True
         serveLA
@@ -181,17 +183,17 @@ controlPlaneRoleInterpretersSuite =
                   (encodeProjectionImportRequest (ImportLegacyProjection CheckpointProjection))
               )
           )
-          `shouldReturn` (200, "projection-import-accepted")
+          `shouldReturn` (ReplyOk, "projection-import-accepted")
       it "does not compose the legacy caller-selected operation endpoints" $ do
         interpreter <- freshLifecycleInterpreter True
         serveLA interpreter (post "/v1/operations/submit" "caller-selected-body")
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         serveLA interpreter (get "/v1/operations/observe" "caller-selected-body")
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
       it "refuses a route owned by a different role with 404 route-not-owned" $ do
         interpreter <- freshLifecycleInterpreter True
         serveLA interpreter (post "/v1/tls-retention/store" "body")
-          `shouldReturn` (404, "route-not-owned\n")
+          `shouldReturn` (ReplyNotFound, "route-not-owned\n")
     describe "Lifecycle Authority production aggregate interpreter" $ do
       it "keeps operation routes unavailable on the raw context-free interpreter" $ do
         (interpreter, revisionRef) <- freshAggregateLifecycleInterpreter True
@@ -201,28 +203,28 @@ controlPlaneRoleInterpretersSuite =
               "/v1/operations/submit"
               (encoded (AuthorityOperationSubmitPayload "request-a" "digest-a"))
           )
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         serveLA
           interpreter
           ( post
               "/v1/authority/control"
               (encoded AuthorityControlBeginMigration)
           )
-          `shouldReturn` (200, "authority-migration-started")
+          `shouldReturn` (ReplyOk, "authority-migration-started")
         serveLA
           interpreter
           ( post
               "/v1/operations/submit"
               (encoded (AuthorityOperationSubmitPayload "request-a" "digest-a"))
           )
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         serveLA
           interpreter
           ( post
               "/v1/operations/submit"
               (encoded (AuthorityOperationSubmitPayload "request-b" "digest-b"))
           )
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         readIORef revisionRef `shouldReturn` 1
       it "keeps a missing trusted projection registration fail closed" $ do
         (interpreter, revisionRef) <- freshAggregateLifecycleInterpreter True
@@ -234,7 +236,7 @@ controlPlaneRoleInterpretersSuite =
                   (encodeProjectionImportRequest (ImportLegacyProjection CheckpointProjection))
               )
           )
-          `shouldReturn` (503, "projection-import-authority-read-failed")
+          `shouldReturn` (ReplyServiceUnavailable, "projection-import-authority-read-failed")
         readIORef revisionRef `shouldReturn` 0
       it "owns the closed retained SES lease route and fails closed without registration" $ do
         (interpreter, revisionRef) <- freshAggregateLifecycleInterpreter True
@@ -245,7 +247,7 @@ controlPlaneRoleInterpretersSuite =
                 "/v1/authority/retained-ses-lease"
                 (encoded ObserveRetainedSesLease)
             )
-        status `shouldBe` 503
+        status `shouldBe` ReplyServiceUnavailable
         decodeStrictResponse body
           `shouldBe` Right (RetainedSesLeaseUnavailable "fixture lease registration absent")
         readIORef revisionRef `shouldReturn` 0
@@ -257,7 +259,7 @@ controlPlaneRoleInterpretersSuite =
               "/v1/authority/pulumi-checkpoint"
               (encoded (ObservePulumiCheckpoint "aws-test"))
           )
-          `shouldReturn` (503, "interpreter-unavailable\n")
+          `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         readIORef revisionRef `shouldReturn` 0
     describe "TLS Retention interpreter (store + restore through the seam)" $ do
       it "dispatches a well-formed envelope store and preserves the binary receipt" $ do
@@ -266,7 +268,7 @@ controlPlaneRoleInterpretersSuite =
           serveTls
             interpreter
             (post "/v1/tls-retention/store" (encoded (TlsStorePayload ref1 tlsEnvelope)))
-        status `shouldBe` 200
+        status `shouldBe` ReplyOk
         (decodeStrictResponse body :: Either ControlPlaneRequestCodecError TlsRetentionReceipt)
           `shouldSatisfy` isRight
       it "dispatches restore and preserves the exact binary envelope observation" $ do
@@ -275,17 +277,18 @@ controlPlaneRoleInterpretersSuite =
           serveTls
             interpreter
             (post "/v1/tls-retention/restore" (encoded (TlsRestorePayload ref1)))
-        status `shouldBe` 200
+        status `shouldBe` ReplyOk
         case decodeStrictResponse body of
           Right (TlsEnvelopePresent envelope _) -> envelope `shouldBe` tlsEnvelope
           other -> expectationFailure ("expected TLS envelope observation, got " <> show other)
       it "maps a malformed store body to a 400 bad request through the seam" $ do
         interpreter <- freshTlsInterpreter Nothing True
         serveTls interpreter (post "/v1/tls-retention/store" "not-a-cbor-envelope")
-          `shouldReturn` (400, "tls-store:bad-request:invalid")
+          `shouldReturn` (ReplyBadRequest, "tls-store:bad-request:invalid")
       it "serves the injected readiness probe" $ do
         notReady <- freshTlsInterpreter Nothing False
-        serveTls notReady "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (503, "not-ready\n")
+        serveTls notReady "GET /readyz HTTP/1.1\r\n\r\n"
+          `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
     describe "Authority Backup interpreter (copy + observe through the seam)" $ do
       it "dispatches opaque copy and observe with canonical binary bodies" $ do
         interpreter <- freshBackupInterpreter True
@@ -296,7 +299,7 @@ controlPlaneRoleInterpretersSuite =
                 "/v1/authority-backup/copy"
                 (encoded (AuthorityBackupCopyRequest AuthorityAggregateEnvelope backupCiphertext))
             )
-        copyStatus `shouldBe` 200
+        copyStatus `shouldBe` ReplyOk
         (decodeStrictResponse copyBody :: Either ControlPlaneRequestCodecError AuthorityBackupReceipt)
           `shouldSatisfy` isRight
         (observeStatus, observeBody) <-
@@ -311,7 +314,7 @@ controlPlaneRoleInterpretersSuite =
                     )
                 )
             )
-        observeStatus `shouldBe` 200
+        observeStatus `shouldBe` ReplyOk
         case decodeStrictResponse observeBody of
           Right (AuthorityBackupBlobPresent ciphertext _) -> ciphertext `shouldBe` backupCiphertext
           other -> expectationFailure ("expected Backup blob observation, got " <> show other)
@@ -325,43 +328,45 @@ controlPlaneRoleInterpretersSuite =
                 "/v1/authority-backup/observe"
                 (encoded (AuthorityBackupObserveRequest AuthorityAggregateEnvelope missingDigest))
             )
-        status `shouldBe` 404
+        status `shouldBe` ReplyNotFound
         decodeStrictResponse body `shouldBe` Right AuthorityBackupBlobMissing
       it "maps a malformed copy body to a 400 bad request through the seam" $ do
         interpreter <- freshBackupInterpreter True
         serveBackup interpreter (post "/v1/authority-backup/copy" "not-a-cbor-envelope")
-          `shouldReturn` (400, "backup-copy:bad-request:invalid")
+          `shouldReturn` (ReplyBadRequest, "backup-copy:bad-request:invalid")
       it "refuses a route owned by a different role with 404 route-not-owned" $ do
         interpreter <- freshBackupInterpreter True
         serveBackup interpreter (post "/v1/tls-retention/store" "body")
-          `shouldReturn` (404, "route-not-owned\n")
+          `shouldReturn` (ReplyNotFound, "route-not-owned\n")
       it "serves the injected readiness probe" $ do
         notReady <- freshBackupInterpreter False
-        serveBackup notReady "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (503, "not-ready\n")
+        serveBackup notReady "GET /readyz HTTP/1.1\r\n\r\n"
+          `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
     describe "Provider Worker interpreter (apply + observe through the seam)" $ do
       it "dispatches a well-formed stack reconcile to the apply handler and admits it" $ do
         interpreter <- freshProviderInterpreter ProviderIdle True
         serveProvider interpreter (post "/v1/provider-work/apply" (encoded submitReconcile))
-          `shouldReturn` (200, "provider-work-admitted")
+          `shouldReturn` (ReplyOk, "provider-work-admitted")
       it "observes the idle session through the seam" $ do
         interpreter <- freshProviderInterpreter ProviderIdle True
         serveProvider interpreter (get "/v1/provider-work/observe" "")
-          `shouldReturn` (200, "provider-work-observe:idle")
+          `shouldReturn` (ReplyOk, "provider-work-observe:idle")
       it "refuses an unregistered resource with a 409 through the seam" $ do
         interpreter <- freshProviderInterpreter ProviderIdle True
         serveProvider interpreter (post "/v1/provider-work/apply" (encoded submitStaging))
-          `shouldReturn` (409, "provider-work-refused:unregistered-resource")
+          `shouldReturn` (ReplyConflict, "provider-work-refused:unregistered-resource")
       it "maps a malformed apply body to a 400 bad request through the seam" $ do
         interpreter <- freshProviderInterpreter ProviderIdle True
         serveProvider interpreter (post "/v1/provider-work/apply" "not-a-cbor-envelope")
-          `shouldReturn` (400, "provider-work-bad-request:invalid")
+          `shouldReturn` (ReplyBadRequest, "provider-work-bad-request:invalid")
       it "refuses a route owned by a different role with 404 route-not-owned" $ do
         interpreter <- freshProviderInterpreter ProviderIdle True
         serveProvider interpreter (post "/v1/tls-retention/store" "body")
-          `shouldReturn` (404, "route-not-owned\n")
+          `shouldReturn` (ReplyNotFound, "route-not-owned\n")
       it "serves the injected readiness probe" $ do
         notReady <- freshProviderInterpreter ProviderIdle False
-        serveProvider notReady "GET /readyz HTTP/1.1\r\n\r\n" `shouldReturn` (503, "not-ready\n")
+        serveProvider notReady "GET /readyz HTTP/1.1\r\n\r\n"
+          `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
  where
   digest = fromJust (mkMigrationDigest "interpreter-v1")
   src = SourceSecretRef "uid-1" "rv-1"

@@ -68,6 +68,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsTargetVerifyHttpStatus
   , tlsTargetVerifyResponseBody
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 
 data TargetOneShotOperationBoundary m = TargetOneShotOperationBoundary
   { runTargetOneShotOperation
@@ -241,50 +242,50 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
   decodeText =
     first (const "request-codec-rejected") . decode
 
-tlsPrepareResponse :: TlsTargetPrepareResult -> (Int, ByteString)
+tlsPrepareResponse :: TlsTargetPrepareResult -> (ReplyStatus, ByteString)
 tlsPrepareResponse result =
   (tlsTargetPrepareHttpStatus result, tlsTargetPrepareResponseBody result)
 
-tlsRetainResponse :: TlsTargetRetainResult -> (Int, ByteString)
+tlsRetainResponse :: TlsTargetRetainResult -> (ReplyStatus, ByteString)
 tlsRetainResponse result =
   (tlsTargetRetainHttpStatus result, tlsTargetRetainResponseBody result)
 
-tlsWrapResponse :: TlsHomeWrapResult -> (Int, ByteString)
+tlsWrapResponse :: TlsHomeWrapResult -> (ReplyStatus, ByteString)
 tlsWrapResponse result =
   (tlsHomeWrapHttpStatus result, tlsHomeWrapResponseBody result)
 
-tlsRewrapResponse :: TlsHomeRewrapResult -> (Int, ByteString)
+tlsRewrapResponse :: TlsHomeRewrapResult -> (ReplyStatus, ByteString)
 tlsRewrapResponse result =
   (tlsHomeRewrapHttpStatus result, tlsHomeRewrapResponseBody result)
 
-tlsRestoreResponse :: TlsTargetRestoreResult -> (Int, ByteString)
+tlsRestoreResponse :: TlsTargetRestoreResult -> (ReplyStatus, ByteString)
 tlsRestoreResponse result =
   (tlsTargetRestoreHttpStatus result, tlsTargetRestoreResponseBody result)
 
-tlsVerifyResponse :: TlsTargetVerifyResult -> (Int, ByteString)
+tlsVerifyResponse :: TlsTargetVerifyResult -> (ReplyStatus, ByteString)
 tlsVerifyResponse result =
   (tlsTargetVerifyHttpStatus result, tlsTargetVerifyResponseBody result)
 
-operationUnavailable :: ByteString -> (Int, ByteString)
-operationUnavailable label = (503, label <> ":one-shot-operation-unavailable")
+operationUnavailable :: ByteString -> (ReplyStatus, ByteString)
+operationUnavailable label = (ReplyServiceUnavailable, label <> ":one-shot-operation-unavailable")
 
-custodyCommitStatus :: ChildCustodyCommitResponse -> Int
+custodyCommitStatus :: ChildCustodyCommitResponse -> ReplyStatus
 custodyCommitStatus response = case response of
-  ChildCustodyCommitted {} -> 200
-  ChildCustodyCommitRefused {} -> 409
-  ChildCustodyCommitUnavailable {} -> 503
+  ChildCustodyCommitted {} -> ReplyOk
+  ChildCustodyCommitRefused {} -> ReplyConflict
+  ChildCustodyCommitUnavailable {} -> ReplyServiceUnavailable
 
-custodyPrepareStatus :: ChildRecoveryPrepareResponse -> Int
+custodyPrepareStatus :: ChildRecoveryPrepareResponse -> ReplyStatus
 custodyPrepareStatus response = case response of
-  ChildRecoveryPrepared {} -> 200
-  ChildRecoveryPrepareRefused {} -> 409
-  ChildRecoveryPrepareUnavailable {} -> 503
+  ChildRecoveryPrepared {} -> ReplyOk
+  ChildRecoveryPrepareRefused {} -> ReplyConflict
+  ChildRecoveryPrepareUnavailable {} -> ReplyServiceUnavailable
 
-custodyObserveStatus :: ChildRecoveryObserveResponse -> Int
+custodyObserveStatus :: ChildRecoveryObserveResponse -> ReplyStatus
 custodyObserveStatus response = case response of
-  ChildRecoveryConsumptionObserved {} -> 200
-  ChildRecoveryObserveRefused {} -> 409
-  ChildRecoveryObserveUnavailable {} -> 503
+  ChildRecoveryConsumptionObserved {} -> ReplyOk
+  ChildRecoveryObserveRefused {} -> ReplyConflict
+  ChildRecoveryObserveUnavailable {} -> ReplyServiceUnavailable
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

@@ -39,6 +39,7 @@ import Prodbox.ControlPlane.RetainedMaterialDeliveryCoordinator qualified as Coo
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleRetainedMaterialDelivery)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.RetainedMaterial
   ( RetainedDeliveryReceipt
   , RetainedMaterialSchema (..)
@@ -266,10 +267,10 @@ appliedResponse receipt =
         retainedMaterialRefText (retainedDeliveryReceiptCommitmentRef receipt)
     }
 
-responseStatus :: RetainedMaterialDeliveryWireResponse -> Int
+responseStatus :: RetainedMaterialDeliveryWireResponse -> ReplyStatus
 responseStatus response = case response of
-  RetainedMaterialDeliveryApplied {} -> 200
-  RetainedMaterialDeliveryRefused _ -> 409
+  RetainedMaterialDeliveryApplied {} -> ReplyOk
+  RetainedMaterialDeliveryRefused _ -> ReplyConflict
 
 responseBody :: RetainedMaterialDeliveryWireResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

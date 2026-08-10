@@ -572,10 +572,22 @@ the newer GHC. The specific `allow-newer` set is owned by
 Decoding produces a well-typed record. It does not produce a validated one, and the distinction is
 load-bearing enough to state plainly rather than leave to the reader.
 
-`decodeProjectConfigDhall` is `Dhall.inputFile Dhall.auto` and nothing more: it returns the raw
-Tier-0 record, and the callers that stamp the basics floor or feed the daemon consume that record
+`decodeProjectConfigDhall` is `Dhall.inputFile Dhall.auto` plus exactly one refusal: it returns the
+raw Tier-0 record, and the callers that stamp the basics floor or feed the daemon consume that record
 directly. The validating path is separate — `loadConfigFileAtPath` decodes the `parameters`
 projection and `validateConfig` is the only builder of `ValidatedSettings`.
+
+The one refusal is the secret-free guard (Sprint `1.82`). Tier 0 is non-secret by contract (§ 10),
+and `tier0CarriesNoSecretValues` was exported and documented as the guard enforcing that — with zero
+production call sites, so it enforced nothing. It is now the last step of this decode, and the
+refusal names the dotted fields carrying a literal value without quoting the values themselves.
+
+State its scope rather than its name, because the two differ. The operational `aws.*` arm was already
+refused by `validateAwsCredentialsRef`, but only on the *validating* path — so the in-cluster daemon
+binary context (`loadDaemonBinaryContext`) and the § 4 drift gate both reached a full Tier-0 record
+with no such check, and `acme.eab_*` had no local-tier check on any path at all. Its enumerator is a
+**positional** pattern over `ProdboxParameters` for the same reason `validateLocalConfig` is, so a
+new section carrying a `SecretRef` is a compile error rather than a silent omission.
 
 Two honest limits on that gate:
 

@@ -75,6 +75,7 @@ import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleProviderDispatch)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityProviderSettlementDecision (..)
   , AuthorityProviderSubmissionDecision (..)
@@ -153,7 +154,7 @@ authorityProviderDispatchAuthenticatedHandler maximumBytes boundary fallback =
       | callerAllowed (verifiedCallerSlotPrincipal caller) ->
           Just <$> serve caller body
       | otherwise ->
-          pure (Just (403, responseBody (ProviderDispatchRefused "caller-refused")))
+          pure (Just (ReplyForbidden, responseBody (ProviderDispatchRefused "caller-refused")))
     _ -> authenticatedHandlerHandle fallback caller route body
 
   callerAllowed principal = case principal of
@@ -165,7 +166,7 @@ authorityProviderDispatchAuthenticatedHandler maximumBytes boundary fallback =
     case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
       Left err ->
         pure
-          ( 400
+          ( ReplyBadRequest
           , responseBody (ProviderDispatchRefused (Text.pack (show err)))
           )
       Right payload -> do
@@ -229,12 +230,12 @@ runProviderDispatch boundary caller payload =
                             Right (AuthorityProviderSettlementRefused detail) ->
                               ProviderDispatchRefused detail
 
-providerResponseStatus :: ProviderDispatchResponse -> Int
+providerResponseStatus :: ProviderDispatchResponse -> ReplyStatus
 providerResponseStatus response = case response of
-  ProviderDispatchCompleted _ -> 200
-  ProviderDispatchAlreadyCompleted _ -> 200
-  ProviderDispatchRefused _ -> 409
-  ProviderDispatchUnavailable _ -> 503
+  ProviderDispatchCompleted _ -> ReplyOk
+  ProviderDispatchAlreadyCompleted _ -> ReplyOk
+  ProviderDispatchRefused _ -> ReplyConflict
+  ProviderDispatchUnavailable _ -> ReplyServiceUnavailable
 
 submissionOperation :: AuthorityProviderSubmissionDecision -> Maybe OperationId
 submissionOperation decision = case decision of

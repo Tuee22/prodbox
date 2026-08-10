@@ -56,6 +56,7 @@ import Prodbox.ControlPlane.TrustedTargetSink
   , vaultTrustedTargetSink
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( TargetClusterSecretSink
   , targetSecretSinkIdentity
@@ -76,8 +77,8 @@ import Prodbox.Lifecycle.Decommission.Manifest
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
   , TargetSinkObservation (..)
-  , TargetSinkRecord (..)
   , credentialGenerationValue
+  , targetSinkRecordGeneration
   )
 import Prodbox.Vault.Client
   ( vaultKvDeleteMetadataV2
@@ -399,19 +400,19 @@ serveTargetGenerationTombstoneRequest maximumBytes expectedSigner registry body 
             (targetTombstoneAction request)
             (targetTombstoneCommand request)
 
-targetGenerationTombstoneHttpStatus :: TargetGenerationTombstoneResult -> Int
+targetGenerationTombstoneHttpStatus :: TargetGenerationTombstoneResult -> ReplyStatus
 targetGenerationTombstoneHttpStatus result = case result of
-  TargetGenerationAlreadyAbsent -> 200
-  TargetGenerationPresent -> 200
-  TargetGenerationDestroyedAndReadBack -> 200
+  TargetGenerationAlreadyAbsent -> ReplyOk
+  TargetGenerationPresent -> ReplyOk
+  TargetGenerationDestroyedAndReadBack -> ReplyOk
   TargetGenerationTombstoneRefused err -> case err of
-    TargetTombstoneBadRequest _ -> 400
-    TargetTombstoneManifestInvalid _ -> 403
-    TargetTombstoneNodeNotAuthorized _ -> 403
-    TargetTombstoneReferenceNotRegistered _ -> 404
-    TargetTombstoneObservationUnavailable _ -> 503
-    TargetTombstoneGenerationMismatch _ _ -> 409
-    TargetTombstoneDeleteNotConfirmed _ -> 503
+    TargetTombstoneBadRequest _ -> ReplyBadRequest
+    TargetTombstoneManifestInvalid _ -> ReplyForbidden
+    TargetTombstoneNodeNotAuthorized _ -> ReplyForbidden
+    TargetTombstoneReferenceNotRegistered _ -> ReplyNotFound
+    TargetTombstoneObservationUnavailable _ -> ReplyServiceUnavailable
+    TargetTombstoneGenerationMismatch _ _ -> ReplyConflict
+    TargetTombstoneDeleteNotConfirmed _ -> ReplyServiceUnavailable
 
 targetGenerationTombstoneSummary :: TargetGenerationTombstoneResult -> Text
 targetGenerationTombstoneSummary result = case result of

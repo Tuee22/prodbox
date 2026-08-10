@@ -295,6 +295,7 @@ import Prodbox.Lifecycle.AnchoredReconcile
   , anchoredOrderRespectsGraph
   , compileAnchoredOrder
   , runAnchoredStepOrder
+  , runFirstAnchoredStepOrder
   )
 import Prodbox.Lifecycle.Authority.BootstrapReconcile
   ( AuthorityBackupReconcileOutcome (..)
@@ -329,10 +330,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   )
 import Prodbox.Lifecycle.DependencyAdmission
-  ( AdmissionSet
+  ( AdmissionRefusal
+  , AdmissionSet
   , DependencyAdmission
   , mutationAdmittedComponent
-  , noAdmissions
   , recordAdmission
   , renderAdmissionRefusal
   )
@@ -381,6 +382,7 @@ import Prodbox.PublicEdge
   , minioPathPrefix
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
+  , requireSubstrateCertScopeSet
   , resolveSubstrateHostedZoneId
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
@@ -407,7 +409,6 @@ import Prodbox.Settings
   , ValidatedSettings (..)
   , acme
   , aws
-  , certScopeSetForServedHost
   , defaultConfigFile
   , eab_hmac_key
   , eab_key_id
@@ -426,6 +427,7 @@ import Prodbox.Settings
   , validateAndLoadSettings
   , validateOperationalAwsCredentials
   , validatedConfig
+  , validatedPublicEdgeFor
   , validatedResourcePlan
   )
 import Prodbox.Settings.SecretRef
@@ -439,12 +441,19 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
 import Prodbox.Vault.Client
-  ( VaultAddress (..)
+  ( KvV2Cas (KvV2Cas)
+  , VaultAddress (..)
+  , VaultCasOutcome (..)
   , VaultToken (..)
+  , classifyVaultCasOutcome
+  , kvV2VersionedSecretData
+  , kvV2VersionedSecretVersion
+  , renderVaultCasOutcome
   , vaultCreateToken
   , vaultCreateTransitKey
+  , vaultKvCasWriteV2
   , vaultKvReadV2
-  , vaultKvWriteV2
+  , vaultKvReadVersionedV2
   , vaultReadTransitKey
   , vaultSealStatus
   , vaultWritePolicy
@@ -1000,6 +1009,20 @@ runClusterStatus repoRoot = do
             (error . CapacityAllocation.renderCompileError)
             id
             (CapacityAllocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
+      , -- Sprint 1.83: `resourceStatusLines` reads only the capacity plan and the
+        -- manual PV root, but the record is total, so the public-edge projection
+        -- is built from the same default config rather than faked. The default
+        -- config's served host is well-formed, so this cannot fail; a `Left`
+        -- here would mean `defaultConfigFile` itself stopped validating, which
+        -- the config suite already refuses.
+        validatedPublicEdge =
+          either
+            error
+            id
+            ( validatedPublicEdgeFor
+                (domain defaultConfigFile)
+                (aws_substrate defaultConfigFile)
+            )
       }
 
 resourceStatusLines :: FilePath -> ValidatedSettings -> IO [String]
@@ -1123,24 +1146,22 @@ applyClusterFederationRegister repoRoot payload =
                               , childBootstrapToken = unVaultToken childToken
                               }
                       metadataResult <-
-                        vaultKvWriteV2
+                        writeParentChildObject
                           parentAddress
                           parentToken
-                          "secret"
                           (childMetadataKvLogicalPath childId)
                           (childMetadataVaultFields metadata)
                       case metadataResult of
-                        Left err -> failWith ("write child metadata Vault KV: " ++ renderHttpError err)
+                        Left err -> failWith ("write child metadata Vault KV: " ++ Text.unpack err)
                         Right () -> do
                           bootstrapResult <-
-                            vaultKvWriteV2
+                            writeParentChildObject
                               parentAddress
                               parentToken
-                              "secret"
                               (childBootstrapKvLogicalPath childId)
                               (childBootstrapVaultFields bootstrapCredential)
                           case bootstrapResult of
-                            Left err -> failWith ("write child bootstrap Vault KV: " ++ renderHttpError err)
+                            Left err -> failWith ("write child bootstrap Vault KV: " ++ Text.unpack err)
                             Right () -> do
                               indexResult <- updateParentChildIndex parentAddress parentToken childId
                               case indexResult of
@@ -1192,31 +1213,89 @@ childMetadataFromRegisterPayload parentClusterId childVaultAddress payload plan 
  where
   textPair (key, value) = (Text.pack key, Text.pack value)
 
+-- | Sprint 4.71: the child index is a read-modify-write, and the write is now
+-- conditioned on the version the read observed.
+--
+-- The superseded shape read the index, upserted one child, and wrote
+-- unconditionally: two concurrent registrations both read the same index and
+-- the second silently erased the first child. That is a lost update, not a
+-- hygiene issue, and no read-back downstream would have noticed — the index
+-- looks perfectly well-formed with a child missing from it.
 updateParentChildIndex :: VaultAddress -> VaultToken -> Text.Text -> IO (Either String ())
 updateParentChildIndex parentAddress parentToken childId = do
-  readResult <- vaultKvReadV2 parentAddress parentToken "secret" federationChildrenIndexKvLogicalPath
+  readResult <-
+    vaultKvReadVersionedV2
+      parentAddress
+      parentToken
+      "secret"
+      federationChildrenIndexKvLogicalPath
   case readResult of
     Left (HttpStatus 404 _) ->
-      writeIndex (ChildIndex [])
+      writeIndex 0 (ChildIndex [])
     Left err ->
       pure (Left ("read child federation index Vault KV: " ++ renderHttpError err))
-    Right fields ->
-      case decodePayloadJsonField decodeChildIndex fields of
+    Right versioned ->
+      case decodePayloadJsonField decodeChildIndex (kvV2VersionedSecretData versioned) of
         Left err -> pure (Left ("decode child federation index Vault KV: " ++ err))
-        Right index -> writeIndex index
+        Right index -> writeIndex (kvV2VersionedSecretVersion versioned) index
  where
-  writeIndex index = do
+  writeIndex expectedVersion index = do
     let updatedIndex = upsertChildIndex childId index
     writeResult <-
-      vaultKvWriteV2
+      vaultKvCasWriteV2
         parentAddress
         parentToken
         "secret"
         federationChildrenIndexKvLogicalPath
+        (KvV2Cas expectedVersion)
         (childIndexVaultFields updatedIndex)
-    pure $ case writeResult of
-      Left err -> Left ("write child federation index Vault KV: " ++ renderHttpError err)
-      Right () -> Right ()
+    -- Sprint 4.74: a lost race on the child index is a different operator
+    -- fact from an unreachable Vault — the first means another registration
+    -- won and this one must re-read, the second means nothing is known.
+    pure $ case classifyVaultCasOutcome writeResult of
+      VaultCasApplied _ -> Right ()
+      failed ->
+        Left
+          ( "write child federation index Vault KV: "
+              ++ Text.unpack (renderVaultCasOutcome failed)
+          )
+
+-- | Write one parent-held child object, conditioned on the version the parent
+-- observed.
+--
+-- Registration may legitimately re-run, so this is not create-only: what it
+-- refuses is a blind overwrite of a value that changed since it was read. The
+-- objects it guards are the child's metadata and its bootstrap credential, and
+-- silently replacing the latter would strand the parent's custody of the
+-- previous one.
+writeParentChildObject
+  :: VaultAddress
+  -> VaultToken
+  -> Text.Text
+  -> Map.Map Text.Text Text.Text
+  -> IO (Either Text.Text ())
+writeParentChildObject parentAddress parentToken logicalPath fields = do
+  observed <- vaultKvReadVersionedV2 parentAddress parentToken "secret" logicalPath
+  case observed of
+    Left (HttpStatus 404 _) -> write 0
+    Left err -> pure (Left (Text.pack (renderHttpError err)))
+    Right versioned -> write (kvV2VersionedSecretVersion versioned)
+ where
+  -- Sprint 4.74: this object guards the child's metadata and bootstrap
+  -- credential, so "another registration won" and "Vault did not answer" must
+  -- not reach the operator as one sentence.
+  write expectedVersion = do
+    written <-
+      vaultKvCasWriteV2
+        parentAddress
+        parentToken
+        "secret"
+        logicalPath
+        (KvV2Cas expectedVersion)
+        fields
+    pure $ case classifyVaultCasOutcome written of
+      VaultCasApplied _ -> Right ()
+      failed -> Left (renderVaultCasOutcome failed)
 
 loadParentFederationAuthority
   :: FilePath -> IO (Either String (Text.Text, VaultAddress, VaultToken))
@@ -1791,17 +1870,19 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
   -- than reset at each one. The phases are separate calls only because their
   -- step actions differ; they are one run, and a readiness observation made in
   -- an earlier phase is evidence in a later one until its age bound expires it.
-  (bootstrapExit, bootstrapAdmissions) <-
-    runAnchoredReconcileSteps
+  -- Sprint 4.64: the run begins here and only here. The empty admission set is
+  -- no longer nameable at a phase boundary, so a later phase cannot be handed
+  -- one by accident.
+  bootstrapOutcome <-
+    runFirstAnchoredReconcileSteps
       repoRoot
       bootstrapSettings
       dag
       bootstrapStepAction
-      noAdmissions
       [step | step <- order, reconcileStepPhase step == PhaseBootstrap]
-  case bootstrapExit of
-    ExitFailure _ -> pure bootstrapExit
-    ExitSuccess -> do
+  case bootstrapOutcome of
+    Left bootstrapExit -> pure bootstrapExit
+    Right bootstrapAdmissions -> do
       vaultLifecycleResult <- ensureFederatedVaultLifecycleDetailed repoRoot
       case vaultLifecycleExitCode vaultLifecycleResult of
         ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
@@ -2116,16 +2197,8 @@ runAnchoredReconcileSteps
   -> AdmissionSet
   -> [ReconcileStepId]
   -> IO (ExitCode, AdmissionSet)
-runAnchoredReconcileSteps repoRoot settings dag runStep carried steps = do
-  -- Sprint 5.31: the refusal arrives as itself and is rendered here. Lowering
-  -- it to an exit code inside the runner discarded the reason on a path that
-  -- printed nothing, so a refused reconcile exited 1 in silence.
-  outcome <- runOrder carried steps
-  case outcome of
-    Left refusal -> do
-      refused <- failWith (Text.unpack (renderAdmissionRefusal refusal))
-      pure (refused, carried)
-    Right result -> pure result
+runAnchoredReconcileSteps repoRoot settings dag runStep carried steps =
+  renderRefusalAsExit carried (runOrder carried steps)
  where
   runOrder =
     runAnchoredStepOrder
@@ -2138,6 +2211,52 @@ runAnchoredReconcileSteps repoRoot settings dag runStep carried steps = do
       (\admission step -> mutationAdmittedComponent admission `seq` runStep step)
       runStep
       (requireNativeComponentReadiness repoRoot settings dag)
+
+-- | Sprint 4.64: the run's first phase. The empty admission set is supplied by
+-- the executor, so this surface names it nowhere and a later phase cannot be
+-- handed one.
+--
+-- The return type is @'Either' 'ExitCode' 'AdmissionSet'@ rather than the pair
+-- the later phases use, and that is the point rather than an inconsistency: on
+-- any failure there is no admission set worth carrying, and the pair shape
+-- would have forced this function to name an empty one — reintroducing exactly
+-- the value the sprint removed.
+runFirstAnchoredReconcileSteps
+  :: FilePath
+  -> ValidatedSettings
+  -> ComponentDag
+  -> (ReconcileStepId -> IO ExitCode)
+  -> [ReconcileStepId]
+  -> IO (Either ExitCode AdmissionSet)
+runFirstAnchoredReconcileSteps repoRoot settings dag runStep steps = do
+  outcome <-
+    runFirstAnchoredStepOrder
+      dag
+      reconcileClockMicros
+      reconcileStepAnchor
+      (\admission step -> mutationAdmittedComponent admission `seq` runStep step)
+      runStep
+      (requireNativeComponentReadiness repoRoot settings dag)
+      steps
+  case outcome of
+    Left refusal -> Left <$> failWith (Text.unpack (renderAdmissionRefusal refusal))
+    Right (ExitFailure code, _) -> pure (Left (ExitFailure code))
+    Right (ExitSuccess, admissions) -> pure (Right admissions)
+
+-- | Sprint 5.31: the refusal arrives as itself and is rendered here. Lowering
+-- it to an exit code inside the runner discarded the reason on a path that
+-- printed nothing, so a refused reconcile exited 1 in silence.
+renderRefusalAsExit
+  :: AdmissionSet
+  -> IO (Either AdmissionRefusal (ExitCode, AdmissionSet))
+  -> IO (ExitCode, AdmissionSet)
+renderRefusalAsExit carried run = do
+  outcome <- run
+  case outcome of
+    Left refusal -> do
+      refused <- failWith (Text.unpack (renderAdmissionRefusal refusal))
+      pure (refused, carried)
+    Right result -> pure result
 
 -- | The reconcile clock an admission's age is measured against.
 reconcileClockMicros :: IO Natural
@@ -2722,13 +2841,8 @@ firstReconcileIamParameters _basics settings credentials credentialClass =
       pure (Left "authority-backup install is valid only as first-reconcile member zero")
     TlsRetentionStoreCredential ->
       pure $ do
-        scopeSet <-
-          firstText
-            ( certScopeSetForServedHost
-                (domain config)
-                (aws_substrate config)
-                (Text.pack (substratePublicFqdn settings SubstrateHomeLocal))
-            )
+        -- Sprint 1.83: the carried parse, not a third derivation of it.
+        scopeSet <- firstText (requireSubstrateCertScopeSet settings SubstrateHomeLocal)
         firstText
           ( mkTlsRetentionIamParameters
               backendRegion

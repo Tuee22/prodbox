@@ -59,7 +59,12 @@ import Prodbox.Http.Client
   , defaultHttpConfig
   , httpGetText
   )
-import Prodbox.Lifecycle.DependencyAdmission (noAdmissions)
+
+-- Sprint 4.64: the empty admission set is package-internal so no production
+-- module can begin a phase with one; a fixture driving the executor directly
+-- still needs it, and the `dev check` rule barring this import is scoped to
+-- `src/`.
+import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
   ( SecretRef (SecretRefVault)

@@ -18,6 +18,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( initialCleanInstallAuthority
   )
@@ -55,7 +56,7 @@ controlPlaneAuthorityObservationSuite =
           (pure (Right 123456))
           (constantRepository (Just (StoredMigration 7 (encodeMigrationState activeState))))
           (encodeControlPlaneRequest request)
-      authorityObservationHttpStatus result `shouldBe` 200
+      authorityObservationHttpStatus result `shouldBe` ReplyOk
       decoded
         (authorityObservationResponseBody result)
         `shouldBe` Right

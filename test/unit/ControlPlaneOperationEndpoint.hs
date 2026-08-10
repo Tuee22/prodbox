@@ -13,6 +13,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   )
 import Prodbox.ControlPlane.OperationEndpoint
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityEpoch
   , authorityEpochGenesis
@@ -61,7 +62,7 @@ controlPlaneOperationEndpointSuite =
         (repository, ledgerRef) <- freshRepository (emptySubmissionLedger 4)
         result <- serveOperationSubmit repository client1 seq1 digestA
         assertAccepted result
-        operationSubmitHttpStatus result `shouldBe` 200
+        operationSubmitHttpStatus result `shouldBe` ReplyOk
         operationSubmitSummary result `shouldBe` "operation-accepted"
         -- The commit landed: the same identity now observes as in-flight.
         state <- readIORef ledgerRef
@@ -75,30 +76,30 @@ controlPlaneOperationEndpointSuite =
         case result of
           OperationSubmitDecided (SubmissionDuplicate _) -> pure ()
           other -> expectationFailure ("expected an idempotent duplicate, got " <> show other)
-        operationSubmitHttpStatus result `shouldBe` 200
+        operationSubmitHttpStatus result `shouldBe` ReplyOk
         operationSubmitSummary result `shouldBe` "operation-duplicate"
       it "refuses a reused sequence with a different digest without committing" $ do
         let repository = failWritesRepository inFlightLedger
         result <- serveOperationSubmit repository client1 seq1 digestB
         result `shouldBe` OperationSubmitDecided SubmissionRefusedSequenceReused
-        operationSubmitHttpStatus result `shouldBe` 409
+        operationSubmitHttpStatus result `shouldBe` ReplyConflict
         operationSubmitSummary result `shouldBe` "operation-refused-sequence-reused"
       it "refuses a sequence at or below the compacted floor as expired" $ do
         let repository = failWritesRepository (emptySubmissionLedger 4)
         result <- serveOperationSubmit repository client1 seq0 digestA
         result `shouldBe` OperationSubmitDecided SubmissionRefusedExpired
-        operationSubmitHttpStatus result `shouldBe` 409
+        operationSubmitHttpStatus result `shouldBe` ReplyConflict
         operationSubmitSummary result `shouldBe` "operation-refused-expired"
       it "refuses a fresh submission at capacity as retryable back-pressure" $ do
         let repository = failWritesRepository (emptySubmissionLedger 0)
         result <- serveOperationSubmit repository client1 seq1 digestA
         result `shouldBe` OperationSubmitDecided SubmissionRefusedFull
-        operationSubmitHttpStatus result `shouldBe` 503
+        operationSubmitHttpStatus result `shouldBe` ReplyServiceUnavailable
         operationSubmitSummary result `shouldBe` "operation-refused-full"
       it "reports a failed durable commit of an accepted submission as retryable" $ do
         let repository = failWritesRepository (emptySubmissionLedger 4)
         result <- serveOperationSubmit repository client1 seq1 digestA
-        operationSubmitHttpStatus result `shouldBe` 503
+        operationSubmitHttpStatus result `shouldBe` ReplyServiceUnavailable
         operationSubmitSummary result `shouldBe` "operation-submit-write-failed"
       it "confirms an applied write after its CAS response is lost" $ do
         stateRef <- newIORef (initialOperationSubmissionState epoch 4)
@@ -142,7 +143,7 @@ controlPlaneOperationEndpointSuite =
         let body = encodeControlPlaneRequest (OperationSubmitPayload "c1" 1 "dA")
         result <- serveOperationSubmitRequest 4096 repository body
         assertAccepted result
-        operationSubmitHttpStatus result `shouldBe` 200
+        operationSubmitHttpStatus result `shouldBe` ReplyOk
         state <- readIORef ledgerRef
         serveOperationObserve (readOnlyState state) client1 seq1
           `shouldReturn` OperationObserveFound StatusInFlight
@@ -150,7 +151,7 @@ controlPlaneOperationEndpointSuite =
         (repository, ledgerRef) <- freshRepository (emptySubmissionLedger 4)
         result <- serveOperationSubmitRequest 4096 repository "not-a-cbor-envelope"
         result `shouldBe` OperationSubmitBadRequest ControlPlaneRequestInvalid
-        operationSubmitHttpStatus result `shouldBe` 400
+        operationSubmitHttpStatus result `shouldBe` ReplyBadRequest
         operationSubmitSummary result `shouldBe` "operation-submit-bad-request:invalid"
         -- Nothing was read or written: the ledger is still the empty fixture.
         state <- readIORef ledgerRef
@@ -161,23 +162,23 @@ controlPlaneOperationEndpointSuite =
         let body = encodeControlPlaneRequest (OperationSubmitPayload "c1" 1 "dA")
         result <- serveOperationSubmitRequest 2 repository body
         result `shouldBe` OperationSubmitBadRequest ControlPlaneRequestTooLarge
-        operationSubmitHttpStatus result `shouldBe` 400
+        operationSubmitHttpStatus result `shouldBe` ReplyBadRequest
         operationSubmitSummary result `shouldBe` "operation-submit-bad-request:too-large"
     describe "operations/observe" $ do
       it "observes an in-flight submission as 200 in-flight" $ do
         result <- serveOperationObserve (readOnly inFlightLedger) client1 seq1
         result `shouldBe` OperationObserveFound StatusInFlight
-        operationObserveResultHttpStatus result `shouldBe` 200
+        operationObserveResultHttpStatus result `shouldBe` ReplyOk
         operationObserveResultSummary result `shouldBe` "operation-in-flight"
       it "observes a never-seen submission as 404 unknown" $ do
         result <- serveOperationObserve (readOnly (emptySubmissionLedger 4)) client1 seq1
         result `shouldBe` OperationObserveFound StatusUnknown
-        operationObserveResultHttpStatus result `shouldBe` 404
+        operationObserveResultHttpStatus result `shouldBe` ReplyNotFound
         operationObserveResultSummary result `shouldBe` "operation-unknown"
       it "observes a completed submission as 200 settled-completed" $ do
         result <- serveOperationObserve (readOnly (settledLedger completeSubmission)) client1 seq1
         result `shouldBe` OperationObserveFound (StatusSettled OperationCompletedOutcome)
-        operationObserveResultHttpStatus result `shouldBe` 200
+        operationObserveResultHttpStatus result `shouldBe` ReplyOk
         operationObserveResultSummary result `shouldBe` "operation-settled-completed"
       it "observes a cancelled submission as 200 settled-cancelled" $ do
         result <- serveOperationObserve (readOnly (settledLedger cancelSubmission)) client1 seq1
@@ -186,7 +187,7 @@ controlPlaneOperationEndpointSuite =
       it "observes a compacted-away submission as 200 expired" $ do
         result <- serveOperationObserve (readOnly expiredLedger) client1 seq1
         result `shouldBe` OperationObserveFound StatusExpired
-        operationObserveResultHttpStatus result `shouldBe` 200
+        operationObserveResultHttpStatus result `shouldBe` ReplyOk
         operationObserveResultSummary result `shouldBe` "operation-expired"
       it "serveOperationObserveRequest decodes a well-formed body and looks it up" $ do
         let body = encodeControlPlaneRequest (OperationObservePayload "c1" 1)

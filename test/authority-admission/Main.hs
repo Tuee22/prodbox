@@ -20,6 +20,7 @@ import Prodbox.ControlPlane.MigrationEndpoint
   )
 import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecycleOperationSubmit))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
 import Prodbox.Lifecycle.Authority.BackupRepair
   ( BackupHealth (..)
@@ -371,7 +372,7 @@ endpointTests =
             4096
             repository
             (encodeControlPlaneRequest AuthorityControlBeginMigration)
-        authorityTransitionHttpStatus begun @?= 200
+        authorityTransitionHttpStatus begun @?= ReplyOk
         authorityTransitionSummary begun @?= "authority-migration-started"
         mapM_
           ( \projection ->

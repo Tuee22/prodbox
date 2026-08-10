@@ -35,6 +35,7 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.AdminAction.Protocol
   ( AdminActionPlan (AdminDestroyAwsSesPlanAction)
   , AdminDestroyAwsSesPlan
@@ -285,21 +286,21 @@ custodyResponse request result = case result of
   evidence =
     "admin-action:" <> adminCustodyRequestOperationId request <> ":ses-custody-absent"
 
-adminTargetTombstoneResponseStatus :: AdminTargetTombstoneResponse -> Int
+adminTargetTombstoneResponseStatus :: AdminTargetTombstoneResponse -> ReplyStatus
 adminTargetTombstoneResponseStatus response = case response of
-  AdminTargetTombstoneAbsent _ -> 200
-  AdminTargetTombstonePresent -> 200
-  AdminTargetTombstoneDestroyed _ -> 200
-  AdminTargetTombstoneRefused _ -> 403
-  AdminTargetTombstoneUnavailable _ -> 503
+  AdminTargetTombstoneAbsent _ -> ReplyOk
+  AdminTargetTombstonePresent -> ReplyOk
+  AdminTargetTombstoneDestroyed _ -> ReplyOk
+  AdminTargetTombstoneRefused _ -> ReplyForbidden
+  AdminTargetTombstoneUnavailable _ -> ReplyServiceUnavailable
 
-adminCustodyTombstoneResponseStatus :: AdminCustodyTombstoneResponse -> Int
+adminCustodyTombstoneResponseStatus :: AdminCustodyTombstoneResponse -> ReplyStatus
 adminCustodyTombstoneResponseStatus response = case response of
-  AdminCustodyTombstoneAbsent _ -> 200
-  AdminCustodyTombstonePresent -> 200
-  AdminCustodyTombstoneDestroyed _ -> 200
-  AdminCustodyTombstoneRefused _ -> 403
-  AdminCustodyTombstoneUnavailable _ -> 503
+  AdminCustodyTombstoneAbsent _ -> ReplyOk
+  AdminCustodyTombstonePresent -> ReplyOk
+  AdminCustodyTombstoneDestroyed _ -> ReplyOk
+  AdminCustodyTombstoneRefused _ -> ReplyForbidden
+  AdminCustodyTombstoneUnavailable _ -> ReplyServiceUnavailable
 
 adminActionTargetResponseBody :: (Serialise response) => response -> ByteString
 adminActionTargetResponseBody = LazyByteString.toStrict . encodeControlPlaneResponse

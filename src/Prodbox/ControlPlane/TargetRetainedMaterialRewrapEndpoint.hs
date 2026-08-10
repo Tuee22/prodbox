@@ -39,6 +39,7 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   )
@@ -108,11 +109,11 @@ targetRetainedMaterialRewrapAuthenticatedHandler maximumBytes observeNow boundar
       pure (Just (responseStatus response, responseBody response))
     _ -> authenticatedHandlerHandle inner caller route body
 
-responseStatus :: TargetRetainedMaterialRewrapResponse -> Int
+responseStatus :: TargetRetainedMaterialRewrapResponse -> ReplyStatus
 responseStatus response = case response of
-  TargetRetainedMaterialRewrapped {} -> 200
-  TargetRetainedMaterialRewrapRefused _ -> 409
-  TargetRetainedMaterialRewrapUnavailable _ -> 503
+  TargetRetainedMaterialRewrapped {} -> ReplyOk
+  TargetRetainedMaterialRewrapRefused _ -> ReplyConflict
+  TargetRetainedMaterialRewrapUnavailable _ -> ReplyServiceUnavailable
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

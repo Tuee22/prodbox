@@ -52,6 +52,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneResponse
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
 import Prodbox.Lifecycle.Decommission.Manifest
   ( DecommissionNode (RetainedCustody)
@@ -346,17 +347,17 @@ serveRetainedCustodyTombstoneRequest maximumBytes expectedSigner boundary body =
             boundary
             (retainedCustodyTombstoneAction request)
 
-retainedCustodyTombstoneHttpStatus :: RetainedCustodyTombstoneResult -> Int
+retainedCustodyTombstoneHttpStatus :: RetainedCustodyTombstoneResult -> ReplyStatus
 retainedCustodyTombstoneHttpStatus result = case result of
-  RetainedCustodyAlreadyAbsent -> 200
-  RetainedCustodyPresentResult -> 200
-  RetainedCustodyDestroyedAndReadBack -> 200
+  RetainedCustodyAlreadyAbsent -> ReplyOk
+  RetainedCustodyPresentResult -> ReplyOk
+  RetainedCustodyDestroyedAndReadBack -> ReplyOk
   RetainedCustodyTombstoneRefused err -> case err of
-    RetainedCustodyTombstoneBadRequest _ -> 400
-    RetainedCustodyTombstoneManifestInvalid _ -> 403
-    RetainedCustodyTombstoneNodeNotAuthorized -> 403
-    RetainedCustodyTombstoneObservationUnavailable _ -> 503
-    RetainedCustodyTombstoneDeleteNotConfirmed _ -> 503
+    RetainedCustodyTombstoneBadRequest _ -> ReplyBadRequest
+    RetainedCustodyTombstoneManifestInvalid _ -> ReplyForbidden
+    RetainedCustodyTombstoneNodeNotAuthorized -> ReplyForbidden
+    RetainedCustodyTombstoneObservationUnavailable _ -> ReplyServiceUnavailable
+    RetainedCustodyTombstoneDeleteNotConfirmed _ -> ReplyServiceUnavailable
 
 retainedCustodyTombstoneResponseBody
   :: RetainedCustodyTombstoneResult

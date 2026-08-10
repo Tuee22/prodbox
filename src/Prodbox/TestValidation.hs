@@ -203,6 +203,7 @@ import Prodbox.PublicEdge
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
   , substratePublicRouteUrl
+  , substrateServedHostMissing
   )
 import Prodbox.Pulsar.Admin
   ( PulsarAdminConfig (..)
@@ -299,7 +300,7 @@ import Prodbox.TestPlan
   ( NativeValidation (..)
   , nativeValidationId
   )
-import Prodbox.Tls.CertScope (certScopeSetDnsNames)
+import Prodbox.Tls.CertScope (certScopeSetDnsNames, fqdnText)
 import Prodbox.UsersAdmin qualified
 import System.Directory
   ( createDirectoryIfMissing
@@ -4800,16 +4801,15 @@ runCertificateScopeServingValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith ("load settings for certificate-scope validation: " ++ err)
-    Right settings -> do
-      let config = Prodbox.Settings.validatedConfig settings
-          domainSection = Prodbox.Settings.domain config
-          awsSection = Prodbox.Settings.aws_substrate config
-          servedHost = case substrate of
-            SubstrateHomeLocal -> Prodbox.Settings.demo_fqdn domainSection
-            SubstrateAws -> Prodbox.Settings.subzone_name awsSection
-      case Prodbox.Settings.certScopeSetForServedHost domainSection awsSection servedHost of
-        Left err -> failWith err
-        Right scopeSet -> do
+    Right settings ->
+      -- Sprint 1.83: the served host and its scope set are the pair config
+      -- validation parsed, so this validation can no longer probe one host while
+      -- asserting the scope set of another.
+      case Prodbox.Settings.substrateServedHost settings substrate of
+        Nothing -> failWith (substrateServedHostMissing substrate)
+        Just served -> do
+          let servedHost = fqdnText (Prodbox.Settings.servedHostFqdn served)
+              scopeSet = Prodbox.Settings.servedHostCertScopes served
           probeResult <- curlTlsServingProbe repoRoot (Text.unpack servedHost)
           case probeResult of
             Left err -> failWith err

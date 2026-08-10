@@ -25,6 +25,7 @@ import Prodbox.ControlPlane.CallerPrincipal
   )
 import Prodbox.ControlPlane.Codec (encodeControlPlaneRequest)
 import Prodbox.ControlPlane.ConfigEndpoint
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (..)
@@ -210,7 +211,7 @@ controlPlaneConfigEndpointSuite =
           ( encodeControlPlaneRequest
               (ConfigObserveRequest ConfigProjectionGatewayRuntime)
           )
-      configEndpointHttpStatus observed `shouldBe` 200
+      configEndpointHttpStatus observed `shouldBe` ReplyOk
       forbidden <-
         serveConfigProposeCasRequest
           4096

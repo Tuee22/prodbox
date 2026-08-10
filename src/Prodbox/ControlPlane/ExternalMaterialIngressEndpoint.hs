@@ -52,6 +52,7 @@ import Prodbox.ControlPlane.RoleReadiness
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleExternalMaterialIngress)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -303,10 +304,10 @@ externalMaterialIngressAuthenticatedHandler
 
     serve caller body
       | not (externalCallerAllowed caller) =
-          pure (403, responseBody (ExternalMaterialIngressRefused "caller-refused"))
+          pure (ReplyForbidden, responseBody (ExternalMaterialIngressRefused "caller-refused"))
       | otherwise = case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
           Left _ ->
-            pure (400, responseBody (ExternalMaterialIngressRefused "request-codec-rejected"))
+            pure (ReplyBadRequest, responseBody (ExternalMaterialIngressRefused "request-codec-rejected"))
           Right request -> do
             response <- runRequest request
             pure (responseStatus response, responseBody response)
@@ -701,15 +702,15 @@ externalCallerAllowed caller = case verifiedCallerSlotPrincipal caller of
   CallerTestHarness -> True
   _ -> False
 
-responseStatus :: ExternalMaterialIngressResponse -> Int
+responseStatus :: ExternalMaterialIngressResponse -> ReplyStatus
 responseStatus response = case response of
-  ExternalMaterialIngressPrepared _ -> 200
-  ExternalMaterialIngressAuthorized _ -> 200
-  ExternalMaterialIngressCompleted _ -> 200
-  ExternalMaterialIngressObserved _ -> 200
-  ExternalMaterialIngressCurrentObserved _ -> 200
-  ExternalMaterialIngressRefused _ -> 409
-  ExternalMaterialIngressUnavailable _ -> 503
+  ExternalMaterialIngressPrepared _ -> ReplyOk
+  ExternalMaterialIngressAuthorized _ -> ReplyOk
+  ExternalMaterialIngressCompleted _ -> ReplyOk
+  ExternalMaterialIngressObserved _ -> ReplyOk
+  ExternalMaterialIngressCurrentObserved _ -> ReplyOk
+  ExternalMaterialIngressRefused _ -> ReplyConflict
+  ExternalMaterialIngressUnavailable _ -> ReplyServiceUnavailable
 
 responseBody :: ExternalMaterialIngressResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

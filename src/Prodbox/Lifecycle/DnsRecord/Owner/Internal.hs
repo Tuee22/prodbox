@@ -17,13 +17,23 @@ where
 
 -- | The closed set of owners a registered DNS coordinate can be bound to.
 --
--- Two of them name a prodbox process; two name the substrate-local cert-manager
--- installation, which is not a prodbox process and therefore holds no
--- 'DnsOwnerAuthority' — see 'Prodbox.Lifecycle.DnsRecord.Owner' for what that
--- excludes.
+-- Three of them name a prodbox process; two name the substrate-local
+-- cert-manager installation, which is not a prodbox process and therefore holds
+-- no 'DnsOwnerAuthority' — see 'Prodbox.Lifecycle.DnsRecord.Owner' for what
+-- that excludes.
+--
+-- Sprint @4.73@ adds 'AwsSesDnsOwner' rather than reusing
+-- 'AwsLifecycleProviderDnsOwner' for the SES identity, DKIM, and inbound
+-- records, and the reason is that an owner decides two things a shared owner
+-- would decide wrongly. It decides the lifecycle class, and the SES records
+-- live in the operator's long-lived parent zone while the provider lane's
+-- records are per-run. It also decides the admissible record types, so folding
+-- SES into the provider lane would hand the public A-record writer TXT, CNAME,
+-- and MX authority over the same zone.
 data DnsRecordOwner
   = HomeGatewayDnsOwner
   | AwsLifecycleProviderDnsOwner
+  | AwsSesDnsOwner
   | HomeCertManagerDns01Owner
   | AwsCertManagerDns01Owner
   deriving stock (Eq, Ord, Show, Enum, Bounded)

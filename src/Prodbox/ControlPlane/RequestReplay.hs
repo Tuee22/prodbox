@@ -29,6 +29,7 @@ module Prodbox.ControlPlane.RequestReplay
   , ReplayResponse
   , ReplayResponseError (..)
   , mkReplayResponse
+  , mkReplayResponseFromStoredCode
   , replayResponseStatus
   , replayResponseBody
   , RequestReplayProjection
@@ -107,6 +108,11 @@ import Prodbox.ControlPlane.RequestAuthentication
   , verifiedRequestDigestBytes
   , verifiedRequestNonce
   , verifiedRequestSigningKeyGeneration
+  )
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus
+  , replyStatusCode
+  , replyStatusFromCode
   )
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityEpoch
@@ -218,28 +224,50 @@ mkReplayCasAttempts attempts
  where
   hardMaximum = 100
 
+-- | A recorded reply, retained so a repeated request is answered with the
+-- response the first attempt produced rather than re-executed.
+--
+-- Sprint 4.67: the status is a 'ReplyStatus'. It used to be an @Int@ admitted
+-- by a @100 <= status <= 599@ range test, which accepted every code the
+-- repository does not define — including the four Sprint 4.66 found reaching
+-- the wire with no reason phrase.
 data ReplayResponse = ReplayResponse
-  { replayResponseStatus :: !Int
+  { replayResponseStatus :: !ReplyStatus
   , replayResponseBody :: !ByteString
   }
   deriving stock (Eq, Show)
 
 data ReplayResponseError
-  = ReplayResponseStatusInvalid !Int
+  = -- | A stored code with no constructor in the closed set. Only the durable
+    -- decoder can produce this; a live producer cannot express it.
+    ReplayResponseStatusInvalid !Int
   | ReplayResponseBodyTooLarge !Int !Int
   deriving stock (Eq, Show)
 
 mkReplayResponse
-  :: RequestReplayLimits -> Int -> ByteString -> Either ReplayResponseError ReplayResponse
-mkReplayResponse limits status body = do
-  let bodyBytes = ByteString.length body
-      maximumBodyBytes = requestReplayMaximumResponseBytes limits
-  if status >= 100 && status <= 599
-    then pure ()
-    else Left (ReplayResponseStatusInvalid status)
+  :: RequestReplayLimits -> ReplyStatus -> ByteString -> Either ReplayResponseError ReplayResponse
+mkReplayResponse limits status body =
   if bodyBytes <= maximumBodyBytes
     then Right ReplayResponse {replayResponseStatus = status, replayResponseBody = body}
     else Left (ReplayResponseBodyTooLarge bodyBytes maximumBodyBytes)
+ where
+  bodyBytes = ByteString.length body
+  maximumBodyBytes = requestReplayMaximumResponseBytes limits
+
+-- | Admit a status recorded by an __earlier revision__ of this process.
+--
+-- The durable projection stores the numeric code, so the format is unchanged by
+-- Sprint 4.67 and a projection written before it still decodes. This is the one
+-- crossing where a raw code becomes a 'ReplyStatus', and it is a refusal rather
+-- than a widening: a stored code the closed set does not define is a decode
+-- failure, not a value that flows on to the renderer
+-- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+mkReplayResponseFromStoredCode
+  :: RequestReplayLimits -> Int -> ByteString -> Either ReplayResponseError ReplayResponse
+mkReplayResponseFromStoredCode limits code body =
+  case replyStatusFromCode code of
+    Nothing -> Left (ReplayResponseStatusInvalid code)
+    Just status -> mkReplayResponse limits status body
 
 newtype ReplayRequestDigest = ReplayRequestDigest ByteString
   deriving stock (Eq, Ord, Show)
@@ -633,7 +661,7 @@ valueToWire entry = case entry of
     RequestReplayCompletedWire
       (replayRequestDigestBytes digest)
       (authorityTimeMicros deadline)
-      (replayResponseStatus response)
+      (replyStatusCode (replayResponseStatus response))
       (replayResponseBody response)
   ReplayTombstonedEntry digest retainUntil ->
     RequestReplayTombstonedWire
@@ -705,7 +733,7 @@ valueFromWire limits wire = case wire of
       either
         (Left . RequestReplayResponseInvalid)
         Right
-        (mkReplayResponse limits status body)
+        (mkReplayResponseFromStoredCode limits status body)
     pure (ReplayCompletedEntry digest (authorityTimeFromMicros deadlineMicros) response)
   RequestReplayTombstonedWire rawDigest retainUntilMicros -> do
     digest <- decodeDigest rawDigest

@@ -1,7 +1,7 @@
 -- | DNS record ownership and the authority a running process holds over it.
 --
 -- 'DnsOwnerAuthority' is opaque here.  Its one minter is
--- 'dnsOwnerAuthorityForProcess', a total function of the two facts that
+-- 'dnsOwnerAuthoritiesForProcess', a total function of the two facts that
 -- identify a running prodbox process: the 'RuntimeRole' it selected before it
 -- decoded configuration ("Prodbox.Runtime.Role") and the 'Substrate' that
 -- configuration declares.  A destroy program consumes the authority rather than
@@ -30,11 +30,13 @@ module Prodbox.Lifecycle.DnsRecord.Owner
   ( DnsRecordOwner (..)
   , DnsOwnerAuthority
   , allDnsRecordOwners
+  , dnsOwnerAuthoritiesForProcess
   , dnsOwnerAuthorityForProcess
   , authorizedDnsOwner
   )
 where
 
+import Data.List (find)
 import Prodbox.Lifecycle.DnsRecord.Owner.Internal
   ( DnsOwnerAuthority (..)
   , DnsRecordOwner (..)
@@ -50,23 +52,48 @@ allDnsRecordOwners = [minBound .. maxBound]
 --
 -- Total over @'RuntimeRole' × 'Substrate'@ and written out pair by pair rather
 -- than with a wildcard, so adding a role or a substrate is a compile error at
--- this table instead of a silent 'Nothing'.
-dnsOwnerAuthorityForProcess :: RuntimeRole -> Substrate -> Maybe DnsOwnerAuthority
-dnsOwnerAuthorityForProcess role substrate = case (role, substrate) of
-  (GatewayRuntime, SubstrateHomeLocal) -> Just (DnsOwnerAuthority HomeGatewayDnsOwner)
-  (GatewayRuntime, SubstrateAws) -> Nothing
-  (ProviderWorkerRuntime, SubstrateAws) -> Just (DnsOwnerAuthority AwsLifecycleProviderDnsOwner)
-  (ProviderWorkerRuntime, SubstrateHomeLocal) -> Nothing
-  (BootstrapBroker, SubstrateHomeLocal) -> Nothing
-  (BootstrapBroker, SubstrateAws) -> Nothing
-  (LifecycleAuthorityRuntime, SubstrateHomeLocal) -> Nothing
-  (LifecycleAuthorityRuntime, SubstrateAws) -> Nothing
-  (AuthorityBackupRuntime, SubstrateHomeLocal) -> Nothing
-  (AuthorityBackupRuntime, SubstrateAws) -> Nothing
-  (TlsRetentionRuntime, SubstrateHomeLocal) -> Nothing
-  (TlsRetentionRuntime, SubstrateAws) -> Nothing
-  (TargetSecretAgentRuntime, SubstrateHomeLocal) -> Nothing
-  (TargetSecretAgentRuntime, SubstrateAws) -> Nothing
+-- this table instead of a silent empty list.
+--
+-- Sprint @4.73@ widened the range from one owner to a list, because one process
+-- legitimately owns more than one DNS lane: the Provider Worker writes both the
+-- per-run public A record and the long-lived SES identity, DKIM, and inbound
+-- records, and those lanes differ in lifecycle class and in admissible record
+-- type.  What did __not__ widen is who may hold a lane — a pair still holds
+-- exactly the owners written beside it, and there is no other way to build the
+-- value.
+dnsOwnerAuthoritiesForProcess :: RuntimeRole -> Substrate -> [DnsOwnerAuthority]
+dnsOwnerAuthoritiesForProcess role substrate = case (role, substrate) of
+  (GatewayRuntime, SubstrateHomeLocal) -> [DnsOwnerAuthority HomeGatewayDnsOwner]
+  (GatewayRuntime, SubstrateAws) -> []
+  (ProviderWorkerRuntime, SubstrateAws) ->
+    [ DnsOwnerAuthority AwsLifecycleProviderDnsOwner
+    , DnsOwnerAuthority AwsSesDnsOwner
+    ]
+  (ProviderWorkerRuntime, SubstrateHomeLocal) -> []
+  (BootstrapBroker, SubstrateHomeLocal) -> []
+  (BootstrapBroker, SubstrateAws) -> []
+  (LifecycleAuthorityRuntime, SubstrateHomeLocal) -> []
+  (LifecycleAuthorityRuntime, SubstrateAws) -> []
+  (AuthorityBackupRuntime, SubstrateHomeLocal) -> []
+  (AuthorityBackupRuntime, SubstrateAws) -> []
+  (TlsRetentionRuntime, SubstrateHomeLocal) -> []
+  (TlsRetentionRuntime, SubstrateAws) -> []
+  (TargetSecretAgentRuntime, SubstrateHomeLocal) -> []
+  (TargetSecretAgentRuntime, SubstrateAws) -> []
+
+-- | The authority for exactly one lane, when this process holds that lane.
+--
+-- The caller names the lane it wants and the table decides whether the process
+-- holds it, so naming an owner is still not the same thing as holding one: a
+-- lane this @(role, substrate)@ does not own answers 'Nothing', and 'Nothing'
+-- is the only other inhabitant.
+dnsOwnerAuthorityForProcess
+  :: RuntimeRole
+  -> Substrate
+  -> DnsRecordOwner
+  -> Maybe DnsOwnerAuthority
+dnsOwnerAuthorityForProcess role substrate owner =
+  find ((== owner) . authorizedDnsOwner) (dnsOwnerAuthoritiesForProcess role substrate)
 
 -- | The owner an authority entitles its holder to act as.
 authorizedDnsOwner :: DnsOwnerAuthority -> DnsRecordOwner

@@ -47,6 +47,7 @@ import Prodbox.ControlPlane.TlsTargetAgentProduction
   ( TlsSecretApplyDecision (..)
   , decideTlsSecretApply
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( CertIdentity (..)
   , RetainedTlsRef (..)
@@ -115,7 +116,7 @@ controlPlaneTlsRetentionEndpointSuite =
           reference = referenceFor 1 envelope
           request = TlsStorePayload reference envelope
       result <- serveTlsStoreRequest 4096 repository (encodeControlPlaneRequest request)
-      tlsStoreHttpStatus result `shouldBe` 200
+      tlsStoreHttpStatus result `shouldBe` ReplyOk
       tlsStoreSummary result `shouldBe` "tls-store:read-back-confirmed"
       case result of
         TlsStoreSucceeded receipt ->
@@ -203,7 +204,7 @@ controlPlaneTlsRetentionEndpointSuite =
           4096
           repository
           (encodeControlPlaneRequest (TlsRestorePayload reference))
-      tlsRestoreHttpStatus result `shouldBe` 200
+      tlsRestoreHttpStatus result `shouldBe` ReplyOk
       decodeControlPlaneResponse
         (1024 * 1024)
         (LazyByteString.fromStrict (tlsRestoreResponseBody result))

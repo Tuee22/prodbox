@@ -55,6 +55,7 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease (AuthorityDuration)
 import Prodbox.Runtime.Role (RuntimeRole)
 
@@ -64,7 +65,7 @@ data AuthenticatedRoleHandler m = AuthenticatedRoleHandler
       :: VerifiedCallerSlot
       -> ControlPlaneRoute
       -> ByteString
-      -> m (Maybe (Int, ByteString))
+      -> m (Maybe (ReplyStatus, ByteString))
   }
 
 -- | Lift a handler that has no caller-dependent operations.  This is the only
@@ -132,7 +133,7 @@ authenticatedRoleInterpreter
         Right request -> do
           attempted <- provideAuthenticatedReplayAttempt providers
           case attempted of
-            Left _ -> pure (Just (503, "authenticated-replay-attempt-unavailable\n"))
+            Left _ -> pure (Just (ReplyServiceUnavailable, "authenticated-replay-attempt-unavailable\n"))
             Right attempt -> do
               replayed <-
                 runReplayProtectedRequest
@@ -156,56 +157,56 @@ authenticatedRoleInterpreter
             AuthenticatedRoleHandlerResponseInvalid
             (mkReplayResponse replayLimits status responseBody)
 
-authenticatedServerErrorResponse :: AuthenticatedServerError -> (Int, ByteString)
+authenticatedServerErrorResponse :: AuthenticatedServerError -> (ReplyStatus, ByteString)
 authenticatedServerErrorResponse err = case err of
   AuthenticatedServerFrameFailed _ ->
-    (400, "authenticated-frame-refused\n")
+    (ReplyBadRequest, "authenticated-frame-refused\n")
   AuthenticatedServerRouteRoleMismatch {} ->
-    (500, "authenticated-route-role-mismatch\n")
+    (ReplyInternalError, "authenticated-route-role-mismatch\n")
   AuthenticatedServerScopeUnavailable _ ->
-    (503, "authenticated-scope-unavailable\n")
+    (ReplyServiceUnavailable, "authenticated-scope-unavailable\n")
   AuthenticatedServerEpochUnavailable _ ->
-    (503, "authenticated-epoch-unavailable\n")
+    (ReplyServiceUnavailable, "authenticated-epoch-unavailable\n")
   AuthenticatedServerTimeUnavailable _ ->
-    (503, "authenticated-time-unavailable\n")
+    (ReplyServiceUnavailable, "authenticated-time-unavailable\n")
   AuthenticatedServerTrustRegistryUnavailable _ ->
-    (503, "authenticated-trust-unavailable\n")
+    (ReplyServiceUnavailable, "authenticated-trust-unavailable\n")
   AuthenticatedServerTrustRegistryRoleMismatch {} ->
-    (500, "authenticated-trust-role-mismatch\n")
+    (ReplyInternalError, "authenticated-trust-role-mismatch\n")
   AuthenticatedServerRequestAuthenticationFailed _ ->
-    (401, "authentication-refused\n")
+    (ReplyUnauthorized, "authentication-refused\n")
   AuthenticatedServerRequestAuthenticationAmbiguous ->
-    (401, "authentication-ambiguous\n")
+    (ReplyUnauthorized, "authentication-ambiguous\n")
   AuthenticatedServerBindingFailed _ ->
-    (500, "authentication-binding-invalid\n")
+    (ReplyInternalError, "authentication-binding-invalid\n")
 
 replayProtectedResponse
   :: ReplayProtectedResult AuthenticatedRoleHandlerFailure
-  -> (Int, ByteString)
+  -> (ReplyStatus, ByteString)
 replayProtectedResponse result = case result of
   ReplayProtectedExecuted response -> replayResponse response
   ReplayProtectedRecovered response -> replayResponse response
-  ReplayProtectedInFlight -> (409, "authenticated-replay-in-flight\n")
-  ReplayProtectedTombstoned -> (409, "authenticated-replay-tombstoned\n")
-  ReplayProtectedDigestConflict -> (409, "authenticated-replay-digest-conflict\n")
-  ReplayProtectedExpired -> (408, "authenticated-replay-expired\n")
+  ReplayProtectedInFlight -> (ReplyConflict, "authenticated-replay-in-flight\n")
+  ReplayProtectedTombstoned -> (ReplyConflict, "authenticated-replay-tombstoned\n")
+  ReplayProtectedDigestConflict -> (ReplyConflict, "authenticated-replay-digest-conflict\n")
+  ReplayProtectedExpired -> (ReplyRequestTimeout, "authenticated-replay-expired\n")
   ReplayProtectedCapacityExhausted ->
-    (503, "authenticated-replay-capacity-exhausted\n")
+    (ReplyServiceUnavailable, "authenticated-replay-capacity-exhausted\n")
   ReplayProtectedUnavailable _ ->
-    (503, "authenticated-replay-unavailable\n")
+    (ReplyServiceUnavailable, "authenticated-replay-unavailable\n")
   ReplayProtectedAttemptsExhausted ->
-    (503, "authenticated-replay-attempts-exhausted\n")
+    (ReplyServiceUnavailable, "authenticated-replay-attempts-exhausted\n")
   ReplayProtectedEffectFailed failure -> handlerFailureResponse failure
   ReplayProtectedCompletionUnconfirmed _ ->
-    (503, "authenticated-replay-completion-unconfirmed\n")
+    (ReplyServiceUnavailable, "authenticated-replay-completion-unconfirmed\n")
 
-replayResponse :: ReplayResponse -> (Int, ByteString)
+replayResponse :: ReplayResponse -> (ReplyStatus, ByteString)
 replayResponse response =
   (replayResponseStatus response, replayResponseBody response)
 
-handlerFailureResponse :: AuthenticatedRoleHandlerFailure -> (Int, ByteString)
+handlerFailureResponse :: AuthenticatedRoleHandlerFailure -> (ReplyStatus, ByteString)
 handlerFailureResponse failure = case failure of
   AuthenticatedRoleHandlerUnavailable ->
-    (503, "interpreter-unavailable\n")
+    (ReplyServiceUnavailable, "interpreter-unavailable\n")
   AuthenticatedRoleHandlerResponseInvalid _ ->
-    (500, "authenticated-handler-response-invalid\n")
+    (ReplyInternalError, "authenticated-handler-response-invalid\n")

@@ -24,10 +24,11 @@ import Prodbox.Lifecycle.Lease (mkFencingToken, mkOwnerNonce)
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
   , TargetSinkObservation (..)
-  , TargetSinkRecord (..)
+  , TargetSinkRecord
   , TargetSinkVersion
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , targetSinkRecordFromStore
   )
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
@@ -285,13 +286,12 @@ otherRecord = recordFor otherGeneration
 
 recordFor :: CredentialGeneration -> TargetSinkRecord Text.Text
 recordFor candidateGeneration =
-  TargetSinkRecord
-    { targetSinkRecordOwnerNonce = mustRight (mkOwnerNonce "owner-1")
-    , targetSinkRecordFencingToken = mustRight (mkFencingToken 1)
-    , targetSinkRecordGeneration = candidateGeneration
-    , targetSinkRecordDigest = mustRight (mkTargetValueDigest (Text.replicate 64 "a"))
-    , targetSinkRecordPayload = "payload"
-    }
+  targetSinkRecordFromStore
+    (mustRight (mkOwnerNonce "owner-1"))
+    (mustRight (mkFencingToken 1))
+    candidateGeneration
+    (mustRight (mkTargetValueDigest (Text.replicate 64 "a")))
+    "payload"
 
 verifiedManifest :: VerifiedDecommissionManifest
 verifiedManifest =

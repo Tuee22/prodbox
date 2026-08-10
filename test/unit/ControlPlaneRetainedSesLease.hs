@@ -43,6 +43,7 @@ import Prodbox.Http.Client
   ( HttpBoundedError (HttpBoundedTransport)
   , HttpError (HttpConnectionFailure)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -130,7 +131,7 @@ controlPlaneRetainedSesLeaseSuite =
       case response of
         RetainedSesLeaseProjectionRefused _ -> pure ()
         other -> expectationFailure ("expected projection refusal, got " ++ show other)
-      retainedSesLeaseResponseHttpStatus response `shouldBe` 400
+      retainedSesLeaseResponseHttpStatus response `shouldBe` ReplyBadRequest
       readIORef writes `shouldReturn` 0
 
     it "never sends a caller-selected coordinate through the closed client" $ do
@@ -343,7 +344,7 @@ clientFor handler = do
                       (LazyByteString.fromStrict (authenticatedServerInnerBody request))
                   pure
                     ( Right
-                        ( retainedSesLeaseResponseHttpStatus response
+                        ( replyStatusCode (retainedSesLeaseResponseHttpStatus response)
                         , retainedSesLeaseResponseBody response
                         )
                     )

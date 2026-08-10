@@ -37,6 +37,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityDecommissionDecision (..)
   )
@@ -177,22 +178,22 @@ serveAuthorityDecommissionStopRequest maximumBytes expectedSigner repository bod
       pure (AuthorityDecommissionStopRefused (AuthorityStopBadRequest detail))
     Right request -> runAuthorityDecommissionStop expectedSigner repository request
 
-authorityDecommissionStopHttpStatus :: AuthorityDecommissionStopResult -> Int
+authorityDecommissionStopHttpStatus :: AuthorityDecommissionStopResult -> ReplyStatus
 authorityDecommissionStopHttpStatus result = case result of
-  AuthorityDecommissionStopped -> 200
-  AuthorityDecommissionStopAlreadyCommitted -> 200
+  AuthorityDecommissionStopped -> ReplyOk
+  AuthorityDecommissionStopAlreadyCommitted -> ReplyOk
   AuthorityDecommissionStopRefused detail -> case detail of
-    AuthorityStopBadRequest _ -> 400
-    AuthorityStopManifestInvalid _ -> 403
-    AuthorityStopReceiptPathInvalid _ -> 400
-    AuthorityStopReceiptHeaderMismatch -> 409
-    AuthorityStopCommittedManifestUnavailable _ -> 503
-    AuthorityStopCommittedManifestMissing -> 409
-    AuthorityStopCommittedManifestMismatch _ _ -> 409
-    AuthorityStopCommitUnavailable _ -> 503
-    AuthorityStopNotFrozen -> 409
-    AuthorityStopAlreadyStoppedWithDifferentBinding -> 409
-    AuthorityStopFreezeAfterPermanentStop -> 409
+    AuthorityStopBadRequest _ -> ReplyBadRequest
+    AuthorityStopManifestInvalid _ -> ReplyForbidden
+    AuthorityStopReceiptPathInvalid _ -> ReplyBadRequest
+    AuthorityStopReceiptHeaderMismatch -> ReplyConflict
+    AuthorityStopCommittedManifestUnavailable _ -> ReplyServiceUnavailable
+    AuthorityStopCommittedManifestMissing -> ReplyConflict
+    AuthorityStopCommittedManifestMismatch _ _ -> ReplyConflict
+    AuthorityStopCommitUnavailable _ -> ReplyServiceUnavailable
+    AuthorityStopNotFrozen -> ReplyConflict
+    AuthorityStopAlreadyStoppedWithDifferentBinding -> ReplyConflict
+    AuthorityStopFreezeAfterPermanentStop -> ReplyConflict
 
 authorityDecommissionStopSummary :: AuthorityDecommissionStopResult -> Text
 authorityDecommissionStopSummary result = case result of

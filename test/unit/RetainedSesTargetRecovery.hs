@@ -61,7 +61,6 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , TargetIntentCoordinate
   , TargetIntentProjection
   , TargetSinkCasAdapter (..)
-  , TargetSinkCasRequest (..)
   , TargetSinkCasResult (..)
   , TargetSinkObservation (..)
   , TargetSinkReadbackRefusal (..)
@@ -76,6 +75,9 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , targetProjectionEntries
   , targetProjectionEntryIntent
   , targetProjectionEntryTargetIdentity
+  , targetSinkCasRequestExpectedVersion
+  , targetSinkCasRequestRecord
+  , targetSinkCasRequestSink
   )
 import Prodbox.Lifecycle.TargetCommitInterpreter
   ( TargetCommitInterpreter (..)
@@ -328,9 +330,9 @@ fakeSinkAdapter state =
         record state (SinkObserved identity)
         readSink state identity
     , targetSinkCompareAndSwap = \request -> do
-        let (sink, expectedVersion, sinkRecord) = case request of
-              TargetSinkInitialize target value -> (target, Nothing, value)
-              TargetSinkReplace target expected value -> (target, Just expected, value)
+        let sink = targetSinkCasRequestSink request
+            expectedVersion = targetSinkCasRequestExpectedVersion request
+            sinkRecord = targetSinkCasRequestRecord request
             identity = targetSecretSinkIdentity sink
         current <- readSink state identity
         if sinkCasMatches expectedVersion current

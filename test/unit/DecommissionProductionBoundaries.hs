@@ -34,9 +34,10 @@ import Prodbox.Lifecycle.Lease (mkFencingToken, mkOwnerNonce)
 import Prodbox.Lifecycle.ResidueStatus (ResidueStatus (ResidueAbsent))
 import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetSinkObservation (..)
-  , TargetSinkRecord (..)
+  , TargetSinkRecord
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , targetSinkRecordFromStore
   )
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
@@ -175,14 +176,12 @@ targetSink =
 
 targetRecord :: TargetSinkRecord Text
 targetRecord =
-  TargetSinkRecord
-    { targetSinkRecordOwnerNonce = mustRight (mkOwnerNonce "owner-17")
-    , targetSinkRecordFencingToken = mustRight (mkFencingToken 17)
-    , targetSinkRecordGeneration = mustRight (mkCredentialGeneration 17)
-    , targetSinkRecordDigest =
-        mustRight (mkTargetValueDigest (Text.replicate 64 "a"))
-    , targetSinkRecordPayload = "opaque-fixture"
-    }
+  targetSinkRecordFromStore
+    (mustRight (mkOwnerNonce "owner-17"))
+    (mustRight (mkFencingToken 17))
+    (mustRight (mkCredentialGeneration 17))
+    (mustRight (mkTargetValueDigest (Text.replicate 64 "a")))
+    "opaque-fixture"
 
 retainedCustodyManifest :: VerifiedDecommissionManifest
 retainedCustodyManifest = verifiedFor [RetainedCustody]

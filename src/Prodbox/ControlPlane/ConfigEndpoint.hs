@@ -53,6 +53,7 @@ import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityConfigProposalDecision (..)
   , AuthoritySubmissionGateRefusal
@@ -413,11 +414,11 @@ serveConfigProposeCasRequest maximumBytes repository callerSlot body
     CallerCredentialProvisioner -> False
     CallerService _ -> False
 
-configEndpointHttpStatus :: ConfigEndpointResult response -> Int
+configEndpointHttpStatus :: ConfigEndpointResult response -> ReplyStatus
 configEndpointHttpStatus result = case result of
-  ConfigEndpointBadRequest _ -> 400
-  ConfigEndpointForbidden -> 403
-  ConfigEndpointRespond _ -> 200
+  ConfigEndpointBadRequest _ -> ReplyBadRequest
+  ConfigEndpointForbidden -> ReplyForbidden
+  ConfigEndpointRespond _ -> ReplyOk
 
 configEndpointResponseBody
   :: (Serialise response)

@@ -39,6 +39,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
@@ -258,13 +259,13 @@ encodeCasResult result = case result of
 badRequest :: ControlPlaneRequestCodecError -> RetainedSesLeaseResponse
 badRequest = RetainedSesLeaseBadRequest . controlPlaneRequestCodecToken
 
-retainedSesLeaseResponseHttpStatus :: RetainedSesLeaseResponse -> Int
+retainedSesLeaseResponseHttpStatus :: RetainedSesLeaseResponse -> ReplyStatus
 retainedSesLeaseResponseHttpStatus response = case response of
-  RetainedSesLeaseObservation _ -> 200
-  RetainedSesLeaseCas _ -> 200
-  RetainedSesLeaseBadRequest _ -> 400
-  RetainedSesLeaseProjectionRefused _ -> 400
-  RetainedSesLeaseUnavailable _ -> 503
+  RetainedSesLeaseObservation _ -> ReplyOk
+  RetainedSesLeaseCas _ -> ReplyOk
+  RetainedSesLeaseBadRequest _ -> ReplyBadRequest
+  RetainedSesLeaseProjectionRefused _ -> ReplyBadRequest
+  RetainedSesLeaseUnavailable _ -> ReplyServiceUnavailable
 
 retainedSesLeaseResponseBody :: RetainedSesLeaseResponse -> ByteString
 retainedSesLeaseResponseBody =

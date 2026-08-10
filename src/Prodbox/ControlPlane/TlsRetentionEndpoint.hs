@@ -50,6 +50,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention (RetainedTlsRef (..))
 
 data TlsSealedEnvelope = TlsSealedEnvelope
@@ -208,13 +209,13 @@ serveTlsRestoreRequest maximumBytes repository body =
         Left detail -> TlsRestoreReadFailed detail
         Right observation -> TlsRestoreObserved observation
 
-tlsStoreHttpStatus :: TlsStoreResult -> Int
+tlsStoreHttpStatus :: TlsStoreResult -> ReplyStatus
 tlsStoreHttpStatus result = case result of
-  TlsStoreSucceeded _ -> 200
-  TlsStoreFailed _ -> 503
-  TlsStoreBadRequest _ -> 400
-  TlsStoreInvalidEnvelope -> 400
-  TlsStoreDigestMismatch -> 409
+  TlsStoreSucceeded _ -> ReplyOk
+  TlsStoreFailed _ -> ReplyServiceUnavailable
+  TlsStoreBadRequest _ -> ReplyBadRequest
+  TlsStoreInvalidEnvelope -> ReplyBadRequest
+  TlsStoreDigestMismatch -> ReplyConflict
 
 tlsStoreSummary :: TlsStoreResult -> Text
 tlsStoreSummary result = case result of
@@ -224,13 +225,13 @@ tlsStoreSummary result = case result of
   TlsStoreInvalidEnvelope -> "tls-store:invalid-envelope"
   TlsStoreDigestMismatch -> "tls-store:digest-mismatch"
 
-tlsRestoreHttpStatus :: TlsRestoreResult -> Int
+tlsRestoreHttpStatus :: TlsRestoreResult -> ReplyStatus
 tlsRestoreHttpStatus result = case result of
-  TlsRestoreObserved TlsEnvelopeMissing -> 404
-  TlsRestoreObserved (TlsEnvelopePresent _ _) -> 200
-  TlsRestoreObserved (TlsEnvelopeCorrupt _) -> 500
-  TlsRestoreReadFailed _ -> 503
-  TlsRestoreBadRequest _ -> 400
+  TlsRestoreObserved TlsEnvelopeMissing -> ReplyNotFound
+  TlsRestoreObserved (TlsEnvelopePresent _ _) -> ReplyOk
+  TlsRestoreObserved (TlsEnvelopeCorrupt _) -> ReplyInternalError
+  TlsRestoreReadFailed _ -> ReplyServiceUnavailable
+  TlsRestoreBadRequest _ -> ReplyBadRequest
 
 tlsRestoreSummary :: TlsRestoreResult -> Text
 tlsRestoreSummary result = case result of

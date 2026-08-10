@@ -47,6 +47,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.RequestAuthentication (VerifiedCallerSlot)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( CanonicalPulumiCheckpoint
@@ -305,34 +306,34 @@ badRequest = PulumiCheckpointBadRequest . controlPlaneRequestCodecToken
 renderPayloadError :: PulumiCheckpointCodecError -> Text
 renderPayloadError = Text.pack . show
 
-pulumiCheckpointResponseHttpStatus :: PulumiCheckpointResponse -> Int
+pulumiCheckpointResponseHttpStatus :: PulumiCheckpointResponse -> ReplyStatus
 pulumiCheckpointResponseHttpStatus response = case response of
   PulumiCheckpointObserved _ observation -> observationStatus observation
   PulumiCheckpointPublication _ result -> publicationStatus result
   PulumiCheckpointRetirement _ result -> retirementStatus result
-  PulumiCheckpointBadRequest _ -> 400
-  PulumiCheckpointRegistrationRefused _ -> 400
-  PulumiCheckpointOperationRefRefused _ _ -> 400
-  PulumiCheckpointPayloadRefused _ _ -> 400
+  PulumiCheckpointBadRequest _ -> ReplyBadRequest
+  PulumiCheckpointRegistrationRefused _ -> ReplyBadRequest
+  PulumiCheckpointOperationRefRefused _ _ -> ReplyBadRequest
+  PulumiCheckpointPayloadRefused _ _ -> ReplyBadRequest
  where
   observationStatus observation = case observation of
-    PulumiCheckpointWireMissing -> 200
-    PulumiCheckpointWireObserved {} -> 200
-    PulumiCheckpointWireCorrupt _ -> 500
-    PulumiCheckpointWireCorruptAt {} -> 500
-    PulumiCheckpointWireEndpointUnready _ -> 503
-    PulumiCheckpointWireUnobservable _ -> 503
+    PulumiCheckpointWireMissing -> ReplyOk
+    PulumiCheckpointWireObserved {} -> ReplyOk
+    PulumiCheckpointWireCorrupt _ -> ReplyInternalError
+    PulumiCheckpointWireCorruptAt {} -> ReplyInternalError
+    PulumiCheckpointWireEndpointUnready _ -> ReplyServiceUnavailable
+    PulumiCheckpointWireUnobservable _ -> ReplyServiceUnavailable
   publicationStatus result = case result of
-    PulumiCheckpointWirePublished _ -> 200
-    PulumiCheckpointWireAlreadyCurrent _ -> 200
-    PulumiCheckpointWirePublicationConflict _ -> 409
-    PulumiCheckpointWirePublicationRefused _ -> 409
-    PulumiCheckpointWirePublicationUnavailable _ -> 503
+    PulumiCheckpointWirePublished _ -> ReplyOk
+    PulumiCheckpointWireAlreadyCurrent _ -> ReplyOk
+    PulumiCheckpointWirePublicationConflict _ -> ReplyConflict
+    PulumiCheckpointWirePublicationRefused _ -> ReplyConflict
+    PulumiCheckpointWirePublicationUnavailable _ -> ReplyServiceUnavailable
   retirementStatus result = case result of
-    PulumiCheckpointWireAlreadyAbsent -> 200
-    PulumiCheckpointWireRetiredAndReadBack -> 200
-    PulumiCheckpointWireRetirementRefused _ -> 409
-    PulumiCheckpointWireRetirementUnavailable _ -> 503
+    PulumiCheckpointWireAlreadyAbsent -> ReplyOk
+    PulumiCheckpointWireRetiredAndReadBack -> ReplyOk
+    PulumiCheckpointWireRetirementRefused _ -> ReplyConflict
+    PulumiCheckpointWireRetirementUnavailable _ -> ReplyServiceUnavailable
 
 pulumiCheckpointResponseBody :: PulumiCheckpointResponse -> ByteString
 pulumiCheckpointResponseBody =

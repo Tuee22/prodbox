@@ -72,6 +72,7 @@ import Prodbox.ControlPlane.Codec
   , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityEpoch
   , authorityEpochValue
@@ -521,17 +522,17 @@ serveOperationObserveRequest maximumBytes repository body =
 -- phase); a reused sequence and an expired sequence are @409 Conflict@; an
 -- at-capacity ledger is @503@ (transient back-pressure, retryable, no state change);
 -- a failed durable write is @503@; a malformed request is @400@.
-operationSubmitHttpStatus :: OperationSubmitResult -> Int
+operationSubmitHttpStatus :: OperationSubmitResult -> ReplyStatus
 operationSubmitHttpStatus result = case result of
-  OperationSubmitBadRequest _ -> 400
-  OperationSubmitReadFailed _ -> 503
-  OperationSubmitWriteFailed _ -> 503
+  OperationSubmitBadRequest _ -> ReplyBadRequest
+  OperationSubmitReadFailed _ -> ReplyServiceUnavailable
+  OperationSubmitWriteFailed _ -> ReplyServiceUnavailable
   OperationSubmitDecided decision -> case decision of
-    SubmissionAccepted _ -> 200
-    SubmissionDuplicate _ -> 200
-    SubmissionRefusedFull -> 503
-    SubmissionRefusedSequenceReused -> 409
-    SubmissionRefusedExpired -> 409
+    SubmissionAccepted _ -> ReplyOk
+    SubmissionDuplicate _ -> ReplyOk
+    SubmissionRefusedFull -> ReplyServiceUnavailable
+    SubmissionRefusedSequenceReused -> ReplyConflict
+    SubmissionRefusedExpired -> ReplyConflict
 
 -- | Stable single-line diagnostic body for @operations/submit@. Kebab-case tokens
 -- keep the response machine-greppable without serialising the bound 'OperationId'.
@@ -551,12 +552,12 @@ operationSubmitSummary result = case result of
 -- | Total HTTP status projection for @operations/observe@. A known submission
 -- (in-flight, settled, or expired but previously seen) is @200@; a never-seen
 -- @(client, sequence)@ is @404@.
-operationObserveHttpStatus :: SubmissionStatus -> Int
+operationObserveHttpStatus :: SubmissionStatus -> ReplyStatus
 operationObserveHttpStatus status = case status of
-  StatusInFlight -> 200
-  StatusSettled _ -> 200
-  StatusExpired -> 200
-  StatusUnknown -> 404
+  StatusInFlight -> ReplyOk
+  StatusSettled _ -> ReplyOk
+  StatusExpired -> ReplyOk
+  StatusUnknown -> ReplyNotFound
 
 -- | Stable single-line diagnostic body for @operations/observe@.
 operationObserveSummary :: SubmissionStatus -> Text
@@ -567,11 +568,11 @@ operationObserveSummary status = case status of
   StatusExpired -> "operation-expired"
   StatusUnknown -> "operation-unknown"
 
-operationObserveResultHttpStatus :: OperationObserveResult -> Int
+operationObserveResultHttpStatus :: OperationObserveResult -> ReplyStatus
 operationObserveResultHttpStatus result = case result of
   OperationObserveFound status -> operationObserveHttpStatus status
-  OperationObserveReadFailed _ -> 503
-  OperationObserveBadRequest _ -> 400
+  OperationObserveReadFailed _ -> ReplyServiceUnavailable
+  OperationObserveBadRequest _ -> ReplyBadRequest
 
 operationObserveResultSummary :: OperationObserveResult -> Text
 operationObserveResultSummary result = case result of

@@ -9,6 +9,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   )
 import Prodbox.ControlPlane.ProviderWorkEndpoint
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ReconcileRegisteredStack)
@@ -38,53 +39,53 @@ controlPlaneProviderWorkEndpointSuite =
                 4096
                 repository
                 (encodeControlPlaneRequest payload)
-            providerWorkApplyHttpStatus result `shouldBe` 200
+            providerWorkApplyHttpStatus result `shouldBe` ReplyOk
         )
         allSubmitPayloads
     it "admits a well-formed stack reconcile and commits the in-flight state" $ do
       (repository, stateRef) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitReconcile)
-      providerWorkApplyHttpStatus result `shouldBe` 200
+      providerWorkApplyHttpStatus result `shouldBe` ReplyOk
       providerWorkApplySummary result `shouldBe` "provider-work-admitted"
       readIORef stateRef `shouldReturn` ProviderInFlight coordReconcile
     it "treats an identical resubmission as an idempotent already-in-flight" $ do
       (repository, _) <- freshRepository (ProviderInFlight coordReconcile) False
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitReconcile)
-      providerWorkApplyHttpStatus result `shouldBe` 200
+      providerWorkApplyHttpStatus result `shouldBe` ReplyOk
       providerWorkApplySummary result `shouldBe` "provider-work-already-in-flight"
     it "refuses an unregistered resource with a 409 conflict" $ do
       (repository, stateRef) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitStaging)
-      providerWorkApplyHttpStatus result `shouldBe` 409
+      providerWorkApplyHttpStatus result `shouldBe` ReplyConflict
       providerWorkApplySummary result `shouldBe` "provider-work-refused:unregistered-resource"
       readIORef stateRef `shouldReturn` ProviderIdle
     it "refuses a malformed body before reading state" $ do
       (repository, stateRef) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 4096 repository "not-a-cbor-envelope"
       result `shouldBe` ProviderWorkBadRequest ControlPlaneRequestInvalid
-      providerWorkApplyHttpStatus result `shouldBe` 400
+      providerWorkApplyHttpStatus result `shouldBe` ReplyBadRequest
       providerWorkApplySummary result `shouldBe` "provider-work-bad-request:invalid"
       readIORef stateRef `shouldReturn` ProviderIdle
     it "refuses an oversized body before reading state" $ do
       (repository, _) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 2 repository (encodeControlPlaneRequest submitReconcile)
       result `shouldBe` ProviderWorkBadRequest ControlPlaneRequestTooLarge
-      providerWorkApplyHttpStatus result `shouldBe` 400
+      providerWorkApplyHttpStatus result `shouldBe` ReplyBadRequest
     it "refuses a well-formed body whose reference fails re-validation" $ do
       (repository, _) <- freshRepository ProviderIdle False
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitEmptyRef)
-      providerWorkApplyHttpStatus result `shouldBe` 400
+      providerWorkApplyHttpStatus result `shouldBe` ReplyBadRequest
       providerWorkApplySummary result `shouldBe` "provider-work-invalid-field:stack:ProviderRefEmpty"
     it "reports a failed durable commit as a retryable write failure" $ do
       (repository, _) <- freshRepository ProviderIdle True
       result <- serveProviderWorkApplyRequest 4096 repository (encodeControlPlaneRequest submitReconcile)
-      providerWorkApplyHttpStatus result `shouldBe` 503
+      providerWorkApplyHttpStatus result `shouldBe` ReplyServiceUnavailable
       providerWorkApplySummary result `shouldBe` "provider-work-write-failed"
     it "observes the current session state without mutating it" $ do
       (repository, _) <- freshRepository (ProviderInFlight coordReconcile) False
       observed <- serveProviderWorkObserve repository
       observed `shouldBe` ProviderInFlight coordReconcile
-      providerWorkObserveStatus observed `shouldBe` 200
+      providerWorkObserveStatus observed `shouldBe` ReplyOk
       providerWorkObserveSummary observed `shouldBe` "provider-work-observe:in-flight"
     it "observes an idle session" $ do
       (repository, _) <- freshRepository initialProviderWorkState False

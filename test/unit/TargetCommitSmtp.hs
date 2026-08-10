@@ -104,9 +104,12 @@ targetCommitSmtpSuite = do
                   globalObservation
               )
       record <- case decideTargetSinkWrite payloadDigest writePermit secretPayload TargetSinkMissing of
-        TargetSinkWriteCompareAndSwap (TargetSinkInitialize actualSink record) -> do
-          actualSink `shouldBe` sinkA
-          pure record
+        TargetSinkWriteCompareAndSwap request -> do
+          targetSinkCasRequestSink request `shouldBe` sinkA
+          -- Sprint 4.70: an initialize is an absent expected version, not
+          -- version zero, and the projection keeps the two distinguishable.
+          targetSinkCasRequestExpectedVersion request `shouldBe` Nothing
+          pure (targetSinkCasRequestRecord request)
         other -> unexpected ("expected one sink initialize CAS, got " ++ show other)
       let sinkReadback = TargetSinkObserved sinkVersion record
           readback = expectRight (confirmTargetSinkReadback payloadDigest writePermit sinkReadback)
@@ -180,7 +183,7 @@ targetCommitSmtpSuite = do
                   (observedGlobal "intent-v2" projectionBoth)
               )
           recordA = case decideTargetSinkWrite payloadDigest writePermitA secretPayload TargetSinkMissing of
-            TargetSinkWriteCompareAndSwap (TargetSinkInitialize _ record) -> record
+            TargetSinkWriteCompareAndSwap request -> targetSinkCasRequestRecord request
             other -> error ("expected sink action: " ++ show other)
           exactA = TargetSinkObserved sinkVersion recordA
           witnessA =
@@ -314,6 +317,102 @@ targetCommitSmtpSuite = do
       filter (== "sink-observe") secondEvents `shouldBe` []
       filter (== "global-cas") secondEvents `shouldBe` []
 
+    it "Sprint 4.62: a refused sink CAS is a typed failure, not a read-back question" $ do
+      -- Before 4.62 the store's verdict was bound to `_`, so a store that
+      -- explicitly refused the write was indistinguishable from one that applied
+      -- it: whatever the following read-back saw decided the run. Here the sink
+      -- observation is left exactly as a successful write would leave it, so the
+      -- read-back WOULD have confirmed and the old code WOULD have committed.
+      events <- newIORef []
+      global <- newIORef ModelBMissing
+      sinkState <- newIORef TargetSinkMissing
+      globalVersion <- newIORef (1 :: Natural)
+      let base = fakeTargetCommitInterpreter events global sinkState globalVersion
+          refusing =
+            base
+              { targetCommitSinkAdapter =
+                  (targetCommitSinkAdapter base)
+                    { targetSinkCompareAndSwap = \request -> do
+                        modifyIORef' events (++ ["sink-cas"])
+                        let version =
+                              maybe sinkVersion id (targetSinkCasRequestExpectedVersion request)
+                            sinkRecord = targetSinkCasRequestRecord request
+                        -- Leave the sink looking exactly as a success would.
+                        writeIORef sinkState (TargetSinkObserved version sinkRecord)
+                        pure (TargetSinkCasRefused "target sink refused the write")
+                    }
+              }
+      result <-
+        runPreparedTargetCommit
+          refusing
+          registered
+          intentCoordinate
+          sinkA
+          generationOne
+          digestA
+          (at 1600)
+          secretFields
+      result `shouldBe` Left (TargetCommitSinkCasRefused "target sink refused the write")
+      recorded <- readIORef events
+      -- It refuses at the verdict, so no read-back observation follows the CAS.
+      length (filter (== "sink-cas") recorded) `shouldBe` 1
+      drop 1 (dropWhile (/= "sink-cas") recorded) `shouldBe` []
+
+    it "Sprint 4.63: a refused global-ledger completion is not a read-back question" $ do
+      -- The co-defect of 4.62 one store along. The completion CAS verdict was
+      -- bound to `_`, so a ledger that explicitly refused the write was decided
+      -- by whatever the following observation saw. Here the ledger is left
+      -- exactly as a successful completion would leave it -- the projection
+      -- carries the committed intent -- so the read-back WOULD have confirmed
+      -- and the old code WOULD have returned `Committed` for a write the ledger
+      -- said it did not perform.
+      events <- newIORef []
+      global <- newIORef ModelBMissing
+      sinkState <- newIORef TargetSinkMissing
+      globalVersion <- newIORef (1 :: Natural)
+      casCount <- newIORef (0 :: Int)
+      let base = fakeTargetCommitInterpreter events global sinkState globalVersion
+          refusingCompletion =
+            base
+              { targetCommitGlobalAdapter =
+                  (targetCommitGlobalAdapter base)
+                    { modelBCompareAndSwap = \request -> do
+                        applied <- modelBCompareAndSwap (targetCommitGlobalAdapter base) request
+                        attempt <- readIORef casCount
+                        writeIORef casCount (attempt + 1)
+                        -- Attempt 0 is the prepare CAS; attempt 1 is the
+                        -- completion. Only the completion refuses, and the
+                        -- projection it refused to write is already stored.
+                        pure $
+                          if attempt == 1
+                            then ModelBCasRefusedCorrupt "global ledger refused the completion write"
+                            else applied
+                    }
+              }
+      result <-
+        runPreparedTargetCommit
+          refusingCompletion
+          registered
+          intentCoordinate
+          sinkA
+          generationOne
+          digestA
+          (at 1600)
+          secretFields
+      result
+        `shouldBe` Left
+          ( TargetCommitGlobalCasRefused
+              GlobalLedgerComplete
+              "global ledger refused the completion write"
+          )
+      recorded <- readIORef events
+      -- Refused at the verdict: no confirming observation follows the
+      -- completion CAS, so the refusal cannot be overturned by a read-back.
+      length (filter (== "global-cas") recorded) `shouldBe` 2
+      let afterCompletion =
+            drop 1 (dropWhile (/= "global-cas") (drop 1 (dropWhile (/= "global-cas") recorded)))
+      filter (== "global-observe") afterCompletion `shouldBe` []
+
     it "fails closed when authority time is unobservable before mutation" $ do
       events <- newIORef []
       global <- newIORef ModelBMissing
@@ -355,7 +454,7 @@ targetCommitSmtpSuite = do
                   (observedGlobal "intent-v2" projectionBoth)
               )
           recordA = case decideTargetSinkWrite payloadDigest writePermitA secretPayload TargetSinkMissing of
-            TargetSinkWriteCompareAndSwap (TargetSinkInitialize _ record) -> record
+            TargetSinkWriteCompareAndSwap request -> targetSinkCasRequestRecord request
             other -> error ("expected target record fixture, got " ++ show other)
       events <- newIORef []
       global <- newIORef (observedGlobal "recovery-v1" projectionBoth)
@@ -394,7 +493,7 @@ targetCommitSmtpSuite = do
                   (observedGlobal "intent-v1" projection)
               )
           record = case decideTargetSinkWrite payloadDigest writePermit secretPayload TargetSinkMissing of
-            TargetSinkWriteCompareAndSwap (TargetSinkInitialize _ value) -> value
+            TargetSinkWriteCompareAndSwap request -> targetSinkCasRequestRecord request
             other -> error ("expected target record fixture, got " ++ show other)
       events <- newIORef []
       global <- newIORef (observedGlobal "release-v1" projection)
@@ -433,7 +532,7 @@ targetCommitSmtpSuite = do
                   (observedGlobal "intent-v1" projection)
               )
           record = case decideTargetSinkWrite payloadDigest writePermit secretPayload TargetSinkMissing of
-            TargetSinkWriteCompareAndSwap (TargetSinkInitialize _ value) -> value
+            TargetSinkWriteCompareAndSwap request -> targetSinkCasRequestRecord request
             other -> error ("expected target record fixture, got " ++ show other)
       events <- newIORef []
       global <- newIORef ModelBMissing
@@ -870,9 +969,8 @@ fakeTargetCommitInterpreter events global sinkState globalVersion =
               readIORef sinkState
           , targetSinkCompareAndSwap = \request -> do
               record "sink-cas"
-              let (version, sinkRecord) = case request of
-                    TargetSinkInitialize _ value -> (sinkVersion, value)
-                    TargetSinkReplace _ expected value -> (expected, value)
+              let version = maybe sinkVersion id (targetSinkCasRequestExpectedVersion request)
+                  sinkRecord = targetSinkCasRequestRecord request
                   observation = TargetSinkObserved version sinkRecord
               writeIORef sinkState observation
               pure (TargetSinkCasApplied version sinkRecord)

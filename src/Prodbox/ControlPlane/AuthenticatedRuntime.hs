@@ -81,6 +81,7 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease (AuthorityDuration)
 import Prodbox.Runtime.Role (RuntimeRole)
 
@@ -383,7 +384,7 @@ authenticatedRuntimeUnavailableInterpreter gap =
     { interpreterReadiness =
         constantRoleReadinessSource
           (unobservedRoleReadinessFacts "authenticated-runtime")
-    , interpreterHandle = \_ _ -> pure (Just (503, provisioningGapBody gap))
+    , interpreterHandle = \_ _ -> pure (Just (ReplyServiceUnavailable, provisioningGapBody gap))
     }
 
 provisioningGapBody :: AuthenticatedRuntimeProvisioningGap -> ByteString

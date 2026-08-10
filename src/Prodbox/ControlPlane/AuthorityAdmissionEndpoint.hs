@@ -79,6 +79,7 @@ import Prodbox.ControlPlane.RequestAuthentication
   , verifiedCallerSlotKeyGeneration
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (..)
@@ -567,24 +568,24 @@ serveAuthorityControlRequest maximumBytes repository body =
         AuthorityControlBeginMigration -> BeginAuthorityMigration
         AuthorityControlForwardMigration command -> ApplyAuthorityForwardMigration command
 
-authorityTransitionHttpStatus :: AuthorityTransitionResult -> Int
+authorityTransitionHttpStatus :: AuthorityTransitionResult -> ReplyStatus
 authorityTransitionHttpStatus result = case result of
-  AuthorityTransitionBadRequest _ -> 400
-  AuthorityTransitionReadFailed _ -> 503
-  AuthorityTransitionWriteFailed _ -> 503
+  AuthorityTransitionBadRequest _ -> ReplyBadRequest
+  AuthorityTransitionReadFailed _ -> ReplyServiceUnavailable
+  AuthorityTransitionWriteFailed _ -> ReplyServiceUnavailable
   AuthorityTransitionDecided decision -> case decision of
-    AuthorityGenesisDecided (GenesisRefused _) -> 409
-    AuthorityGenesisDecided _ -> 200
-    AuthorityBackupRepairDecided (BackupRepairRefused _) -> 409
-    AuthorityBackupRepairDecided _ -> 200
-    AuthorityMigrationStarted -> 200
-    AuthorityMigrationDecided (MigrationRefused _) -> 409
-    AuthorityMigrationDecided _ -> 200
-    AuthorityMigrationImportDecided (MigrationImportRefused _) -> 409
-    AuthorityMigrationImportDecided _ -> 200
-    AuthorityForwardMigrationDecided (ForwardMigrationRefused _) -> 409
-    AuthorityForwardMigrationDecided _ -> 200
-    AuthorityAdmissionCommandRefused _ -> 409
+    AuthorityGenesisDecided (GenesisRefused _) -> ReplyConflict
+    AuthorityGenesisDecided _ -> ReplyOk
+    AuthorityBackupRepairDecided (BackupRepairRefused _) -> ReplyConflict
+    AuthorityBackupRepairDecided _ -> ReplyOk
+    AuthorityMigrationStarted -> ReplyOk
+    AuthorityMigrationDecided (MigrationRefused _) -> ReplyConflict
+    AuthorityMigrationDecided _ -> ReplyOk
+    AuthorityMigrationImportDecided (MigrationImportRefused _) -> ReplyConflict
+    AuthorityMigrationImportDecided _ -> ReplyOk
+    AuthorityForwardMigrationDecided (ForwardMigrationRefused _) -> ReplyConflict
+    AuthorityForwardMigrationDecided _ -> ReplyOk
+    AuthorityAdmissionCommandRefused _ -> ReplyConflict
 
 authorityTransitionSummary :: AuthorityTransitionResult -> Text
 authorityTransitionSummary result = case result of
@@ -856,25 +857,25 @@ registeredGenerationForSlot callerSlot =
     Left _ -> Left "verified caller slot contains an invalid signing-key generation"
     Right generation -> Right generation
 
-authorityOperationSubmitHttpStatus :: AuthorityOperationSubmitResult -> Int
+authorityOperationSubmitHttpStatus :: AuthorityOperationSubmitResult -> ReplyStatus
 authorityOperationSubmitHttpStatus result = case result of
-  AuthorityOperationSubmitBadRequest _ -> 400
-  AuthorityOperationSubmitInvalidField _ -> 400
-  AuthorityOperationSubmitReadFailed _ -> 503
-  AuthorityOperationSubmitWriteFailed _ -> 503
+  AuthorityOperationSubmitBadRequest _ -> ReplyBadRequest
+  AuthorityOperationSubmitInvalidField _ -> ReplyBadRequest
+  AuthorityOperationSubmitReadFailed _ -> ReplyServiceUnavailable
+  AuthorityOperationSubmitWriteFailed _ -> ReplyServiceUnavailable
   AuthorityOperationSubmitDecided decision -> case decision of
-    AuthorityRegisteredSubmissionRefusedByGate _ -> 503
-    AuthorityRegisteredSubmissionRefusedRetainedCapacity -> 503
+    AuthorityRegisteredSubmissionRefusedByGate _ -> ReplyServiceUnavailable
+    AuthorityRegisteredSubmissionRefusedRetainedCapacity -> ReplyServiceUnavailable
     AuthorityRegisteredSubmissionDecided submitted -> case submitted of
-      RegisteredSubmissionAccepted _ -> 200
-      RegisteredSubmissionDuplicate _ -> 200
-      RegisteredSubmissionRefusedUnregistered -> 403
-      RegisteredSubmissionRefusedGenerationMismatch {} -> 403
-      RegisteredSubmissionRefusedReservationCapacity -> 503
-      RegisteredSubmissionRefusedDigestConflict -> 409
-      RegisteredSubmissionRefusedGlobalCapacity -> 503
-      RegisteredSubmissionRefusedExpired -> 409
-      RegisteredSubmissionRefusedLedgerDiverged -> 503
+      RegisteredSubmissionAccepted _ -> ReplyOk
+      RegisteredSubmissionDuplicate _ -> ReplyOk
+      RegisteredSubmissionRefusedUnregistered -> ReplyForbidden
+      RegisteredSubmissionRefusedGenerationMismatch {} -> ReplyForbidden
+      RegisteredSubmissionRefusedReservationCapacity -> ReplyServiceUnavailable
+      RegisteredSubmissionRefusedDigestConflict -> ReplyConflict
+      RegisteredSubmissionRefusedGlobalCapacity -> ReplyServiceUnavailable
+      RegisteredSubmissionRefusedExpired -> ReplyConflict
+      RegisteredSubmissionRefusedLedgerDiverged -> ReplyServiceUnavailable
 
 authorityOperationSubmitSummary :: AuthorityOperationSubmitResult -> Text
 authorityOperationSubmitSummary result = case result of
@@ -938,17 +939,17 @@ authorityOperationSubmitResponseBody =
         ) -> AuthorityOperationDuplicate operation
     _ -> AuthorityOperationSubmitRefused (authorityOperationSubmitSummary result)
 
-authorityOperationObserveHttpStatus :: AuthorityOperationObserveResult -> Int
+authorityOperationObserveHttpStatus :: AuthorityOperationObserveResult -> ReplyStatus
 authorityOperationObserveHttpStatus result = case result of
-  AuthorityOperationObserveBadRequest _ -> 400
-  AuthorityOperationObserveInvalidField _ -> 400
-  AuthorityOperationObserveReadFailed _ -> 503
+  AuthorityOperationObserveBadRequest _ -> ReplyBadRequest
+  AuthorityOperationObserveInvalidField _ -> ReplyBadRequest
+  AuthorityOperationObserveReadFailed _ -> ReplyServiceUnavailable
   AuthorityOperationObserveDecided decision -> case decision of
-    RegisteredSubmissionObserved _ -> 200
-    RegisteredSubmissionUnknown -> 404
-    RegisteredSubmissionObserveRefusedUnregistered -> 403
-    RegisteredSubmissionObserveRefusedGenerationMismatch {} -> 403
-    RegisteredSubmissionObserveDiverged -> 503
+    RegisteredSubmissionObserved _ -> ReplyOk
+    RegisteredSubmissionUnknown -> ReplyNotFound
+    RegisteredSubmissionObserveRefusedUnregistered -> ReplyForbidden
+    RegisteredSubmissionObserveRefusedGenerationMismatch {} -> ReplyForbidden
+    RegisteredSubmissionObserveDiverged -> ReplyServiceUnavailable
 
 authorityOperationObserveSummary :: AuthorityOperationObserveResult -> Text
 authorityOperationObserveSummary result = case result of

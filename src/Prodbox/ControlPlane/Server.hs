@@ -31,7 +31,6 @@ module Prodbox.ControlPlane.Server
   , failClosedInterpreter
   , serveControlPlaneRequest
   , renderHttpResponse
-  , httpReasonPhrase
   )
 where
 
@@ -50,6 +49,12 @@ import Prodbox.ControlPlane.RoleReadiness
   , roleReadinessSnapshot
   , unobservedRoleReadinessFacts
   )
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (..)
+  , replyStatusCode
+  , replyStatusReason
+  )
+
 import Prodbox.ControlPlane.Route
   ( ControlPlaneMethod (ControlPlaneGet, ControlPlanePost)
   , ControlPlaneRoute (..)
@@ -376,6 +381,12 @@ classifyControlPlaneRequest role raw =
 -- owned-but-unbound route (served as @503 interpreter-unavailable@) and
 -- @Just (status, body)@ once the role binds a production handler.
 --
+-- Sprint 4.67: the status is a 'ReplyStatus', not an @Int@. Sprint 4.66 closed
+-- the set at the /renderer/ and left every producer answering a raw @Int@,
+-- which is why a @dev check@ text rule had to stand in for the type. A status
+-- outside the closed set is now a @-Werror@ error at the producer rather than a
+-- lint finding about it.
+--
 -- Sprint 4.55: readiness is a 'RoleReadinessSource' — cached facts readable in
 -- one @STM@ transaction — and not an @m Bool@. The old field let a role put a
 -- signed S3 @LIST@, a Vault read, or an @aws sts get-caller-identity@
@@ -383,7 +394,7 @@ classifyControlPlaneRequest role raw =
 -- @STM@ has no @IO@, so that no longer type-checks.
 data RoleInterpreter m = RoleInterpreter
   { interpreterReadiness :: !RoleReadinessSource
-  , interpreterHandle :: ControlPlaneRoute -> ByteString -> m (Maybe (Int, ByteString))
+  , interpreterHandle :: ControlPlaneRoute -> ByteString -> m (Maybe (ReplyStatus, ByteString))
   }
 
 -- | The default interpreter: liveness serves, readiness has observed nothing
@@ -428,44 +439,40 @@ serveControlPlaneRequest
   -> RoleInterpreter m
   -> RuntimeRole
   -> ByteString
-  -> m (Int, ByteString)
+  -> m (ReplyStatus, ByteString)
 serveControlPlaneRequest resolver interpreter role raw =
   case classifyControlPlaneRequest role raw of
-    DispositionLive -> pure (200, "live\n")
+    DispositionLive -> pure (ReplyOk, "live\n")
     DispositionNotReady -> do
       state <- resolveRoleReadinessSource resolver (interpreterReadiness interpreter)
       pure
         ( if roleReadinessIsReady state
-            then (200, "ready\n")
-            else (503, "not-ready\n")
+            then (ReplyOk, "ready\n")
+            else (ReplyServiceUnavailable, "not-ready\n")
         )
-    DispositionNotOwned -> pure (404, "route-not-owned\n")
+    DispositionNotOwned -> pure (ReplyNotFound, "route-not-owned\n")
     DispositionOwnedRoute route body -> do
       handled <- interpreterHandle interpreter route body
-      pure (maybe (503, "interpreter-unavailable\n") id handled)
+      pure (maybe (ReplyServiceUnavailable, "interpreter-unavailable\n") id handled)
 
 -- | Render a bounded @Connection: close@ HTTP/1.1 response with an explicit
 -- content length.
-renderHttpResponse :: Int -> ByteString -> ByteString
+--
+-- Sprint 4.67: the status argument is a 'ReplyStatus'. Sprint 4.66 made the
+-- renderer total over a raw @Int@ by mapping an unknown code to
+-- @Unmapped Status@; the code that reached it is now a closed constructor, so
+-- the unmapped arm is unreachable from this call rather than merely unused by
+-- it. The code and the reason are the two projections of one value and cannot
+-- name different statuses.
+renderHttpResponse :: ReplyStatus -> ByteString -> ByteString
 renderHttpResponse status body =
   ByteString.concat
     [ "HTTP/1.1 "
-    , Char8.pack (show status)
+    , Char8.pack (show (replyStatusCode status))
     , " "
-    , httpReasonPhrase status
+    , replyStatusReason status
     , "\r\nConnection: close\r\nContent-Length: "
     , Char8.pack (show (ByteString.length body))
     , "\r\n\r\n"
     , body
     ]
-
--- | Total reason phrase for the closed set of status codes the role servers emit.
-httpReasonPhrase :: Int -> ByteString
-httpReasonPhrase status = case status of
-  200 -> "OK"
-  400 -> "Bad Request"
-  404 -> "Not Found"
-  409 -> "Conflict"
-  500 -> "Internal Server Error"
-  503 -> "Service Unavailable"
-  _ -> "Status"

@@ -43,6 +43,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneResponse
   )
 import Prodbox.Http.Client (HttpError (HttpDecode), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Decommission.Manifest
   ( DecommissionManifest
   , ManifestPublicKey
@@ -222,18 +223,18 @@ serveAuthorityDecommissionExportRequest maximumBytes repository signer body =
     Left err -> pure (AuthorityDecommissionExportRefused (AuthorityExportBadRequest err))
     Right request -> runAuthorityDecommissionExport repository signer request
 
-authorityDecommissionExportHttpStatus :: AuthorityDecommissionExportResult -> Int
+authorityDecommissionExportHttpStatus :: AuthorityDecommissionExportResult -> ReplyStatus
 authorityDecommissionExportHttpStatus result = case result of
-  AuthorityDecommissionExported _ -> 200
+  AuthorityDecommissionExported _ -> ReplyOk
   AuthorityDecommissionExportRefused err -> case err of
-    AuthorityExportBadRequest _ -> 400
-    AuthorityExportVerifierBindingInvalid _ -> 400
-    AuthorityExportFreezeFailed _ -> 503
-    AuthorityExportPlanUnavailable _ -> 503
-    AuthorityExportSignerUnavailable _ -> 503
-    AuthorityExportSignerGenerationChanged _ _ -> 409
-    AuthorityExportSignatureInvalid _ -> 500
-    AuthorityExportCommitFailed _ -> 503
+    AuthorityExportBadRequest _ -> ReplyBadRequest
+    AuthorityExportVerifierBindingInvalid _ -> ReplyBadRequest
+    AuthorityExportFreezeFailed _ -> ReplyServiceUnavailable
+    AuthorityExportPlanUnavailable _ -> ReplyServiceUnavailable
+    AuthorityExportSignerUnavailable _ -> ReplyServiceUnavailable
+    AuthorityExportSignerGenerationChanged _ _ -> ReplyConflict
+    AuthorityExportSignatureInvalid _ -> ReplyInternalError
+    AuthorityExportCommitFailed _ -> ReplyServiceUnavailable
 
 authorityDecommissionExportSummary :: AuthorityDecommissionExportResult -> Text
 authorityDecommissionExportSummary result = case result of

@@ -1574,8 +1574,20 @@ comments, governed documents, commit messages, and history.
 ### 20.3 Production code carries handles, not values
 
 Every secret-bearing field is a `SecretRef` resolving through Vault — coordinates only, never
-material (§3). That discipline is enforced today over Tier-0 Dhall by `tier0CarriesNoSecretValues`;
-as doctrine it also binds two surfaces the type does not reach:
+material (§3). That discipline is enforced over Tier-0 Dhall by `tier0CarriesNoSecretValues`, which
+`decodeProjectConfigDhall` runs as the last step of the one Tier-0 decode gate.
+
+**This sentence was false when it was written, and the correction is the point** (Standard C). Until
+Sprint `1.82` the named guard had **zero production call sites** — it was exported, was documented as
+the guard that rejects a record carrying a literal credential, and was reachable only from a unit
+test that ran it against the compiled-in default. A doctrine that names a mechanism as "enforced
+today" is making a claim about call sites, not about existence, and that claim went unchecked for as
+long as the mechanism merely compiled. The `aws.*` arm happened to be covered on the CLI path by
+`validateAwsCredentialsRef`, but that runs over the decoded `parameters` and never over the Tier-0
+record, so the in-cluster daemon binary context and the Tier-0 drift gate reached a full record with
+no check at all — and `acme.eab_*` had none on any path.
+
+As doctrine it also binds two surfaces the type does not reach:
 
 1. **Haskell top-level constants.** A `String`/`Text` binding holding a credential is a committed
    secret regardless of how it is later injected.

@@ -19,6 +19,10 @@ module Prodbox.PublicEdge
   , substrateIdentityIssuerUrl
   , substratePublicFqdn
   , substratePublicRouteUrl
+  , substrateServedHostMissing
+  , requireSubstratePublicFqdn
+  , requireSubstrateCertScopeSet
+  , servedHostString
   , vscodePathPrefix
   , websocketOidcPathPrefix
   , websocketPathPrefix
@@ -42,11 +46,13 @@ import Prodbox.Settings
   , ConfigFile (..)
   , DomainSection (..)
   , Route53Section (..)
+  , ValidatedServedHost (..)
   , ValidatedSettings (..)
+  , substrateServedHost
   , validatedConfig
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Tls.CertScope (CertScopeSet, renderCertScopeSet)
+import Prodbox.Tls.CertScope (CertScopeSet, fqdnText, renderCertScopeSet)
 
 data PublicEdgeRoute
   = PublicRouteAuth
@@ -109,19 +115,58 @@ identityIssuerUrl settings = publicRouteUrl settings PublicRouteAuth ++ "/realms
 sharedPublicHostFqdns :: ValidatedSettings -> [String]
 sharedPublicHostFqdns settings = [publicFqdn settings]
 
+-- | The served public hostname for a substrate, or 'Nothing' when this config
+-- declares none for it.
+--
+-- Sprint 1.83: this reads the parse 'Prodbox.Settings.validateConfig' performed
+-- rather than the raw field. Sprint 1.81 removed the crash arm and left the
+-- empty string in its place, with the honest note that a config validated only
+-- by the LOCAL tier still reaches the AWS arm — @aws_substrate.subzone_name@ is
+-- required by 'Prodbox.Settings.validateAwsBootstrapConfig', the AWS tier, and
+-- deliberately not by the local one, because empty is the correct state for a
+-- home-only host. The state is real; what was wrong was representing it as a
+-- served hostname. It is now 'Nothing', and a caller must say what to do about
+-- it.
 substratePublicFqdn :: ValidatedSettings -> Substrate -> String
 substratePublicFqdn settings substrate =
-  case substrate of
-    SubstrateHomeLocal -> publicFqdn settings
-    -- Sprint 1.81: no crash arm. `aws_substrate.subzone_name` is required by
-    -- 'Prodbox.Settings.validateAwsBootstrapConfig' — the AWS tier, and only
-    -- that tier, because an empty value is the correct state for a home-only
-    -- host — so an AWS-gated config cannot reach here empty. A config that never
-    -- passed that gate gets the empty string it configured, which every consumer
-    -- then fails on visibly, rather than an `error` unwinding the process from
-    -- inside a pure renderer.
-    SubstrateAws ->
-      Text.unpack (Text.strip (subzone_name (aws_substrate (validatedConfig settings))))
+  maybe "" servedHostString (substrateServedHost settings substrate)
+
+-- | The served host as the string the renderers below want.
+servedHostString :: ValidatedServedHost -> String
+servedHostString = Text.unpack . fqdnText . servedHostFqdn
+
+-- | 'substratePublicFqdn' for a caller that has an error channel: the substrate
+-- either has a served host or the config does not declare one, and the second
+-- case is a refusal rather than an empty hostname.
+--
+-- Sprint 1.83 introduces this as the __replacement__ accessor and converts the
+-- callers that already sit in an @Either@; the remaining consumers reach
+-- 'substratePublicFqdn' from pure renderers with no error channel, and
+-- converting those is registered in
+-- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ rather than folded in here.
+requireSubstratePublicFqdn :: ValidatedSettings -> Substrate -> Either String String
+requireSubstratePublicFqdn settings substrate =
+  maybe
+    (Left (substrateServedHostMissing substrate))
+    (Right . servedHostString)
+    (substrateServedHost settings substrate)
+
+-- | The certificate scope set the substrate's served host projects, read from
+-- the parse config validation performed rather than re-derived from raw text.
+requireSubstrateCertScopeSet :: ValidatedSettings -> Substrate -> Either String CertScopeSet
+requireSubstrateCertScopeSet settings substrate =
+  maybe
+    (Left (substrateServedHostMissing substrate))
+    (Right . servedHostCertScopes)
+    (substrateServedHost settings substrate)
+
+-- | The one wording for \"this config declares no served host for that
+-- substrate\", so the same state does not get three different messages.
+substrateServedHostMissing :: Substrate -> String
+substrateServedHostMissing substrate =
+  substrateId substrate
+    ++ " public FQDN is not configured: aws_substrate.subzone_name is required by "
+    ++ "the AWS config tier and this config was validated only locally"
 
 substratePublicRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
 substratePublicRouteUrl settings substrate route =

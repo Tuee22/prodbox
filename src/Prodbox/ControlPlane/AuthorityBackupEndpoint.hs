@@ -55,6 +55,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 
 data AuthorityBackupBlobClass
   = AuthorityAggregateEnvelope
@@ -238,12 +239,12 @@ serveBackupObserveRequest maximumBytes repository body =
             Left detail -> AuthorityBackupObserveReadFailed detail
             Right observation -> AuthorityBackupObserved observation
 
-authorityBackupHttpStatus :: AuthorityBackupCopyResult -> Int
+authorityBackupHttpStatus :: AuthorityBackupCopyResult -> ReplyStatus
 authorityBackupHttpStatus result = case result of
-  AuthorityBackupCopySucceeded _ -> 200
-  AuthorityBackupCopyFailed _ -> 503
-  AuthorityBackupCopyBadRequest _ -> 400
-  AuthorityBackupCopyInvalidCiphertext -> 400
+  AuthorityBackupCopySucceeded _ -> ReplyOk
+  AuthorityBackupCopyFailed _ -> ReplyServiceUnavailable
+  AuthorityBackupCopyBadRequest _ -> ReplyBadRequest
+  AuthorityBackupCopyInvalidCiphertext -> ReplyBadRequest
 
 authorityBackupSummary :: AuthorityBackupCopyResult -> Text
 authorityBackupSummary result = case result of
@@ -253,14 +254,14 @@ authorityBackupSummary result = case result of
     "backup-copy:bad-request:" <> controlPlaneRequestCodecToken err
   AuthorityBackupCopyInvalidCiphertext -> "backup-copy:invalid-ciphertext"
 
-authorityBackupObserveStatus :: AuthorityBackupObserveResult -> Int
+authorityBackupObserveStatus :: AuthorityBackupObserveResult -> ReplyStatus
 authorityBackupObserveStatus result = case result of
-  AuthorityBackupObserved AuthorityBackupBlobMissing -> 404
-  AuthorityBackupObserved (AuthorityBackupBlobPresent _ _) -> 200
-  AuthorityBackupObserved (AuthorityBackupBlobCorrupt _) -> 500
-  AuthorityBackupObserveReadFailed _ -> 503
-  AuthorityBackupObserveBadRequest _ -> 400
-  AuthorityBackupObserveInvalidDigest -> 400
+  AuthorityBackupObserved AuthorityBackupBlobMissing -> ReplyNotFound
+  AuthorityBackupObserved (AuthorityBackupBlobPresent _ _) -> ReplyOk
+  AuthorityBackupObserved (AuthorityBackupBlobCorrupt _) -> ReplyInternalError
+  AuthorityBackupObserveReadFailed _ -> ReplyServiceUnavailable
+  AuthorityBackupObserveBadRequest _ -> ReplyBadRequest
+  AuthorityBackupObserveInvalidDigest -> ReplyBadRequest
 
 authorityBackupObserveSummary :: AuthorityBackupObserveResult -> Text
 authorityBackupObserveSummary result = case result of

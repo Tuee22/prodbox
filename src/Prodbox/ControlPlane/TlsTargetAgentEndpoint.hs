@@ -103,6 +103,7 @@ import Prodbox.Crypto.Aead
   , openAead
   , sealAead
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( CertIdentity (..)
   , RetainedTlsRef (..)
@@ -544,11 +545,11 @@ serveTlsTargetVerifyRequest maximumBytes secretBoundary body =
         secretBoundary
         (tlsTargetVerifyReference request)
 
-tlsTargetPrepareHttpStatus :: TlsTargetPrepareResult -> Int
+tlsTargetPrepareHttpStatus :: TlsTargetPrepareResult -> ReplyStatus
 tlsTargetPrepareHttpStatus result = case result of
-  TlsTargetPrepared _ -> 200
-  TlsTargetPrepareFailed _ -> 503
-  TlsTargetPrepareBadRequest _ -> 400
+  TlsTargetPrepared _ -> ReplyOk
+  TlsTargetPrepareFailed _ -> ReplyServiceUnavailable
+  TlsTargetPrepareBadRequest _ -> ReplyBadRequest
 
 tlsTargetPrepareResponseBody :: TlsTargetPrepareResult -> ByteString
 tlsTargetPrepareResponseBody result = case result of
@@ -557,13 +558,13 @@ tlsTargetPrepareResponseBody result = case result of
   TlsTargetPrepareBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-target-prepare:bad-request:" <> controlPlaneRequestCodecToken err)
 
-tlsTargetRetainHttpStatus :: TlsTargetRetainResult -> Int
+tlsTargetRetainHttpStatus :: TlsTargetRetainResult -> ReplyStatus
 tlsTargetRetainHttpStatus result = case result of
-  TlsTargetRetained _ -> 200
-  TlsTargetRetainMissing -> 404
-  TlsTargetRetainFailed TlsTargetSecretUnavailable -> 503
-  TlsTargetRetainFailed _ -> 409
-  TlsTargetRetainBadRequest _ -> 400
+  TlsTargetRetained _ -> ReplyOk
+  TlsTargetRetainMissing -> ReplyNotFound
+  TlsTargetRetainFailed TlsTargetSecretUnavailable -> ReplyServiceUnavailable
+  TlsTargetRetainFailed _ -> ReplyConflict
+  TlsTargetRetainBadRequest _ -> ReplyBadRequest
 
 tlsTargetRetainResponseBody :: TlsTargetRetainResult -> ByteString
 tlsTargetRetainResponseBody result = case result of
@@ -573,11 +574,11 @@ tlsTargetRetainResponseBody result = case result of
   TlsTargetRetainBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-target-retain:bad-request:" <> controlPlaneRequestCodecToken err)
 
-tlsHomeWrapHttpStatus :: TlsHomeWrapResult -> Int
+tlsHomeWrapHttpStatus :: TlsHomeWrapResult -> ReplyStatus
 tlsHomeWrapHttpStatus result = case result of
-  TlsHomeWrapped _ -> 200
-  TlsHomeWrapFailed _ -> 409
-  TlsHomeWrapBadRequest _ -> 400
+  TlsHomeWrapped _ -> ReplyOk
+  TlsHomeWrapFailed _ -> ReplyConflict
+  TlsHomeWrapBadRequest _ -> ReplyBadRequest
 
 tlsHomeWrapResponseBody :: TlsHomeWrapResult -> ByteString
 tlsHomeWrapResponseBody result = case result of
@@ -586,11 +587,11 @@ tlsHomeWrapResponseBody result = case result of
   TlsHomeWrapBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-home-wrap:bad-request:" <> controlPlaneRequestCodecToken err)
 
-tlsHomeRewrapHttpStatus :: TlsHomeRewrapResult -> Int
+tlsHomeRewrapHttpStatus :: TlsHomeRewrapResult -> ReplyStatus
 tlsHomeRewrapHttpStatus result = case result of
-  TlsHomeRewrapped _ -> 200
-  TlsHomeRewrapFailed _ -> 409
-  TlsHomeRewrapBadRequest _ -> 400
+  TlsHomeRewrapped _ -> ReplyOk
+  TlsHomeRewrapFailed _ -> ReplyConflict
+  TlsHomeRewrapBadRequest _ -> ReplyBadRequest
 
 tlsHomeRewrapResponseBody :: TlsHomeRewrapResult -> ByteString
 tlsHomeRewrapResponseBody result = case result of
@@ -599,13 +600,13 @@ tlsHomeRewrapResponseBody result = case result of
   TlsHomeRewrapBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-home-rewrap:bad-request:" <> controlPlaneRequestCodecToken err)
 
-tlsTargetRestoreHttpStatus :: TlsTargetRestoreResult -> Int
+tlsTargetRestoreHttpStatus :: TlsTargetRestoreResult -> ReplyStatus
 tlsTargetRestoreHttpStatus result = case result of
-  TlsTargetRestored _ -> 200
-  TlsTargetRestoreFailed TlsTargetSecretApplyFailed -> 503
-  TlsTargetRestoreFailed TlsTargetSecretUnavailable -> 503
-  TlsTargetRestoreFailed _ -> 409
-  TlsTargetRestoreBadRequest _ -> 400
+  TlsTargetRestored _ -> ReplyOk
+  TlsTargetRestoreFailed TlsTargetSecretApplyFailed -> ReplyServiceUnavailable
+  TlsTargetRestoreFailed TlsTargetSecretUnavailable -> ReplyServiceUnavailable
+  TlsTargetRestoreFailed _ -> ReplyConflict
+  TlsTargetRestoreBadRequest _ -> ReplyBadRequest
 
 tlsTargetRestoreResponseBody :: TlsTargetRestoreResult -> ByteString
 tlsTargetRestoreResponseBody result = case result of
@@ -614,14 +615,14 @@ tlsTargetRestoreResponseBody result = case result of
   TlsTargetRestoreBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-target-restore:bad-request:" <> controlPlaneRequestCodecToken err)
 
-tlsTargetVerifyHttpStatus :: TlsTargetVerifyResult -> Int
+tlsTargetVerifyHttpStatus :: TlsTargetVerifyResult -> ReplyStatus
 tlsTargetVerifyHttpStatus result = case result of
-  TlsTargetSourceVerified _ -> 200
-  TlsTargetVerifyMissing -> 404
-  TlsTargetVerifyMismatch -> 409
-  TlsTargetVerifyFailed TlsTargetSecretUnavailable -> 503
-  TlsTargetVerifyFailed _ -> 409
-  TlsTargetVerifyBadRequest _ -> 400
+  TlsTargetSourceVerified _ -> ReplyOk
+  TlsTargetVerifyMissing -> ReplyNotFound
+  TlsTargetVerifyMismatch -> ReplyConflict
+  TlsTargetVerifyFailed TlsTargetSecretUnavailable -> ReplyServiceUnavailable
+  TlsTargetVerifyFailed _ -> ReplyConflict
+  TlsTargetVerifyBadRequest _ -> ReplyBadRequest
 
 tlsTargetVerifyResponseBody :: TlsTargetVerifyResult -> ByteString
 tlsTargetVerifyResponseBody result = case result of

@@ -36,11 +36,20 @@ import Prodbox.ControlPlane.Observation
   , observationFromRef
   )
 import Prodbox.ControlPlane.SCapability (SCapability, withKnownCapability)
+import Prodbox.Lib.AwsSubstratePlatform (runReconcileSlices)
 import Prodbox.Lifecycle.AnchoredReconcile
-  ( ReconcileStepAnchor (ComponentMutation)
+  ( ReconcileStepAnchor (ComponentMutation, ComponentReadiness)
   , runAnchoredStepOrder
+  , runFirstAnchoredStepOrder
   )
 import Prodbox.Lifecycle.DependencyAdmission
+
+-- Sprint 4.64: `noAdmissions` left the public API so that no production module
+-- can begin a phase with an empty set. A test suite must still be able to
+-- construct the empty case in order to assert what it refuses, and reaching the
+-- package-internal module is the documented way to do that: the `dev check`
+-- rule that bars this import is scoped to `src/`.
+import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
@@ -172,6 +181,113 @@ dependencyAdmissionSuite =
       dependencyAdmissionInternalSourceViolations
         ("src/Prodbox/CLI/Rke2.hs", "import Prodbox.Lifecycle.DependencyAdmission\n")
         `shouldBe` []
+
+    it "Sprint 4.64: only the reconcile executor may begin a run with no admissions" $ do
+      -- The empty set left the public API, so a phase call site cannot name it.
+      -- Two things have to hold together for that to mean anything, and this
+      -- case asserts both.
+      --
+      -- (1) The executor is on the allowlist, because it is the one module that
+      --     legitimately starts empty.
+      let internalImport =
+            "import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)\n"
+      dependencyAdmissionInternalSourceViolations
+        ("src/Prodbox/Lifecycle/AnchoredReconcile.hs", internalImport)
+        `shouldBe` []
+      -- (2) The two reconcile surfaces are NOT, so reaching around the removed
+      --     export fails the build rather than compiling. Without this the
+      --     removal would only have moved the reset one import away.
+      length
+        ( dependencyAdmissionInternalSourceViolations
+            ("src/Prodbox/CLI/Rke2.hs", internalImport)
+        )
+        `shouldBe` 1
+      length
+        ( dependencyAdmissionInternalSourceViolations
+            ("src/Prodbox/Lib/AwsSubstratePlatform.hs", internalImport)
+        )
+        `shouldBe` 1
+
+    it "Sprint 4.64: beginning a run and continuing one are different functions" $ do
+      -- `runFirstAnchoredStepOrder` supplies the empty set itself and returns
+      -- the admissions a later phase must be given; the two are distinguished
+      -- by type, so a later phase cannot be started fresh by passing a value
+      -- that merely happens to be empty.
+      --
+      -- The observable difference: a first phase whose readiness step succeeds
+      -- returns a NON-empty set, which is precisely the value Sprint 4.61's
+      -- defect discarded.
+      admitted <- newIORef ([] :: [ComponentId])
+      let readinessFor component = do
+            seen <- readIORef admitted
+            writeIORef admitted (seen ++ [component])
+            pure (Right (admissionAt now component))
+      outcome <-
+        runFirstAnchoredStepOrder
+          dag
+          (pure now)
+          (const (ComponentReadiness firstDependency))
+          (\_ _ -> pure ExitSuccess)
+          (\_ -> pure ExitSuccess)
+          readinessFor
+          [()]
+      case outcome of
+        Left refusal -> expectationFailure ("first phase refused: " ++ show refusal)
+        Right (exitCode, admissions) -> do
+          exitCode `shouldBe` ExitSuccess
+          -- Carried out of the first phase, available to the next one.
+          admissionFor firstDependency admissions `shouldSatisfy` isJust
+      observed <- readIORef admitted
+      observed `shouldBe` [firstDependency]
+
+    it "Sprint 4.69: a reconcile run threads its admissions through the fold" $ do
+      -- The defect this replaces was a call site, not a value: the final slice
+      -- dropped the set it returned with `fst <$>`, correct only because it was
+      -- last. Threading is now the fold's job, so a slice that ignores the
+      -- carrier is a slice someone wrote that way rather than a slice that was
+      -- handed nothing.
+      seen <- newIORef ([] :: [Bool])
+      let record carried = do
+            observed <- readIORef seen
+            writeIORef seen (observed ++ [isJust (admissionFor firstDependency carried)])
+            pure (Right (recordAdmission (admissionAt now firstDependency) carried))
+      exitCode <-
+        runReconcileSlices
+          (pure (Right noAdmissions))
+          [record, record, record]
+      exitCode `shouldBe` ExitSuccess
+      -- The first slice opens with nothing; every later slice observes what the
+      -- one before it recorded. The pre-fix shape produced `False` from the
+      -- second slice onward, which is Sprint 4.61's defect with no compile
+      -- error and no lint.
+      readIORef seen `shouldReturn` [False, True, True]
+
+    it "Sprint 4.69: a failing slice stops the run and no later slice observes" $ do
+      ran <- newIORef (0 :: Int)
+      let counting carried = do
+            observed <- readIORef ran
+            writeIORef ran (observed + 1)
+            pure (Right carried)
+      exitCode <-
+        runReconcileSlices
+          (pure (Right noAdmissions))
+          [ counting
+          , \_ -> pure (Left (ExitFailure 3))
+          , counting
+          ]
+      exitCode `shouldBe` ExitFailure 3
+      readIORef ran `shouldReturn` 1
+
+    it "Sprint 4.69: a failing opening slice runs nothing at all" $ do
+      ran <- newIORef (0 :: Int)
+      let counting carried = do
+            observed <- readIORef ran
+            writeIORef ran (observed + 1)
+            pure (Right carried)
+      exitCode <-
+        runReconcileSlices (pure (Left (ExitFailure 2))) [counting]
+      exitCode `shouldBe` ExitFailure 2
+      readIORef ran `shouldReturn` 0
 
 dedupe :: (Eq a) => [a] -> [a]
 dedupe = foldr (\value seen -> if value `elem` seen then seen else value : seen) []

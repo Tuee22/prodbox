@@ -48,6 +48,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   )
 import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.AdminAction.Protocol
   ( AdminActionReceipt
   , SignedAdminActionPermit
@@ -179,9 +180,14 @@ callAdminAuthority bounds providers permit command =
                     (LazyByteString.fromStrict body)
                 )
             let expected = adminActionAuthorityExecutionResponseStatus decoded
-            if status == expected
+            if status == replyStatusCode expected
               then Right decoded
-              else Left (AdminActionAuthorityHttpStatusMismatch expected status)
+              else
+                Left
+                  ( AdminActionAuthorityHttpStatusMismatch
+                      (replyStatusCode expected)
+                      status
+                  )
 
 requestFor
   :: SignedAdminActionPermit

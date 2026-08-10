@@ -91,6 +91,7 @@ import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (..)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
@@ -172,9 +173,12 @@ replayPureTests =
                 (100 * 1024 * 1024 + 1)
                 (100 * 1024 * 1024)
             )
-        mkReplayResponse replayLimits 99 "body"
+        -- Sprint 4.67: a live producer can no longer state an undefined
+        -- status at all, so the refusal moved to the one crossing that still
+        -- receives a number — a projection written by an earlier revision.
+        mkReplayResponseFromStoredCode replayLimits 99 "body"
           @?= Left (ReplayResponseStatusInvalid 99)
-        mkReplayResponse replayLimits 200 (ByteString.replicate 65 0)
+        mkReplayResponse replayLimits ReplyOk (ByteString.replicate 65 0)
           @?= Left (ReplayResponseBodyTooLarge 65 64)
     , testCase "reserves before effect and classifies owner versus concurrent duplicate" $ do
         let fresh = reserveVerifiedRequest now attemptA verifiedRequest emptyReplay
@@ -503,7 +507,7 @@ authenticatedRoleInterpreterTests =
                 writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
                 writeIORef seenKey (Just (authorityOperationSubmitKey decoded))
                 modifyIORef' effects (+ 1)
-                pure (Just (200, "inner-response"))
+                pure (Just (ReplyOk, "inner-response"))
               _ -> pure Nothing
             inner =
               AuthenticatedRoleHandler
@@ -522,7 +526,7 @@ authenticatedRoleInterpreterTests =
             wrapped
             LifecycleOperationSubmit
             (LazyByteString.toStrict captured)
-        handled @?= Just (200, "inner-response")
+        handled @?= Just (ReplyOk, "inner-response")
         readIORef effects >>= (@?= 1)
         readIORef seenCaller >>= (@?= Just CallerOperatorCli)
         readIORef seenKey >>= (@?= Just "request-a")
@@ -552,7 +556,7 @@ authenticatedRoleInterpreterTests =
             LifecycleOperationSubmit
             (LazyByteString.toStrict captured)
         case handled of
-          Just (200, responseBody) ->
+          Just (ReplyOk, responseBody) ->
             decodeControlPlaneResponse
               authorityOperationResponseMaximumBytes
               (LazyByteString.fromStrict responseBody)
@@ -585,7 +589,7 @@ authenticatedRoleInterpreterTests =
             LifecycleOperationSubmit
             (LazyByteString.toStrict captured)
         case handled of
-          Just (403, responseBody) ->
+          Just (ReplyForbidden, responseBody) ->
             decodeControlPlaneResponse
               authorityOperationResponseMaximumBytes
               (LazyByteString.fromStrict responseBody)
@@ -623,7 +627,7 @@ authenticatedRoleInterpreterTests =
                 authorityOperationSubmitKey decoded @?= "request-a"
                 writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
                 modifyIORef' effects (+ 1)
-                pure (Just (200, "inner-response"))
+                pure (Just (ReplyOk, "inner-response"))
               _ -> pure Nothing
             inner =
               AuthenticatedRoleHandler
@@ -647,8 +651,8 @@ authenticatedRoleInterpreterTests =
             raw = LazyByteString.toStrict captured
         first <- interpreterHandle firstWrapper LifecycleOperationSubmit raw
         duplicate <- interpreterHandle duplicateWrapper LifecycleOperationSubmit raw
-        first @?= Just (200, "inner-response")
-        duplicate @?= Just (200, "inner-response")
+        first @?= Just (ReplyOk, "inner-response")
+        duplicate @?= Just (ReplyOk, "inner-response")
         readIORef effects >>= (@?= 1)
         readIORef reservedBeforeEffect >>= (@?= True)
         readIORef seenCaller >>= (@?= Just CallerOperatorCli)
@@ -685,7 +689,7 @@ authenticatedRoleInterpreterTests =
             wrapped
             ProviderWorkApply
             (LazyByteString.toStrict captured)
-        handled @?= Just (409, "authenticated-replay-in-flight\n")
+        handled @?= Just (ReplyConflict, "authenticated-replay-in-flight\n")
         readIORef effects >>= (@?= 0)
     , testCase "projects every replay outcome onto a stable status and body" $
         mapM_
@@ -694,10 +698,10 @@ authenticatedRoleInterpreterTests =
     , testCase "projects authentication and attempt-provider refusals" $ do
         authenticatedServerErrorResponse
           (AuthenticatedServerFrameFailed AuthenticatedFrameInvalid)
-          @?= (400, "authenticated-frame-refused\n")
+          @?= (ReplyBadRequest, "authenticated-frame-refused\n")
         authenticatedServerErrorResponse
           (AuthenticatedServerRequestAuthenticationFailed [])
-          @?= (401, "authentication-refused\n")
+          @?= (ReplyUnauthorized, "authentication-refused\n")
         captured <- captureAuthenticatedFrame clientProviders body
         state <- newReplayState emptyReplay
         let unavailableAttemptProviders =
@@ -720,7 +724,7 @@ authenticatedRoleInterpreterTests =
             wrapped
             ProviderWorkApply
             (LazyByteString.toStrict captured)
-        handled @?= Just (503, "authenticated-replay-attempt-unavailable\n")
+        handled @?= Just (ReplyServiceUnavailable, "authenticated-replay-attempt-unavailable\n")
     ]
 
 authenticatedRuntimeTests :: TestTree
@@ -794,7 +798,7 @@ authenticatedRuntimeTests =
           Right interpreter -> pure interpreter
         captured <- captureAuthenticatedFrame clientProviders body
         interpreterHandle installed ProviderWorkApply (LazyByteString.toStrict captured)
-          >>= (@?= Just (200, "inner-response"))
+          >>= (@?= Just (ReplyOk, "inner-response"))
         readIORef effects >>= (@?= 1)
         case installAuthenticatedRuntimeInterpreter LifecycleAuthorityRuntime inputs handler of
           Left (AuthenticatedRuntimeRoleMismatch LifecycleAuthorityRuntime ProviderWorkerRuntime) ->
@@ -816,7 +820,7 @@ authenticatedRuntimeTests =
         interpreterHandle unavailable ProviderWorkApply "ignored"
           >>= ( @?=
                   Just
-                    ( 503
+                    ( ReplyServiceUnavailable
                     , "authenticated-runtime-retained-replay-and-epoch-provisioning-missing\n"
                     )
               )
@@ -985,53 +989,53 @@ countingInterpreter effects =
     { interpreterReadiness = transportReadyReadinessSource
     , interpreterHandle = \_ _ -> do
         modifyIORef' effects (+ 1)
-        pure (Just (200, "inner-response"))
+        pure (Just (ReplyOk, "inner-response"))
     }
 
 countingInterpreterDiscarded :: RoleInterpreter IO
 countingInterpreterDiscarded =
   RoleInterpreter
     { interpreterReadiness = transportReadyReadinessSource
-    , interpreterHandle = \_ _ -> pure (Just (200, "inner-response"))
+    , interpreterHandle = \_ _ -> pure (Just (ReplyOk, "inner-response"))
     }
 
 replayResponseFixtures
-  :: [(ReplayProtectedResult AuthenticatedRoleHandlerFailure, (Int, ByteString))]
+  :: [(ReplayProtectedResult AuthenticatedRoleHandlerFailure, (ReplyStatus, ByteString))]
 replayResponseFixtures =
-  [ (ReplayProtectedExecuted response, (200, "response"))
-  , (ReplayProtectedRecovered response, (200, "response"))
-  , (ReplayProtectedInFlight, (409, "authenticated-replay-in-flight\n"))
-  , (ReplayProtectedTombstoned, (409, "authenticated-replay-tombstoned\n"))
-  , (ReplayProtectedDigestConflict, (409, "authenticated-replay-digest-conflict\n"))
-  , (ReplayProtectedExpired, (408, "authenticated-replay-expired\n"))
+  [ (ReplayProtectedExecuted response, (ReplyOk, "response"))
+  , (ReplayProtectedRecovered response, (ReplyOk, "response"))
+  , (ReplayProtectedInFlight, (ReplyConflict, "authenticated-replay-in-flight\n"))
+  , (ReplayProtectedTombstoned, (ReplyConflict, "authenticated-replay-tombstoned\n"))
+  , (ReplayProtectedDigestConflict, (ReplyConflict, "authenticated-replay-digest-conflict\n"))
+  , (ReplayProtectedExpired, (ReplyRequestTimeout, "authenticated-replay-expired\n"))
   ,
     ( ReplayProtectedCapacityExhausted
-    , (503, "authenticated-replay-capacity-exhausted\n")
+    , (ReplyServiceUnavailable, "authenticated-replay-capacity-exhausted\n")
     )
   ,
     ( ReplayProtectedUnavailable
         (RequestReplayRepositoryUnobservable "unavailable")
-    , (503, "authenticated-replay-unavailable\n")
+    , (ReplyServiceUnavailable, "authenticated-replay-unavailable\n")
     )
   ,
     ( ReplayProtectedAttemptsExhausted
-    , (503, "authenticated-replay-attempts-exhausted\n")
+    , (ReplyServiceUnavailable, "authenticated-replay-attempts-exhausted\n")
     )
   ,
     ( ReplayProtectedEffectFailed AuthenticatedRoleHandlerUnavailable
-    , (503, "interpreter-unavailable\n")
+    , (ReplyServiceUnavailable, "interpreter-unavailable\n")
     )
   ,
     ( ReplayProtectedEffectFailed
         ( AuthenticatedRoleHandlerResponseInvalid
             (ReplayResponseStatusInvalid 99)
         )
-    , (500, "authenticated-handler-response-invalid\n")
+    , (ReplyInternalError, "authenticated-handler-response-invalid\n")
     )
   ,
     ( ReplayProtectedCompletionUnconfirmed
         DurableReplayCompletionReservationMissing
-    , (503, "authenticated-replay-completion-unconfirmed\n")
+    , (ReplyServiceUnavailable, "authenticated-replay-completion-unconfirmed\n")
     )
   ]
 
@@ -1308,10 +1312,10 @@ replayLimits :: RequestReplayLimits
 replayLimits = mustRight (mkRequestReplayLimits 1 64 skew)
 
 response :: ReplayResponse
-response = mustRight (mkReplayResponse replayLimits 200 "response")
+response = mustRight (mkReplayResponse replayLimits ReplyOk "response")
 
 otherResponse :: ReplayResponse
-otherResponse = mustRight (mkReplayResponse replayLimits 409 "other")
+otherResponse = mustRight (mkReplayResponse replayLimits ReplyConflict "other")
 
 transportBounds :: AuthenticatedTransportBounds
 transportBounds = mustRight (mkAuthenticatedTransportBounds 65536 256 65000)

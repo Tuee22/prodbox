@@ -83,9 +83,13 @@ import Prodbox.ControlPlane.Route
       )
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Vault.Client
   ( KvV2Cas (..)
   , KvV2VersionedSecret (..)
+  , VaultCasOutcome (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   , vaultTransitHmacSha256
@@ -228,23 +232,23 @@ bootstrapCustodyAuthenticatedHandler maximumBytes repository inner =
       (const "request-codec-rejected")
       (decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body))
 
-commitStatus :: ChildCustodyCommitResponse -> Int
+commitStatus :: ChildCustodyCommitResponse -> ReplyStatus
 commitStatus response = case response of
-  ChildCustodyCommitted {} -> 200
-  ChildCustodyCommitRefused {} -> 409
-  ChildCustodyCommitUnavailable {} -> 503
+  ChildCustodyCommitted {} -> ReplyOk
+  ChildCustodyCommitRefused {} -> ReplyConflict
+  ChildCustodyCommitUnavailable {} -> ReplyServiceUnavailable
 
-prepareStatus :: ChildRecoveryPrepareResponse -> Int
+prepareStatus :: ChildRecoveryPrepareResponse -> ReplyStatus
 prepareStatus response = case response of
-  ChildRecoveryPrepared {} -> 200
-  ChildRecoveryPrepareRefused {} -> 409
-  ChildRecoveryPrepareUnavailable {} -> 503
+  ChildRecoveryPrepared {} -> ReplyOk
+  ChildRecoveryPrepareRefused {} -> ReplyConflict
+  ChildRecoveryPrepareUnavailable {} -> ReplyServiceUnavailable
 
-observeStatus :: ChildRecoveryObserveResponse -> Int
+observeStatus :: ChildRecoveryObserveResponse -> ReplyStatus
 observeStatus response = case response of
-  ChildRecoveryConsumptionObserved {} -> 200
-  ChildRecoveryObserveRefused {} -> 409
-  ChildRecoveryObserveUnavailable {} -> 503
+  ChildRecoveryConsumptionObserved {} -> ReplyOk
+  ChildRecoveryObserveRefused {} -> ReplyConflict
+  ChildRecoveryObserveUnavailable {} -> ReplyServiceUnavailable
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
@@ -475,11 +479,13 @@ writeRecord session path expected record = do
         path
         (KvV2Cas expected)
         (Map.singleton "record_base64" (encodeRecord record))
-  pure $ case written of
-    Left (HttpStatus 400 _) -> Left "conflict"
-    Left (HttpStatus 409 _) -> Left "conflict"
-    Left err -> Left (Text.pack (renderHttpError err))
-    Right _ -> Right ()
+  -- Sprint 4.74: "conflict" is reserved for a real version mismatch. The
+  -- superseded body reported every `400` as one, so a refused request read as
+  -- a lost race to the custody caller.
+  pure $ case classifyVaultCasOutcome written of
+    VaultCasApplied _ -> Right ()
+    VaultCasConflict _ -> Left "conflict"
+    refusedOrUnknown -> Left (renderVaultCasOutcome refusedOrUnknown)
 
 decodeRecord :: Map.Map Text Text -> Either Text TargetChildCustodyRecord
 decodeRecord fields

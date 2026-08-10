@@ -10,6 +10,7 @@ import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProjectionImportEndpoint
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommandRefusal (AuthorityMigrationNotStarted)
   )
@@ -62,7 +63,7 @@ lifecycleAuthorityCutoverSuite =
                 missingSource
                 missingTarget
                 (encodeProjectionImportRequest (ImportLegacyProjection projection))
-            projectionImportEndpointHttpStatus result `shouldBe` 200
+            projectionImportEndpointHttpStatus result `shouldBe` ReplyOk
             projectionImportEndpointSummary result `shouldBe` "projection-import-accepted"
         )
         requiredCutoverProjections
@@ -75,7 +76,7 @@ lifecycleAuthorityCutoverSuite =
           missingSource
           missingTarget
           (encodeProjectionImportRequest CompleteLegacyProjectionImports)
-      projectionImportEndpointHttpStatus completed `shouldBe` 200
+      projectionImportEndpointHttpStatus completed `shouldBe` ReplyOk
       projectionImportEndpointSummary completed `shouldBe` "projection-imports-accepted"
 
     it "refuses malformed import bytes before observing either store" $ do
@@ -104,7 +105,7 @@ lifecycleAuthorityCutoverSuite =
           source
           target
           "not-cbor"
-      projectionImportEndpointHttpStatus result `shouldBe` 400
+      projectionImportEndpointHttpStatus result `shouldBe` ReplyBadRequest
       readIORef sourceReads `shouldReturn` 0
       readIORef targetReads `shouldReturn` 0
 
@@ -127,7 +128,7 @@ lifecycleAuthorityCutoverSuite =
           missingSource
           missingTarget
           (encodeProjectionImportRequest (ImportLegacyProjection LeaseProjection))
-      projectionImportEndpointHttpStatus result `shouldBe` 409
+      projectionImportEndpointHttpStatus result `shouldBe` ReplyConflict
       projectionImportEndpointSummary result
         `shouldBe` "projection-import-authority-refused:not-started"
       readIORef appliedCommands

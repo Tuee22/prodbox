@@ -31,6 +31,7 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , AuthorityTransitionResult (..)
   , serveAuthorityTransition
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommand (ApplyAuthorityMigration)
   , AuthorityAdmissionCommandRefusal
@@ -146,19 +147,19 @@ serveAuthorityMigrationApply maximumBytes repository body =
 -- an unobservable read or a failed write is @503@ (transient, no state change); a
 -- corrupt durable decode is @500@ (authority-side invariant break); a malformed
 -- request is @400@.
-migrationEndpointHttpStatus :: MigrationEndpointResult -> Int
+migrationEndpointHttpStatus :: MigrationEndpointResult -> ReplyStatus
 migrationEndpointHttpStatus result = case result of
-  MigrationEndpointBadRequest _ -> 400
+  MigrationEndpointBadRequest _ -> ReplyBadRequest
   MigrationEndpointApplied applied -> case appliedMigrationDecision applied of
-    MigrationAccepted _ -> 200
-    MigrationAlreadyApplied -> 200
-    MigrationRefused _ -> 409
-  MigrationEndpointReadFailed _ -> 503
-  MigrationEndpointDecodeFailed _ -> 500
-  MigrationEndpointWriteFailed _ -> 503
-  MigrationEndpointConcurrentWrite -> 409
-  MigrationEndpointAdmissionRefused _ -> 409
-  MigrationEndpointAggregateMismatch -> 500
+    MigrationAccepted _ -> ReplyOk
+    MigrationAlreadyApplied -> ReplyOk
+    MigrationRefused _ -> ReplyConflict
+  MigrationEndpointReadFailed _ -> ReplyServiceUnavailable
+  MigrationEndpointDecodeFailed _ -> ReplyInternalError
+  MigrationEndpointWriteFailed _ -> ReplyServiceUnavailable
+  MigrationEndpointConcurrentWrite -> ReplyConflict
+  MigrationEndpointAdmissionRefused _ -> ReplyConflict
+  MigrationEndpointAggregateMismatch -> ReplyInternalError
 
 -- | Stable single-line diagnostic body.  Kebab-case tokens keep the response
 -- machine-greppable without serialising the hidden migration events.

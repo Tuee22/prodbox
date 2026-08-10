@@ -37,6 +37,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , authorityAggregateAdmission
@@ -121,13 +122,13 @@ purposeMatches purpose state = case (purpose, state) of
     maybe False ((== expected) . backupRepairPermitDigest) (backupRepairPermit progress)
   _ -> False
 
-authorityBackupExportHttpStatus :: AuthorityBackupExportResult -> Int
+authorityBackupExportHttpStatus :: AuthorityBackupExportResult -> ReplyStatus
 authorityBackupExportHttpStatus result = case result of
-  AuthorityBackupExported _ -> 200
-  AuthorityBackupExportPurposeMismatch -> 409
-  AuthorityBackupExportBadRequest _ -> 400
-  AuthorityBackupExportReadFailed _ -> 503
-  AuthorityBackupExportEncodeFailed _ -> 500
+  AuthorityBackupExported _ -> ReplyOk
+  AuthorityBackupExportPurposeMismatch -> ReplyConflict
+  AuthorityBackupExportBadRequest _ -> ReplyBadRequest
+  AuthorityBackupExportReadFailed _ -> ReplyServiceUnavailable
+  AuthorityBackupExportEncodeFailed _ -> ReplyInternalError
 
 authorityBackupExportResponseBody :: AuthorityBackupExportResult -> ByteString
 authorityBackupExportResponseBody result =

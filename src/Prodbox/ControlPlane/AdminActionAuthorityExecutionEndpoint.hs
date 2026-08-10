@@ -46,6 +46,7 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.AdminAction.Authority qualified as Authority
 import Prodbox.Lifecycle.AdminAction.Protocol
   ( AdminActionPlan (..)
@@ -745,11 +746,11 @@ validateEffectState state = case state of
         Left "admin action effect evidence is invalid"
     | otherwise = Right ()
 
-adminActionAuthorityExecutionResponseStatus :: AdminActionAuthorityResponse -> Int
+adminActionAuthorityExecutionResponseStatus :: AdminActionAuthorityResponse -> ReplyStatus
 adminActionAuthorityExecutionResponseStatus response = case response of
-  AdminActionAuthorityRefused _ -> 403
-  AdminActionAuthorityUnavailable _ -> 503
-  _ -> 200
+  AdminActionAuthorityRefused _ -> ReplyForbidden
+  AdminActionAuthorityUnavailable _ -> ReplyServiceUnavailable
+  _ -> ReplyOk
 
 adminActionAuthorityExecutionResponseBody :: AdminActionAuthorityResponse -> ByteString
 adminActionAuthorityExecutionResponseBody =

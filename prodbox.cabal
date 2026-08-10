@@ -292,6 +292,7 @@ library
         Prodbox.Host.Substrate
         Prodbox.Host.Wsl2
         Prodbox.Http.Client
+        Prodbox.Http.ReplyStatus
         Prodbox.Http.ResponseObligation
         Prodbox.Infra.AwsSesLeaseRole
         Prodbox.Infra.AwsSesDecommission
@@ -397,6 +398,7 @@ library
         Prodbox.Lifecycle.DnsRecord
         Prodbox.Lifecycle.DnsRecord.Owner
         Prodbox.Lifecycle.DnsRecord.Owner.Internal
+        Prodbox.Lifecycle.DnsRecord.Route53
         Prodbox.Lifecycle.FederatedVault
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.Lease

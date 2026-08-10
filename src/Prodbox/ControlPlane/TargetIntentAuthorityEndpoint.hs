@@ -83,6 +83,7 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , targetWorkerExecutionPermitMatchesObservation
   , verifyTargetWorkerExecutionPermit
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.TargetCommitIntent
   ( mkCredentialGeneration
@@ -154,7 +155,7 @@ handleTargetIntentIssue
   -> VerifiedCallerSlot
   -> ControlPlaneRoute
   -> ByteString
-  -> m (Maybe (Int, ByteString))
+  -> m (Maybe (ReplyStatus, ByteString))
 handleTargetIntentIssue maximumBytes boundary inner caller route body = case route of
   LifecycleTargetIntentIssue -> do
     response <-
@@ -432,12 +433,12 @@ responseFromResult result = case result of
     TargetIntentIssueTrustReadBackMismatch ->
       TargetIntentIssueRefused "target-trust-read-back-mismatch"
 
-targetIntentIssueResponseStatus :: TargetIntentIssueResponse -> Int
+targetIntentIssueResponseStatus :: TargetIntentIssueResponse -> ReplyStatus
 targetIntentIssueResponseStatus response = case response of
-  TargetIntentIssueAuthorized {} -> 200
-  TargetExecutionPermitAuthorized _ -> 200
-  TargetIntentIssueRefused _ -> 409
-  TargetIntentIssueUnavailable _ -> 503
+  TargetIntentIssueAuthorized {} -> ReplyOk
+  TargetExecutionPermitAuthorized _ -> ReplyOk
+  TargetIntentIssueRefused _ -> ReplyConflict
+  TargetIntentIssueUnavailable _ -> ReplyServiceUnavailable
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

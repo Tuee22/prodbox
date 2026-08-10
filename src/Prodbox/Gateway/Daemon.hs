@@ -391,6 +391,8 @@ import Prodbox.Http.Client
 import Prodbox.K8s.InCluster (loadInClusterCredentials)
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.DnsRecord qualified as DnsRecord
+import Prodbox.Lifecycle.DnsRecord.Owner qualified as DnsOwner
+import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordType)
 import Prodbox.Minio.ObjectStore
   ( ObjectStoreConfig (..)
   , ObjectVersion
@@ -404,18 +406,24 @@ import Prodbox.Retry
   , drawRetryDelayMicros
   , retryPolicyMaxAttempts
   )
+import Prodbox.Runtime.Role qualified as RuntimeRole
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Substrate qualified as Substrate
 import Prodbox.Vault.Client
-  ( VaultAddress (..)
+  ( KvV2Cas (KvV2Cas)
+  , VaultAddress (..)
+  , VaultCasOutcome (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKubernetesLoginWithLease
+  , vaultKvCasWriteV2
   , vaultKvReadV2
-  , vaultKvWriteV2
   )
 import Prodbox.Vault.Session
   ( GatewaySessionKey (..)
@@ -1282,25 +1290,36 @@ persistContinuityAdmission config nodeId = do
   case tokenResult of
     Left err -> pure (Left ("continuity admission marker cannot be persisted: " ++ err))
     Right (address, token) -> do
+      -- Sprint 4.71: `KvV2Cas 0` is Vault's create-if-absent. This marker is a
+      -- one-time admission witness — its own contract is that once it exists a
+      -- missing continuity object is recovery failure rather than permission to
+      -- recreate a genesis anchor — and an unconditional write could overwrite
+      -- one. A second admission is now a refusal from the store, not a silent
+      -- clobber of the first.
       written <-
-        vaultKvWriteV2
+        vaultKvCasWriteV2
           address
           token
           "secret"
           (continuityAdmissionPath nodeId)
+          (KvV2Cas 0)
           ( Map.fromList
               [ ("admitted", "true")
               , ("node_id", BoundedState.nodeIdText nodeId)
               ]
           )
+      -- Sprint 4.74: `KvV2Cas 0` refused means the marker already exists — a
+      -- second admission, which is exactly what Sprint 4.71 made refusable.
+      -- Reporting that identically to an unreachable Vault would hide the one
+      -- outcome this create-only write exists to detect.
       pure $
-        case written of
-          Left err ->
+        case classifyVaultCasOutcome written of
+          VaultCasApplied _ -> Right ()
+          failed ->
             Left
               ( "continuity admission marker cannot be persisted: "
-                  ++ renderHttpError err
+                  ++ Text.unpack (renderVaultCasOutcome failed)
               )
-          Right () -> Right ()
 
 installContinuityRecovery
   :: DaemonEnv
@@ -5966,18 +5985,33 @@ writeNativeDnsRecord deadline observeAuthorityEpoch action = do
                 action
                 (NativeSts.callerIdentityAccount callerIdentity) of
                 Left err -> pure (Left err)
-                Right (coordinate, desired) -> do
-                  let client = NativeRoute53.newRoute53Client credentialHandle httpSend
-                      boundary = nativeHomeDnsBoundary deadline client coordinate
-                  result <-
-                    DnsRecord.runDnsRecordProgram
-                      boundary
-                      coordinate
-                      (DnsRecord.EnsureDnsRecord desired)
-                  pure $ case result of
-                    DnsRecord.DnsEnsureAlreadyConverged -> Right ()
-                    DnsRecord.DnsEnsureAppliedAndReadBack -> Right ()
-                    refused -> Left ("Route 53 exact DNS ensure refused: " ++ show refused)
+                Right (coordinate, desired) ->
+                  -- Sprint 3.33: the authority is MINTED from what this running
+                  -- binary is — the Gateway Runtime on the home substrate — not
+                  -- named beside the coordinate. `dnsOwnerAuthorityForProcess`
+                  -- yields `HomeGatewayDnsOwner` for exactly that pair, which is
+                  -- the owner `homeDnsProgramInputs` builds the coordinate with,
+                  -- so the supported path is unchanged; what is no longer
+                  -- possible is reaching this write from a role the table does
+                  -- not entitle.
+                  case DnsOwner.dnsOwnerAuthorityForProcess
+                    RuntimeRole.GatewayRuntime
+                    Substrate.SubstrateHomeLocal
+                    DnsRecord.HomeGatewayDnsOwner of
+                    Nothing ->
+                      pure (Left "Route 53 write refused: this runtime holds no home DNS authority")
+                    Just authority -> do
+                      let client = NativeRoute53.newRoute53Client credentialHandle httpSend
+                          boundary = nativeHomeDnsBoundary deadline client coordinate
+                      result <-
+                        DnsRecord.runDnsRecordProgram
+                          boundary
+                          coordinate
+                          (DnsRecord.EnsureDnsRecord authority desired)
+                      pure $ case result of
+                        DnsRecord.DnsEnsureAlreadyConverged -> Right ()
+                        DnsRecord.DnsEnsureAppliedAndReadBack -> Right ()
+                        refused -> Left ("Route 53 exact DNS ensure refused: " ++ show refused)
 
 observeAuthorityEpochWithinDeadline
   :: Deadline
@@ -6117,26 +6151,6 @@ dnsRecordSetFromNative coordinate observed = do
 
 canonicalDnsName :: Text.Text -> Text.Text
 canonicalDnsName = Text.toLower . Text.dropWhileEnd (== '.') . Text.strip
-
-nativeDnsRecordType :: DnsRecord.DnsRecordType -> NativeRoute53.RecordType
-nativeDnsRecordType recordType = case recordType of
-  DnsRecord.DnsRecordA -> NativeRoute53.RecordA
-  DnsRecord.DnsRecordTxt -> NativeRoute53.RecordTXT
-
-nativeDnsRecordSet
-  :: DnsRecord.DnsRecordCoordinate
-  -> DnsRecord.DnsRecordSet
-  -> NativeRoute53.ResourceRecordSet
-nativeDnsRecordSet coordinate recordSet =
-  NativeRoute53.ResourceRecordSet
-    { NativeRoute53.rrsName = DnsRecord.dnsCoordinateName coordinate
-    , NativeRoute53.rrsType = nativeDnsRecordType (DnsRecord.dnsCoordinateType coordinate)
-    , NativeRoute53.rrsTtl = fromIntegral (DnsRecord.dnsRecordSetTtl recordSet)
-    , NativeRoute53.rrsRecords =
-        map
-          DnsRecord.dnsRecordValueText
-          (Set.toAscList (DnsRecord.dnsRecordSetValues recordSet))
-    }
 
 applyNativeDnsRecordChange
   :: Deadline

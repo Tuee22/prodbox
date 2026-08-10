@@ -40,6 +40,7 @@ import Prodbox.ControlPlane.RoleReadiness
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleAdminAction)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.AdminAction.Authority
   ( AdminActionAuthorityBoundary
   , AdminActionAuthorityError (..)
@@ -107,9 +108,9 @@ adminActionAuthenticatedHandler maximumBytes readiness resolveRepository boundar
 
   serve caller body
     | not (adminCallerAllowed caller) =
-        pure (403, responseBody (AdminActionRefused "caller-refused"))
+        pure (ReplyForbidden, responseBody (AdminActionRefused "caller-refused"))
     | otherwise = case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
-        Left _ -> pure (400, responseBody (AdminActionRefused "request-codec-rejected"))
+        Left _ -> pure (ReplyBadRequest, responseBody (AdminActionRefused "request-codec-rejected"))
         Right request -> do
           response <- runRequest request
           pure (responseStatus response, responseBody response)
@@ -158,14 +159,14 @@ responseForError err = case err of
   refused = AdminActionRefused
   unavailable = AdminActionUnavailable
 
-responseStatus :: AdminActionAuthorityResponse -> Int
+responseStatus :: AdminActionAuthorityResponse -> ReplyStatus
 responseStatus response = case response of
-  AdminActionPrepared _ _ -> 200
-  AdminActionAuthorized _ -> 200
-  AdminActionCompleted _ -> 200
-  AdminActionObserved _ -> 200
-  AdminActionRefused _ -> 409
-  AdminActionUnavailable _ -> 503
+  AdminActionPrepared _ _ -> ReplyOk
+  AdminActionAuthorized _ -> ReplyOk
+  AdminActionCompleted _ -> ReplyOk
+  AdminActionObserved _ -> ReplyOk
+  AdminActionRefused _ -> ReplyConflict
+  AdminActionUnavailable _ -> ReplyServiceUnavailable
 
 responseBody :: AdminActionAuthorityResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

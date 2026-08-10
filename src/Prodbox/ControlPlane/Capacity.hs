@@ -80,7 +80,15 @@ data RawServiceCapacityPlan = RawServiceCapacityPlan
   { rawArrivalPerSecond :: !Natural
   -- ^ max steady arrival rate, requests/sec
   , rawServiceTimeMicros :: !Natural
-  -- ^ measured/attested per-request service time, micros (§2E/§2F)
+  -- ^ per-request service time, micros. §2E\/§2F ask for a __measured or
+  -- attested__ value; Sprint @4.75@ corrected this haddock against source,
+  -- because it said the field /was/ measured while its only producer
+  -- ('Prodbox.ControlPlane.Runtime.controlPlaneCapacityInputs') authors it and
+  -- @dhall\/capacity\/measured\/@ holds no committed profile for any lane. The
+  -- utilization 'mkServiceCapacityPlan' validates is therefore arithmetic over
+  -- an authored number, which is a weaker guarantee than a validated plan
+  -- sounds like. Certification is a recorder axis, tracked in
+  -- @DEVELOPMENT_PLAN\/legacy-tracking-for-deletion.md@ under Sprint @4.75@.
   , rawWorkerCount :: !Natural
   -- ^ concurrent servers
   , rawQueueCapacity :: !Natural

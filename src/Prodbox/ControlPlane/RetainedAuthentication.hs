@@ -50,6 +50,9 @@ import Prodbox.Runtime.Role (RuntimeRole, runtimeRoleName)
 import Prodbox.Vault.Client
   ( KvV2Cas (..)
   , KvV2VersionedSecret (..)
+  , VaultCasOutcome (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
@@ -131,11 +134,30 @@ reconcileRetainedAuthorityEpoch session desired = go (8 :: Natural)
         | actual == desired -> pure (Right ())
         | actual > desired ->
             pure (Left "retained authority epoch regression observed after CAS")
-      _ -> case attempted of
-        Left (HttpStatus 400 _) -> go (attempts - 1)
-        Left (HttpStatus 409 _) -> go (attempts - 1)
-        Left err -> pure (Left (renderVaultError err))
-        Right _ -> pure (Left "retained authority epoch CAS was not confirmed by readback")
+      -- Sprint 4.74: only a real version mismatch consumes a retry. The
+      -- superseded body retried on every `400` and on `409`, which Vault does
+      -- not answer a KV CAS with at all — so a malformed or forbidden request
+      -- spent the retry budget and then reported as a lost race. A refusal
+      -- cannot be fixed by retrying, and an unobservable attempt may already
+      -- have applied.
+      _ -> case classifyVaultCasOutcome attempted of
+        VaultCasConflict _ -> go (attempts - 1)
+        VaultCasRefused status detail ->
+          pure
+            ( Left
+                ( renderVaultCasOutcome (VaultCasRefused status detail)
+                    <> " writing the retained authority epoch"
+                )
+            )
+        VaultCasUnobservable detail ->
+          pure
+            ( Left
+                ( renderVaultCasOutcome (VaultCasUnobservable detail)
+                    <> " writing the retained authority epoch"
+                )
+            )
+        VaultCasApplied _ ->
+          pure (Left "retained authority epoch CAS was not confirmed by readback")
 
 authorityAdmissionWithRetainedEpoch
   :: VaultSession
@@ -227,14 +249,23 @@ vaultRequestReplayRepository session role maximumEncodedBytes limits =
                   requestReplayField
                   (TextEncoding.decodeUtf8 (Base64.encode encoded))
               )
-        pure $ case attempted of
-          Right _ -> RequestReplayCasApplied
-          Left (HttpStatus 400 _) -> RequestReplayCasConflict
-          Left (HttpStatus 409 _) -> RequestReplayCasConflict
-          Left err ->
+        -- Sprint 4.74: a request Vault refused is not a replay. The superseded
+        -- body answered `RequestReplayCasConflict` for every `400`, so a
+        -- malformed or forbidden write was reported as "another writer already
+        -- claimed this request id" — a replay-protection decision made on a
+        -- premise that never happened.
+        pure $ case classifyVaultCasOutcome attempted of
+          VaultCasApplied _ -> RequestReplayCasApplied
+          VaultCasConflict _ -> RequestReplayCasConflict
+          VaultCasRefused status detail ->
             RequestReplayCasUnobservable
               ( RequestReplayRepositoryUnobservable
-                  (Text.pack (renderHttpError err))
+                  (renderVaultCasOutcome (VaultCasRefused status detail))
+              )
+          VaultCasUnobservable detail ->
+            RequestReplayCasUnobservable
+              ( RequestReplayRepositoryUnobservable
+                  (renderVaultCasOutcome (VaultCasUnobservable detail))
               )
   decodeProjection fields
     | Map.keys fields /= [requestReplayField] =

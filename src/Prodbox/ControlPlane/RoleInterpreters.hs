@@ -236,6 +236,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsTargetVerifyHttpStatus
   , tlsTargetVerifyResponseBody
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.AdminAction.Authority
   ( AdminActionAuthorityRepository
   )
@@ -542,7 +543,7 @@ lifecycleAuthorityDecommissionAuthenticatedHandler maximumBytes inputs inner =
   handle callerSlot route body = case route of
     LifecycleAuthorityDecommissionExport -> case inputs of
       LifecycleAuthorityDecommissionUnprovisioned _ ->
-        pure (Just (503, "authority-decommission-export-unprovisioned\n"))
+        pure (Just (ReplyServiceUnavailable, "authority-decommission-export-unprovisioned\n"))
       LifecycleAuthorityDecommissionProvisioned repository signer _ _ -> do
         result <-
           serveAuthorityDecommissionExportRequest
@@ -558,7 +559,7 @@ lifecycleAuthorityDecommissionAuthenticatedHandler maximumBytes inputs inner =
           )
     LifecycleAuthorityDecommissionStop -> case inputs of
       LifecycleAuthorityDecommissionUnprovisioned _ ->
-        pure (Just (503, "authority-decommission-stop-unprovisioned\n"))
+        pure (Just (ReplyServiceUnavailable, "authority-decommission-stop-unprovisioned\n"))
       LifecycleAuthorityDecommissionProvisioned _ _ expectedSigner repository -> do
         result <-
           serveAuthorityDecommissionStopRequest
@@ -635,7 +636,7 @@ lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
     handle callerSlot route body = case route of
       LifecycleAdminActionExecution
         | verifiedCallerSlotPrincipal callerSlot /= CallerAdminActionRunner ->
-            pure (Just (403, "admin-action-runner-caller-required\n"))
+            pure (Just (ReplyForbidden, "admin-action-runner-caller-required\n"))
         | otherwise -> do
             response <-
               serveAdminActionAuthorityExecutionRequest
@@ -892,7 +893,7 @@ targetSecretAgentDecommissionAuthenticatedHandler maximumBytes inputs inner =
   handle callerSlot route body = case route of
     TargetSecretDecommissionTombstone -> case inputs of
       TargetSecretAgentDecommissionUnprovisioned _ ->
-        pure (Just (503, "target-generation-tombstone-unprovisioned\n"))
+        pure (Just (ReplyServiceUnavailable, "target-generation-tombstone-unprovisioned\n"))
       TargetSecretAgentDecommissionProvisioned expectedSigner registry _ _ -> do
         result <-
           serveTargetGenerationTombstoneRequest
@@ -908,7 +909,7 @@ targetSecretAgentDecommissionAuthenticatedHandler maximumBytes inputs inner =
           )
     TargetSecretDecommissionInventory -> case inputs of
       TargetSecretAgentDecommissionUnprovisioned _ ->
-        pure (Just (503, "target-decommission-inventory-unprovisioned\n"))
+        pure (Just (ReplyServiceUnavailable, "target-decommission-inventory-unprovisioned\n"))
       TargetSecretAgentDecommissionProvisioned _ _ boundary _ -> do
         result <-
           serveTargetDecommissionInventoryRequest
@@ -923,7 +924,7 @@ targetSecretAgentDecommissionAuthenticatedHandler maximumBytes inputs inner =
           )
     TargetSecretDecommissionCustodyTombstone -> case inputs of
       TargetSecretAgentDecommissionUnprovisioned _ ->
-        pure (Just (503, "retained-custody-tombstone-unprovisioned\n"))
+        pure (Just (ReplyServiceUnavailable, "retained-custody-tombstone-unprovisioned\n"))
       TargetSecretAgentDecommissionProvisioned expectedSigner _ _ boundary -> do
         result <-
           serveRetainedCustodyTombstoneRequest
@@ -977,7 +978,7 @@ targetSecretAgentAdminActionAuthenticatedHandler
     handle callerSlot route body
       | route `elem` adminRoutes
           && verifiedCallerSlotPrincipal callerSlot /= CallerAdminActionRunner =
-          pure (Just (403, "admin-action-runner-caller-required\n"))
+          pure (Just (ReplyForbidden, "admin-action-runner-caller-required\n"))
       | otherwise = case route of
           TargetSecretAdminActionGenerationTombstone -> do
             response <-

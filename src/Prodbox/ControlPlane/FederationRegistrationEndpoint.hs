@@ -93,6 +93,7 @@ import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleFederationRegister)
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (TargetAgentIdentity)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -571,15 +572,15 @@ refusal = Left . RegistrationDriveRefused
 unavailable :: Text -> Either RegistrationDriveError value
 unavailable = Left . RegistrationDriveUnavailable
 
-responseStatus :: FederationRegistrationResponse -> Int
+responseStatus :: FederationRegistrationResponse -> ReplyStatus
 responseStatus response = case response of
-  FederationBootstrapPrepareSucceeded {} -> 200
-  FederationBootstrapObserved {} -> 200
-  FederationBootstrapParentEnvelopeReady {} -> 200
-  FederationBootstrapCustodySucceeded {} -> 200
-  FederationRegistrationSucceeded {} -> 200
-  FederationRegistrationRefused {} -> 409
-  FederationRegistrationUnavailable {} -> 503
+  FederationBootstrapPrepareSucceeded {} -> ReplyOk
+  FederationBootstrapObserved {} -> ReplyOk
+  FederationBootstrapParentEnvelopeReady {} -> ReplyOk
+  FederationBootstrapCustodySucceeded {} -> ReplyOk
+  FederationRegistrationSucceeded {} -> ReplyOk
+  FederationRegistrationRefused {} -> ReplyConflict
+  FederationRegistrationUnavailable {} -> ReplyServiceUnavailable
 
 responseBody :: FederationRegistrationResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

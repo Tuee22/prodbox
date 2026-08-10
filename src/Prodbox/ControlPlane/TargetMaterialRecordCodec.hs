@@ -30,10 +30,16 @@ import Prodbox.Lifecycle.Lease
   , ownerNonceText
   )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( TargetSinkRecord (..)
+  ( TargetSinkRecord
   , credentialGenerationValue
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , targetSinkRecordDigest
+  , targetSinkRecordFencingToken
+  , targetSinkRecordFromStore
+  , targetSinkRecordGeneration
+  , targetSinkRecordOwnerNonce
+  , targetSinkRecordPayload
   , targetValueDigestText
   )
 import Text.Read (readMaybe)
@@ -80,14 +86,7 @@ targetMaterialRecordFromVaultFields target fields = do
   generation <- first (Text.pack . show) (mkCredentialGeneration generationNatural)
   digest <- first (Text.pack . show) (mkTargetValueDigest digestText)
   payload <- targetSecretPayloadFromVaultFields target payloadFields
-  pure
-    TargetSinkRecord
-      { targetSinkRecordOwnerNonce = owner
-      , targetSinkRecordFencingToken = fence
-      , targetSinkRecordGeneration = generation
-      , targetSinkRecordDigest = digest
-      , targetSinkRecordPayload = payload
-      }
+  pure (targetSinkRecordFromStore owner fence generation digest payload)
  where
   requireMetadata name =
     maybe

@@ -9,6 +9,7 @@ module Prodbox.Lifecycle.AnchoredReconcile
   , anchoredOrderRespectsGraph
   , compileAnchoredOrder
   , runAnchoredStepOrder
+  , runFirstAnchoredStepOrder
   )
 where
 
@@ -33,6 +34,12 @@ import Prodbox.Lifecycle.DependencyAdmission
   , admitComponentMutation
   , recordAdmission
   )
+
+-- Sprint 4.64: this module is the reconcile executor and therefore the one
+-- place a run legitimately begins with no admissions. It is on the
+-- @dependencyAdmissionInternalSourceViolations@ allowlist for exactly that
+-- reason, and 'noAdmissions' is reachable from nowhere else under @src/@.
+import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)
 import System.Exit (ExitCode (..))
 
 data ReconcilePhase
@@ -282,6 +289,34 @@ runAnchoredStepOrder
   -- Returning the refusal moves the lowering to the caller, where a reason can
   -- be rendered, and makes the silent version unrepresentable rather than
   -- merely absent: there is no longer an @ExitCode@ to return in its place.
+  -- | Begin a reconcile run: 'runAnchoredStepOrder' with the empty admission set
+  -- supplied here rather than named by the caller.
+  --
+  -- Sprint @4.64@. Sprint @4.61@ fixed the admission reset and left the threading
+  -- correct-by-convention: @noAdmissions@ was exported, so any phase call site
+  -- could pass an empty set and silently discard everything the run had observed.
+  -- The residual is closed by removing the choice rather than by policing it —
+  -- @noAdmissions@ is now package-internal, this is the only entry point that
+  -- starts empty, and every later phase must be handed a value that only an
+  -- earlier phase could have returned.
+  --
+  -- __The bound, stated rather than implied.__ This makes an accidental reset a
+  -- compile error and a deliberate one a loudly-named function call. It does not
+  -- prevent a caller from invoking /this/ function twice in one reconcile; what
+  -- it removes is the innocuous-looking way to do it. A surface with two "first"
+  -- phases is visible in review as a second @runFirstAnchoredStepOrder@, which
+  -- @noAdmissions@ at a phase boundary never was.
+runFirstAnchoredStepOrder
+  :: ComponentDag
+  -> IO Natural
+  -> (step -> ReconcileStepAnchor)
+  -> (MutationAdmission -> step -> IO ExitCode)
+  -> (step -> IO ExitCode)
+  -> (ComponentId -> IO (Either ExitCode DependencyAdmission))
+  -> [step]
+  -> IO (Either AdmissionRefusal (ExitCode, AdmissionSet))
+runFirstAnchoredStepOrder dag clock stepAnchor runMutation runStep requireReadiness =
+  runAnchoredStepOrder dag clock stepAnchor runMutation runStep requireReadiness noAdmissions
 runAnchoredStepOrder dag clock stepAnchor runMutation runStep requireReadiness carried steps = do
   outcome <- foldM runAnchoredStep (Right ExitSuccess, carried) steps
   pure $ case outcome of

@@ -14,6 +14,7 @@ module Prodbox.Secret.VaultInventory
   , VaultSecretBootstrapStep (..)
   , VaultSecretBootstrapError (..)
   , VaultSecretBootstrapOps (..)
+  , VaultSecretObservation (..)
   , vaultSecretConsumerKvApiPaths
   , vaultSecretConsumerPolicyDocument
   , vaultSecretPathName
@@ -42,8 +43,10 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Numeric.Natural (Natural)
 import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
+import Prodbox.Vault.Client (VaultCasOutcome)
 import Prodbox.Vault.RoleId (allVaultRoleIds, vaultRoleIdText)
 
 data VaultSecretPath = VaultSecretPath
@@ -96,13 +99,37 @@ data VaultSecretBootstrapStep = VaultSecretBootstrapStep
 
 data VaultSecretBootstrapError
   = VaultSecretBootstrapReadFailed VaultSecretPath HttpError
-  | VaultSecretBootstrapWriteFailed VaultSecretPath HttpError
+  | -- | Sprint 4.74: a bootstrap write's failure is a CAS outcome, not a bare
+    -- transport error. The fold unions generated fields onto what it read, so
+    -- "another writer changed this object" and "Vault did not answer" call for
+    -- different responses and used to arrive as the same value.
+    VaultSecretBootstrapWriteFailed VaultSecretPath VaultCasOutcome
   | VaultSecretBootstrapExternalFieldMissing VaultSecretPath Text
   deriving (Eq, Show)
 
+-- | What a bootstrap read found, carrying the version a conditional write must
+-- be conditioned on.
+--
+-- Sprint 4.71: the read used to answer a bare field map, which is why the write
+-- that followed it could only be unconditional. The bootstrap fold is a
+-- read-modify-write — it unions generated fields onto what it observed — so an
+-- unconditional write silently loses a concurrent writer's generated field.
+data VaultSecretObservation
+  = VaultSecretObjectAbsent
+  | VaultSecretObjectPresent !Natural !(Map Text Text)
+  deriving (Eq, Show)
+
 data VaultSecretBootstrapOps = VaultSecretBootstrapOps
-  { vaultSecretBootstrapRead :: VaultSecretPath -> IO (Either HttpError (Map Text Text))
-  , vaultSecretBootstrapWrite :: VaultSecretPath -> Map Text Text -> IO (Either HttpError ())
+  { vaultSecretBootstrapObserve
+      :: VaultSecretPath -> IO (Either HttpError VaultSecretObservation)
+  , vaultSecretBootstrapWrite
+      :: VaultSecretPath
+      -> Natural
+      -- \^ The version the write is conditioned on. @0@ is Vault's own
+      -- create-if-absent, so an absent observation and a present one are the
+      -- same call with different evidence rather than two code paths.
+      -> Map Text Text
+      -> IO (Either VaultCasOutcome ())
   , vaultSecretBootstrapGenerate :: VaultSecretFieldSpec -> IO Text
   }
 
@@ -587,12 +614,14 @@ runVaultSecretBootstrapWith ops =
  where
   go steps [] = pure (Right (reverse steps))
   go steps (spec : rest) = do
-    readResult <- vaultSecretBootstrapRead ops (vaultSecretObjectPath spec)
+    readResult <- vaultSecretBootstrapObserve ops (vaultSecretObjectPath spec)
     case readResult of
-      Right existing ->
-        ensureFields ops False existing spec >>= continue steps rest
+      Right (VaultSecretObjectPresent version existing) ->
+        ensureFields ops False version existing spec >>= continue steps rest
+      Right VaultSecretObjectAbsent ->
+        ensureFields ops True 0 Map.empty spec >>= continue steps rest
       Left (HttpStatus 404 _) ->
-        ensureFields ops True Map.empty spec >>= continue steps rest
+        ensureFields ops True 0 Map.empty spec >>= continue steps rest
       Left err ->
         pure (Left (VaultSecretBootstrapReadFailed (vaultSecretObjectPath spec) err))
 
@@ -602,10 +631,11 @@ runVaultSecretBootstrapWith ops =
 ensureFields
   :: VaultSecretBootstrapOps
   -> Bool
+  -> Natural
   -> Map Text Text
   -> VaultSecretObjectSpec
   -> IO (Either VaultSecretBootstrapError VaultSecretBootstrapStep)
-ensureFields ops wasAbsent existing spec = do
+ensureFields ops wasAbsent expectedVersion existing spec = do
   materialized <-
     materializeMissingFields
       ops
@@ -626,7 +656,8 @@ ensureFields ops wasAbsent existing spec = do
             )
       | otherwise -> do
           let fields = Map.union (Map.fromList missingValues) existing
-          writeResult <- vaultSecretBootstrapWrite ops (vaultSecretObjectPath spec) fields
+          writeResult <-
+            vaultSecretBootstrapWrite ops (vaultSecretObjectPath spec) expectedVersion fields
           pure $ case writeResult of
             Left err -> Left (VaultSecretBootstrapWriteFailed (vaultSecretObjectPath spec) err)
             Right () ->

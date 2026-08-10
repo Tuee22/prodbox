@@ -214,7 +214,10 @@ import Prodbox.Vault.Client
   , KvV2VersionedSecret (..)
   , TokenAccessorListing (..)
   , VaultAddress (..)
+  , VaultCasOutcome (..)
   , VaultKubernetesLoginResult (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKubernetesLoginWithLease
   , vaultKvCasWriteV2
   , vaultKvReadMetadataV2
@@ -780,7 +783,12 @@ compareAndSwapTargetWorkerData session target expected fields =
             (targetSecretSinkKvPath sink)
             (KvV2Cas expected)
             fields
-      pure (first (Text.pack . renderHttpError) result)
+      -- Sprint 4.74: the target sink's CAS answers three different facts, and
+      -- the commit fold this feeds already distinguishes them on the
+      -- object-store lane; this lane stops collapsing them into one string.
+      pure $ case classifyVaultCasOutcome result of
+        VaultCasApplied version -> Right version
+        failed -> Left (renderVaultCasOutcome failed)
 
 writeTargetWorkerMetadata
   :: VaultSession

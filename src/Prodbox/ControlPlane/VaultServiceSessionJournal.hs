@@ -30,7 +30,10 @@ import Prodbox.Vault.Client
   ( KvV2Cas (KvV2Cas)
   , KvV2VersionedSecret (..)
   , VaultAddress
+  , VaultCasOutcome (..)
   , VaultToken
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
@@ -71,9 +74,12 @@ vaultServiceSessionJournalRepository address token role =
                 (serviceSessionJournalVaultPath role)
                 (KvV2Cas expected)
                 (Map.singleton serviceSessionJournalField (encodeJournalField journal))
-            pure $ case written of
-              Left err -> Left (renderVaultError err)
-              Right _ -> Right ()
+            -- Sprint 4.74: the journal's caller decides whether to re-read and
+            -- retry, and that decision differs for a lost race, a refusal, and
+            -- an attempt whose outcome is unknown.
+            pure $ case classifyVaultCasOutcome written of
+              VaultCasApplied _ -> Right ()
+              failed -> Left (renderVaultCasOutcome failed)
     }
  where
   decodeVersioned versioned = do

@@ -3358,6 +3358,74 @@ a `dev check` source gate plus a totality proof. Recorded rather than quietly su
 - Per [chaos_hardening_doctrine.md § 22](../documents/engineering/chaos_hardening_doctrine.md), a
   ring-2 gate bounds a process, not a protocol.
 
+## Sprint 3.33: An Ensure Is a Mutation Too ✅
+
+**Status**: Done (2026-08-09) — Phase `3` own-surface work completing the DNS ownership authority
+Sprint `3.32` opened.
+**Implementation**: `src/Prodbox/Lifecycle/DnsRecord.hs` (`EnsureDnsRecord` takes the
+`DnsOwnerAuthority`; `runEnsure` checks it in the same order `runDestroy` does),
+`src/Prodbox/Gateway/Daemon.hs` (the one production construction site mints its authority from
+`RuntimeRole` × `Substrate` instead of receiving none), `test/unit/DnsOwnerAuthoritySuite.hs`,
+`test/unit/DnsRecord.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — and unlike Sprint `3.32`, this one **does** edit a live
+production mutation path, so the reasoning is given rather than the conclusion. `DestroyDnsRecord`
+had zero production construction sites, which is why `3.32` was a runtime no-op. `EnsureDnsRecord`
+has exactly one: the gateway daemon's home Route 53 A-record write. The authority it now mints is
+`dnsOwnerAuthorityForProcess GatewayRuntime SubstrateHomeLocal` = `HomeGatewayDnsOwner`, which is the
+owner `homeDnsProgramInputs` already builds the coordinate with, so the new guard cannot fire on the
+supported path and no record, value, TTL, or ordering changes. None of Standard P's enumerated
+surfaces moves. The next qualification run must still exercise the post-`3.33` write path.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
+including a refusal case that asserts the boundary is never called.
+**Docs to update**: none — `Prodbox.Lifecycle.DnsRecord.Owner`'s module Haddock already states the
+rule for both directions, and it is now true of both.
+
+### Objective
+
+Sprint `3.32` gave `DestroyDnsRecord` the authority the running process holds and recorded, in its
+own Remaining Work and as an unowned ledger row, that `EnsureDnsRecord` was still unwitnessed.
+Writing a record you do not own is not obviously less bad than deleting one; it is the same
+*Direction* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and the
+asymmetry was deliberate scoping rather than a judgement that an ensure is safe.
+
+The ledger's own note said this should be scheduled "with the ensure path's first production
+constructor rather than before it". That constructor already exists — `src/Prodbox/Gateway/Daemon.hs`
+— so the condition the row set is met, and the sprint is the one that meets it.
+
+### Deliverables
+
+- ✅ `EnsureDnsRecord :: DnsOwnerAuthority -> DnsRecordSet -> DnsRecordProgram DnsProgramResult`, with
+  `runEnsure` refusing `DnsProgramOwnerUnauthorized` **before** its first observation — checked in the
+  same order as `runDestroy`, so an unauthorized writer never reaches Route 53 at all rather than
+  reaching it and being refused on read-back.
+- ✅ The gateway daemon **mints** its authority from what the binary is (`GatewayRuntime` on
+  `SubstrateHomeLocal`) rather than naming an owner beside the coordinate. A role the total
+  `dnsOwnerAuthorityForProcess` table does not entitle gets `Nothing` and a typed refusal; there is no
+  arm that proceeds without one.
+- ✅ The asymmetry the deletion ledger recorded is gone: both mutating arms of `DnsRecordProgram` now
+  consume the same witness, and neither can be satisfied by supplying the coordinate's owner twice.
+
+### Validation
+
+1. ✅ `prodbox-unit -p "caller-bound DNS ownership"` — **9/9**, including the two new cases: an ensure
+   under a foreign authority refuses with `DnsProgramOwnerUnauthorized` **and the boundary call log is
+   empty**, and an ensure under the held authority still reads back exactly
+   (`["observe", "ensure", "observe"]`).
+2. ✅ `prodbox-unit -p "registered DNS record"` — 8/8 unchanged, so the arity change did not alter the
+   ensure semantics the Sprint `3.32`-era cases pin.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 with main Hspec **3266/3266**.
+
+### Remaining Work
+
+None on this sprint's surface. The bound Sprint `3.32` stated still holds and is not narrowed by this
+sprint: per
+[chaos_hardening_doctrine.md § 22](../documents/engineering/chaos_hardening_doctrine.md) a ring-2 gate
+bounds a process, not a protocol. The two untyped Route 53 writers in
+`src/Prodbox/ControlPlane/ProviderProduction.hs` carry no owner value at all and are unaffected by
+either sprint; that row stays open, owned by the Provider Worker surface rather than this one.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

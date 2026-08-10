@@ -37,22 +37,49 @@ module Prodbox.ControlPlane.Runtime
   , receiveControlPlaneRequest
   , runControlPlaneRole
   , serveControlPlaneConnection
+  , controlPlaneCapacityInputs
+  , controlPlaneCapacityPlan
+  , controlPlaneRequestBudget
+  , refuseControlPlaneConnection
   )
 where
 
-import Control.Concurrent (forkFinally)
-import Control.Concurrent.STM (atomically)
-import Control.Exception (SomeException, bracket, try)
-import Control.Monad (forever, void)
+import Control.Concurrent.Async (async, cancel)
+import Control.Concurrent.STM
+  ( TBQueue
+  , TVar
+  , atomically
+  , modifyTVar'
+  , newTBQueueIO
+  , newTVarIO
+  , readTBQueue
+  , readTVar
+  , stateTVar
+  , writeTBQueue
+  , writeTVar
+  )
+import Control.Exception
+  ( SomeAsyncException
+  , SomeException
+  , bracket
+  , finally
+  , fromException
+  , mask
+  , throwIO
+  , try
+  )
+import Control.Monad (forever, replicateM, void)
 import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Dhall qualified
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Generics (Generic)
 import Network.Socket
 import Network.Socket.ByteString (recv)
@@ -153,6 +180,22 @@ import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerService)
   , callerPrincipalCode
   )
+import Prodbox.ControlPlane.Capacity
+  ( AdmissionDecision (AdmissionAdmit, AdmissionRejected)
+  , AdmissionQueue
+  , AdmissionRequest (AdmissionRequest)
+  , RawServiceCapacityPlan (..)
+  , RejectionReason (RejectedDeadlineUnmeetable, RejectedSaturated)
+  , RequestId (RequestId)
+  , ServiceCapacityPlan
+  , ServiceCapacityPlanError
+  , admit
+  , completeService
+  , emptyAdmissionQueue
+  , mkServiceCapacityPlan
+  , serviceCapacityQueueCapacity
+  , serviceCapacityWorkerCount
+  )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunRepositoryProvider (..)
   )
@@ -175,7 +218,16 @@ import Prodbox.ControlPlane.ConfigProductionStore
   )
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
-import Prodbox.ControlPlane.Deadline (monotonicInstantMicros)
+import Prodbox.ControlPlane.Deadline
+  ( Deadline
+  , DeadlineObservation (DeadlineExpired, DeadlineOpen)
+  , MonotonicInstant
+  , RemainingDuration (RemainingDuration)
+  , deadlineAtOffset
+  , deadlineObservation
+  , monotonicInstantFromMicros
+  , monotonicInstantMicros
+  )
 import Prodbox.ControlPlane.DecommissionClient
   ( requestTargetDecommissionInventory
   )
@@ -453,11 +505,17 @@ import Prodbox.ControlPlane.VaultSession
   , newControlPlaneVaultSession
   , readProjectedServiceAccountJwt
   )
+import Prodbox.Gateway.Logging (field, logError)
 import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (..)
+  , replyStatusCode
+  )
 import Prodbox.Http.ResponseObligation
   ( ResponseObligation
   , ResponseRefusal (ResponseCancelled, ResponseHandlerFailed)
   , mkResponseObligation
+  , renderResponseRefusalReason
   , responseWriteBudgetMicrosDefault
   , withResponseObligation
   )
@@ -601,6 +659,7 @@ import Prodbox.Vault.Session
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
+import System.Timeout (timeout)
 
 data ControlPlaneConfig = ControlPlaneConfig
   { schema_version :: !Natural
@@ -2535,7 +2594,11 @@ providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner =
         mkProviderWorkerExecutionBoundary
           trustRepository
           currentAuthorityTime
-          (providerProductionNarrowSession vaultSession authorityTransport)
+          ( providerProductionNarrowSession
+              vaultSession
+              authorityTransport
+              (readRetainedAuthorityEpoch vaultSession)
+          )
           providerProductionCapabilities
       -- Sprint 4.55: readiness used to read the retained Authority epoch and
       -- then run `providerProductionReady`, which reads the Provider Vault KV
@@ -3007,23 +3070,102 @@ mapLeft convert value = case value of
   Left err -> Left (convert err)
   Right result -> Right result
 
+-- | The control plane's authored service-capacity inputs.
+--
+-- Sprint 4.68. These are __authored, not measured__, and saying so is the point:
+-- @rawServiceTimeMicros@ is the one field
+-- [resource_scaling_doctrine.md § 2C](../../../documents/engineering/resource_scaling_doctrine.md)
+-- calls uncertified-until-first-profile, and no measured control-plane profile
+-- exists. What the plan buys today is not a proven service rate; it is that the
+-- concurrency, the queue depth, and the rejection threshold are __finite and
+-- stated in one place__, where before they were unstated because there was no
+-- bound at all.
+--
+-- The four numbers are chosen so the lane is not over-committed at the authored
+-- rate: @ρ = λS/c = 8 × 0.3 s / 4 = 0.6@ against a @0.7@ ceiling, which
+-- 'mkServiceCapacityPlan' checks rather than trusts.
+-- Sprint 4.75: @rawServiceTimeMicros@ below is __authored, not measured__.
+-- Every other number here is a policy choice and is fine to author; a service
+-- time is an observation of the running lane, and no measured control-plane
+-- profile exists to compare it against. The bound this plan computes is
+-- therefore only as good as that one constant, and saying so here is the
+-- correction — the field's own haddock claimed it was measured.
+controlPlaneCapacityInputs :: RawServiceCapacityPlan
+controlPlaneCapacityInputs =
+  RawServiceCapacityPlan
+    { rawArrivalPerSecond = 8
+    , rawServiceTimeMicros = 300000
+    , rawWorkerCount = 4
+    , rawQueueCapacity = 32
+    , rawRejectionThreshold = 24
+    , rawHeadroomPpm = 300000
+    }
+
+-- | The compiled plan. @Left@ is unreachable in a built binary because
+-- @prodbox dev check@ fails when 'controlPlaneCapacityInputs' does not compile,
+-- but the value stays an 'Either' rather than an @error@ so that unreachability
+-- is a property of the gate and not an assumption in the runtime.
+controlPlaneCapacityPlan :: Either ServiceCapacityPlanError ServiceCapacityPlan
+controlPlaneCapacityPlan = mkServiceCapacityPlan controlPlaneCapacityInputs
+
+-- | The absolute budget one accepted connection gets, from the instant it was
+-- accepted: read, dispatch, and interpreter together.
+--
+-- Matches the Bootstrap Broker's production @request_deadline_milliseconds@,
+-- deliberately: the two servers admit the same class of large-payload
+-- operations, and two different budgets for the same work would be a number
+-- nobody could defend.
+controlPlaneRequestBudget :: RemainingDuration
+controlPlaneRequestBudget = RemainingDuration (300 * 1000 * 1000)
+
+-- | An accepted connection with the instant it was accepted.
+--
+-- The instant is stamped at @accept@ rather than at dequeue, so queue wait is
+-- spent from the caller's budget instead of being invisible to it.
+data QueuedControlPlaneConnection = QueuedControlPlaneConnection
+  { queuedControlPlaneSocket :: !Socket
+  , queuedControlPlaneRequestId :: !RequestId
+  , queuedControlPlaneAcceptedAt :: !MonotonicInstant
+  }
+
+-- | Sprint 4.68: a bounded accept path with one absolute deadline per request.
+--
+-- The superseded loop was @forever { accept; forkFinally }@: every accepted
+-- connection got its own thread, nothing counted them, and neither the request
+-- read nor the interpreter had a deadline — so a stalled peer held a thread
+-- indefinitely and arrival rate alone decided in-process concurrency. The
+-- kernel backlog (@listen … 32@) bounded /pending/ connections and was
+-- sometimes mistaken for a bound on /accepted/ ones; it is not, and that is the
+-- distinction this closes.
+--
+-- __The admission machine is not new; it was unused.__
+-- "Prodbox.ControlPlane.Capacity" has held an opaque 'ServiceCapacityPlan' and
+-- a pure decide\/evolve 'AdmissionQueue' since Sprint 1.62, with no production
+-- consumer on this path. This sprint makes it load-bearing rather than writing
+-- a second one.
+--
+-- Two bounds are deliberately redundant and in the same direction: the
+-- 'TBQueue' is sized at the plan's queue capacity, so over-admission is not
+-- representable in the carrier, while 'admit' rejects at the lower rejection
+-- threshold and says /why/. A bug in the decision cannot unbound the memory.
 runControlPlaneServer
   :: RuntimeRole
   -> RoleInterpreter IO
   -> IO ExitCode
-runControlPlaneServer role interpreter =
-  withSocketsDo $
-    bracket open close $ \listener ->
-      forever $ do
-        (client, _) <- accept listener
-        -- Sprint 4.60: the connection's outcome used to be discarded by
-        -- `const`, so any throw inside `serve` closed the socket with zero
-        -- bytes. `serveControlPlaneConnection` now owns the guarantee that
-        -- exactly one reply is attempted; this binder closes the socket and
-        -- deliberately ignores an outcome that has already been answered.
-        void $
-          forkFinally (serveControlPlaneConnection role interpreter client) $
-            \_answered -> close client
+runControlPlaneServer role interpreter = case controlPlaneCapacityPlan of
+  Left _ -> pure (ExitFailure 1)
+  Right plan -> withSocketsDo $
+    bracket open close $ \listener -> do
+      pending <- newTBQueueIO (serviceCapacityQueueCapacity plan)
+      admission <- newTVarIO (emptyAdmissionQueue plan)
+      nextRequestId <- newTVarIO (0 :: Natural)
+      bracket
+        ( replicateM
+            (fromIntegral (serviceCapacityWorkerCount plan))
+            (async (controlPlaneWorkerLoop role interpreter admission pending))
+        )
+        (mapM_ cancel)
+        (const (forever (acceptOne pending admission nextRequestId listener)))
  where
   open = do
     listener <- socket AF_INET Stream defaultProtocol
@@ -3031,6 +3173,140 @@ runControlPlaneServer role interpreter =
     bind listener (SockAddrInet 8600 (tupleToHostAddress (0, 0, 0, 0)))
     listen listener 32
     pure listener
+
+  -- `mask` covers the window between `accept` returning a socket and that
+  -- socket being owned by the queue or refused: an asynchronous exception
+  -- landing there would leak the descriptor with nothing left holding it.
+  acceptOne pending admission nextRequestId listener = mask $ \restore -> do
+    (client, _) <- restore (accept listener)
+    acceptedAt <- monotonicInstantFromMicros <$> controlPlaneMonotonicMicros
+    decision <- atomically $ do
+      requestId <- stateTVar nextRequestId (\value -> (RequestId value, value + 1))
+      queue <- readTVar admission
+      let (verdict, evolved) =
+            admit queue (AdmissionRequest requestId controlPlaneRequestBudget)
+      case verdict of
+        AdmissionAdmit _ -> do
+          writeTVar admission evolved
+          writeTBQueue
+            pending
+            QueuedControlPlaneConnection
+              { queuedControlPlaneSocket = client
+              , queuedControlPlaneRequestId = requestId
+              , queuedControlPlaneAcceptedAt = acceptedAt
+              }
+          pure Nothing
+        AdmissionRejected reason -> pure (Just reason)
+    case decision of
+      Nothing -> pure ()
+      -- A refused connection is still an accepted connection and is still owed
+      -- a reply, so it goes through the same obligation rather than a raw
+      -- write. It is answered on the accept thread under a short write budget:
+      -- that serialises refusals, which under saturation is backpressure rather
+      -- than a cost, and the alternative — one thread per refusal — is the
+      -- unbounded spawn this sprint removes.
+      Just reason ->
+        restore (refuseControlPlaneConnection role reason client)
+          `finally` close client
+
+-- | Take one admitted connection, serve it under its own absolute deadline, and
+-- free its server slot however it ends.
+controlPlaneWorkerLoop
+  :: RuntimeRole
+  -> RoleInterpreter IO
+  -> TVar AdmissionQueue
+  -> TBQueue QueuedControlPlaneConnection
+  -> IO ()
+controlPlaneWorkerLoop role interpreter admission pending = forever $ do
+  queued <- atomically (readTBQueue pending)
+  -- `try` keeps a worker alive across a synchronous failure. Without it a
+  -- single throw would retire one of a fixed number of servers permanently,
+  -- which is a slower version of the unbounded defect: capacity that silently
+  -- decays. The connection itself is already answered by the obligation.
+  outcome <-
+    try
+      ( serveControlPlaneConnection
+          role
+          interpreter
+          (deadlineAtOffset (queuedControlPlaneAcceptedAt queued) controlPlaneRequestBudget)
+          (queuedControlPlaneSocket queued)
+          `finally` do
+            close (queuedControlPlaneSocket queued)
+            atomically
+              ( modifyTVar'
+                  admission
+                  (completeService (queuedControlPlaneRequestId queued))
+              )
+      )
+      :: IO (Either SomeException ())
+  case outcome of
+    Right () -> pure ()
+    -- Cancellation is the drain path and must not be swallowed into a loop.
+    Left err -> case fromException err :: Maybe SomeAsyncException of
+      Just _ -> throwIO err
+      Nothing -> pure ()
+
+-- | Answer a connection the admission machine refused.
+--
+-- The two reasons map to different statuses on purpose. Saturation is
+-- retryable and says so; an unmeetable deadline is not, because retrying
+-- against the same budget produces the same answer. The second arm is
+-- unreachable under 'controlPlaneCapacityInputs' — the deepest admissible queue
+-- costs about two seconds against a 300-second budget — and it exists because
+-- the decision is total, not because it is expected.
+refuseControlPlaneConnection :: RuntimeRole -> RejectionReason -> Socket -> IO ()
+refuseControlPlaneConnection activeRole reason client =
+  withResponseObligation obligation client $ do
+    drainBeforeRefusal client
+    pure (refusalReply reason)
+ where
+  obligation =
+    mkResponseObligation
+      (uncurry renderHttpResponse)
+      controlPlaneRefusalReply
+      (observeControlPlaneRefusal activeRole)
+      controlPlaneRefusalWriteBudgetMicros
+
+  refusalReply value = case value of
+    RejectedSaturated _ -> (ReplyTooManyRequests, "control-plane-saturated\n")
+    RejectedDeadlineUnmeetable _ _ ->
+      (ReplyServiceUnavailable, "control-plane-deadline-unmeetable\n")
+
+-- | The write budget a refusal gets. Short relative to
+-- 'responseWriteBudgetMicrosDefault' because it is spent on the accept thread:
+-- a wedged peer being refused must not stop the server accepting.
+controlPlaneRefusalWriteBudgetMicros :: Int
+controlPlaneRefusalWriteBudgetMicros = 250 * 1000
+
+-- | Consume the request a refusal is about to answer without reading.
+--
+-- Sprint 4.68 found this by testing the path rather than by reasoning about it.
+-- @close@ on a socket that still holds unread bytes sends __RST__, and an RST
+-- discards what was already written — so the @429@ and the @408@ could be lost
+-- precisely because those are the two replies produced /without/ reading the
+-- request. That is Sprint 4.60's "accepted a connection and answered nothing"
+-- reappearing through the kernel instead of through a @const@.
+--
+-- The drain is the ordinary bounded reader, so it is bounded in bytes by the
+-- framing limits, and it is bounded in time here because a peer that opens a
+-- connection and then stalls must not hold the accept thread. Its result is
+-- discarded deliberately: the request is refused either way, and parsing it
+-- would be work this path exists to avoid.
+drainBeforeRefusal :: Socket -> IO ()
+drainBeforeRefusal client =
+  void
+    ( try (timeout controlPlaneRefusalDrainMicros (receiveControlPlaneRequest client))
+        :: IO (Either SomeException (Maybe (Either ControlPlaneFramingError ByteString.ByteString)))
+    )
+
+-- | How long a refusal will wait for the request it is refusing. Smaller than
+-- the write budget: draining is a courtesy that protects the reply, and it must
+-- never cost more than the reply itself.
+controlPlaneRefusalDrainMicros :: Int
+controlPlaneRefusalDrainMicros = 100 * 1000
+
+controlPlaneMonotonicMicros :: IO Natural
+controlPlaneMonotonicMicros = fromIntegral . (`div` 1000) <$> getMonotonicTimeNSec
 
 -- | Serve one accepted connection through the response obligation.
 --
@@ -3042,16 +3318,36 @@ runControlPlaneServer role interpreter =
 -- throws while being read is exactly as owed a reply as an interpreter that
 -- throws, and putting the read outside would leave the gap the Bootstrap
 -- Broker still has.
+--
+-- Sprint 4.68: the read and the dispatch run under the connection's absolute
+-- deadline, and __the deadline is enforced inside the handler rather than
+-- around the obligation__. That placement is the whole design. A @timeout@
+-- wrapped outside would deliver an asynchronous exception into
+-- 'withResponseObligation', which answers its cancellation refusal and re-raises
+-- — so the caller would receive @503 shutting-down@, and any second write would
+-- be a second reply on one connection. Inside, the expiry is an ordinary value
+-- and the peer gets exactly one reply that names what happened.
 serveControlPlaneConnection
   :: RuntimeRole
   -> RoleInterpreter IO
+  -> Deadline
   -> Socket
   -> IO ()
-serveControlPlaneConnection activeRole interpreter client =
-  withResponseObligation controlPlaneResponseObligation client $ do
+serveControlPlaneConnection activeRole interpreter deadline client =
+  withResponseObligation (controlPlaneResponseObligation activeRole) client $ do
+    now <- monotonicInstantFromMicros <$> controlPlaneMonotonicMicros
+    case deadlineObservation now deadline of
+      DeadlineExpired -> do
+        drainBeforeRefusal client
+        pure controlPlaneDeadlineReply
+      DeadlineOpen (RemainingDuration remaining) -> do
+        answered <- timeout (controlPlaneTimeoutMicros remaining) served
+        pure (fromMaybe controlPlaneDeadlineReply answered)
+ where
+  served = do
     framed <- receiveControlPlaneRequest client
     case framed of
-      Left _ -> pure (400, "bad-request\n")
+      Left _ -> pure (ReplyBadRequest, "bad-request\n")
       Right request ->
         serveControlPlaneRequest
           productionRoleReadinessResolver
@@ -3059,20 +3355,50 @@ serveControlPlaneConnection activeRole interpreter client =
           activeRole
           request
 
+controlPlaneDeadlineReply :: (ReplyStatus, ByteString.ByteString)
+controlPlaneDeadlineReply = (ReplyRequestTimeout, "request-deadline-exceeded\n")
+
+-- | Saturate rather than wrap: a budget wider than 'Int' becomes the widest
+-- representable wait, never a negative one.
+controlPlaneTimeoutMicros :: Natural -> Int
+controlPlaneTimeoutMicros value = fromIntegral (min value (fromIntegral (maxBound :: Int)))
+
 -- | The production obligation. Both refusal statuses are ones
 -- 'httpReasonPhrase' already maps, so a refusal renders a complete status line.
 --
 -- The refusal body carries no exception text. That is a deliberate asymmetry
 -- with the integration fixture server, which does carry it: a fixture's job is
 -- to name the failure, a production control-plane role's is not to leak it.
-controlPlaneResponseObligation :: ResponseObligation (Int, ByteString.ByteString)
-controlPlaneResponseObligation =
+--
+-- Sprint 4.65: because the body carries nothing, the reason has to go
+-- somewhere, and until now it went nowhere — a `500` was the whole surviving
+-- record of any handler failure. It is now recorded on the role's own stderr,
+-- which is the pod's captured log stream and is not the wire.
+controlPlaneResponseObligation
+  :: RuntimeRole -> ResponseObligation (ReplyStatus, ByteString.ByteString)
+controlPlaneResponseObligation role =
   mkResponseObligation
     (uncurry renderHttpResponse)
     controlPlaneRefusalReply
+    (observeControlPlaneRefusal role)
     responseWriteBudgetMicrosDefault
 
-controlPlaneRefusalReply :: ResponseRefusal -> (Int, ByteString.ByteString)
+-- | Record a refused control-plane response with its structured reason.
+--
+-- Sprint 4.65. The status the peer received is included so an operator reading
+-- the log can join it to the client's observation, and the role is included
+-- because five roles share this implementation and one line of stderr must say
+-- which of them refused.
+observeControlPlaneRefusal :: RuntimeRole -> ResponseRefusal -> IO ()
+observeControlPlaneRefusal role refusal =
+  logError
+    "control_plane_response_refused"
+    [ field "role" (runtimeRoleName role)
+    , field "reply_status" (replyStatusCode (fst (controlPlaneRefusalReply refusal)))
+    , field "reason" (renderResponseRefusalReason refusal)
+    ]
+
+controlPlaneRefusalReply :: ResponseRefusal -> (ReplyStatus, ByteString.ByteString)
 controlPlaneRefusalReply refusal = case refusal of
-  ResponseHandlerFailed _ -> (500, "internal-error\n")
-  ResponseCancelled _ -> (503, "shutting-down\n")
+  ResponseHandlerFailed _ -> (ReplyInternalError, "internal-error\n")
+  ResponseCancelled _ -> (ReplyServiceUnavailable, "shutting-down\n")

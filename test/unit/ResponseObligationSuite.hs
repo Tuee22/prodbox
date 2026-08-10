@@ -7,11 +7,12 @@
 module ResponseObligationSuite (responseObligationSuite) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (SomeException, throwIO, try)
+import Control.Exception (SomeException, throwIO, toException, try)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as Char8
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Network.Socket
   ( Family (AF_UNIX)
   , Socket
@@ -24,6 +25,7 @@ import Network.Socket
 import Network.Socket.ByteString (recv)
 import Prodbox.CheckCode (responseObligationViolations)
 import Prodbox.ControlPlane.Server (renderHttpResponse)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Http.ResponseObligation
 import System.Timeout (timeout)
 import TestSupport
@@ -43,7 +45,7 @@ responseObligationSuite =
       -- `renderHttpResponse` forces the body to compute Content-Length, so the
       -- thunk is evaluated somewhere regardless; this proves it is evaluated
       -- inside the guarded region rather than past it.
-      answered <- runObligation (pure (200, error "bad body"))
+      answered <- runObligation (pure (ReplyOk, error "bad body"))
       Char8.unpack answered `shouldContain` "HTTP/1.1 500 Internal Server Error"
 
     it "falls back to the last-resort reply when the refusal renderer itself bottoms" $ do
@@ -51,9 +53,52 @@ responseObligationSuite =
             mkResponseObligation
               (uncurry renderHttpResponse)
               (\_ -> error "refusal renderer is broken")
+              (\_ -> pure ())
               responseWriteBudgetMicrosDefault
       answered <- runWith brokenObligation (throwIO (userError "boom"))
       answered `shouldBe` lastResortInternalError
+
+    it "Sprint 4.65: a refusal is observed with its structured reason" $ do
+      -- Sprint 4.60 made the reply obligatory and left the reason nowhere: the
+      -- production body deliberately carries no exception text, so a `500` was
+      -- the whole surviving record of a handler failure.
+      seen <- newIORef ([] :: [String])
+      let observing =
+            mkResponseObligation
+              (uncurry renderHttpResponse)
+              refusalReply
+              (\refusal -> modifyIORef' seen (++ [renderResponseRefusalReason refusal]))
+              responseWriteBudgetMicrosDefault
+      answered <- runWith observing (throwIO (userError "interpreter exploded"))
+      Char8.unpack answered `shouldContain` "HTTP/1.1 500 Internal Server Error"
+      -- The wire still says nothing about why; the observer says everything.
+      Char8.unpack answered `shouldNotContain` "interpreter exploded"
+      recorded <- readIORef seen
+      length recorded `shouldBe` 1
+      concat recorded `shouldContain` "handler-failed"
+      concat recorded `shouldContain` "interpreter exploded"
+
+    it "Sprint 4.65: a broken observer costs the reason, never the reply" $ do
+      -- The observer is caller-supplied code on the one path whose entire
+      -- purpose is that nothing prevents the reply. A throw must be swallowed.
+      let throwingObserver =
+            mkResponseObligation
+              (uncurry renderHttpResponse)
+              refusalReply
+              (\_ -> throwIO (userError "logger is broken"))
+              responseWriteBudgetMicrosDefault
+      answered <- runWith throwingObserver (throwIO (userError "interpreter exploded"))
+      Char8.unpack answered `shouldContain` "HTTP/1.1 500 Internal Server Error"
+      Char8.unpack answered `shouldContain` "internal-error"
+      declaredLengthMatches answered `shouldBe` True
+
+    it "Sprint 4.65: the recorded reason is bounded" $ do
+      -- An exception's rendering can quote its input, so an unbounded reason is
+      -- an unbounded write to the log stream from the request path.
+      let reason =
+            renderResponseRefusalReason
+              (ResponseHandlerFailed (toException (userError (replicate 4096 'x'))))
+      length reason `shouldSatisfy` (<= 512 + length ("handler-failed: " :: String))
 
     it "keeps the last-resort reply self-consistent" $
       -- It is a hand-written literal, so its declared length is the one thing
@@ -61,15 +106,15 @@ responseObligationSuite =
       declaredLengthMatches lastResortInternalError `shouldBe` True
 
     it "answers a normal reply byte-exactly as renderHttpResponse would" $ do
-      answered <- runObligation (pure (200, "live\n"))
-      answered `shouldBe` renderHttpResponse 200 "live\n"
+      answered <- runObligation (pure (ReplyOk, "live\n"))
+      answered `shouldBe` renderHttpResponse ReplyOk "live\n"
 
     it "does not throw when the peer closed first" $ do
       outcome <- withSocketsDo $ do
         (writer, reader) <- socketPair AF_UNIX Stream defaultProtocol
         close reader
         result <-
-          try (withResponseObligation testObligation writer (pure (200, "live\n")))
+          try (withResponseObligation testObligation writer (pure (ReplyOk, "live\n")))
             :: IO (Either SomeException ())
         close writer
         pure result
@@ -89,7 +134,7 @@ responseObligationSuite =
             ( withResponseObligation
                 testObligation
                 writer
-                (threadDelay 5000000 >> pure (200, "never\n"))
+                (threadDelay 5000000 >> pure (ReplyOk, "never\n"))
             )
         close writer
         close reader
@@ -164,9 +209,10 @@ helperModule =
     , "mkResponseObligation"
     , "  :: (reply -> ByteString)"
     , "  -> (ResponseRefusal -> reply)"
+    , "  -> (ResponseRefusal -> IO ())"
     , "  -> Int"
     , "  -> ResponseObligation reply"
-    , "mkResponseObligation render refusal budgetMicros ="
+    , "mkResponseObligation render refusal observe budgetMicros ="
     , "  ResponseObligation"
     , ""
     , "withResponseObligation"
@@ -200,23 +246,25 @@ isInfixOfSimple needle haystack =
   startsWith _ [] = False
   startsWith (x : xs) (y : ys) = x == y && startsWith xs ys
 
-testObligation :: ResponseObligation (Int, ByteString)
+testObligation :: ResponseObligation (ReplyStatus, ByteString)
 testObligation =
   mkResponseObligation
     (uncurry renderHttpResponse)
     refusalReply
+    (\_ -> pure ())
     responseWriteBudgetMicrosDefault
 
-refusalReply :: ResponseRefusal -> (Int, ByteString)
+refusalReply :: ResponseRefusal -> (ReplyStatus, ByteString)
 refusalReply refusal = case refusal of
-  ResponseHandlerFailed _ -> (500, "internal-error\n")
-  ResponseCancelled _ -> (503, "shutting-down\n")
+  ResponseHandlerFailed _ -> (ReplyInternalError, "internal-error\n")
+  ResponseCancelled _ -> (ReplyServiceUnavailable, "shutting-down\n")
 
-runObligation :: IO (Int, ByteString) -> IO ByteString
+runObligation :: IO (ReplyStatus, ByteString) -> IO ByteString
 runObligation = runWith testObligation
 
 -- | Drive one obligation over a socket pair and return every byte the peer saw.
-runWith :: ResponseObligation (Int, ByteString) -> IO (Int, ByteString) -> IO ByteString
+runWith
+  :: ResponseObligation (ReplyStatus, ByteString) -> IO (ReplyStatus, ByteString) -> IO ByteString
 runWith obligation handler = withSocketsDo $ do
   (writer, reader) <- socketPair AF_UNIX Stream defaultProtocol
   void $ forkIO $ do

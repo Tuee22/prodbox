@@ -19,9 +19,11 @@ module Prodbox.Lifecycle.DnsRecord
   , OwnershipEpoch
   , KubernetesUid
   , DnsRecordType (..)
+  , allDnsRecordTypes
   , DnsRecordOwner (..)
   , DnsOwnerAuthority
   , allDnsRecordOwners
+  , dnsOwnerAuthoritiesForProcess
   , dnsOwnerAuthorityForProcess
   , authorizedDnsOwner
   , DnsRecordCoordinate
@@ -41,6 +43,13 @@ module Prodbox.Lifecycle.DnsRecord
   , mkDns01ChallengeRegistration
   , mkDns01ChallengeCoordinate
   , dns01ChallengeRecordName
+  , mkSesVerificationCoordinate
+  , mkSesDkimCoordinate
+  , mkSesInboundMxCoordinate
+  , sesVerificationRecordName
+  , sesDkimRecordName
+  , sesInboundMxRecordName
+  , ownerAcceptsType
   , mkDnsRecordValue
   , mkDnsRecordSet
   , awsAccountIdText
@@ -60,7 +69,8 @@ module Prodbox.Lifecycle.DnsRecord
   )
 where
 
-import Data.Char (isAlphaNum, isControl, isDigit, isSpace)
+import Control.Monad (guard)
+import Data.Char (isAlphaNum, isAsciiLower, isControl, isDigit, isSpace)
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Set (Set)
@@ -77,6 +87,7 @@ import Prodbox.Lifecycle.DnsRecord.Owner
   , DnsRecordOwner (..)
   , allDnsRecordOwners
   , authorizedDnsOwner
+  , dnsOwnerAuthoritiesForProcess
   , dnsOwnerAuthorityForProcess
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
@@ -95,8 +106,19 @@ newtype OwnershipEpoch = OwnershipEpoch AuthorityEpoch
 newtype KubernetesUid = KubernetesUid Text
   deriving stock (Eq, Ord, Show)
 
-data DnsRecordType = DnsRecordA | DnsRecordTxt
-  deriving stock (Eq, Ord, Show)
+-- | Sprint @4.73@ adds CNAME and MX, which the SES identity, DKIM, and inbound
+-- lanes write.  'Enum'\/'Bounded' exist so the owner\/type rule below can be
+-- proven total over the whole matrix rather than sampled.
+data DnsRecordType
+  = DnsRecordA
+  | DnsRecordTxt
+  | DnsRecordCname
+  | DnsRecordMx
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+-- | Every record type, for total folds and inventory proofs.
+allDnsRecordTypes :: [DnsRecordType]
+allDnsRecordTypes = [minBound .. maxBound]
 
 data DnsRecordCoordinate = DnsRecordCoordinate
   { internalDnsAccount :: !AwsAccountId
@@ -124,6 +146,7 @@ data DnsCoordinateError
   | HostedZoneIdInvalid !Text
   | KubernetesUidInvalid !Text
   | DnsFqdnInvalid !Text
+  | SesDkimTokenInvalid !Text
   | DnsOwnerTypeMismatch !DnsRecordOwner !DnsRecordType
   | DnsRecordValueEmpty
   | DnsRecordValueInvalid !DnsRecordType !Text
@@ -139,7 +162,11 @@ data DnsRecordObservation
 
 data DnsRecordProgram result where
   ObserveDnsRecord :: DnsRecordProgram DnsRecordObservation
-  EnsureDnsRecord :: DnsRecordSet -> DnsRecordProgram DnsProgramResult
+  -- | Sprint 3.33: an ensure is a mutation against the same coordinate and is
+  -- the same /Direction/ class as a destroy — writing a record you do not own is
+  -- not obviously less bad than deleting one. The authority is the running
+  -- process's, not a second copy of the coordinate's owner.
+  EnsureDnsRecord :: DnsOwnerAuthority -> DnsRecordSet -> DnsRecordProgram DnsProgramResult
   -- | The authority is the running process's, not a second copy of the
   -- coordinate's owner; see "Prodbox.Lifecycle.DnsRecord.Owner".
   DestroyDnsRecord :: DnsOwnerAuthority -> DnsRecordProgram DnsProgramResult
@@ -262,6 +289,82 @@ mkDns01ChallengeRegistration account zone rawCertificateFqdn owner epoch certifi
         (DnsRecordCoordinate account zone challengeName DnsRecordTxt owner epoch)
     )
 
+-- | The exact record names the SES lane owns.
+--
+-- One definition each, for the same reason 'dns01ChallengeRecordName' has one:
+-- the observation that decides whether a reconcile is needed, the ensure that
+-- writes the record, and the read-back that closes it must not be able to
+-- disagree about which name they mean.  The coordinate constructors below are
+-- the only other caller, so the coordinate and the observation are the same
+-- name by construction rather than by review.
+sesVerificationRecordName :: Text -> Either DnsCoordinateError Text
+sesVerificationRecordName rawIdentityDomain =
+  (("_amazonses." <>) . fqdnText) <$> mapFqdnError rawIdentityDomain
+
+sesDkimRecordName :: Text -> Text -> Either DnsCoordinateError Text
+sesDkimRecordName rawToken rawIdentityDomain = do
+  token <- mapDkimTokenError rawToken
+  domain <- mapFqdnError rawIdentityDomain
+  pure (token <> "._domainkey." <> fqdnText domain)
+
+sesInboundMxRecordName :: Text -> Either DnsCoordinateError Text
+sesInboundMxRecordName rawReceiveSubdomain =
+  fqdnText <$> mapFqdnError rawReceiveSubdomain
+
+-- | SES DKIM tokens are a single lower-case alphanumeric label.  Validating
+-- one here keeps a malformed provider response from composing a record name
+-- that is not a name at all.
+mapDkimTokenError :: Text -> Either DnsCoordinateError Text
+mapDkimTokenError raw
+  | Text.null token || Text.length token > 63 = Left (SesDkimTokenInvalid raw)
+  | Text.all validCharacter token = Right token
+  | otherwise = Left (SesDkimTokenInvalid raw)
+ where
+  token = Text.strip raw
+  validCharacter character = isAsciiLower character || isDigit character
+
+-- | The SES sending identity's verification TXT coordinate.
+mkSesVerificationCoordinate
+  :: AwsAccountId
+  -> HostedZoneId
+  -> Text
+  -> DnsRecordOwner
+  -> OwnershipEpoch
+  -> Either DnsCoordinateError DnsRecordCoordinate
+mkSesVerificationCoordinate account zone rawIdentityDomain owner epoch = do
+  ensureOwnerType owner DnsRecordTxt
+  name <- sesVerificationRecordName rawIdentityDomain
+  pure (DnsRecordCoordinate account zone (DnsRecordName name) DnsRecordTxt owner epoch)
+
+-- | One SES DKIM CNAME coordinate.  SES publishes three tokens and therefore
+-- three coordinates; a coordinate is one name and one type, so they are three
+-- values rather than one.
+mkSesDkimCoordinate
+  :: AwsAccountId
+  -> HostedZoneId
+  -> Text
+  -> Text
+  -> DnsRecordOwner
+  -> OwnershipEpoch
+  -> Either DnsCoordinateError DnsRecordCoordinate
+mkSesDkimCoordinate account zone rawToken rawIdentityDomain owner epoch = do
+  ensureOwnerType owner DnsRecordCname
+  name <- sesDkimRecordName rawToken rawIdentityDomain
+  pure (DnsRecordCoordinate account zone (DnsRecordName name) DnsRecordCname owner epoch)
+
+-- | The SES inbound MX coordinate for the receive subdomain.
+mkSesInboundMxCoordinate
+  :: AwsAccountId
+  -> HostedZoneId
+  -> Text
+  -> DnsRecordOwner
+  -> OwnershipEpoch
+  -> Either DnsCoordinateError DnsRecordCoordinate
+mkSesInboundMxCoordinate account zone rawReceiveSubdomain owner epoch = do
+  ensureOwnerType owner DnsRecordMx
+  name <- sesInboundMxRecordName rawReceiveSubdomain
+  pure (DnsRecordCoordinate account zone (DnsRecordName name) DnsRecordMx owner epoch)
+
 mapFqdnError :: Text -> Either DnsCoordinateError Fqdn
 mapFqdnError raw =
   case mkFqdn raw of
@@ -273,19 +376,58 @@ ensureOwnerType owner recordType
   | ownerAcceptsType owner recordType = Right ()
   | otherwise = Left (DnsOwnerTypeMismatch owner recordType)
 
+-- | Which record types each owner may be bound to.
+--
+-- Sprint @4.73@ writes the whole matrix out.  The superseded body ended in a
+-- wildcard @False@, which was correct for the pairs that existed and silently
+-- wrong for every pair added afterwards: a new record type would have been
+-- rejected for every owner without anyone deciding that, and the rejection
+-- would have surfaced as an unconstructible coordinate rather than as a
+-- missing decision.  Twenty explicit pairs means adding an owner or a type is a
+-- compile error here.
 ownerAcceptsType :: DnsRecordOwner -> DnsRecordType -> Bool
 ownerAcceptsType owner recordType = case (owner, recordType) of
   (HomeGatewayDnsOwner, DnsRecordA) -> True
+  (HomeGatewayDnsOwner, DnsRecordTxt) -> False
+  (HomeGatewayDnsOwner, DnsRecordCname) -> False
+  (HomeGatewayDnsOwner, DnsRecordMx) -> False
   (AwsLifecycleProviderDnsOwner, DnsRecordA) -> True
+  (AwsLifecycleProviderDnsOwner, DnsRecordTxt) -> False
+  (AwsLifecycleProviderDnsOwner, DnsRecordCname) -> False
+  (AwsLifecycleProviderDnsOwner, DnsRecordMx) -> False
+  -- The SES lane owns exactly the three types SES asks for, and no A record:
+  -- the public A record belongs to the provider lane above, in the same
+  -- account and often the same zone.
+  (AwsSesDnsOwner, DnsRecordA) -> False
+  (AwsSesDnsOwner, DnsRecordTxt) -> True
+  (AwsSesDnsOwner, DnsRecordCname) -> True
+  (AwsSesDnsOwner, DnsRecordMx) -> True
+  (HomeCertManagerDns01Owner, DnsRecordA) -> False
   (HomeCertManagerDns01Owner, DnsRecordTxt) -> True
+  (HomeCertManagerDns01Owner, DnsRecordCname) -> False
+  (HomeCertManagerDns01Owner, DnsRecordMx) -> False
+  (AwsCertManagerDns01Owner, DnsRecordA) -> False
   (AwsCertManagerDns01Owner, DnsRecordTxt) -> True
-  _ -> False
+  (AwsCertManagerDns01Owner, DnsRecordCname) -> False
+  (AwsCertManagerDns01Owner, DnsRecordMx) -> False
 
+-- | Build a record value in the one canonical spelling of its type.
+--
+-- Sprint @4.73@: CNAME and MX carry a host name, and Route 53 accepts — and
+-- echoes back — both the trailing-dot and the bare spelling of the same name,
+-- as well as either letter case.  Canonicalizing __here__ rather than at each
+-- comparison is what lets 'observationMatches' stay exact equality: the desired
+-- value and the value read back from the provider are both built through this
+-- function, so a spelling difference cannot present as drift and provoke a
+-- rewrite of a record that is already correct.  The canonical spelling is the
+-- fully-qualified, lower-case one, which is byte-identical to what this
+-- repository already writes.
 mkDnsRecordValue :: DnsRecordType -> Text -> Either DnsCoordinateError DnsRecordValue
 mkDnsRecordValue recordType raw
   | Text.null value = Left DnsRecordValueEmpty
-  | validRecordValue recordType value = Right (DnsRecordValue value)
-  | otherwise = Left (DnsRecordValueInvalid recordType raw)
+  | otherwise = case canonicalRecordValue recordType value of
+      Just canonical -> Right (DnsRecordValue canonical)
+      Nothing -> Left (DnsRecordValueInvalid recordType raw)
  where
   value = Text.strip raw
 
@@ -308,12 +450,48 @@ mkDnsRecordSet ttl values
           , internalDnsRecordSetValues = Set.fromList (NonEmpty.toList values)
           }
 
-validRecordValue :: DnsRecordType -> Text -> Bool
-validRecordValue recordType value = case recordType of
-  DnsRecordA -> validIpv4 value
+canonicalRecordValue :: DnsRecordType -> Text -> Maybe Text
+canonicalRecordValue recordType value = case recordType of
+  DnsRecordA -> if validIpv4 value then Just value else Nothing
   DnsRecordTxt ->
-    Text.length value <= 255
-      && not (Text.any isControl value)
+    -- A TXT value keeps its exact bytes, quotes included: Route 53 stores what
+    -- it is given and the SES verification token is compared byte for byte.
+    if Text.length value <= 255 && not (Text.any isControl value)
+      then Just value
+      else Nothing
+  DnsRecordCname -> canonicalHostname value
+  DnsRecordMx -> case Text.words value of
+    [rawPreference, rawTarget] -> do
+      preference <- readMaybe (Text.unpack rawPreference) :: Maybe Int
+      guard (preference >= 0 && preference <= 65535)
+      -- A padded spelling such as "010" is a second string for one preference;
+      -- rejecting it keeps the canonical form unique.
+      guard (Text.pack (show preference) == rawPreference)
+      target <- canonicalHostname rawTarget
+      pure (rawPreference <> " " <> target)
+    _ -> Nothing
+
+-- | A host name in its fully-qualified canonical spelling: lower case, exactly
+-- one trailing dot, and every label a legal LDH label.  Underscore labels are
+-- deliberately absent — they are legal in a record /name/ (RFC 8552, as in
+-- @_amazonses@ and @_acme-challenge@) but not in the host name a CNAME or MX
+-- record points at.
+canonicalHostname :: Text -> Maybe Text
+canonicalHostname raw
+  | Text.null bare || Text.length bare > 253 = Nothing
+  | all validLabel labels = Just (bare <> ".")
+  | otherwise = Nothing
+ where
+  bare = Text.toLower (Text.dropWhileEnd (== '.') (Text.strip raw))
+  labels = Text.splitOn "." bare
+  validLabel label =
+    not (Text.null label)
+      && Text.length label <= 63
+      && Text.all validLabelCharacter label
+      && Text.head label /= '-'
+      && Text.last label /= '-'
+  validLabelCharacter character =
+    isAsciiLower character || isDigit character || character == '-'
 
 validIpv4 :: Text -> Bool
 validIpv4 value =
@@ -371,6 +549,11 @@ dnsRecordLifecycleClass coordinate = case internalDnsOwner coordinate of
   HomeGatewayDnsOwner -> LongLived
   HomeCertManagerDns01Owner -> LongLived
   AwsLifecycleProviderDnsOwner -> PerRun
+  -- The SES records live in the operator's long-lived parent zone alongside
+  -- the rest of the retained @aws-ses@ infrastructure, which is why they are
+  -- their own owner rather than the provider lane's: an owner decides this,
+  -- and a shared owner would have decided it wrongly.
+  AwsSesDnsOwner -> LongLived
   AwsCertManagerDns01Owner -> PerRun
 
 runDnsRecordProgram
@@ -383,14 +566,24 @@ runDnsRecordProgram boundary coordinate program = case program of
   ObserveDnsRecord
     | coordinateMatches -> dnsBoundaryObserve boundary
     | otherwise -> pure (DnsRecordUnobservable "DNS boundary coordinate mismatch")
-  EnsureDnsRecord values -> runEnsure values
+  EnsureDnsRecord authority values -> runEnsure authority values
   DestroyDnsRecord authority -> runDestroy authority
  where
   boundCoordinate = dnsBoundaryCoordinate boundary
   ownerMatches = internalDnsOwner boundCoordinate == internalDnsOwner coordinate
   coordinateMatches = boundCoordinate == coordinate
 
-  runEnsure values
+  runEnsure authority values
+    -- Sprint 3.33: the held authority is checked before the coordinate-versus-
+    -- boundary comparison, in the same order `runDestroy` checks them, so an
+    -- unauthorized caller is refused by the strongest available reason rather
+    -- than by whichever mismatch happens to be reported first.
+    | authorizedDnsOwner authority /= internalDnsOwner coordinate =
+        pure
+          ( DnsProgramOwnerUnauthorized
+              (authorizedDnsOwner authority)
+              (internalDnsOwner coordinate)
+          )
     | not ownerMatches =
         pure (DnsProgramOwnerMismatch (internalDnsOwner coordinate) (internalDnsOwner boundCoordinate))
     | not coordinateMatches =

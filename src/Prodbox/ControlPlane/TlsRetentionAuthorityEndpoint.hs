@@ -38,6 +38,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , observeTlsRetentionAuthority
   , promoteTlsRetentionAuthority
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
@@ -163,15 +164,15 @@ refusalToken refusal = case refusal of
   TlsValidityRegression -> "validity-regression"
   TlsUnapprovedKeyChange -> "unapproved-key-change"
 
-tlsAuthorityResponseHttpStatus :: TlsAuthorityResponse -> Int
+tlsAuthorityResponseHttpStatus :: TlsAuthorityResponse -> ReplyStatus
 tlsAuthorityResponseHttpStatus response = case response of
-  TlsAuthorityObserved _ -> 200
-  TlsAuthorityPromotionApplied _ -> 200
-  TlsAuthorityPromotionNoop _ -> 200
-  TlsAuthorityPromotionRefused _ -> 409
-  TlsAuthorityConcurrentWrite -> 409
-  TlsAuthorityUnavailable -> 503
-  TlsAuthorityRequestRefused -> 400
+  TlsAuthorityObserved _ -> ReplyOk
+  TlsAuthorityPromotionApplied _ -> ReplyOk
+  TlsAuthorityPromotionNoop _ -> ReplyOk
+  TlsAuthorityPromotionRefused _ -> ReplyConflict
+  TlsAuthorityConcurrentWrite -> ReplyConflict
+  TlsAuthorityUnavailable -> ReplyServiceUnavailable
+  TlsAuthorityRequestRefused -> ReplyBadRequest
 
 tlsAuthorityResponseBody :: TlsAuthorityResponse -> ByteString
 tlsAuthorityResponseBody = LazyByteString.toStrict . encodeControlPlaneResponse

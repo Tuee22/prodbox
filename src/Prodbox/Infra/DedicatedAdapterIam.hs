@@ -32,10 +32,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   )
 import Prodbox.PublicEdge (publicEdgeTlsRetentionKey)
 import Prodbox.Settings
-  ( AwsSubstrateSection (subzone_name)
-  , ConfigFile (aws_substrate, domain)
-  , DomainSection (demo_fqdn)
-  , certScopeSetForServedHost
+  ( ConfigFile (aws_substrate, domain)
+  , ValidatedPublicEdge (..)
+  , ValidatedServedHost (..)
+  , validatedPublicEdgeFor
   )
 import Prodbox.Substrate (Substrate (SubstrateAws, SubstrateHomeLocal))
 
@@ -98,22 +98,25 @@ dedicatedAdapterIamSpecs repoRoot config = do
         }
     ]
 
+-- Sprint 1.83: one parse of the public-edge projection supplies both served
+-- hosts and both scope sets, and the AWS substrate's presence is the `Maybe` the
+-- projection already carries rather than a second emptiness test over the raw
+-- field.
 configuredTlsRetentionPrefixes :: ConfigFile -> Either String [Text]
 configuredTlsRetentionPrefixes config = do
-  let domainConfig = domain config
-      awsConfig = aws_substrate config
-      homeHost = Text.strip (demo_fqdn domainConfig)
-      awsHost = Text.strip (subzone_name awsConfig)
-  homeScope <- certScopeSetForServedHost domainConfig awsConfig homeHost
-  let homePrefix = Text.pack (publicEdgeTlsRetentionKey SubstrateHomeLocal homeScope)
-  case nonEmptyText awsHost of
-    Nothing -> Right [homePrefix]
-    Just configuredAwsHost -> do
-      awsScope <- certScopeSetForServedHost domainConfig awsConfig configuredAwsHost
-      Right
-        [ homePrefix
-        , Text.pack (publicEdgeTlsRetentionKey SubstrateAws awsScope)
-        ]
+  publicEdge <- validatedPublicEdgeFor (domain config) (aws_substrate config)
+  let homePrefix =
+        Text.pack
+          ( publicEdgeTlsRetentionKey
+              SubstrateHomeLocal
+              (servedHostCertScopes (validatedHomeServedHost publicEdge))
+          )
+  Right $ case validatedAwsServedHost publicEdge of
+    Nothing -> [homePrefix]
+    Just awsServed ->
+      [ homePrefix
+      , Text.pack (publicEdgeTlsRetentionKey SubstrateAws (servedHostCertScopes awsServed))
+      ]
 
 validateDedicatedBucket :: Text -> Either String Text
 validateDedicatedBucket raw =
@@ -170,8 +173,3 @@ validScopeSegment value =
     Just (character, rest) ->
       (isAsciiLower character || Char.isDigit character || character `elem` ['-', '.'])
         && go rest
-
-nonEmptyText :: Text -> Maybe Text
-nonEmptyText value =
-  let stripped = Text.strip value
-   in if Text.null stripped then Nothing else Just stripped

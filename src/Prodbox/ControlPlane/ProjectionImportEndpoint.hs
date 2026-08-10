@@ -37,6 +37,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneRequest
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommandRefusal (..)
   )
@@ -228,9 +229,9 @@ serveProjectionImportRequestWithApplicator requestMaximum config applicator sour
           Left failure -> ProjectionImportEndpointStateFailed failure
           Right result -> ProjectionImportEndpointCompleted result
 
-projectionImportEndpointHttpStatus :: ProjectionImportEndpointResult -> Int
+projectionImportEndpointHttpStatus :: ProjectionImportEndpointResult -> ReplyStatus
 projectionImportEndpointHttpStatus result = case result of
-  ProjectionImportEndpointBadRequest _ -> 400
+  ProjectionImportEndpointBadRequest _ -> ReplyBadRequest
   ProjectionImportEndpointImported _ imported ->
     importDecisionStatus
       (appliedMigrationImportDecision (projectionImportStateResult imported))
@@ -251,11 +252,11 @@ projectionImportEndpointSummary result = case result of
   ProjectionImportEndpointImportFailed failure -> importFailureSummary failure
   ProjectionImportEndpointStateFailed failure -> migrationFailureSummary failure
 
-importDecisionStatus :: MigrationImportDecision -> Int
+importDecisionStatus :: MigrationImportDecision -> ReplyStatus
 importDecisionStatus decision = case decision of
-  MigrationImportAccepted -> 200
-  MigrationImportAlreadyApplied -> 200
-  MigrationImportRefused _ -> 409
+  MigrationImportAccepted -> ReplyOk
+  MigrationImportAlreadyApplied -> ReplyOk
+  MigrationImportRefused _ -> ReplyConflict
 
 importDecisionSummary :: MigrationImportDecision -> Text
 importDecisionSummary decision =
@@ -273,22 +274,22 @@ importRefusalToken refusal = case refusal of
   MigrationImportConflict _ -> "conflict"
   MigrationImportsMissing _ -> "imports-missing"
 
-importFailureStatus :: ProjectionImportFailure -> Int
+importFailureStatus :: ProjectionImportFailure -> ReplyStatus
 importFailureStatus failure = case failure of
-  ProjectionImportSourceCorrupt {} -> 500
-  ProjectionImportSourceCodecCorrupt {} -> 500
-  ProjectionImportSourceEndpointUnready {} -> 503
-  ProjectionImportSourceUnobservable {} -> 503
-  ProjectionImportSourceChanged {} -> 409
-  ProjectionImportShadowChanged {} -> 409
-  ProjectionImportTargetCorrupt {} -> 500
-  ProjectionImportTargetCodecCorrupt {} -> 500
-  ProjectionImportTargetEndpointUnready {} -> 503
-  ProjectionImportTargetUnobservable {} -> 503
-  ProjectionImportTargetConflict {} -> 409
-  ProjectionImportTargetUnexpectedPresent {} -> 409
-  ProjectionImportTargetReadbackMissing {} -> 409
-  ProjectionImportTargetWriteRefused {} -> 500
+  ProjectionImportSourceCorrupt {} -> ReplyInternalError
+  ProjectionImportSourceCodecCorrupt {} -> ReplyInternalError
+  ProjectionImportSourceEndpointUnready {} -> ReplyServiceUnavailable
+  ProjectionImportSourceUnobservable {} -> ReplyServiceUnavailable
+  ProjectionImportSourceChanged {} -> ReplyConflict
+  ProjectionImportShadowChanged {} -> ReplyConflict
+  ProjectionImportTargetCorrupt {} -> ReplyInternalError
+  ProjectionImportTargetCodecCorrupt {} -> ReplyInternalError
+  ProjectionImportTargetEndpointUnready {} -> ReplyServiceUnavailable
+  ProjectionImportTargetUnobservable {} -> ReplyServiceUnavailable
+  ProjectionImportTargetConflict {} -> ReplyConflict
+  ProjectionImportTargetUnexpectedPresent {} -> ReplyConflict
+  ProjectionImportTargetReadbackMissing {} -> ReplyConflict
+  ProjectionImportTargetWriteRefused {} -> ReplyInternalError
   ProjectionImportMigrationStateFailed migrationFailure ->
     migrationFailureStatus migrationFailure
 
@@ -311,16 +312,16 @@ importFailureSummary failure = case failure of
   ProjectionImportMigrationStateFailed migrationFailure ->
     migrationFailureSummary migrationFailure
 
-migrationFailureStatus :: MigrationImportApplicationError -> Int
+migrationFailureStatus :: MigrationImportApplicationError -> ReplyStatus
 migrationFailureStatus failure = case failure of
   MigrationImportCompatibilityRepositoryFailed compatibilityFailure ->
     compatibilityFailureStatus compatibilityFailure
-  MigrationImportAuthorityReadFailed _ -> 503
-  MigrationImportAuthorityWriteFailed _ -> 503
-  MigrationImportAuthorityReadbackFailed _ -> 503
+  MigrationImportAuthorityReadFailed _ -> ReplyServiceUnavailable
+  MigrationImportAuthorityWriteFailed _ -> ReplyServiceUnavailable
+  MigrationImportAuthorityReadbackFailed _ -> ReplyServiceUnavailable
   MigrationImportAuthorityRefused refusal -> authorityRefusalStatus refusal
-  MigrationImportAuthorityProtocolViolation _ -> 500
-  MigrationImportAuthorityReadbackDiverged {} -> 409
+  MigrationImportAuthorityProtocolViolation _ -> ReplyInternalError
+  MigrationImportAuthorityReadbackDiverged {} -> ReplyConflict
 
 migrationFailureSummary :: MigrationImportApplicationError -> Text
 migrationFailureSummary failure = case failure of
@@ -337,12 +338,12 @@ migrationFailureSummary failure = case failure of
   MigrationImportAuthorityReadbackDiverged {} ->
     "projection-import-authority-readback-diverged"
 
-compatibilityFailureStatus :: MigrationApplyError -> Int
+compatibilityFailureStatus :: MigrationApplyError -> ReplyStatus
 compatibilityFailureStatus failure = case failure of
-  MigrationReadFailed _ -> 503
-  MigrationDecodeFailed _ -> 500
-  MigrationWriteFailed _ -> 503
-  MigrationConcurrentWrite -> 409
+  MigrationReadFailed _ -> ReplyServiceUnavailable
+  MigrationDecodeFailed _ -> ReplyInternalError
+  MigrationWriteFailed _ -> ReplyServiceUnavailable
+  MigrationConcurrentWrite -> ReplyConflict
 
 compatibilityFailureSummary :: MigrationApplyError -> Text
 compatibilityFailureSummary failure = case failure of
@@ -351,13 +352,13 @@ compatibilityFailureSummary failure = case failure of
   MigrationWriteFailed _ -> "projection-import-state-write-failed"
   MigrationConcurrentWrite -> "projection-import-state-concurrent-write"
 
-authorityRefusalStatus :: AuthorityAdmissionCommandRefusal -> Int
+authorityRefusalStatus :: AuthorityAdmissionCommandRefusal -> ReplyStatus
 authorityRefusalStatus refusal = case refusal of
-  AuthorityMigrationBeforeGenesis -> 503
-  AuthorityMigrationDuringBackupRepair -> 503
-  AuthorityMigrationAlreadyStarted -> 409
-  AuthorityMigrationNotStarted -> 409
-  AuthorityMigrationEpochRegressed {} -> 409
+  AuthorityMigrationBeforeGenesis -> ReplyServiceUnavailable
+  AuthorityMigrationDuringBackupRepair -> ReplyServiceUnavailable
+  AuthorityMigrationAlreadyStarted -> ReplyConflict
+  AuthorityMigrationNotStarted -> ReplyConflict
+  AuthorityMigrationEpochRegressed {} -> ReplyConflict
 
 authorityRefusalToken :: AuthorityAdmissionCommandRefusal -> Text
 authorityRefusalToken refusal = case refusal of

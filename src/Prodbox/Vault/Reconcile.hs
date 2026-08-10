@@ -82,6 +82,7 @@ import Prodbox.Secret.VaultInventory
   , VaultSecretFieldSource (..)
   , VaultSecretFieldSpec (..)
   , VaultSecretObjectSpec (..)
+  , VaultSecretObservation (..)
   , VaultSecretPath (..)
   , chartVaultManagedSecretObjects
   , chartVaultSecretConsumers
@@ -92,19 +93,25 @@ import Prodbox.Secret.VaultInventory
   )
 import Prodbox.Vault.Client
   ( KubernetesRoleReadback (..)
+  , KvV2Cas (KvV2Cas)
   , PkiIssuerListing (..)
   , PkiRoleInfo (..)
   , TransitKeyInfo (..)
   , VaultAddress
   , VaultAuthInfo (..)
+  , VaultCasOutcome (..)
   , VaultMountInfo (..)
   , VaultToken
+  , classifyVaultCasOutcome
+  , kvV2VersionedSecretData
+  , kvV2VersionedSecretVersion
+  , renderVaultCasOutcome
   , vaultCreateTransitKey
   , vaultEnableAuthMethod
   , vaultEnableMount
   , vaultGeneratePkiInternalRoot
-  , vaultKvReadV2
-  , vaultKvWriteV2
+  , vaultKvCasWriteV2
+  , vaultKvReadVersionedV2
   , vaultListAuthMethods
   , vaultListMounts
   , vaultListPkiIssuers
@@ -662,21 +669,42 @@ runVaultReconcile address token =
               (vaultKubernetesRoleSpecName spec)
       , vaultOpsSecretBootstrap =
           VaultSecretBootstrapOps
-            { vaultSecretBootstrapRead =
-                \path ->
-                  vaultKvReadV2
-                    address
-                    token
-                    (vaultSecretPathMount path)
-                    (vaultSecretPathLogical path)
-            , vaultSecretBootstrapWrite =
-                \path fields ->
-                  vaultKvWriteV2
-                    address
-                    token
-                    (vaultSecretPathMount path)
-                    (vaultSecretPathLogical path)
-                    fields
+            { vaultSecretBootstrapObserve =
+                \path -> do
+                  observed <-
+                    vaultKvReadVersionedV2
+                      address
+                      token
+                      (vaultSecretPathMount path)
+                      (vaultSecretPathLogical path)
+                  pure $ case observed of
+                    Left (HttpStatus 404 _) -> Right VaultSecretObjectAbsent
+                    Left err -> Left err
+                    Right versioned ->
+                      Right
+                        ( VaultSecretObjectPresent
+                            (kvV2VersionedSecretVersion versioned)
+                            (kvV2VersionedSecretData versioned)
+                        )
+            , -- Sprint 4.71: conditioned on the version the observation
+              -- carried. The bootstrap fold unions generated fields onto what
+              -- it read, so an unconditional write here silently discarded a
+              -- concurrent writer's generated field.
+              vaultSecretBootstrapWrite =
+                \path expectedVersion fields -> do
+                  written <-
+                    vaultKvCasWriteV2
+                      address
+                      token
+                      (vaultSecretPathMount path)
+                      (vaultSecretPathLogical path)
+                      (KvV2Cas expectedVersion)
+                      fields
+                  -- Sprint 4.74: the fold's caller receives which of the three
+                  -- CAS facts occurred rather than one transport error.
+                  pure $ case classifyVaultCasOutcome written of
+                    VaultCasApplied _ -> Right ()
+                    failed -> Left failed
             , vaultSecretBootstrapGenerate = generateVaultSecretFieldValue
             }
       }
@@ -1078,11 +1106,11 @@ renderVaultSecretBootstrapError err = case err of
       ++ Text.unpack (vaultSecretPathName path)
       ++ " read failed: "
       ++ renderHttpError httpErr
-  VaultSecretBootstrapWriteFailed path httpErr ->
+  VaultSecretBootstrapWriteFailed path casOutcome ->
     "Vault secret "
       ++ Text.unpack (vaultSecretPathName path)
       ++ " write failed: "
-      ++ renderHttpError httpErr
+      ++ Text.unpack (renderVaultCasOutcome casOutcome)
   VaultSecretBootstrapExternalFieldMissing path fieldName ->
     "Vault secret "
       ++ Text.unpack (vaultSecretPathName path)

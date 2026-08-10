@@ -56,6 +56,11 @@ module Prodbox.Settings
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
   , validateConfiguredCertScope
+  , validateConfig
+  , ValidatedServedHost (..)
+  , ValidatedPublicEdge (..)
+  , validatedPublicEdgeFor
+  , substrateServedHost
   , validateOperationalAwsCredentials
   , PublicEdgeAdvertisementMode (..)
   , parsePublicEdgeAdvertisementMode
@@ -67,6 +72,7 @@ module Prodbox.Settings
 where
 
 import Control.Exception (SomeException, displayException, try)
+import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isDigit, isHexDigit, toLower)
@@ -162,6 +168,7 @@ import Prodbox.Substrate
   ( ElasticScalingBounds (..)
   , ScalingPolicy (..)
   , ScalingPolicyBySubstrate (..)
+  , Substrate (..)
   , fixedScalingPolicyBySubstrate
   , validateScalingPolicyBySubstrate
   )
@@ -180,6 +187,7 @@ import Prodbox.TestTopology
 import Prodbox.Tls.CertScope
   ( CertScope (..)
   , CertScopeSet
+  , Fqdn
   , bindListener
   , certScopeSetDnsNames
   , mkDelegatedZone
@@ -411,6 +419,39 @@ data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile
   , resolvedManualPvHostRoot :: FilePath
   , validatedAllocatedPlan :: Allocation.SomeAllocatedPlan
+  , validatedPublicEdge :: ValidatedPublicEdge
+  -- ^ Sprint 1.83: the parsed public-edge projection, built by the one parse
+  -- validation performs rather than re-derived from the raw record at each
+  -- use. See 'ValidatedPublicEdge'.
+  }
+  deriving (Eq, Show)
+
+-- | A served public host together with the certificate scope set it projects.
+--
+-- Both halves come from the same parse. Before Sprint 1.83 the parse happened at
+-- config validation and its result was bound to @_@, so eight production call
+-- sites re-derived the scope set from the raw @Text@ and every consumer of the
+-- served host re-read an unparsed field. This is the /Provenance/ class of
+-- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md):
+-- the one place a real parse happened threw the proof away.
+data ValidatedServedHost = ValidatedServedHost
+  { servedHostFqdn :: !Fqdn
+  , servedHostCertScopes :: !CertScopeSet
+  }
+  deriving (Eq, Show)
+
+-- | The served hosts this config declares, keyed by the substrate that serves
+-- them.
+--
+-- The AWS entry is 'Maybe' because __absent is the correct state for a home-only
+-- host__ — @aws_substrate.subzone_name@ is required by the AWS tier
+-- ('validateAwsBootstrapConfig') and deliberately not by the local tier. Before
+-- Sprint 1.83 that absence was carried as the empty string, so a config validated
+-- only by the local tier reached 'Prodbox.PublicEdge.substratePublicFqdn' and
+-- received @\"\"@ — a served hostname that is not one.
+data ValidatedPublicEdge = ValidatedPublicEdge
+  { validatedHomeServedHost :: !ValidatedServedHost
+  , validatedAwsServedHost :: !(Maybe ValidatedServedHost)
   }
   deriving (Eq, Show)
 
@@ -862,11 +903,16 @@ validateConfig repoRoot config = do
       mapLeft
         Allocation.renderCompileError
         (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
+    -- Sprint 1.83: the public-edge parse is retained rather than repeated. The
+    -- same call inside `validateLocalConfig` above is the refusal; this is the
+    -- value, and it is the only one any consumer sees.
+    publicEdge <- validatedPublicEdgeFor (domain config) (aws_substrate config)
     pure
       ValidatedSettings
         { validatedConfig = config
         , resolvedManualPvHostRoot = resolvedManualRoot
         , validatedAllocatedPlan = allocatedPlan
+        , validatedPublicEdge = publicEdge
         }
 
 -- | Purely-local config invariants. No operational AWS credentials, Route 53
@@ -1222,17 +1268,55 @@ ipv6GroupWidth =
 -- served host, a malformed name, a wildcard at an undelegated zone — are rejected
 -- fail-closed at config-validation time.
 validateConfiguredCertScope :: DomainSection -> AwsSubstrateSection -> Either String ()
-validateConfiguredCertScope domainSection awsSection
+validateConfiguredCertScope domainSection awsSection =
+  void (validatedPublicEdgeFor domainSection awsSection)
+
+-- | Sprint 1.83: the builder behind 'validateConfiguredCertScope'.
+--
+-- 'validateConfiguredCertScope' is now exactly this with its result discarded,
+-- which is honest for a refusal-only check inside 'validateLocalConfig'. What
+-- changed is that the __value__ is no longer discarded everywhere:
+-- 'validateConfig' — the sole constructor of 'ValidatedSettings' — keeps it, so
+-- the parse happens once per config rather than once per consumer.
+validatedPublicEdgeFor
+  :: DomainSection -> AwsSubstrateSection -> Either String ValidatedPublicEdge
+validatedPublicEdgeFor domainSection awsSection
   | Text.null (Text.strip (demo_fqdn domainSection)) =
       Left "domain.demo_fqdn must not be empty"
   | otherwise = do
-      _ <- certScopeSetForServedHost domainSection awsSection (demo_fqdn domainSection)
+      home <- servedHostFor (demo_fqdn domainSection)
       let awsServedHost = Text.strip (subzone_name awsSection)
-      if Text.null awsServedHost
-        then Right ()
-        else do
-          _ <- certScopeSetForServedHost domainSection awsSection awsServedHost
-          Right ()
+      aws <-
+        if Text.null awsServedHost
+          then Right Nothing
+          else Just <$> servedHostFor awsServedHost
+      Right
+        ValidatedPublicEdge
+          { validatedHomeServedHost = home
+          , validatedAwsServedHost = aws
+          }
+ where
+  servedHostFor raw = do
+    parsed <- mapLeft (\e -> "served hostname: " ++ renderScopeError e) (mkFqdn raw)
+    scopeSet <- certScopeSetForServedHost domainSection awsSection raw
+    Right ValidatedServedHost {servedHostFqdn = parsed, servedHostCertScopes = scopeSet}
+
+-- | The served host a substrate presents, or 'Nothing' when this config declares
+-- none for it.
+--
+-- 'Nothing' is reachable only for 'SubstrateAws' on a config the AWS tier never
+-- validated, which is exactly the state Sprint 1.81 left representable as the
+-- empty string. Every caller that has an error channel now consumes it through
+-- 'Prodbox.PublicEdge.requireSubstratePublicFqdn' and refuses. The bound worth
+-- stating: 'Prodbox.PublicEdge.substratePublicFqdn' still answers @\"\"@ here,
+-- because its remaining consumers are pure renderers with nowhere to put a
+-- refusal; narrowing it is a registered follow-up, not a claim this makes.
+substrateServedHost :: ValidatedSettings -> Substrate -> Maybe ValidatedServedHost
+substrateServedHost settings substrate = case substrate of
+  SubstrateHomeLocal -> Just (validatedHomeServedHost edge)
+  SubstrateAws -> validatedAwsServedHost edge
+ where
+  edge = validatedPublicEdge settings
 
 -- | The configured 'CertScopeSet' as seen from a specific served host (the home
 -- served host on the home substrate, the AWS subzone on the AWS substrate). The

@@ -35,6 +35,7 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
   , decodeControlPlaneRequest
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Test.CleanupRun
   ( CleanupNodeOutcome
   , CleanupPrimaryOutcome
@@ -261,18 +262,18 @@ projectStoreResult result = case result of
       CleanupRunEndpointTransitionRefused refusal
     _ -> CleanupRunEndpointUnavailable (render err)
 
-cleanupRunEndpointStatus :: CleanupRunEndpointResult -> Int
+cleanupRunEndpointStatus :: CleanupRunEndpointResult -> ReplyStatus
 cleanupRunEndpointStatus result = case result of
-  CleanupRunEndpointSucceeded _ -> 200
-  CleanupRunEndpointScanned _ -> 200
-  CleanupRunEndpointCompacted _ -> 200
-  CleanupRunEndpointTombstoned _ -> 410
-  CleanupRunEndpointMissing -> 404
-  CleanupRunEndpointInvalidIdentity _ -> 400
-  CleanupRunEndpointInvalidState _ -> 400
-  CleanupRunEndpointTransitionRefused _ -> 409
-  CleanupRunEndpointUnavailable _ -> 503
-  CleanupRunEndpointBadRequest _ -> 400
+  CleanupRunEndpointSucceeded _ -> ReplyOk
+  CleanupRunEndpointScanned _ -> ReplyOk
+  CleanupRunEndpointCompacted _ -> ReplyOk
+  CleanupRunEndpointTombstoned _ -> ReplyGone
+  CleanupRunEndpointMissing -> ReplyNotFound
+  CleanupRunEndpointInvalidIdentity _ -> ReplyBadRequest
+  CleanupRunEndpointInvalidState _ -> ReplyBadRequest
+  CleanupRunEndpointTransitionRefused _ -> ReplyConflict
+  CleanupRunEndpointUnavailable _ -> ReplyServiceUnavailable
+  CleanupRunEndpointBadRequest _ -> ReplyBadRequest
 
 cleanupRunEndpointBody :: CleanupRunEndpointResult -> ByteString
 cleanupRunEndpointBody result = case result of

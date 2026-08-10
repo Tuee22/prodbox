@@ -62,6 +62,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , targetSecretIdToken
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( targetSecretSinkKvPath
   , targetSecretSinkVaultMount
@@ -128,13 +129,13 @@ targetMaterialObservationAuthenticatedHandler maximumBytes repository =
   handle _caller route body = case route of
     TargetMaterialObserve -> do
       response <- case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
-        Left _ -> pure (400, TargetMaterialObserveRefused "request-codec-rejected")
+        Left _ -> pure (ReplyBadRequest, TargetMaterialObserveRefused "request-codec-rejected")
         Right request -> do
           observed <- observeTargetMaterial repository (targetMaterialObserveTarget request)
           pure $ case observed of
-            Left _ -> (503, TargetMaterialObserveRefused "target-metadata-unavailable")
-            Right Nothing -> (404, TargetMaterialMissing)
-            Right (Just metadata) -> (200, TargetMaterialObserved metadata)
+            Left _ -> (ReplyServiceUnavailable, TargetMaterialObserveRefused "target-metadata-unavailable")
+            Right Nothing -> (ReplyNotFound, TargetMaterialMissing)
+            Right (Just metadata) -> (ReplyOk, TargetMaterialObserved metadata)
       pure (Just (Data.Bifunctor.second responseBody response))
     _ -> pure Nothing
 

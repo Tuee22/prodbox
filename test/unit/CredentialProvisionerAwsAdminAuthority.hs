@@ -59,6 +59,7 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
   , mkTargetAgentIdentity
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   ( AwsAdminAuthorityAuthorizationError (..)
   , AwsAdminAuthorityRepository (..)
@@ -241,14 +242,14 @@ credentialProvisionerAwsAdminAuthoritySuite =
           worker
           LifecycleAwsAdminProvisioner
           prepareBody
-      fmap fst workerResult `shouldBe` Just 403
+      fmap fst workerResult `shouldBe` Just ReplyForbidden
       operatorResult <-
         authenticatedHandlerHandle
           handler
           operator
           LifecycleAwsAdminProvisioner
           completeBody
-      fmap fst operatorResult `shouldBe` Just 403
+      fmap fst operatorResult `shouldBe` Just ReplyForbidden
 
     it "projects the exact retained next member through the closed client" $ do
       let projection =
@@ -306,7 +307,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
           LifecycleAwsAdminProvisioner
           requestBody
       case response of
-        Just (200, body) ->
+        Just (ReplyOk, body) ->
           decodeControlPlaneResponse
             awsAdminProvisionerResponseMaximumBytes
             (LazyByteString.fromStrict body)

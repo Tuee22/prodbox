@@ -55,7 +55,6 @@ import Control.Monad
   ( filterM
   , foldM
   , forM
-  , unless
   , when
   )
 import Data.Aeson
@@ -222,7 +221,8 @@ import Prodbox.PublicEdge
   , minioPathPrefix
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
-  , publicFqdn
+  , requireSubstrateCertScopeSet
+  , requireSubstratePublicFqdn
   , resolveSubstrateHostedZoneId
   , vscodePathPrefix
   , websocketOidcPathPrefix
@@ -247,14 +247,11 @@ import Prodbox.Service
   )
 import Prodbox.Settings
   ( AwsCredentialsRef (..)
-  , AwsSubstrateSection (..)
   , ConfigFile (..)
   , DeploymentSection (..)
   , PulumiStateBackendSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
-  , certDnsNamesForServedHost
-  , certScopeSetForServedHost
   , validateAndLoadSettings
   , validatedResourcePlan
   )
@@ -264,7 +261,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
-import Prodbox.Tls.CertScope (CertScopeSet, renderCertScopeSet)
+import Prodbox.Tls.CertScope (CertScopeSet, certScopeSetDnsNames, renderCertScopeSet)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -712,11 +709,7 @@ buildChartDeletePlanForSubstrate substrate repoRoot maybeSettings chartName = do
     case (ownsPublicEdgeCertificate, maybeSettings) of
       (True, Just settings) -> do
         fqdn <- resolveRootPublicFqdn substrate settings chartName
-        scopeSet <-
-          certScopeSetForServedHost
-            (domain (validatedConfig settings))
-            (aws_substrate (validatedConfig settings))
-            (Text.pack fqdn)
+        scopeSet <- requireSubstrateCertScopeSet settings substrate
         Right (Just fqdn, Just scopeSet)
       _ -> Right (Nothing, Nothing)
   let resourcePlan = maybe Capacity.defaultResourcePlan validatedResourcePlan maybeSettings
@@ -1908,13 +1901,9 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
       else Right Nothing
   maybeCertScopeSet <-
     case maybePublicFqdn of
-      Just fqdn
+      Just _
         | chartName == publicEdgeTlsNamespace && "keycloak" `elem` releaseOrder ->
-            Just
-              <$> certScopeSetForServedHost
-                (domain (validatedConfig settings))
-                (aws_substrate (validatedConfig settings))
-                (Text.pack fqdn)
+            Just <$> requireSubstrateCertScopeSet settings substrate
       _ -> Right Nothing
   releases <-
     forM definitions $ \definition -> do
@@ -2017,15 +2006,15 @@ chartDirectDependencyNames rawGraph chartName =
       [name | dep <- directChartDependencies dag cid, Just name <- [chartNameForComponent dep]]
     _ -> []
 
+-- | Sprint 1.83: the served host comes from the parse config validation
+-- performed ('Prodbox.Settings.validatedPublicEdge'), not from a second reading
+-- of the raw record followed by an emptiness test. The @chartName@ argument is
+-- retained because every caller passes one and the root chart is what the
+-- resolution is *about*, but it has never participated: the served host is a
+-- property of the substrate.
 resolveRootPublicFqdn :: Substrate -> ValidatedSettings -> String -> Either String String
-resolveRootPublicFqdn substrate settings _chartName = do
-  let fqdn =
-        case substrate of
-          SubstrateHomeLocal -> publicFqdn settings
-          SubstrateAws ->
-            Text.unpack (Text.strip (subzone_name (aws_substrate (validatedConfig settings))))
-  unless (fqdn /= "") (Left (substrateId substrate ++ " public FQDN must not be empty"))
-  Right fqdn
+resolveRootPublicFqdn substrate settings _chartName =
+  requireSubstratePublicFqdn settings substrate
 
 resolveGatewayHostedZoneIdForSubstrate
   :: Substrate -> FilePath -> ValidatedSettings -> IO (Either String (Maybe String))
@@ -2130,7 +2119,7 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
       "keycloak" ->
         case maybePublicFqdn of
           Just fqdn ->
-            valuesForKeycloak namespace rootChart settings chartSecrets fqdn
+            valuesForKeycloak substrate namespace rootChart settings chartSecrets fqdn
           Nothing -> Left "keycloak requires a public host"
       "vscode" ->
         case (maybePublicFqdn, storageBindings) of
@@ -2316,13 +2305,14 @@ mergeObjectValues base additions =
     _ -> Left "chart resource-plan injection requires object values"
 
 valuesForKeycloak
-  :: String
+  :: Substrate
+  -> String
   -> String
   -> ValidatedSettings
   -> Map String String
   -> String
   -> Either String Value
-valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
+valuesForKeycloak substrate namespace rootChart settings _chartSecrets sharedHostFqdn = do
   -- Sprint 3.18: Keycloak's admin password, Patroni application-role
   -- password, OIDC client secrets, demo-user password, and SMTP settings are
   -- read directly from Vault KV by the Pod's Kubernetes-auth init container.
@@ -2334,11 +2324,8 @@ valuesForKeycloak namespace rootChart settings _chartSecrets sharedHostFqdn = do
   -- configured certificate scope set, keyed on this substrate's served host. Empty
   -- @cert_scopes@ yields exactly @[sharedHostFqdn]@, so the rendered dnsNames are
   -- behavior-identical to the prior single-host list until an operator widens scope.
-  certDnsNames <-
-    certDnsNamesForServedHost
-      (domain (validatedConfig settings))
-      (aws_substrate (validatedConfig settings))
-      (Text.pack sharedHostFqdn)
+  -- Sprint 1.83: projected from the carried scope set rather than re-parsed.
+  certDnsNames <- certScopeSetDnsNames <$> requireSubstrateCertScopeSet settings substrate
   pure
     ( object
         [ "replicaCount" .= (1 :: Int)
@@ -2945,12 +2932,8 @@ valuesForTlsRetention
   -> Either String Value
 valuesForTlsRetention substrate settings clusterId namespace rootChart maybeRuntimeImage = do
   (bucket, region) <- dedicatedAdapterBackend settings
-  servedFqdn <- resolveRootPublicFqdn substrate settings rootChart
-  scopeSet <-
-    certScopeSetForServedHost
-      (domain (validatedConfig settings))
-      (aws_substrate (validatedConfig settings))
-      (Text.pack servedFqdn)
+  _servedFqdn <- resolveRootPublicFqdn substrate settings rootChart
+  scopeSet <- requireSubstrateCertScopeSet settings substrate
   let prefix = Text.pack (publicEdgeTlsRetentionKey substrate scopeSet)
       prefixStem = Text.pack ("public-edge-tls/" ++ substrateId substrate ++ "/")
   scopeKey <-
@@ -4233,11 +4216,8 @@ retainReadyPublicEdgeCertificate repoRoot substrate = do
     Right settings ->
       case resolveRootPublicFqdn substrate settings publicEdgeTlsNamespace of
         Left detail -> pure (Right (PreserveSkippedNoRetentionStore detail))
-        Right fqdn ->
-          case certScopeSetForServedHost
-            (domain (validatedConfig settings))
-            (aws_substrate (validatedConfig settings))
-            (Text.pack fqdn) of
+        Right _fqdn ->
+          case requireSubstrateCertScopeSet settings substrate of
             Left err -> pure (Left err)
             Right scopeSet -> do
               retained <-

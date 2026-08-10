@@ -54,6 +54,7 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , tlsRetentionCredentialPath
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (mkTargetAgentIdentity)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , initialCleanInstallAuthority
@@ -128,7 +129,7 @@ controlPlaneAuthorityBackupEndpointSuite =
           ciphertext = mustRight (mkAuthorityBackupCiphertext "opaque-ciphertext")
           request = AuthorityBackupCopyRequest AuthorityAggregateEnvelope ciphertext
       result <- serveBackupCopyRequest 4096 repository (encodeControlPlaneRequest request)
-      authorityBackupHttpStatus result `shouldBe` 200
+      authorityBackupHttpStatus result `shouldBe` ReplyOk
       authorityBackupSummary result `shouldBe` "backup-copy:read-back-confirmed"
       case result of
         AuthorityBackupCopySucceeded receipt ->
@@ -249,7 +250,7 @@ controlPlaneAuthorityBackupEndpointSuite =
           (const (Right "canonical-retained-aggregate"))
           repository
           (request (ExportGenesisAggregate "genesis-plan-digest"))
-      authorityBackupExportHttpStatus exported `shouldBe` 200
+      authorityBackupExportHttpStatus exported `shouldBe` ReplyOk
       case exported of
         AuthorityBackupExported response -> do
           authorityBackupExportEnvelope response
@@ -263,7 +264,7 @@ controlPlaneAuthorityBackupEndpointSuite =
           repository
           (request (ExportGenesisAggregate "different-plan"))
       mismatched `shouldBe` AuthorityBackupExportPurposeMismatch
-      authorityBackupExportHttpStatus mismatched `shouldBe` 409
+      authorityBackupExportHttpStatus mismatched `shouldBe` ReplyConflict
     it "retains the immutable Adapter digest and re-observes that exact backup" $ do
       let envelope = "canonical-retained-aggregate"
           ciphertext = mustRight (mkAuthorityBackupCiphertext envelope)

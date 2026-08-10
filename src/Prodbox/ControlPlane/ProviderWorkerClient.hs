@@ -55,6 +55,7 @@ import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (ProviderWorkApply)
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
@@ -94,7 +95,7 @@ providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
           == CallerService LifecycleAuthorityRuntime ->
           Just <$> serve body
       | otherwise ->
-          pure (Just (403, responseBody (ProviderWorkerAdmissionRefused "caller-refused")))
+          pure (Just (ReplyForbidden, responseBody (ProviderWorkerAdmissionRefused "caller-refused")))
     _ -> authenticatedHandlerHandle fallback caller route body
 
   serve body = do
@@ -102,7 +103,7 @@ providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
     case admitted of
       Left err ->
         pure
-          ( 409
+          ( ReplyConflict
           , responseBody
               (ProviderWorkerAdmissionRefused (Text.pack (show err)))
           )
@@ -110,11 +111,11 @@ providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
         executed <- executeVerifiedProviderIntent boundary verified
         pure $ case executed of
           Left err ->
-            ( 503
+            ( ReplyServiceUnavailable
             , responseBody
                 (ProviderWorkerExecutionFailed (Text.pack (show err)))
             )
-          Right result -> (200, responseBody (ProviderWorkerExecuted result))
+          Right result -> (ReplyOk, responseBody (ProviderWorkerExecuted result))
 
   responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
 

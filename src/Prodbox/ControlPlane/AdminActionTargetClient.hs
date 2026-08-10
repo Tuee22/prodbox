@@ -48,6 +48,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   )
 import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.ReplyStatus (ReplyStatus, replyStatusCode)
 import Prodbox.Lifecycle.AdminAction.Protocol
   ( AdminRetainedCustodyMember (..)
   , AdminTargetGeneration (..)
@@ -140,7 +141,7 @@ callTarget
   -> Text
   -> ControlPlaneRouteFor 'TargetSecretAgentRuntime
   -> request
-  -> (response -> Int)
+  -> (response -> ReplyStatus)
   -> IO (Either AdminActionTargetClientError response)
 callTarget bounds providers endpointText route request responseStatus =
   case do
@@ -167,6 +168,11 @@ callTarget bounds providers endpointText route request responseStatus =
                 (LazyByteString.fromStrict body)
             )
         let expected = responseStatus decoded
-        if status == expected
+        if status == replyStatusCode expected
           then Right decoded
-          else Left (AdminActionTargetHttpStatusMismatch expected status)
+          else
+            Left
+              ( AdminActionTargetHttpStatusMismatch
+                  (replyStatusCode expected)
+                  status
+              )

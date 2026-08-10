@@ -3,6 +3,7 @@
 
 module DecommissionControlPlaneClient (decommissionControlPlaneClientSuite) where
 
+import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as Char8
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -41,6 +42,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , compiledTargetSecretSink
   )
 import Prodbox.ControlPlane.TrustedTargetSink (mkTrustedTargetSink)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( TargetClusterSecretSink
@@ -75,10 +77,11 @@ import Prodbox.Lifecycle.Lease
 import Prodbox.Lifecycle.ResidueStatus (ResidueStatus (..))
 import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetSinkObservation (..)
-  , TargetSinkRecord (..)
+  , TargetSinkRecord
   , TargetSinkVersion
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , targetSinkRecordFromStore
   )
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
@@ -263,7 +266,7 @@ decommissionControlPlaneClientSuite =
               "authority-decommission-export-unprovisioned\n"
           )
       serveReadyz authorityInterpreter LifecycleAuthorityRuntime
-        `shouldReturn` (503, "not-ready\n")
+        `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
 
       targetProviders <- freshClientProviders
       targetInterpreter <-
@@ -297,7 +300,7 @@ decommissionControlPlaneClientSuite =
               "target-generation-tombstone-unprovisioned\n"
           )
       serveReadyz targetInterpreter TargetSecretAgentRuntime
-        `shouldReturn` (503, "not-ready\n")
+        `shouldReturn` (ReplyServiceUnavailable, "not-ready\n")
 
 authorityTransport
   :: IORef (Maybe String)
@@ -356,7 +359,11 @@ targetRoleTransport observedUrls interpreter method _headers url body = do
           , body
           ]
       )
-  pure (Right response)
+  -- Sprint 4.67: the fixture stands in for an HTTP transport, and a transport
+  -- carries the numeric code off the wire. The server's typed status is
+  -- projected here rather than the transport being retyped, because a peer's
+  -- status is not bounded by this repository's closed set (§ 22).
+  pure (Right (first replyStatusCode response))
  where
   targetEndpointPrefix :: String
   targetEndpointPrefix = "http://target-secret-agent:8600"
@@ -385,7 +392,7 @@ servingTransport role route observeUrl interpreter method _headers url body = do
           , body
           ]
       )
-  pure (Right response)
+  pure (Right (first replyStatusCode response))
 
 authorityRepository :: AuthorityDecommissionExportRepository IO
 authorityRepository =
@@ -673,22 +680,20 @@ targetVersion = mustJust (targetSinkVersionFromStoreVersion 7)
 
 targetRecord :: TargetSinkRecord TargetSecretPayload
 targetRecord =
-  TargetSinkRecord
-    { targetSinkRecordOwnerNonce = mustRight (mkOwnerNonce "owner-1")
-    , targetSinkRecordFencingToken = mustRight (mkFencingToken 1)
-    , targetSinkRecordGeneration = mustRight (mkCredentialGeneration 7)
-    , targetSinkRecordDigest = mustRight (mkTargetValueDigest (Text.replicate 64 "a"))
-    , targetSinkRecordPayload =
-        SesSmtpMaterial
-          { sesSmtpHost = "email-smtp.ca-central-1.amazonaws.com"
-          , sesSmtpPort = "587"
-          , sesSmtpFrom = "noreply@example.com"
-          , sesSmtpFromDisplayName = "Prodbox"
-          , sesSmtpReplyTo = "support@example.com"
-          , sesSmtpUsername = "smtp-user"
-          , sesSmtpPassword = "payload"
-          }
-    }
+  targetSinkRecordFromStore
+    (mustRight (mkOwnerNonce "owner-1"))
+    (mustRight (mkFencingToken 1))
+    (mustRight (mkCredentialGeneration 7))
+    (mustRight (mkTargetValueDigest (Text.replicate 64 "a")))
+    SesSmtpMaterial
+      { sesSmtpHost = "email-smtp.ca-central-1.amazonaws.com"
+      , sesSmtpPort = "587"
+      , sesSmtpFrom = "noreply@example.com"
+      , sesSmtpFromDisplayName = "Prodbox"
+      , sesSmtpReplyTo = "support@example.com"
+      , sesSmtpUsername = "smtp-user"
+      , sesSmtpPassword = "payload"
+      }
 
 targetTombstoneRequestBody
   :: TargetGenerationTombstoneAction
@@ -710,7 +715,7 @@ targetTombstoneRequestBody action =
 serveReadyz
   :: RoleInterpreter IO
   -> RuntimeRole
-  -> IO (Int, ByteString.ByteString)
+  -> IO (ReplyStatus, ByteString.ByteString)
 serveReadyz interpreter role =
   serveControlPlaneRequest
     fixtureRoleReadinessResolver

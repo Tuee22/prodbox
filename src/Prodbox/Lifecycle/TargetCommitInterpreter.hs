@@ -6,7 +6,8 @@
 -- step only through a fresh authoritative observation.  The target CAS is
 -- invoked at most once in one run.
 module Prodbox.Lifecycle.TargetCommitInterpreter
-  ( TargetCommitInterpreter (..)
+  ( GlobalLedgerStep (..)
+  , TargetCommitInterpreter (..)
   , TargetCommitInterpreterError (..)
   , TargetCommitRun (..)
   , TargetRecoveryInterpreter (..)
@@ -20,6 +21,7 @@ where
 import Data.Text (Text)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
+  , ModelBCasResult (..)
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   , TargetClusterSecretSink
@@ -49,6 +51,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , TargetProjectionEntry
   , TargetRecoveryDecision (..)
   , TargetSinkCasAdapter (..)
+  , TargetSinkCasResult (..)
   , TargetSinkReadbackRefusal
   , TargetSinkWriteDecision (..)
   , TargetValueDigest
@@ -83,12 +86,38 @@ data TargetCommitInterpreter m payload = TargetCommitInterpreter
   , targetCommitDigestPayload :: !(payload -> TargetValueDigest)
   }
 
+-- | Which write against the global target-intent ledger a refusal came from.
+--
+-- Sprint 4.63. The same @ModelBCasRefusedCorrupt@ text means four different
+-- things depending on which ledger step produced it, and the constructor is the
+-- only place that distinction can survive: every one of the four call sites
+-- previously discarded the verdict, so the operator saw a message re-derived
+-- from the /next/ observation instead of the one the store gave.
+data GlobalLedgerStep
+  = GlobalLedgerPrepare
+  | GlobalLedgerComplete
+  | GlobalLedgerCompaction
+  | GlobalLedgerRecoveryResolve
+  deriving (Eq, Show)
+
 data TargetCommitInterpreterError
   = TargetCommitPermitUnavailable !Text
   | TargetCommitAuthorityClockUnavailable !Text
   | TargetCommitPrepareFailed !TargetCommitRefusal
   | TargetCommitPrepareNotConfirmed !TargetCommitRefusal
   | TargetCommitSinkWriteFailed !TargetSinkReadbackRefusal
+  | -- | Sprint 4.62: the target sink store answered @TargetSinkCasRefused@ — it
+    -- explicitly did not write, and said why. Distinct from
+    -- 'TargetCommitSinkReadbackFailed', which is what the sink looks like
+    -- afterwards; this is what the sink said at the time.
+    TargetCommitSinkCasRefused !Text
+  | -- | Sprint 4.63: the __global__ target-intent ledger answered
+    -- @ModelBCasRefusedCorrupt@ — it performed no write, and said why. Carries
+    -- the ledger step that was refused, because the same refusal at prepare,
+    -- complete, compaction, and recovery-resolve means four different things to
+    -- an operator and the constructor is the only place that distinction can
+    -- survive.
+    TargetCommitGlobalCasRefused !GlobalLedgerStep !Text
   | TargetCommitSinkReadbackFailed !TargetSinkReadbackRefusal
   | TargetCommitCompleteFailed !TargetCommitRefusal
   | TargetCommitCompleteNotConfirmed !Text
@@ -100,6 +129,37 @@ data TargetCommitInterpreterError
   | TargetCommitRecoveryFailed !TargetCommitRefusal
   | TargetCommitRecoveryNotConfirmed ![Text]
   deriving (Eq, Show)
+
+-- | Decide one global-ledger CAS answer, totally.
+--
+-- Sprint 4.63. Four of the five arms continue to the authoritative
+-- re-observation the caller already performs, and that re-observation is
+-- deliberately __retained rather than replaced__: it is what resolves an
+-- applied-but-response-lost write, and 'ModelBCasUnobservable' is exactly that
+-- case. Routing it to a refusal would reintroduce the \"unobservable is not
+-- absent\" defect Sprints @4.53@, @4.62@, and @5.29@ closed elsewhere.
+--
+-- 'ModelBCasRefusedCorrupt' is different in kind and is the only arm that
+-- refuses here. Every producer of it in this repository refuses /before/
+-- reaching the object store — an encode failure, a non-registered coordinate, an
+-- unsupported guarded arm, or an Authority projection refusal — so it is the one
+-- answer that states no write was performed. A read-back cannot recover that
+-- fact, because a read-back reports what the object looks like afterwards and
+-- not what the store said at the time.
+--
+-- Being total is the point: a sixth 'ModelBCasResult' constructor is a
+-- @-Werror@ compile error here rather than a silent fifth thing that is also
+-- ignored.
+globalLedgerCasRefusal
+  :: GlobalLedgerStep
+  -> ModelBCasResult value
+  -> Maybe TargetCommitInterpreterError
+globalLedgerCasRefusal step result = case result of
+  ModelBCasApplied _ _ -> Nothing
+  ModelBCasConflict _ -> Nothing
+  ModelBCasEndpointUnready _ -> Nothing
+  ModelBCasUnobservable _ -> Nothing
+  ModelBCasRefusedCorrupt detail -> Just (TargetCommitGlobalCasRefused step detail)
 
 data TargetCommitRun
   = TargetCommitRunAlreadyCommitted !Text !CredentialGeneration
@@ -147,8 +207,10 @@ runPreparedTargetCommit interpreter registered coordinate sink generation digest
                         )
                     )
                 TargetCommitPrepareCompareAndSwap request intent -> do
-                  _ <- modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
-                  runPrepared intent
+                  verdict <- modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
+                  case globalLedgerCasRefusal GlobalLedgerPrepare verdict of
+                    Just refusal -> pure (Left refusal)
+                    Nothing -> runPrepared intent
  where
   runPrepared intent = do
     currentPermit <- targetCommitCurrentPermit interpreter
@@ -174,8 +236,25 @@ runPreparedTargetCommit interpreter registered coordinate sink generation digest
                     pure (Left (TargetCommitSinkWriteFailed refusal))
                   TargetSinkWriteAlreadyApplied -> completeAfterReadback intent False writePermit
                   TargetSinkWriteCompareAndSwap request -> do
-                    _ <- targetSinkCompareAndSwap (targetCommitSinkAdapter interpreter) request
-                    completeAfterReadback intent True writePermit
+                    -- Sprint 4.62: the store's answer was bound to `_`, so
+                    -- correctness rested entirely on the read-back that follows.
+                    -- The four arms are not interchangeable and are decided
+                    -- separately rather than folded into "read back and see".
+                    verdict <- targetSinkCompareAndSwap (targetCommitSinkAdapter interpreter) request
+                    case verdict of
+                      -- The store said it did not write, and why. A read-back
+                      -- cannot convert that into a success: if the expected bytes
+                      -- are present they are someone else's write, and this
+                      -- commit did not perform it.
+                      TargetSinkCasRefused detail ->
+                        pure (Left (TargetCommitSinkCasRefused detail))
+                      -- Applied, superseded, or unknown: all three are resolved
+                      -- by the authoritative read-back, which is exactly what it
+                      -- exists for. `Unobservable` is the applied-but-response-
+                      -- lost case and must NOT be read as absence.
+                      TargetSinkCasApplied _ _ -> completeAfterReadback intent True writePermit
+                      TargetSinkCasConflict _ -> completeAfterReadback intent True writePermit
+                      TargetSinkCasUnobservable _ -> completeAfterReadback intent True writePermit
 
   completeAfterReadback intent sinkCasAttempted writePermit = do
     readbackObservation <- targetSinkObserve (targetCommitSinkAdapter interpreter) sink
@@ -201,20 +280,29 @@ runPreparedTargetCommit interpreter registered coordinate sink generation digest
                   TargetCommitCompleteAlreadyApplied ->
                     compactThenReturn sinkCasAttempted
                   TargetCommitCompleteCompareAndSwap request -> do
-                    _ <- modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
-                    confirmed <-
-                      modelBObserve (targetCommitGlobalAdapter interpreter) (coordinateObject coordinate)
-                    case confirmed of
-                      ModelBObserved _ projection
-                        | projectionHasCommittedIntent intent projection ->
-                            compactThenReturn sinkCasAttempted
-                      _ ->
-                        pure
-                          ( Left
-                              ( TargetCommitCompleteNotConfirmed
-                                  (targetCommitTargetIdentity intent)
+                    verdict <- modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
+                    -- Sprint 4.63: this arm is the one where discarding the
+                    -- verdict could turn a refusal into a success. A refused
+                    -- completion followed by a read-back that happens to show
+                    -- the intent committed — reachable when a same-fence
+                    -- attempt committed it — used to return `Committed` for a
+                    -- write this run did not perform.
+                    case globalLedgerCasRefusal GlobalLedgerComplete verdict of
+                      Just refusal -> pure (Left refusal)
+                      Nothing -> do
+                        confirmed <-
+                          modelBObserve (targetCommitGlobalAdapter interpreter) (coordinateObject coordinate)
+                        case confirmed of
+                          ModelBObserved _ projection
+                            | projectionHasCommittedIntent intent projection ->
+                                compactThenReturn sinkCasAttempted
+                          _ ->
+                            pure
+                              ( Left
+                                  ( TargetCommitCompleteNotConfirmed
+                                      (targetCommitTargetIdentity intent)
+                                  )
                               )
-                          )
 
   compactThenReturn sinkCasAttempted = do
     compacted <- compactAllTerminalIntents interpreter registered coordinate
@@ -272,8 +360,18 @@ compactAllTerminalIntents interpreter registered coordinate =
                         pure (Left (TargetCommitCompactionFailed refusal))
                       TargetIntentCompactAlreadyApplied -> go (remaining - 1)
                       TargetIntentCompactCompareAndSwap request -> do
-                        _ <- modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
-                        go (remaining - 1)
+                        verdict <-
+                          modelBCompareAndSwap (targetCommitGlobalAdapter interpreter) request
+                        -- Sprint 4.63: a refusal used to consume one retry from
+                        -- a budget whose exhaustion is then reported as
+                        -- 'TargetCommitCompactionOverBound' — a capacity bound
+                        -- named as the cause of a refusal. That misdiagnosis is
+                        -- reachable in the ordinary write-denied/read-allowed
+                        -- state, where every observation succeeds and every
+                        -- write is refused.
+                        case globalLedgerCasRefusal GlobalLedgerCompaction verdict of
+                          Just refusal -> pure (Left refusal)
+                          Nothing -> go (remaining - 1)
 
 data TargetRecoveryInterpreter m payload = TargetRecoveryInterpreter
   { targetRecoveryBaseInterpreter :: !(TargetCommitInterpreter m payload)
@@ -409,24 +507,27 @@ runSuccessorTargetRecoveryAfter recovery registered coordinate policy recoveryNo
           TargetRecoveryRefused refusal -> pure (Left (TargetCommitRecoveryFailed refusal))
           TargetRecoveryAlreadyResolved -> pure (Right TargetRecoveryRunAlreadyResolved)
           TargetRecoveryCompareAndSwap request -> do
-            _ <- modelBCompareAndSwap (targetCommitGlobalAdapter base) request
-            compacted <- compactAllTerminalIntents base registered coordinate
-            case compacted of
-              Left err -> pure (Left err)
-              Right () -> do
-                confirmed <-
-                  modelBObserve (targetCommitGlobalAdapter base) (coordinateObject coordinate)
-                let remaining = case confirmed of
-                      ModelBObserved _ projection -> intentIdentities projection
-                      _ -> map targetCommitTargetIdentity originalIntents
-                pure $
-                  if null remaining
-                    then
-                      Right
-                        ( TargetRecoveryRunResolved
-                            (map targetCommitTargetIdentity originalIntents)
-                        )
-                    else Left (TargetCommitRecoveryNotConfirmed remaining)
+            verdict <- modelBCompareAndSwap (targetCommitGlobalAdapter base) request
+            case globalLedgerCasRefusal GlobalLedgerRecoveryResolve verdict of
+              Just refusal -> pure (Left refusal)
+              Nothing -> do
+                compacted <- compactAllTerminalIntents base registered coordinate
+                case compacted of
+                  Left err -> pure (Left err)
+                  Right () -> do
+                    confirmed <-
+                      modelBObserve (targetCommitGlobalAdapter base) (coordinateObject coordinate)
+                    let remaining = case confirmed of
+                          ModelBObserved _ projection -> intentIdentities projection
+                          _ -> map targetCommitTargetIdentity originalIntents
+                    pure $
+                      if null remaining
+                        then
+                          Right
+                            ( TargetRecoveryRunResolved
+                                (map targetCommitTargetIdentity originalIntents)
+                            )
+                        else Left (TargetCommitRecoveryNotConfirmed remaining)
 
   coordinateObject = targetIntentCoordinateObject
 

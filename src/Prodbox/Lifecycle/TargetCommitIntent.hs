@@ -29,12 +29,12 @@ module Prodbox.Lifecycle.TargetCommitIntent
   , TargetRecoveryDecision (..)
   , TargetRecoveryOutcome (..)
   , TargetRegistrationError (..)
-  , TargetSinkCasRequest (..)
+  , TargetSinkCasRequest
   , TargetSinkCasResult (..)
   , TargetSinkCasAdapter (..)
   , TargetSinkObservation (..)
   , TargetSinkReadbackRefusal (..)
-  , TargetSinkRecord (..)
+  , TargetSinkRecord
   , TargetSinkVersion
   , TargetSinkWriteDecision (..)
   , TargetValueDigest
@@ -43,6 +43,15 @@ module Prodbox.Lifecycle.TargetCommitIntent
   , committedTargetGeneration
   , compactTargetIntent
   , confirmTargetSinkReadback
+  , targetSinkCasRequestExpectedVersion
+  , targetSinkCasRequestRecord
+  , targetSinkCasRequestSink
+  , targetSinkRecordDigest
+  , targetSinkRecordFencingToken
+  , targetSinkRecordFromStore
+  , targetSinkRecordGeneration
+  , targetSinkRecordOwnerNonce
+  , targetSinkRecordPayload
   , credentialGenerationValue
   , decodeTargetIntentProjection
   , decideCompleteTargetCommit
@@ -810,6 +819,18 @@ prepareTargetWrite registered now permit sink expected observation = do
       , internalPreparedTargetWriteSink = sink
       }
 
+-- | What a target sink holds, or is being asked to hold.
+--
+-- Sprint 4.70: the constructor is __not exported__; the five accessors are.
+-- The record carries the owner nonce and fencing token that make a write
+-- authoritative, so a public constructor let any module assemble one from raw
+-- data (/Provenance/ class, § 21).
+--
+-- Two minters exist and they are different facts about the same shape, which is
+-- worth stating rather than leaving implicit: 'recordForIntent' builds the
+-- record a committed intent /decides/ to write, and 'targetSinkRecordFromStore'
+-- rebuilds what the store /says/ it holds. The second is a decode, not a
+-- decision, and a @dev check@ rule keeps it to the one durable decoder.
 data TargetSinkRecord payload = TargetSinkRecord
   { targetSinkRecordOwnerNonce :: !OwnerNonce
   , targetSinkRecordFencingToken :: !FencingToken
@@ -818,6 +839,35 @@ data TargetSinkRecord payload = TargetSinkRecord
   , targetSinkRecordPayload :: !payload
   }
   deriving (Eq, Show)
+
+-- | Rebuild the record a store reports holding.
+--
+-- Sprint 4.70. This is the sole way to obtain a 'TargetSinkRecord' outside this
+-- module, and its name says what it is: the store's account of itself, decoded
+-- from durable fields. It is __not__ evidence that anything decided to write
+-- those bytes, and nothing may treat it as such — the decision path mints its
+-- record from a 'PreparedTargetWritePermit' and never from this.
+--
+-- Bounded to the durable decoder by @prodbox dev check@ rather than by type,
+-- because the arguments are exactly the record's fields and no type can
+-- separate "read these back" from "make these up". Per
+-- [§ 22](../../../documents/engineering/chaos_hardening_doctrine.md) that bounds
+-- a process, not a protocol, and the bound is stated here rather than implied.
+targetSinkRecordFromStore
+  :: OwnerNonce
+  -> FencingToken
+  -> CredentialGeneration
+  -> TargetValueDigest
+  -> payload
+  -> TargetSinkRecord payload
+targetSinkRecordFromStore owner fence generation digest payload =
+  TargetSinkRecord
+    { targetSinkRecordOwnerNonce = owner
+    , targetSinkRecordFencingToken = fence
+    , targetSinkRecordGeneration = generation
+    , targetSinkRecordDigest = digest
+    , targetSinkRecordPayload = payload
+    }
 
 data TargetSinkObservation payload
   = TargetSinkMissing
@@ -828,6 +878,21 @@ data TargetSinkObservation payload
   | TargetSinkChanging !Text
   deriving (Eq, Show)
 
+-- | A compare-and-swap the target sink is being asked to perform.
+--
+-- Sprint 4.70: the constructors are __not exported__. The value carries an
+-- owner nonce and a fencing token, and with the constructors public any module
+-- holding raw data could assemble one — a request that looks exactly like an
+-- authorized one and carries no evidence of the decision that authorized it
+-- (/Provenance/ class,
+-- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md)).
+-- 'decideTargetSinkWrite' is the only minter, and it cannot be called without a
+-- 'PreparedTargetWritePermit'.
+--
+-- An adapter still needs to read one, so the three projections below answer
+-- what a @case@ used to: the sink, the expected version (absent for an
+-- initialize), and the record. That is the whole of what an interpreter needs,
+-- which is why hiding the constructors costs nothing here.
 data TargetSinkCasRequest payload
   = TargetSinkInitialize
       !TargetClusterSecretSink
@@ -837,6 +902,27 @@ data TargetSinkCasRequest payload
       !TargetSinkVersion
       !(TargetSinkRecord payload)
   deriving (Eq, Show)
+
+-- | The sink a request writes to.
+targetSinkCasRequestSink :: TargetSinkCasRequest payload -> TargetClusterSecretSink
+targetSinkCasRequestSink request = case request of
+  TargetSinkInitialize sink _ -> sink
+  TargetSinkReplace sink _ _ -> sink
+
+-- | The version the request is conditioned on, or 'Nothing' for a
+-- create-if-absent. The two cases are different facts and stay distinguishable:
+-- an absent version is not version zero.
+targetSinkCasRequestExpectedVersion
+  :: TargetSinkCasRequest payload -> Maybe TargetSinkVersion
+targetSinkCasRequestExpectedVersion request = case request of
+  TargetSinkInitialize _ _ -> Nothing
+  TargetSinkReplace _ version _ -> Just version
+
+-- | The record the request would store.
+targetSinkCasRequestRecord :: TargetSinkCasRequest payload -> TargetSinkRecord payload
+targetSinkCasRequestRecord request = case request of
+  TargetSinkInitialize _ record -> record
+  TargetSinkReplace _ _ record -> record
 
 data TargetSinkCasResult payload
   = TargetSinkCasApplied !TargetSinkVersion !(TargetSinkRecord payload)

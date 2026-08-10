@@ -2042,7 +2042,177 @@ None on this sprint's surface. Two things recorded rather than left implicit:
   A total validator is a prerequisite for that, not a substitute, and neither makes Dhall express the
   invariants, which it cannot.
 
+## Sprint 1.82: The Tier-0 Secret-Free Guard Becomes Total and Load-Bearing ✅
+
+**Status**: Done (2026-08-09) — Phase `1` own-surface work on the Tier-0 decode gate.
+**Implementation**: `src/Prodbox/Config/Tier0.hs` (`tier0SecretRefs` as a positional constructor
+pattern returning named refs; new `tier0SecretValueFields` and `tier0SecretValueRefusal`;
+`decodeProjectConfigDhall` refuses a record carrying a literal secret value),
+`test/unit/Main.hs` (the `poisonTier0` fixture builder and the Sprint 1.82 cases).
+**Blocked by**: none.
+**Deployment qualification**: pending — this adds a refusal to the Tier-0 decode path. It moves no
+Standard-P production-composition surface: no envelope, image reference, topology, deadline, or
+admission decision changes, and every generated `prodbox.dhall` in the repository already decodes
+(the accepting case is proven, not assumed). What changes is that a Tier-0 file which was already
+forbidden now fails to load instead of loading.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
+plus a mutation exercise that adds a `SecretRef` field to the config record and confirms the build
+objects at the enumerator, restored byte-exactly.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/vault_doctrine.md` (§ 20.3 asserted this guard was "enforced today" while it
+had zero call sites; the claim is corrected in place rather than quietly made true)
+
+### Objective
+
+`tier0CarriesNoSecretValues` is exported, is documented as the guard that rejects a Tier-0 record
+carrying a literal credential, and has **zero production call sites** — it is exercised only from
+`test/unit/Main.hs`, and there only against `defaultProjectConfig` rather than a loaded file. A
+guard that reads as enforced and is not is the same defect class Sprints `1.78` and `4.57` removed.
+
+Its enumerator was also a list of field accessors, which is the *Totality* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md) and the
+exact shape Sprint `1.81` corrected on the neighbouring fold: it never mentions the record, so a new
+section carrying a `SecretRef` would be omitted silently and the guard would keep answering `True`
+about a field it could not see. That the enumeration happens to be complete today is a coincidence,
+not a property.
+
+### Deliverables
+
+- ✅ `tier0SecretRefs` is a **positional** pattern over `ProdboxParameters` returning
+  `[(Text, SecretRef)]`. Sections that carry no `SecretRef` are bound with a leading underscore, so
+  the decision is recorded at the site rather than expressed as an absence.
+- ✅ `tier0SecretValueFields` replaces the `Bool` at the point where something has to be reported.
+  A `Bool` cannot say what to fix; the refusal names the dotted fields, in record order.
+- ✅ `decodeProjectConfigDhall` — the **one** Tier-0 decode gate — refuses a record carrying a
+  literal secret value. The refusal quotes the field names and never the values, because the whole
+  reason it exists is that those bytes must not travel
+  ([vault_doctrine.md § 20](../documents/engineering/vault_doctrine.md)).
+- ✅ **The bound is stated rather than implied.** The overlap the deletion ledger recorded is real
+  and is now measured: the operational `aws.*` arm was already refused on the CLI path by
+  `validateAwsCredentialsRef`, but that runs over the decoded `parameters` inside
+  `Prodbox.Settings.validateConfig` and never over this record — so `loadDaemonBinaryContext` (the
+  in-cluster daemon binary context) and the Sprint `0.24` drift gate both reached a full Tier-0
+  record with no such check at all, and `acme.eab_*` had no local-tier check on **any** path. The
+  new gate is narrower than the guard's name suggests and wider than what existed.
+
+### Validation
+
+1. ✅ The mutation exercise: adding `mutation_exercise_secret :: SecretRef` to `ProdboxParameters`
+   makes the build object **at `tier0SecretRefs`** (`The data constructor 'ProdboxParameters' should
+   have 13 arguments, but has been given 12`), which is the point — as an accessor list the same
+   mutation compiled clean and the guard silently stopped covering the record. Source restored
+   byte-exactly (`sha256sum -c`: `OK`).
+2. ✅ `prodbox-unit -p "Sprint 1.82"` — 5/5: the field-naming case, the `aws.*` decode refusal (which
+   also asserts the refusal does **not** contain the literal it refused), the `acme.eab_*` refusal
+   that no local-tier check reached before, the daemon-loader inheritance, and an accepting case for
+   a clean generated file so the gate cannot be satisfied by refusing everything.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 with main Hspec **3264/3264** (the
+   Phase-1 reopen adds 9: 5 here and 4 in Sprint `1.83`), plus 27/27, 33/33, and 27/27 on the
+   dedicated suites. `prodbox dev docs check` and `prodbox dev lint docs` exit 0.
+
 ### Remaining Work
+
+None on this sprint's surface.
+
+## Sprint 1.83: The Parsed Public Edge Is Carried, Not Re-Derived ✅
+
+**Status**: Done (2026-08-09) — Phase `1` own-surface work on the config-validation seam.
+**Implementation**: `src/Prodbox/Settings.hs` (`ValidatedServedHost`, `ValidatedPublicEdge`,
+`validatedPublicEdgeFor`, `substrateServedHost`; `ValidatedSettings` gains `validatedPublicEdge`),
+`src/Prodbox/PublicEdge.hs` (`requireSubstratePublicFqdn`, `requireSubstrateCertScopeSet`,
+`servedHostString`, `substrateServedHostMissing`; `substratePublicFqdn` now reads the parse),
+`src/Prodbox/Lib/ChartPlatform.hs` (five re-derivation sites; `resolveRootPublicFqdn` reduced to the
+shared accessor; `valuesForKeycloak` takes the substrate), `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Infra/DedicatedAdapterIam.hs`, `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — no Standard-P production-composition surface moves, with one
+consequence stated rather than asserted away. The rendered certificate `dnsNames`, the TLS retention
+key, and the served host are computed from the **same parse** they were computed from before; what
+changed is that the parse happens once, at validation, instead of once per consumer, and the unit
+case pins that equality directly. **One difference was found by reading `mkFqdn` rather than by
+assuming**: it applies `Text.toLower` as well as `Text.strip`, so a served host now reaches the
+renderers lowercased where it previously reached them as authored. On the supported path this is a
+no-op — `supportedPublicHostname` is lowercase — but for a mixed-case `domain.demo_fqdn` it is a real
+change, and it closes a latent inconsistency rather than opening one: the certificate scope set was
+*already* built through `mkFqdn`, so the served host and its own SANs could previously disagree in
+case. DNS and SAN matching are both case-insensitive, so no comparison changes result.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
+including a case that compares the carried scope set against the derivation it replaced.
+**Docs to update**: `documents/engineering/config_doctrine.md`
+
+### Objective
+
+`validateConfiguredCertScope` builds a `CertScopeSet`, binds it to `_`, and returns `()`. Eight
+production call sites then rebuild the same value from the raw `Text`, and
+`Prodbox.PublicEdge.substratePublicFqdn` re-reads the served host unparsed beside them. The one place
+a real parse happens throws the proof away — the *Provenance* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), and the
+same move Sprint `1.76` made for readiness evidence.
+
+The second row this closes is the residual Sprint `1.81` recorded about itself. With the AWS-tier
+refusal in place an AWS-gated config cannot reach the AWS arm with an empty hostname, but a config
+validated only by the *local* tier still can, and it received the empty string it configured. The
+state is real and correct — `aws_substrate.subzone_name` is empty on a home-only host — and what was
+wrong was representing it as a served hostname.
+
+### Deliverables
+
+- ✅ `ValidatedSettings` carries `validatedPublicEdge :: ValidatedPublicEdge`: the home served host
+  and its scope set, plus **`Maybe`** the AWS pair. Built by `validateConfig`, the sole constructor,
+  from `validatedPublicEdgeFor` — the builder `validateConfiguredCertScope` is now defined as, with
+  its result discarded. Discarding it *there* is honest, because that call is the refusal inside
+  `validateLocalConfig`; what is no longer discarded is the value.
+- ✅ All eight production re-derivation sites read the carried parse:
+  `Prodbox.Lib.ChartPlatform` (delete plan, install plan, keycloak `dnsNames`, TLS-retention values,
+  TLS preserve/restore), `Prodbox.CLI.Rke2` (TLS-retention IAM parameters),
+  `Prodbox.Infra.DedicatedAdapterIam` (both prefixes from one projection), and
+  `Prodbox.TestValidation` (certificate-scope serving validation, which can no longer probe one host
+  while asserting another host's scope set).
+- ✅ `resolveRootPublicFqdn` reduces to `requireSubstratePublicFqdn`: a second reading of the raw
+  record followed by an emptiness test is replaced by the projection's own `Maybe`. Its
+  `chartName` parameter is retained and documented as never having participated.
+- ✅ `requireSubstratePublicFqdn` / `requireSubstrateCertScopeSet` refuse with one wording
+  (`substrateServedHostMissing`) rather than three.
+
+### Validation
+
+1. ✅ `prodbox-unit -p "Sprint 1.83"` — 4/4: a home-only config carries `Nothing` for AWS (the empty
+   string is gone); an AWS-configured one carries the subzone; **the carried scope set equals what
+   `certScopeSetForServedHost` derives for both substrates**, which is the case that makes the
+   refactor a provenance change rather than a behaviour change; and the AWS served host on a
+   locally-validated config is a `Left`, proven through the real `validateConfig` builder.
+2. ✅ Warning-clean `cabal build --enable-tests all --ghc-options=-Werror`; the conversion orphaned
+   four imports (`Control.Monad.unless`, `publicFqdn`, `AwsSubstrateSection`,
+   `certScopeSetForServedHost`) and one helper (`nonEmptyText`), each named by the build and removed.
+   That the *build* named them, rather than a reviewer, is the point of `-Werror` here: an
+   unreferenced import is the residue a re-derivation leaves behind.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 with main Hspec **3264/3264**;
+   `prodbox dev docs check` and `prodbox dev lint docs` exit 0. The first `dev check` after this
+   sprint exited **1** on two `hlint` hints in the new code (`() <$` where `void` belongs; a lambda
+   where a tuple section belongs) — recorded rather than quietly fixed, because the gate catching
+   them is the gate doing its job.
+4. ✅ `prodbox test integration cli` — **55/55**, exit 0, on the installed binary. This sprint edits
+   `Prodbox.Lib.ChartPlatform` and `Prodbox.TestValidation`, both of which the installed suite drives,
+   so the run is a regression gate for the conversion rather than a formality.
+
+### Remaining Work
+
+Two things are registered rather than folded in, and both are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md):
+
+- **`substratePublicFqdn` still has a total `String` signature**, now defined as
+  `maybe "" servedHostString` over the projection. Converting it to the `Maybe` its projection
+  already carries cascades through `substratePublicRouteUrl`, `substrateIdentityIssuerUrl`, and
+  roughly a dozen **pure manifest renderers** in `Prodbox.CLI.Rke2` and `Prodbox.TestValidation` that
+  have no error channel — measured by attempting it, not estimated. That is a separate sprint whose
+  deliverable is threading a resolved host into those renderers; widening this one to reach it is
+  what [Standard L](development_plan_standards.md#l-cli-doctrine-alignment) forbids. What this sprint
+  delivers is the `Either`-returning replacement accessor and the conversion of every caller that
+  already had somewhere to put a refusal.
+- **`certDnsNamesForServedHost` lost its last production caller** and is now exercised only by the
+  Sprint `2.35` contract cases. It is a one-line projection of a function that *is* production-
+  reachable, so it is not the guard-shaped defect Sprint `1.82` closed — but it is recorded rather
+  than left for a later reader to rediscover.
 
 ## Documentation Requirements
 

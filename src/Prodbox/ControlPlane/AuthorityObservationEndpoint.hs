@@ -37,6 +37,7 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityMigrationMode (..)
@@ -209,14 +210,14 @@ aggregateWriterStatus aggregate = case authorityAggregateMigration aggregate of
     EstablishingBackup _ -> Right MigrationWritersQuiesced
     BackupRepairFrozen _ _ -> Right MigrationWritersQuiesced
 
-authorityObservationHttpStatus :: AuthorityObservationResult -> Int
+authorityObservationHttpStatus :: AuthorityObservationResult -> ReplyStatus
 authorityObservationHttpStatus result = case result of
-  AuthorityObservationBadRequest _ -> 400
-  AuthorityObservationScopeMismatch -> 409
-  AuthorityObservationReadFailed _ -> 503
-  AuthorityObservationStateCorrupt -> 500
-  AuthorityObservationClockFailed _ -> 503
-  AuthorityObservationSucceeded _ -> 200
+  AuthorityObservationBadRequest _ -> ReplyBadRequest
+  AuthorityObservationScopeMismatch -> ReplyConflict
+  AuthorityObservationReadFailed _ -> ReplyServiceUnavailable
+  AuthorityObservationStateCorrupt -> ReplyInternalError
+  AuthorityObservationClockFailed _ -> ReplyServiceUnavailable
+  AuthorityObservationSucceeded _ -> ReplyOk
 
 authorityObservationResponseBody :: AuthorityObservationResult -> ByteString
 authorityObservationResponseBody result = case result of

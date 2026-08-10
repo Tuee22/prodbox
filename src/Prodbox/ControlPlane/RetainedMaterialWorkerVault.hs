@@ -37,7 +37,10 @@ import Prodbox.Vault.Client
   , KvV2ExactVersionSecret (..)
   , KvV2SecretMetadata (..)
   , KvV2VersionedSecret (..)
+  , VaultCasOutcome (..)
   , VaultToken
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvDestroyVersionV2
   , vaultKvReadExactVersionV2
@@ -128,18 +131,27 @@ retainedCustodyVaultBoundary session schema =
       session
       (\token -> vaultTransitHmacSha256 address token retainedCustodyCommitmentKey input)
 
-  compareAndSwap expected fields =
-    vaultSessionCall
-      session
-      ( \token ->
-          vaultKvCasWriteV2
-            address
-            token
-            retainedCustodyMount
-            path
-            (KvV2Cas expected)
-            fields
-      )
+  -- Sprint 4.74: this lane classifies rather than rendering the transport
+  -- error, so the operator learns whether another writer won, the request was
+  -- refused, or the attempt's outcome is unknown. `applyCas` in
+  -- "Prodbox.ControlPlane.RetainedMaterialWorker" recovers by authoritative
+  -- read-back on every failure, which is the right response to all three arms,
+  -- so what this changes is what the failure says and not what it does — and it
+  -- is the eleventh call site, found by the sprint's own `dev check` rule rather
+  -- than by the ledger row, which named three.
+  compareAndSwap expected fields = do
+    written <-
+      withSessionToken session $ \token ->
+        vaultKvCasWriteV2
+          address
+          token
+          retainedCustodyMount
+          path
+          (KvV2Cas expected)
+          fields
+    pure $ case classifyVaultCasOutcome written of
+      VaultCasApplied version -> Right version
+      failed -> Left (renderVaultCasOutcome failed)
 
   writeMetadata fields =
     vaultSessionCall

@@ -32,6 +32,8 @@ module Prodbox.Http.ResponseObligation
   , mkResponseObligation
   , withResponseObligation
   , responseWriteBudgetMicrosDefault
+  , responseObserveBudgetMicrosDefault
+  , renderResponseRefusalReason
   , lastResortInternalError
   )
 where
@@ -78,6 +80,7 @@ instance Show ResponseRefusal where
 data ResponseObligation reply = ResponseObligation
   { obligationRender :: reply -> ByteString
   , obligationRefusal :: ResponseRefusal -> reply
+  , obligationObserveRefusal :: ResponseRefusal -> IO ()
   , obligationWriteBudgetMicros :: !Int
   }
 
@@ -95,16 +98,63 @@ mkResponseObligation
   -- ^ Render a reply to wire bytes.
   -> (ResponseRefusal -> reply)
   -- ^ Render a refusal to a reply. Required.
+  -> (ResponseRefusal -> IO ())
+  -- ^ Observe a refusal server-side. Required, and __positional on purpose__.
+  --
+  -- Sprint @4.65@. Sprint @4.60@ made the reply obligatory and left the
+  -- /reason/ nowhere: production must not put an exception's text on the wire,
+  -- so after @4.60@ a `500` was the entire surviving record of any handler
+  -- failure — a refusal that does not retain its structured reason, which
+  -- [bootstrap_readiness_doctrine.md § 0.5](../../../documents/engineering/bootstrap_readiness_doctrine.md)
+  -- forbids.
+  --
+  -- A record field with a default would have made observation opt-in, and the
+  -- defect this closes is precisely that nobody opted in. This is the same
+  -- required-argument move the module already makes for the refusal renderer:
+  -- an argument the call does not type-check without.
   -> Int
   -- ^ Write budget in microseconds; clamped to a positive value.
   -> ResponseObligation reply
-mkResponseObligation render refusal budgetMicros =
+mkResponseObligation render refusal observe budgetMicros =
   ResponseObligation
     { obligationRender = render
     , obligationRefusal = refusal
+    , obligationObserveRefusal = observe
     , obligationWriteBudgetMicros =
         if budgetMicros > 0 then budgetMicros else responseWriteBudgetMicrosDefault
     }
+
+-- | The budget the refusal observation runs under.
+--
+-- Small relative to 'responseWriteBudgetMicrosDefault' and deliberately so: a
+-- wedged logger must cost the reply a rounding error, never the reply itself.
+responseObserveBudgetMicrosDefault :: Int
+responseObserveBudgetMicrosDefault = 250 * 1000
+
+-- | The structured reason an observer records, bounded.
+--
+-- Sprint @4.65@. Two properties matter and neither is cosmetic.
+--
+--   * __It is bounded.__ An exception's rendering is attacker-influenced in
+--     principle (a decode failure can quote its input), so an unbounded reason
+--     is an unbounded write to the pod's log stream from the request path.
+--   * __It is truncated, not sanitised, and this is a stated residual.__ No
+--     mechanism here can prove an exception's text carries no secret byte. What
+--     bounds the exposure is the destination: the reason goes to the process's
+--     own stderr, which the wire never sees, and never into a reply. A caller
+--     that can produce an exception embedding secret material should not be
+--     throwing it — that is the writer's obligation, not this renderer's, and
+--     it is recorded rather than implied.
+renderResponseRefusalReason :: ResponseRefusal -> String
+renderResponseRefusalReason refusal = case refusal of
+  ResponseHandlerFailed err -> bounded "handler-failed" err
+  ResponseCancelled err -> bounded "cancelled" err
+ where
+  bounded label err = label ++ ": " ++ take responseRefusalReasonMaximumChars (show err)
+
+-- | The bound 'renderResponseRefusalReason' truncates at.
+responseRefusalReasonMaximumChars :: Int
+responseRefusalReasonMaximumChars = 512
 
 -- | The last thing a server can say when even the refusal renderer is broken.
 --
@@ -157,6 +207,22 @@ withResponseObligation obligation client handler =
   budget = obligationWriteBudgetMicros obligation
 
   refusalWire refusal = do
+    -- Sprint 4.65: the reason is recorded before the reply is computed, so a
+    -- refusal is observed even if rendering it then bottoms out into
+    -- 'lastResortInternalError'.
+    --
+    -- Both wrappers are load-bearing rather than defensive habit. Sprint 4.60's
+    -- whole guarantee is that nothing on the refusal path prevents the reply,
+    -- and an observer is caller-supplied code: it may throw, and it may block.
+    -- A throw is swallowed and a stall is abandoned at
+    -- 'responseObserveBudgetMicrosDefault'. The one thing not swallowed is
+    -- cancellation, which is re-raised so an enclosing deadline still fires.
+    observed <-
+      try (timeout responseObserveBudgetMicrosDefault (obligationObserveRefusal obligation refusal))
+        :: IO (Either SomeException (Maybe ()))
+    case observed of
+      Left err | isAsyncException err -> throwIO err
+      _ -> pure ()
     attempted <-
       try (evaluate (obligationRender obligation (obligationRefusal obligation refusal)))
         :: IO (Either SomeException ByteString)

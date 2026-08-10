@@ -50,6 +50,7 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , pulumiCheckpointResponseHttpStatus
   , pulumiCheckpointResponseMaximumBytes
   )
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( CanonicalPulumiCheckpoint
@@ -204,9 +205,14 @@ pulumiCheckpointClientWith callAuthenticated registered =
               (LazyByteString.fromStrict body)
           )
       let expectedStatus = pulumiCheckpointResponseHttpStatus decoded
-      if status == expectedStatus
+      if status == replyStatusCode expectedStatus
         then Right decoded
-        else Left (PulumiCheckpointHttpStatusMismatch expectedStatus status)
+        else
+          Left
+            ( PulumiCheckpointHttpStatusMismatch
+                (replyStatusCode expectedStatus)
+                status
+            )
 
   unexpected response = case response of
     PulumiCheckpointBadRequest detail -> PulumiCheckpointRemoteRefused detail

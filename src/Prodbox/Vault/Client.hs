@@ -31,6 +31,9 @@ module Prodbox.Vault.Client
   , KvV2ReadResponse (..)
   , KvV2Cas (..)
   , KvV2CasWriteRequest (..)
+  , VaultCasOutcome (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , KvV2VersionedSecret (..)
   , KvV2ExactVersionSecret (..)
   , KvV2WriteResponse (..)
@@ -83,7 +86,6 @@ module Prodbox.Vault.Client
   , vaultKvReadVersionedV2
   , vaultKvReadExactVersionV2
   , vaultKvCasWriteV2
-  , vaultKvWriteV2
   , vaultKvReadMetadataV2
   , vaultKvWriteCustomMetadataV2
   , vaultKvMetadataExistsV2
@@ -118,7 +120,6 @@ module Prodbox.Vault.Client
   )
 where
 
-import Control.Monad (void)
 import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)
@@ -161,6 +162,7 @@ import Prodbox.Http.Client
   , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
   , httpRequestNoBody
+  , renderHttpError
   )
 import Text.Read (readMaybe)
 
@@ -914,9 +916,82 @@ vaultKvReadExactVersionV2 address token mount path version =
     [vaultTokenHeader token]
     (vaultUrl address (kvV2DataPath mount path) ++ "?version=" ++ show version)
 
+-- | What exactly one KV-v2 CAS attempt established.
+--
+-- Sprint @4.74@. The object-store path has had this distinction since the
+-- 'Prodbox.Lifecycle.CheckpointAuthority.ModelBCasResult' vocabulary landed;
+-- the Vault path answered every failure as one 'HttpError', so a lost race and
+-- an unreachable Vault arrived at the caller as the same @Left@.
+-- Distinguishability class, @chaos_hardening_doctrine.md § 21@.
+--
+-- The three failure arms differ in exactly one respect that matters to a
+-- caller: whether a write happened.
+data VaultCasOutcome
+  = -- | Vault accepted the write, at the version it answers with.
+    VaultCasApplied !Natural
+  | -- | Vault compared the version and refused. __No write happened__, and
+    -- that is authoritative: Vault performs the check before it writes. A
+    -- caller that re-observes and retries is racing a real concurrent writer.
+    VaultCasConflict !Text
+  | -- | Vault refused the request itself — forbidden, absent mount or path, or
+    -- malformed. __No write happened__, and retrying unchanged cannot help.
+    -- Distinct from a conflict because nothing was concurrent about it.
+    VaultCasRefused !Int !Text
+  | -- | Whether the write applied is __unknown__. A conditional retry
+    -- re-observes the expected version first, so this is recoverable — but it
+    -- is not evidence that nothing happened, and it must never be reported as
+    -- a lost race.
+    VaultCasUnobservable !Text
+  deriving (Eq, Show)
+
+-- | Classify one CAS attempt's transport result.
+--
+-- Total, pure, and the only supported reading of a CAS result: a
+-- @prodbox dev check@ rule fails the build for any module that names
+-- 'vaultKvCasWriteV2' without also naming this function, so a new call site
+-- cannot quietly go back to matching on 'HttpStatus'. That is a compiled rule
+-- over a source region rather than a property of the type
+-- (@chaos_hardening_doctrine.md § 22@) — it bounds this repository, not the
+-- Vault protocol.
+--
+-- Two classification decisions are worth stating, because the superseded
+-- hand-rolled versions got both wrong:
+--
+--   * __Only the version-mismatch body is a conflict.__ Vault answers a CAS
+--     mismatch as @400@ carrying @did not match the current version@, and it
+--     also answers a malformed or cas-required request as @400@. Treating
+--     every @400@ as a conflict reports a request defect as a lost race.
+--   * __@5xx@, @429@, and every transport failure are unobservable, not
+--     refusals.__ A write that may have been applied and whose response was
+--     lost is the one case that must not be collapsed into "nothing happened".
+classifyVaultCasOutcome :: Either HttpError Natural -> VaultCasOutcome
+classifyVaultCasOutcome result = case result of
+  Right version -> VaultCasApplied version
+  Left (HttpStatus status body)
+    | status == 400 && casVersionMismatch body -> VaultCasConflict (Text.pack body)
+    | status `elem` [400, 403, 404, 405] -> VaultCasRefused status (Text.pack body)
+    | otherwise -> VaultCasUnobservable (Text.pack ("HTTP " ++ show status ++ ": " ++ body))
+  Left err -> VaultCasUnobservable (Text.pack (renderHttpError err))
+ where
+  casVersionMismatch body =
+    Text.isInfixOf "did not match the current version" (Text.toLower (Text.pack body))
+
+-- | Render a CAS outcome's failure arms for an operator-facing @Left@.
+--
+-- Callers that have no structured channel still say which of the three
+-- happened, so a coarse report is at least not a wrong one.
+renderVaultCasOutcome :: VaultCasOutcome -> Text
+renderVaultCasOutcome outcome = case outcome of
+  VaultCasApplied version -> "Vault CAS applied at version " <> Text.pack (show version)
+  VaultCasConflict detail -> "Vault CAS conflict (no write): " <> detail
+  VaultCasRefused status detail ->
+    "Vault CAS refused (no write, HTTP " <> Text.pack (show status) <> "): " <> detail
+  VaultCasUnobservable detail -> "Vault CAS outcome is unobservable: " <> detail
+
 -- | Perform exactly one KV v2 CAS attempt and preserve Vault's resulting
--- version. A mismatch remains an 'HttpStatus'; the gateway route performs an
--- authoritative readback and returns a conflict observation without retrying.
+-- version. Read the result through 'classifyVaultCasOutcome'; a mismatch, a
+-- request refusal, and a lost response are three different facts and this
+-- 'HttpError' is only the transport shape they arrive in.
 vaultKvCasWriteV2
   :: VaultAddress
   -> VaultToken
@@ -936,19 +1011,6 @@ vaultKvCasWriteV2 address token mount path expectedVersion fields = do
         , kvV2CasWriteExpectedVersion = expectedVersion
         }
   pure (kvV2WriteResponseVersion <$> (result :: Either HttpError KvV2WriteResponse))
-
--- | @POST \/v1\/\<mount\>\/data\/\<path\>@ — write a KV v2 secret's field map.
--- The 200 response carries version metadata, which is ignored.
-vaultKvWriteV2
-  :: VaultAddress -> VaultToken -> Text -> Text -> Map Text Text -> IO (Either HttpError ())
-vaultKvWriteV2 address token mount path fields = do
-  result <-
-    httpPostJsonWithHeaders
-      defaultHttpConfig
-      [vaultTokenHeader token]
-      (vaultUrl address (kvV2DataPath mount path))
-      (KvV2WriteRequest fields)
-  pure (void (result :: Either HttpError Value))
 
 -- | Read only a KV-v2 coordinate's non-secret metadata document.
 vaultKvReadMetadataV2

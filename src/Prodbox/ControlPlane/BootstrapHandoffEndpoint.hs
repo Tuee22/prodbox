@@ -63,9 +63,13 @@ import Prodbox.ControlPlane.Route
       )
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Vault.Client
   ( KvV2Cas (..)
   , KvV2VersionedSecret (..)
+  , VaultCasOutcome (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
@@ -154,12 +158,12 @@ bootstrapHandoffAuthenticatedHandler maximumBytes repository inner =
       (const "request-codec-rejected")
       (decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body))
 
-responseStatus :: BootstrapHandoffResponse -> Int
+responseStatus :: BootstrapHandoffResponse -> ReplyStatus
 responseStatus response = case response of
-  BootstrapHandoffAccepted {} -> 200
-  BootstrapHandoffObserved {} -> 200
-  BootstrapHandoffRefused {} -> 409
-  BootstrapHandoffUnavailable {} -> 503
+  BootstrapHandoffAccepted {} -> ReplyOk
+  BootstrapHandoffObserved {} -> ReplyOk
+  BootstrapHandoffRefused {} -> ReplyConflict
+  BootstrapHandoffUnavailable {} -> ReplyServiceUnavailable
 
 responseBody :: BootstrapHandoffResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
@@ -260,11 +264,14 @@ writeReceipt session version receipt = do
                 (Base64.encode (LazyByteString.toStrict (serialise receipt)))
             )
         )
-  pure $ case written of
-    Left (HttpStatus 400 _) -> Left "conflict"
-    Left (HttpStatus 409 _) -> Left "conflict"
-    Left err -> Left (Text.pack (renderHttpError err))
-    Right _ -> Right ()
+  -- Sprint 4.74: the handoff receipt's caller treats "conflict" as another
+  -- writer having already recorded a handoff. The superseded body said that of
+  -- every `400`, and of `409`, which Vault does not answer a KV CAS with at
+  -- all.
+  pure $ case classifyVaultCasOutcome written of
+    VaultCasApplied _ -> Right ()
+    VaultCasConflict _ -> Left "conflict"
+    refusedOrUnknown -> Left (renderVaultCasOutcome refusedOrUnknown)
 
 decodeReceipt
   :: Map.Map Text Text -> Either Text PostUnsealHandoffReceipt

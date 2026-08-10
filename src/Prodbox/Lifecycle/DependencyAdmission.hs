@@ -32,7 +32,6 @@ module Prodbox.Lifecycle.DependencyAdmission
   , mutationAdmittedAtMicros
   , mutationAdmittedDependencies
   , dependencyAdmissionFromVerdict
-  , noAdmissions
   , recordAdmission
   , admissionFor
   , dependencyAdmissionBoundMicros
@@ -41,7 +40,6 @@ module Prodbox.Lifecycle.DependencyAdmission
   )
 where
 
-import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -65,7 +63,8 @@ import Prodbox.ControlPlane.Observation
   , admissionObservedAt
   )
 import Prodbox.Lifecycle.DependencyAdmission.Internal
-  ( DependencyAdmission (..)
+  ( AdmissionSet (..)
+  , DependencyAdmission (..)
   , MutationAdmission (..)
   )
 import Prodbox.Lifecycle.Lease (authorityTimeMicros)
@@ -88,13 +87,6 @@ dependencyAdmissionFromVerdict component verdict = case verdict of
   VerdictPending _ -> Nothing
   VerdictFailed _ -> Nothing
   VerdictUnobservable _ -> Nothing
-
--- | The admissions accumulated so far in one reconcile run.
-newtype AdmissionSet = AdmissionSet (Map ComponentId DependencyAdmission)
-  deriving stock (Eq, Show)
-
-noAdmissions :: AdmissionSet
-noAdmissions = AdmissionSet Map.empty
 
 -- | Record an admission, replacing any earlier one for the same component: a
 -- re-observation supersedes what it re-observed.

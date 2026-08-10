@@ -66,6 +66,7 @@ import Prodbox.ControlPlane.Route
   , decodeRoleRoute
   , routesForRole
   )
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Infra.StackDescriptor
   ( StackDescriptor (..)
   , stackDescriptors
@@ -419,7 +420,7 @@ clientFor handler = do
                     )
                 pure
                   ( Right
-                      ( pulumiCheckpointResponseHttpStatus served
+                      ( replyStatusCode (pulumiCheckpointResponseHttpStatus served)
                       , pulumiCheckpointResponseBody served
                       )
                   )

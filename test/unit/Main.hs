@@ -108,6 +108,7 @@ import Data.List
   )
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust, isNothing)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -431,6 +432,7 @@ import Prodbox.CheckCode
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , substrateImagePinningViolations
+  , targetSinkRecordMinterViolations
   , targetSinkVersionInternalSourceViolations
   , tier0DriftFindings
   , tier0DriftLocation
@@ -532,6 +534,7 @@ import Prodbox.Config.Tier0
   , Tier0SealMode (..)
   , Tier0Source (..)
   , daemonConfigMapTier0Path
+  , decodeProjectConfigDhall
   , defaultDaemonContext
   , defaultDaemonProjectConfig
   , defaultProjectConfig
@@ -541,6 +544,7 @@ import Prodbox.Config.Tier0
   , projectBasics
   , renderProjectConfigDhall
   , tier0CarriesNoSecretValues
+  , tier0SecretValueFields
   , writeTier0AtPath
   )
 import Prodbox.Config.Tier0 qualified as Tier0
@@ -665,6 +669,7 @@ import Prodbox.Host.Substrate
 import Prodbox.Host.Wsl2
   ( defaultWsl2VM
   )
+import Prodbox.Http.Client (HttpError (HttpStatus, HttpTimeout))
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
@@ -834,6 +839,8 @@ import Prodbox.PrerequisiteId
 import Prodbox.PublicEdge
   ( publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
+  , requireSubstrateCertScopeSet
+  , requireSubstratePublicFqdn
   )
 import Prodbox.Pulsar.Client qualified as PulsarClient
 import Prodbox.Pulsar.Codec qualified as PulsarCodec
@@ -910,6 +917,8 @@ import Prodbox.Settings
   , TestSuite (..)
   , TestTopology (..)
   , TestTopologyError (..)
+  , ValidatedPublicEdge (..)
+  , ValidatedServedHost (..)
   , ValidatedSettings (..)
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
@@ -924,14 +933,17 @@ import Prodbox.Settings
   , renderConfigDhall
   , renderPublicEdgeAdvertisementMode
   , renderSettingsDisplay
+  , substrateServedHost
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
   , validateAwsSubstrateSection
   , validateComponentNodes
+  , validateConfig
   , validateConfiguredCertScope
   , validateLocalConfig
   , validatePublicEdgeDeployment
   , validateTestTopology
+  , validatedPublicEdgeFor
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -1028,7 +1040,7 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   , volumeRebindReport
   )
-import Prodbox.Tls.CertScope (impliedBy)
+import Prodbox.Tls.CertScope (fqdnText, impliedBy)
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -1055,11 +1067,13 @@ import Prodbox.Vault.Client
   , VaultAddress (..)
   , VaultAuthInfo (..)
   , VaultAuthListing (..)
+  , VaultCasOutcome (..)
   , VaultMountInfo (..)
   , VaultMountListing (..)
   , VaultToken (..)
   , WritePolicyRequest (..)
   , bootstrapAction
+  , classifyVaultCasOutcome
   , defaultInitRequest
   )
 import Prodbox.Vault.Gate
@@ -1408,6 +1422,52 @@ sampleTier0Child =
                 }
           }
     }
+
+-- | Sprint 1.82: a Tier-0 record whose __named__ fields carry a literal secret
+-- value, for the decode gate that must refuse it. The stand-in value is
+-- unmistakably synthetic (vault_doctrine.md §20.1) and is deliberately built
+-- from the field name so a refusal that leaked it would be unambiguous about
+-- which one.
+poisonTier0 :: [Text.Text] -> ProdboxProjectConfig
+poisonTier0 fields = defaultProjectConfig {parameters = poisonedParams}
+ where
+  base = Tier0.parameters defaultProjectConfig
+  baseAws = Tier0.aws base
+  baseAcme = Tier0.acme base
+  literal name = SecretRefTestPlaintext ("AKIA-LITERAL-CREDENTIAL-" <> name)
+  poisonRequired name original
+    | name `elem` fields = literal name
+    | otherwise = original
+  poisonOptional name original
+    | name `elem` fields = Just (literal name)
+    | otherwise = original
+  poisonedParams =
+    Tier0.ProdboxParameters
+      { Tier0.aws =
+          baseAws
+            { awsCredentialAccessKeyId =
+                poisonRequired "aws.access_key_id" (awsCredentialAccessKeyId baseAws)
+            , awsCredentialSecretAccessKey =
+                poisonRequired "aws.secret_access_key" (awsCredentialSecretAccessKey baseAws)
+            , awsCredentialSessionToken =
+                poisonOptional "aws.session_token" (awsCredentialSessionToken baseAws)
+            }
+      , Tier0.route53 = Tier0.route53 base
+      , Tier0.aws_substrate = Tier0.aws_substrate base
+      , Tier0.ses = Tier0.ses base
+      , Tier0.domain = Tier0.domain base
+      , Tier0.acme =
+          baseAcme
+            { eab_key_id = poisonOptional "acme.eab_key_id" (eab_key_id baseAcme)
+            , eab_hmac_key = poisonOptional "acme.eab_hmac_key" (eab_hmac_key baseAcme)
+            }
+      , Tier0.deployment = Tier0.deployment base
+      , Tier0.capacity = Tier0.capacity base
+      , Tier0.cluster_topology = Tier0.cluster_topology base
+      , Tier0.storage = Tier0.storage base
+      , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
+      , Tier0.components = Tier0.components base
+      }
 
 runtimeMemoryTestBytes :: RuntimeMemory.MemoryTerm -> Natural -> RuntimeMemory.PositiveBytes
 runtimeMemoryTestBytes term value =
@@ -2031,6 +2091,86 @@ unitSuite = do
         , "aws/cert-manager/aws/dns01"
         ]
         assertDedicatedSpec
+    it "Sprint 4.74: a Vault CAS names which of three facts it established" $ do
+      -- Vault answers a lost race and a malformed request with the same status.
+      -- Four call sites classified on the status alone, so a request Vault
+      -- refused was reported as another writer having won — and one of them
+      -- spent an authority-epoch retry budget doing it.
+      classifyVaultCasOutcome (Right 7) `shouldBe` VaultCasApplied 7
+      classifyVaultCasOutcome
+        (Left (HttpStatus 400 "check-and-set parameter did not match the current version"))
+        `shouldBe` VaultCasConflict "check-and-set parameter did not match the current version"
+      classifyVaultCasOutcome
+        (Left (HttpStatus 400 "check-and-set parameter required for this call"))
+        `shouldBe` VaultCasRefused 400 "check-and-set parameter required for this call"
+      classifyVaultCasOutcome (Left (HttpStatus 403 "permission denied"))
+        `shouldBe` VaultCasRefused 403 "permission denied"
+      -- The one arm that must never be reported as a lost race: a write that
+      -- may already have applied.
+      case classifyVaultCasOutcome (Left (HttpTimeout "deadline")) of
+        VaultCasUnobservable _ -> pure ()
+        other -> expectationFailure ("a lost response was classified as " <> show other)
+      case classifyVaultCasOutcome (Left (HttpStatus 500 "internal")) of
+        VaultCasUnobservable _ -> pure ()
+        other -> expectationFailure ("a 500 was classified as " <> show other)
+      -- Vault does not answer a KV CAS with 409 at all; the superseded call
+      -- sites each carried a dead arm claiming it was a conflict.
+      case classifyVaultCasOutcome (Left (HttpStatus 409 "conflict")) of
+        VaultCasUnobservable _ -> pure ()
+        other -> expectationFailure ("a 409 was classified as " <> show other)
+
+    it "Sprint 4.74: a CAS call site that does not classify fails the build" $ do
+      let unclassified = "  written <- vaultKvCasWriteV2 address token mount path cas fields\n"
+          classified = unclassified <> "  pure (classifyVaultCasOutcome written)\n"
+      length
+        ( Prodbox.CheckCode.vaultCasClassificationViolations
+            ("src/Prodbox/Gateway/Daemon.hs", unclassified)
+        )
+        `shouldBe` 1
+      Prodbox.CheckCode.vaultCasClassificationViolations
+        ("src/Prodbox/Gateway/Daemon.hs", classified)
+        `shouldBe` []
+      -- The module that owns the classifier is the one exemption.
+      Prodbox.CheckCode.vaultCasClassificationViolations
+        ("src/Prodbox/Vault/Client.hs", unclassified)
+        `shouldBe` []
+
+    it "Sprint 4.71: a seed write is conditioned on the version it observed" $ do
+      -- The bootstrap fold is a read-modify-write: it unions generated fields
+      -- onto what it read. With an unconditional write, two concurrent
+      -- bootstraps both read the same object and the second silently discarded
+      -- the first's generated field — a lost update no read-back downstream
+      -- would notice, because the object looks well-formed with a field missing.
+      seen <- newIORef []
+      let path = VaultInventory.VaultSecretPath "secret" "keycloak/admin"
+          spec =
+            VaultInventory.VaultSecretObjectSpec
+              path
+              [ VaultInventory.VaultSecretFieldSpec
+                  "password"
+                  (VaultInventory.VaultSecretGenerated "keycloak-admin-password")
+              ]
+          opsFor observation =
+            VaultInventory.VaultSecretBootstrapOps
+              { VaultInventory.vaultSecretBootstrapObserve = const (pure (Right observation))
+              , VaultInventory.vaultSecretBootstrapWrite = \_ expected _ -> do
+                  modifyIORef' seen (++ [expected])
+                  pure (Right ())
+              , VaultInventory.vaultSecretBootstrapGenerate = const (pure "generated")
+              }
+      _ <-
+        VaultInventory.runVaultSecretBootstrapWith
+          (opsFor VaultInventory.VaultSecretObjectAbsent)
+          [spec]
+      _ <-
+        VaultInventory.runVaultSecretBootstrapWith
+          (opsFor (VaultInventory.VaultSecretObjectPresent 9 Map.empty))
+          [spec]
+      -- An absent object writes create-if-absent (Vault's own `cas = 0`); a
+      -- present one writes against exactly the version that was read. The two
+      -- are one call with different evidence rather than two code paths.
+      readIORef seen `shouldReturn` [0, 9]
+
     it "mints a missing Vault KV object once from the seed inventory" $ do
       writesRef <- newIORef []
       let path = VaultInventory.VaultSecretPath "secret" "keycloak/admin"
@@ -2043,9 +2183,11 @@ unitSuite = do
               ]
           ops =
             VaultInventory.VaultSecretBootstrapOps
-              { VaultInventory.vaultSecretBootstrapRead =
-                  const (pure (Left (Prodbox.Http.Client.HttpStatus 404 "missing")))
-              , VaultInventory.vaultSecretBootstrapWrite = \candidate fields -> do
+              { VaultInventory.vaultSecretBootstrapObserve =
+                  const (pure (Right VaultInventory.VaultSecretObjectAbsent))
+              , VaultInventory.vaultSecretBootstrapWrite = \candidate expected fields -> do
+                  -- Sprint 4.71: an absent object is written create-if-absent.
+                  expected `shouldBe` 0
                   modifyIORef' writesRef (++ [(candidate, fields)])
                   pure (Right ())
               , VaultInventory.vaultSecretBootstrapGenerate =
@@ -2087,18 +2229,24 @@ unitSuite = do
               ]
           ops =
             VaultInventory.VaultSecretBootstrapOps
-              { VaultInventory.vaultSecretBootstrapRead =
+              { VaultInventory.vaultSecretBootstrapObserve =
                   const
                     ( pure
                         ( Right
-                            ( Map.fromList
-                                [ ("rootUser", "prodbox-minio-root")
-                                , ("rootPassword", "-unsafe")
-                                ]
+                            ( VaultInventory.VaultSecretObjectPresent
+                                4
+                                ( Map.fromList
+                                    [ ("rootUser", "prodbox-minio-root")
+                                    , ("rootPassword", "-unsafe")
+                                    ]
+                                )
                             )
                         )
                     )
-              , VaultInventory.vaultSecretBootstrapWrite = \candidate fields -> do
+              , VaultInventory.vaultSecretBootstrapWrite = \candidate expected fields -> do
+                  -- The write is conditioned on the version the read observed,
+                  -- so a concurrent writer loses rather than being overwritten.
+                  expected `shouldBe` 4
                   modifyIORef' writesRef (++ [(candidate, fields)])
                   pure (Right ())
               , VaultInventory.vaultSecretBootstrapGenerate =
@@ -2155,9 +2303,18 @@ unitSuite = do
               ]
           ops =
             VaultInventory.VaultSecretBootstrapOps
-              { VaultInventory.vaultSecretBootstrapRead =
-                  const (pure (Right (Map.singleton "username" "keycloak")))
-              , VaultInventory.vaultSecretBootstrapWrite = \candidate fields -> do
+              { VaultInventory.vaultSecretBootstrapObserve =
+                  const
+                    ( pure
+                        ( Right
+                            ( VaultInventory.VaultSecretObjectPresent
+                                2
+                                (Map.singleton "username" "keycloak")
+                            )
+                        )
+                    )
+              , VaultInventory.vaultSecretBootstrapWrite = \candidate expected fields -> do
+                  expected `shouldBe` 2
                   modifyIORef' writesRef (++ [(candidate, fields)])
                   pure (Right ())
               , VaultInventory.vaultSecretBootstrapGenerate =
@@ -2190,8 +2347,9 @@ unitSuite = do
               [VaultInventory.VaultSecretFieldSpec "host" VaultInventory.VaultSecretExternal]
           ops =
             VaultInventory.VaultSecretBootstrapOps
-              { VaultInventory.vaultSecretBootstrapRead = const (pure (Right Map.empty))
-              , VaultInventory.vaultSecretBootstrapWrite = \candidate fields -> do
+              { VaultInventory.vaultSecretBootstrapObserve =
+                  const (pure (Right (VaultInventory.VaultSecretObjectPresent 1 Map.empty)))
+              , VaultInventory.vaultSecretBootstrapWrite = \candidate _expected fields -> do
                   modifyIORef' writesRef (++ [(candidate, fields)])
                   pure (Right ())
               , VaultInventory.vaultSecretBootstrapGenerate = const (pure "generated")
@@ -2432,9 +2590,9 @@ unitSuite = do
                       )
                 , vaultOpsSecretBootstrap =
                     VaultInventory.VaultSecretBootstrapOps
-                      { VaultInventory.vaultSecretBootstrapRead =
-                          const (pure (Left (Prodbox.Http.Client.HttpStatus 404 "missing")))
-                      , VaultInventory.vaultSecretBootstrapWrite = \path fields -> do
+                      { VaultInventory.vaultSecretBootstrapObserve =
+                          const (pure (Right VaultInventory.VaultSecretObjectAbsent))
+                      , VaultInventory.vaultSecretBootstrapWrite = \path _expected fields -> do
                           record ("secret:" <> VaultInventory.vaultSecretPathName path)
                           fields `shouldBe` Map.singleton "password" "generated-password"
                           pure (Right ())
@@ -2532,8 +2690,9 @@ unitSuite = do
                     )
               , vaultOpsSecretBootstrap =
                   VaultInventory.VaultSecretBootstrapOps
-                    { VaultInventory.vaultSecretBootstrapRead = const (pure (Right Map.empty))
-                    , VaultInventory.vaultSecretBootstrapWrite = \_ _ -> pure (Right ())
+                    { VaultInventory.vaultSecretBootstrapObserve =
+                        const (pure (Right VaultInventory.VaultSecretObjectAbsent))
+                    , VaultInventory.vaultSecretBootstrapWrite = \_ _ _ -> pure (Right ())
                     , VaultInventory.vaultSecretBootstrapGenerate = const (pure "generated")
                     }
               }
@@ -3758,6 +3917,52 @@ unitSuite = do
               }
           poisoned = defaultProjectConfig {parameters = poisonedParams}
       tier0CarriesNoSecretValues poisoned `shouldBe` False
+  describe "Sprint 1.82: the Tier-0 secret-free guard is the decode gate" $ do
+    it "names the exact fields carrying a literal value, in record order" $ do
+      -- A Bool cannot say what to fix. The decode refusal quotes these names and
+      -- never the values.
+      tier0SecretValueFields defaultProjectConfig `shouldBe` []
+      tier0SecretValueFields (poisonTier0 ["aws.secret_access_key", "acme.eab_hmac_key"])
+        `shouldBe` ["aws.secret_access_key", "acme.eab_hmac_key"]
+    it "refuses a Tier-0 file carrying a literal aws credential at decode" $
+      withSystemTempDirectory "prodbox-tier0-secret-decode" $ \tmpDir -> do
+        let path = tmpDir </> "prodbox.dhall"
+        writeFile path (Text.unpack (renderProjectConfigDhall (poisonTier0 ["aws.access_key_id"])))
+        decoded <- decodeProjectConfigDhall path
+        case decoded of
+          Right _ -> expectationFailure "expected the decode gate to refuse a literal credential"
+          Left err -> do
+            err `shouldContain` "aws.access_key_id"
+            err `shouldContain` "SecretRef.Vault"
+            -- The refusal must not carry the credential it refused.
+            err `shouldNotContain` "AKIA-LITERAL-CREDENTIAL"
+    it "refuses an acme.eab_* literal, which no local-tier check reached before" $
+      withSystemTempDirectory "prodbox-tier0-secret-eab" $ \tmpDir -> do
+        let path = tmpDir </> "prodbox.dhall"
+        writeFile path (Text.unpack (renderProjectConfigDhall (poisonTier0 ["acme.eab_key_id"])))
+        decoded <- decodeProjectConfigDhall path
+        case decoded of
+          Right _ -> expectationFailure "expected the decode gate to refuse an EAB literal"
+          Left err -> err `shouldContain` "acme.eab_key_id"
+    it "the daemon binary-context loader inherits the refusal" $
+      withSystemTempDirectory "prodbox-tier0-secret-daemon" $ \tmpDir -> do
+        let containerDefault = tmpDir </> "prodbox.dhall"
+            configMapDir = tmpDir </> "no-configmap"
+        writeFile
+          containerDefault
+          (Text.unpack (renderProjectConfigDhall (poisonTier0 ["aws.secret_access_key"])))
+        result <- loadDaemonBinaryContext configMapDir containerDefault
+        case result of
+          Right _ -> expectationFailure "expected the daemon loader to refuse a literal credential"
+          Left err -> err `shouldContain` "aws.secret_access_key"
+    it "a clean generated Tier-0 file still decodes" $
+      withSystemTempDirectory "prodbox-tier0-secret-clean" $ \tmpDir -> do
+        -- The gate must not be satisfiable by refusing everything.
+        let path = tmpDir </> "prodbox.dhall"
+        writeFile path (Text.unpack (renderProjectConfigDhall defaultProjectConfig))
+        decoded <- decodeProjectConfigDhall path
+        fmap Tier0.parameters decoded
+          `shouldBe` Right (Tier0.parameters defaultProjectConfig)
   describe "Tier 0 in-cluster daemon binary context (Sprint 1.40)" $ do
     it "the daemon default is the Daemon-frame variant of the host default" $ do
       -- The in-cluster default reuses the shared non-secret parameters but
@@ -12659,8 +12864,17 @@ unitSuite = do
         readFile
           (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
       pulumiProgram `shouldNotContain` "allowOverwrite"
+      -- Sprint 4.73: this case pinned the batched expression
+      -- `[(NativeRoute53.Upsert, record) | record <- desired]` rather than the
+      -- property that expression carried. The property is that the SES writer
+      -- UPSERTs — so a record retained across a state repair is reconciled over
+      -- rather than collided with — and it survives the move to one typed DNS
+      -- program per coordinate. The assertion now names the ensure arm that
+      -- holds it, on both SES and public-A lanes.
       providerProduction
-        `shouldContain` "[(NativeRoute53.Upsert, record) | record <- desired]"
+        `shouldContain` "dnsBoundaryEnsure = submit NativeRoute53.Upsert"
+      providerProduction
+        `shouldContain` "dnsBoundaryEnsure = change NativeRoute53.Upsert"
 
     it "allows Keycloak egress to the configured SES SMTP port" $ do
       repoRoot <- getCurrentDirectory
@@ -13330,6 +13544,32 @@ unitSuite = do
     it "is silent for the observation decoder, which may mint" $
       targetSinkVersionInternalSourceViolations
         ("src/Prodbox/ControlPlane/TrustedTargetSink.hs", internalImport)
+        `shouldBe` []
+
+    it "Sprint 4.70: fires when an unlisted src module mints a sink record" $
+      -- The record carries the owner nonce and fencing token that make a write
+      -- authoritative. With the constructor public, any module holding raw
+      -- fields could assemble one indistinguishable from an authorized record.
+      targetSinkRecordMinterViolations
+        ( "src/Prodbox/ControlPlane/TargetSecretWorker.hs"
+        , "  record = targetSinkRecordFromStore owner fence generation digest payload\n"
+        )
+        `shouldSatisfy` (not . null)
+
+    it "Sprint 4.70: is silent for the durable decoder, which may rebuild one" $ do
+      -- Two minters state different facts through one shape and no type
+      -- separates them: `recordForIntent` builds what an intent DECIDED to
+      -- write, this rebuilds what the store SAYS it holds. The bound is a named
+      -- path list for exactly that reason.
+      targetSinkRecordMinterViolations
+        ( "src/Prodbox/ControlPlane/TargetMaterialRecordCodec.hs"
+        , "  pure (targetSinkRecordFromStore owner fence generation digest payload)\n"
+        )
+        `shouldBe` []
+      targetSinkRecordMinterViolations
+        ( "src/Prodbox/Lifecycle/TargetCommitIntent.hs"
+        , "targetSinkRecordFromStore owner fence generation digest payload =\n"
+        )
         `shouldBe` []
 
     it "lets the public face cross the boundary for the type but not to mint" $ do
@@ -16312,6 +16552,56 @@ unitSuite = do
         (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
         `shouldSatisfy` isCertScopeError "not covered"
 
+    it "Sprint 1.83: a home-only config carries no AWS served host at all" $ do
+      -- Before 1.83 this state was carried as the empty string, and
+      -- `substratePublicFqdn settings SubstrateAws` returned it as a hostname.
+      let homeOnly =
+            validatedPublicEdgeFor
+              (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+              (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+      fmap (isJust . validatedAwsServedHost) homeOnly `shouldBe` Right False
+      fmap (fqdnText . servedHostFqdn . validatedHomeServedHost) homeOnly
+        `shouldBe` Right "test.resolvefintech.com"
+    it "Sprint 1.83: an AWS-configured config carries the subzone served host" $ do
+      let withSubzone =
+            validatedPublicEdgeFor
+              (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+              ( AwsSubstrateSection
+                  { hosted_zone_id = "Z123"
+                  , subzone_name = "aws.test.resolvefintech.com"
+                  }
+              )
+      fmap (fmap (fqdnText . servedHostFqdn) . validatedAwsServedHost) withSubzone
+        `shouldBe` Right (Just "aws.test.resolvefintech.com")
+    it "Sprint 1.83: the carried scope set is the parse, not a second derivation" $ do
+      -- The property that matters: what consumers now read is exactly what the
+      -- discarded parse produced, so threading it cannot have changed behavior.
+      let settings = testValidatedSettings ".data"
+          config = validatedConfig settings
+      requireSubstrateCertScopeSet settings SubstrateAws
+        `shouldBe` certScopeSetForServedHost
+          (domain config)
+          (aws_substrate config)
+          "aws.test.resolvefintech.com"
+      requireSubstrateCertScopeSet settings SubstrateHomeLocal
+        `shouldBe` certScopeSetForServedHost
+          (domain config)
+          (aws_substrate config)
+          "test.resolvefintech.com"
+    it "Sprint 1.83: the AWS served host is a refusal, never an empty hostname" $ do
+      let homeOnlyConfig =
+            defaultConfigFile
+              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""}
+              }
+      validated <- validateConfig "." homeOnlyConfig
+      case validated of
+        Left err -> expectationFailure ("expected a home-only config to validate, got: " ++ err)
+        Right settings -> do
+          substrateServedHost settings SubstrateAws `shouldSatisfy` isNothing
+          requireSubstratePublicFqdn settings SubstrateAws
+            `shouldSatisfy` either (const True) (const False)
+          requireSubstratePublicFqdn settings SubstrateHomeLocal
+            `shouldBe` Right (Text.unpack (demo_fqdn (domain homeOnlyConfig)))
     it "Sprint 2.35: certDnsNamesForServedHost defaults to the served host (behavior-identical)" $
       certDnsNamesForServedHost
         (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
@@ -17181,45 +17471,59 @@ expectTextField payload fieldName expected =
 testValidatedSettings :: FilePath -> ValidatedSettings
 testValidatedSettings manualRoot =
   ValidatedSettings
-    { validatedConfig =
-        defaultConfigFile
-          { aws =
-              AwsCredentialsRef
-                { awsCredentialAccessKeyId =
-                    SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
-                , awsCredentialSecretAccessKey =
-                    SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
-                , awsCredentialSessionToken =
-                    Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
-                , awsCredentialRegion = "us-east-1"
-                }
-          , route53 = Route53Section {zone_id = "Z1234567890ABC"}
-          , aws_substrate =
-              AwsSubstrateSection
-                { hosted_zone_id = "ZAWSSUBZONE123"
-                , subzone_name = "aws.test.resolvefintech.com"
-                }
-          , domain =
-              DomainSection
-                { demo_fqdn = "test.resolvefintech.com"
-                , demo_ttl = 60
-                , cert_scopes = []
-                }
-          , deployment = validDeploymentSection
-          , storage = StorageSection {manual_pv_host_root = ".data"}
-          , pulumi_state_backend =
-              PulumiStateBackendSection
-                { psbBucketName = "prodbox-retained"
-                , psbRegion = "ca-central-1"
-                , psbKeyPrefix = "pulumi"
-                }
-          }
+    { validatedConfig = testValidatedConfigFile
     , resolvedManualPvHostRoot = manualRoot
     , validatedAllocatedPlan =
         either
           (error . Allocation.renderCompileError)
           id
           (Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
+    , -- Sprint 1.83: derived from the same config through the same builder
+      -- production uses, so the fixture cannot carry a public-edge projection
+      -- that disagrees with its own config.
+      validatedPublicEdge =
+        either
+          error
+          id
+          ( validatedPublicEdgeFor
+              (domain testValidatedConfigFile)
+              (aws_substrate testValidatedConfigFile)
+          )
+    }
+
+testValidatedConfigFile :: ConfigFile
+testValidatedConfigFile =
+  defaultConfigFile
+    { aws =
+        AwsCredentialsRef
+          { awsCredentialAccessKeyId =
+              SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "access_key_id")
+          , awsCredentialSecretAccessKey =
+              SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
+          , awsCredentialSessionToken =
+              Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
+          , awsCredentialRegion = "us-east-1"
+          }
+    , route53 = Route53Section {zone_id = "Z1234567890ABC"}
+    , aws_substrate =
+        AwsSubstrateSection
+          { hosted_zone_id = "ZAWSSUBZONE123"
+          , subzone_name = "aws.test.resolvefintech.com"
+          }
+    , domain =
+        DomainSection
+          { demo_fqdn = "test.resolvefintech.com"
+          , demo_ttl = 60
+          , cert_scopes = []
+          }
+    , deployment = validDeploymentSection
+    , storage = StorageSection {manual_pv_host_root = ".data"}
+    , pulumi_state_backend =
+        PulumiStateBackendSection
+          { psbBucketName = "prodbox-retained"
+          , psbRegion = "ca-central-1"
+          , psbKeyPrefix = "pulumi"
+          }
     }
 
 sampleAwsSetupInput :: AwsSetupInput

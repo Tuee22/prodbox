@@ -9,6 +9,7 @@ import Prodbox.ControlPlane.MigrationEndpoint
   , migrationEndpointSummary
   , serveMigrationApply
   )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationBinding
   , MigrationCommand (..)
@@ -41,30 +42,30 @@ controlPlaneMigrationEndpointSuite =
     it "serves an accepted command as 200 and mutates once" $ do
       repository <- freshRepository
       result <- serveMigrationApply 4096 (fst repository) (encodeMigrationCommand (VerifyShadow digest))
-      migrationEndpointHttpStatus result `shouldBe` 200
+      migrationEndpointHttpStatus result `shouldBe` ReplyOk
       migrationEndpointSummary result `shouldBe` "migration-accepted"
       readIORef (snd repository) `shouldReturn` 1
     it "reports a well-formed but refused command as 409 without mutating" $ do
       repository <- freshRepository
       result <- serveMigrationApply 4096 (fst repository) (encodeMigrationCommand RequestLegacyRollback)
-      migrationEndpointHttpStatus result `shouldBe` 409
+      migrationEndpointHttpStatus result `shouldBe` ReplyConflict
       migrationEndpointSummary result `shouldBe` "migration-refused:legacy-rollback-forbidden"
       readIORef (snd repository) `shouldReturn` 0
     it "rejects a malformed request body as 400 without touching the repository" $ do
       repository <- freshRepository
       result <- serveMigrationApply 4096 (fst repository) "garbage"
-      migrationEndpointHttpStatus result `shouldBe` 400
+      migrationEndpointHttpStatus result `shouldBe` ReplyBadRequest
       migrationEndpointSummary result `shouldBe` "migration-bad-request:invalid"
       readIORef (snd repository) `shouldReturn` 0
     it "rejects an oversized request body as 400" $ do
       repository <- freshRepository
       result <- serveMigrationApply 1 (fst repository) (encodeMigrationCommand (VerifyShadow digest))
-      migrationEndpointHttpStatus result `shouldBe` 400
+      migrationEndpointHttpStatus result `shouldBe` ReplyBadRequest
       migrationEndpointSummary result `shouldBe` "migration-bad-request:too-large"
     it "surfaces an unobservable retained read as 503" $ do
       result <-
         serveMigrationApply 4096 readFailingRepository (encodeMigrationCommand (VerifyShadow digest))
-      migrationEndpointHttpStatus result `shouldBe` 503
+      migrationEndpointHttpStatus result `shouldBe` ReplyServiceUnavailable
       migrationEndpointSummary result `shouldBe` "migration-read-failed"
     it "surfaces a lost compare-and-swap race as 409" $ do
       stateRef <- newIORef Nothing
@@ -74,7 +75,7 @@ controlPlaneMigrationEndpointSuite =
           4096
           (inMemoryRepository stateRef revisionRef True)
           (encodeMigrationCommand (VerifyShadow digest))
-      migrationEndpointHttpStatus result `shouldBe` 409
+      migrationEndpointHttpStatus result `shouldBe` ReplyConflict
       migrationEndpointSummary result `shouldBe` "migration-concurrent-write"
     it "drives the complete activation sequence to an accepted terminal write" $ do
       repository <- freshRepository
@@ -82,7 +83,7 @@ controlPlaneMigrationEndpointSuite =
         mapM
           (serveMigrationApply 4096 (fst repository) . encodeMigrationCommand)
           activationSequence
-      fmap migrationEndpointHttpStatus results `shouldSatisfy` all (== 200)
+      fmap migrationEndpointHttpStatus results `shouldSatisfy` all (== ReplyOk)
       migrationEndpointSummary (last results) `shouldBe` "migration-accepted"
  where
   digest = fromJust (mkMigrationDigest "endpoint-v1")

@@ -15,7 +15,6 @@ module Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
 where
 
 import Codec.Serialise (Serialise)
-import Control.Monad qualified
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 qualified as Base64
@@ -54,9 +53,13 @@ import Prodbox.ControlPlane.TargetSecretWorkerRuntime
   ( targetSecretWorkerTrustPath
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Vault.Client
   ( KvV2Cas (KvV2Cas)
   , KvV2VersionedSecret (..)
+  , VaultCasOutcome (..)
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
@@ -137,13 +140,13 @@ responseFromInstall result = case result of
  where
   refused = TargetAuthorityTrustRefusedResponse
 
-responseStatus :: TargetAuthorityTrustResponse -> Int
+responseStatus :: TargetAuthorityTrustResponse -> ReplyStatus
 responseStatus response = case response of
-  TargetAuthorityTrustInstalledResponse _ -> 200
-  TargetAuthorityTrustAlreadyInstalledResponse _ -> 200
-  TargetAuthorityTrustRecoveredResponse _ -> 200
-  TargetAuthorityTrustRefusedResponse _ -> 409
-  TargetAuthorityTrustUnavailableResponse _ -> 503
+  TargetAuthorityTrustInstalledResponse _ -> ReplyOk
+  TargetAuthorityTrustAlreadyInstalledResponse _ -> ReplyOk
+  TargetAuthorityTrustRecoveredResponse _ -> ReplyOk
+  TargetAuthorityTrustRefusedResponse _ -> ReplyConflict
+  TargetAuthorityTrustUnavailableResponse _ -> ReplyServiceUnavailable
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
@@ -196,7 +199,11 @@ vaultTargetAuthorityTrustRepository localAgentIdentity session =
               (targetSecretWorkerTrustPath target)
               (KvV2Cas expected)
               (Map.singleton "accepted_authority" (encodeTrustText accepted))
-        pure (first (Text.pack . renderHttpError) (Control.Monad.void result))
+        -- Sprint 4.74: an accepted-Authority trust rotation that lost a race
+        -- must not read the same as one Vault never answered.
+        pure $ case classifyVaultCasOutcome result of
+          VaultCasApplied _ -> Right ()
+          failed -> Left (renderVaultCasOutcome failed)
 
   decodeFields fields = do
     encodedText <-

@@ -7,8 +7,15 @@ module DnsOwnerAuthoritySuite (dnsOwnerAuthoritySuite) where
 
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isNothing)
+import Data.Text qualified as Text
 import Prodbox.CheckCode (dnsOwnerAuthorityInternalSourceViolations)
+import Prodbox.ControlPlane.ProviderProduction
+  ( providerDnsOwnerAuthority
+  , publicARecordProgramOutcome
+  , sesDnsOwnerAuthority
+  , sesDnsProgramOutcome
+  )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.DnsRecord
 import Prodbox.Runtime.Role (RuntimeRole (..), allRuntimeRoles)
@@ -23,12 +30,74 @@ dnsOwnerAuthoritySuite =
             [ (role, substrate, authorizedDnsOwner authority)
             | role <- allRuntimeRoles
             , substrate <- allSubstrates
-            , Just authority <- [dnsOwnerAuthorityForProcess role substrate]
+            , authority <- dnsOwnerAuthoritiesForProcess role substrate
             ]
+      -- Sprint 4.73: the Provider Worker holds two lanes, not one. The public A
+      -- record is per-run and the SES records live in the operator's retained
+      -- parent zone, so one owner would have had to be wrong about the
+      -- lifecycle class and about which record types the lane may write.
       minted
         `shouldBe` [ (GatewayRuntime, SubstrateHomeLocal, HomeGatewayDnsOwner)
                    , (ProviderWorkerRuntime, SubstrateAws, AwsLifecycleProviderDnsOwner)
+                   , (ProviderWorkerRuntime, SubstrateAws, AwsSesDnsOwner)
                    ]
+
+    it "Sprint 4.73: a lane a process does not hold is still unmintable" $ do
+      -- Widening the range to a list did not widen who may hold a lane. Naming
+      -- an owner remains different from holding one.
+      dnsOwnerAuthorityForProcess ProviderWorkerRuntime SubstrateAws HomeGatewayDnsOwner
+        `shouldSatisfy` isNothing
+      dnsOwnerAuthorityForProcess GatewayRuntime SubstrateHomeLocal AwsSesDnsOwner
+        `shouldSatisfy` isNothing
+      dnsOwnerAuthorityForProcess GatewayRuntime SubstrateAws AwsLifecycleProviderDnsOwner
+        `shouldSatisfy` isNothing
+      fmap
+        authorizedDnsOwner
+        (dnsOwnerAuthorityForProcess ProviderWorkerRuntime SubstrateAws AwsSesDnsOwner)
+        `shouldBe` Just AwsSesDnsOwner
+
+    it "Sprint 4.73: the SES writer holds the SES lane and names its refusals" $ do
+      authorizedDnsOwner sesDnsOwnerAuthority `shouldBe` AwsSesDnsOwner
+      sesDnsProgramOutcome sesTxt DnsEnsureAlreadyConverged `shouldBe` Right ()
+      sesDnsProgramOutcome sesTxt DnsEnsureAppliedAndReadBack `shouldBe` Right ()
+      case sesDnsProgramOutcome
+        sesTxt
+        (DnsProgramOwnerUnauthorized AwsLifecycleProviderDnsOwner AwsSesDnsOwner) of
+        Right () -> expectationFailure "an unauthorized owner was reported as success"
+        Left detail -> do
+          -- Five lanes run in sequence, so the refusal has to say which record
+          -- provoked it as well as which refusal it was.
+          unpackText detail `shouldContain` "_amazonses.example.com"
+          unpackText detail `shouldContain` "AwsLifecycleProviderDnsOwner"
+      case sesDnsProgramOutcome sesTxt (DnsProgramPostconditionFailed DnsRecordMissing) of
+        Right () -> expectationFailure "a failed read-back was reported as success"
+        Left detail -> unpackText detail `shouldContain` "read-back"
+
+    it "Sprint 4.72: the Provider Worker's production writer holds the AWS owner" $ do
+      -- Until this sprint `DnsRecordProgram` had NO production caller at all —
+      -- it was exercised only by this suite and one other, so the guarantee it
+      -- exists to provide bounded nothing that actually runs. The public A
+      -- record writer now consumes the same compiled authority the minter
+      -- produces for this role, and there is no second owner it could name.
+      authorizedDnsOwner providerDnsOwnerAuthority `shouldBe` AwsLifecycleProviderDnsOwner
+
+    it "Sprint 4.72: the writer distinguishes both ownership refusals from success" $ do
+      -- A refusal reaching the provider lane as a bare `Left` would lose which
+      -- of the program's refusals occurred, and the two ownership arms are the
+      -- entire reason for routing through it.
+      publicARecordProgramOutcome DnsEnsureAlreadyConverged `shouldBe` Right ()
+      publicARecordProgramOutcome DnsEnsureAppliedAndReadBack `shouldBe` Right ()
+      case publicARecordProgramOutcome
+        (DnsProgramOwnerUnauthorized HomeGatewayDnsOwner AwsLifecycleProviderDnsOwner) of
+        Right () -> expectationFailure "an unauthorized owner was reported as success"
+        Left detail -> unpackText detail `shouldContain` "HomeGatewayDnsOwner"
+      case publicARecordProgramOutcome
+        (DnsProgramOwnerMismatch HomeGatewayDnsOwner AwsLifecycleProviderDnsOwner) of
+        Right () -> expectationFailure "an owner mismatch was reported as success"
+        Left detail -> unpackText detail `shouldContain` "mismatch"
+      case publicARecordProgramOutcome (DnsProgramPostconditionFailed DnsRecordMissing) of
+        Right () -> expectationFailure "a failed read-back was reported as success"
+        Left detail -> unpackText detail `shouldContain` "read-back"
 
     it "covers every role/substrate pair, so a new role cannot default to holding nothing" $ do
       let pairs = [(role, substrate) | role <- allRuntimeRoles, substrate <- allSubstrates]
@@ -37,9 +106,9 @@ dnsOwnerAuthoritySuite =
 
     it "puts neither cert-manager owner in the minter's range" $ do
       let reachable =
-            mapMaybe
-              (fmap authorizedDnsOwner . uncurry dnsOwnerAuthorityForProcess)
-              [(role, substrate) | role <- allRuntimeRoles, substrate <- allSubstrates]
+            map authorizedDnsOwner
+              . concatMap (uncurry dnsOwnerAuthoritiesForProcess)
+              $ [(role, substrate) | role <- allRuntimeRoles, substrate <- allSubstrates]
       filter (`elem` [HomeCertManagerDns01Owner, AwsCertManagerDns01Owner]) reachable
         `shouldBe` []
       -- Stated the other way round, so a new owner constructor shows up here.
@@ -60,6 +129,32 @@ dnsOwnerAuthoritySuite =
       result
         `shouldBe` DnsProgramOwnerUnauthorized HomeGatewayDnsOwner AwsLifecycleProviderDnsOwner
       readIORef calls `shouldReturn` []
+
+    it "Sprint 3.33: refuses an ensure whose held authority is not the coordinate's owner" $ do
+      calls <- newIORef ([] :: [String])
+      observations <- newIORef [DnsRecordMissing, DnsRecordObserved recordSet]
+      -- Program and boundary agree exactly, so the only thing that can refuse is
+      -- the running process's own authority — and it refuses BEFORE the first
+      -- observe, so an unauthorized writer never reaches Route 53 at all.
+      result <-
+        runDnsRecordProgram
+          (boundary calls observations awsA)
+          awsA
+          (EnsureDnsRecord homeGatewayAuthority recordSet)
+      result
+        `shouldBe` DnsProgramOwnerUnauthorized HomeGatewayDnsOwner AwsLifecycleProviderDnsOwner
+      readIORef calls `shouldReturn` []
+
+    it "Sprint 3.33: ensures under the held authority and still reads back exactly" $ do
+      calls <- newIORef ([] :: [String])
+      observations <- newIORef [DnsRecordMissing, DnsRecordObserved recordSet]
+      result <-
+        runDnsRecordProgram
+          (boundary calls observations homeA)
+          homeA
+          (EnsureDnsRecord homeGatewayAuthority recordSet)
+      result `shouldBe` DnsEnsureAppliedAndReadBack
+      readIORef calls `shouldReturn` ["observe", "ensure", "observe"]
 
     it "destroys under the held authority and still proves exact absence" $ do
       calls <- newIORef ([] :: [String])
@@ -108,15 +203,18 @@ dnsOwnerAuthoritySuite =
         `shouldBe` []
 
 mints :: RuntimeRole -> Substrate -> Bool
-mints role substrate = case dnsOwnerAuthorityForProcess role substrate of
-  Just _ -> True
-  Nothing -> False
+mints role substrate = not (null (dnsOwnerAuthoritiesForProcess role substrate))
 
 homeGatewayAuthority :: DnsOwnerAuthority
 homeGatewayAuthority =
-  case dnsOwnerAuthorityForProcess GatewayRuntime SubstrateHomeLocal of
+  case dnsOwnerAuthorityForProcess GatewayRuntime SubstrateHomeLocal HomeGatewayDnsOwner of
     Just authority -> authority
     Nothing -> error "the home gateway holds its own DNS ownership"
+
+sesTxt :: DnsRecordCoordinate
+sesTxt =
+  accepted
+    (mkSesVerificationCoordinate account zone "example.com" AwsSesDnsOwner epoch)
 
 boundary
   :: IORef [String]
@@ -167,3 +265,6 @@ accepted :: (Show err) => Either err value -> value
 accepted result = case result of
   Right value -> value
   Left err -> error (show err)
+
+unpackText :: Text.Text -> String
+unpackText = Text.unpack

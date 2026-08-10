@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | Sprint 1.39: __Tier 0__ — the binary-owned, project-local non-secret
@@ -69,6 +70,7 @@ module Prodbox.Config.Tier0
 
     -- * Secret-free guard (pure)
   , tier0CarriesNoSecretValues
+  , tier0SecretValueFields
 
     -- * Write side (IO)
   , writeTier0
@@ -418,8 +420,22 @@ daemonConfigMapTier0Path configDir = configDir <> "/prodbox.dhall"
 
 -- | Decode a Tier-0 @prodbox.dhall@ file to a 'ProdboxProjectConfig', wrapping
 -- any decode failure as a @Left String@ rather than an exception (mirrors the
--- daemon's other Dhall loaders). Pure-by-construction: the Tier-0 record carries
--- no secret values, so no SecretRef resolution happens here.
+-- daemon's other Dhall loaders). No SecretRef resolution happens here.
+--
+-- Sprint 1.82: \"the Tier-0 record carries no secret values\" used to be an
+-- assertion in this Haddock with nothing behind it on this path.
+-- 'tier0CarriesNoSecretValues' existed, was exported, was documented as the
+-- guard that rejects a record carrying a literal credential — and had zero
+-- production call sites, so it guarded nothing. It is now the last step of the
+-- one Tier-0 decode gate, which is where the sentence above becomes true.
+--
+-- The bound is worth stating rather than implying. The operational @aws.*@ arm
+-- was already refused on the CLI path by
+-- 'Prodbox.Settings.validateAwsCredentialsRef', but that runs over the decoded
+-- @parameters@ in 'Prodbox.Settings.validateConfig' and never over this record,
+-- so the in-cluster daemon binary context ('loadDaemonBinaryContext') and the
+-- Sprint 0.24 drift gate both reached a full Tier-0 record with no such check at
+-- all — and @acme.eab_*@ had no local-tier check on any path.
 decodeProjectConfigDhall :: FilePath -> IO (Either String ProdboxProjectConfig)
 decodeProjectConfigDhall path = do
   result <- try (Dhall.inputFile Dhall.auto path) :: IO (Either SomeException ProdboxProjectConfig)
@@ -431,7 +447,24 @@ decodeProjectConfigDhall path = do
             ++ "`: "
             ++ displayException err
         )
-    Right config -> Right config
+    Right config -> case tier0SecretValueFields config of
+      [] -> Right config
+      fields -> Left (tier0SecretValueRefusal path fields)
+
+-- | The decode refusal for a Tier-0 record carrying a literal secret value.
+--
+-- It names the offending fields and never the values: the whole reason this
+-- refusal exists is that those bytes must not travel, and a diagnostic that
+-- quoted them would put a credential into every log that captured the failure
+-- (config_doctrine.md §10, vault_doctrine.md §20).
+tier0SecretValueRefusal :: FilePath -> [Text] -> String
+tier0SecretValueRefusal path fields =
+  "Tier-0 prodbox.dhall `"
+    ++ path
+    ++ "` carries literal secret values in "
+    ++ Text.unpack (Text.intercalate ", " fields)
+    ++ ". Tier-0 is non-secret: every sensitive field must be a "
+    ++ "SecretRef.Vault pointer. Regenerate it with `prodbox config generate`."
 
 -- | Load the gateway daemon's Tier-0 binary context using hostbootstrap's
 -- per-frame context-init pattern (Sprint 1.40, config_doctrine.md §0):
@@ -512,24 +545,53 @@ toBasicsParentRef ref =
 -- parameters. The Sprint 1.39 secret-free unit test asserts it; a record with a
 -- literal credential is rejected (config_doctrine.md §10).
 tier0CarriesNoSecretValues :: ProdboxProjectConfig -> Bool
-tier0CarriesNoSecretValues config =
-  not (any secretRefIsValue (tier0SecretRefs (parameters config)))
+tier0CarriesNoSecretValues = null . tier0SecretValueFields
 
--- | Every 'SecretRef' carried anywhere in the Tier-0 parameters — the operational
--- @aws.*@ credential pointers and the optional @acme.eab_*@ pointers.
-tier0SecretRefs :: ProdboxParameters -> [SecretRef]
-tier0SecretRefs params =
-  [ awsCredentialAccessKeyId awsRefs
-  , awsCredentialSecretAccessKey awsRefs
-  ]
-    ++ catMaybes
-      [ awsCredentialSessionToken awsRefs
-      , Settings.eab_key_id acmeSection
-      , Settings.eab_hmac_key acmeSection
-      ]
- where
-  awsRefs = aws params
-  acmeSection = acme params
+-- | The dotted Tier-0 field names carrying a literal secret __value__, in record
+-- order. Empty is the only admissible state; the list exists so the decode gate
+-- can name what it refused rather than reporting that something, somewhere, was
+-- a literal.
+--
+-- Sprint 1.82.
+tier0SecretValueFields :: ProdboxProjectConfig -> [Text]
+tier0SecretValueFields config =
+  [name | (name, ref) <- tier0SecretRefs (parameters config), secretRefIsValue ref]
+
+-- | Every 'SecretRef' carried anywhere in the Tier-0 parameters, paired with the
+-- dotted field name it came from.
+--
+-- Sprint 1.82: this is a __positional__ constructor pattern for the same reason
+-- 'Prodbox.Settings.validateLocalConfig' is (Sprint 1.81). As a list of
+-- accessors it never mentioned the record, so a new section carrying a
+-- 'SecretRef' would have been omitted silently and the guard would have kept
+-- returning 'True' about a field it could not see. The arity is now a compile
+-- error at the one place that must decide whether a new section can carry a
+-- secret value. Sections bound with a leading underscore carry no 'SecretRef'
+-- today; that is a decision recorded here, not an omission.
+tier0SecretRefs :: ProdboxParameters -> [(Text, SecretRef)]
+tier0SecretRefs
+  ( ProdboxParameters
+      awsSection
+      _route53Section
+      _awsSubstrateSection
+      _sesSection
+      _domainSection
+      acmeSection
+      _deploymentSection
+      _capacitySection
+      _clusterTopologySection
+      _storageSection
+      _pulumiStateBackendSection
+      _componentNodes
+    ) =
+    [ ("aws.access_key_id", awsCredentialAccessKeyId awsSection)
+    , ("aws.secret_access_key", awsCredentialSecretAccessKey awsSection)
+    ]
+      ++ catMaybes
+        [ ("aws.session_token",) <$> awsCredentialSessionToken awsSection
+        , ("acme.eab_key_id",) <$> Settings.eab_key_id acmeSection
+        , ("acme.eab_hmac_key",) <$> Settings.eab_hmac_key acmeSection
+        ]
 
 -- | 'True' for a 'SecretRef' arm that carries a literal secret __value__ (only
 -- 'SecretRefTestPlaintext'). 'SecretRefVault' \/ 'SecretRefTransitKey' \/

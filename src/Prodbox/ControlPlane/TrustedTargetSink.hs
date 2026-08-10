@@ -16,15 +16,10 @@ module Prodbox.ControlPlane.TrustedTargetSink
   )
 where
 
-import Control.Monad (void)
-import Data.Bifunctor (first)
-import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.TargetMaterialRecordCodec
   ( targetMaterialRecordFromVaultFields
-  , targetMaterialRecordToVaultFields
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretPayload
@@ -37,21 +32,13 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , targetSecretSinkVaultMount
   )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( TargetSinkCasAdapter (..)
-  , TargetSinkCasRequest (..)
-  , TargetSinkCasResult (..)
-  , TargetSinkObservation (..)
-  , TargetSinkRecord (..)
-  , TargetSinkVersion
-  , targetSinkVersionValue
+  ( TargetSinkObservation (..)
   )
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
   )
 import Prodbox.Vault.Client
-  ( KvV2Cas (..)
-  , KvV2VersionedSecret (..)
-  , vaultKvCasWriteV2
+  ( KvV2VersionedSecret (..)
   , vaultKvReadVersionedV2
   )
 import Prodbox.Vault.Session
@@ -148,8 +135,3 @@ decodeVaultTargetObservation sink versioned = do
     maybe (Left "target sink is outside the compiled registry") Right (targetSecretIdForSink sink)
   record <- targetMaterialRecordFromVaultFields target (kvV2VersionedSecretData versioned)
   pure (TargetSinkObserved version record)
-
-encodeVaultTargetRecord
-  :: TargetSinkRecord TargetSecretPayload
-  -> Either Text (Map Text Text)
-encodeVaultTargetRecord = targetMaterialRecordToVaultFields

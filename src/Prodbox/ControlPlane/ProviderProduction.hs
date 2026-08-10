@@ -9,6 +9,10 @@
 -- configuration constructors.
 module Prodbox.ControlPlane.ProviderProduction
   ( ProviderProductionSession
+  , providerDnsOwnerAuthority
+  , publicARecordProgramOutcome
+  , sesDnsOwnerAuthority
+  , sesDnsProgramOutcome
   , providerProductionNarrowSession
   , providerProductionCapabilities
   , providerProductionReady
@@ -27,11 +31,15 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -40,6 +48,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime, utcTimeToPOSIXSeconds)
 import Data.Time.Format (defaultTimeLocale, parseTimeM)
 import Data.Vector qualified as Vector
 import Numeric (showHex)
+import Numeric.Natural (Natural)
 import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
 import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
 import Prodbox.Aws.Native.Wire (httpSend)
@@ -61,6 +70,41 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderReadOnly (..)
   )
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
+import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.DnsRecord
+  ( AwsAccountId
+  , DnsCoordinateError
+  , DnsOwnerAuthority
+  , DnsProgramResult (..)
+  , DnsRecordBoundary (..)
+  , DnsRecordCoordinate
+  , DnsRecordObservation (..)
+  , DnsRecordOwner (AwsLifecycleProviderDnsOwner, AwsSesDnsOwner)
+  , DnsRecordProgram (EnsureDnsRecord)
+  , DnsRecordSet
+  , DnsRecordType (DnsRecordA, DnsRecordCname, DnsRecordMx, DnsRecordTxt)
+  , HostedZoneId
+  , OwnershipEpoch
+  , authorizedDnsOwner
+  , dnsCoordinateName
+  , dnsCoordinateType
+  , dnsOwnerAuthorityForProcess
+  , dnsRecordSetValues
+  , mkAwsAccountId
+  , mkDnsRecordSet
+  , mkDnsRecordValue
+  , mkHostedZoneId
+  , mkOwnershipEpoch
+  , mkPublicARecordCoordinate
+  , mkSesDkimCoordinate
+  , mkSesInboundMxCoordinate
+  , mkSesVerificationCoordinate
+  , runDnsRecordProgram
+  , sesDkimRecordName
+  , sesInboundMxRecordName
+  , sesVerificationRecordName
+  )
+import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordType)
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
@@ -104,13 +148,16 @@ import Prodbox.Pulumi.EncryptedBackend
   , withAuthenticatedObservedDecryptedStackEnvironment
   )
 import Prodbox.Result (Result (..))
-import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Runtime.Role
+  ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
+  )
 import Prodbox.Settings (Credentials (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Substrate (Substrate (SubstrateAws))
 import Prodbox.Vault.Client (vaultKvReadV2)
 import Prodbox.Vault.Session
   ( VaultSession
@@ -126,13 +173,19 @@ data ProviderProductionSession = ProviderProductionSession
   { productionSessionCredentials :: !Credentials
   , productionSessionAuthorityTransport
       :: !(AuthenticatedClientTransport 'LifecycleAuthorityRuntime)
+  , productionSessionAuthorityEpoch :: !(IO (Either Text AuthorityEpoch))
+  -- ^ Sprint 4.72: the retained Authority epoch this process is acting
+  -- under, read on demand. A DNS coordinate binds an ownership generation,
+  -- and the only truthful source of one is the Authority the role already
+  -- trusts — not a number carried in the request.
   }
 
 providerProductionNarrowSession
   :: VaultSession
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either Text AuthorityEpoch)
   -> ProviderNarrowSessionRunner IO ProviderProductionSession
-providerProductionNarrowSession vaultSession authorityTransport =
+providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpoch =
   ProviderNarrowSessionRunner
     { withProviderNarrowSession = \_intent _deadline action -> do
         credentials <- readProviderCredentials vaultSession
@@ -143,6 +196,7 @@ providerProductionNarrowSession vaultSession authorityTransport =
               ProviderProductionSession
                 { productionSessionCredentials = resolved
                 , productionSessionAuthorityTransport = authorityTransport
+                , productionSessionAuthorityEpoch = readAuthorityEpoch
                 }
     }
 
@@ -975,28 +1029,191 @@ observePublicARecord session ref = case route53ClientForSession session of
               then ProviderEffectSatisfied evidence
               else ProviderEffectNeedsApply evidence
 
+-- | Sprint 4.72: the public A record is written through the typed DNS program.
+--
+-- The superseded body called @changeResourceRecordSets@ directly, so it carried
+-- no owner value at all — and until this sprint __@DnsRecordProgram@ had no
+-- production caller whatsoever__, which makes the claim it exists to support
+-- narrower than it looked: it was exercised only by two unit suites. Routing
+-- this writer through it is what makes the program load-bearing for the first
+-- time, the same defect shape Sprint @1.82@ closed for the Tier-0 secret guard.
+--
+-- The coordinate's two non-request facts are __observed rather than asserted__.
+-- The AWS account comes from @sts get-caller-identity@ — the account this
+-- process is actually acting in — and the ownership epoch from the retained
+-- Authority epoch the role already reads. Carrying either in the intent would
+-- let a request /claim/ an account; observing them proves one.
 applyPublicARecord
   :: ProviderProductionSession -> PublicARecordRef -> IO (Either Text ())
 applyPublicARecord session ref = case route53ClientForSession session of
   Left detail -> pure (Left detail)
   Right client -> do
+    prepared <- preparePublicARecordProgram session ref
+    case prepared of
+      Left detail -> pure (Left detail)
+      Right (coordinate, values) -> do
+        outcome <-
+          runDnsRecordProgram
+            (publicARecordDnsBoundary client coordinate ref)
+            coordinate
+            (EnsureDnsRecord providerDnsOwnerAuthority values)
+        pure (publicARecordProgramOutcome outcome)
+
+-- | The per-run public A-record authority this role holds.
+--
+-- @dnsOwnerAuthorityForProcess@ is total over @RuntimeRole \u00d7 Substrate@ and
+-- the table decides which lanes the pair holds, so the Provider Worker cannot
+-- name a lane it does not own — naming an owner and holding one are different
+-- things ("Prodbox.Lifecycle.DnsRecord.Owner").
+providerDnsOwnerAuthority :: DnsOwnerAuthority
+providerDnsOwnerAuthority = heldDnsOwnerAuthority AwsLifecycleProviderDnsOwner
+
+-- | The long-lived SES authority this role holds.
+--
+-- Sprint @4.73@: a separate lane rather than a second use of the one above,
+-- because an owner decides the lifecycle class and the admissible record types,
+-- and the SES records differ from the public A record on both.
+sesDnsOwnerAuthority :: DnsOwnerAuthority
+sesDnsOwnerAuthority = heldDnsOwnerAuthority AwsSesDnsOwner
+
+heldDnsOwnerAuthority :: DnsRecordOwner -> DnsOwnerAuthority
+heldDnsOwnerAuthority owner =
+  case dnsOwnerAuthorityForProcess ProviderWorkerRuntime SubstrateAws owner of
+    Just authority -> authority
+    Nothing ->
+      -- Unreachable: the minter's table is written out pair by pair and both
+      -- lanes this module names are listed beside this pair. Adding a role or a
+      -- substrate is a compile error there, not a silent `Nothing` here.
+      error ("the Provider Worker holds no AWS DNS ownership for " <> show owner)
+
+preparePublicARecordProgram
+  :: ProviderProductionSession
+  -> PublicARecordRef
+  -> IO (Either Text (DnsRecordCoordinate, DnsRecordSet))
+preparePublicARecordProgram session ref = do
+  accountResult <- observeProviderAwsAccountId session
+  case accountResult of
+    Left detail -> pure (Left detail)
+    Right account -> do
+      epochResult <- productionSessionAuthorityEpoch session
+      pure $ do
+        epoch <- epochResult
+        zone <- coordinateError (mkHostedZoneId (publicARecordHostedZoneId ref))
+        coordinate <-
+          coordinateError
+            ( mkPublicARecordCoordinate
+                account
+                zone
+                (publicARecordFqdn ref)
+                (authorizedDnsOwner providerDnsOwnerAuthority)
+                (mkOwnershipEpoch epoch)
+            )
+        values <- publicARecordValueSet (publicARecordTtl ref) (publicARecordValues ref)
+        pure (coordinate, values)
+
+publicARecordValueSet :: Natural -> [Text] -> Either Text DnsRecordSet
+publicARecordValueSet ttl rawValues = do
+  parsed <- traverse (coordinateError . mkDnsRecordValue DnsRecordA) rawValues
+  case NonEmpty.nonEmpty parsed of
+    Nothing -> Left "public A record intent carries no address"
+    Just values -> coordinateError (mkDnsRecordSet ttl values)
+
+coordinateError :: Either DnsCoordinateError value -> Either Text value
+coordinateError = first (Text.pack . show)
+
+-- | The Route 53 side of the program: one exact coordinate, observed and
+-- mutated through the same client. @destroy@ is a real delete rather than a
+-- refusal, because a boundary whose destroy cannot act would make the program's
+-- absence read-back untestable against this lane.
+publicARecordDnsBoundary
+  :: NativeRoute53.Route53Client
+  -> DnsRecordCoordinate
+  -> PublicARecordRef
+  -> DnsRecordBoundary IO
+publicARecordDnsBoundary client coordinate ref =
+  DnsRecordBoundary
+    { dnsBoundaryCoordinate = coordinate
+    , dnsBoundaryObserve = observe
+    , dnsBoundaryEnsure = change NativeRoute53.Upsert
+    , dnsBoundaryDestroy = change NativeRoute53.DeleteRecord
+    }
+ where
+  zone = publicARecordHostedZoneId ref
+  name = publicARecordFqdn ref
+
+  observe = do
+    observed <-
+      NativeRoute53.listExactResourceRecordSet client zone name NativeRoute53.RecordA
+    pure $ case observed of
+      Left err -> DnsRecordUnobservable (nativeRoute53Error err)
+      Right Nothing -> DnsRecordMissing
+      Right (Just record) ->
+        case publicARecordValueSet
+          (fromIntegral (NativeRoute53.rrsTtl record))
+          (NativeRoute53.rrsRecords record) of
+          Left detail -> DnsRecordUnobservable detail
+          Right values -> DnsRecordObserved values
+
+  -- Sprint 4.73: the wire shape comes from the one shared renderer rather than
+  -- a copy assembled here, so the name and type this lane writes are the
+  -- coordinate's by construction.
+  change action values = do
     changed <-
       NativeRoute53.changeResourceRecordSets
         client
-        (publicARecordHostedZoneId ref)
-        [
-          ( NativeRoute53.Upsert
-          , NativeRoute53.ResourceRecordSet
-              { NativeRoute53.rrsName = publicARecordFqdn ref
-              , NativeRoute53.rrsType = NativeRoute53.RecordA
-              , NativeRoute53.rrsTtl = fromIntegral (publicARecordTtl ref)
-              , NativeRoute53.rrsRecords = publicARecordValues ref
-              }
-          )
-        ]
+        zone
+        [(action, nativeDnsRecordSet coordinate values)]
     case changed of
       Left err -> pure (Left (nativeRoute53Error err))
-      Right (changeId, status) -> awaitSesDnsChange client changeId status
+      Right (changeId, status) -> awaitRoute53Change client changeId status
+
+-- | Every arm is named. A refusal that reached this lane as a bare @Left@ would
+-- lose which of the program's five distinct refusals occurred, and two of them
+-- — an unauthorized owner and a coordinate mismatch — are the whole point of
+-- routing through it.
+publicARecordProgramOutcome :: DnsProgramResult -> Either Text ()
+publicARecordProgramOutcome result = case result of
+  DnsEnsureAlreadyConverged -> Right ()
+  DnsEnsureAppliedAndReadBack -> Right ()
+  DnsDestroyAlreadyAbsent -> Left "public A record ensure answered a destroy result"
+  DnsDestroyAppliedAndReadBack -> Left "public A record ensure answered a destroy result"
+  DnsProgramOwnerMismatch expected actual ->
+    Left
+      ( "public A record coordinate owner mismatch: expected "
+          <> Text.pack (show expected)
+          <> ", bound to "
+          <> Text.pack (show actual)
+      )
+  DnsProgramOwnerUnauthorized held bound ->
+    Left
+      ( "this process holds "
+          <> Text.pack (show held)
+          <> " and the public A record coordinate is owned by "
+          <> Text.pack (show bound)
+      )
+  DnsProgramCoordinateMismatch _ _ ->
+    Left "public A record boundary is bound to a different coordinate"
+  DnsProgramInitialObservationRefused observation ->
+    Left ("public A record is unobservable before mutation: " <> Text.pack (show observation))
+  DnsProgramMutationFailed detail _ -> Left detail
+  DnsProgramPostconditionFailed observation ->
+    Left ("public A record read-back did not converge: " <> Text.pack (show observation))
+
+-- | The AWS account this Provider session is acting in, observed rather than
+-- carried. A request that names its own account is an assertion; @sts
+-- get-caller-identity@ is evidence.
+observeProviderAwsAccountId
+  :: ProviderProductionSession -> IO (Either Text AwsAccountId)
+observeProviderAwsAccountId session = do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+  pure $ case commandSuccess output of
+    Left detail -> Left (Text.pack detail)
+    Right _ -> case decodeObject (processStdout output) of
+      Left detail -> Left detail
+      Right root -> case KeyMap.lookup "Account" root of
+        Just (String account) -> coordinateError (mkAwsAccountId account)
+        _ -> Left "aws sts get-caller-identity returned no Account field"
 
 data SesDnsInputs = SesDnsInputs
   { sesDnsVerificationToken :: !Text
@@ -1017,31 +1234,46 @@ observeSesDns session ref = do
             "SES identity or DKIM tokens are absent before DNS reconciliation"
         )
     Right (Just inputs) ->
-      case desiredSesDnsRecords session ref inputs of
+      case sesDnsRecordPlans session inputs of
         Left detail -> pure (ProviderEffectUnobservable detail)
-        Right desired -> observeSesDnsRecords session ref desired
+        Right plans -> observeSesDnsRecords session ref plans
 
+-- | Sprint 4.73: the SES DNS records are written through the typed DNS program,
+-- under an owner this process holds.
+--
+-- Sprint 4.72 routed the public A record the same way and measured why this
+-- lane was not the same rerouting. Each of the three reasons is answered here
+-- rather than deferred again:
+--
+--   * It writes three record types where @DnsRecordType@ defined two.
+--     @DnsRecordCname@ and @DnsRecordMx@ now exist with their own canonical
+--     value forms, and @ownerAcceptsType@ is total over the whole matrix, so
+--     the SES lane's admissible types are a decision per pair rather than a
+--     wildcard @False@.
+--   * It wrote five records in one batched change with one propagation wait. A
+--     coordinate is one name and one type, so the program necessarily submits
+--     five changes; @ensureSesDnsLanes@ submits them all before awaiting any,
+--     which keeps the propagation windows overlapping the way the batch's did.
+--   * Its desired values are not known until the SES identity exists.
+--     @ensureSesDnsInputs@ therefore still runs first and the coordinates are
+--     built from its result, so the program's ensure always begins from a
+--     conclusive observation.
 applySesDns
   :: ProviderProductionSession
   -> SesDnsRef
   -> IO (Either Text ())
 applySesDns session ref = do
   inputsResult <- ensureSesDnsInputs session ref
-  case inputsResult >>= desiredSesDnsRecords session ref of
+  case inputsResult >>= sesDnsRecordPlans session of
     Left detail -> pure (Left detail)
-    Right desired ->
+    Right plans ->
       case route53ClientForSession session of
         Left detail -> pure (Left detail)
         Right client -> do
-          changed <-
-            NativeRoute53.changeResourceRecordSets
-              client
-              (sesDnsHostedZoneId ref)
-              [(NativeRoute53.Upsert, record) | record <- desired]
-          case changed of
-            Left err -> pure (Left (nativeRoute53Error err))
-            Right (changeId, status) ->
-              awaitSesDnsChange client changeId status
+          prepared <- prepareSesDnsLanes session ref plans
+          case prepared of
+            Left detail -> pure (Left detail)
+            Right lanes -> ensureSesDnsLanes client (sesDnsHostedZoneId ref) lanes
 
 ensureSesDnsInputs
   :: ProviderProductionSession
@@ -1179,85 +1411,302 @@ optionalSesIdentityTextArray collectionName fieldName identity root =
         _ -> Left ("SES " <> collectionName <> " identity is malformed")
     _ -> Left ("SES " <> collectionName <> " collection is missing")
 
-desiredSesDnsRecords
+-- | Which of the SES lane's records a plan is.
+--
+-- A closed sum rather than a rendered record, because the coordinate a lane
+-- needs at apply time cannot be recovered from a rendered name: the DKIM lane's
+-- coordinate is a function of its token.
+data SesDnsLaneKind
+  = SesVerificationLane
+  | SesDkimLane !Text
+  | SesInboundMxLane
+
+data SesDnsRecordPlan = SesDnsRecordPlan
+  { sesPlanKind :: !SesDnsLaneKind
+  , sesPlanValues :: !DnsRecordSet
+  }
+
+-- | The one derivation of what the SES lane's records are.
+--
+-- The observation that decides whether an apply is needed and the ensure that
+-- performs it both consume this, so they cannot disagree about a name, a TTL,
+-- or a value — the drift a second renderer would reintroduce
+-- (@chaos_hardening_doctrine.md § 23@).
+sesDnsRecordPlans
   :: ProviderProductionSession
-  -> SesDnsRef
   -> SesDnsInputs
-  -> Either Text [NativeRoute53.ResourceRecordSet]
-desiredSesDnsRecords session ref inputs = do
-  let providerRegion = Text.strip (region (productionSessionCredentials session))
-  if Text.null providerRegion
-    then Left "Provider AWS region is empty while rendering the SES MX target"
-    else
-      Right
-        ( verificationRecord
-            : map dkimRecord (sesDnsDkimTokens inputs)
-              <> [mxRecord providerRegion]
-        )
+  -> Either Text [SesDnsRecordPlan]
+sesDnsRecordPlans session inputs = do
+  providerRegion <-
+    if Text.null strippedRegion
+      then Left "Provider AWS region is empty while rendering the SES MX target"
+      else Right strippedRegion
+  verification <-
+    plan SesVerificationLane (route53TxtValue (sesDnsVerificationToken inputs))
+  dkim <-
+    traverse
+      (\token -> plan (SesDkimLane token) (token <> ".dkim.amazonses.com."))
+      (sesDnsDkimTokens inputs)
+  inboundMx <-
+    plan
+      SesInboundMxLane
+      ("10 inbound-smtp." <> providerRegion <> ".amazonaws.com.")
+  pure (verification : dkim <> [inboundMx])
  where
-  verificationRecord =
-    NativeRoute53.ResourceRecordSet
-      { NativeRoute53.rrsName = "_amazonses." <> sesDnsIdentityDomain ref
-      , NativeRoute53.rrsType = NativeRoute53.RecordTXT
-      , NativeRoute53.rrsTtl = sesDnsRecordTtl
-      , NativeRoute53.rrsRecords = [route53TxtValue (sesDnsVerificationToken inputs)]
-      }
-  dkimRecord token =
-    NativeRoute53.ResourceRecordSet
-      { NativeRoute53.rrsName = token <> "._domainkey." <> sesDnsIdentityDomain ref
-      , NativeRoute53.rrsType = NativeRoute53.RecordCNAME
-      , NativeRoute53.rrsTtl = sesDnsRecordTtl
-      , NativeRoute53.rrsRecords = [token <> ".dkim.amazonses.com."]
-      }
-  mxRecord providerRegion =
-    NativeRoute53.ResourceRecordSet
-      { NativeRoute53.rrsName = sesDnsReceiveSubdomain ref
-      , NativeRoute53.rrsType = NativeRoute53.RecordMX
-      , NativeRoute53.rrsTtl = sesDnsRecordTtl
-      , NativeRoute53.rrsRecords =
-          ["10 inbound-smtp." <> providerRegion <> ".amazonaws.com."]
-      }
+  strippedRegion = Text.strip (region (productionSessionCredentials session))
+  plan kind rawValue = do
+    value <- coordinateError (mkDnsRecordValue (sesLaneRecordType kind) rawValue)
+    values <- coordinateError (mkDnsRecordSet sesDnsRecordTtl (value NonEmpty.:| []))
+    pure SesDnsRecordPlan {sesPlanKind = kind, sesPlanValues = values}
+
+sesLaneRecordType :: SesDnsLaneKind -> DnsRecordType
+sesLaneRecordType kind = case kind of
+  SesVerificationLane -> DnsRecordTxt
+  SesDkimLane _ -> DnsRecordCname
+  SesInboundMxLane -> DnsRecordMx
+
+-- | The record name a lane owns, from the single definition in
+-- "Prodbox.Lifecycle.DnsRecord" that the coordinate constructors also use.
+sesLaneRecordName :: SesDnsRef -> SesDnsLaneKind -> Either Text Text
+sesLaneRecordName ref kind =
+  coordinateError $ case kind of
+    SesVerificationLane -> sesVerificationRecordName (sesDnsIdentityDomain ref)
+    SesDkimLane token -> sesDkimRecordName token (sesDnsIdentityDomain ref)
+    SesInboundMxLane -> sesInboundMxRecordName (sesDnsReceiveSubdomain ref)
 
 observeSesDnsRecords
   :: ProviderProductionSession
   -> SesDnsRef
-  -> [NativeRoute53.ResourceRecordSet]
+  -> [SesDnsRecordPlan]
   -> IO ProviderEffectObservation
-observeSesDnsRecords session ref desired =
-  case route53ClientForSession session of
-    Left detail -> pure (ProviderEffectUnobservable detail)
-    Right client -> go client desired
+observeSesDnsRecords session ref plans =
+  case (route53ClientForSession session, traverse (sesLaneRecordName ref . sesPlanKind) plans) of
+    (Left detail, _) -> pure (ProviderEffectUnobservable detail)
+    (_, Left detail) -> pure (ProviderEffectUnobservable detail)
+    (Right client, Right names) -> go names client (zip names plans)
  where
-  go _ [] =
+  go names _ [] =
     pure
       ( ProviderEffectSatisfied
           ( "ses-dns:"
               <> sesDnsHostedZoneId ref
               <> ":"
-              <> Text.intercalate "," (map NativeRoute53.rrsName desired)
+              <> Text.intercalate "," names
           )
       )
-  go client (expected : remaining) = do
+  go names client ((name, expected) : remaining) = do
     observed <-
       NativeRoute53.listExactResourceRecordSet
         client
         (sesDnsHostedZoneId ref)
-        (NativeRoute53.rrsName expected)
-        (NativeRoute53.rrsType expected)
+        name
+        (nativeDnsRecordType (sesLaneRecordType (sesPlanKind expected)))
     case observed of
       Left err -> pure (ProviderEffectUnobservable (nativeRoute53Error err))
       Right Nothing ->
-        pure
-          ( ProviderEffectNeedsApply
-              ("SES DNS record is absent: " <> NativeRoute53.rrsName expected)
-          )
-      Right (Just actual)
-        | exactSesDnsRecord expected actual -> go client remaining
-        | otherwise ->
-            pure
-              ( ProviderEffectNeedsApply
-                  ("SES DNS record differs: " <> NativeRoute53.rrsName expected)
-              )
+        pure (ProviderEffectNeedsApply ("SES DNS record is absent: " <> name))
+      Right (Just actual) ->
+        case observedDnsRecordSet (sesLaneRecordType (sesPlanKind expected)) actual of
+          -- A value the canonical form refuses is not evidence of absence and
+          -- not evidence of a match; "cannot observe" stays its own answer.
+          Left detail -> pure (ProviderEffectUnobservable detail)
+          Right actualValues
+            | actualValues == sesPlanValues expected -> go names client remaining
+            | otherwise ->
+                pure (ProviderEffectNeedsApply ("SES DNS record differs: " <> name))
+
+-- | An observed Route 53 record set in the canonical form the desired set is
+-- already in, so the comparison is exact equality rather than a second
+-- normalizing comparator that could disagree with the constructor.
+observedDnsRecordSet
+  :: DnsRecordType
+  -> NativeRoute53.ResourceRecordSet
+  -> Either Text DnsRecordSet
+observedDnsRecordSet recordType observed = do
+  parsed <-
+    traverse
+      (coordinateError . mkDnsRecordValue recordType)
+      (NativeRoute53.rrsRecords observed)
+  values <-
+    maybe
+      (Left "Route 53 SES DNS record carried no values")
+      Right
+      (NonEmpty.nonEmpty parsed)
+  recordSet <-
+    coordinateError (mkDnsRecordSet (fromIntegral (NativeRoute53.rrsTtl observed)) values)
+  -- A set that lost members to deduplication is not the response that was
+  -- observed, and comparing the smaller set could report a duplicated record as
+  -- converged. The home Gateway DNS observation has made this check since it
+  -- was written; the two paths now agree.
+  if Set.size (dnsRecordSetValues recordSet) == length (NativeRoute53.rrsRecords observed)
+    then Right recordSet
+    else Left "Route 53 SES DNS record carried duplicate values"
+
+-- | Lift each plan to an exact coordinate.
+--
+-- The account and the ownership epoch are observed rather than carried, for the
+-- reason Sprint 4.72 gives on the public A-record lane: a request that names
+-- its own account is an assertion, and @sts get-caller-identity@ is evidence.
+prepareSesDnsLanes
+  :: ProviderProductionSession
+  -> SesDnsRef
+  -> [SesDnsRecordPlan]
+  -> IO (Either Text [(DnsRecordCoordinate, DnsRecordSet)])
+prepareSesDnsLanes session ref plans = do
+  accountResult <- observeProviderAwsAccountId session
+  case accountResult of
+    Left detail -> pure (Left detail)
+    Right account -> do
+      epochResult <- productionSessionAuthorityEpoch session
+      pure $ do
+        epoch <- epochResult
+        zone <- coordinateError (mkHostedZoneId (sesDnsHostedZoneId ref))
+        traverse (lane account zone (mkOwnershipEpoch epoch)) plans
+ where
+  lane account zone epoch item = do
+    coordinate <-
+      coordinateError (sesLaneCoordinate ref account zone epoch (sesPlanKind item))
+    pure (coordinate, sesPlanValues item)
+
+sesLaneCoordinate
+  :: SesDnsRef
+  -> AwsAccountId
+  -> HostedZoneId
+  -> OwnershipEpoch
+  -> SesDnsLaneKind
+  -> Either DnsCoordinateError DnsRecordCoordinate
+sesLaneCoordinate ref account zone epoch kind = case kind of
+  SesVerificationLane ->
+    mkSesVerificationCoordinate account zone (sesDnsIdentityDomain ref) owner epoch
+  SesDkimLane token ->
+    mkSesDkimCoordinate account zone token (sesDnsIdentityDomain ref) owner epoch
+  SesInboundMxLane ->
+    mkSesInboundMxCoordinate account zone (sesDnsReceiveSubdomain ref) owner epoch
+ where
+  owner = authorizedDnsOwner sesDnsOwnerAuthority
+
+-- | Ensure every SES lane, then discharge propagation once.
+--
+-- The superseded body sent all five records in one @changeResourceRecordSets@
+-- batch and waited for that single change to reach INSYNC. A coordinate is one
+-- name and one type, so the typed program necessarily submits one change per
+-- lane — and if each awaited inline, this lane would spend five propagation
+-- windows in series where it used to spend one. Submitting first and awaiting
+-- afterwards keeps the windows overlapping, which is the property the batch
+-- had; what is added is a per-coordinate observation before the write and a
+-- read-back after it, neither of which the batch performed at all.
+--
+-- Deferring the wait does not weaken the read-back.
+-- @ListResourceRecordSets@ answers from the hosted zone's record data, which a
+-- change updates when it is accepted, while PENDING and INSYNC describe
+-- replication to the Route 53 name servers. The post-apply observation this
+-- repository already performs reads the same way.
+ensureSesDnsLanes
+  :: NativeRoute53.Route53Client
+  -> Text
+  -> [(DnsRecordCoordinate, DnsRecordSet)]
+  -> IO (Either Text ())
+ensureSesDnsLanes client zone lanes = do
+  pending <- newIORef []
+  ensured <- ensureEach pending lanes
+  case ensured of
+    Left detail -> pure (Left detail)
+    Right () -> readIORef pending >>= awaitPending
+ where
+  ensureEach _ [] = pure (Right ())
+  ensureEach pending ((coordinate, values) : remaining) = do
+    outcome <-
+      runDnsRecordProgram
+        (sesDnsRecordBoundary client zone pending coordinate)
+        coordinate
+        (EnsureDnsRecord sesDnsOwnerAuthority values)
+    case sesDnsProgramOutcome coordinate outcome of
+      Left detail -> pure (Left detail)
+      Right () -> ensureEach pending remaining
+
+  awaitPending [] = pure (Right ())
+  awaitPending (changeId : remaining) = do
+    completed <- awaitRoute53Change client changeId NativeRoute53.ChangePending
+    case completed of
+      Left detail -> pure (Left detail)
+      Right () -> awaitPending remaining
+
+sesDnsRecordBoundary
+  :: NativeRoute53.Route53Client
+  -> Text
+  -> IORef [NativeRoute53.ChangeId]
+  -> DnsRecordCoordinate
+  -> DnsRecordBoundary IO
+sesDnsRecordBoundary client zone pending coordinate =
+  DnsRecordBoundary
+    { dnsBoundaryCoordinate = coordinate
+    , dnsBoundaryObserve = observe
+    , dnsBoundaryEnsure = submit NativeRoute53.Upsert
+    , dnsBoundaryDestroy = submit NativeRoute53.DeleteRecord
+    }
+ where
+  observe = do
+    observed <-
+      NativeRoute53.listExactResourceRecordSet
+        client
+        zone
+        (dnsCoordinateName coordinate)
+        (nativeDnsRecordType (dnsCoordinateType coordinate))
+    pure $ case observed of
+      Left err -> DnsRecordUnobservable (nativeRoute53Error err)
+      Right Nothing -> DnsRecordMissing
+      Right (Just record) ->
+        case observedDnsRecordSet (dnsCoordinateType coordinate) record of
+          Left detail -> DnsRecordUnobservable detail
+          Right values -> DnsRecordObserved values
+
+  submit action values = do
+    changed <-
+      NativeRoute53.changeResourceRecordSets
+        client
+        zone
+        [(action, nativeDnsRecordSet coordinate values)]
+    case changed of
+      Left err -> pure (Left (nativeRoute53Error err))
+      Right (_, NativeRoute53.ChangeInsync) -> pure (Right ())
+      Right (changeId, NativeRoute53.ChangePending) -> do
+        modifyIORef' pending (changeId :)
+        pure (Right ())
+
+-- | Every arm is named, and each names the coordinate it refused.
+--
+-- Five lanes run in sequence, so a bare @Left@ would lose both which refusal
+-- occurred and which record provoked it.
+sesDnsProgramOutcome :: DnsRecordCoordinate -> DnsProgramResult -> Either Text ()
+sesDnsProgramOutcome coordinate result = case result of
+  DnsEnsureAlreadyConverged -> Right ()
+  DnsEnsureAppliedAndReadBack -> Right ()
+  DnsDestroyAlreadyAbsent -> refused "ensure answered a destroy result"
+  DnsDestroyAppliedAndReadBack -> refused "ensure answered a destroy result"
+  DnsProgramOwnerMismatch expected actual ->
+    refused
+      ( "coordinate owner mismatch: expected "
+          <> Text.pack (show expected)
+          <> ", bound to "
+          <> Text.pack (show actual)
+      )
+  DnsProgramOwnerUnauthorized held bound ->
+    refused
+      ( "this process holds "
+          <> Text.pack (show held)
+          <> " and the coordinate is owned by "
+          <> Text.pack (show bound)
+      )
+  DnsProgramCoordinateMismatch _ _ ->
+    refused "boundary is bound to a different coordinate"
+  DnsProgramInitialObservationRefused observation ->
+    refused ("unobservable before mutation: " <> Text.pack (show observation))
+  DnsProgramMutationFailed detail _ -> refused detail
+  DnsProgramPostconditionFailed observation ->
+    refused ("read-back did not converge: " <> Text.pack (show observation))
+ where
+  refused detail =
+    Left ("SES DNS record " <> dnsCoordinateName coordinate <> ": " <> detail)
 
 route53ClientForSession
   :: ProviderProductionSession
@@ -1267,13 +1716,13 @@ route53ClientForSession session =
     Left err -> Left ("Provider AWS credential is invalid: " <> Text.pack (show err))
     Right handle -> Right (NativeRoute53.newRoute53Client handle httpSend)
 
-awaitSesDnsChange
+awaitRoute53Change
   :: NativeRoute53.Route53Client
   -> NativeRoute53.ChangeId
   -> NativeRoute53.ChangeStatus
   -> IO (Either Text ())
-awaitSesDnsChange _ _ NativeRoute53.ChangeInsync = pure (Right ())
-awaitSesDnsChange client changeId NativeRoute53.ChangePending = do
+awaitRoute53Change _ _ NativeRoute53.ChangeInsync = pure (Right ())
+awaitRoute53Change client changeId NativeRoute53.ChangePending = do
   completed <- timeout sesDnsChangeTimeoutMicros (poll sesDnsChangePollLimit)
   pure $ case completed of
     Nothing -> Left "Route 53 SES DNS change timed out before INSYNC"
@@ -1289,37 +1738,13 @@ awaitSesDnsChange client changeId NativeRoute53.ChangePending = do
           Right NativeRoute53.ChangeInsync -> pure (Right ())
           Right NativeRoute53.ChangePending -> poll (attempts - 1)
 
-exactSesDnsRecord
-  :: NativeRoute53.ResourceRecordSet
-  -> NativeRoute53.ResourceRecordSet
-  -> Bool
-exactSesDnsRecord expected actual =
-  canonicalDnsName (NativeRoute53.rrsName actual)
-    == canonicalDnsName (NativeRoute53.rrsName expected)
-    && NativeRoute53.rrsType actual == NativeRoute53.rrsType expected
-    && NativeRoute53.rrsTtl actual == NativeRoute53.rrsTtl expected
-    && map (canonicalDnsValue (NativeRoute53.rrsType expected)) (NativeRoute53.rrsRecords actual)
-      == map (canonicalDnsValue (NativeRoute53.rrsType expected)) (NativeRoute53.rrsRecords expected)
-
-canonicalDnsName :: Text -> Text
-canonicalDnsName = Text.toLower . Text.dropWhileEnd (== '.') . Text.strip
-
-canonicalDnsValue :: NativeRoute53.RecordType -> Text -> Text
-canonicalDnsValue recordType raw = case recordType of
-  NativeRoute53.RecordCNAME -> canonicalDnsName raw
-  NativeRoute53.RecordMX ->
-    case Text.words (Text.strip raw) of
-      [priority, target] -> priority <> " " <> canonicalDnsName target
-      _ -> Text.strip raw
-  _ -> Text.strip raw
-
 route53TxtValue :: Text -> Text
 route53TxtValue value = "\"" <> value <> "\""
 
 nativeRoute53Error :: (Show errorValue) => errorValue -> Text
 nativeRoute53Error = ("Route 53 SES DNS request failed: " <>) . Text.pack . show
 
-sesDnsRecordTtl :: Int
+sesDnsRecordTtl :: Natural
 sesDnsRecordTtl = 300
 
 sesDnsChangePollLimit :: Int

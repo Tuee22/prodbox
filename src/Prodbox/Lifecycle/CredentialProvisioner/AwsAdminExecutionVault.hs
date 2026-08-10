@@ -39,7 +39,10 @@ import Prodbox.Vault.Client
   ( KvV2Cas (KvV2Cas)
   , KvV2VersionedSecret (..)
   , VaultAddress
+  , VaultCasOutcome (..)
   , VaultToken
+  , classifyVaultCasOutcome
+  , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
@@ -150,7 +153,11 @@ writeJournal address token path expectedVersion journal = do
               (Base64.encode (encodeAwsAdminExecutionJournal journal))
           )
       )
-  pure (either (Left . renderVaultError) (const (Right ())) written)
+  -- Sprint 4.74: the confirm step below reads back, so this arm only has to
+  -- name which of the three failures occurred rather than decide recovery.
+  pure $ case classifyVaultCasOutcome written of
+    VaultCasApplied _ -> Right ()
+    failed -> Left (renderVaultCasOutcome failed)
 
 -- A successful write response is provisional, while a failed response may
 -- have been lost after commit. Only exact canonical readback closes the CAS.

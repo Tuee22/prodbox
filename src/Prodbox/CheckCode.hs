@@ -59,6 +59,8 @@ module Prodbox.CheckCode
   , secretPayloadInternalSourceViolations
   , roundTripWitnessInternalSourceViolations
   , dnsOwnerAuthorityInternalSourceViolations
+  , vaultCasClassificationViolations
+  , controlPlaneReplyStatusViolations
   , dependencyAdmissionInternalSourceViolations
   , responseObligationViolations
   , tier0EncoderViolations
@@ -67,6 +69,7 @@ module Prodbox.CheckCode
   , supervisedWorkerViolations
   , sharedRetryScheduleViolations
   , targetSinkVersionInternalSourceViolations
+  , targetSinkRecordMinterViolations
   , runDocsCommand
   , runLintCommand
   , substrateImagePinningViolations
@@ -84,7 +87,17 @@ import Control.Exception (evaluate)
 import Control.Monad (filterM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.Char (isAlpha, isAlphaNum, isAsciiUpper, isDigit, isSpace, toLower)
-import Data.List (find, intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort, tails)
+import Data.List
+  ( dropWhileEnd
+  , find
+  , intercalate
+  , isInfixOf
+  , isPrefixOf
+  , isSuffixOf
+  , nub
+  , sort
+  , tails
+  )
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
@@ -119,6 +132,7 @@ import Prodbox.Config.Tier0
   ( decodeProjectConfigDhall
   , renderProjectConfigDhall
   )
+import Prodbox.ControlPlane.Runtime (controlPlaneCapacityPlan)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Probe (renderGatewayProbeDefaultsYaml)
@@ -582,7 +596,19 @@ runConformanceTier repoRoot =
                 ++ ["Correct capacity/Config.hs defaultResourcePlan so the nesting proof holds."]
             )
         )
-    [] -> runConformanceTierChecks repoRoot
+    [] -> case controlPlaneCapacityViolations of
+      (_ : _) ->
+        failWith
+          ( unlines
+              ( ( "Control-plane service-capacity gate failed. The committed "
+                    ++ "controlPlaneCapacityInputs must compile into a ServiceCapacityPlan "
+                    ++ "(Sprint 4.68); the accept path fails closed on a Left, so an "
+                    ++ "over-committed lane would surface as a role that will not serve:"
+                )
+                  : map ("- " ++) controlPlaneCapacityViolations
+              )
+          )
+      [] -> runConformanceTierChecks repoRoot
 
 -- | Sprint 1.68 over-commit compile gate: the committed 'defaultResourcePlan' must
 -- compile into an 'Allocation.AllocatedResourcePlan' proof. No committed measured
@@ -595,6 +621,20 @@ resourcePlanOverCommitViolations =
   case Allocation.compileResourcePlanUncertified defaultResourcePlan of
     Right _ -> []
     Left err -> [Allocation.renderCompileError err]
+
+-- | Sprint 4.68 accept-path capacity gate.
+--
+-- 'runControlPlaneServer' answers @ExitFailure 1@ when its plan does not
+-- compile, which is the right runtime behaviour and a terrible way to find out:
+-- the symptom is a role Pod that starts and refuses to serve, with the cause an
+-- arithmetic property of four constants. This makes it a build failure instead,
+-- in the same seconds-fast tier as the resource-plan proof and for the same
+-- reason.
+controlPlaneCapacityViolations :: [String]
+controlPlaneCapacityViolations =
+  case controlPlaneCapacityPlan of
+    Right _ -> []
+    Left err -> [show err]
 
 runConformanceTierChecks :: FilePath -> IO ExitCode
 runConformanceTierChecks repoRoot = do
@@ -1425,6 +1465,7 @@ haskellStyleViolations repoRoot = do
   forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
   secretPayloadInternalViolations <- checkSecretPayloadInternalBoundary repoRoot
   targetSinkVersionViolations <- checkTargetSinkVersionBoundary repoRoot
+  targetSinkRecordViolations <- checkTargetSinkRecordMinter repoRoot
   roundTripWitnessViolations <- checkRoundTripWitnessBoundary repoRoot
   dnsOwnerAuthorityViolations <- checkDnsOwnerAuthorityBoundary repoRoot
   dependencyAdmissionViolations <- checkDependencyAdmissionBoundary repoRoot
@@ -1434,7 +1475,9 @@ haskellStyleViolations repoRoot = do
   brokerReadinessViolations <- checkBrokerReadinessProjection repoRoot
   roleReadinessViolations <- checkRoleReadinessProjection repoRoot
   supervisedWorkerViolationsFound <- checkSupervisedWorkers repoRoot
+  replyStatusViolations <- checkControlPlaneReplyStatusCoverage repoRoot
   committedValueViolations <- checkCommittedValueHygiene repoRoot
+  vaultCasFindings <- checkVaultCasClassification repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1451,6 +1494,7 @@ haskellStyleViolations repoRoot = do
         ++ forbidDotProdboxStateViolations
         ++ secretPayloadInternalViolations
         ++ targetSinkVersionViolations
+        ++ targetSinkRecordViolations
         ++ roundTripWitnessViolations
         ++ dnsOwnerAuthorityViolations
         ++ dependencyAdmissionViolations
@@ -1460,7 +1504,9 @@ haskellStyleViolations repoRoot = do
         ++ brokerReadinessViolations
         ++ roleReadinessViolations
         ++ supervisedWorkerViolationsFound
+        ++ replyStatusViolations
         ++ committedValueViolations
+        ++ vaultCasFindings
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -1570,6 +1616,26 @@ checkTargetSinkVersionBoundary repoRoot = do
           pure (targetSinkVersionInternalSourceViolations (path, contents))
       )
 
+-- | Sprint 4.70: same shape and same scope as the target-sink-version boundary
+-- above, over the record rather than the version. A test fixture standing in
+-- for a store may mint one; a test module cannot be imported by production
+-- code.
+checkTargetSinkRecordMinter :: FilePath -> IO [String]
+checkTargetSinkRecordMinter repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (targetSinkRecordMinterViolations (path, contents))
+      )
+
 -- | Sprint 1.76: a 'RoundTripWitness' asserts that a conditional WRITE reached
 -- a store. That claim is only worth anything while the set of modules able to
 -- make it is exactly the set that performed or authoritatively decoded one.
@@ -1614,6 +1680,51 @@ checkDnsOwnerAuthorityBoundary repoRoot = do
           contents <- readFileStrict (repoRoot </> path)
           pure (dnsOwnerAuthorityInternalSourceViolations (path, contents))
       )
+
+-- | Sprint 4.74: a Vault CAS result is read through its classifier or not at
+-- all.
+--
+-- The three facts a CAS attempt can establish — a lost race, a refused
+-- request, and an attempt whose outcome is unknown — are distinguishable only
+-- through 'Prodbox.Vault.Client.classifyVaultCasOutcome'. Nothing in the type
+-- forces a caller to use it, because the transport result must stay an
+-- @Either HttpError@ for the Vault session wrapper's single relogin. This rule
+-- supplies the missing force over the compiled source region instead: a module
+-- that writes a CAS and does not classify it fails the build.
+--
+-- What this does not prove is the same thing
+-- @chaos_hardening_doctrine.md § 22@ says of every ring-2 gate: it bounds this
+-- repository's source, not the Vault protocol.
+checkVaultCasClassification :: FilePath -> IO [String]
+checkVaultCasClassification repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (vaultCasClassificationViolations (path, contents))
+      )
+
+vaultCasClassificationViolations :: (FilePath, String) -> [String]
+vaultCasClassificationViolations (path, contents) =
+  [ path
+      ++ " performs a Vault KV-v2 compare-and-swap without reading the result "
+      ++ "through `classifyVaultCasOutcome`. A lost race, a refused request, and "
+      ++ "an attempt whose outcome is unknown are three different facts, and "
+      ++ "matching on `HttpStatus` at the call site reports the first two as each "
+      ++ "other and the third as either (Sprint 4.74)."
+  | path `notElem` classifierOwningPaths
+  , "vaultKvCasWriteV2" `isInfixOf` contents
+  , not ("classifyVaultCasOutcome" `isInfixOf` contents)
+  ]
+ where
+  classifierOwningPaths = ["src/Prodbox/Vault/Client.hs"]
 
 -- | Sprint 4.56: the admission minting boundary, same shape and same reason.
 checkDependencyAdmissionBoundary :: FilePath -> IO [String]
@@ -2203,6 +2314,10 @@ dependencyAdmissionInternalSourceViolations (path, contents) =
   internalModuleAllowedPaths =
     [ "src/Prodbox/Lifecycle/DependencyAdmission.hs"
     , "src/Prodbox/Lifecycle/DependencyAdmission/Internal.hs"
+    , -- Sprint 4.64: the reconcile executor is the one place a run legitimately
+      -- begins with no admissions, so it alone reaches `noAdmissions`. Adding
+      -- it here is what lets the empty set leave the public API.
+      "src/Prodbox/Lifecycle/AnchoredReconcile.hs"
     ]
   internalModuleViolations =
     [ path
@@ -2213,6 +2328,98 @@ dependencyAdmissionInternalSourceViolations (path, contents) =
     | internalModuleName `isInfixOf` contents
     , path `notElem` internalModuleAllowedPaths
     ]
+
+-- | Sprint 4.67: no control-plane producer states an HTTP status as a number.
+--
+-- Sprint 4.66 introduced this rule in a weaker form — a literal was permitted
+-- so long as the closed set defined it — because the producers still answered a
+-- raw @Int@ and a text rule was the only available gate. They now answer
+-- 'Prodbox.Http.ReplyStatus.ReplyStatus', so the closed set is carried by the
+-- type and this rule has a different job: it stops a new @Int@-typed reply seam
+-- being opened beside the typed one. The original defect is worth restating,
+-- because it is what an untyped seam re-enables — @httpReasonPhrase@ fell four
+-- codes behind its producers and the control plane wrote
+-- @HTTP\/1.1 403 Status@ on the wire.
+--
+-- __The bound, stated in the rule rather than left to the reader.__ It is a
+-- text scan for reply-tuple and status-projection literals under one namespace.
+-- It cannot see a status computed arithmetically, and it says nothing about a
+-- status reaching the renderer from outside that namespace — a ring-2 gate
+-- bounds a process, not a protocol
+-- ([chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)).
+-- What it does cover is the shape every producer in the namespace actually
+-- uses today, which is what let the gap open.
+checkControlPlaneReplyStatusCoverage :: FilePath -> IO [String]
+checkControlPlaneReplyStatusCoverage repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/Prodbox/ControlPlane/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (controlPlaneReplyStatusViolations (path, contents))
+      )
+
+-- | Paths whose three-digit projection arms are not HTTP statuses.
+--
+-- Exactly one today. @CallerPrincipal@ encodes caller identities as @100@-@103@
+-- through the same @-> NNN@ shape a status projection uses, and no text rule
+-- can tell the two apart from one line. Naming the exemption is honest; a
+-- cleverer matcher that happened to exclude it would be an unstated bound.
+controlPlaneNonStatusCodePaths :: [FilePath]
+controlPlaneNonStatusCodePaths = ["src/Prodbox/ControlPlane/CallerPrincipal.hs"]
+
+controlPlaneReplyStatusViolations :: (FilePath, String) -> [String]
+controlPlaneReplyStatusViolations (path, contents) =
+  [ path
+      ++ " emits the raw HTTP status literal "
+      ++ code
+      ++ " in a reply position. Control-plane producers answer "
+      ++ "Prodbox.Http.ReplyStatus, so a status is a constructor and not a "
+      ++ "number (Sprint 4.67). Add a constructor to ReplyStatus if the set "
+      ++ "needs to grow; do not reintroduce an Int-typed reply seam."
+  | path `notElem` controlPlaneNonStatusCodePaths
+  , code <- emittedCodes
+  ]
+ where
+  emittedCodes = dedupeStrings (concatMap statusLiteralsOnLine (lines contents))
+
+  -- Two producer shapes, both measured from the namespace: a reply tuple
+  -- `(NNN, body)` anywhere on the line, and a status projection arm ending
+  -- `-> NNN`. Reading shapes rather than bare three-digit numbers is what keeps
+  -- ordinary constants out; it is NOT enough to separate a status from a
+  -- same-shaped non-status encoding, which is why
+  -- 'controlPlaneNonStatusCodePaths' exists and is named rather than implied.
+  statusLiteralsOnLine line =
+    replyTupleLiterals line ++ projectionArmLiteral line
+
+  -- The body after the comma must not itself start with a digit. Without that
+  -- clause an IPv4 octet tuple matches: `(127, 0, 0, 1)` in
+  -- `ControlPlane/LocalClient.hs` was flagged as HTTP status 127 by the first
+  -- version of this rule, which is how the clause came to exist. The cost is a
+  -- stated false negative — a reply whose body literal begins with a digit
+  -- would be missed — and no producer in the namespace has one, because a reply
+  -- body is a quoted ByteString or a function call.
+  replyTupleLiterals line =
+    [ digits
+    | '(' : rest <- tails line
+    , let (digits, remainder) = span isDigit rest
+    , length digits == 3
+    , "," `isPrefixOf` remainder
+    , not (any isDigit (take 1 (dropWhile isSpace (drop 1 remainder))))
+    ]
+
+  projectionArmLiteral line =
+    let trimmed = dropWhileEnd isSpace line
+        digits = reverse (takeWhile isDigit (reverse trimmed))
+     in [digits | length digits == 3, ("-> " ++ digits) `isSuffixOf` trimmed]
+
+dedupeStrings :: [String] -> [String]
+dedupeStrings = foldr (\value seen -> if value `elem` seen then seen else value : seen) []
 
 dnsOwnerAuthorityInternalSourceViolations :: (FilePath, String) -> [String]
 dnsOwnerAuthorityInternalSourceViolations (path, contents) =
@@ -2232,6 +2439,35 @@ dnsOwnerAuthorityInternalSourceViolations (path, contents) =
         ++ "already had (Sprint 3.32)."
     | internalModuleName `isInfixOf` contents
     , path `notElem` internalModuleAllowedPaths
+    ]
+
+-- | Sprint 4.70: a target sink record may be rebuilt from the store by the
+-- durable decoder, and by nothing else.
+--
+-- The two minters of a 'Prodbox.Lifecycle.TargetCommitIntent.TargetSinkRecord'
+-- state different facts through one shape: @recordForIntent@ builds the record
+-- a committed intent __decided__ to write, and @targetSinkRecordFromStore@
+-- rebuilds what the store __says__ it holds. No type separates them, because
+-- the arguments are identical — so the bound is a named path list rather than a
+-- signature, and per
+-- [chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)
+-- it bounds this process and not the protocol.
+targetSinkRecordMinterViolations :: (FilePath, String) -> [String]
+targetSinkRecordMinterViolations (path, contents) =
+  [ path
+      ++ " mints a TargetSinkRecord from raw fields outside the durable target"
+      ++ " decoder. A record carries the owner nonce and fencing token that make"
+      ++ " a write authoritative; it is either decided from a"
+      ++ " PreparedTargetWritePermit or decoded from what the store reports, and"
+      ++ " nothing else may assemble one (Sprint 4.70)."
+  | minterName `isInfixOf` contents
+  , path `notElem` minterAllowedPaths
+  ]
+ where
+  minterName = "targetSinkRecordFromStore"
+  minterAllowedPaths =
+    [ "src/Prodbox/Lifecycle/TargetCommitIntent.hs"
+    , "src/Prodbox/ControlPlane/TargetMaterialRecordCodec.hs"
     ]
 
 targetSinkVersionInternalSourceViolations :: (FilePath, String) -> [String]
@@ -4212,9 +4448,6 @@ matchesSprintToken line =
  where
   stripPunct :: String -> String
   stripPunct = dropWhileEnd (not . isAlphaNum) . dropWhile (not . isAlphaNum)
-
-  dropWhileEnd :: (a -> Bool) -> [a] -> [a]
-  dropWhileEnd p = foldr (\c acc -> if null acc && p c then [] else c : acc) []
 
 shortenSprintLeak :: String -> String
 shortenSprintLeak lit

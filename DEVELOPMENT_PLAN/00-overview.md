@@ -469,7 +469,7 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
 | 2 | Gateway Runtime and DNS Ownership | ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
 | 3 | Chart Platform and Public Workload Delivery | ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
-| 4 | Lifecycle Hardening and Pulumi Decoupling | ✅ Reclosed on Sprints `4.50`/`4.53` (2026-08-01). Retained Authority admission/checkpoints, authenticated five-role clients, Broker/Target/Provider execution, exact TLS retention, encrypted EKS client auth, Provider-native SES/Route53 reconciliation, crash-safe decommission, legacy transport deletion, and the authenticated S3 witness are independently validated; live qualification remains Standard O/P. | Warning-clean builds, 2972/2972 unit tests plus focused retained-admission/authenticated-transport suites, negative scans, and `dev check` exit 0. |
+| 4 | Lifecycle Hardening and Pulumi Decoupling | ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. `4.73` routes the SES DNS writer through the typed `DnsRecordProgram` under its own `LongLived` owner, with a total owner/type matrix, canonical CNAME/MX value forms, and a propagation barrier that keeps the batch's single wait; `4.74` gives the Vault CAS seam the `ModelBCas*`-style vocabulary and a build rule enforcing it, after finding four callers classifying wrongly where the row said none classified at all; `4.75` owns the authored control-plane service time and corrects the haddock that called it measured. Prior reclosures stand. | Pure capacity/admission and deadline folds, the owner/type matrix and CAS classifier as total pure functions, socket-pair proofs of the `429`/`408` replies with no listener, mutation exercises on the `dev check` gates, and the installed `cli` integration suite — no live infrastructure. The live Route 53 read-back and the control-plane measured profile remain Standard-O axes. |
 | 5 | Canonical Test Suite | ✅ Reclosed on Sprint `5.31` (2026-08-09). The final fixture drifts are corrected and the installed integration surface is green; clean-room deployment qualification remains pending under Standards O/P. | Installed `cli`/`env` integration **55/55** and canonical `prodbox test unit` exit 0 with main Hspec **3255/3255**, using fake/local proof with no later-phase or live-infrastructure dependency. |
 | 6 | Final Clean-Room Rerun and Handoff | ✅ Reclosed on Sprint `6.4` (2026-08-02): exact-prefix cutover/restore/cleanup, rollback refusal, installed-binary plan, and retired-transport absence are validated; destructive aggregates remain qualification. | Focused 8/8, installed command exit 0, unit 3028/3028, generated docs, and `dev check` exit 0. |
 | 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic ownership, target DNS01, public-A Provider intents, and fault dispositions are code-locally complete. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
@@ -482,7 +482,57 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-08-09 — all code-owned phases are closed):**
+**Current head state (2026-08-10, second entry — every phase is closed):**
+
+- Sprints `4.73`–`4.75` are ✅ Done and **Phase `4` recloses**, ending the 2026-08-09 own-surface
+  reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is
+  unowned. The unowned count moves **9 → 6** (two closed, one given an owning sprint, none created),
+  and all six remaining sit on Phase-`0`, `1`, and `5` surfaces.
+- **The pass's finding is a row that was wrong in the flattering direction.** Sprint `4.74`'s row
+  said Vault CAS callers reported coarsely; four of them already classified and **all four were
+  wrong identically**, treating every `400` as a lost race when Vault answers a version mismatch and
+  a malformed request with the same status. One spent an authority-epoch retry budget on a refused
+  request; another reported a write that never happened as a replay conflict.
+- **One sprint moves a Standard-P surface**: `4.74` (persistence protocol — four call sites change
+  which outcomes count as a lost race, and one changes what consumes a retry budget). Its
+  qualification row was already `pending`, so no claim is withdrawn. `4.73` writes byte-identical
+  records and `4.75` moves no executable behaviour.
+- **One row stays open on this phase's surface and it is owned, not unowned.** The authored
+  control-plane service time needs a recorded profile; `dhall/capacity/measured/` holds only
+  `Schema.dhall`, so no profile exists for any lane and this one is downstream of Sprint `5.21`'s
+  recorder. Standard-O, non-blocking.
+- Evidence: `prodbox dev check`, `dev docs check`, and `dev lint docs` exit 0; `prodbox test unit`
+  exit 0 at main Hspec **3294/3294** plus 27/27, 33/33, 27/27; installed
+  `prodbox test integration cli` **55/55**, exit 0.
+- Clean-room deployment qualification remains `pending` on both substrates as the separate
+  Standards O/P axis, with no deployment-ready or cutover claim.
+
+**Prior head state (2026-08-10 — every phase but `4` is closed; Phase `4` is 🔄 Active on one
+unowned ledger row):**
+
+- Sprints `4.67`–`4.72` are ✅ Done. They close five of the six unowned `Pending Removal` rows Phase
+  `4` owned; the unowned count moves **12 → 9** (five closed, one narrowed and replaced, three new
+  residuals registered rather than absorbed).
+- **The pass's recurring finding is a mechanism that was enforcing nothing.** The bounded admission
+  machine Sprint `4.68` wires in has existed since Sprint `1.62` with no production consumer on the
+  accept path, and Sprint `4.72` measured that `DnsRecordProgram` appeared **only in two unit
+  suites** before it — so the typed DNS program bounded no running code. Both are the shape Sprint
+  `1.82` closed for the Tier-0 secret guard.
+- **Two sprints move Standard-P surfaces**: `4.68` (queueing/admission and absolute-deadline
+  composition — in-process concurrency goes from unbounded to a compiled four) and `4.71`
+  (persistence protocol — four Vault writes that always succeeded can now be refused, and one is
+  create-only). Both qualification rows were already `pending`, so no claim is withdrawn.
+- **Phase `4` stays Active on the SES DNS writer**, narrowed with a measured reason: three record
+  types against two defined, five records in one batched change with a single propagation wait, and
+  desired values that may require creating the SES identity before the records are known. That is a
+  redesign of the SES DNS mutation rather than a rerouting of it.
+- Evidence: `prodbox dev check`, `dev docs check`, and `dev lint docs` exit 0; `prodbox test unit`
+  exit 0 at main Hspec **3287/3287** plus 27/27, 33/33, 27/27; installed
+  `prodbox test integration cli` **55/55**, exit 0.
+- Clean-room deployment qualification remains `pending` on both substrates as the separate
+  Standards O/P axis, with no deployment-ready or cutover claim.
+
+**Prior head state (2026-08-09 — all code-owned phases are closed):**
 
 - Sprint `5.31` is ✅ Done and Phase `5` is reclosed on its own surface. Installed `cli` and `env`
   integration pass **55/55**; canonical `prodbox test unit` exits 0 with main Hspec **3255/3255**.
@@ -897,8 +947,20 @@ four phases on their own surfaces, each on verified evidence rather than intent:
   refuted the sprint's premise for a second time: prodbox — not Percona PGO — is the authority for
   the three Patroni passwords, and the one mirror that exists is chart-local and runs Vault →
   Secret.
-- **Phase `4`** — Sprints `4.55`, `4.56`, and `4.59` are all ✅ **Done (2026-08-08)** and the reopen
-  closes. `4.55` gives the five control-plane roles the treatment Sprint `2.39` gave the Bootstrap
+- **Phase `4` (2026-08-09 own-surface reopen, 🔄 Active)** — Sprints `4.62`–`4.66` are ✅ **Done** and
+  the reopen stays open, because unowned `Pending Removal` rows this phase owns remain. `4.66` is the
+  one that mattered on the wire: `httpReasonPhrase` mapped six statuses while the interpreters emit
+  ten, so the control plane was writing `HTTP/1.1 403 Status`. `4.65` gives a refusal back its
+  structured reason through a required positional argument — its ledger row prescribed a module that
+  has never existed and a mechanism `dev check` forbids, so following it would have failed the build.
+  `4.64` makes the admission reset `4.61` fixed by hand unnameable, using the type and the existing
+  allowlist rather than a new lint. `4.63` decides the global ledger's CAS verdict at all four sites
+  its row said was one. Remaining: the unbounded control-plane accept loop and its missing deadlines
+  (Standard-P queueing/admission), the producer-side `ReplyStatus` migration, the two untyped Route 53
+  writers, the `TargetSinkCasRequest`/`TargetSinkRecord` constructor exports, the non-CAS
+  `vaultKvWriteV2` export, and the discarded final-slice admission set.
+- **Phase `4` (2026-08-08)** — Sprints `4.55`, `4.56`, and `4.59` are all ✅ **Done** and that reopen
+  closed. `4.55` gives the five control-plane roles the treatment Sprint `2.39` gave the Bootstrap
   Broker: readiness is `STM`-typed cached facts, so backend I/O on a `timeoutSeconds: 1` probe path
   no longer type-checks, and the `m Bool` seam is gone. Its stated counts were wrong for every role
   and are corrected — the worst offenders were the two the sprint said ran nothing: an

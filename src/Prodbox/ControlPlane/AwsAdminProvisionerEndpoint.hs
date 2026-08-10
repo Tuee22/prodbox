@@ -54,6 +54,7 @@ import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleAwsAdminProvisioner)
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId)
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   ( AwsAdminAuthorityRepository
   , AwsAdminAuthorityRepositoryError (..)
@@ -231,10 +232,10 @@ awsAdminProvisionerAuthenticatedHandler
       _ -> authenticatedHandlerHandle fallback caller route body
 
     serve caller body = case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
-      Left _ -> pure (400, responseBody (refused "request-codec-rejected"))
+      Left _ -> pure (ReplyBadRequest, responseBody (refused "request-codec-rejected"))
       Right request
         | not (callerAllowed caller request) ->
-            pure (403, responseBody (refused "caller-refused"))
+            pure (ReplyForbidden, responseBody (refused "caller-refused"))
         | otherwise -> do
             response <- runRequest request
             pure (responseStatus response, responseBody response)
@@ -480,16 +481,16 @@ refused = AwsAdminProvisioningRefused
 unavailable :: Text -> AwsAdminProvisionerResponse
 unavailable = AwsAdminProvisioningUnavailable
 
-responseStatus :: AwsAdminProvisionerResponse -> Int
+responseStatus :: AwsAdminProvisionerResponse -> ReplyStatus
 responseStatus response = case response of
-  AwsAdminProvisioningPrepared _ -> 200
-  AwsAdminProvisioningAttested _ -> 200
-  AwsAdminProvisioningAuthorized _ -> 200
-  AwsAdminProvisioningCompleted _ -> 200
-  AwsAdminProvisioningObserved _ -> 200
-  AwsAdminFirstReconcileObserved _ -> 200
-  AwsAdminProvisioningRefused _ -> 409
-  AwsAdminProvisioningUnavailable _ -> 503
+  AwsAdminProvisioningPrepared _ -> ReplyOk
+  AwsAdminProvisioningAttested _ -> ReplyOk
+  AwsAdminProvisioningAuthorized _ -> ReplyOk
+  AwsAdminProvisioningCompleted _ -> ReplyOk
+  AwsAdminProvisioningObserved _ -> ReplyOk
+  AwsAdminFirstReconcileObserved _ -> ReplyOk
+  AwsAdminProvisioningRefused _ -> ReplyConflict
+  AwsAdminProvisioningUnavailable _ -> ReplyServiceUnavailable
 
 responseBody :: AwsAdminProvisionerResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

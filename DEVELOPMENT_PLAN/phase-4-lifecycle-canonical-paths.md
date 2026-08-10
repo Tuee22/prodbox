@@ -10,6 +10,60 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-10 on Sprints `4.73`–`4.75`.** The 2026-08-09 own-surface reopen closes:
+**no `Pending Removal` row on a Phase-`4` surface is unowned any more**, which is the condition the
+reopen existed to remove. Sprints `4.62`–`4.75` are all ✅ **Done** on their code-owned surfaces.
+
+The closing three are worth reading together, because each answers a row that had been deferred with
+a stated reason and each found the row understated itself.
+
+- Sprint `4.73` ✅ routes the SES DNS writer through `DnsRecordProgram`, answering all three
+  obstacles Sprint `4.72` measured. Its own finding: the lane needs **its own owner**, which the row
+  did not say — sharing `AwsLifecycleProviderDnsOwner` would have classified retained-zone records
+  as `PerRun` and handed the public A-record writer TXT/CNAME/MX authority over the same zone.
+- Sprint `4.74` ✅ gives the Vault CAS seam the vocabulary the object-store seam has had since
+  `ModelBCasResult`. Its row named three files against **ten call sites**, and said no caller made
+  the distinction when **four made it wrongly** — one of them spending an authority-epoch retry on a
+  refused request, another reporting a write that never happened as a replay conflict.
+- Sprint `4.75` ✅ takes ownership of the one row that **cannot** be closed by code and corrects the
+  false claim it rested on: `rawServiceTimeMicros`'s haddock said the value was measured while its
+  only producer authors it, and `dhall/capacity/measured/` holds no committed profile for any lane.
+
+**One row remains in `Pending Removal` on this phase's surface and it is owned, not unowned.** The
+authored control-plane service time needs a recorded profile, which is a Standard-O recorder axis
+rather than sprint-owned code work
+([development_plan_standards.md § O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)),
+so it does not hold the phase open. Deployment qualification stays `pending` on both substrates.
+
+### Prior reopen (2026-08-09), closed by the above
+
+Sprints `4.62`–`4.66` close the same defect shape at five layers — **a value the code already had and
+then did not use** — and three of them corrected their own ledger row against source.
+
+- Sprint `4.62` ✅ binds the target-sink CAS verdict; its row called the defect hygiene and the
+  mutation exercise showed a refused write being recorded as `TargetCommitRunCommitted`.
+- Sprint `4.63` ✅ decides the **global** ledger's CAS verdict at all four call sites the row said was
+  one. `ModelBCasRefusedCorrupt` refuses — every producer of it refuses *before* the object store, so
+  it is the one arm stating no write happened — while `Unobservable` deliberately stays on the
+  read-back path. A second defect fell out: a refusal used to consume a compaction retry and surface
+  as `TargetCommitCompactionOverBound`, a capacity bound named as the cause of a refusal.
+- Sprint `4.64` ✅ makes the admission reset Sprint `4.61` fixed by hand **unnameable**: `noAdmissions`
+  is package-internal, `runFirstAnchoredStepOrder` is the sole entry point that starts empty, and the
+  existing `dev check` allowlist bars the way around it.
+- Sprint `4.65` ✅ gives a refusal back its reason. Its row's stated evidence was false twice over —
+  it named a module that has never existed and a mechanism `dev check` forbids — and it was filed
+  against the wrong file.
+- Sprint `4.66` ✅ stops the control plane writing `HTTP/1.1 403 Status`. This one was **live**, and
+  the row understated it three ways: the unmapped set is `{401, 403, 408, 410}` not `{401, 403}`, 17
+  sites not 9, and 338 literals not 47.
+
+**Everything that reopen listed as remaining is now closed.** The unbounded control-plane accept
+loop went to Sprint `4.68`; the producer-side `ReplyStatus` migration to `4.67`; the two untyped
+Route 53 writers in `ProviderProduction.hs` to `4.72` and `4.73`; the
+`TargetSinkCasRequest`/`TargetSinkRecord` constructor exports to `4.70`; the non-CAS
+`vaultKvWriteV2` export to `4.71`; and the discarded final-slice admission set to `4.69`. The two
+residuals `4.68` and `4.71` registered while doing that work went to `4.75` and `4.74`.
+
 ✅ **Reclosed 2026-08-08 on Sprint `4.61`** — a second own-surface reopen the same day, closed the
 same day. Phase `5`'s Sprint `5.31` made a discarded refusal speak, and the sentence it produced
 named a Phase-`4` defect: `runAnchoredStepOrder` reset its admission set at every phase boundary, so
@@ -6906,6 +6960,964 @@ reintroducing the reset — the threading is correct but not enforced, and `noAd
 constructible at any call site. The honest options are a `dev check` rule holding that
 `noAdmissions` appears exactly once per reconcile surface, or a type that distinguishes "the run's
 admissions" from "an empty set". Registered here rather than asserted as done.
+
+## Sprint 4.62: A Refused Sink CAS Is Not a Read-Back Question ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the target-commit persistence path.
+**Implementation**: `src/Prodbox/Lifecycle/TargetCommitInterpreter.hs` (the discarded
+`targetSinkCompareAndSwap` verdict is bound and decided; new `TargetCommitSinkCasRefused`),
+`test/unit/TargetCommitSmtp.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — **this one does move a Standard-P surface**. It changes the
+persistence protocol: a target-secret commit that the sink store explicitly refused is no longer
+recorded as committed. Both substrate rows are already `pending`, so nothing is invalidated, but the
+next qualification run must exercise the post-`4.62` commit path, in which a refused CAS surfaces as
+`TargetCommitSinkCasRefused` instead of being absorbed by the following read-back.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
+plus a mutation exercise that reproduces the pre-fix outcome and restores byte-exactly.
+**Docs to update**: none — no governed document described the discarded verdict, which is part of why
+it survived.
+
+### Objective
+
+`runPreparedTargetCommit` bound the target sink store's answer with `_ <-`. The adapter distinguishes
+four outcomes — `TargetSinkCasApplied`, `TargetSinkCasConflict`, `TargetSinkCasRefused`,
+`TargetSinkCasUnobservable` — and every one of them was dropped, so correctness rested entirely on the
+read-back that follows. That is the *Distinguishability* class of
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md).
+
+**The deletion ledger recorded this as a hygiene defect. It is not.** The mutation exercise below
+shows the pre-fix interpreter returning
+`TargetCommitRunCommitted { targetCommitRunSinkCasAttempted = True }` for a write the store said it
+did **not** perform — a false commit record for a target secret, produced whenever the sink happens to
+hold the expected bytes for any other reason.
+
+### Deliverables
+
+- ✅ The verdict is bound and matched exhaustively, so a fifth outcome would be a compile error rather
+  than a silent fifth thing that is also ignored.
+- ✅ `TargetSinkCasRefused` becomes `TargetCommitSinkCasRefused`, a distinct error from
+  `TargetCommitSinkReadbackFailed`. The distinction is the point: one is what the sink **said at the
+  time**, the other is what the sink **looks like afterwards**, and collapsing them is how a refusal
+  became a success.
+- ✅ `Applied`, `Conflict`, and `Unobservable` continue through the authoritative read-back, decided
+  explicitly rather than by falling through. `Unobservable` in particular **must** stay on the
+  read-back path — it is the applied-but-response-lost case, and treating it as a refusal would
+  reintroduce the "unobservable ≠ absent" defect Sprints `4.53` and `5.29` closed elsewhere.
+- ✅ **A stale location claim in the ledger row is corrected against source** (Standard C). The row
+  named two call sites — `TargetCommitInterpreter.hs` and
+  `ControlPlane/TargetSecretAgentExecution.hs`. The second has **zero** occurrences of
+  `targetSinkCompareAndSwap` or `TargetSinkCas` today: Sprint `4.59` deleted the lane it sat on. The
+  row was written before that deletion and was never re-measured.
+
+### Validation
+
+1. ✅ The mutation exercise: with the fix reverted to `_ <-`, the new case fails with
+   `expected: Left (TargetCommitSinkCasRefused …)` / `but got: Right (TargetCommitRunCommitted
+   {…, targetCommitRunSinkCasAttempted = True})`. The fixture deliberately leaves the sink observation
+   exactly as a successful write would leave it, so the read-back *would* have confirmed — which is
+   what makes the old behaviour reachable rather than theoretical. Source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+2. ✅ `prodbox-unit -p "Sprint 4.62"` — 1/1, also asserting that no read-back observation follows the
+   refused CAS, so the refusal happens at the verdict rather than after another round trip.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 with main Hspec **3267/3267** plus
+   27/27, 33/33, and 27/27 on the dedicated suites; `prodbox dev docs check` and
+   `prodbox dev lint docs` exit 0; installed `prodbox test integration cli` **55/55**, exit 0. The
+   installed run matters here rather than being a formality: this sprint edits a production
+   interpreter on the target-commit path, so a suite that drives the installed binary is the
+   regression gate for it.
+
+### Remaining Work
+
+One co-defect of the same shape is **registered rather than absorbed**: the neighbouring
+`modelBCompareAndSwap` verdict on the global target-intent ledger is discarded the same way, at
+`src/Prodbox/Lifecycle/TargetCommitInterpreter.hs`. It was found while reading this call path and is
+not this sprint's stated deliverable; it is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with its own analysis owed, because
+the global ledger's guarded-CAS semantics are not the sink's and the right disposition per arm has to
+be decided rather than copied.
+
+## Sprint 4.63: The Global Ledger's CAS Verdict Is Decided, Not Discarded ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the target-commit persistence path.
+**Implementation**: `src/Prodbox/Lifecycle/TargetCommitInterpreter.hs` (new `GlobalLedgerStep`,
+`globalLedgerCasRefusal`, and `TargetCommitGlobalCasRefused`; four `_ <-` bindings replaced),
+`test/unit/TargetCommitSmtp.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — this moves a Standard-P surface (persistence protocol). A
+target-intent completion the global ledger refused is no longer recorded as committed, so *when a
+commit counts as a commit* changes on the global lane as it did on the sink lane in Sprint `4.62`.
+**Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count
+plus a mutation exercise that reproduces the pre-fix outcome and restores byte-exactly
+(`sha256sum -c`: `OK`).
+**Docs to update**: none — no governed document described the discarded verdict.
+
+### Objective
+
+Sprint `4.62` closed the discarded *sink* CAS verdict and **registered the global one rather than
+absorbing it**, because the global ledger's guard semantics are not the sink's. This is that
+analysis, done.
+
+### Deliverables
+
+- ✅ **The row's own location claim was corrected by measurement (Standard C).** It named
+  `modelBCompareAndSwap` bound with `_ <-` as one site. There are **four**:
+  `TargetCommitInterpreter.hs` prepare, complete, compaction, and recovery-resolve. It also said the
+  result type "answers `ModelBCasApplied` / `ModelBCasUnobservable`"; `ModelBCasResult` has **five**
+  constructors, and the two the row omitted include the only one that matters here.
+- ✅ **The disposition is decided per arm rather than copied from `4.62`, and the answer differs.**
+  `globalLedgerCasRefusal` is total over all five arms. `ModelBCasRefusedCorrupt` refuses; the other
+  four continue to the authoritative re-observation the caller already performs. The reason is
+  measured rather than assumed: **every producer of `ModelBCasRefusedCorrupt` in the repository
+  refuses *before* reaching the object store** — an encode failure
+  (`ModelBCasTransport.hs:122`), a non-registered coordinate, an unsupported guarded arm, or an
+  Authority projection refusal (`RetainedSesLeaseClient.hs:137`–`:175`). It is the one answer that
+  states no write was performed.
+- ✅ **`ModelBCasUnobservable` deliberately stays on the read-back path.** It is the
+  applied-but-response-lost case; routing it to a refusal would reintroduce the "unobservable is not
+  absent" defect Sprints `4.53`, `4.62`, and `5.29` closed elsewhere.
+- ✅ The refusal carries `GlobalLedgerStep`, because the same store text means four different things
+  at prepare, complete, compaction, and recovery-resolve, and the constructor is the only place that
+  distinction survives.
+- ✅ **A second defect was found at the compaction site and is fixed by the same change.**
+  `compactAllTerminalIntents` consumed one retry from `registeredTargetCapacity` per refusal and then
+  reported `TargetCommitCompactionOverBound` — *a capacity bound named as the cause of a refusal*,
+  reachable in the ordinary write-denied/read-allowed state where every observation succeeds and
+  every write is refused.
+
+### Validation
+
+1. ✅ The mutation exercise, on the arm where discarding could invert the outcome: with the
+   completion-arm decision reverted, the new case fails with
+   `expected: Left (TargetCommitGlobalCasRefused GlobalLedgerComplete …)` /
+   `but got: Right (TargetCommitRunCommitted {…})`. The fixture leaves the ledger exactly as a
+   successful completion would, so the read-back *would* have confirmed — which is what makes the old
+   behaviour reachable rather than theoretical. Source restored byte-exactly (`sha256sum -c`: `OK`).
+2. ✅ `prodbox-unit -p "Sprint 4.63"` — 1/1, also asserting that no confirming observation follows the
+   refused completion, so the refusal happens at the verdict rather than after another round trip.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+None.
+
+## Sprint 4.64: An Admission Reset Is Not Nameable ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the reconcile executor.
+**Implementation**: `src/Prodbox/Lifecycle/DependencyAdmission/Internal.hs` (`AdmissionSet` and
+`noAdmissions` relocated), `src/Prodbox/Lifecycle/DependencyAdmission.hs` (export removed),
+`src/Prodbox/Lifecycle/AnchoredReconcile.hs` (`runFirstAnchoredStepOrder`),
+`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
+`src/Prodbox/CheckCode.hs` (allowlist entry), `test/unit/DependencyAdmissionSuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. No process, deadline,
+envelope, or admission *decision* changes: the same admissions are threaded through the same phases
+in the same order. What changes is which values a call site can name.
+**Independent Validation**: pure — a compile-failure mutation exercise plus two named unit cases.
+**Docs to update**: none.
+
+### Objective
+
+Sprint `4.61` fixed the admission reset by hand and left the threading correct **by convention**.
+`noAdmissions` was exported, so any phase call site could pass an empty set and silently discard
+everything the run had observed — the exact defect `4.61` had just removed, one edit away.
+
+### Deliverables
+
+- ✅ `AdmissionSet` and `noAdmissions` move to `Prodbox.Lifecycle.DependencyAdmission.Internal`;
+  `noAdmissions` leaves the public export list. The type stays exported abstractly.
+- ✅ `runFirstAnchoredStepOrder` is the sole entry point that starts empty. Every later phase must be
+  handed a value **only an earlier phase could have returned**.
+- ✅ The reconcile executor is added to the *already existing*
+  `dependencyAdmissionInternalSourceViolations` allowlist rather than a new lint being written, so
+  reaching around the removed export fails the build. Test modules import `Internal` deliberately —
+  a suite must be able to construct the empty case to assert what it refuses — and the rule is scoped
+  to `src/`, which is what makes that legal.
+- ✅ The first-phase runners answer `Either ExitCode AdmissionSet` rather than the pair the later
+  phases use. That is the point rather than an inconsistency: the pair shape would have forced these
+  functions to name an empty set on the failure arm, reintroducing the value the sprint removes.
+
+### Validation
+
+1. ✅ Mutation exercise: adding `noAdmissions` to `Rke2.hs`'s import list fails the build —
+   *Module 'Prodbox.Lifecycle.DependencyAdmission' does not export 'noAdmissions'*. Source restored.
+2. ✅ `prodbox-unit -p "Sprint 4.64"` — 2/2. One asserts the allowlist admits the executor and refuses
+   **both** reconcile surfaces; the other asserts a first phase returns a *non-empty* set, which is
+   precisely the value `4.61`'s defect discarded.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+**The bound is stated rather than implied.** This makes an accidental reset a compile error and a
+deliberate one a loudly-named function call. It does **not** prevent a surface from invoking
+`runFirstAnchoredStepOrder` twice; what it removes is the innocuous-looking way to do it. The
+`ReconcileRun` state-threading refactor that would close that too is not folded in.
+
+One latent trap found while measuring and **registered rather than absorbed**:
+`src/Prodbox/Lib/AwsSubstratePlatform.hs` drops the final slice's returned `AdmissionSet` with
+`fst <$>`. That is correct today because it is the last slice, and becomes the same defect the moment
+a third slice is added.
+
+## Sprint 4.65: A Refusal Retains Its Reason ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the control-plane response path.
+**Implementation**: `src/Prodbox/Http/ResponseObligation.hs` (required `obligationObserveRefusal`,
+`renderResponseRefusalReason`, `responseObserveBudgetMicrosDefault`),
+`src/Prodbox/ControlPlane/Runtime.hs`, `test/integration/FixtureServer.hs`,
+`test/unit/ResponseObligationSuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. No process, capability,
+deadline, envelope, or admission decision changes, and **no wire byte changes** — the reply is
+identical; what is added is a write to the process's own stderr.
+**Independent Validation**: pure — three named unit cases plus a mutation exercise.
+**Docs to update**: none. `bootstrap_readiness_doctrine.md` § 0.5 already states the requirement this
+implements; it needed satisfying, not amending.
+
+### Objective
+
+Sprint `4.60` made the reply obligatory and left the *reason* nowhere. Production must not put an
+exception's text on the wire, so after `4.60` a `500` was the entire surviving record of any handler
+failure — a refusal that does not retain its structured reason, which
+[bootstrap_readiness_doctrine.md § 0.5](../documents/engineering/bootstrap_readiness_doctrine.md)
+forbids.
+
+### Deliverables
+
+- ✅ **Two halves of the ledger row's evidence were false and are corrected against source
+  (Standard C).** The row said the fix was to add a `Prodbox.Logging` import and an
+  `hPutStrLn stderr`. `Prodbox.Logging` **has never existed** — the module is
+  `Prodbox.Gateway.Logging` — and `hPutStrLn stderr` is **forbidden** in every `src/Prodbox/**.hs`
+  by `checkErrorBoundaryViolations`, which exempts exactly three paths. Following the row as written
+  would have failed the build.
+- ✅ **The row was also filed against the wrong file.** `Runtime.hs` never sees the exception: the
+  only seam that does is `obligationRefusal`, a **pure** field of `ResponseObligation`. The fix
+  therefore lives in the helper, not the server.
+- ✅ `obligationObserveRefusal` is a **positional** parameter of `mkResponseObligation`, not a record
+  field with a default. A default would have made observation opt-in, and the defect is precisely
+  that nobody opted in. It is the same required-argument move the module already makes for the
+  refusal renderer.
+- ✅ The observer runs inside its own `try` **and** its own `timeout`, both load-bearing: `4.60`'s
+  guarantee is that nothing on the refusal path prevents the reply, and an observer is caller-supplied
+  code that may throw or block. Cancellation is re-raised so an enclosing deadline still fires.
+- ✅ `renderResponseRefusalReason` bounds the reason at 512 characters, because an exception's
+  rendering can quote its input and an unbounded reason is an unbounded write to the log stream from
+  the request path.
+- ✅ The integration fixture server observes too. A fixture passing a no-op would be the
+  counterexample to the required argument.
+
+### Validation
+
+1. ✅ Mutation exercise: with the observer invocation removed, `Sprint 4.65: a refusal is observed with
+   its structured reason` fails `expected: 1 / but got: 0`. Source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+2. ✅ `prodbox-unit -p "Sprint 4.65"` — 3/3: the reason is recorded and the **wire still does not
+   carry it**; a throwing observer costs the reason and not the reply; the reason is bounded.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+**One residual is recorded rather than solved.** Truncation is not sanitisation: no mechanism here
+proves an exception's text carries no secret byte. What bounds the exposure is the destination — the
+process's own stderr, never a reply — and that is an argument, not a proof.
+
+## Sprint 4.66: The Wire Stops Saying "Status" ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the control-plane transport.
+**Implementation**: `src/Prodbox/Http/ReplyStatus.hs` (new), `src/Prodbox/ControlPlane/Server.hs`,
+`src/Prodbox/CheckCode.hs` (`checkControlPlaneReplyStatusCoverage`), `prodbox.cabal`,
+`test/unit/ControlPlaneServer.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. No status code changes —
+a `403` is still a `403`. What changes is the reason phrase beside it, from the literal `Status` to
+`Forbidden`. No process, capability, deadline, envelope, admission, persistence, or routing decision
+moves.
+**Independent Validation**: pure — three named unit cases plus a repository-wide mutation exercise
+run through the installed gate.
+**Docs to update**: none.
+
+### Objective
+
+`httpReasonPhrase` mapped six codes and ended `_ -> "Status"`, while the interpreters emit ten. This
+was **live, not latent**: the control plane was writing `HTTP/1.1 403 Status` on the wire.
+
+### Deliverables
+
+- ✅ **Three counts in the ledger row are wrong and are corrected by measurement (Standard C).** The
+  row said the unmapped emitted set is `{401, 403}`; it is **`{401, 403, 408, 410}`** — the row misses
+  the `408` at `AuthenticatedRoleInterpreter.hs:191` and the `410` at `CleanupRunEndpoint.hs:269`. It
+  said nine interpreter sites; the measured count is **17** across 11 files. It said 47 literals and
+  17 type sites; the measured producer census is **338** literals and **75** type sites across 37
+  files.
+- ✅ `Prodbox.Http.ReplyStatus` holds the closed set. `replyStatusCode` and `replyStatusReason` are
+  total with no wildcard arm, so adding a constructor is a `-Werror` error at each.
+  `replyStatusFromCode` is **derived from** `replyStatusCode` rather than hand-written, so the two
+  cannot drift — a second table is exactly the restatement that produced this defect.
+- ✅ `checkControlPlaneReplyStatusCoverage` fails the build when a producer under
+  `src/Prodbox/ControlPlane/` emits a code the closed set does not define, which is what makes the
+  `Unmapped Status` arm unreachable on the governed namespace.
+
+### Validation
+
+1. ✅ **Repository-wide mutation exercise.** Deleting `ReplyForbidden` from the closed set makes
+   `prodbox dev check` fail naming **11 real production files**, one per `403` producer — so the gate
+   is coupled to the type and to the actual namespace, not to a fixture. Source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+2. ✅ **The gate's own first run found two false positives, and both are recorded rather than quietly
+   patched.** `CallerPrincipal` encodes caller identities as `100`–`103` through the same `-> NNN`
+   shape a status projection uses — so shape alone does *not* discriminate, and the exemption is by
+   path and named. `LocalClient.hs` binds `(127, 0, 0, 1)`, which matched the reply-tuple shape and
+   was reported as "HTTP status 127"; the matcher now requires the body after the comma not to begin
+   with a digit, at the cost of a **stated false negative**.
+3. ✅ **An existing unit case's name was true and its body was not**, and it is corrected rather than
+   extended: `maps every emitted status code to a reason phrase` listed six codes while ten are
+   emitted, so the four it omitted were exactly the four that reached the wire unnamed. The list is
+   now derived from the closed type.
+4. ✅ `prodbox-unit -p "Sprint 4.66"` — 2/2; `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+**The row's own prescription is not fully executed, and that is stated rather than rounded off.** It
+asks for a closed reply-status ADT **at the producer**; what landed is the closed set plus a
+transport that cannot render outside it plus a drift gate. The producers still answer a raw `Int` —
+`interpreterHandle`'s reply type is `(Int, ByteString)` and 51 status projections answer `Int`. The
+338-literal producer migration is **registered in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) and remains open**; the row is not
+closed by this sprint, it is narrowed.
+
+## Sprint 4.67: A Status Is a Value at the Producer ✅
+
+**Status**: Done (2026-08-09) — Phase `4` own-surface work on the control-plane reply seam.
+**Implementation**: `src/Prodbox/ControlPlane/Server.hs`, `src/Prodbox/ControlPlane/Runtime.hs`,
+`src/Prodbox/ControlPlane/AuthenticatedRoleInterpreter.hs`,
+`src/Prodbox/ControlPlane/RequestReplay.hs`,
+`src/Prodbox/ControlPlane/TlsRetentionAuthorityClient.hs`, 29 further endpoint modules under
+`src/Prodbox/ControlPlane/`, five under `src/Prodbox/Lifecycle/Decommission/`,
+`src/Prodbox/Http/ReplyStatus.hs`, `src/Prodbox/CheckCode.hs`, and the unit/transport suites.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. Every status keeps the
+number it had; a `409` is still a `409`, byte for byte on the wire, and the retained replay
+projection's encoding is unchanged. What moves is the type a producer states it in. No process,
+capability, deadline, queue, envelope, admission, persistence, or routing decision changes.
+**Independent Validation**: pure — the closed type plus two named unit cases, one of which derives
+its expectation from both projections of every constructor rather than from a sample.
+**Docs to update**: none.
+
+### Objective
+
+Sprint `4.66` closed the set at the **renderer** and left every producer answering a raw `Int`,
+which is why a `dev check` text rule had to stand in for a type. Close it at the producer.
+
+### Deliverables
+
+- ✅ **The row's count was right for the namespace it named and wrong for the repository.** It said
+  51 status projections under `src/Prodbox/ControlPlane/`; measured, that is exactly 51. But five
+  more live under `src/Prodbox/Lifecycle/Decommission/` — `authorityDecommissionExportHttpStatus`,
+  `authorityDecommissionStopHttpStatus`, `targetGenerationTombstoneHttpStatus`,
+  `targetDecommissionInventoryHttpStatus`, `retainedCustodyTombstoneHttpStatus` — and they are
+  reached from `RoleInterpreters.hs` like any other. The migrated total is **56 projections across
+  34 files**. A namespace-scoped census measured a namespace, not a surface.
+- ✅ `interpreterHandle`, `serveControlPlaneRequest`, `renderHttpResponse`,
+  `AuthenticatedRoleHandler`, and every reply tuple answer `ReplyStatus`. `httpReasonPhrase` is
+  deleted rather than kept as a compatibility projection: with no producer holding an `Int`, the
+  only thing it could still serve is a new untyped seam.
+- ✅ **A second copy of a server's status table was found and deleted, not merely retyped.**
+  `TlsRetentionAuthorityClient` carried a verbatim seven-arm restatement of
+  `tlsAuthorityResponseHttpStatus` in a `where` clause, so the client's idea of the expected status
+  and the server's were two values that a change to one would have made disagree
+  ([chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)). The
+  client now projects the server's own answer.
+- ✅ **The durable replay projection admitted any code between 100 and 599.** `mkReplayResponse`
+  range-tested an `Int`, which accepted every status the repository does not define — including all
+  four Sprint `4.66` found reaching the wire unnamed. The live constructor now takes a
+  `ReplyStatus`; the numeric admission moves to `mkReplayResponseFromStoredCode`, the one crossing
+  that legitimately receives a number, where an undefined code is a **decode refusal** rather than a
+  value that flows on. The stored bytes are unchanged, so a projection written by an earlier
+  revision still decodes.
+- ✅ **Two crossings deliberately keep an `Int`, and both are stated rather than left as residue.**
+  A peer's status (`ControlPlaneResponse`) is a byte off the wire that no type here bounds — turning
+  a proxy's `502` into a decode failure would name nothing — and the stored status above. Per
+  [§ 22](../documents/engineering/chaos_hardening_doctrine.md), a ring-2 gate bounds a process, not
+  a protocol.
+- ✅ **The `dev check` rule is repurposed rather than retired.** Sprint `4.66`'s form admitted a
+  literal the closed set defined, because the producers held `Int`s and a text rule was the only
+  gate available. It now fails on **any** status literal in a reply position under
+  `src/Prodbox/ControlPlane/`, which is a job the type cannot do: stop a new `Int`-typed reply seam
+  being opened beside the typed one. Both named exemptions survive unchanged —
+  `CallerPrincipal`'s `100`–`103` tags and `LocalClient`'s `(127, 0, 0, 1)`.
+
+### Validation
+
+1. ✅ **The migration is proven by the compiler, not by review.** With `interpreterHandle` retyped,
+   `-Werror` named every producer; the closing build is warning-clean across the library, the
+   executable, and all eight test suites.
+2. ✅ `Sprint 4.67: renderHttpResponse takes a status, not a number` compares the rendered status
+   line against both projections of **every** constructor, so a new constructor is covered by
+   construction rather than by someone remembering to extend a list — the exact failure mode that
+   produced `HTTP/1.1 403 Status`.
+3. ✅ `Sprint 4.67: a producer stating a status as a number fails the build` fixes the gate's new
+   meaning in both directions: `(403, body)` is now a violation where `4.66` allowed it, `418`
+   still is, and the migrated `(ReplyForbidden, body)` shape is clean.
+4. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3276/3276** (the sprint
+   adds 1 net) plus 27/27, 33/33, and 27/27 on the dedicated suites.
+
+### Remaining Work
+
+None on this sprint's surface. The
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row moves to `Completed`.
+
+## Sprint 4.68: The Accept Path Has a Bound and a Deadline ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the control-plane accept path.
+**Implementation**: `src/Prodbox/ControlPlane/Runtime.hs`, `src/Prodbox/Http/ReplyStatus.hs`,
+`src/Prodbox/CheckCode.hs` (`controlPlaneCapacityViolations`), `test/unit/ControlPlaneServer.hs`.
+**Blocked by**: none.
+**Deployment qualification**: **pending, and this sprint moves two Standard-P surfaces** —
+queueing/admission and absolute-deadline composition
+([development_plan_standards.md § P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)).
+In-process concurrency changes from *unbounded* to a compiled four, a request acquires an absolute
+deadline it did not have, and two new statuses (`429`, `408`) can appear on the wire. Both ledger
+rows were already `pending`, so no qualification claim is withdrawn — but this is the sprint a
+re-qualification run must exercise.
+**Independent Validation**: pure plus socket-pair — the plan is proven by a build gate and a unit
+case, and both new replies are driven end to end over a socket pair with no listener, no port, and
+no live infrastructure.
+**Docs to update**: none.
+
+### Objective
+
+`runControlPlaneServer` was `forever { accept; forkFinally }`: a thread per accepted connection,
+nothing counting them, and no deadline on either the request read or the interpreter. A stalled peer
+held a thread indefinitely and arrival rate alone decided concurrency.
+
+### Deliverables
+
+- ✅ **The admission machine already existed and had no production consumer.**
+  `Prodbox.ControlPlane.Capacity` has held an opaque `ServiceCapacityPlan` and a pure decide/evolve
+  `AdmissionQueue` — with saturation, deadline-feasibility, and a retry hint — since Sprint `1.62`,
+  reachable from `TestValidation.hs` and from nothing on this path. This sprint makes it
+  load-bearing rather than writing a second one. That is the same shape Sprint `1.82` closed for the
+  Tier-0 secret guard: a mechanism documented as enforcing something, enforcing nothing.
+- ✅ **The kernel backlog is not the bound, and the distinction is the finding.** `listen … 32`
+  bounds *pending* connections and was easy to read as a bound on *accepted* ones. It is not: every
+  connection the loop accepted became a thread immediately.
+- ✅ Two bounds, deliberately redundant and in the same direction: the `TBQueue` is sized at the
+  plan's queue capacity so over-admission is not representable in the carrier, while `admit` refuses
+  at the lower rejection threshold and says **why**. A bug in the decision cannot unbound the memory.
+- ✅ **The deadline is enforced inside the handler, not around the obligation, and that placement is
+  the whole design.** A `timeout` wrapped outside delivers an asynchronous exception into
+  `withResponseObligation`, which answers its *cancellation* refusal and re-raises — so the caller
+  would read `503 shutting-down`, naming the wrong cause, and a worker writing `408` afterwards
+  would be a second reply on one connection. Inside, expiry is an ordinary value and the peer gets
+  exactly one reply that names what happened.
+- ✅ **A refusal is answered through the same obligation as a served request**, not by a raw write —
+  which is also why `Runtime.hs` still cannot import `sendAll` and the Sprint `4.60` lint still
+  holds over it.
+- ✅ `ReplyTooManyRequests` joins the closed set, because a producer now emits `429`.
+- ✅ A `dev check` gate fails the build when `controlPlaneCapacityInputs` does not compile into a
+  plan. The runtime answers `ExitFailure 1` on a `Left`, which is correct behaviour and a terrible
+  way to discover an arithmetic property of four constants — the symptom would be a role Pod that
+  starts and will not serve.
+
+### Validation
+
+1. ✅ **A defect was found by testing the path rather than by reasoning about it, and it is the one
+   worth reading.** The `408` case failed with `Connection reset by peer`: `close` on a socket
+   holding unread bytes sends **RST**, and an RST discards what was already written. The `429` and
+   the `408` are exactly the two replies produced *without* reading the request, so both could be
+   lost — Sprint `4.60`'s "accepted a connection and answered nothing", reappearing through the
+   kernel instead of through a `const`. `drainBeforeRefusal` consumes the request through the
+   ordinary bounded reader first, bounded in bytes by the framing limits and in time by 100 ms so a
+   stalled peer cannot hold the accept thread.
+2. ✅ **Mutation exercise on the build gate.** Setting `rawWorkerCount = 1` makes `prodbox dev check`
+   exit 1 with `ServiceCapacityOverCommitted 2400000`. Source restored byte-exactly
+   (`sha256sum -c`: `OK`).
+3. ✅ Three named cases: the plan compiles with its utilization stated as a number (`600000` ppm
+   against the `700000` ceiling) rather than as a passing constructor; a saturated path answers
+   `429 Too Many Requests` and the unreachable-under-these-constants second arm answers `503`; an
+   expired connection answers `408 Request Timeout` **and the interpreter is never invoked**.
+4. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3279/3279** (the sprint
+   adds 3) plus 27/27, 33/33, and 27/27.
+
+### Remaining Work
+
+**One number is authored rather than measured, and it is registered rather than glossed.**
+`rawServiceTimeMicros = 300000` is the field
+[resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md) calls
+uncertified-until-first-profile, and no measured control-plane profile exists. What the plan buys
+today is not a proven service rate: it is that concurrency, queue depth, and rejection threshold are
+finite and stated in one place, where before they were unstated because there was no bound at all.
+A measured profile for this lane is a Standard-O axis, tracked as a new
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row rather than absorbed here.
+
+## Sprint 4.69: A Reconcile Run Carries Its Admissions ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the AWS-substrate reconcile order.
+**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs` (`runReconcileSlices`),
+`test/unit/DependencyAdmissionSuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. The same steps run in the
+same order against the same admissions; what changes is that the carrier is threaded by a fold
+instead of by hand. No process, capability, deadline, queue, envelope, persistence, or routing
+decision changes.
+**Independent Validation**: pure — three named cases drive the fold with recording slices, with no
+graph, no cluster, and no AWS.
+**Docs to update**: none.
+
+### Objective
+
+The final AWS-substrate slice discarded the `AdmissionSet` it returned with `fst <$>`. Sprint `4.64`
+had made a slice that starts from *no* admissions unnameable; it did nothing about one that starts
+from a *stale* set because an intervening slice's admissions were dropped.
+
+### Deliverables
+
+- ✅ **The defect was a call site, not a value, which is why the previous sprint's type could not
+  see it.** `noAdmissions` being package-internal stops a phase being *given* an empty set; it says
+  nothing about a phase being given a set that is real but out of date. Adding a third slice would
+  have reintroduced Sprint `4.61`'s defect with no compile error and no lint.
+- ✅ `runReconcileSlices` takes an opening slice and a list of continuing slices and threads the
+  carrier between them. A continuing slice **is** a function of the carrier, so writing one that
+  ignores it is now a deliberate act rather than the default; the run's final admissions are
+  discarded in exactly one place, where the run ends and there is nothing left to hand them to.
+- ✅ **The shape is deliberately asymmetric and that is stated rather than tidied away.** Only the
+  opening slice may start from the executor's own empty set, so it is a separate argument rather
+  than the head of a uniform list — a uniform list would need a starting `AdmissionSet` from
+  somewhere, and the only honest source of an empty one is package-internal by construction
+  (Sprint `4.64`).
+- ✅ `runSlice` now answers the same `Either ExitCode AdmissionSet` the opening slice answers. The
+  pair it used to answer is what made `fst <$>` expressible at all.
+
+### Validation
+
+1. ✅ Three named cases: three recording slices observe `[False, True, True]` — the first opens with
+   nothing and each later one sees what its predecessor recorded, where the pre-fix shape produced
+   `False` from the second slice onward; a failing continuing slice stops the run with its exit code
+   and no later slice runs; a failing opening slice runs nothing at all.
+2. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3282/3282** (the sprint
+   adds 3) plus 27/27, 33/33, and 27/27.
+
+### Remaining Work
+
+None on this sprint's surface. The
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) row moves to `Completed`.
+
+## Sprint 4.70: A Target-Sink Write Cannot Be Assembled From Raw Data ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the target-commit vocabulary.
+**Implementation**: `src/Prodbox/Lifecycle/TargetCommitIntent.hs`,
+`src/Prodbox/ControlPlane/TargetMaterialRecordCodec.hs`,
+`src/Prodbox/ControlPlane/TrustedTargetSink.hs`,
+`src/Prodbox/Lifecycle/Decommission/TargetTombstone.hs`, `src/Prodbox/CheckCode.hs`
+(`targetSinkRecordMinterViolations`), and five unit modules.
+**Blocked by**: none.
+**Deployment qualification**: pending, and **no Standard-P surface moves**. No value that reaches a
+store changes; what changes is which modules can construct one. The deleted code had zero callers.
+**Independent Validation**: pure — the type carries the constructor bound, and two named cases fix
+the lint's behaviour in both directions.
+**Docs to update**: none.
+
+### Objective
+
+`TargetSinkCasRequest (..)` and `TargetSinkRecord (..)` were exported with their constructors, so a
+CAS request — including the owner nonce and fencing token that make a write authoritative — was
+constructible from raw data by any module. *Provenance* class,
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md).
+
+### Deliverables
+
+- ✅ **The request needed no `.Internal` module, because measurement showed it needed no
+  constructors at all.** In `src/`, `TargetSinkInitialize`/`TargetSinkReplace` appear at exactly
+  three sites: the definition and the two mints inside `decideTargetSinkWrite`. Every other use —
+  all of them in test adapters — was the same three-way projection, so
+  `targetSinkCasRequestSink` / `…ExpectedVersion` / `…Record` answer what a `case` used to and the
+  constructors are simply unexported. An initialize projects to `Nothing`, not to version zero: the
+  two are different facts and stay distinguishable.
+- ✅ `TargetSinkRecord`'s constructor is unexported and its five accessors are not.
+- ✅ **Two minters state different facts through one shape, and that is named rather than left
+  implicit.** `recordForIntent` builds the record a committed intent **decided** to write;
+  `targetSinkRecordFromStore` rebuilds what the store **says** it holds. No type separates them —
+  the arguments are identical — so the second is bounded to the one durable decoder by a `dev check`
+  rule, and [§ 22](../documents/engineering/chaos_hardening_doctrine.md) applies: that bounds this
+  process, not the protocol. The bound is stated in the rule's own comment.
+- ✅ **Narrowing the export surface exposed dead code that the `(..)` imports had been masking.**
+  `TrustedTargetSink.hs` still imported `TargetSinkCasAdapter`, `TargetSinkCasRequest`,
+  `TargetSinkCasResult`, `TargetSinkVersion`, `targetSinkVersionValue`, `KvV2Cas`,
+  `vaultKvCasWriteV2`, `Control.Monad (void)`, `Data.Bifunctor (first)`, `Numeric.Natural`, and
+  `Data.Map.Strict` — and carried `encodeVaultTargetRecord`, an unexported top-level binding with no
+  caller. All of it is residue from Sprint `4.59`'s deletion of the CAS half of that module. It is
+  deleted rather than annotated.
+- ✅ `Decommission/TargetTombstone.hs` imported the constructor and used only
+  `targetSinkRecordGeneration`; the import is narrowed to what it reads.
+
+### Validation
+
+1. ✅ **Mutation exercise on the wired gate.** Naming `targetSinkRecordFromStore` in
+   `TrustedTargetSink.hs` makes `prodbox dev check` exit 1 with the rule's message; source restored
+   and re-verified (`sha256sum -c`: `OK`).
+2. ✅ Two named cases fix the rule in both directions: an unlisted `src/` module minting a record is
+   a violation, and both allowlisted paths — the durable decoder and the definition site — are
+   silent.
+3. ✅ **The five test modules that built these values are migrated rather than exempted**, so the
+   suite exercises the same projections production does.
+4. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3284/3284** (the sprint
+   adds 2) plus 27/27, 33/33, and 27/27.
+
+### Remaining Work
+
+None on this sprint's surface. Both
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rows — the constructor exports and
+its 2026-08-08 correction — move to `Completed`.
+
+## Sprint 4.71: There Is No Unconditional Vault Write ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the Vault KV write boundary.
+**Implementation**: `src/Prodbox/Vault/Client.hs`, `src/Prodbox/Secret/VaultInventory.hs`,
+`src/Prodbox/Vault/Reconcile.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: **pending, and this sprint moves a Standard-P persistence-protocol
+surface.** Four writes that previously always succeeded can now be refused by the store, and one is
+create-only. Both qualification rows were already `pending`, so no claim is withdrawn — but a
+re-qualification run must exercise the federation-register and gateway-continuity paths.
+**Independent Validation**: pure — the deletion is enforced by the type (the function no longer
+exists), and one named case fixes the version-threading in both arms with a recording fixture.
+**Docs to update**: none.
+
+### Objective
+
+`vaultKvWriteV2` was exported beside the conditional `vaultKvCasWriteV2`, so any module holding a
+`VaultSession` could overwrite a target secret path outright — one layer below every type-level gate
+the target-commit path builds. *Cardinality* class,
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md).
+
+### Deliverables
+
+- ✅ **The function is deleted, not deprecated.** Once every caller supplies an expected version, an
+  unconditional KV write is not expressible in this binary — which is a stronger statement than a
+  lint, and it is why the audit the row described as "its own sprint" was worth doing rather than
+  deferring again.
+- ✅ **The audit found three real lost-update races, not five hygiene sites.** Each is a
+  read-modify-write whose write could not observe that the value had changed underneath it:
+  - `updateParentChildIndex` reads the federation child index, upserts one child, and wrote
+    unconditionally. **Two concurrent registrations both read the same index and the second silently
+    erased the first child** — and no downstream read-back would notice, because an index is
+    perfectly well-formed with a child missing from it.
+  - `runVaultSecretBootstrapWith` unions generated fields onto what it read, so a concurrent
+    bootstrap's generated field could be discarded the same way. The read now answers a typed
+    `VaultSecretObservation` carrying the version, because the old bare field map is precisely why
+    the write that followed it *could* only be unconditional.
+  - The two parent-held child objects — metadata and bootstrap credential — were blind overwrites.
+    Registration may legitimately re-run, so these are read-then-CAS rather than create-only; what
+    is refused is overwriting a value that changed since it was read, and silently replacing a
+    bootstrap credential would strand the parent's custody of the previous one.
+- ✅ **The gateway continuity admission marker becomes create-only (`cas = 0`), because its own
+  contract already said so**: "once this marker exists, a missing object is recovery failure — not
+  permission to recreate a genesis anchor." A latch that can be overwritten is not a latch. A second
+  admission is now a refusal from the store rather than a silent clobber of the first.
+- ✅ `0` is Vault's own create-if-absent, so an absent object and a present one are **one call with
+  different evidence** rather than two code paths.
+
+### Validation
+
+1. ✅ `Sprint 4.71: a seed write is conditioned on the version it observed` drives both arms through
+   a recording fixture and asserts the exact versions `[0, 9]`.
+2. ✅ Three pre-existing bootstrap fixtures now assert the expected version inline, so the threading
+   is checked by the cases that already covered those paths rather than only by a new one.
+3. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3285/3285** (the sprint
+   adds 1) plus 27/27, 33/33, and 27/27.
+
+### Remaining Work
+
+**One limit is stated rather than claimed.** A Vault CAS conflict arrives as an HTTP error carrying
+Vault's own message; this sprint does not classify it into a typed conflict distinct from a
+transport failure. The callers therefore report "write failed" with the store's text, which is
+honest but coarser than the `ModelBCas*` vocabulary the object-store path uses. Registered in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than absorbed, because
+classifying it means parsing Vault's error surface and that is its own decision.
+
+## Sprint 4.72: The Public A-Record Writer Holds an Owner ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the Provider Worker's DNS lane.
+**Implementation**: `src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/ControlPlane/Runtime.hs`, `test/unit/DnsOwnerAuthoritySuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. The written record is byte-identical — same zone, name, TTL,
+and values through the same `changeResourceRecordSets` call — so no Standard-P surface moves. What
+is added is an observe/read-back around it and two refusal paths that can now stop a write.
+**Live-proof**: **pending.** The owner check, the coordinate, and every refusal arm are proven
+locally; the read-back against live Route 53 is a Standard-O axis
+([development_plan_standards.md § O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)).
+**Independent Validation**: pure — the compiled authority and the total refusal projection are
+driven by two named cases with no AWS.
+**Docs to update**: none.
+
+### Objective
+
+`applyPublicARecord` called Route 53 directly and carried no owner value at all, so the supportable
+claim about DNS ownership was narrower than it read.
+
+### Deliverables
+
+- ✅ **The row understated the gap, and the measurement is the finding.** It said `DnsOwnerAuthority`
+  "says nothing about a caller that reaches Route 53 directly". Measured: before this sprint
+  **`DnsRecordProgram` had no production caller anywhere** — `runDnsRecordProgram`,
+  `EnsureDnsRecord`, and `DestroyDnsRecord` appear only in two unit suites. So the typed program
+  bounded nothing that runs, which is the same shape Sprint `1.82` closed for the Tier-0 secret
+  guard: a mechanism documented as enforcing something, with zero production call sites.
+- ✅ The writer now runs `EnsureDnsRecord` against an exact coordinate through a Route 53-backed
+  `DnsRecordBoundary`, so the mutation is preceded by an observation and followed by a read-back
+  that must converge — neither of which the direct call had.
+- ✅ **The coordinate's two non-request facts are observed, not asserted.** The AWS account comes
+  from `sts get-caller-identity` — the account this process is actually acting in — and the
+  ownership epoch from the retained Authority epoch the role already reads. Carrying either in the
+  intent would let a request *claim* an account; observing them proves one, and it needs no change
+  to the durable provider-intent wire format.
+- ✅ The authority is `dnsOwnerAuthorityForProcess ProviderWorkerRuntime SubstrateAws`, whose table
+  is written out pair by pair, so this role cannot name a second owner.
+- ✅ `publicARecordProgramOutcome` is total over all nine `DnsProgramResult` arms. A refusal
+  reaching this lane as a bare `Left` would lose which one occurred, and the two ownership arms are
+  the entire reason for routing through the program.
+
+### Validation
+
+1. ✅ Two named cases: the production writer's compiled authority is `AwsLifecycleProviderDnsOwner`,
+   and the outcome projection distinguishes both ownership refusals and a failed read-back from
+   success.
+2. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3287/3287** (the sprint
+   adds 2) plus 27/27, 33/33, and 27/27.
+
+### Remaining Work
+
+**The SES DNS writer is re-scoped into its own row rather than forced into this one, and the reason
+is measured rather than asserted.** `applySesDns` is not a second instance of the same rerouting:
+
+- It writes **three record types** — TXT, CNAME, and MX — and `DnsRecordType` defines two. Adding
+  them means value validation and owner/type rules for both, plus making `ownerAcceptsType`
+  exhaustive so a new pair is a decision instead of a wildcard `False`.
+- It writes **five records in one batched `changeResourceRecordSets`** with a single propagation
+  wait. A coordinate is one name and one type, so the typed program turns that into five ensures
+  and five sequential INSYNC waits on a live AWS path this repository cannot exercise locally —
+  a live-behaviour change that would land unverified.
+- Its desired values come from `ensureSesDnsInputs`, which may **create the SES identity** before
+  the records are known. The program's ensure requires a conclusive initial observation, so this is
+  a redesign of the SES DNS mutation rather than a rerouting of it.
+
+Registered in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The original row
+was therefore **narrowed, not closed**, and Phase `4` stayed Active on it until **Sprint `4.73`
+below** closed it — answering all three obstacles rather than deferring them again, and finding a
+fourth the list above had not considered: the lane needs its own DNS owner.
+
+## Sprint 4.73: The SES DNS Writer Holds an Owner ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the Provider Worker's SES DNS lane.
+**Implementation**: `src/Prodbox/Lifecycle/DnsRecord.hs`,
+`src/Prodbox/Lifecycle/DnsRecord/Owner.hs`,
+`src/Prodbox/Lifecycle/DnsRecord/Owner/Internal.hs`,
+`src/Prodbox/Lifecycle/DnsRecord/Route53.hs` (new),
+`src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`test/unit/DnsRecord.hs`, `test/unit/DnsOwnerAuthoritySuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. The five records written are byte-identical — same zone,
+names, TTL, and values — and the propagation barrier below keeps the lane's wall-clock shape. What
+is added is a per-coordinate observation before each write and a read-back after it, plus two
+refusal paths that can now stop a write.
+**Live-proof**: **pending.** The owner rules, the canonical value forms, and every refusal arm are
+proven locally; the read-back against live Route 53 is a Standard-O axis
+([development_plan_standards.md § O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)).
+**Independent Validation**: pure — the owner/type matrix, the three SES coordinates, the canonical
+CNAME/MX forms, and the total outcome projection are driven by five named cases with no AWS.
+**Docs to update**: `system-components.md`.
+
+### Objective
+
+Close the last ledger row Phase `4` could close by code: `applySesDns` reached Route 53 through a
+direct `changeResourceRecordSets` call and carried no owner value at all.
+
+### Deliverables
+
+- ✅ **All three obstacles Sprint `4.72` measured are answered rather than deferred again.**
+  `DnsRecordType` gains `DnsRecordCname` and `DnsRecordMx`; the five lanes submit their changes in
+  one burst and discharge propagation afterwards; and `ensureSesDnsInputs` still runs first, so the
+  program's ensure always begins from a conclusive observation.
+- ✅ `ownerAcceptsType` is **total over the whole 5 × 4 matrix**. The superseded body ended in a
+  wildcard `False`, which was right for the pairs that existed and would have silently rejected
+  every pair added afterwards — the rejection would have surfaced as an unconstructible coordinate
+  rather than as a missing decision.
+- ✅ **The row did not say the lane needs its own owner, and it does.** Reusing
+  `AwsLifecycleProviderDnsOwner` would have made `dnsRecordLifecycleClass` assert `PerRun` about
+  records that live in the operator's retained parent zone, and would have handed the public
+  A-record writer TXT/CNAME/MX authority over the same zone. `AwsSesDnsOwner` is `LongLived` and
+  accepts exactly `{TXT, CNAME, MX}`; the public A lane keeps `{A}`.
+- ✅ The minter's range widens from one owner to a list, because **one process legitimately owns
+  more than one DNS lane**. What did not widen is who may hold a lane: a caller now names the lane
+  it wants and the table still decides, so `(GatewayRuntime, SubstrateHomeLocal, AwsSesDnsOwner)`
+  is `Nothing`.
+- ✅ **CNAME and MX values carry one canonical spelling** — lower case, exactly one trailing dot —
+  built in `mkDnsRecordValue`. Route 53 echoes either spelling of the same name, so canonicalizing
+  at the constructor is what lets the read-back stay exact equality; comparing at each use would
+  let a correct record read as drift and provoke a rewrite. The bytes written are unchanged.
+- ✅ **The propagation barrier preserves the batch's timing property.** A coordinate is one name
+  and one type, so the program necessarily submits five changes. Awaiting each inline would spend
+  five propagation windows in series where the batch spent one; `ensureSesDnsLanes` submits all
+  five, then awaits. Deferring the wait does not weaken the read-back — `ListResourceRecordSets`
+  answers from hosted-zone record data, which a change updates on acceptance, and the post-apply
+  observation this repository already performed reads the same way.
+- ✅ **One derivation feeds both the observation and the ensure.** `sesDnsRecordPlans` is the sole
+  producer of the five names and values, and the record names have one definition each in
+  `Prodbox.Lifecycle.DnsRecord` beside the coordinate constructors that consume them.
+- ✅ `nativeDnsRecordType` / `nativeDnsRecordSet` **move to one shared module** rather than being
+  copied. Two encoders for one typed value is the conversion defect
+  [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md) names;
+  the public A-record boundary now uses the shared renderer too, so three copies became one.
+- ✅ `sesDnsProgramOutcome` is total over all nine `DnsProgramResult` arms and names the coordinate
+  in every refusal, because five lanes run in sequence and a bare `Left` would lose both which
+  refusal occurred and which record provoked it.
+
+### Validation
+
+1. ✅ Five named cases: the exhaustive owner/type matrix stated as data, the three SES coordinates
+   and their `LongLived` class, the cross-lane type refusals, the CNAME/MX canonical forms with
+   their rejections, and the SES outcome projection naming its coordinate.
+2. ✅ `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs`
+   exit 0, `prodbox test unit` exit 0 at main Hspec **3294/3294** (the three sprints add 7) plus
+   27/27, 33/33, and 27/27, and installed `prodbox test integration cli` **55/55**, exit 0.
+
+### Remaining Work
+
+None. The row moves to `Completed` in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 4.74: A Vault CAS Says Which Of Three Facts It Established ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface work on the Vault compare-and-swap seam.
+**Implementation**: `src/Prodbox/Vault/Client.hs`, `src/Prodbox/CheckCode.hs`,
+`src/Prodbox/Secret/VaultInventory.hs`, `src/Prodbox/Vault/Reconcile.hs`,
+`src/Prodbox/ControlPlane/RetainedAuthentication.hs`,
+`src/Prodbox/ControlPlane/BootstrapCustodyEndpoint.hs`,
+`src/Prodbox/ControlPlane/BootstrapHandoffEndpoint.hs`,
+`src/Prodbox/ControlPlane/VaultServiceSessionJournal.hs`,
+`src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs`,
+`src/Prodbox/ControlPlane/TargetAuthorityTrustEndpoint.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminExecutionVault.hs`,
+`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway/Daemon.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. This moves a **persistence-protocol** surface: four call
+sites change which outcomes they treat as a lost race, and one changes what consumes a retry
+budget. The qualification row was already `pending`, so no claim is withdrawn.
+**Live-proof**: **pending.** The classification is proven against Vault's documented answers; the
+live confirmation that a refused CAS carries the mismatch phrasing is a Standard-O axis.
+**Independent Validation**: pure — the total classifier and the build rule are driven by two named
+cases over fixed inputs, with no Vault.
+**Docs to update**: none.
+
+### Objective
+
+Give the Vault CAS path the distinction the object-store path has had since `ModelBCasResult`: a
+lost race, a refused request, and an attempt whose outcome is unknown are three different facts.
+
+### Deliverables
+
+- ✅ **The row understated itself twice, and both counts are corrected by measurement.** It named
+  three files; the measured inventory is **eleven call sites across ten modules**. And it said the
+  distinction was
+  absent at the caller — measurement found **four callers already attempting it and all four wrong
+  in the same way**: `HttpStatus 400 -> "conflict"` plus a `409` arm Vault never produces for a KV
+  CAS.
+- ✅ **The consequence was worse than "coarse reporting" in two places, and this is the finding.**
+  Vault answers a version mismatch and a malformed or cas-required request with the same `400`. So
+  `reconcileRetainedAuthorityEpoch` spent an authority-epoch CAS retry on a request Vault had
+  refused and then reported it as a lost race; and `vaultRequestReplayRepository` answered
+  `RequestReplayCasConflict` — "another writer already claimed this request id" — for a write that
+  never happened. That is a replay-protection decision made on a premise that did not occur.
+- ✅ `VaultCasOutcome` names the four outcomes, and `classifyVaultCasOutcome` is the one total
+  reading of a CAS result. **Only the version-mismatch body is a conflict**; `5xx`, `429`, and
+  every transport failure are `Unobservable` rather than refusals, because a write that may have
+  applied and whose response was lost is the one case that must not collapse into "nothing
+  happened".
+- ✅ Every call site consumes it, and `VaultSecretBootstrapOps` carries the outcome instead of a
+  bare `HttpError`, so the bootstrap fold's caller learns which fact occurred.
+- ✅ A `prodbox dev check` rule fails the build for any `src/Prodbox/**.hs` that names
+  `vaultKvCasWriteV2` without naming `classifyVaultCasOutcome`.
+- ✅ **The rule found an eleventh call site on its first run, and that is the argument for having
+  written it.** `retainedCustodyVaultBoundary` in
+  `src/Prodbox/ControlPlane/RetainedMaterialWorkerVault.hs` reaches the CAS through a module-local
+  session wrapper, so it did not appear in a grep for the call shape the other ten share — the
+  measured inventory is therefore **eleven sites**, not the ten found by reading, and not the three
+  the row named. Its consumer, `applyCas` in `Prodbox.ControlPlane.RetainedMaterialWorker`, recovers
+  by authoritative read-back on every failure, which is the right response to all three arms, so
+  what changed there is what the failure *says* rather than what it does.
+- ✅ **The guarantee is stated as what it is.** The transport result stays `Either HttpError` so the
+  Vault session wrapper can still see a `403` for its single relogin, so nothing in the type forces
+  classification; the build rule supplies that force over the compiled source region instead. Per
+  [chaos_hardening_doctrine.md § 22](../documents/engineering/chaos_hardening_doctrine.md) that
+  bounds this repository's source, not the Vault protocol. Retyping the primitive across eleven
+  critical-path sites was considered and declined: it is the coupled-big-bang shape that required
+  reverting Sprint `4.51`.
+
+### Validation
+
+1. ✅ Two named cases: the classifier over applied, mismatch-`400`, non-mismatch-`400`, `403`,
+   timeout, `500`, and the dead `409`; and the build rule firing on an unclassified call site,
+   passing on a classified one, and exempting the classifier's own module.
+2. ✅ `prodbox dev check` exit 0, which also reports zero violations of the new rule over a tree
+   that would have produced eleven before this sprint. **The rule's first run was not vacuous**: it
+   failed the build on `RetainedMaterialWorkerVault.hs`, the site reading found no path to, which is
+   the evidence that it bounds something. Full gate set: `dev docs check` and `dev lint docs` exit 0,
+   `prodbox test unit` exit 0 at main Hspec **3294/3294** plus 27/27, 33/33, and 27/27, and installed
+   `prodbox test integration cli` **55/55**, exit 0.
+
+### Remaining Work
+
+None. The row moves to `Completed` in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 4.75: Name the Authored Control-Plane Service Time As Authored ✅
+
+**Status**: Done (2026-08-10) — Phase `4` own-surface correction; the row it owns stays
+`Pending Removal` as a Standard-O recorder axis.
+**Implementation**: `src/Prodbox/ControlPlane/Capacity.hs`,
+`src/Prodbox/ControlPlane/Runtime.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending; unchanged — this sprint moves no executable behaviour.
+**Live-proof**: **pending**, and it is the whole of the remaining work. Certifying the constant
+needs a recorded control-plane profile.
+**Independent Validation**: the corrected claims are checked against source in the same change; no
+runtime dependency.
+**Docs to update**: none.
+
+### Objective
+
+The last unowned row on a Phase-`4` surface asks for a measured per-request service time. Give it
+an owning sprint (Standard I) and correct the false claim the type was making in the meantime.
+
+### Deliverables
+
+- ✅ **The row's premise is confirmed and its closure path is measured.** `rawServiceTimeMicros`'s
+  own haddock said the field carries a *measured/attested* value; its only producer,
+  `controlPlaneCapacityInputs`, authors it. Both statements are corrected in place rather than left
+  to be quietly made true later — the same treatment Sprint `1.82` gave
+  [vault_doctrine.md § 20.3](../documents/engineering/vault_doctrine.md).
+- ✅ **Why no code change can close the row, stated as a measurement rather than a deferral.**
+  `dhall/capacity/measured/` contains only `Schema.dhall` — **no measured profile has ever been
+  committed for any lane**, so Sprint `5.21`'s recorder activation is itself outstanding and the
+  control-plane profile is downstream of it. Adding a `service_time_p99_micros` schema field and a
+  certification rule now would land a mechanism with nothing to certify, which is precisely the
+  enforcing-nothing shape Sprints `1.82`, `4.68`, and `4.72` each had to close.
+- ✅ The row is re-registered under this sprint with `Live-proof: pending`, so no `Pending Removal`
+  row on a Phase-`4` surface is unowned.
+
+### Validation
+
+1. ✅ `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs` exit 0,
+   `prodbox test unit` exit 0 at main Hspec **3294/3294**, and installed
+   `prodbox test integration cli` **55/55**, exit 0.
+
+### Remaining Work
+
+**The recorder run, and it is not code work.** A committed control-plane measured profile plus its
+consumption through `certifyMeasuredProfile` closes the row; both are gated on Sprint `5.21`'s
+recorder producing its first artifact for any lane. Non-blocking under
+[Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof).
 
 ## Related Documents
 

@@ -660,6 +660,37 @@ that sprint carries: such a lint closes drift between a value and its owner, not
 owner, and would not by itself have caught the `443`/`6443` defect
 ([chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md)).
 
+**Widening landed (2026-08-11, Sprint `3.34`).** The claim above is now true of every repo-owned
+chart template. `chartTemplatePortLiteralViolations` is a sibling of
+`chartTemplateResourceViolations` reusing its enumeration, and refuses an all-digit value under the
+closed key set `port:` / `targetPort:` / `containerPort:` / `nodePort:` / `hostPort:` in any chart
+template — so a `networkpolicy.yaml` is now read for content, which no gate previously did. Named
+ports and `{{ .Values… }}` expressions fall out of the predicate rather than being excepted by it, so
+the region needs no allowlist. Its first run named **79** findings across 13 charts, the number
+measured above; all are now values bindings.
+
+The Kubernetes API egress coordinate gained the compiled owner it lacked:
+`KubernetesApiEgressCoordinate`, observed once from `endpoints/kubernetes` by
+`readKubernetesApiEgressCoordinate`, which yields the post-DNAT address **and** port together. The
+two charts that carry the coordinate — `bootstrap-broker` and `target-secret-agent` — bind
+`.Values.kubernetesApiEgress.addresses` and `.port`, and the generated
+`target-secret-agent-kubernetes-api` policy renders one `ipBlock` per observed address. The
+previous observation read `service/kubernetes`, which is the **pre-DNAT** coordinate: deriving both
+halves from one source fixed the encoder count and not the layer, which is the § 24 rule this
+implements.
+
+Two coordinates deliberately survive as distinct. `kubernetes.default.svc.cluster.local:443` in
+`src/Prodbox/K8s/InCluster.hs` and `src/Prodbox/Vault/Reconcile.hs` is what a **client dials** and is
+correct pre-DNAT; the endpoint address and port are what a **policy engine matches**. They are not
+restatements of each other, and collapsing them breaks the client path. The nine remaining `443`
+literals elsewhere are `ipBlock: 0.0.0.0/0` public-internet HTTPS egress — a third coordinate this
+owner does not speak for.
+
+The honest bound stands unchanged: the lint closes drift between a rendered value and its compiled
+owner, not correctness of the owner. Had it existed, `port: 443` would have become a binding, and if
+the compiled owner still said `443` the cluster would break identically. Only a live run proves
+`6443`, and this gate is not credited with catching the outage that registered the sprint.
+
 ## 7. Delete Semantics
 
 `prodbox charts delete <chart>`:

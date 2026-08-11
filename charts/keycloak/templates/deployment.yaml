@@ -113,7 +113,7 @@ spec:
                 --import-realm
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: {{ .Values.ports.http }}
           env:
             - name: KC_DB
               value: postgres
@@ -142,19 +142,19 @@ spec:
           startupProbe:
             httpGet:
               path: {{ printf "%s/health/ready" $healthPathPrefix | quote }}
-              port: 9000
+              port: {{ .Values.ports.management }}
             failureThreshold: 60
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: {{ printf "%s/health/ready" $healthPathPrefix | quote }}
-              port: 9000
+              port: {{ .Values.ports.management }}
             initialDelaySeconds: 20
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: {{ printf "%s/health/live" $healthPathPrefix | quote }}
-              port: 9000
+              port: {{ .Values.ports.management }}
             initialDelaySeconds: 40
             periodSeconds: 20
       volumes:

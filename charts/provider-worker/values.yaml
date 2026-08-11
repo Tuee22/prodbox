@@ -61,6 +61,20 @@ probeTiming:
 listener:
   port: 8600
 
+# Shared port bindings referenced by this chart's templates. Declared here so no
+# template carries a bare numeric port literal; the defaults below are exactly
+# the values previously inlined in the NetworkPolicy egress rules.
+ports:
+  # Cluster DNS (kube-system egress, UDP + TCP).
+  dns: 53
+  # Public-internet HTTPS egress to 0.0.0.0/0 (AWS / Pulumi control plane).
+  publicHttps: 443
+  # In-cluster Vault API (fenced `secret/aws/lifecycle-provider` read).
+  vault: 8200
+  # In-cluster control-plane role listener (the Lifecycle Authority
+  # operation/checkpoint surface this worker calls).
+  controlPlane: 8600
+
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `provider-worker` workload
 # profile) by `Prodbox.Lib.ChartPlatform` into `.Values.resources.providerWorker`,

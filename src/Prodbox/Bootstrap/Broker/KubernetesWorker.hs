@@ -37,6 +37,10 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerDeletionFromResponse
   , workerAbsenceFromResponse
   , bootstrapLeaseFromResponse
+  , kubernetesTransportFailureLabel
+  , unobservableReason
+  , imageReferenceRepository
+  , brokerPodsUrl
   )
 where
 
@@ -305,14 +309,18 @@ productionKubernetesWorkerBoundary = do
         , kubernetesObserveWorkerAttestation = \deadline request -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
-              Left _ -> SecretWorkerAttestationUnobservable "Kubernetes Pod observation unavailable"
+              Left detail ->
+                SecretWorkerAttestationUnobservable
+                  (unobservableReason "Kubernetes Pod observation unavailable" detail)
               Right (code, body) -> workerAttestationFromResponse namespace request code body
         , kubernetesDiscardUnreceiptedWorker =
             discardUnreceiptedWorker manager namespace
         , kubernetesObserveWorkerExit = \deadline binding -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
-              Left _ -> SecretWorkerLifecycleUnobservable "Kubernetes Pod exit observation unavailable"
+              Left detail ->
+                SecretWorkerLifecycleUnobservable
+                  (unobservableReason "Kubernetes Pod exit observation unavailable" detail)
               Right (code, body) -> workerExitFromResponse namespace binding code body
         , kubernetesDeleteWorkerPod = \deadline binding -> do
             response <-
@@ -323,17 +331,25 @@ productionKubernetesWorkerBoundary = do
                 (workerPodUrl namespace)
                 (Just (workerPodDeleteOptions binding))
             pure $ case response of
-              Left _ -> SecretWorkerLifecycleUnobservable "Kubernetes Pod deletion unavailable"
+              Left detail ->
+                SecretWorkerLifecycleUnobservable
+                  (unobservableReason "Kubernetes Pod deletion unavailable" detail)
               Right (code, body) -> workerDeletionFromResponse binding code body
         , kubernetesObserveWorkerAbsence = \deadline binding -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
-              Left _ -> SecretWorkerLifecycleUnobservable "Kubernetes Pod absence observation unavailable"
+              Left detail ->
+                SecretWorkerLifecycleUnobservable
+                  (unobservableReason "Kubernetes Pod absence observation unavailable" detail)
               Right (code, body) -> workerAbsenceFromResponse namespace binding code body
         , kubernetesObserveBootstrapLease = \deadline -> do
             response <- requestKubernetes manager deadline "GET" (bootstrapLeaseUrl namespace) Nothing
             case response of
-              Left _ -> pure (BootstrapLeaseUnobservable "Kubernetes Lease observation unavailable")
+              Left detail ->
+                pure
+                  ( BootstrapLeaseUnobservable
+                      (unobservableReason "Kubernetes Lease observation unavailable" detail)
+                  )
               Right (code, body) -> do
                 monotonicBeforeWall <- realMonotonicNow
                 wallNow <- getCurrentTime
@@ -387,7 +403,11 @@ productionKubernetesWorkerBoundary = do
                   Right _ -> pure (Left "Kubernetes Lease read-back was refused")
               other -> pure other
             case response of
-              Left _ -> pure (BootstrapLeaseUnobservable "Kubernetes Lease write unavailable")
+              Left detail ->
+                pure
+                  ( BootstrapLeaseUnobservable
+                      (unobservableReason "Kubernetes Lease write unavailable" detail)
+                  )
               Right (code, body) -> do
                 monotonicBeforeWall <- realMonotonicNow
                 wallNow <- getCurrentTime
@@ -854,7 +874,13 @@ brokerPodsUrl namespace =
   secretApiBaseUrl
     ++ "/api/v1/namespaces/"
     ++ Text.unpack namespace
-    ++ "/pods?labelSelector=app.kubernetes.io%2Fname%3Dbootstrap-broker"
+    -- The chart labels every Broker object `prodbox-bootstrap-broker`
+    -- (charts/bootstrap-broker/templates/_helpers.tpl), matching the
+    -- repo-wide `prodbox-<component>` convention that the Broker's own
+    -- NetworkPolicy peers (`prodbox-vault`, `prodbox-minio`) also use.
+    -- Selecting the unprefixed name matched no Pod, so the controller-image
+    -- self-observation read an empty PodList and readiness never cleared.
+    ++ "/pods?labelSelector=app.kubernetes.io%2Fname%3Dprodbox-bootstrap-broker"
 
 workerPodAnnotationsForRequest :: SecretFreeWorkerRequest -> Map Text Text
 workerPodAnnotationsForRequest =
@@ -1691,8 +1717,15 @@ instance FromJSON PodWire where
     spec <- root .: "spec"
     status <- root .: "status"
     PodWire
-      <$> root .: "apiVersion"
-      <*> root .: "kind"
+      -- Sprint 2.43: Kubernetes sends `apiVersion` and `kind` on a Pod fetched
+      -- directly, and omits both on a Pod that appears as an item inside a
+      -- `PodList` — there they exist once, on the enclosing list. Requiring
+      -- them here made every non-empty list decode fail. They are optional at
+      -- parse time and default to what the enclosing list guarantees; the
+      -- single-Pod path still validates the values it actually receives,
+      -- because `.:?` falls back only when the key is absent.
+      <$> root .:? "apiVersion" .!= "v1"
+      <*> root .:? "kind" .!= "Pod"
       <*> metadata .: "name"
       <*> metadata .: "namespace"
       <*> metadata .: "uid"
@@ -1817,7 +1850,7 @@ controllerImageDigestFromResponse scope namespace code body
       maybe
         (Left "Bootstrap Broker controller image reference is invalid")
         Right
-        (Text.stripSuffix ":latest" (containerWireImage container))
+        (imageReferenceRepository (containerWireImage container))
     requireCreateEqual
       "controller image repository"
       (ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics)
@@ -2131,7 +2164,15 @@ requestKubernetes manager deadline httpMethod url maybeBody = do
               after <- realMonotonicNow
               pure $ case completed of
                 Nothing -> Left "Kubernetes API request timed out"
-                Just (Left _) -> Left "Kubernetes API request failed"
+                -- Sprint 2.42: the caught exception is classified rather than
+                -- discarded. Collapsing it here would leave every call site
+                -- appending a prefix to a constant.
+                Just (Left transportError) ->
+                  Left
+                    ( unobservableReason
+                        "Kubernetes API request failed"
+                        (kubernetesTransportFailureLabel transportError)
+                    )
                 Just (Right (_code, Left detail)) -> Left detail
                 Just (Right (code, Right body))
                   | deadlineExpired after deadline ->
@@ -2218,6 +2259,87 @@ inClusterManager = do
           clientParams =
             baseParams {clientShared = (clientShared baseParams) {sharedCAStore = store}}
       Right <$> newManager (mkManagerSettings (TLSSettings clientParams) Nothing)
+
+-- | Sprint 2.42: classify a synchronous 'HttpException' onto a closed set of
+-- operator-facing labels.
+--
+-- Three rules govern this function, and the second is why @show@ is not used.
+--
+--   * __Classify, never @show@.__ @show@ on 'HttpExceptionRequest' prints the
+--     'Request', and every request this module issues carries an
+--     @Authorization: Bearer@ header (see 'requestKubernetes'). The rendered
+--     reason reaches an operator through the @\/readyz@ body, so rendering the
+--     exception would turn a readiness projection into a credential-disclosure
+--     surface. The 'Request' is therefore matched as @_@ and never inspected.
+--   * __No payload reaches the label.__ Several constructors carry attacker- or
+--     credential-adjacent bytes — 'InvalidRequestHeader' can carry the
+--     @Authorization@ header itself, and the proxy constructors can carry proxy
+--     credentials — so every label is a fixed string and no argument is
+--     interpolated.
+--   * __Distinct labels.__ The cases imply different operator actions: a
+--     dropped packet is a policy or routing defect, a refused connection is a
+--     listener or address defect, a response timeout is a slow or wedged
+--     server. Collapsing them is the § 23 corollary-2 defect this sprint
+--     removes, so no two constructors share a label.
+kubernetesTransportFailureLabel :: HttpException -> Text
+kubernetesTransportFailureLabel err = case err of
+  InvalidUrlException {} -> "the request URL is invalid"
+  HttpExceptionRequest _ content -> case content of
+    ConnectionTimeout ->
+      "connecting to the Kubernetes API timed out (no route, or a network policy dropped the packet)"
+    ConnectionFailure _ -> "connecting to the Kubernetes API failed"
+    ResponseTimeout -> "the Kubernetes API accepted the connection and did not answer in time"
+    NoResponseDataReceived -> "the Kubernetes API closed the connection without answering"
+    ConnectionClosed -> "the connection to the Kubernetes API was closed mid-request"
+    InternalException _ -> "an underlying socket or TLS layer failed"
+    TlsNotSupported -> "the Kubernetes API endpoint does not support TLS"
+    StatusCodeException {} -> "the Kubernetes API returned a non-2XX status"
+    TooManyRedirects _ -> "the Kubernetes API redirected too many times"
+    OverlongHeaders -> "the Kubernetes API returned overlong headers"
+    TooManyHeaderFields -> "the Kubernetes API returned too many header fields"
+    InvalidStatusLine _ -> "the Kubernetes API returned an unparseable status line"
+    InvalidHeader _ -> "the Kubernetes API returned an unparseable header"
+    InvalidRequestHeader _ -> "the request carried a non-compliant header"
+    ProxyConnectException {} -> "the proxy refused the Kubernetes API connection"
+    WrongRequestBodyStreamSize {} -> "the request body stream size did not match its declaration"
+    ResponseBodyTooShort {} -> "the Kubernetes API response body was shorter than declared"
+    InvalidChunkHeaders -> "the Kubernetes API returned invalid chunk headers"
+    IncompleteHeaders -> "the Kubernetes API returned incomplete headers"
+    InvalidDestinationHost _ -> "the Kubernetes API destination host is invalid"
+    HttpZlibException _ -> "the Kubernetes API response failed to decompress"
+    InvalidProxyEnvironmentVariable {} -> "the proxy environment variable is invalid"
+    InvalidProxySettings _ -> "the proxy settings are invalid"
+
+-- | Sprint 2.43: the repository half of a container image reference, with
+-- whatever tag or digest is present removed.
+--
+-- The previous implementation required the suffix @:latest@, which the harness
+-- never renders: 'Prodbox.Lib.ChartPlatform.resolveCustomImageTag' produces a
+-- machine-id-derived tag on the home substrate and the fixed
+-- @prodbox-aws-substrate@ tag on AWS, overriding the chart's @tag: latest@
+-- default on both supported paths. The check therefore failed on every
+-- substrate rather than comparing repositories.
+--
+-- The separator cannot simply be the first or last colon: a registry host may
+-- carry a port, and @127.0.0.1:30080\/prodbox\/prodbox-runtime:tag@ contains
+-- two. The tag colon is the one after the final @\/@.
+imageReferenceRepository :: Text -> Maybe Text
+imageReferenceRepository reference
+  | Text.null reference = Nothing
+  | otherwise =
+      let withoutDigest = Text.takeWhile (/= '@') reference
+          (beforeLastSlash, afterLastSlash) = Text.breakOnEnd "/" withoutDigest
+          repository = beforeLastSlash <> Text.takeWhile (/= ':') afterLastSlash
+       in if Text.null repository then Nothing else Just repository
+
+-- | Sprint 2.42: compose an unobservable-dependency reason from the site that
+-- could not be observed and the typed detail explaining why.
+--
+-- Every caller that turns a transport failure into a typed unobservable
+-- observation routes through here, so a site phrase can never reach an operator
+-- without the detail that distinguishes a dropped packet from an RBAC refusal.
+unobservableReason :: Text -> Text -> Text
+unobservableReason site detail = site <> ": " <> detail
 
 catchSynchronousHttp :: HttpException -> Maybe HttpException
 catchSynchronousHttp err

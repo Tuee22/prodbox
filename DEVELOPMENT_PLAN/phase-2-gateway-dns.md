@@ -4060,9 +4060,9 @@ affected test leaked a permanently blocked manager thread rather than failing.
 
 None.
 
-## Sprint 2.42: The Broker's Readiness Reason Survives Its Transport 📋
+## Sprint 2.42: The Broker's Readiness Reason Survives Its Transport ✅
 
-**Status**: Planned — Phase `2` own-surface reopen (Standard A/N) on the Bootstrap Broker readiness
+**Status**: Done — Phase `2` own-surface reopen (Standard A/N) on the Bootstrap Broker readiness
 contract this phase already owns through Sprints `2.39` and `2.40`. Registered by the live
 investigation of a Phase-`3` chart defect: the chart was the cause, and the broker's own reporting
 is why it took eight runs and roughly four hours to find.
@@ -4105,33 +4105,119 @@ different decisions.
 
 ### Deliverables
 
-- 📋 **The transport detail reaches the readiness body.** `Left detail` is carried into
+- ✅ **The transport detail reaches the readiness body.** `Left detail` is carried into
   `BootstrapLeaseUnobservable` rather than discarded, at the lease site and at the symmetric worker
-  site.
-- 📋 **The detail is actually a detail.** Fixing the lease site alone is insufficient: the request
-  helper already collapses its `HttpException` to a bare `"Kubernetes API request failed"`, so the
-  reason would gain a prefix and no information. The exception must be classified there.
-- 📋 **Classify, never `show`.** `show` on `HttpExceptionRequest` prints the `Request`, and this
-  request carries an `Authorization: Bearer` header. Pattern-match the `HttpExceptionContent`
-  constructors — connection timeout, connection failure, response timeout — onto a closed set of
-  labels. A readiness body is operator-visible and must not become a credential-disclosure surface;
-  this is the one deliverable where the obvious implementation is the wrong one.
+  site. All six discarding sites in `productionKubernetesWorkerBoundary` now compose through
+  `unobservableReason` — the two `BootstrapLeaseUnobservable` sites (observation and write) and the
+  four `SecretWorker*Unobservable` sites (attestation, exit, deletion, absence).
+- ✅ **The detail is actually a detail.** `requestKubernetes` classifies its caught exception rather
+  than collapsing it, so the reason gains information and not merely a prefix.
+- ✅ **Classify, never `show`.** `kubernetesTransportFailureLabel` pattern-matches every
+  `HttpExceptionContent` constructor of `http-client` 0.7.19 plus `InvalidUrlException` onto a
+  closed set of fixed labels. The `Request` is matched as `_` and never inspected, and no
+  constructor argument is interpolated — `InvalidRequestHeader` can carry the `Authorization`
+  header itself, and the two proxy constructors can carry proxy credentials. The match carries no
+  wildcard arm, so a new upstream constructor is a compile error rather than a silent collapse.
 
 ### Validation
 
-1. 📋 Each transport failure constructor produces a distinct reason, asserted by exact string.
-2. 📋 A negative case: no input produces the bare `"Kubernetes Lease observation unavailable"` with
-   no detail appended.
-3. 📋 A credential-safety case: the rendered reason for a failed authenticated request contains
-   neither the bearer token nor the header name.
-4. 📋 `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+1. ✅ Each transport failure constructor produces a distinct reason, asserted by exact string —
+   21 constructor fixtures in `test/unit/BootstrapBrokerProductionBoundary.hs`, plus a mutual
+   distinctness assertion and a non-empty assertion over the same set.
+2. ✅ A negative case: no input produces the bare `"Kubernetes Lease observation unavailable"` with
+   no detail appended; every composed reason is asserted to carry the site phrase *and* a suffix.
+3. ✅ A credential-safety case: a bearer token planted in the four credential-carrying constructors
+   appears in no rendered reason, and neither does `Authorization` nor `Bearer`.
+4. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 (3319 + 27 + 33 + 27 tests).
 
 ### Remaining Work
 
-Registered rather than absorbed into Sprint `3.34`. That sprint's surface is the chart platform and
-the chart lint; this one is broker runtime, which Phase `2` owns. The two share a live failure and
-nothing else — and the division is worth stating precisely, because the chart defect caused the
-outage while this defect caused its cost.
+None. Registered rather than absorbed into Sprint `3.34`. That sprint's surface is the chart
+platform and the chart lint; this one is broker runtime, which Phase `2` owns. The two share a live
+failure and nothing else — and the division is worth stating precisely, because the chart defect
+caused the outage while this defect caused its cost.
+
+**The honest bound on this sprint.** It shortens the distance between a transport failure and its
+diagnosis; it does not prevent one. The live outage that registered it is Sprint `3.34`'s to fix,
+and a reader should not read `2.42` as having addressed the cause. What it changes is that the next
+such outage names itself: `connecting to the Kubernetes API timed out (no route, or a network
+policy dropped the packet)` is a sentence an operator can act on, where
+`Kubernetes Lease observation unavailable` was not.
+
+## Sprint 2.43: The Broker's Self-Observation Never Matched Its Own Pod ✅
+
+**Status**: Done (2026-08-11) — Phase `2` own-surface reopen (Standard A/N) on the same Bootstrap Broker
+readiness contract as Sprints `2.39`, `2.40`, and `2.42`. Registered by the live investigation that
+landed Sprint `3.34`: with the NetworkPolicy defect fixed, the broker's Kubernetes API calls
+succeeded for the first time and exposed three further defects on the readiness path that the
+dropped packets had masked. Each is registered here rather than patched silently
+([development_plan_standards.md § L](development_plan_standards.md)).
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — the change is to a label selector, a wire decoder, and an
+image-reference check inside an existing readiness observation. No rendered manifest and no
+readiness *verdict* semantics move; both substrate rows stay `pending`.
+**Independent Validation**: pure and local — the selector is asserted against the chart's rendered
+label, and the decoder against a captured `PodList` payload whose items carry no `apiVersion`/`kind`.
+No live infrastructure.
+**Live-proof**: pending — this sprint is what unblocks Sprint `3.34`'s validation 5.
+**Docs to update**: none.
+
+### Objective
+
+`/readyz` gates on six dependencies, and `controller-image` is the last. Three separate defects sit
+on it, each masked by the one before:
+
+1. **The selector matched no Pod.** `brokerPodsUrl` queried
+   `labelSelector=app.kubernetes.io/name=bootstrap-broker`, while the chart labels every broker
+   object `prodbox-bootstrap-broker` — the repo-wide `prodbox-<component>` convention the broker's
+   own NetworkPolicy peers (`prodbox-vault`, `prodbox-minio`) also use, and the one its
+   ServiceAccount and token audience already follow. `KubernetesWorker.hs` held the only unprefixed
+   occurrence in the repository. The `PodList` came back empty and `podListItems` produced
+   `Bootstrap Broker PodList did not contain exactly one controller`.
+2. **The decoder required fields Kubernetes omits.** `PodWire`'s `FromJSON` takes `apiVersion` and
+   `kind` from each item, but Kubernetes omits both on items inside a `List` — they exist on the
+   enclosing `PodList` only. Every decode of a non-empty list therefore failed with
+   `Bootstrap Broker PodList response is invalid`. The single-Pod `GET` path, which shares `PodWire`
+   and validates both fields at `decodeWorkerPod`, is correct as written and must keep validating
+   them.
+3. **The image check required a tag the harness never renders.** The controller-image validation
+   computes `Text.stripSuffix ":latest"` on the container image reference, but
+   `resolveCustomImageTag` renders a machine-id-derived tag on the home substrate and the fixed
+   `prodbox-aws-substrate` tag on AWS. The chart's `values.yaml` default is `tag: latest`, and the
+   harness overrides it on both substrates, so the suffix is absent on every supported path and the
+   check returns `Bootstrap Broker controller image reference is invalid`.
+
+These are one sprint because they are one observation's failure chain: each is only reachable once
+its predecessor is fixed, so splitting them would register two sprints that cannot be validated.
+
+### Deliverables
+
+- ✅ **The selector names the label the chart renders.** `brokerPodsUrl` selects
+  `app.kubernetes.io/name=prodbox-bootstrap-broker`.
+- ✅ **The decoder accepts a list item.** `apiVersion` and `kind` are optional when parsing a
+  `PodList` item and default to the values the enclosing list guarantees, while the single-Pod path
+  keeps validating the fields it does receive.
+- ✅ **The image check reads the tag that is rendered.** The repository is compared against the
+  compiled owner by splitting the tag actually present, rather than by requiring `:latest`.
+
+### Validation
+
+1. ✅ The selector equals the chart's rendered `app.kubernetes.io/name` value, read out of
+   `charts/bootstrap-broker/templates/_helpers.tpl` at test time rather than restated in the test.
+2. ✅ A `PodList` payload shaped as the API returns one — `apiVersion`/`kind` on the list, absent on
+   the item — is observed; an empty list is still refused.
+3. ✅ Machine-id, `prodbox-aws-substrate`, and `latest` tags all validate against the compiled
+   repository owner; a foreign repository and a registry-host port are both handled correctly.
+4. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0 (3332 + 27 + 33 + 27).
+
+### Remaining Work
+
+None. All three deliverables and all four validations are landed.
+
+**Live-proof.** Sprint `3.34`'s validation 5 — a broker that reaches `"ready":true` on a live
+cluster — is now unblocked on its code-owned dependencies. It remains a Standard-O axis for both
+sprints and is proven by a live run, not by this closure.
 
 ## Related Documents
 

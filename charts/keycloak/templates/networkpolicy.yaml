@@ -26,7 +26,7 @@ spec:
               app.kubernetes.io/name: websocket
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ .Values.ports.http }}
   egress:
     - to:
         - podSelector:
@@ -34,12 +34,12 @@ spec:
               postgres-operator.crunchydata.com/data: postgres
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ .Values.ports.postgres }}
     - to:
         - podSelector: {}
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ .Values.ports.http }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -49,22 +49,22 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.ports.publicHttps }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -96,19 +96,19 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.ports.publicHttps }}

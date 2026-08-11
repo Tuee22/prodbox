@@ -13,6 +13,9 @@ module Prodbox.Lib.ChartPlatform
   , buildChartDeploymentPlanForSubstrate
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
+  , KubernetesApiEgressCoordinate (..)
+  , kubernetesApiEgressChartNames
+  , parseKubernetesApiEgressCoordinate
   , classifyPublicEdgePreserve
   , deleteChartPlan
   , deployChartPlan
@@ -81,6 +84,7 @@ import Data.List
   , find
   , intercalate
   , isInfixOf
+  , nub
   , sort
   , sortOn
   , stripPrefix
@@ -667,12 +671,20 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
         if "bootstrap-broker" `elem` releaseOrder
           then resolveParentRegistrationForSubstrate substrate repoRoot
           else pure (Right Nothing)
+      -- Sprint 3.34: the sixth observation, of the same shape as the five
+      -- above. Only the two charts whose NetworkPolicy carries the Kubernetes
+      -- API egress coordinate need it.
+      apiEgressCoordinateResult <-
+        if any (`elem` releaseOrder) kubernetesApiEgressChartNames
+          then fmap (fmap Just) readKubernetesApiEgressCoordinate
+          else pure (Right Nothing)
       pure $ do
         maybeRuntimeImage <- runtimeImageResult
         maybeGatewayHostedZoneId <- gatewayHostedZoneIdResult
         maybeGatewayTier0Dhall <- gatewayTier0DhallResult
         maybeControlPlaneClusterId <- controlPlaneClusterIdResult
         maybeControlPlaneParentRef <- controlPlaneParentRefResult
+        maybeApiEgressCoordinate <- apiEgressCoordinateResult
         buildChartDeploymentPlanPure
           substrate
           repoRoot
@@ -685,6 +697,7 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
           maybeGatewayTier0Dhall
           maybeControlPlaneClusterId
           maybeControlPlaneParentRef
+          maybeApiEgressCoordinate
 
 buildChartDeletePlan
   :: FilePath
@@ -1881,8 +1894,9 @@ buildChartDeploymentPlanPure
   -> Maybe String
   -> Maybe Text.Text
   -> Maybe ParentRef
+  -> Maybe KubernetesApiEgressCoordinate
   -> Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef = do
+buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets gatewayEventKeys maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef maybeApiEgressCoordinate = do
   when
     (chartStorageClassName /= "manual")
     (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
@@ -1933,6 +1947,7 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
           maybeGatewayTier0Dhall
           maybeControlPlaneClusterId
           maybeControlPlaneParentRef
+          maybeApiEgressCoordinate
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = chartDefinitionName definition
@@ -2101,8 +2116,9 @@ renderReleaseValuesJson
   -> Maybe String
   -> Maybe Text.Text
   -> Maybe ParentRef
+  -> Maybe KubernetesApiEgressCoordinate
   -> Either String String
-renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef = do
+renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef maybeApiEgressCoordinate = do
   baseValues <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
@@ -2197,13 +2213,41 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           valuesForTargetSecretAgent clusterId namespace rootChart maybeRuntimeImage
       _ -> Left ("Unsupported chart definition '" ++ chartDefinitionName definition ++ "'")
   values <- attachResourcePlanValues substrate settings definition rootChart baseValues
-  pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig values))
+  valuesWithApiEgress <-
+    attachKubernetesApiEgressValues definition maybeApiEgressCoordinate values
+  pure (BL8.unpack (Pretty.encodePretty' prettyJsonConfig valuesWithApiEgress))
  where
   requireControlPlaneClusterId =
     maybe
       (Left "standing control-plane role requires an explicit substrate cluster identity")
       Right
       maybeControlPlaneClusterId
+
+-- | Sprint 3.34: bind the observed Kubernetes API egress coordinate into the
+-- values of the two charts whose NetworkPolicy carries it.
+--
+-- The chart is the consumer and this is the only producer, so a chart in
+-- 'kubernetesApiEgressChartNames' rendered without an observation is a loud
+-- failure rather than a silently absent binding — the template would otherwise
+-- render an egress rule with an empty peer list and admit nothing, reproducing
+-- the outage this sprint exists to remove.
+attachKubernetesApiEgressValues
+  :: ChartDefinition -> Maybe KubernetesApiEgressCoordinate -> Value -> Either String Value
+attachKubernetesApiEgressValues definition maybeCoordinate values
+  | chartDefinitionName definition `notElem` kubernetesApiEgressChartNames = Right values
+  | otherwise =
+      case maybeCoordinate of
+        Nothing ->
+          Left
+            ( "chart '"
+                ++ chartDefinitionName definition
+                ++ "' renders the Kubernetes API egress rule but no `endpoints/kubernetes` "
+                ++ "observation was supplied"
+            )
+        Just coordinate ->
+          mergeObjectValues
+            values
+            (object ["kubernetesApiEgress" .= kubernetesApiEgressValues coordinate])
 
 attachResourcePlanValues
   :: Substrate -> ValidatedSettings -> ChartDefinition -> String -> Value -> Either String Value
@@ -3965,10 +4009,10 @@ ensurePublicEdgeTlsAgentAccess plan
           case bindingApplied of
             Left err -> pure (Left err)
             Right () -> do
-              apiAddress <- readKubernetesApiServiceIpv4
-              case apiAddress of
+              apiCoordinate <- readKubernetesApiEgressCoordinate
+              case apiCoordinate of
                 Left err -> pure (Left err)
-                Right address -> applyManifest (apiEgress address)
+                Right coordinate -> applyManifest (apiEgress coordinate)
  where
   namespace = chartDeploymentPlanNamespace plan
   roleName :: String
@@ -4017,7 +4061,7 @@ ensurePublicEdgeTlsAgentAccess plan
             , "name" .= roleName
             ]
       ]
-  apiEgress address =
+  apiEgress coordinate =
     object
       [ "apiVersion" .= ("networking.k8s.io/v1" :: String)
       , "kind" .= ("NetworkPolicy" :: String)
@@ -4038,18 +4082,24 @@ ensurePublicEdgeTlsAgentAccess plan
                         ]
                   ]
             , "policyTypes" .= (["Egress"] :: [String])
-            , "egress"
+            , -- Sprint 3.34: one `ipBlock` per observed endpoint address, and
+              -- the observed endpoint port. Both halves come from the same
+              -- `endpoints/kubernetes` observation, so the rule matches the
+              -- post-DNAT coordinate the CNI evaluates rather than the
+              -- pre-DNAT Service coordinate it never sees.
+              "egress"
                 .= [ object
                        [ "to"
                            .= [ object
                                   [ "ipBlock"
                                       .= object ["cidr" .= (address ++ "/32")]
                                   ]
+                              | address <- kubernetesApiEgressAddresses coordinate
                               ]
                        , "ports"
                            .= [ object
                                   [ "protocol" .= ("TCP" :: String)
-                                  , "port" .= (443 :: Int)
+                                  , "port" .= kubernetesApiEgressPort coordinate
                                   ]
                               ]
                        ]
@@ -4057,34 +4107,95 @@ ensurePublicEdgeTlsAgentAccess plan
             ]
       ]
 
-readKubernetesApiServiceIpv4 :: IO (Either String String)
-readKubernetesApiServiceIpv4 = do
+-- | Sprint 3.34: the Kubernetes API egress coordinate — the compiled owner of
+-- the address and port a NetworkPolicy egress rule must match to admit traffic
+-- to the Kubernetes API.
+--
+-- __Both halves come from one observation, and the layer is the point.__
+-- @service\/kubernetes@ reports @10.43.0.1:443@; kube-proxy DNATs that to the
+-- endpoint before the CNI evaluates egress, so a policy matching the Service
+-- coordinate matches nothing. @endpoints\/kubernetes@ reports the post-DNAT
+-- address and port together — the coordinate the policy engine actually sees.
+-- Deriving the two halves from one source is what
+-- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- requires: an observation has a layer, and observing the wrong layer from a
+-- single source fixes the encoder count and not the correctness.
+--
+-- This is __not__ a restatement of @kubernetes.default.svc.cluster.local:443@
+-- in "Prodbox.K8s.InCluster" and "Prodbox.Vault.Reconcile". That is what a
+-- client dials and is correct pre-DNAT; this is what a policy engine matches.
+-- Collapsing the two breaks the client path.
+data KubernetesApiEgressCoordinate = KubernetesApiEgressCoordinate
+  { kubernetesApiEgressAddresses :: [String]
+  , kubernetesApiEgressPort :: Int
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 3.34: the charts whose rendered NetworkPolicy carries the Kubernetes
+-- API egress coordinate, and therefore the only charts that consume
+-- 'readKubernetesApiEgressCoordinate'. Every other chart's `443` egress is
+-- public-internet HTTPS to `0.0.0.0/0` — a different coordinate this owner does
+-- not speak for.
+kubernetesApiEgressChartNames :: [String]
+kubernetesApiEgressChartNames = ["bootstrap-broker", "target-secret-agent"]
+
+-- | Sprint 3.34: the values object both charts consume, so the rendered rule is
+-- a binding rather than a literal.
+kubernetesApiEgressValues :: KubernetesApiEgressCoordinate -> Value
+kubernetesApiEgressValues coordinate =
+  object
+    [ "addresses" .= kubernetesApiEgressAddresses coordinate
+    , "port" .= kubernetesApiEgressPort coordinate
+    ]
+
+-- | Observe the Kubernetes API egress coordinate from @endpoints/kubernetes@.
+readKubernetesApiEgressCoordinate :: IO (Either String KubernetesApiEgressCoordinate)
+readKubernetesApiEgressCoordinate = do
   observed <-
     runCaptured
-      "kubectl get kubernetes API Service ClusterIP"
+      "kubectl get kubernetes API Endpoints address and port"
       "kubectl"
       [ "get"
-      , "service"
+      , "endpoints"
       , "kubernetes"
       , "--namespace"
       , "default"
       , "-o"
-      , "jsonpath={.spec.clusterIP}"
+      , "jsonpath={.subsets[*].addresses[*].ip}|{.subsets[*].ports[*].port}"
       ]
   pure $ do
     output <- observed
     case processExitCode output of
       ExitFailure _ ->
         Left
-          ( "kubectl get kubernetes API Service failed: "
+          ( "kubectl get kubernetes API Endpoints failed: "
               ++ processStderr output
               ++ processStdout output
           )
-      ExitSuccess ->
-        let address = trimWhitespace (processStdout output)
-         in if validIpv4Literal address
-              then Right address
-              else Left "kubernetes API Service did not report a valid IPv4 ClusterIP"
+      ExitSuccess -> parseKubernetesApiEgressCoordinate (processStdout output)
+
+-- | Pure projection of the @endpoints/kubernetes@ jsonpath output into the
+-- coordinate. Kept separate from the observation so it is testable without a
+-- cluster.
+parseKubernetesApiEgressCoordinate :: String -> Either String KubernetesApiEgressCoordinate
+parseKubernetesApiEgressCoordinate raw =
+  case break (== '|') (trimWhitespace raw) of
+    (addressField, '|' : portField) ->
+      let addresses = filter (not . null) (words addressField)
+          portWords = filter (not . null) (words portField)
+       in if null addresses || not (all validIpv4Literal addresses)
+            then Left "kubernetes API Endpoints did not report a valid IPv4 address"
+            else case nub portWords of
+              [solePort]
+                | all isDigit solePort && not (null solePort) ->
+                    Right
+                      KubernetesApiEgressCoordinate
+                        { kubernetesApiEgressAddresses = addresses
+                        , kubernetesApiEgressPort = read solePort
+                        }
+              [] -> Left "kubernetes API Endpoints did not report a port"
+              _ -> Left "kubernetes API Endpoints reported more than one distinct port"
+    _ -> Left "kubernetes API Endpoints observation was not in the expected form"
 
 validIpv4Literal :: String -> Bool
 validIpv4Literal value = case splitOnDot value of

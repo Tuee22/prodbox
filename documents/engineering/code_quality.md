@@ -228,6 +228,19 @@ Four further check families join the canonical quality gate under the Foundation
   port literals across 13 charts sit outside every gate. Widening the region to every repo-owned
   chart template is registered as Sprint `3.34`, a sibling of the Sprint `1.68` chart-PVC-size lint
   below rather than a consumer of its slot.
+- the **chart port-literal lint** (Sprint `3.34`, landed 2026-08-11): the widening recorded
+  immediately above. `chartTemplatePortLiteralViolations` is a sibling of
+  `chartTemplateResourceViolations` reusing its enumeration, and fails closed on an all-digit value
+  under the closed key set `port:` / `targetPort:` / `containerPort:` / `nodePort:` / `hostPort:` in
+  **any** repo-owned chart template — so a `networkpolicy.yaml` is now read for content, which no
+  gate previously did. Named ports (`port: http`) and `{{ .Values… }}` expressions are not all-digit
+  and fall out of the predicate, so the region carries **no allowlist**. Its first run named the 79
+  findings measured above; all are now values bindings, and `prodbox dev lint chart` exits 0.
+  **The honest bound**: this closes drift between a rendered value and its compiled owner, not
+  correctness of the owner. Had it existed when the Kubernetes API egress rule said `443`, that
+  literal would have become a binding, and if the compiled owner still said `443` the cluster would
+  break identically — only a live run proves `6443`. The gate is not credited with catching the
+  outage that registered the sprint.
 - the **legacy escape registry bijection check** (Sprint `1.63`): every surviving legacy escape
   call site (the shared operational AWS credential and `aws` CLI subprocess object-store sites) is
   enumerated in the machine-readable registry `src/Prodbox/Legacy/EscapeRegistry.hs`, and a

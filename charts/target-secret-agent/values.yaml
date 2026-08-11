@@ -66,6 +66,16 @@ probeTiming:
 listener:
   port: 8600
 
+# Sprint 3.34: the egress port coordinates this chart's NetworkPolicies pin,
+# bound from values instead of hard-coded literals so an operator can retarget a
+# cluster's DNS or Vault listener without editing templates. Defaults are the
+# previously inlined literals, so the rendered policy is unchanged.
+ports:
+  # Cluster DNS (kube-system), UDP + TCP.
+  dns: 53
+  # In-cluster Vault API (Kubernetes auth plus allowlisted KV / Transit).
+  vault: 8200
+
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `target-secret-agent`
 # workload profile) by `Prodbox.Lib.ChartPlatform` into

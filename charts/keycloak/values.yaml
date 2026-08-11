@@ -11,6 +11,22 @@ image:
   repository: 127.0.0.1:30080/prodbox/keycloak-mirror
   tag: "26.0.0"
 
+ports:
+  # Cluster DNS (kube-system CoreDNS), UDP + TCP.
+  dns: 53
+  # Plain HTTP — the public-edge Gateway's HTTP->HTTPS redirect listener.
+  httpPlain: 80
+  # Public HTTPS — the public-edge Gateway TLS listener and HTTPS egress to 0.0.0.0/0.
+  publicHttps: 443
+  # PostgreSQL (Percona/Patroni keycloak database).
+  postgres: 5432
+  # Workload HTTP (Keycloak listener, Service port, HTTPRoute backend port).
+  http: 8080
+  # In-cluster Vault API.
+  vault: 8200
+  # Keycloak management listener serving /health/ready and /health/live probes.
+  management: 9000
+
 gateway:
   className: prodbox-public-edge
   name: public-edge

@@ -66,9 +66,9 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -78,14 +78,21 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
-    # Kubernetes API Service endpoints are commonly host-networked and lack a
-    # selectable Pod label. The standing Agent's namespaced RBAC is the exact
-    # authorization boundary for Job/Pod/ServiceAccount observation, attach,
-    # and UID-preconditioned cleanup; no Secret verb is granted.
-    - ports:
+          port: {{ .Values.ports.vault }}
+    # Sprint 3.34: the Kubernetes API egress coordinate, bound from the single
+    # compiled owner that observes `endpoints/kubernetes` — the POST-DNAT
+    # address and port, which is what the CNI evaluates this rule against. The
+    # standing Agent's namespaced RBAC is the exact authorization boundary for
+    # Job/Pod/ServiceAccount observation, attach, and UID-preconditioned
+    # cleanup; no Secret verb is granted.
+    - to:
+        {{- range .Values.kubernetesApiEgress.addresses }}
+        - ipBlock:
+            cidr: {{ . }}/32
+        {{- end }}
+      ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.kubernetesApiEgress.port }}
 ---
 # A one-shot materializer has no ingress and may reach only cluster DNS and
 # Vault.  In particular it has no AWS/public egress: AWS credentials are output
@@ -112,9 +119,9 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -124,4 +131,4 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}

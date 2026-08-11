@@ -26,9 +26,9 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -38,7 +38,7 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     {{- if eq .Values.ingressSchema "aws-admin" }}
     - to:
         - namespaceSelector:
@@ -49,7 +49,7 @@ spec:
               app.kubernetes.io/name: prodbox-lifecycle-authority
       ports:
         - protocol: TCP
-          port: 8600
+          port: {{ .Values.ports.controlPlane }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -59,12 +59,12 @@ spec:
               app.kubernetes.io/name: prodbox-target-secret-agent
       ports:
         - protocol: TCP
-          port: 8600
+          port: {{ .Values.ports.controlPlane }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.ports.publicHttps }}
     {{- end }}
 {{- end }}

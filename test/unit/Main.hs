@@ -710,6 +710,7 @@ import Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
+  , KubernetesApiEgressCoordinate (..)
   , PublicEdgePreserveOutcome (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
@@ -720,9 +721,11 @@ import Prodbox.Lib.ChartPlatform
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
   , deploymentConditionReportsTrue
+  , kubernetesApiEgressChartNames
   , observePatroniOperatorAvailableWith
   , operatorAvailableTarget
   , operatorGateResult
+  , parseKubernetesApiEgressCoordinate
   , renderPublicEdgePreserveOutcome
   , resolveChart
   , resolveChartSecrets
@@ -5870,7 +5873,9 @@ unitSuite = do
         `shouldContain` "{{ printf \"%s-client\" .Values.oidc.securityPolicyName | quote }}"
       vscodeNetworkPolicy `shouldContain` "kubernetes.io/metadata.name: vault"
       vscodeNetworkPolicy `shouldContain` "app.kubernetes.io/name: prodbox-vault"
-      vscodeNetworkPolicy `shouldContain` "port: 8200"
+      -- Sprint 3.34: the Vault egress port is a values binding, not a restated
+      -- literal.
+      vscodeNetworkPolicy `shouldContain` "port: {{ .Values.ports.vault }}"
       vscodeValues `shouldContain` "role: vscode-oidc"
       vscodeValues `shouldContain` "oidcVscode: vscode/oidc/vscode"
       vscodeValues `shouldContain` "repository: 127.0.0.1:30080/prodbox/curl-mirror"
@@ -7381,6 +7386,56 @@ unitSuite = do
     it "expands prerequisite closures transitively and deterministically" $ do
       transitiveClosureTexts ["tool_systemctl", "supported_ubuntu_2404"]
         `shouldBe` Right ["platform_linux", "supported_ubuntu_2404", "systemd_available", "tool_systemctl"]
+
+  describe "Sprint 3.34 Kubernetes API egress coordinate" $ do
+    it "projects both post-DNAT halves from one endpoints observation" $
+      parseKubernetesApiEgressCoordinate "192.168.2.43|6443"
+        `shouldBe` Right
+          KubernetesApiEgressCoordinate
+            { kubernetesApiEgressAddresses = ["192.168.2.43"]
+            , kubernetesApiEgressPort = 6443
+            }
+
+    it "emits one address per endpoint on a multi-master control plane" $
+      parseKubernetesApiEgressCoordinate "10.0.0.1 10.0.0.2 10.0.0.3|6443"
+        `shouldBe` Right
+          KubernetesApiEgressCoordinate
+            { kubernetesApiEgressAddresses = ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+            , kubernetesApiEgressPort = 6443
+            }
+
+    it "accepts the repeated port a multi-endpoint subset reports" $
+      fmap kubernetesApiEgressPort (parseKubernetesApiEgressCoordinate "10.0.0.1 10.0.0.2|6443 6443")
+        `shouldBe` Right 6443
+
+    it "refuses an unobservable, malformed, or ambiguous coordinate" $ do
+      parseKubernetesApiEgressCoordinate "" `shouldSatisfy` isLeft
+      parseKubernetesApiEgressCoordinate "192.168.2.43" `shouldSatisfy` isLeft
+      parseKubernetesApiEgressCoordinate "|6443" `shouldSatisfy` isLeft
+      parseKubernetesApiEgressCoordinate "192.168.2.43|" `shouldSatisfy` isLeft
+      parseKubernetesApiEgressCoordinate "not-an-ip|6443" `shouldSatisfy` isLeft
+      parseKubernetesApiEgressCoordinate "10.0.0.1 10.0.0.2|6443 8443" `shouldSatisfy` isLeft
+
+    -- The positive anchors Sprint 3.34 requires: deleting the compiled owner,
+    -- or reverting the observation to the pre-DNAT Service coordinate, is a
+    -- failure rather than a silent pass.
+    it "observes endpoints/kubernetes rather than service/kubernetes" $ do
+      repoRoot <- getCurrentDirectory
+      chartPlatformSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Lib" </> "ChartPlatform.hs")
+      chartPlatformSource `shouldContain` "readKubernetesApiEgressCoordinate"
+      chartPlatformSource `shouldContain` "\"endpoints\""
+      chartPlatformSource
+        `shouldContain` "jsonpath={.subsets[*].addresses[*].ip}|{.subsets[*].ports[*].port}"
+      chartPlatformSource `shouldNotContain` "readKubernetesApiServiceIpv4"
+      chartPlatformSource `shouldNotContain` "jsonpath={.spec.clusterIP}"
+
+    it "binds the coordinate in both charts that carry it" $ do
+      repoRoot <- getCurrentDirectory
+      forM_ kubernetesApiEgressChartNames $ \chartName -> do
+        template <-
+          readFile (repoRoot </> "charts" </> chartName </> "templates" </> "networkpolicy.yaml")
+        template `shouldContain` "{{ .Values.kubernetesApiEgress.port }}"
+        template `shouldContain` "range .Values.kubernetesApiEgress.addresses"
 
   describe "prerequisite registry" $ do
     it "covers the full shared prerequisite inventory" $ do

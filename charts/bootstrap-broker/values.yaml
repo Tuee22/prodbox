@@ -78,6 +78,22 @@ probeTiming:
 listener:
   port: 8600
 
+# Sprint 3.34: the shared port vocabulary bound by this chart's NetworkPolicy
+# egress rules. Every default equals the literal it replaced — this block is a
+# pure refactor of the previously hard-coded numbers. The Kubernetes API egress
+# coordinate is deliberately NOT here: it stays under
+# `.Values.kubernetesApiEgress.port`, bound from its single compiled owner.
+ports:
+  # Cluster DNS (kube-system), both UDP and TCP.
+  dns: 53
+  # In-cluster Vault API (init / unseal / seal / PKI status / test-issuance).
+  vault: 8200
+  # In-cluster MinIO object store.
+  objectStore: 9000
+  # In-cluster control-plane role listener — the exact authenticated custody
+  # consumers (Target Secret Agent and Lifecycle Authority).
+  controlPlane: 8600
+
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `bootstrap-broker` workload
 # profile) by `Prodbox.Lib.ChartPlatform.attachResourcePlanValues` into

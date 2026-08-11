@@ -19,7 +19,7 @@ spec:
               kubernetes.io/metadata.name: envoy-gateway-system
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ .Values.ports.http }}
   egress:
     - to:
         - namespaceSelector:
@@ -27,9 +27,9 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -39,12 +39,12 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:
         - protocol: TCP
-          port: 80
+          port: {{ .Values.ports.httpPlain }}
         - protocol: TCP
-          port: 443
+          port: {{ .Values.ports.publicHttps }}

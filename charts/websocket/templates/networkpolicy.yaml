@@ -37,7 +37,7 @@ spec:
               app.kubernetes.io/name: keycloak
       ports:
         - protocol: TCP
-          port: 8080
+          port: {{ .Values.ports.http }}
     # The websocket workload resolves its OIDC client_secret SecretRef.Vault
     # via Vault Kubernetes auth at startup (role websocket-oidc); without this
     # egress the auth login times out and the pod crash-loops. Mirrors the
@@ -51,13 +51,13 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
+          port: {{ .Values.ports.dns }}

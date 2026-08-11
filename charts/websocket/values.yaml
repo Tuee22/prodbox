@@ -2,6 +2,13 @@ global:
   namespace: default
   rootChart: websocket
 
+# Shared port bindings (Sprint 3.34). Defaults match the literals these keys
+# replaced in templates/; changing one changes the rendered NetworkPolicy.
+ports:
+  dns: 53
+  vault: 8200
+  http: 8080
+
 replicaCount: 2
 
 podAntiAffinity:

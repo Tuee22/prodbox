@@ -35,14 +35,14 @@ spec:
   listeners:
     - name: {{ .Values.gateway.httpRedirectListenerName | quote }}
       hostname: {{ .Values.gateway.host | quote }}
-      port: 80
+      port: {{ .Values.ports.httpPlain }}
       protocol: HTTP
       allowedRoutes:
         namespaces:
           from: All
     - name: {{ .Values.gateway.listenerName | quote }}
       hostname: {{ .Values.gateway.host | quote }}
-      port: 443
+      port: {{ .Values.ports.publicHttps }}
       protocol: HTTPS
       tls:
         mode: Terminate
@@ -101,4 +101,4 @@ spec:
             value: {{ printf "%s/resources" .Values.gateway.authPathPrefix | quote }}
       backendRefs:
         - name: keycloak
-          port: 8080
+          port: {{ .Values.ports.http }}

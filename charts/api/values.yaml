@@ -36,3 +36,12 @@ jwt:
 
 api:
   port: 8080
+
+# Shared port-binding convention (Sprint 3.34): every all-digit port literal in
+# templates/ binds through .Values.ports.*. Defaults below equal the literals
+# they replaced.
+ports:
+  # cluster DNS (kube-system CoreDNS, UDP + TCP)
+  dns: 53
+  # public-internet HTTPS egress to 0.0.0.0/0
+  publicHttps: 443

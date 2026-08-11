@@ -60,6 +60,23 @@ probeTiming:
 listener:
   port: 8600
 
+# Shared port bindings for this chart's NetworkPolicy egress rules. Every port
+# literal the templates emit is declared here so the isolation policy is
+# configuration, not a hard-coded constant. Defaults equal the values the
+# templates previously inlined.
+ports:
+  # Cluster DNS (kube-system egress, UDP + TCP).
+  dns: 53
+  # Public-internet HTTPS egress to 0.0.0.0/0 (AWS APIs).
+  publicHttps: 443
+  # In-cluster Vault API (transit lifecycle-aggregate/checkpoint + secret/lifecycle KV).
+  vault: 8200
+  # In-cluster MinIO object store (Model-B CAS objects).
+  objectStore: 9000
+  # In-cluster control-plane role listener — the Authority Backup Adapter and the
+  # Target Secret Agent decommission inventory endpoint.
+  controlPlane: 8600
+
 # The retained operation-journal PersistentVolume the single-replica StatefulSet
 # mounts at /var/lib/prodbox/lifecycle-authority-journal. The physical retained
 # PV (Retain reclaim policy) is provisioned by the harness under this storage

@@ -791,7 +791,9 @@ credentialProvisionerSuite =
         serviceAccount `shouldContain` "automountServiceAccountToken: false"
         policy `shouldContain` "ingress: []"
         policy `shouldContain` "kubernetes.io/metadata.name: vault"
-        policy `shouldContain` "port: 8200"
+        -- Sprint 3.34: the Vault egress port is a values binding, not a
+        -- restated literal.
+        policy `shouldContain` "port: {{ .Values.ports.vault }}"
         policy `shouldContain` "metadata.name: target-secret-agent"
         policy `shouldContain` "app.kubernetes.io/name: prodbox-target-secret-agent"
         policy `shouldContain` "metadata.name: lifecycle-authority"

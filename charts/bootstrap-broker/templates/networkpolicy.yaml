@@ -38,16 +38,25 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.ports.dns }}
         - protocol: TCP
-          port: 53
-    # Kubernetes API Service endpoints are commonly host-networked rather than
-    # selected by stable Pod labels. The Broker's RBAC still restricts this
-    # path to create-only TokenReview plus the exact-name Broker worker/Lease
-    # and Vault reset Role permissions. pods/exec remains ungranted.
-    - ports:
+          port: {{ .Values.ports.dns }}
+    # Sprint 3.34: the Kubernetes API egress coordinate, bound from the single
+    # compiled owner that observes `endpoints/kubernetes`. Both halves are the
+    # POST-DNAT ones: kube-proxy translates the API Service before the CNI
+    # evaluates egress, so a rule written against the Service coordinate
+    # (`10.43.0.1:443`) matches nothing and the Broker's every API call is
+    # dropped. The Broker's RBAC still restricts this path to create-only
+    # TokenReview plus the exact-name Broker worker/Lease and Vault reset Role
+    # permissions. pods/exec remains ungranted.
+    - to:
+        {{- range .Values.kubernetesApiEgress.addresses }}
+        - ipBlock:
+            cidr: {{ . }}/32
+        {{- end }}
+      ports:
         - protocol: TCP
-          port: 443
+          port: {{ .Values.kubernetesApiEgress.port }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -57,7 +66,7 @@ spec:
               app.kubernetes.io/name: prodbox-vault
       ports:
         - protocol: TCP
-          port: 8200
+          port: {{ .Values.ports.vault }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -67,7 +76,7 @@ spec:
               app.kubernetes.io/name: prodbox-minio
       ports:
         - protocol: TCP
-          port: 9000
+          port: {{ .Values.ports.objectStore }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -77,7 +86,7 @@ spec:
               app.kubernetes.io/name: prodbox-target-secret-agent
       ports:
         - protocol: TCP
-          port: 8600
+          port: {{ .Values.ports.controlPlane }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -87,4 +96,4 @@ spec:
               app.kubernetes.io/name: prodbox-lifecycle-authority
       ports:
         - protocol: TCP
-          port: 8600
+          port: {{ .Values.ports.controlPlane }}

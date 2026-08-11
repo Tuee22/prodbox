@@ -4,6 +4,18 @@ global:
 
 replicaCount: 1
 
+ports:
+  # Cluster DNS (kube-system CoreDNS), UDP + TCP.
+  dns: 53
+  # Plain HTTP egress to the public internet.
+  httpPlain: 80
+  # HTTPS egress to the public internet (0.0.0.0/0).
+  publicHttps: 443
+  # Workload HTTP (code-server listener, Service port, HTTPRoute backend port).
+  http: 8080
+  # In-cluster Vault API.
+  vault: 8200
+
 podAntiAffinity:
   enabled: true
 

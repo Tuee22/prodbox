@@ -8,6 +8,14 @@ enabled: false
 
 ingressSchema: aws-admin
 
+# Egress port bindings for the isolation NetworkPolicy. Defaults match the
+# previously hard-coded literals; overriding them changes only the policy.
+ports:
+  dns: 53
+  publicHttps: 443
+  vault: 8200
+  controlPlane: 8600
+
 image:
   repository: 127.0.0.1:30080/prodbox/prodbox-runtime
   # The permit-created render must supply the immutable sha256 digest. Tags are

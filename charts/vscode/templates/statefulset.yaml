@@ -52,7 +52,7 @@ spec:
             - /workspace
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: {{ .Values.ports.http }}
           volumeMounts:
             - name: data
               mountPath: /workspace

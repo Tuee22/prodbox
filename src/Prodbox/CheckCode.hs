@@ -5070,6 +5070,7 @@ chartViolationsFor repoRoot relativeChartPath = do
         pure (labelViolations helperPath helperContents)
       else pure [helperPath ++ " is missing the shared label helper."]
   templateViolations <- chartTemplateResourceViolations chartDir
+  portLiteralFindings <- chartTemplatePortLiteralViolations chartDir
   guardrailViolations <- chartRootGuardrailViolations (takeFileName chartDir) chartDir
   probeViolations <- gatewayProbeChartViolations (takeFileName chartDir) chartDir
   staticsViolations <- gatewayStaticsChartViolations (takeFileName chartDir) chartDir
@@ -5079,6 +5080,7 @@ chartViolationsFor repoRoot relativeChartPath = do
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
         ++ templateViolations
+        ++ portLiteralFindings
         ++ guardrailViolations
         ++ probeViolations
         ++ staticsViolations
@@ -5489,6 +5491,72 @@ chartTemplateResourceViolations chartDir = do
               contents <- readFileStrict path
               pure (containerResourceViolations path contents)
           )
+
+-- | Sprint 3.34: a sibling of 'chartTemplateResourceViolations', reusing its
+-- enumeration, that refuses an all-digit port value in any repo-owned chart
+-- template.
+--
+-- __Why the region is every template, not a filename list.__ Per
+-- [resource_scaling_doctrine.md § 2C](../../documents/engineering/resource_scaling_doctrine.md)
+-- a gate's region must cover the surface that carries its evidence, and before
+-- this check no gate read a chart @networkpolicy.yaml@ for content at all — the
+-- Kubernetes API egress coordinate lived in three independently-authored
+-- literals with no compiled owner.
+--
+-- __No allowlist is needed.__ Named ports (@port: http@) and @{{ .Values… }}@
+-- expressions are not all-digit, so they fall out of the predicate rather than
+-- being excepted by it.
+--
+-- __The honest bound.__ This closes drift between a rendered value and its
+-- compiled owner; it does not close correctness of the owner. Had it existed,
+-- @port: 443@ would have become a values binding, and if the compiled owner
+-- still said @443@ the cluster would break identically. Only a live run proves
+-- @6443@. This gate is not credited with catching the outage that registered
+-- the sprint.
+chartTemplatePortLiteralViolations :: FilePath -> IO [String]
+chartTemplatePortLiteralViolations chartDir = do
+  let templatesDir = chartDir </> "templates"
+  templatesDirExists <- doesDirectoryExist templatesDir
+  if not templatesDirExists
+    then pure []
+    else do
+      entries <- listDirectory templatesDir
+      fmap concat $
+        forM
+          (sort [entry | entry <- entries, ".yaml" `isSuffixOf` entry])
+          ( \entry -> do
+              let path = templatesDir </> entry
+              contents <- readFileStrict path
+              pure (portLiteralViolations path contents)
+          )
+
+-- | The closed key set that carries a port coordinate in a Kubernetes manifest.
+chartPortKeys :: [String]
+chartPortKeys = ["port:", "targetPort:", "containerPort:", "nodePort:", "hostPort:"]
+
+portLiteralViolations :: FilePath -> String -> [String]
+portLiteralViolations path contents =
+  [ path
+      ++ " line "
+      ++ show lineNumber
+      ++ " renders `"
+      ++ trimLine lineText
+      ++ "` as a port literal; bind it to a compiled owner through `.Values`."
+  | (lineNumber, lineText) <- zip [1 :: Int ..] (lines contents)
+  , Just value <- [portValueOnLine lineText]
+  , not (null value)
+  , all isDigit value
+  ]
+
+-- | The value of a port-carrying key on this line, if the line declares one.
+portValueOnLine :: String -> Maybe String
+portValueOnLine lineText =
+  case find (`isPrefixOf` afterDash) chartPortKeys of
+    Nothing -> Nothing
+    Just key -> Just (trimLine (drop (length key) afterDash))
+ where
+  trimmed = trimLine lineText
+  afterDash = if "- " `isPrefixOf` trimmed then trimLine (drop 2 trimmed) else trimmed
 
 containerResourceViolations :: FilePath -> String -> [String]
 containerResourceViolations path contents =

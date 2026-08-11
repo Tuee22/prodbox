@@ -60,6 +60,16 @@ probeTiming:
 listener:
   port: 8600
 
+# Shared port bindings referenced by this chart's templates. Defaults equal the
+# literals they replaced — changing one changes the rendered policy.
+ports:
+  # Cluster DNS (kube-system egress, UDP + TCP).
+  dns: 53
+  # In-cluster Vault API (least-privilege Kubernetes-auth login + read).
+  vault: 8200
+  # Public-internet HTTPS egress to 0.0.0.0/0 (AWS S3 backup target).
+  publicHttps: 443
+
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `authority-backup` workload
 # profile) into `.Values.resources.authorityBackup` by

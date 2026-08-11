@@ -13,6 +13,9 @@ pulsar:
   clusterName: prodbox
   memoryOptions: "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m"
 
+ports:
+  dns: 53
+
 storage:
   className: manual
   size: 20Gi

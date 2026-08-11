@@ -11,6 +11,19 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-10 on Sprint `2.42` (Standard A/N)** — an own-surface reopen on the Bootstrap
+Broker readiness contract this phase already owns through Sprints `2.39` and `2.40`. A live
+`prodbox test all --substrate aws` investigation found a Phase-`3` chart defect blocking the
+broker's Kubernetes API egress; the chart caused the outage, and this phase's surface is why it cost
+eight runs to find. `kubernetesObserveBootstrapLease` discards its typed transport failure with a
+wildcard, so a dropped packet, a `403`, and a `404` all reach the operator as the single sentence
+`Kubernetes Lease observation unavailable` while `/healthz` answers 200. That is
+[chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md) corollary 2
+at the broker's Kubernetes boundary. Sprint `2.42` carries the detail through, and classifies the
+underlying exception rather than showing it, because the request carries a bearer token and a
+readiness body is operator-visible. No rendered manifest and no readiness verdict changes; the
+Standard-P rows stay `pending`.
+
 ✅ **Reclosed 2026-08-07 on Sprint `2.41`** — Sprints `2.39`, `2.40`, and `2.41` are all Done on
 their code-owned surfaces, so the 2026-08-04 reopen closes. The live reproducer and the deployed-path
 readiness change remain 🧪 Standard-O and do not prevent closure.
@@ -4046,6 +4059,79 @@ affected test leaked a permanently blocked manager thread rather than failing.
 ### Remaining Work
 
 None.
+
+## Sprint 2.42: The Broker's Readiness Reason Survives Its Transport 📋
+
+**Status**: Planned — Phase `2` own-surface reopen (Standard A/N) on the Bootstrap Broker readiness
+contract this phase already owns through Sprints `2.39` and `2.40`. Registered by the live
+investigation of a Phase-`3` chart defect: the chart was the cause, and the broker's own reporting
+is why it took eight runs and roughly four hours to find.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` (the discarded transport
+error), reaching the operator through `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs` and
+`src/Prodbox/Bootstrap/Broker/Readiness.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — the change is to the *reason text* carried in an existing
+readiness projection, not to the readiness verdict, the probe wiring, or any rendered manifest. None
+of Standard P's enumerated surfaces moves; both substrate rows stay `pending`.
+**Independent Validation**: pure and local — a fake Kubernetes boundary returning each transport
+failure constructor is asserted to produce a distinct, non-empty reason in the `/readyz` body, with
+a negative case proving a bare "unavailable" string can no longer be produced. No live
+infrastructure.
+**Docs to update**: none — the rule is
+[chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md) corollary 2,
+already authored by Sprint `0.25`.
+
+### Objective
+
+`kubernetesObserveBootstrapLease` discards a typed transport failure:
+
+```haskell
+Left _ -> pure (BootstrapLeaseUnobservable "Kubernetes Lease observation unavailable")
+```
+
+A NetworkPolicy was dropping the broker's packets to the Kubernetes API. What the operator saw for
+thirty minutes was `dependency-unavailable: bootstrap-lease: Kubernetes Lease observation
+unavailable` — a sentence that names neither the endpoint dialled, nor the failure mode, nor the
+fact that a packet was dropped rather than a request refused. `/healthz` stayed 200 the whole time,
+so the process was visibly alive and inexplicably not ready.
+
+This is § 23 corollary 2 — *do not convert a typed failure into an untyped one* — at the broker's
+Kubernetes boundary. The reason was a value and it was thrown away. Distinguishing the cases matters
+because they imply different operator actions: a dropped packet is a policy or routing defect, a
+`403` is RBAC, a `404` is a missing object.
+[pure_fp_standards.md § 2.3](../documents/engineering/pure_fp_standards.md) states the same rule
+from the decode side: invalid, corrupt, missing, and unobservable are distinct when they imply
+different decisions.
+
+### Deliverables
+
+- 📋 **The transport detail reaches the readiness body.** `Left detail` is carried into
+  `BootstrapLeaseUnobservable` rather than discarded, at the lease site and at the symmetric worker
+  site.
+- 📋 **The detail is actually a detail.** Fixing the lease site alone is insufficient: the request
+  helper already collapses its `HttpException` to a bare `"Kubernetes API request failed"`, so the
+  reason would gain a prefix and no information. The exception must be classified there.
+- 📋 **Classify, never `show`.** `show` on `HttpExceptionRequest` prints the `Request`, and this
+  request carries an `Authorization: Bearer` header. Pattern-match the `HttpExceptionContent`
+  constructors — connection timeout, connection failure, response timeout — onto a closed set of
+  labels. A readiness body is operator-visible and must not become a credential-disclosure surface;
+  this is the one deliverable where the obvious implementation is the wrong one.
+
+### Validation
+
+1. 📋 Each transport failure constructor produces a distinct reason, asserted by exact string.
+2. 📋 A negative case: no input produces the bare `"Kubernetes Lease observation unavailable"` with
+   no detail appended.
+3. 📋 A credential-safety case: the rendered reason for a failed authenticated request contains
+   neither the bearer token nor the header name.
+4. 📋 `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+Registered rather than absorbed into Sprint `3.34`. That sprint's surface is the chart platform and
+the chart lint; this one is broker runtime, which Phase `2` owns. The two share a live failure and
+nothing else — and the division is worth stating precisely, because the chart defect caused the
+outage while this defect caused its cost.
 
 ## Related Documents
 

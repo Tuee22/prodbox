@@ -2520,10 +2520,99 @@ its own worked example. Applying it broke twenty integration cases and the failu
 None on this sprint's surface. The code that closes the two defect classes is Sprints `5.30` and
 `4.60`; this sprint states the doctrine they implement and does not depend on them.
 
+## Sprint 0.26: An Observation Has a Layer ✅
+
+**Status**: Done (2026-08-10) — governance work on the already-reclosed Phase `0`
+documentation surface; it neither re-closes nor reopens the phase (Sprint `0.17`'s reclosure
+stands). Registered by a live `prodbox test all --substrate aws` failure whose cause was a derived
+value read at the wrong layer, and by the discovery that a chart-doctrine claim is wider than the
+region enforcing it.
+**Blocked by**: none.
+**Deployment qualification**: not invalidated — this sprint changes governed documentation only and
+moves no production-composition surface; both substrate rows stay `pending`. Note that
+`SourceIdentity` binds governed documentation, so these edits do move the source-manifest digest a
+future `proven` row would bind.
+**Independent Validation**: `prodbox dev check` exit 0, which runs the governed-document harmony
+set — status values, relative links, generated-section harmony, and the section-citation existence
+gate over the new § 24.
+**Docs to update**: `documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/code_quality.md`.
+
+### Objective
+
+Sprint `0.25` established that MISU stops at conversions: a value crossing out of a region must be
+reconstructed by exactly one derived encoder. A live failure showed that rule is satisfiable by a
+value that is still wrong.
+
+`apiEgress` in `src/Prodbox/Lib/ChartPlatform.hs` renders the NetworkPolicy permitting a workload to
+reach the Kubernetes API. It does not hand-author its coordinate — `readKubernetesApiServiceIpv4`
+observes `service/kubernetes`, and the rule is generated from that observation, exactly as § 21's
+class-G prescribes. It is wrong in **both** coordinates anyway. The Service is `10.43.0.1:443` with
+`targetPort=6443`; the endpoint is `192.168.2.43:6443`; kube-proxy DNATs before the CNI evaluates
+egress, so the policy is matched against the endpoint and a rule naming the Service matches nothing.
+The observation was authoritative for the layer at which a client dials, and was read for the layer
+at which policy is evaluated.
+
+That is not a missing coordinate on a value (§ 21) and not a second encoder (§ 23). It is a source
+read at the wrong layer, and no existing section names it.
+
+### Deliverables
+
+- ✅ **`chaos_hardening_doctrine.md` gains § 24, "An observation has a layer."** The rule: *a derived
+  value is only as correct as the layer at which its source object is authoritative, and that layer
+  must match the layer at which the value is enforced.* Deriving from one source fixes the encoder
+  count, not the layer. Carries the measured worked example, the control test that separated the two
+  candidate causes, and the corollary that a layer mismatch is not a duplicate — the client-dial and
+  policy-match coordinates are both correct at their own layer, and collapsing them breaks the
+  client path.
+- ✅ **A § 12 ledger row.** "Derivation from an observed source (§ 24)" establishes agreement with the
+  object actually read, is **proven only for the layer at which that object is authoritative**, and
+  does not establish that the layer read is the layer enforced.
+- ✅ **`helm_chart_platform_doctrine.md`'s probe/route single-source rule is corrected in place
+  (Standard C).** The passage states the rule as a property of every chart; `prodbox dev lint chart`
+  enforces it on seven charts, on hand-listed filenames, and only the gateway rule covers ports at
+  all. No chart's `networkpolicy.yaml` is inspected for content by any gate —
+  `chartTemplateResourceViolations` opens every template but reads `containers:` stanzas, which a
+  NetworkPolicy has none of. Measured: 79 numeric port literals across 13 charts sit outside every
+  gate. The correction is recorded rather than quietly made true, the same treatment Sprint `1.82`
+  gave `vault_doctrine.md` § 20.3.
+- ✅ **`code_quality.md` records that region** beside the lint it describes, and points at the
+  registered widening.
+- ✅ **No section renumbered.** § 24 is appended, so the bound `§ 21`/`§ 22`/`§ 23` citations across
+  `documents/`, `DEVELOPMENT_PLAN/` and `src/` Haddock are untouched — the same discipline Sprint
+  `0.25` used when appending § 23.
+
+### Validation
+
+1. ✅ `prodbox dev check` exit 0, including `checkDoctrineSectionCitations` over the new bound
+   `chaos_hardening_doctrine.md § 24` citations and `checkGeneratedSectionsHarmony` over three files
+   that keep `**Generated sections**: none`.
+2. ✅ The corrected passage is additive: the original claim is quoted rather than edited, so a reader
+   sees what was asserted and where it holds.
+
+### Remaining Work
+
+None on this sprint's surface. The code that makes the widened claim true is Sprint `3.34`; the
+broker-side conversion this failure also exposed is Sprint `2.42`. This sprint states the doctrine
+they implement and does not depend on either.
+
+**A claim this sprint deliberately does not make.** The lint Sprint `3.34` will add closes drift
+between a rendered value and its compiled owner, not correctness of the owner. It would not have
+caught this outage: with the owner still saying `443`, the cluster breaks identically. § 24 exists
+because the failure was a layer error, and no gate over literals detects a layer error.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
+- ✅ Sprint `0.26`: `documents/engineering/chaos_hardening_doctrine.md` - new § 24 "An observation
+  has a layer" (SSoT for the observation-layer rule) and a § 12 ledger row. Appended, so no bound
+  citation moves.
+- ✅ Sprint `0.26`: `documents/engineering/helm_chart_platform_doctrine.md` - the probe/route
+  single-source rule's enforcement region is recorded in place (Standard C); the claim as written
+  was wider than the region enforces.
+- ✅ Sprint `0.26`: `documents/engineering/code_quality.md` - the chart forbidden-literal lint's
+  region, and the fact that no gate reads a chart `networkpolicy.yaml` for content.
 - ✅ Sprint `0.25`: `documents/engineering/chaos_hardening_doctrine.md` - new § 23 "Conversions —
   where the moves stop" (SSoT for the conversion-boundary rule); § 22 fourth honest consequence and
   Ring-2 cell; § 21's sufficiency claim corrected in place; a § 12 ledger row.

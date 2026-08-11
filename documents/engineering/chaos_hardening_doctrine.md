@@ -640,6 +640,7 @@ assumed result and report it as proven. Keep this ledger explicitly:
 | **Inject** — live fault injection | The deployed system survived the injected faults | **Tested** (the faults you chose), never proven | Faults/interleavings not injected; that the invariant is *sound* |
 | Synchrony / real-time assumption (R8) | The timing premise the live system relies on (clock-skew bound, lease, heartbeat) is named, bounded, and monitored | **Assumed** — monitored at runtime, never proven by any move | Behaviour when the bound is exceeded; that the premise actually holds in the field |
 | Type tightening inside a region (§ 23) | Values of that type in the compiled region cannot take the excluded shape | **Proven for the compiled region only** — and the region is whatever the build command selects, not the repository (§ 22) | Anything at a conversion out of the region: a hand-authored serialization, a typed failure thrown as an exception, an unanswered socket. Tightening a type does not update a second encoder; it only makes it wrong |
+| Derivation from an observed source (§ 24) | The rendered value agrees with the object that was actually read | **Proven only for the layer at which that object is authoritative** — deriving from one source fixes the encoder count, not the layer | That the layer read is the layer the value is enforced at. A value generated from the pre-translation object and matched against the post-translation one is single-sourced, derived, and wrong |
 
 (Three further rows — the cross-boundary consistency premise, the failover budget, and the
 invariant-confluence classification — belong to systems that cross a storage boundary, and are recorded in
@@ -1200,6 +1201,50 @@ must be constrained to produce only values the pure layer's types demand. The fa
 proofs kept being added *inside* regions while the boundaries between them stayed ungoverned. Where
 a conversion is unavoidable — a file format, a wire protocol, a socket — the honest position is
 § 22's: name the region, say the proofs end at its edge, and put one derived encoder there.
+
+---
+
+## 24. An observation has a layer
+
+§ 23 requires that a value crossing out of a region be reconstructed by exactly one derived encoder.
+§ 21's class-G requires that cross-seam values derive from one source. A value can satisfy both and
+still be wrong, and this section names the coordinate they omit.
+
+**The rule.** *A derived value is only as correct as the layer at which its source object is
+authoritative, and that layer must match the layer at which the value is enforced.* Deriving from
+one source is necessary and not sufficient. Naming the source without naming the layer is the
+observation-side twin of stating a ring without its region (§ 22): not a weaker claim than intended,
+but a claim about a different packet than the reader will assume.
+
+**The worked example, measured 2026-08-10.** `apiEgress` in `src/Prodbox/Lib/ChartPlatform.hs`
+renders the NetworkPolicy that lets a workload reach the Kubernetes API. It does not hand-author its
+coordinate — `readKubernetesApiServiceIpv4` observes `service/kubernetes` and the rule is generated
+from that observation, which is precisely what class-G prescribes. It is nonetheless wrong in
+**both** coordinates. The Service is `10.43.0.1:443` with `targetPort=6443`; the endpoint behind it
+is `192.168.2.43:6443`, host-networked on the control-plane node. kube-proxy DNATs the packet before
+the CNI evaluates egress, so the policy is matched against the *endpoint* address and port, and a
+rule naming the *Service* address and port matches nothing. The observation was authoritative for
+the layer at which a client dials and was read for the layer at which policy is evaluated.
+
+The consequence had the shape § 23's conversions have. The workload bound its port and answered
+`/healthz` 200 while `/readyz` answered 503 for thirty minutes, `helm upgrade --wait` expired on
+`context deadline exceeded`, and the operator-visible reason was `Kubernetes Lease observation
+unavailable` — a sentence that names neither the packet nor the rule that dropped it. A control
+test is what separated the two candidate causes: pods in namespaces carrying no NetworkPolicy
+reached `https://10.43.0.1:443/healthz` and were answered `401`, while the policied pod timed out.
+
+**A layer mismatch is not a duplicate.** The same system holds two coordinates for the same server,
+and both are correct at their own layer: `kubernetes.default.svc.cluster.local:443` is what a client
+dials, and the endpoint's address and port are what a policy engine matches. Collapsing them because
+they "describe the same thing" breaks the client path. The discipline is to say which layer a value
+is for, not to reduce the count of values.
+
+**The corollary — name the layer whenever you name the source.** A derivation that records only
+"observed from the cluster" has recorded half a provenance. State the object observed, the layer at
+which that object is authoritative, and the layer at which the derived value is consumed; where they
+differ, the derivation is a defect even though it observed a real thing. This is the same discipline
+[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md) applies to a ring's region, and
+the same one [pure_fp_standards.md § 1.4](./pure_fp_standards.md) applies to a projection's source.
 
 ---
 

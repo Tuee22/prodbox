@@ -1027,3 +1027,7 @@ Code-local qualification fixtures remain explicitly pending. Final qualification
 independent green `prodbox test all` and `prodbox test all --substrate aws` governed artifacts with
 the complete invite assertions, mandatory fault campaign, exact backup restore, cleanup-owner
 takeover, retained-generation restoration, and authoritative cleanup evidence.
+
+Per-substrate qualification status and its evidence live in exactly one place — the
+[Deployment Qualification ledger](./DEVELOPMENT_PLAN/README.md#deployment-qualification) — and this
+file deliberately does not restate it.

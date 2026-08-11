@@ -635,6 +635,31 @@ projection of the same registry. Implementation is owned by Sprint `2.34`; see t
 [Development Plan](../../DEVELOPMENT_PLAN/README.md) and
 [Lifecycle Control-Plane Architecture §10.2](./lifecycle_control_plane_architecture.md).
 
+**Region correction (2026-08-10, Standard C).** The paragraph above states the rule without its
+enforcement region, and the region is much smaller than the sentence implies. "A hand-authored probe
+path string in a chart template or values file is a defect, as is a hand-mirrored port or identity
+literal" is written as a property of every chart; `prodbox dev lint chart` enforces it on the
+**gateway chart, the bootstrap-broker chart, and five control-plane role charts, and within those
+only on hand-listed filenames** — `values.yaml`, `serviceaccount.yaml`, and one workload file per
+chart. It forbids raw ServiceAccount, Vault-role, and probe-path literals; only the gateway rule
+covers ports at all. No chart's `networkpolicy.yaml` is inspected for content by any gate:
+`chartTemplateResourceViolations` opens every template file, but it reads `containers:` stanzas, and
+a NetworkPolicy has none, so the file is read and returns nothing. Measured 2026-08-10: **79 numeric
+port literals across 13 charts** sit outside every gate.
+
+The property that actually matters — that a rendered value and its compiled owner cannot disagree —
+holds where a compiled owner exists and the lint names the file. It cannot hold where there is no
+owner to disagree with: the Kubernetes API egress port had no compiled owner anywhere in `src/`,
+which is why twelve templates each authored their own, and why a rule permitting `443` survived
+review against a cluster whose API endpoint listens on `6443`. The claim as written was wider than
+the region enforces, and per [chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md) a
+rule stated without its region is a claim about a different set of files than the reader will
+assume. The widening — a port-literal lint whose region is every repo-owned chart template — is
+registered as Sprint `3.34` and recorded here rather than quietly made true. Note the honest bound
+that sprint carries: such a lint closes drift between a value and its owner, not correctness of the
+owner, and would not by itself have caught the `443`/`6443` defect
+([chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md)).
+
 ## 7. Delete Semantics
 
 `prodbox charts delete <chart>`:

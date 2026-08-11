@@ -218,6 +218,16 @@ Four further check families join the canonical quality gate under the Foundation
   gateway route registry and chart statics; a hand-authored raw literal for any of these in a
   template or values file is a lint failure. The single-source rule lives in
   [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md).
+  **Region, recorded 2026-08-10 (Standard C).** The rule as stated in that doctrine reads as a
+  property of every chart; the lint's actual region is the gateway chart, the bootstrap-broker
+  chart, and five control-plane role charts, and within those only hand-listed filenames
+  (`values.yaml`, `serviceaccount.yaml`, and one workload file per chart). Only the gateway rule
+  covers ports at all. **No chart's `networkpolicy.yaml` is inspected for content by any gate** —
+  `chartTemplateResourceViolations` opens every template file but reads `containers:` stanzas, and
+  a NetworkPolicy has none, so the file is read and yields nothing. Measured 2026-08-10: 79 numeric
+  port literals across 13 charts sit outside every gate. Widening the region to every repo-owned
+  chart template is registered as Sprint `3.34`, a sibling of the Sprint `1.68` chart-PVC-size lint
+  below rather than a consumer of its slot.
 - the **legacy escape registry bijection check** (Sprint `1.63`): every surviving legacy escape
   call site (the shared operational AWS credential and `aws` CLI subprocess object-store sites) is
   enumerated in the machine-readable registry `src/Prodbox/Legacy/EscapeRegistry.hs`, and a

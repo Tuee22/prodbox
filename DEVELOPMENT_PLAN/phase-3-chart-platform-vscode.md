@@ -10,6 +10,32 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart
+platform and chart lint this phase owns. A live `prodbox test all --substrate aws` run failed at the
+`bootstrap-broker` Helm release on eight consecutive attempts: the chart's NetworkPolicy permits
+Kubernetes API egress on TCP `443`, kube-proxy DNATs the API Service to its endpoint on `6443`
+before the CNI evaluates egress, and the rule therefore matches nothing — the broker answered
+`/healthz` 200 and `/readyz` 503 until `helm upgrade --wait` expired. The coordinate has **no
+compiled owner**: `grep -rn "6443" src/` returns one hit, a kubeconfig string-match, so each of
+three sites authors its own and the DNAT fact survives in the repository only as a chart comment.
+Sprint `3.34` gives the coordinate one owner derived from `endpoints/kubernetes` — one observation
+yielding both post-DNAT halves — and extends the chart lint's region to every repo-owned template,
+closing the gap that let a `networkpolicy.yaml` literal go unread by every gate. The doctrine it
+implements is
+[chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md), authored
+by Sprint `0.26`. **This does edit a live production rendering path**, so the next Standard-P
+qualification run must exercise the post-`3.34` rendering; both substrate rows were already
+`pending`, so nothing is invalidated.
+
+**Status correction (2026-08-10, Standard C).** This header led with the Sprint `3.32` reclosure
+below and never recorded Sprint `3.33`, which landed 2026-08-09 and is the sprint
+[README.md](README.md) names as this phase's reclose; `3.33` appears in this document only inside
+its own sprint block. The phase document was the one Standard-J document still asserting the earlier
+reclose — the same drift [phase-2-gateway-dns.md](phase-2-gateway-dns.md) corrected in place on
+2026-08-08, and this one likewise survived subsequent sessions. It is corrected here rather than
+rewritten silently: the `3.32` paragraph stands as written, and the reclose it claims was superseded
+by `3.33` before this reopen.
+
 ✅ **Reclosed 2026-08-07 on Sprint `3.32`** — the 2026-08-05 own-surface reopen (Standard A/N,
 Sprint `0.21` topology sweep) closes. Sprint `3.31` made all eight Helm statuses decode to distinct
 constructors and put a `HelmWritePermit` in front of every mutating helper; Sprint `3.32` makes a
@@ -3426,12 +3452,126 @@ bounds a process, not a protocol. The two untyped Route 53 writers in
 `src/Prodbox/ControlPlane/ProviderProduction.hs` carry no owner value at all and are unaffected by
 either sprint; that row stays open, owned by the Provider Worker surface rather than this one.
 
+## Sprint 3.34: The Kubernetes API Egress Coordinate Has No Owner, and No Gate Read It 📋
+
+**Status**: Planned — Phase `3` own-surface reopen (Standard A) on the chart platform and chart lint
+this phase owns. Registered by the live investigation that found `prodbox test all --substrate aws`
+failing at the `bootstrap-broker` Helm release on eight consecutive runs; the doctrine it implements
+is [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md).
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs` (the observation and the rendered egress
+rule), `src/Prodbox/CheckCode.hs` (the chart port-literal lint),
+`charts/bootstrap-broker/templates/networkpolicy.yaml`,
+`charts/target-secret-agent/templates/networkpolicy.yaml`.
+**Blocked by**: none.
+**Deployment qualification**: pending — and this **does** edit a live production rendering path, so
+the reasoning is given rather than the conclusion. It changes the rendered NetworkPolicy egress of
+two charts and of the generated `target-secret-agent-kubernetes-api` policy, which is capability
+wiring by Standard P's own enumeration. Both substrate rows are already `pending`, so nothing is
+invalidated, but the next qualification run must exercise the post-`3.34` rendering rather than an
+earlier one.
+**Independent Validation**: the render half is pure and validated on the home local substrate — the
+emitted policy is asserted to carry the observed endpoint address and port rather than the Service
+ones, against a fixture observation. The lint half is a `dev check` region extension with a
+two-region mutation exercise. The live proof (a broker that reaches ready) is a Standard-O
+`Live-proof: pending` axis and does not gate this sprint's code-owned closure.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md` (the region correction
+is already recorded there by Sprint `0.26`; this sprint makes the widened claim true),
+`documents/engineering/code_quality.md` (the lint's new region).
+
+### Objective
+
+`charts/bootstrap-broker/templates/networkpolicy.yaml` permits egress on TCP `443` with no `to:`
+selector. The `kubernetes` Service is `10.43.0.1:443` with `targetPort=6443`, and its endpoint is
+`192.168.2.43:6443`, host-networked on the control-plane node. kube-proxy DNATs before the CNI
+evaluates egress, so the policy matches the endpoint port and the rule matches nothing. The broker's
+lease observation then fails at transport level, `/readyz` answers 503 while `/healthz` answers 200,
+and `helm upgrade --install --wait --timeout 30m0s` expires on `context deadline exceeded`.
+
+The defect is not the digit. `grep -rn "6443" src/` returns exactly one hit — a kubeconfig
+string-match in `src/Prodbox/CLI/Rke2.hs` — so the Kubernetes API egress coordinate has **no
+compiled owner anywhere**, and with no owner there is nothing for a restatement to drift from: each
+site is an independent author. The fact survives in the repository only as prose, in a comment in
+`charts/vscode/templates/securitypolicy-client-secret-job.yaml`, which
+[pure_fp_standards.md § 1.4](../documents/engineering/pure_fp_standards.md) already names a defect.
+
+The instructive case is `apiEgress`, the one place the rule is *generated* rather than hand-written.
+It derives from a live observation and is still wrong in **both** coordinates, because
+`readKubernetesApiServiceIpv4` observes `service/kubernetes` (pre-DNAT) while the policy is
+evaluated post-DNAT. Deriving from one source fixed the encoder count and not the layer, which is
+the § 24 rule this sprint implements.
+
+### Deliverables
+
+- 📋 **One observation, both coordinates.** Replace the Service-based observation with one of
+  `endpoints/kubernetes`, which yields the post-DNAT address and port together. Emit one `ipBlock`
+  per address plus the observed port. The seam already exists: `buildChartDeploymentPlanForSubstrate`
+  performs five IO observations and threads typed results into the pure plan builder; this is a
+  sixth of the same shape, not a new abstraction.
+- 📋 **Three sites, not eleven.** Only `charts/bootstrap-broker/templates/networkpolicy.yaml`,
+  `charts/target-secret-agent/templates/networkpolicy.yaml`, and `apiEgress` carry the Kubernetes-API
+  coordinate. The other nine `443` literals are `ipBlock: 0.0.0.0/0` public-internet HTTPS egress to
+  AWS — a different coordinate that this sprint must not touch.
+- 📋 **Both API coordinates survive.** `kubernetes.default.svc.cluster.local:443` in
+  `src/Prodbox/K8s/InCluster.hs` and `src/Prodbox/Vault/Reconcile.hs` is what a client dials and is
+  correct pre-DNAT; the endpoint address and port are what a policy engine matches. They are not
+  restatements of each other and collapsing them breaks the client path.
+- 📋 **The lint region covers the evidence.** A sibling of `chartTemplateResourceViolations` reusing
+  its enumeration, firing on an all-digit value under a closed key set
+  (`port:`/`targetPort:`/`containerPort:`/`nodePort:`/`hostPort:`) in any repo-owned chart template.
+  Named ports and `{{ .Values… }}` expressions fall out without an allowlist. Per
+  [resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md), a
+  gate's region must cover the surface that carries its evidence, and today no gate reads a
+  `networkpolicy.yaml` for content at all.
+
+### Validation
+
+1. 📋 `prodbox dev check` exit 0 after migration.
+2. 📋 **The lint's first run must name its findings.** Measured 2026-08-10 there are **79** numeric
+   port literals across 13 charts; report the real number. A gate whose first run finds nothing has
+   the wrong region, and reporting zero here would mean the region was drawn to fit the code.
+3. 📋 **Two-region mutation, restored byte-exactly.** Reintroduce `port: 443` in the broker
+   NetworkPolicy: the old region exits 0, the new region exits 1 naming file and line.
+4. 📋 Deleting the compiled owner, or the values binding in the template, is a finding — positive
+   anchors so removing the fix is a failure rather than a silent pass.
+5. 📋 Live proof, on the Standard-O axis: from inside the broker pod,
+   `curl -m 5 https://10.43.0.1:443/healthz` returns `401` (reached, unauthorized) rather than
+   timing out at exit 28; `/readyz` returns `"ready":true`; the Helm release returns well inside its
+   timeout.
+
+### Remaining Work
+
+Two items are deliberately **not** absorbed.
+
+The `8600` family is the same defect class at a different coordinate — an unowned literal in eight
+or more places while `src/Prodbox/Bootstrap/Broker/ChartStatics.hs` documents an explicit decision
+not to own the broker's listen port. Its template half comes free with this lint; its Haskell half
+(five separately-named constants in `src/Prodbox/ControlPlane/LocalClient.hs`, plus
+`src/Prodbox/ControlPlane/Runtime.hs` and `src/Prodbox/Lib/AwsControlPlaneIsolation.hs`) is a
+different region and a different root cause, and is recorded as a ledger row rather than folded in.
+Whether the five control-plane roles are required to share one port is unresolved; the individually
+named constants suggest divergence was once contemplated.
+
+The broker's discarded transport error is Phase `2`'s surface, not this one, and is registered as
+Sprint `2.42`.
+
+**The honest bound on the lint.** It closes drift between a rendered value and its compiled owner;
+it does not close correctness of the owner. Had it existed, `port: 443` would have become
+`{{ .Values… }}`, and if the compiled owner still said `443` the cluster would break identically.
+Only the live run proves `6443`. This sprint must not claim the gate would have caught the outage.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and § 6.1's bootstrap-floor
   registration are the rules these two sites now satisfy; the doctrine is authored by Sprint `0.20`.
+- `documents/engineering/helm_chart_platform_doctrine.md` - the probe/route single-source rule states
+  a property of every chart while the lint covers seven charts on hand-listed filenames. Sprint
+  `0.26` records that region correction in place; Sprint `3.34` makes the widened claim true.
+- `documents/engineering/code_quality.md` - the chart forbidden-literal lint's region, and the fact
+  that no gate reads a chart `networkpolicy.yaml` for content.
+- `documents/engineering/chaos_hardening_doctrine.md` - the observation-layer rule Sprint `3.34`
+  implements is authored by Sprint `0.26`.
 
 **Product docs to create/update:**
 

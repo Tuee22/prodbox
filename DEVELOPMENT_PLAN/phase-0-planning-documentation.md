@@ -2286,7 +2286,7 @@ heading, and a new "What decoding does and does not validate" subsection under �
 `documents/engineering/code_quality.md` (§ 3 guard coverage), and
 `documents/engineering/chaos_hardening_doctrine.md` (§ 21 worked instances).
 **Blocked by**: none.
-**Deployment qualification**: not applicable — documentation only; no production-composition
+**Deployment qualification**: pending (unchanged) — documentation only; no production-composition
 surface is touched.
 **Independent Validation**: pure, no live infrastructure. Each corrected claim was checked against
 source before rewriting: `git ls-files "*.dhall"` returns five tracked files;
@@ -2443,7 +2443,7 @@ a fourth honest consequence; § 21's sufficiency claim corrected; a § 12 ledger
 `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/bootstrap_readiness_doctrine.md`, and the root `README.md`.
 **Blocked by**: none.
-**Deployment qualification**: not applicable — documentation only. No production-composition
+**Deployment qualification**: pending (unchanged) — documentation only. No production-composition
 surface moves.
 **Independent Validation**: every claim added was measured, not asserted. The two load-bearing ones:
 `cabal build --builddir=.build all --dry-run` lists two components (`lib`, `exe:prodbox`) where
@@ -2528,7 +2528,7 @@ stands). Registered by a live `prodbox test all --substrate aws` failure whose c
 value read at the wrong layer, and by the discovery that a chart-doctrine claim is wider than the
 region enforcing it.
 **Blocked by**: none.
-**Deployment qualification**: not invalidated — this sprint changes governed documentation only and
+**Deployment qualification**: pending (not invalidated) — this sprint changes governed documentation only and
 moves no production-composition surface; both substrate rows stay `pending`. Note that
 `SourceIdentity` binds governed documentation, so these edits do move the source-manifest digest a
 future `proven` row would bind.

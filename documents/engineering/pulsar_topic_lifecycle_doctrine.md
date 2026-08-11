@@ -144,35 +144,59 @@ holds the finite MinIO/storage budget. This doctrine only **consumes** it: a `Lo
 offloaded segments are a line item in that budget, so a topic's retention draws it down alongside
 every other stored object.
 
-The consequence is a static invariant, not a runtime check: a `ManagedTopic` whose retention/offload
-would exceed the budget is **unrepresentable**. The topic family's Dhall `assert : contractOK self
-=== True` includes the capacity doctrine's `storageFitsWithin` lemma, so an over-budget topology is a
-typecheck failure before any broker call — mirroring jitML's durable-state DSL, where the same
-`storageFitsWithin` / `retentionWellFormed` lemmas reject an over-quota or malformed-retention store
-(`durable_state_dsl.md` in the sibling jitML repo). This doctrine does not restate the budget
-arithmetic; see the capacity doctrine's `storageFitsWithin`.
+The intended consequence is a static invariant rather than a runtime check: a `ManagedTopic` whose
+retention/offload would exceed the budget should be **unrepresentable**, because the topic family's
+Dhall `assert : contractOK self === True` would include the capacity doctrine's `storageFitsWithin`
+lemma and an over-budget topology would fail typecheck before any broker call — mirroring jitML's
+durable-state DSL, where `storageFitsWithin` / `retentionWellFormed` lemmas reject an over-quota or
+malformed-retention store (`durable_state_dsl.md` in the sibling jitML repo). This doctrine does not
+restate the budget arithmetic; see the capacity doctrine's `storageFitsWithin`.
+
+**Status of that invariant, corrected 2026-08-11 (Standard C).** It is **scheduled, not in force**,
+exactly as the header note to this document already says: the canonical topic schema "remains a later
+code artifact (`dhall/PulsarTopicSchema.dhall`)". No Pulsar Dhall exists in the repository — the
+complete `.dhall` inventory is the capacity, cluster, test-topology, and measured schemas plus two
+authored files — so there is no topic-family `contractOK`, no topic-family `assert`, and no
+`retentionWellFormed` anywhere in the tree. `storageFitsWithin` itself does exist, in
+`dhall/capacity/Schema.dhall`, but nothing binds it to a topic. § 5 and § 6 previously asserted in
+the present tense what the header declares scheduled; the sections now agree. Until the schema lands,
+these budget properties are enforced only by the Haskell layer, and no claim of Ring-1
+unrepresentability may be made for them —
+[pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md) is the model for how to phrase a
+scheduled schema.
 
 ## 6. Illegal Topic States Are Unrepresentable
+
+Two of the four rows below are in force today and two are scheduled; the column says which, per
+[chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md) — a claim of unrepresentability
+without its region is a claim about a different set of files than the reader will assume.
 
 | Illegal state | Rejected by |
 |---|---|
 | A topic named by a literal string | Unnameable — `TopicName` has no exported constructor; only `topicFor` ([§2](#2-topic-names-come-only-from-the-topic-algebra)) builds one |
 | A topic prodbox can create with no `discover`/`destroy` | `check-code` registry ↔ `substrates.md` parity (Totality, §3.1 invariant 1) |
 | A teardown gate silently passing on an unreachable broker | `residueBlocksTeardownGate` — `TopicUnobservable → refuse` (Soundness, §3.1 invariant 2) |
-| Retention/offload exceeding the storage budget | `storageFitsWithin` — the Dhall `assert : contractOK self === True` reduces to `False` ([§5](#5-retention-and-offload-draw-down-the-finite-budget)) |
-| Malformed retention (e.g. `LastN 0`) | `retentionWellFormed`, owned by [tiered_storage_capacity_doctrine.md](tiered_storage_capacity_doctrine.md) |
+| Retention/offload exceeding the storage budget | **Scheduled, not in force** — the intended `storageFitsWithin` binding needs the topic-family Dhall schema, which does not exist yet ([§5](#5-retention-and-offload-draw-down-the-finite-budget)) |
+| Malformed retention (e.g. `LastN 0`) | **Scheduled, not in force** — `retentionWellFormed` is named by [tiered_storage_capacity_doctrine.md](tiered_storage_capacity_doctrine.md) as the intended lemma and is not yet implemented anywhere in the repository |
 
-## 7. Scheduling
+## 7. Owning Sprints
 
-This doctrine landed in
-[Phase 4 Sprint 4.35](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md) — *Pulsar topics as
-managed resources*: the `ManagedTopic` topic-family rows, the `TopicResidueStatus` discover, the
-total projection onto `ResidueStatus`, typed `ensureTopic` / `deleteTopic`, and the
-`pulsarTopicManagedResource` adapter. The same closure added `Prodbox.Pulsar.Admin` as the live
-admin REST broker adapter and proved broker-backed ensure/discover/delete in
-`./.build/prodbox test integration pulsar-broker`. Sprint `4.35` consumed the
-[Phase 3 Sprint 3.21](../../DEVELOPMENT_PLAN/README.md) Pulsar client boundary after its
-repo-owned broker transport/framing closed.
+This section names **which sprints own** this doctrine's surfaces. It records no completion state:
+sprint status, blockers, and validation closure are authoritative only in
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), per § 1 of
+[documentation_standards.md](../documentation_standards.md). (Corrected 2026-08-11: this section
+previously asserted four completions in its own voice.)
+
+- [Phase 4 Sprint 4.35](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md) — *Pulsar topics
+  as managed resources*: the `ManagedTopic` topic-family rows, the `TopicResidueStatus` discover, the
+  total projection onto `ResidueStatus`, typed `ensureTopic` / `deleteTopic`, the
+  `pulsarTopicManagedResource` adapter, and `Prodbox.Pulsar.Admin` as the live admin REST broker
+  adapter exercised by `prodbox test integration pulsar-broker`.
+- [Phase 3 Sprint 3.21](../../DEVELOPMENT_PLAN/README.md) — the repo-owned Pulsar client
+  transport/framing boundary that Sprint `4.35` consumes.
+- **Unscheduled**: the canonical topic-family Dhall schema (`dhall/PulsarTopicSchema.dhall`) that
+  §§ 5–6 depend on. It has no owning sprint, which is why those sections' invariants are marked
+  scheduled rather than in force.
 
 ## Intent Ownership
 

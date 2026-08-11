@@ -862,12 +862,13 @@ Use these commands for quick feedback that stays local:
 Fourmolu, HLint, a warning-clean Cabal build, and syncs the built executable to `./.build/prodbox`.
 
 The four commands above are **separate surfaces, not redundant ones**. `dev check` formats and lints
-`app src test`, but the build it runs covers the library and the `prodbox` executable — it does not
-compile the test suites. A type error in `test/` is caught by `test unit` (the four unit suites) or
-by `test integration cli` / `env` (the integration suite), and by nothing else. Run all four before
-calling a change validated; the scope rule and the outage that established it are recorded in
+`app src test` and type-checks all of it, but type-checking is not running: a suite that compiles
+still has to be executed to prove anything. Run all four before calling a change validated. Which
+components that build actually selects — the *region* of the guarantee — is owned by
 [resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md) under "The
-region of Ring 2".
+region of Ring 2", along with the outage that established the rule. This guide states the operator
+instruction and links the measurement rather than restating it; a restated measurement is how one
+stale fact previously outlived its correction in two documents at once.
 
 ### Named Infrastructure-Backed Validation
 

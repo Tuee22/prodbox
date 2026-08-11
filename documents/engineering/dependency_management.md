@@ -61,12 +61,17 @@ Haskell dependency reproducibility is governed by:
 2. `cabal.project`
 3. The checked-in YAML Pulumi definitions
 
-Developers should build and test through Cabal:
+Developers build and test through the `prodbox` surface. `dev check` runs the warning-clean
+type-checking build itself (`cabal build --builddir=.build all --enable-tests`), so it supersedes a
+narrower hand-run `cabal build exe:prodbox` rather than following it:
 
 ```bash
-cabal build --builddir=.build exe:prodbox
 prodbox dev check
 ```
+
+The one time a bare `cabal build --builddir=.build exe:prodbox` is the right command is
+bootstrapping a worktree that has no `.build/prodbox` yet — there is no binary to run `dev check`
+with. See [code_quality.md](./code_quality.md) for the gate's full step sequence and scope.
 
 ## 3. Version Constraint Standards
 

@@ -3687,7 +3687,7 @@ as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are rec
 
 ## Sprint 7.18: Non-Interactive ACME EAB Seeding + Materializer Handoff Fix ✅
 
-**Status:** ✅ Done (code-owned surface); 🧪 Live-proof: **passed** on the home substrate
+**Status**: ✅ Done (code-owned surface); 🧪 Live-proof: **passed** on the home substrate
 (`zerossl-dns01` `Ready=True (ACMEAccountRegistered)` with the real ZeroSSL EAB). `dev check` 0,
 `test unit` 0 (966, incl. a 3-test EAB-seeding block), `test integration cli`/`env` 0.
 

@@ -132,7 +132,7 @@ mixed-substrate kind or eks cluster (rule i) is unconstructible.
 
 Dhall lacks built-in union equality, so the static invariants ride on `assert`, exactly as jitML's
 `dhall/project/Schema.dhall` carries its budget lemma. Rule f (worker substrate matches its machine)
-is enforced by a Haskell smart constructor — an ill-typed `Machine` cannot be built:
+is enforced by a Haskell smart constructor — an ill-typed `Machine` cannot be *hand-built*:
 
 ```haskell
 -- Example: rule f as a smart constructor (mirrors jitML's mkAbsExe / prodbox newtype constructors)
@@ -144,6 +144,18 @@ mkMachine mid sub w
   | workerSubstrate w /= sub = Left (WorkerSubstrateMismatch sub (workerSubstrate w))  -- rule f
   | otherwise                = Right (Machine mid sub w)
 ```
+
+**State the region (§ 22; recorded 2026-08-11).** "Cannot be built" holds for hand-written call
+sites and **not** at the decode boundary. `Machine`, `MachineId`, and `ClusterTopology` are exported
+abstractly — no `(..)`, so `mkMachine` is the only hand-written builder — but all three also
+`deriving (… FromDhall …)`, and a derived decoder constructs the record directly. `Dhall.auto` is
+therefore a second constructor that does not check rule f, which is why the compensating
+`validateClusterTopology` exists and runs after decode. This is exactly the conversion class
+[chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) names: an opaque type that derives
+`FromDhall` is not opaque across the decode seam. The structural fix is a `Raw*` DTO decoded and
+then narrowed through `mkMachine`, the shape `Prodbox.ControlPlane.Capacity` and
+`Prodbox.Gateway.Settings` already use; it is tracked in
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 The Dhall `contractOK` mirrors it (`substrateEq` is a nested-merge comparator) and adds rule i for
 EKS, then the generated `prodbox` topology closes with the lemma so an ill-typed topology fails

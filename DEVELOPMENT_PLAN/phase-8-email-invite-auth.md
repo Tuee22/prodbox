@@ -1748,11 +1748,35 @@ to exact current-revision evidence.
    authoritative cleanup re-observation, including live fresh-AWS-Vault restoration of the same
    SES-SMTP and ACME-EAB generations from the closed retained-home custody family.
 
+### Correction To This Sprint's Own Registration (Standard C)
+
+**Recorded 2026-08-11.** The `Independent Validation` line above cites "installed counterexample exit
+0 with 23 faults/8 assertions" as current evidence. That command cannot exit non-zero:
+`simulateFrozenCounterexample` (`src/Prodbox/Test/Qualification/FrozenCounterexample.hs`) discards
+its trace argument and returns a constant, which
+`Prodbox.Test.Qualification.Evidence`/`CounterexampleValidation` then check against itself. An exit
+code that is invariant over its input is not evidence, and the count of faults and assertions it
+prints is the size of an enumeration rather than a result.
+
+Two things are **not** withdrawn. The `Implementation` line's own wording is accurate — the fixture
+"**emits** the complete dimensions", which is exactly what it does. And
+`codeLocalQualificationStatus` in `src/Prodbox/Test/Qualification/Invite.hs` ignores its argument to
+return `QualificationPendingLiveEvidence`, which fails **safe**: it can never claim qualification it
+has not observed. The typed 8-assertion / 23-fault / two-substrate artifact is real; what is absent
+is a path by which any of it can fail.
+
+The falsifying half is owned by Sprint `5.32` 📋. Until it lands, this sprint's counterexample line
+may not be cited to fill the Counterexample column of either Deployment Qualification row
+([README.md](README.md#deployment-qualification)); both rows are already
+`pending`, so nothing is retracted.
+
 ### Remaining Work
 
 - None on the sprint-owned code surface. Live qualification remains Pending until both substrate
   campaigns and the full fault matrix are recorded; it does not change phase status but does gate
   deployment-ready/seamless claims.
+- The counterexample-falsifiability dependency recorded above is owned by Sprint `5.32` 📋 and does
+  not reopen this phase (Standard N: a later-registered sprint never blocks an earlier phase).
 
 ## Documentation Requirements
 

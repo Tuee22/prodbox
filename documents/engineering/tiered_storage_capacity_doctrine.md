@@ -218,23 +218,28 @@ projections that carry "cannot observe" as a first-class value — the three-sta
 and the log-reconciled gateway `Disposition`, per
 [pure_fp_standards.md](./pure_fp_standards.md) — never collapsed into a passing boolean.
 
-## Status
+## Owning Modules
 
-The shared Sprint 1.51 surface is implemented: `dhall/capacity/Schema.dhall` defines
-`Budget`, `fitsWithin`, `storageFitsWithin`, `plus`, `zero`, and self-checking assertions, while
-`src/Prodbox/Capacity/Config.hs` mirrors those budgets in Haskell and `src/Prodbox/Settings.hs`
-decodes the binary-sibling `capacity` block. The Sprint 4.36 storage-specific surface is also
-implemented: `src/Prodbox/Capacity/Storage.hs` provides durable store claims, finite
-`Bounded`/`Autoscaled` capacity constructors with no `Infinite` arm, an autoscaling-policy witness
-for unbounded-sink admission, mandatory ML host/cluster JIT and model-cache budget totals, and a
-finite storage-capacity plan validator. `src/Prodbox/Aws.hs` adapts the existing
-`applyAwsCheckQuotas` / `ensureServiceQuota` / `QuotaStatus` path into the storage region-quota
-preflight. Live AWS Service Quotas observation with real credentials remains a non-blocking
-live-infra proof axis tracked by
-[phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md).
-Sprint status is authoritative only in
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this document describes the
-target surface, not the schedule.
+This section names **where** the doctrine lives in code. It carries no completion state: sprint
+status, blockers, and validation closure are authoritative only in
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), and § 1 of
+[documentation_standards.md](../documentation_standards.md) forbids a second ledger here. (Corrected
+2026-08-11: this section previously recorded per-sprint implementation state and then disclaimed
+doing so.)
+
+- `dhall/capacity/Schema.dhall` — `Budget`, `fitsWithin`, `storageFitsWithin`, `plus`, `zero`, and
+  the self-checking assertions.
+- `src/Prodbox/Capacity/Config.hs` — the Haskell mirror of those budgets;
+  `src/Prodbox/Settings.hs` decodes the binary-sibling `capacity` block.
+- `src/Prodbox/Capacity/Storage.hs` — durable store claims, the finite `Bounded`/`Autoscaled`
+  constructors with no `Infinite` arm, the autoscaling-policy witness for unbounded-sink admission,
+  the mandatory ML host/cluster JIT and model-cache budget totals, and the finite storage-capacity
+  plan validator.
+- `src/Prodbox/Aws.hs` — the `applyAwsCheckQuotas` / `ensureServiceQuota` / `QuotaStatus` path that
+  serves the storage region-quota preflight.
+
+Live AWS Service Quotas observation with real credentials is a non-blocking Standard-O live-infra
+axis; the plan owns its state.
 
 ## Intent Ownership
 

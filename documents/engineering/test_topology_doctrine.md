@@ -5,8 +5,10 @@
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall`, generated
-> per-run config, `.test-data/` isolation, and the `test init` / `test run` surface. Real-resource
-> preparation and cleanup scheduling remain owned by Integration Fixture Doctrine.
+> per-run config, `.test-data/` isolation, and the `test init` / `test run` surface.
+
+Real-resource preparation and cleanup scheduling remain owned by
+[integration_fixture_doctrine.md](./integration_fixture_doctrine.md).
 
 ## 1. A test run is fully described by its test Dhall
 
@@ -68,7 +70,7 @@ in  assert : testContractOK self === True
 | A variant's replica budget exceeds the declared substrate capacity | `variantFitsWithin` (the `assert` reduces to `False`) |
 | A suite declares zero variants (nothing to stand up) | `variantsNonEmpty` |
 | A suite is named `all` (reserved by the `test run all` verb) | `suiteNameNotReserved` |
-| A secret carried inline as cleartext rather than by reference | the field type is `SecretRef`, so a literal secret is unrepresentable (§6) |
+| A secret carried inline as cleartext rather than by reference | the schema declares **no secret-shaped field at all** — a fixture is named by a closed `FixtureId` enum, so a literal secret has nowhere to go (§6) |
 
 This is the house "illegal states unrepresentable" technique
 ([pure_fp_standards.md](./pure_fp_standards.md)) applied to the test surface: prefer the type that
@@ -185,13 +187,22 @@ illegal states are:
 
 ## 6. Secrets travel by reference; one cleartext file, flagged
 
-The generated test Dhall carries secrets **only by `SecretRef` name**, never inline — the same
-`SecretRef` contract every `prodbox` config obeys. The sole cleartext-secret-at-rest file remains
+The generated test Dhall names the fixtures a suite needs and carries **no secret material of any
+kind** — not inline, and not by `SecretRef` either. The sole cleartext-secret-at-rest file remains
 `test-secrets.dhall`, whose values are accepted only by the harness and only through the
-`SecretRef.TestPlaintext` arm. This doc does not restate that model:
+`SecretRef.TestPlaintext` arm. This doc does not restate the reference model:
 [config_doctrine.md §6.2](./config_doctrine.md#62-secretref-typed-secret-references) and
-[vault_doctrine.md](./vault_doctrine.md) own it. A test Dhall that inlined a credential would be
-unrepresentable, because the schema's secret fields are typed `SecretRef` (§2).
+[vault_doctrine.md](./vault_doctrine.md) own it.
+
+**Corrected 2026-08-11 (Standard C).** This section previously said a test Dhall that inlined a
+credential "would be unrepresentable, because the schema's secret fields are typed `SecretRef`."
+`dhall/TestTopologySchema.dhall` contains no `SecretRef` — and, more to the point, no secret field
+for one to be the type *of*. Its whole vocabulary is `FixtureId`, `Budget`, `RunVariant`, `Suite`,
+and `TestTopology`, of which the only `Text` is a suite name. The true property is **stronger** than
+the one claimed: a literal secret is unrepresentable here for want of anywhere to put it, and a
+fixture is nameable only through the closed three-constructor `FixtureId` enum (§2). The `SecretRef`
+machinery is real and is the config surface's, not this schema's; the correction removes a borrowed
+guarantee, not a real one.
 
 ## Intent Ownership
 

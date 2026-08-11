@@ -2323,21 +2323,50 @@ re-run of a re-runnable command genuinely pays off.
 fail-fast via injected fakes); `prodbox test integration cli` 30/30; `prodbox test integration
 env` 30/30. **Live smoke**: `prodbox rke2 delete --cascade --yes` on this (clusterless) host
 ran the rewired cascade clean to exit 0 — per-run residue all unreachable → `reconcileAbsent`
-correctly emitted "skipped (no live per-run residue)", drain skipped, uninstall + postflight
-tag sweep clean.
+emitted "skipped (no live per-run residue)", drain skipped, uninstall + postflight
+tag sweep clean. **See the Standard-C correction below: that smoke run proves the rewiring, not
+the narration.**
+
+### Correction To This Sprint's Own Live Smoke (Standard C)
+
+**Recorded 2026-08-11.** The Validation paragraph above originally said `reconcileAbsent`
+"**correctly** emitted 'skipped (no live per-run residue)'". The word is withdrawn.
+
+The record states its own counter-evidence: the host was **clusterless** and per-run residue was
+**all unreachable**. This sprint's own deliverable list says `resourcesToDestroy` keeps "the present
+ones; absent skipped; **unreachable skipped** per the per-run graceful-degradation rule" — so
+`unreachable` and `absent` take the same branch, and the emitted line is produced by construction on
+any unreachable input. Absence was not observed on that run; it was unobservable. Narrating it as
+"no live per-run residue" is the inverse of
+[lifecycle_reconciliation_doctrine.md § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+layer 1, whose heading is *Cleanup continues without lying*.
+
+Two things stand. The **rewiring** this sprint delivered is behaviour-preserving and correct:
+`pairPerRunResidue`, `resourcesToDestroy`, and `reconcileAbsent` do destroy the present resources in
+canonical order with fail-fast, and the unit cases pinning present/absent/unreachable filtering are
+real. And **skipping** the destroy on `unreachable` remains the documented cascade exception. What
+was wrong is the *acceptance criterion*: a run in which every input was unobservable was read as
+evidence that the observable path behaves correctly, and the narration it produced was recorded as
+correct rather than as the thing to fix.
+
+The narration, the substrate inference that also keys off `isResiduePresent`, and the aggregate exit
+code are owned by Sprint `4.76` 📋.
 
 ### Remaining Work
 
 The present→destroy path's full live exercise (`rke2 delete --cascade` with live per-run
 residue) rolls up with the next operator-driven AWS-substrate cascade run, consistent with the
-Sprint 4.17.a/4.17.b live closure gates.
+Sprint 4.17.a/4.17.b live closure gates. Note this is the branch the 2026-05-28 smoke run did **not**
+exercise, and the correction above records why that matters.
 
 ## Sprint 4.22: Registry ↔ Doc Parity Enforcement in `docs check` ✅
 
 **Status**: Done (2026-05-28). The registry ↔ substrates-doc parity is machine-enforced, and
-the follow-on create-call-site coverage lint also landed (2026-05-28) — together these complete
-the § 3.1 totality enforcement (registry ↔ doc parity + create-site coverage). See Remaining Work
-for the precise — deliberately narrow — surfaces the coverage scan covers.
+the follow-on create-call-site coverage lint also landed (2026-05-28). **Standard-C correction
+(2026-08-11): these do not "complete the § 3.1 totality enforcement" — see the correction below.**
+The registered claim is narrowed to what the two scans deliver: no undocumented registry change, and
+no unregistered create call site *for the verbs in the allowlist*. See Remaining Work for the
+precise — deliberately narrow — surfaces the coverage scan covers.
 **Implementation**: `src/Prodbox/Lifecycle/ResourceClass.hs` (`renderRegisteredResourcesMarkdown`),
 `src/Prodbox/CheckCode.hs` (new `resource-lifecycle-classes` `GeneratedSectionRule`; new
 `checkCreateCallSiteCoverage` lint with pure helpers `pulumiCreateSiteViolations` /
@@ -2392,13 +2421,40 @@ decision logic is factored into pure, unit-tested helpers.
    verb literals do not self-trigger.
 
 **Deliberately out of scope** (would false-positive; not scanned): generic `create*`,
-`change-resource-record-sets` (the § 6a bootstrap DNS record), `create-bucket`, `mc mb`, and
+`change-resource-record-sets` (the § 6a bootstrap DNS record), `mc mb`, and
 other resource origination that is Pulumi-managed (covered transitively by the stack scan) or
 specially-handled. Broadening the scan to arbitrary mutation tokens is what the original
-deferral warned against. Together with the already-landed registry ↔ doc parity, this completes
-the [§ 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md) totality enforcement
-(no undocumented registry change **and** no unregistered create call site on the two scanned
-surfaces).
+deferral warned against.
+
+### Correction To This Sprint's Own Registration (Standard C)
+
+**Recorded 2026-08-11.** Two statements in this block were wrong, one stale and one over-claimed.
+
+**Stale.** This paragraph listed `create-bucket` as deliberately out of scope. It is *in* the
+allowlist, with four owner modules, and Sprint `5.28` later removed the last carve-out
+(`awsCreateProbeVerbs`, which had exempted `create-hosted-zone`). The list above is corrected in
+place.
+
+**Over-claimed.** The registered text said this sprint, with the parity scan, "completes the § 3.1
+**totality** enforcement". `awsCreateVerbs` is a **7-entry substring allowlist** — `create-user`,
+`create-access-key`, `put-user-policy`, `create-role`, `put-role-policy`, `create-hosted-zone`,
+`create-bucket`. Verbs shelled out elsewhere in `src/` that create or mutate real AWS resources and
+are **not** covered include `create-volume` (real billable EBS), `create-receipt-rule-set` (an
+account-global resource of which only one may be active), `put-bucket-policy`, `put-object`,
+`put-public-access-block`, and `request-service-quota-increase`. The Pulumi half is a
+naming-convention scan for `Pulumi<Word>Resources` tokens in one file.
+
+A totality invariant proven over an allowlist drawn to fit the code is not totality — it is a
+regression guard on known sites, which is genuinely useful and is what this sprint delivered. The
+same paragraph already carried the honest scoping ("on the two scanned surfaces") one sentence after
+the totality claim; the two cannot both stand, and the narrower one is correct. This is the
+[chaos_hardening_doctrine.md § 22](../documents/engineering/chaos_hardening_doctrine.md) rule — a
+ring stated without its region is a claim about a different set of files than the reader assumes —
+and the § 3.1 doctrine text carries the matching correction.
+
+The enforcement gap itself is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than reopened here: closing
+it means deciding what the registry owes, not widening a substring list.
 
 ## Sprint 4.23: Per-Run EKS Destroy Drains the Cluster First (DependencyViolation Fix) ✅
 
@@ -7918,6 +7974,179 @@ an owning sprint (Standard I) and correct the false claim the type was making in
 consumption through `certifyMeasuredProfile` closes the row; both are gated on Sprint `5.21`'s
 recorder producing its first artifact for any lane. Non-blocking under
 [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof).
+
+## Sprint 4.76: The Cascade Reports Absence It Did Not Observe 📋
+
+**Status**: Planned — Phase `4` own-surface reopen (Standard A) on the destructive lifecycle paths
+this phase owns. Registered 2026-08-11 by an operator `cluster delete --cascade --yes` run whose
+narration was read against §§ 3, 5b, and 6 of the reconciliation doctrine.
+**Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`,
+`src/Prodbox/Lifecycle/K8sDrain.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
+`src/Prodbox/Lifecycle/ResidueStatus.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending; this sprint **does** touch a Standard-P surface — destructive
+cleanup and lifecycle orchestration are both in the § "Surfaces that invalidate qualification"
+enumeration. Both rows are already `pending`, so nothing is invalidated, but a future run must
+exercise the post-`4.76` cascade.
+**Independent Validation**: the reproduction below runs on the home substrate with RKE2 installed
+but not serving — no AWS, no live cluster API. `prodbox dev check`, `prodbox test unit`, and
+`prodbox test integration cli` / `env` exit 0.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md` (§ 3.1 invariant 3
+and § 6), `documents/engineering/streaming_doctrine.md` § 6.
+
+### Objective
+
+An operator ran `prodbox cluster delete --cascade --yes` on a host with RKE2 installed but its API
+server not serving. The command printed:
+
+```text
+Per-run residue status: aws-eks=unreachable (...), aws-eks-subzone=unreachable (...), aws-test=unreachable (...)
+Per-run Pulumi destroys: skipped (no live per-run residue).
+```
+
+…and exited 0. Three statuses of `unreachable` were narrated as "no live per-run residue". Doctrine
+§ 3 layer 1 is titled *Cleanup continues **without lying***, and § 5b phase 1 says an unreachable
+checkpoint "records an unresolved cleanup failure … the aggregate cannot report success". Skipping
+the destroy is the documented graceful-degradation exception; **claiming absence and exiting 0 is
+not**.
+
+The narration is the visible half. Four folds underneath it convert an unobserved state into a
+benign one:
+
+- `resourcesToDestroy` filters on `isResiduePresent`, so `ResidueUnreachable` lands in the same
+  bucket as `ResidueAbsent`, and `reconcileAbsent` prints a line asserting absence.
+- `inferCascadeSubstrate` also tests `isResiduePresent`, so all-`unreachable` infers
+  `SubstrateHomeLocal` — precisely the branch on which a skipped drain is success.
+- `clusterReachable :: K8sDrainEnv -> IO Bool` returns `False` for *any* non-zero `kubectl` exit, so
+  permission-denied and stale-context are indistinguishable from "cluster is gone". `DrainResult`
+  has four constructors and **no "cannot observe" arm** — the uncertainty is manufactured by the
+  `Bool` and then discarded into `CascadeContinue`.
+- `runCascadePostflightTagSweep :: FilePath -> IO ()` and `runCascadeTestEbsReaper` return unit, so
+  a non-empty escapee list or a failed query cannot reach the exit code. The sweep's own Haddock
+  cites § 6 as licensing this, while § 6 requires the opposite; and `prodbox nuke` — the doctrine's
+  other sweep-owning surface — has no sweep call at all.
+
+These compose: unreadable backend ⇒ "home substrate" ⇒ "nothing to drain" ⇒ "no residue" ⇒ exit 0,
+with the postflight sweep as the only backstop and the sweep unable to fail.
+
+### Deliverables
+
+- A three-valued cluster probe replacing `clusterReachable :: IO Bool`, and a `DrainUnobservable`
+  arm on `DrainResult` that `cascadeDecisionFromDrainResult` maps to abort on **both** substrates.
+  `src/Prodbox/TestRunner.hs` already treats `DrainSkipped` as `ExitFailure 1`; the cascade is the
+  outlier.
+- `reconcileAbsent` narrates absent and unobserved distinctly, using the existing
+  `isResidueAbsent` / `isResidueUnreachable` predicates, and returns an outcome the caller can
+  aggregate rather than a bare `ExitCode`.
+- `inferCascadeSubstrate` treats `Unreachable` as "AWS may be in scope".
+- The cascade folds phase outcomes instead of returning a hardcoded `ExitSuccess`: every independent
+  phase still runs, and the aggregate reports failure — the § 5b shape.
+- The postflight tag sweep is fail-closed on both a non-empty escapee list and an unreachable
+  Tagging API, and `prodbox nuke` gains the sweep § 5/§ 6 already assign it.
+- `renderRetainedStateNotice` takes the delete mode, so a `--cascade` run stops advising the
+  operator to run `--cascade`.
+- `residueBlocksTeardownGate` is expressed as `not . isResidueAbsent` so a future constructor
+  defaults to blocking rather than to the destructive side.
+
+### Validation
+
+1. **Reproduction, and it is the acceptance criterion.** With RKE2 installed but not serving,
+   `prodbox cluster delete --cascade --yes` must report per-run state as *unobserved*, must not
+   print "no live per-run residue", and must exit **non-zero** while still having run the drain,
+   reaper, uninstall, and sweep phases.
+2. Unit cases pinning the new probe's classification of connection-refused vs. permission-denied vs.
+   success, and `reconcileAbsent`'s absent-vs-unobserved narration split.
+3. `prodbox dev check` exit 0 with `--enable-tests` in force; `prodbox test unit`,
+   `prodbox test integration cli` / `env` exit 0.
+
+### Remaining Work
+
+Registered, not started. The doctrine half is a separate obligation and is **not** discharged by
+this sprint's code: § 3.1 invariant 3 states `Unreachable → refuse` for `reconcileAbsent` where the
+code skips, and § 6 states a fail-closed sweep that does not exist. Per
+[Standard L](development_plan_standards.md#l-cli-doctrine-alignment) the doctrine is not rewritten
+down to match the code; the code moves, and the doctrine text is clarified in the same change to say
+which surface owns the refusal.
+
+## Sprint 4.77: Two AWS Queries Do Not Send The Filters They Name, And `--yes` Does Not Confirm 📋
+
+**Status**: Planned — Phase `4` own-surface reopen (Standard A), same destructive-path surface as
+Sprint `4.76`, split out because the root cause is argument construction rather than observation
+folding.
+**Implementation**: `src/Prodbox/Lifecycle/TagSweep.hs`, `src/Prodbox/Lifecycle/EbsVolume.hs`,
+`src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending; touches destructive cleanup. Both rows already `pending`.
+**Independent Validation**: argv is a pure projection, so the pinning tests below need no AWS. The
+live confirmation is a read-only `aws … --debug` argv inspection with empty credentials.
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md` if the EBS reaper's scope statement changes.
+
+### Objective
+
+The AWS CLI parses list-valued options with `store`, so a repeated option **replaces** the earlier
+occurrence rather than accumulating. Two argv builders pass their filter option twice. Measured
+against the installed CLI with empty credentials:
+
+```text
+aws ec2 describe-volumes --filters A B --filters C
+  → body: Filter.1.Name = C          (A and B never sent)
+
+aws resourcegroupstaggingapi get-resources --tag-filters K1 --tag-filters K2
+  → body: TagFilters = [K2]          (K1 never sent)
+```
+
+Consequences differ in kind:
+
+- **`TagSweep.tagFilterArgs`** sends only `prodbox.io/managed-by=prodbox`. The
+  `kubernetes.io/cluster/<name>` filter never reaches AWS — so the postflight sweep is structurally
+  blind to exactly the controller-created ENIs, ALBs, and security groups it exists to backstop,
+  which carry the cluster tag and not the ownership tag. A separate defect rides along: the Tagging
+  API **ANDs** `TagFilters`, so the intended OR needs two calls unioned by ARN, not one call with
+  two filters.
+- **`EbsVolume.ebsDescribeVolumesArgs`** (`EbsPerRunTest` scope) sends only
+  `kubernetes.io/cluster/<name>=owned`, dropping `prodbox.io/managed-by` and
+  `prodbox.io/lifecycle=per-run-test`. `testScopedEbsReaperPlan` then deletes **every** returned
+  volume with no client-side re-filter. This is contained today only because prodbox-created
+  retained volumes are tagged without the cluster tag — an accidental guard, one tag away from
+  deleting retained production EBS.
+
+Separately, `--yes` on all four `aws stack <stack> destroy` verbs is inert. It is parsed as
+`confirmed` with help text "Skip confirmation prompts", renamed `summary` at dispatch, wildcarded by
+three of four sinks, and consumed by the fourth as a **quietness** selector
+(`| summary = pulumiLoginQuiet`). No `requireInteractiveTty` guard covers these verbs. The command
+is *intentionally* non-interactive per `CLAUDE.md`, so the defect is not a missing prompt — it is a
+surface advertising a safety property it does not have, where omitting the flag is byte-identical to
+passing it.
+
+### Deliverables
+
+- One `--filters` occurrence carrying all filter values; one `--tag-filters` occurrence per call,
+  with the cluster-tag and ownership-tag sweeps issued as two calls unioned by ARN.
+- `runTestScopedEbsReaper` re-filters client-side before deleting, through the already-written and
+  already-unit-tested `partitionEbsTagRows` / `testScopedEbsVolumeIdsFromTagRows`, which today have
+  no production caller. Two independent guards, neither sufficient alone.
+- `parseTagSweepPayload` treats a payload with no `ResourceTagMappingList` key as unparseable rather
+  than as an empty (clean) result.
+- `--yes` either gates the destroy (refuse when unset and stdin is not a TTY, as
+  `CLI/Pulumi.hs`'s `runPruneCorruptCheckpoint` and `CLI/Charts.hs` already do) or is removed along
+  with its help text. It must not remain a flag that reads as a confirmation and is not one.
+
+### Validation
+
+1. Unit cases pinning the exact argv of `ebsDescribeVolumesArgs` and `tagFilterArgs` for every
+   scope — the defect is invisible to any test that does not assert on the argument list.
+2. A unit case proving the EBS reaper drops a volume that matches the cluster tag but not the
+   lifecycle tag, exercising the client-side re-filter independently of the argv fix.
+3. `prodbox aws stack eks destroy` without `--yes` in a non-TTY context behaves as the chosen
+   resolution specifies, pinned by an integration case.
+4. `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env` exit 0.
+
+### Remaining Work
+
+Registered, not started. Live AWS confirmation of the corrected argv is a Standard-O axis and is
+non-blocking; the read-only `--debug` inspection above is sufficient for code-owned closure.
 
 ## Related Documents
 

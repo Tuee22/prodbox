@@ -458,8 +458,10 @@ publication re-arms the exact migration admission rather than relabelling eviden
 uses only that journal's authenticated floor, contiguous suffix, and retained stage; peer
 checkpoint/suffix repair updates a remote replica only.
 No `prodbox` command writes to `.prodbox-state/`; the directory is removed from the
-supported architecture and the `forbidDotProdboxState` lint in `prodbox dev check`
-enforces this. Every chart secret — Patroni roles, Keycloak admin, OIDC client
+supported architecture. The `checkForbidDotProdboxState` lint in `prodbox dev check` guards that
+over a stated region — a string-literal scan of `.hs` files under `src/` and `app/` — so it catches
+a reintroduced literal path and not one assembled at runtime (§ 22 of
+[chaos_hardening_doctrine.md](./chaos_hardening_doctrine.md)). Every chart secret — Patroni roles, Keycloak admin, OIDC client
 secrets, gateway peer-event keys, demo-user passwords — is a Vault KV object fetched
 in-cluster via Vault Kubernetes auth per
 [Secret Derivation Doctrine](./secret_derivation_doctrine.md) and

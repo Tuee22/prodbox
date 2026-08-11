@@ -27,7 +27,7 @@ sequence:
 2. thin-`Main.hs` and tracked-generated-artifact policy scan
 3. sandboxed `fourmolu --mode check app src test`
 4. sandboxed `hlint app src test --hint=.hlint.yaml --with-group=default --with-group=extra`
-5. `cabal build --builddir=.build all --ghc-options=-Werror`
+5. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`
 6. sync the built operator binary to `.build/prodbox`
 
 Note the scope of step 5, which is not cosmetic. The formatter and the linter are explicitly scoped

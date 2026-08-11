@@ -693,15 +693,10 @@ Typical WebSocket drain flow is:
 
 The intended migration path from a legacy reverse-proxy edge is:
 
-```text
-Client -> Nginx -> Keycloak / Apps
-```
-
-to:
-
-```text
-Client -> MetalLB -> Envoy Gateway -> Keycloak / Apps
-```
+The before/after edge path is stated once, in
+[§ 4 Traffic and Hostname Model](#4-traffic-and-hostname-model); § 5 of
+[documentation_standards.md](../documentation_standards.md) forbids restating a diagram in a second
+place, which is why this section links rather than repeats it.
 
 Recommended phases:
 

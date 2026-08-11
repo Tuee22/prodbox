@@ -340,6 +340,23 @@ contract.
 Current per-substrate live evidence and every open parity axis are tracked only in
 [substrates.md](substrates.md). This suite-content phase does not duplicate that changing status.
 
+**Independent Validation** (Standard N — see
+[development_plan_standards.md](development_plan_standards.md) Standards N/O): this phase is
+validatable in full on its owned surface — the named-validation set in
+`src/Prodbox/TestValidation.hs`, its plan in `src/Prodbox/TestPlan.hs`, the runner in
+`src/Prodbox/TestRunner.hs`, and the prerequisite DAG in `src/Prodbox/Prerequisite.hs` — with no
+dependency on any later phase. Closure is `prodbox dev check`, `prodbox test unit`, and the installed
+`prodbox test integration cli` / `env` suites; where a validation would touch Route 53, a deployed
+cluster, an unsealed Vault, or live AWS, it runs on the home/local substrate or against a fake, and
+the live exercise is a non-blocking `Live-proof: pending` axis rather than `⏸️ Blocked`. Per-substrate
+AWS coverage of a suite-content validation is tracked in [substrates.md](substrates.md) and never
+marks this phase or its sprints `Blocked` (Standard M, "suite-content closure is
+home-substrate-scoped").
+
+*Added 2026-08-11:* this document was the only phase file without a document-level
+`**Independent Validation**` line, which Standard N requires of every phase document; the first
+occurrence had been inside Sprint `5.8`'s block.
+
 ## Current Baseline In Worktree
 
 - `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT, canonical membership, typed
@@ -1273,11 +1290,44 @@ port-forwarding or direct host Vault NodePort access on supported paths.
 7. Live-proof (Standard O): run the same `daemon-bootstrap` substrate parity row on AWS with Sprint
    `7.30`'s daemon object-store APIs for Pulumi backend/residue paths.
 
+### Correction To This Sprint's Own Validation (Standard C)
+
+**Recorded 2026-08-11.** This sprint's Validation section rests entirely on
+`prodbox test integration daemon-bootstrap`, and that node observes nothing on the path it actually
+takes:
+
+```haskell
+-- File: src/Prodbox/TestValidation.hs
+  fixture <- lookupEnv "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
+  case fixture of
+    Nothing     -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+    Just "pass" -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+```
+
+The unset arm — the one CI and a bare invocation take — is byte-identical to the `"pass"` fixture
+arm, and `DAEMON_AVAILABLE=true` is a literal inside `defaultDaemonBootstrapAuditInput`. The
+deliverables claim "a transport-use oracle that fails on observed `kubectl port-forward` invocation"
+and "negative proof that an unavailable daemon fails with a daemon-actionable error"; both negative
+behaviours exist only as separate string-keyed fixture branches that nothing on the default path
+selects. The validation's `-> []` prerequisite registration and its in-plan description as "a
+code-owned transport oracle" are honest — what is over-claimed is that running it establishes the
+transport property.
+
+The sprint's structural deliverable is not withdrawn: the daemon-mediated boundary exists and the
+audit vocabulary is real. Sprint `5.33` 📋 owns making the unset arm observe or refuse.
+
+**Downstream citations inherit this scope** and are not separately corrected (§ 1 — a fact derivable
+from one place is not copied): Sprint `7.30` in
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md), the 2026-07-05
+four-phase reclosure row in [README.md](README.md), and the historical entry in
+[substrates.md](substrates.md).
+
 ### Remaining Work
 
 - 🧪 Live-proof pending (non-blocking, Standard O): AWS/Pulumi object-store parity composes with
   Sprint `7.30`'s code-owned landing and is tracked through [substrates.md](substrates.md), not as
   a backward block.
+- The unset-arm observation gap recorded above is owned by Sprint `5.33` 📋.
 
 ## Sprint 5.15: Restore-Cycle DRY Builder and Daemon-Liveness Precondition [✅ Done]
 
@@ -1788,6 +1838,29 @@ cleanup across the whole suite run.
   warning-clean build. Live home/AWS load campaigns remain the separate, non-closing Standard-P
   deployment-qualification axis (`pending`); no deployment-ready or operational-cutover claim is made.
 - Live home/AWS campaigns remain a separate deployment-qualification axis after code closure.
+
+### Correction To This Sprint's Own Closure Evidence (Standard C)
+
+**Recorded 2026-08-11.** The Closure Evidence above states that the named
+`control-plane-counterexample` command "validates … five expected superseded failures, five
+replacement closures." It does not. `simulateFrozenCounterexample`
+(`src/Prodbox/Test/Qualification/FrozenCounterexample.hs`) discards its `FrozenCounterexampleTrace`
+argument to a `_` wildcard and returns both halves from its own `simulateComposition`;
+`Prodbox.Test.CounterexampleValidation` then asserts the dispositions that constant already carries.
+Both the five failures and the five closures are produced by the module that checks them, so the
+verdict is a compile-time constant and no input can make the command fail.
+
+What the sprint did land is real and is not withdrawn: the oracle's shape, the identity/evidence
+plumbing, the fault-matrix enumeration, and the installed-binary emission path all exist. What was
+over-claimed is the word *validates* — the command **emits** those dimensions rather than **testing**
+them. This is the same correction shape as Sprint `5.30`'s: the claim as registered was stronger
+than the mechanism delivers.
+
+The falsifying half is owned by Sprint `5.32` 📋, whose acceptance criterion is that a mutated frozen
+trace makes the command exit non-zero. Until it lands, this sprint's evidence may not be cited to
+fill the Counterexample column of either Deployment Qualification row
+([README.md](README.md#deployment-qualification)). No `proven` row rests on it, so nothing is
+retracted.
 
 ## Documentation Requirements
 
@@ -2630,8 +2703,11 @@ postflight red, which is the point.
 test suite this phase owns. Registered by the investigation that found
 `prodbox test integration cli` and `env` failing 20 of 55 cases; the doctrine it implements is
 Sprint `0.25`.
+**Implementation**: `src/Prodbox/CheckCode.hs` (the `--enable-tests` build flag and
+`tier0EncoderViolations`), `src/Prodbox/TestRunner.hs`, `test/support/TestSupport.hs`,
+`test/integration/CliSuite.hs`, and `test/integration/EnvSuite.hs`.
 **Blocked by**: none.
-**Deployment qualification**: not invalidated — this sprint touches test fixtures, a
+**Deployment qualification**: pending (not invalidated) — this sprint touches test fixtures, a
 developer-tooling build flag, a `dev check` rule, and one operator-facing diagnostic line in the
 test runner. No production-composition surface changed; both rows stay `pending`.
 **Independent Validation**: `prodbox dev check` exit 0 with `--enable-tests` in force;
@@ -2850,6 +2926,158 @@ reason, so lowering into it can only destroy one.
 
 None on Sprint `5.31`'s code-owned surface. Clean-room home and AWS deployment qualification remains
 pending in the global Standards O/P ledger and does not reopen this phase.
+
+## Sprint 5.32: The Frozen Counterexample Consumes Its Trace 📋
+
+**Status**: Planned — Phase `5` own-surface reopen (Standard A) on the canonical test suite this
+phase owns. Registered 2026-08-11 by the MISU audit that read the reproducer against Standard P.
+**Implementation**: `src/Prodbox/Test/Qualification/FrozenCounterexample.hs`,
+`src/Prodbox/Test/CounterexampleValidation.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending — and this sprint is a *precondition* for filling the
+Counterexample column of either row in the [Deployment Qualification ledger](README.md#deployment-qualification).
+It changes no production-composition surface; it changes whether a qualification input can fail.
+**Independent Validation**: the mutation exercise below, run on the home substrate with no live
+infrastructure; `prodbox dev check`, `prodbox test unit`, and
+`prodbox test integration control-plane-counterexample` exit 0.
+**Docs to update**: `DEVELOPMENT_PLAN/README.md` (§ Deployment Qualification note), and the
+Standard-C corrections on Sprints `5.19` and `8.12`.
+
+### Objective
+
+Standard P's counterexample rule requires a repository-owned reproducer recording an "expected
+failure against the frozen superseded implementation." The reproducer does not read the frozen
+implementation:
+
+```haskell
+-- File: src/Prodbox/Test/Qualification/FrozenCounterexample.hs
+simulateFrozenCounterexample
+  :: FrozenCounterexampleTrace
+  -> ([CounterexampleResult], [CounterexampleResult])
+simulateFrozenCounterexample _ =
+  ( simulateComposition SupersededGatewayComposition
+  , simulateComposition ReplacementSeparatedComposition
+  )
+```
+
+The `FrozenCounterexampleTrace` — which `loadFrozenCounterexampleTrace` genuinely reads from the
+repository — is discarded to a `_` wildcard, and both halves of the result are regenerated from the
+same in-module `simulateComposition`. `Prodbox.Test.CounterexampleValidation` then checks that the
+two halves agree with the dispositions `simulateComposition` just wrote, so `complete` is `True` for
+every input and `NORMALIZED_ENVELOPE_EQUAL=true` / `TEMPORAL_REPLACEMENT_QUALIFIED=true` are string
+literals rather than rendered verdicts.
+
+This is [chaos_hardening_doctrine.md § 12](../documents/engineering/chaos_hardening_doctrine.md)'s
+cardinal rule — *never report a tested, assumed, or merely argued result as proven* — reached
+through the mechanism written to enforce it. It is the same shape as Sprint `5.30`'s finding at a
+different layer: there a gate's *region* excluded the evidence surface; here a gate's *input* is
+excluded from its own verdict.
+
+### Deliverables
+
+- `simulateFrozenCounterexample` binds and consumes its `FrozenCounterexampleTrace`, deriving each
+  `CounterexampleResult` disposition from the frozen trace rather than from a composition constant.
+- `CounterexampleValidation` renders `NORMALIZED_ENVELOPE_EQUAL` and
+  `TEMPORAL_REPLACEMENT_QUALIFIED` from the computed values; no emitted evidence line is a literal.
+- A repository-owned **mutation fixture**: a frozen trace whose superseded dispositions have been
+  altered, committed alongside the canonical one.
+
+### Validation
+
+The acceptance criterion **is** the deliverable, and it is the one the sprint cannot pass today:
+
+1. `prodbox test integration control-plane-counterexample` exits 0 against the canonical frozen
+   trace.
+2. The same command exits **non-zero** against the mutation fixture. A reproducer that passes both
+   is not a reproducer.
+3. `prodbox dev check` exit 0 with `--enable-tests` in force; `prodbox test unit` exit 0.
+
+### Remaining Work
+
+Registered, not started. Until it lands, the Counterexample/fault-matrix column of both Deployment
+Qualification rows stays unfilled per the note in [README.md](README.md#deployment-qualification),
+and Sprints `5.19` and `8.12` carry Standard-C corrections naming this dependency.
+
+## Sprint 5.33: Two Named Validations Observe Nothing 📋
+
+**Status**: Planned — Phase `5` own-surface reopen (Standard A) on the canonical test suite this
+phase owns, alongside Sprint `5.32`. Registered 2026-08-11 by the same audit.
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending; unchanged. This sprint moves no production-composition
+surface — it changes what two suite nodes assert about themselves.
+**Independent Validation**: both nodes are in-process today and stay validatable with no live
+infrastructure; the unset-fixture exercise below needs only an environment with no `PRODBOX_TEST_*`
+set. `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env` exit 0.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `DEVELOPMENT_PLAN/system-components.md`
+(the `gateway-partition` proof-surface row).
+
+### Objective
+
+Two named validations emit evidence they did not measure. They are different defects and need
+different fixes.
+
+**`daemon-bootstrap` — the default path *is* the pass fixture.**
+
+```haskell
+-- File: src/Prodbox/TestValidation.hs
+  fixture <- lookupEnv "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
+  case fixture of
+    Nothing     -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+    Just "pass" -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+```
+
+The unset arm — the one CI and a bare `prodbox test integration daemon-bootstrap` take — is
+byte-identical to the `"pass"` fixture arm. There is no observation path in the function at all, and
+`DAEMON_AVAILABLE=true` is a literal in `defaultDaemonBootstrapAuditInput`. Sprint `5.14`'s
+`Validation` section rests entirely on this node, and Sprint `7.30`, the 2026-07-05 four-phase
+reclosure in [README.md](README.md), and [substrates.md](substrates.md) inherit it downstream.
+
+**`gateway-partition` — a sound test making an unsound claim.** `runGatewayPartitionValidation` is a
+pure in-process composition over the real `GatewayState` folds. That is a *legitimate property test*
+and its `-> []` prerequisite entry ("fully in-process") is honest. The defect is that it emits
+`INITIAL_OWNER_ACTIVE=true`, `PARTITION_TAKEOVER_ACCEPTED=1`, `SINGLE_WRITER_AFTER_TAKEOVER=true`
+and similar as **string literals**, and is cited as a numbered `Validation` step in eight `Done`
+Phase-`2` sprints for properties — commit-before-peer-response, restart, partition takeover — that
+no peer, restart, or partition was present to exercise. The plan already contradicts itself about
+this: `phase-2-gateway-dns.md` records the validation as "live-proven on 2026-06-26", while
+[this document](phase-5-canonical-test-suite.md) states `gateway-partition` "engages NO harness —
+unit-pinned". The second is correct.
+
+### Deliverables
+
+- `runDaemonBootstrapValidation`'s unset arm **observes or refuses**. It must not emit a canned
+  audit on a path that measured nothing; a missing fixture in a context that cannot observe is a
+  typed refusal naming what was absent, per
+  [bootstrap_readiness_doctrine.md § 0.5](../documents/engineering/bootstrap_readiness_doctrine.md).
+- `gateway-partition` renders its emitted values from the computed report rather than printing
+  literals, and moves to the unit suite, where its identity as an in-process property test is
+  accurate. `TestPlan.hs` drops the integration registration; `system-components.md`'s proof-surface
+  row moves with it.
+- The eight Phase-`2` sprints citing it, and Sprint `5.14`, carry Standard-C corrections naming what
+  the node did and did not establish. Their code deliverables are not withdrawn — only the evidence
+  sentence is corrected, as in Sprint `5.30`'s own registration correction.
+- `phase-2-gateway-dns.md`'s "live-proven" line is corrected to agree with this document.
+
+### Validation
+
+1. **Unset-fixture exercise.** With every `PRODBOX_TEST_*` unset,
+   `prodbox test integration daemon-bootstrap` must refuse rather than pass. It passes today, which
+   is the defect.
+2. `gateway-partition`'s emitted lines change when its inputs change — pinned by a unit case that
+   varies the composition and asserts the rendered output differs.
+3. `prodbox test unit` covers the relocated `gateway-partition` cases;
+   `prodbox test integration cli` / `env` exit 0 with the integration registration removed.
+4. `prodbox dev check` exit 0.
+
+### Remaining Work
+
+Registered, not started. A third node of the same family — `gatewayRuntimeSampleExit` mapping
+`NotStableYet` to `ExitSuccess` while its sibling gate ten lines away retries and then fails — is
+recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than folded in
+here, because it is a fold defect on the Phase-`2` gateway surface rather than suite content.
 
 ## Related Documents
 

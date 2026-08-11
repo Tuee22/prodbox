@@ -7,12 +7,12 @@
 > **Purpose**: Single source of truth for how prodbox stores and serves post-unseal operational
 > secrets as scoped Vault objects, the password-gated Tier-1 recovery exception, and the
 > host↔cluster boundary across which operational secrets are fetched.
->
-> **Filename note.** This file is named `secret_derivation_doctrine.md` for link
-> stability only. The HMAC master-seed *derivation* model it once described is retired;
-> the document now describes the Vault-KV secret-management model. The filename is
-> retained so the docs that already reference it keep working — see
-> [vault_doctrine.md](./vault_doctrine.md) for the finalized Vault-root statement.
+
+**Filename note.** This file is named `secret_derivation_doctrine.md` for link
+stability only. The HMAC master-seed *derivation* model it once described is retired;
+the document now describes the Vault-KV secret-management model. The filename is
+retained so the docs that already reference it keep working — see
+[vault_doctrine.md](./vault_doctrine.md) for the finalized Vault-root statement.
 
 Secret access is capability-scoped, not daemon-scoped. Bootstrap Broker, Lifecycle Authority,
 fenced Provider Worker, Authority Backup Adapter, TLS Retention Adapter, each Target Secret Agent,

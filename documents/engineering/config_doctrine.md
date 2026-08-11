@@ -205,7 +205,29 @@ and QoS before `Settings.validateConfig` / `validateLocalConfig` compile the **d
 (`Prodbox.Capacity.Allocation`) and carry it as a **required field of `ValidatedSettings`** — the
 **decode gate**: an over-committed *authored* config produces no `AllocatedResourcePlan`, hence no
 `ValidatedSettings`, hence no renderer input, so the illegal state is unrepresentable rather than
-caught by a later inequality. This supersedes the runtime-`Either` `validateResourcePlan` inequality
+caught by a later inequality.
+
+**Three precisions on that sentence (corrected 2026-08-11).** The shape is real — the field is
+required, `validateConfig` short-circuits on `Either`, and `AllocatedResourcePlan` is genuinely
+exported without its constructor. But read the guarantee at its actual strength:
+
+1. **The field's type is `SomeAllocatedPlan`, not `AllocatedResourcePlan`** — an existential wrapper
+   whose own constructor *is* exported. Opacity survives (matching one out still yields an
+   unforgeable inner value), but the type named above is not the field's type.
+2. **On this path the proof is always the weaker one.** `validateConfig` calls
+   `compileResourcePlanUncertified`, which is `compileResourcePlan []` — an empty measured-profile
+   list — so every workload resolves to `WorkloadUncertifiedUntilFirstProfile` and the existential
+   tag is **never** `Certified`. "Proof-carrying" here means *the arithmetic fit is proven*, not that
+   any workload is certified against a measured profile.
+3. **`ValidatedSettings` exports its constructor**, so "no proof ⇒ no `ValidatedSettings`" holds for
+   the `validateConfig` path and not for the type. There is a production construction site that
+   bypasses `validateConfig` entirely and obtains its plan by `error`-ing on failure
+   (`defaultResourceStatusSettings` in `src/Prodbox/CLI/Rke2.hs`), and the record's exported fields
+   permit an existing value to be updated so its `validatedConfig` no longer agrees with its proof.
+   The gate is a *function*, not a *type*.
+
+The scale of what rides along unrefined is recorded as one row in
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). This supersedes the runtime-`Either` `validateResourcePlan` inequality
 body (`rke2_reserved + eviction_floor <= host_capacity`, quota-fits-`cluster_allocatable`, positive
 bounded envelopes); only the slim `validateRawResourcePlanShape` survives, as the decode-time shape
 slice `compileResourcePlan` reuses. Namespace `ResourceQuota`/`LimitRange` are **derived**
@@ -642,9 +664,9 @@ Two honest limits on that gate:
   encoders in the tree, of which one was updated. Twenty integration cases broke; because the fixture
   authority server converted the resulting decode failure into an exception and then into a bare
   socket close, the reported symptom was `NoResponseDataReceived` — a transport error naming nothing.
-  The suite is not compiled by `prodbox dev check` (see
+  The suite was not compiled by `prodbox dev check` at the time (see
   [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md), "The region of Ring 2"), so
-  nothing caught it. The general rule is
+  nothing caught it; Sprint `5.30` has since added `--enable-tests` to that build. The general rule is
   [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md): a typed value crossing out of a
   region must be reconstructed by exactly one derived encoder, and here there were four. Tightening a
   type does not update a second encoder; it only makes it wrong.

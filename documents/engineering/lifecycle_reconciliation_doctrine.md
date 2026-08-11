@@ -5,9 +5,11 @@
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth for how prodbox lifecycle commands reconcile required
-> resource presence and prevent AWS resource leaks. Names the resource classes, sets the rule that
-> Pulumi state lifetime must match resource lifetime per class, and defines desired-presence,
-> durable-operation, fencing, recovery, target-delivery, and desired-absence semantics.
+> resource presence and prevent AWS resource leaks.
+
+This doctrine names the resource classes, sets the rule that Pulumi state lifetime must match
+resource lifetime per class, and defines desired-presence, durable-operation, fencing, recovery,
+target-delivery, and desired-absence semantics.
 
 This document owns lifecycle meaning. The independently scheduled Bootstrap Broker, Lifecycle
 Authority, Credential Provisioner, Admin Action Runner, fenced Provider Worker, Authority Backup
@@ -447,7 +449,8 @@ generalizes to any new resource class by adding one `discover` and one
 
 The data-oriented strengthening is the managed-resource registry below: it keeps "data in, data
 out," adds no shared in-memory world model, and makes the "add one `discover` + one destroy per
-resource" rule total and machine-enforced. This is compatible with the bounded externally durable
+resource" rule total by construction and machine-guarded over the region invariant 1 states — a
+`check-code` parity scan plus a create-verb allowlist, not a type. This is compatible with the bounded externally durable
 Lifecycle Authority state machine: that aggregate owns operation/fence/checkpoint/outbox metadata
 only and still consumes separately observed provider, Kubernetes, Vault, and AWS truth. It does not
 pretend to transactionally contain the world.
@@ -556,8 +559,21 @@ Five invariants make the topology leak-proof and idempotent:
    [`substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
    parity, plus direct create-call-site and Kubernetes-owner/controller coverage scans), the same mechanism
    that already enforces the generated-section registry and the
-   subprocess boundary. "A creatable-but-undiscoverable resource" is
-   made unrepresentable.
+   subprocess boundary.
+
+   **State the region (§ 22; corrected 2026-08-11).** This invariant is the *rule*; the lint is a
+   regression guard over a stated region, and the two are not the same claim. `awsCreateVerbs` is a
+   **7-entry substring allowlist** — `create-user`, `create-access-key`, `put-user-policy`,
+   `create-role`, `put-role-policy`, `create-hosted-zone`, `create-bucket` — and the Pulumi half
+   matches `Pulumi<Word>Resources` tokens in one file. Verbs shelled out elsewhere in `src/` that
+   create or mutate real AWS resources and fall outside it today include `create-volume`,
+   `create-receipt-rule-set`, `put-bucket-policy`, `put-object`, `put-public-access-block`, and
+   `request-service-quota-increase`. So "a creatable-but-undiscoverable resource is made
+   unrepresentable" is true **for the verbs the allowlist names**, and is an unenforced obligation
+   everywhere else. An allowlist drawn to fit the code is a
+   [chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md) region claim, not a totality
+   proof; the coverage gap is tracked in
+   [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 2. **Soundness.** `Unreachable` ("cannot observe") is never silently a
    passing decision. A single combinator maps a `discover` result to a
    gate decision with `Unreachable → refuse` (the Sprint 4.19 rule,
@@ -573,7 +589,24 @@ Five invariants make the topology leak-proof and idempotent:
 3. **Idempotent reconciliation.** Teardown is one reconciler,
    `reconcileAbsent`, over a class subset of the registry: for each
    resource `Present → destroy → re-observe`, `Absent → skip`,
-   `Unreachable → refuse`. `prodbox cluster delete --cascade` reconciles
+   `Unreachable → refuse`.
+
+   **Where the refusal lives, and the implementation gap (recorded 2026-08-11).** The refusal is a
+   property of the *teardown decision*, not of the active-destroy loop. The gate combinator
+   `residueBlocksTeardownGate` ("present **or** unreachable → block") owns it, and
+   `reconcileAbsent`'s own filter keeps only `ResiduePresent`, so on the cascade path
+   `ResidueUnreachable` is **skipped** rather than refused — which is the documented per-run
+   graceful-degradation exception named in invariant 2 and § 5b. Two things follow, and neither is a
+   licence to read this arm as optional. First, a caller that skips must not *narrate* the skip as
+   absence: § 3 layer 1 is *Cleanup continues without lying*, and § 5b phase 1 requires the aggregate
+   to withhold success until the authority is observed. Second, the cascade does neither today — it
+   prints "no live per-run residue" on an all-`Unreachable` input and exits 0. That is a code gap,
+   scheduled as Sprint `4.76` in
+   [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
+   per [Standard L](../../DEVELOPMENT_PLAN/development_plan_standards.md#l-cli-doctrine-alignment),
+   **not** a reason to soften this arm.
+
+   `prodbox cluster delete --cascade` reconciles
    `PerRun` (default `cluster delete` is a pure local uninstall and
    reconciles nothing); `prodbox aws teardown` reconciles `Operational`
    after its exact consumers are quiescent while retaining `LongLived`;
@@ -588,10 +621,17 @@ Five invariants make the topology leak-proof and idempotent:
    included. This is the intended Sprint 4.26 invariant: a `check-code`
    lint, `checkPlanOptionsHonored`, forbids any destructive dispatch arm
    from binding the `PlanOptions` argument to a `_` wildcard (which would
-   silently drop `--dry-run` / `--plan-file`). The rule is total — "a
-   destructive command that ignores its plan options" is made
-   unrepresentable, the same way invariant 1 makes
-   "a creatable-but-undiscoverable resource" unrepresentable. The
+   silently drop `--dry-run` / `--plan-file`). The rule is total as
+   doctrine; **as enforcement it has invariant 1's shape and invariant 1's
+   region** (§ 22). The lint's `destructivePlanOptionsArms` table names
+   two constructors and its scan covers three files, so a destructive
+   constructor outside that table — `PulumiEksDestroy`,
+   `PulumiTestDestroy`, `PulumiAwsSubzoneDestroy`, `PulumiAwsSesDestroy`,
+   `ChartsDelete`, `UsersRevoke`, `AwsTeardown` — is unguarded today, and
+   a token scan cannot see an argument that is bound and then ignored
+   (which is how `--yes` on the four stack-destroy verbs became inert).
+   The coverage gap is tracked in
+   [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The
    cascade's per-run sweep is **derived from** `perRunManagedResources`
    (the registry SSoT for the `PerRun` class) rather than a hand-maintained
    stack list, so the rendered `--dry-run` plan and the executed sweep can
@@ -1322,6 +1362,25 @@ absence of residue" is treated as "residue may be present," never as
 
 The tag sweep lives at `src/Prodbox/Lifecycle/TagSweep.hs` (introduced
 in Sprint 4.11; extended for the full cluster-tag scan in Sprint 4.12).
+
+**Implementation gap, recorded 2026-08-11 (Standard C).** Neither half of the paragraph above holds
+in the current worktree, and the divergence is unusually sharp because the code cites this section as
+its authority for the opposite behaviour:
+
+- `runCascadePostflightTagSweep :: FilePath -> IO ()` returns unit, so a non-empty escapee list and
+  an unreachable Tagging API are both narrated and then discarded; the cascade returns
+  `ExitSuccess` regardless. Its Haddock states this and cites "§ 6" while doing so.
+- `prodbox nuke` has **no sweep call at all**. The "step-4 tag sweep" named above does not exist;
+  `discoverClusterTaggedAwsResources` has exactly one caller, on the `cluster delete --cascade` path.
+- The sweep that does run never sends its cluster-tag filter: `tagFilterArgs` passes `--tag-filters`
+  twice and the AWS CLI's last-wins parsing drops the first, so the sweep is blind to precisely the
+  controller-created resources it exists to backstop.
+
+Per [Standard L](../../DEVELOPMENT_PLAN/development_plan_standards.md#l-cli-doctrine-alignment) the
+doctrine is **not** rewritten down to match the code. The gap is scheduled as Sprints `4.76` (the
+fail-closed sweep and the `nuke` surface) and `4.77` (the argv defect) in
+[DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md).
+Until they land, a green sweep line is not evidence of absence, and no cleanup claim may rest on one.
 
 ### 6a. IAM Is Registry-Owned, Not Tag-Sweep-Owned
 

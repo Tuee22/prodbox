@@ -303,8 +303,11 @@ Lifecycle-oriented validation should prove:
    `prodbox cluster reconcile`
 10. a deleted MinIO export host-path mount is repaired back onto the declared retained
     directory before Pulumi backend login or stack operations continue
-11. no `prodbox` invocation writes to `.prodbox-state/` (enforced by
-    `forbidDotProdboxState` in `prodbox dev check`)
+11. no `prodbox` invocation writes to `.prodbox-state/` — the directory is out of the supported
+    architecture. State the region (§ 22): `checkForbidDotProdboxState` in `prodbox dev check` is a
+    **string-literal scan of `.hs` files under `src/` and `app/`**, so it catches the literal path
+    and cannot see one assembled with `</>` or derived at runtime. It guards the shortest road back,
+    not the property
 12. `prodbox test integration eks-volume-rebind` writes a sentinel through the retained
     MinIO workload PV, tears the cluster substrate down, brings it back, and verifies the
     same PV/PVC is `Bound`, the sentinel persists, and any EBS CSI `volumeHandle` is

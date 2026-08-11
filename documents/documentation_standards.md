@@ -310,8 +310,12 @@ Do not maintain a second hand-written registry table in documentation. The curre
 paths, marker pairs, renderer functions, and renderer-source files are the
 [`generatedSectionRules`](../src/Prodbox/CheckCode.hs) values. `prodbox dev docs check` proves that
 their rendered contents match the worktree; `prodbox dev lint docs` proves that every governed
-document's header, physical markers, and registered keys agree. This document has no marker pair and
-therefore correctly declares `**Generated sections**: none`.
+document's header, physical markers, and registered keys agree. This document has no marker pair
+**outside a fenced example** and therefore correctly declares `**Generated sections**: none` — the
+reconciler strips fenced blocks and inline-code spans before extracting keys, which is why the
+illustrative `command-registry` markers above do not count as a declaration. Corrected 2026-08-11:
+the previous wording said the document contains no marker pair at all, which is literally false and
+made the metadata look self-contradictory to a reader grepping for the marker text.
 
 The `prodbox dev lint docs --write` and `prodbox dev docs generate` surfaces share one Haskell
 function; either name regenerates the registered sections.

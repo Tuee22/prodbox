@@ -302,6 +302,25 @@ is tracked as a non-blocking `Live-proof: pending` note rather than as `⏸️ B
 deployed-cluster proof never becomes a backward dependency; a demonstrated defect in this phase's
 own runtime, such as the July 10 unbounded-memory counterexample, does reopen the owned surface.
 
+**What the `gateway-partition` validation establishes (Standard C, recorded 2026-08-11).** Eight
+sprints in this document cite `prodbox test integration gateway-partition` as a numbered validation
+step — `2.2`, `2.3`, `2.4`, `2.5`, `2.7`, `2.25`, `2.31`, and `2.32`. Read those citations with this
+scope, stated once here rather than repeated in each (§ 1 of
+[documentation_standards.md](../documents/documentation_standards.md) — a fact derivable from one
+place is not copied):
+
+- It **is** a genuine property test over the real `GatewayState` folds, and its `-> []` prerequisite
+  registration is honest: it runs wholly in process, with no peer, no cluster, and no harness.
+- It **does not** observe a partition, a restart, a peer response, or a takeover. Its emitted
+  `INITIAL_OWNER_ACTIVE=true`, `PARTITION_TAKEOVER_ACCEPTED=1`, `SINGLE_WRITER_AFTER_TAKEOVER=true`,
+  `EMITTER_PIPELINE_COMPOSED`, and `OFFLINE_REPAIR_EXACT` lines are **string literals**, not rendered
+  verdicts, so a citation of one of those tokens is evidence that the pure fold composes — not that
+  the deployed runtime survived the named fault.
+
+Neither the sprints' code deliverables nor their other validation steps are withdrawn. Sprint `5.33`
+📋 in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) owns rendering those values
+from the computed report and relocating the node to the unit suite, where its identity is accurate.
+
 ## Current Baseline In Worktree
 
 - `src/Prodbox/Gateway.hs` owns the public `prodbox gateway start|status|config-gen` entry
@@ -2327,8 +2346,11 @@ Sprint `3.19` removed the derivation RPC, and Sprint `2.31` replaced the log tra
 
 ### Remaining Work
 
-- None. The code-owned surface closed 2026-06-09 and the home `gateway-daemon`, `gateway-pods`, and
-  `gateway-partition` validations were live-proven on 2026-06-26.
+- None. The code-owned surface closed 2026-06-09 and the home `gateway-daemon` and `gateway-pods`
+  validations were live-proven on 2026-06-26. **Standard-C correction (2026-08-11):** the original
+  line included `gateway-partition` in that live proof. It has no live path — it is registered with
+  `-> []` prerequisites and runs wholly in process. See the note on `gateway-partition` at the head
+  of this document.
 
 ## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody [✅ Done]
 

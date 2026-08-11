@@ -63,10 +63,17 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   directly via Vault Kubernetes auth; there are no Secret-mounted Dhall credential
   fragments and no master seed or HMAC derivation. Updating the root cluster's in-force
   config requires the root Vault token (which requires an unsealed root Vault). No
-  `PRODBOX_*` environment variable participates in config resolution on any supported binary
-  (the host CLI resolves the binary-sibling `prodbox.dhall`; the in-cluster daemon/workload read
-  their mounted `--config` Dhall) — the only `PRODBOX_*` reads in the codebase are documented
-  test-only override hooks (`PRODBOX_TEST_*`, `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`). See
+  `PRODBOX_*` environment variable participates in **Tier-0 config resolution** on any supported
+  binary (the host CLI resolves the binary-sibling `prodbox.dhall`; the in-cluster daemon/workload
+  read their mounted `--config` Dhall). Corrected 2026-08-11: the claim that the *only* `PRODBOX_*`
+  reads are `PRODBOX_TEST_*` and `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` was false. Four others exist in
+  `src/Prodbox/CLI/Rke2.hs` — `PRODBOX_PULUMI_METALLB_POOL` and
+  `PRODBOX_PULUMI_EDGE_LB_IP`/`PRODBOX_PULUMI_INGRESS_LB_IP` (which substitute for live LAN
+  detection), `PRODBOX_RKE2_ENDPOINT_STATUS_ROOT`, and `PRODBOX_RKE2_CONTAINERD_SOCKET`. They do not
+  reach Tier-0 config, but they are production reads and two of them are load-bearing for host
+  networking. `checkEnvVarConfigReads` does not cover that file; the scope gap is tracked in
+  [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+  See
   [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.

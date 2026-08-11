@@ -1135,12 +1135,13 @@ authored limit was adequate.
 
 **A ring has a region, and the region is whatever the build command selects.** "Ring 2 delivers
 unrepresentable" is a claim about a type *over a set of compiled modules*, and the set is not the
-repository — it is the argument list. Measured 2026-08-08:
-`cabal build --builddir=.build all`, the build `prodbox dev check` runs, resolves to `lib` and
-`exe:prodbox` and **no test suite**; `--enable-tests` resolves to those plus all eight. So for
-`test/` — where every sprint's evidence lives — this repository sat at Ring 0 while recording
-Ring-2 claims, and a type tightening that should have been a compile error was instead a runtime
-decode failure in a suite nothing routinely compiled. The region is owned by
+repository — it is the argument list. The worked case: as measured 2026-08-08 the `dev check` build
+omitted every test suite, so for `test/` — where every sprint's evidence lives — this repository sat
+at Ring 0 while recording Ring-2 claims, and a type tightening that should have been a compile error
+was instead a runtime decode failure in a suite nothing routinely compiled. Sprint `5.30` closed
+that particular region gap; the principle is not retired by the fix, because the region moves with
+the argument list. This section deliberately no longer restates the measurement — doing so is what
+let one stale fact outlive its correction in two documents at once. The region is owned by
 [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md); state it there, cite it here.
 A ring stated without its region is not a weaker claim than intended — it is a claim about a
 different set of files than the reader will assume.

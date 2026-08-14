@@ -89,6 +89,43 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
 This rule is scoped to `prodbox cluster delete --yes`. It does not extend to repo-wide stderr
 suppression, and other lifecycle commands continue to follow the streaming contract above.
 
+### 6a. A Narrated Skip Is Not a Narrated Absence (Sprint `4.76`)
+
+The success/failure split above governs *how much* upstream noise reaches the operator. A separate
+rule governs *what the doctrine-owned summary lines are permitted to claim*, and it is the § 2
+causal-story invariant applied to the one place a destructive command is most tempted to compress:
+a phase that took no action.
+
+**A line may assert absence only when absence was observed.** "I ran no destroy" has at least two
+causes — the resource was observed gone, and the resource could not be observed at all — and a
+single sentence covering both converts an unresolved state into a benign one. `prodbox cluster
+delete --cascade` did exactly that: on a host whose per-run state backend was unreadable it printed
+
+```text
+Per-run residue status: aws-eks=unreachable (...), aws-eks-subzone=unreachable (...), aws-test=unreachable (...)
+Per-run Pulumi destroys: skipped (no live per-run residue).
+```
+
+and exited 0 — three non-observations narrated as one observed absence, one line after the status
+line said otherwise. The rule that follows:
+
+- Each skip reason gets its own sentence. `reconcileAbsent` narrates the observed-absent set and the
+  unobserved set separately and never shares a clause between them; its
+  "no destroy ran" sentence is a total function of the pair, so an all-unobserved batch cannot
+  borrow the all-absent wording.
+- The unobserved sentence goes to the **diagnostic** stream and says what remains true afterwards
+  (which resources, that this is not a confirmation, and the canonical command to resolve it).
+- An aggregate line that names phases must be derived from the recorded phase outcomes, not
+  restated. `prodbox cluster delete --cascade` closes with either "every phase reported success" or
+  the list of unresolved phases; neither sentence can be reached without the fold that produced it.
+- Advice must be a function of the mode that is running. The retained-state notice's per-run
+  sentence takes the delete mode, because the shared uninstall step list previously closed a
+  `--cascade` run by advising the operator to run `--cascade`.
+
+The soundness half of this rule — which of those outcomes may reach `ExitSuccess` — belongs to
+[lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md) invariant 3 and
+§ 5b, not here. This section owns only the sentences.
+
 ## 7. Intent Ownership
 
 This SSoT co-owns streaming doctrine intention.

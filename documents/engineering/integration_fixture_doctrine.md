@@ -23,6 +23,22 @@
 - An interrupted or response-lost lifecycle preparation is recovered through its durable operation
   ID. The fixture never infers rollback from a timeout or submits a second mutation under a fresh
   ID.
+- **A fixture stands in for an observation; it never stands in for the *fact* that an observation
+  happened** (Sprint `5.33`, 2026-08-11). Two rules follow, and both were violated by the shipped
+  `daemon-bootstrap` node:
+  1. **The unset arm is not a fixture arm.** A named validation selected by a `PRODBOX_TEST_*`
+     fixture variable must, when that variable is unset, either observe or refuse. It may not fall
+     through to the passing fixture, because the unset arm is the one CI and a bare invocation take
+     and is therefore the arm whose behaviour the plan's evidence actually records.
+  2. **The output names the source.** Where a node can run from either an observation or a fixture,
+     its emitted evidence states which. Otherwise the two are distinguishable only by reading the
+     source — which is exactly where the equivalence went unnoticed for the lifetime of the node.
+- **A boundary fake must answer every observation the production path makes** (Sprint `4.76`,
+  2026-08-11). The fake-`kubectl` boundaries in `test/integration/CliSuite.hs` served no
+  `get endpoints kubernetes` after Sprint `3.34` made that a live observation on the chart-reconcile
+  path, and one of the two had a silent catch-all arm that answered empty stdout with exit 0 — so
+  the production observer read `""` and refused on a shape rather than on an absence. A fake's
+  catch-all arm is a fail-open default; prefer an explicit refusal naming the unhandled request.
 
 ## 1. Scope
 

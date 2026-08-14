@@ -50,10 +50,12 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (toLower)
-import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Prodbox.Aws.AdminCredentials (acquireAdminAwsCredentials)
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
@@ -353,7 +355,26 @@ destroyLongLivedPulumiStateBucket workingDir environment section = case longLive
     let bucket = Text.unpack (Text.strip (psbBucketName section))
     headResult <- runAwsS3Api workingDir environment ["head-bucket", "--bucket", bucket]
     case headResult of
-      Left _ -> pure (Right ())
+      -- Sprint 4.79: only an anchored not-found response means the bucket is
+      -- absent. This arm used to accept EVERY `head-bucket` failure as "already
+      -- gone" — `runAwsS3Api` returns `Left` for subprocess-start failure and
+      -- every non-zero exit, so a 403, an expired credential, throttling, and a
+      -- network fault were all recorded as bucket-absent, on the terminal node
+      -- of the `nuke` decommission DAG, while the bucket holding every
+      -- encrypted checkpoint was alive.
+      Left err
+        | reportsAbsence S3BucketProbe err -> pure (Right ())
+        | otherwise ->
+            pure
+              ( Left
+                  ( BucketEnsureFailed
+                      ( "head-bucket could not determine whether the long-lived "
+                          ++ "Pulumi state bucket exists, so its absence is "
+                          ++ "unconfirmed and it was NOT deleted: "
+                          ++ err
+                      )
+                  )
+              )
       Right () -> do
         emptyResult <- emptyVersionedBucket workingDir environment bucket
         case emptyResult of
@@ -634,7 +655,21 @@ purgeLongLivedObjectsUnderPrefix workingDir environment section prefix =
       let bucket = Text.unpack (Text.strip (psbBucketName section))
       headResult <- runAwsS3Api workingDir environment ["head-bucket", "--bucket", bucket]
       case headResult of
-        Left _ -> pure (Right ())
+        -- Sprint 4.79: same correction as 'destroyLongLivedPulumiStateBucket'.
+        -- A purge that could not observe the bucket reported every object under
+        -- the prefix as gone.
+        Left err
+          | reportsAbsence S3BucketProbe err -> pure (Right ())
+          | otherwise ->
+              pure
+                ( Left
+                    ( "head-bucket could not determine whether the long-lived "
+                        ++ "Pulumi state bucket exists, so objects under prefix '"
+                        ++ prefix
+                        ++ "' are of unconfirmed absence and were NOT purged: "
+                        ++ err
+                    )
+                )
         Right () -> purgeRemainingVersions workingDir environment bucket (Just prefix)
 
 -- | Sprint 7.11: write a local file to a key in the long-lived
@@ -794,12 +829,14 @@ buildAdminS3Environment adminCreds = do
 -- key is simply absent (vs. a real backend failure)? Public so the unit
 -- suite can pin the discrimination. Matches the canonical @NoSuchKey@
 -- blob case-insensitively.
+-- | Sprint 4.78: keyed through the one owner. The former @"not found" &&
+-- "key"@ conjunction is dropped rather than carried: an S3 error that names a
+-- key and says "not found" for some other reason (a missing bucket policy, a
+-- denied "key" in a KMS message) satisfied it, and @nosuchkey@ plus the
+-- anchored status forms cover every shape the CLI actually emits for an absent
+-- object.
 isLongLivedNoSuchKeyMessage :: String -> Bool
-isLongLivedNoSuchKeyMessage detail =
-  "nosuchkey" `isInfixOf` normalized
-    || ("not found" `isInfixOf` normalized && "key" `isInfixOf` normalized)
- where
-  normalized = map toLower detail
+isLongLivedNoSuchKeyMessage = reportsAbsence LongLivedBackendKeyProbe
 
 -- | Bracket the action with the long-lived backend's
 -- @PULUMI_BACKEND_URL@ exported into the process environment, then

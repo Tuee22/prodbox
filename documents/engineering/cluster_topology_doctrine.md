@@ -145,17 +145,30 @@ mkMachine mid sub w
   | otherwise                = Right (Machine mid sub w)
 ```
 
-**State the region (§ 22; recorded 2026-08-11).** "Cannot be built" holds for hand-written call
-sites and **not** at the decode boundary. `Machine`, `MachineId`, and `ClusterTopology` are exported
-abstractly — no `(..)`, so `mkMachine` is the only hand-written builder — but all three also
-`deriving (… FromDhall …)`, and a derived decoder constructs the record directly. `Dhall.auto` is
-therefore a second constructor that does not check rule f, which is why the compensating
-`validateClusterTopology` exists and runs after decode. This is exactly the conversion class
+**The region, and how it closed (recorded 2026-08-11; closed by Sprint `1.86`, 2026-08-12).** Until
+Sprint `1.86` "cannot be built" held for hand-written call sites and **not** at the decode boundary.
+`Machine`, `MachineId`, and `ClusterTopology` were exported abstractly — no `(..)`, so `mkMachine`
+was the only hand-written builder — but all three also `deriving (… FromDhall …)`, and a derived
+decoder constructs the record directly. `Dhall.auto` was therefore a second constructor that did not
+check rule f, which is why the compensating `validateClusterTopology` exists and runs after decode.
+That is exactly the conversion class
 [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) names: an opaque type that derives
-`FromDhall` is not opaque across the decode seam. The structural fix is a `Raw*` DTO decoded and
-then narrowed through `mkMachine`, the shape `Prodbox.ControlPlane.Capacity` and
-`Prodbox.Gateway.Settings` already use; it is tracked in
-[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+`FromDhall` is not opaque across the decode seam.
+
+**Decode is now the smart constructor.** Each of the six types has a hand-written `FromDhall`
+instance that reads its wire shape through `record`/`field`/`union` and narrows through the
+constructor owning its invariant, reporting a refusal as a Dhall extract error. So `Dhall.auto` is
+no longer a second constructor — it is the same one.
+
+The ledger row prescribed a `Raw*` DTO decoded and then narrowed, the shape
+`Prodbox.ControlPlane.Capacity` uses. That shape was measured and **not taken**: the decoded field
+lives on `ProdboxParameters` and `ConfigFile`, both of which derive `FromDhall` generically over the
+whole record, so removing the instance forces a parallel `Raw` record for each of them. The
+validating decoder reaches the same seam without that cascade — and is strictly stronger, because a
+`Raw*` DTO leaves a window in which the wide value exists and this leaves none.
+
+`validateClusterTopology` is retained. It is no longer the only thing between a decoded value and its
+invariants, but it still covers values built by other means and costs nothing.
 
 The Dhall `contractOK` mirrors it (`substrateEq` is a nested-merge comparator) and adds rule i for
 EKS, then the generated `prodbox` topology closes with the lemma so an ill-typed topology fails

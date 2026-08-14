@@ -427,22 +427,29 @@ integrationCliSuite = do
           stderrText `shouldContain` "key_file does not exist"
           stderrText `shouldContain` "ca_file does not exist"
 
-    it "runs native gateway-partition through the built frontend without delegating to tla-check" $ do
+    it "Sprint 5.33: gateway-partition is no longer an integration node" $ do
+      -- Standard C. This case asserted the node's integration output. The
+      -- composition is a legitimate in-process property test over the real
+      -- GatewayState folds, but it engaged no harness, emitted its verdict
+      -- lines as literals, and was cited as numbered `Validation` evidence in
+      -- eight `Done` Phase-2 sprints for peer, restart, and partition
+      -- properties nothing exercised. It moved to the unit suite; the CLI must
+      -- no longer advertise or accept it.
       repoRoot <- getCurrentDirectory
       binary <- resolveBinaryPath
 
-      (exitCode, stdoutText, stderrText) <-
+      (exitCode, _, _) <-
         readCreateProcessWithExitCode
           (proc binary ["test", "integration", "gateway-partition"]) {cwd = Just repoRoot}
           ""
+      exitCode `shouldNotBe` ExitSuccess
 
-      exitCode `shouldBe` ExitSuccess
-      stderrText `shouldContain` "[validation=gateway-partition substrate=home-local] entering body"
-      stderrText
-        `shouldContain` "[validation=gateway-partition substrate=home-local] body exit=ExitSuccess"
-      stdoutText `shouldContain` "Validation: gateway-partition"
-      stdoutText `shouldContain` "FORMAL_MODEL_DELEGATED=false"
-      stdoutText `shouldContain` "SINGLE_WRITER_AFTER_TAKEOVER=true"
+      (helpExit, helpStdout, _) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "--help"]) {cwd = Just repoRoot}
+          ""
+      helpExit `shouldBe` ExitSuccess
+      helpStdout `shouldNotContain` "gateway-partition"
 
     it "runs the frozen control-plane counterexample through an installed binary" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -466,6 +473,42 @@ integrationCliSuite = do
         stdoutText `shouldContain` "INVITE_FAULT_MATRIX=23"
         stdoutText `shouldContain` "INVITE_ASSERTIONS=8"
         stdoutText `shouldContain` "DEPLOYMENT_QUALIFICATION=QualificationPendingLiveEvidence"
+
+    it "Sprint 5.32: the frozen counterexample fails against the committed mutation fixture" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        -- The acceptance criterion. Until Sprint 5.32,
+        -- `simulateFrozenCounterexample` discarded its `FrozenCounterexampleTrace`
+        -- and regenerated both halves from an in-module composition constant,
+        -- so `complete` was True for every input and this command could not
+        -- fail. A reproducer that passes both fixtures is not a reproducer.
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        parentEnv <- getEnvironment
+
+        (mutatedExit, _, mutatedStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "control-plane-counterexample"])
+              { cwd = Just repoRoot
+              , env =
+                  Just (("PRODBOX_TEST_FROZEN_COUNTEREXAMPLE_FIXTURE", "mutated") : parentEnv)
+              }
+            ""
+        mutatedExit `shouldBe` ExitFailure 1
+        mutatedStderr `shouldContain` "GatewayDeadlineUnderThrottle"
+        mutatedStderr `shouldContain` "not recorded as failing on"
+
+        -- An unrecognised selector refuses rather than falling back to the
+        -- canonical (passing) fixture.
+        (typoExit, _, typoStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "control-plane-counterexample"])
+              { cwd = Just repoRoot
+              , env =
+                  Just (("PRODBOX_TEST_FROZEN_COUNTEREXAMPLE_FIXTURE", "canonicaal") : parentEnv)
+              }
+            ""
+        typoExit `shouldBe` ExitFailure 1
+        typoStderr `shouldContain` "is not a known frozen fixture"
 
     it "exposes the certificate-scope serving validation through an installed binary" $ do
       binary <- resolveBinaryPath
@@ -672,6 +715,27 @@ integrationCliSuite = do
         legacyStdout `shouldContain` "Validation: daemon-bootstrap"
         legacyStderr `shouldContain` "legacy transport"
         legacyStderr `shouldContain` "port-forward service/minio"
+
+        -- Sprint 5.33 unset-fixture exercise, and it is the acceptance
+        -- criterion. With every PRODBOX_TEST_* fixture unset, this arm used to
+        -- be byte-identical to the `"pass"` arm above and exited 0 having
+        -- measured nothing. It must now refuse, naming what was absent,
+        -- because no Bootstrap Broker daemon is serving in this fixture
+        -- context.
+        (unsetExitCode, _, unsetStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "daemon-bootstrap"])
+              { cwd = Just tmpDir
+              , env = Just baseEnvironment
+              }
+            ""
+
+        unsetExitCode `shouldBe` ExitFailure 1
+        unsetStderr `shouldContain` "measured nothing and refuses"
+        unsetStderr `shouldContain` "no Bootstrap Broker daemon answered"
+
+        -- And the fixture arm now says it was a fixture.
+        passStdout `shouldContain` "AUDIT_PROVENANCE=fixture:pass"
 
     it
       "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl"
@@ -1141,14 +1205,16 @@ integrationCliSuite = do
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
         dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
         dockerRecord `shouldContain` "pull|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
-        dockerRecord `shouldContain` "pull|docker.io/percona/percona-postgresql-operator:2.9.0"
+        dockerRecord
+          `shouldContain` "pull|--platform|linux/amd64|docker.io/percona/percona-postgresql-operator:2.9.0"
         dockerRecord
           `shouldContain` "tag|docker.io/percona/percona-postgresql-operator:2.9.0|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
-        dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
+        dockerRecord
+          `shouldContain` "push|--platform|linux/amd64|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
         dockerRecord
           `shouldContain` "tag|ghcr.io/coder/code-server:4.98.2|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
         countRecordLines
-          "push|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+          "push|--platform|linux/amd64|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
           dockerRecord
           `shouldBe` 2
         dockerRecord
@@ -1158,7 +1224,8 @@ integrationCliSuite = do
         dockerRecord
           `shouldContain` "build|-f|docker/prodbox.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
         dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-runtime:latest|."
-        dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/prodbox-runtime:latest"
+        dockerRecord
+          `shouldContain` "push|--platform|linux/amd64|127.0.0.1:30080/prodbox/prodbox-runtime:latest"
         dockerRecord `shouldNotContain` "docker/gateway.Dockerfile"
         dockerRecord `shouldNotContain` "prodbox-public-edge-workload"
         dockerRecord `shouldNotContain` "docker/nginx-oidc.Dockerfile"
@@ -1244,12 +1311,14 @@ integrationCliSuite = do
         installStdout `shouldContain` "Kubernetes control plane is running"
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
-        dockerRecord `shouldContain` "pull|docker.io/percona/percona-distribution-postgresql:17.9-1"
-        dockerRecord `shouldContain` "pull|mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1"
+        dockerRecord
+          `shouldContain` "pull|--platform|linux/amd64|docker.io/percona/percona-distribution-postgresql:17.9-1"
+        dockerRecord
+          `shouldContain` "pull|--platform|linux/amd64|mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1"
         dockerRecord
           `shouldContain` "tag|mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
         dockerRecord
-          `shouldContain` "push|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+          `shouldContain` "push|--platform|linux/amd64|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
 
     it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1542,6 +1611,56 @@ integrationCliSuite = do
           stderrText `shouldContain` "Run: prodbox vault unseal"
           pulumiRan <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
           pulumiRan `shouldBe` False
+
+    it "Sprint 4.77: aws stack destroy without --yes refuses, and --yes is not inert" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        baseEnv <- fakeRke2Environment tmpDir
+        -- Before Sprint 4.77 `--yes` was parsed, renamed `summary`, and then
+        -- wildcarded at three of four sinks, so omitting it was byte-identical
+        -- to passing it: the flag read as a confirmation and was not one. The
+        -- command is intentionally non-interactive (CLAUDE.md), so the fix is
+        -- to make the flag load-bearing rather than to add a prompt.
+        (unconfirmedExit, unconfirmedStdout, unconfirmedStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["aws", "stack", "eks", "destroy"]) {cwd = Just tmpDir, env = Just baseEnv}
+            ""
+        unconfirmedExit `shouldBe` ExitFailure 1
+        unconfirmedStdout `shouldBe` ""
+        unconfirmedStderr `shouldContain` "Refusing to destroy without confirmation"
+        unconfirmedStderr `shouldContain` "--yes"
+        -- No Pulumi work may have started on the refusal path.
+        pulumiRan <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
+        pulumiRan `shouldBe` False
+
+        -- `--dry-run` still renders a plan without `--yes`: the gate lives
+        -- inside the apply closure, not around the plan.
+        (dryRunExit, dryRunStdout, _) <-
+          readCreateProcessWithExitCode
+            (proc binary ["aws", "stack", "eks", "destroy", "--dry-run"])
+              { cwd = Just tmpDir
+              , env = Just baseEnv
+              }
+            ""
+        dryRunExit `shouldBe` ExitSuccess
+        dryRunStdout `shouldContain` "COMMAND=eks-destroy"
+        dryRunStdout `shouldContain` "CONFIRMED=false"
+
+        -- And passing `--yes` is observably different: it reaches the Vault
+        -- gate that the refusal never got to.
+        (confirmedExit, _, confirmedStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["aws", "stack", "eks", "destroy", "--yes"])
+              { cwd = Just tmpDir
+              , env = Just baseEnv
+              }
+            ""
+        confirmedStderr `shouldNotContain` "Refusing to destroy without confirmation"
+        confirmedExit `shouldNotBe` ExitSuccess
 
     it "cluster federation register refuses the removed reusable-token bootstrap surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -2983,7 +3102,15 @@ fakeKubectlScript =
     , "    fi"
     , "    ;;"
     , "  'get endpoints')"
-    , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]] && { [[ \"${PRODBOX_FAKE_PATRONI_LIVE_ANCHOR:-}\" == 'true' ]] || [[ -f \"$record_dir/patroni-ready.count\" ]]; }; then"
+    , -- Sprint 3.34 made `endpoints/kubernetes` a live observation on the
+      -- chart-reconcile path (the post-DNAT Kubernetes API egress
+      -- coordinate). The fake boundary did not serve it, so every fixture
+      -- reconcile failed with `endpoints \"kubernetes\" not found`. The
+      -- address is RFC 5737 TEST-NET-1, unmistakably synthetic; the port is
+      -- the real post-DNAT API port, which is the coordinate under test.
+      "    if [[ \"${3:-}\" == 'kubernetes' && \"$*\" == *'jsonpath={.subsets[*].addresses[*].ip}'* ]]; then"
+    , "      printf '192.0.2.10|6443'"
+    , "    elif [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]] && { [[ \"${PRODBOX_FAKE_PATRONI_LIVE_ANCHOR:-}\" == 'true' ]] || [[ -f \"$record_dir/patroni-ready.count\" ]]; }; then"
     , "      printf 'prodbox-vscode-pg-instance1-0\\n'"
     , "    else"
     , "      printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
@@ -3682,6 +3809,22 @@ fakeRke2KubectlScript =
     , "          exit 1"
     , "        fi"
     , "        ;;"
+    , -- Sprint 3.34 made `endpoints/kubernetes` a live observation on the
+      -- reconcile path (the post-DNAT Kubernetes API egress coordinate).
+      -- This inner case's `*)` arm answers an unknown resource with empty
+      -- stdout and exit 0, so before this arm existed the observer read
+      -- "" and refused with "observation was not in the expected form".
+      -- The address is RFC 5737 TEST-NET-1, unmistakably synthetic; the
+      -- port is the real post-DNAT API port, which is the coordinate the
+      -- chart rule under test is derived from.
+      "      endpoints)"
+    , "        if [[ \"${3:-}\" == 'kubernetes' ]]; then"
+    , "          printf '192.0.2.10|6443'"
+    , "        else"
+    , "          printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
+    , "          exit 1"
+    , "        fi"
+    , "        ;;"
     , "      deployment)"
     , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
     , "          printf 'True'"
@@ -3911,8 +4054,18 @@ fakeRke2DockerScript =
     , "    fi"
     , "    exit 1"
     , "    ;;"
-    , "  pull)"
-    , "    ref=${2:-}"
+    , -- Sprint 3.36: the fake parses flags rather than positions. Production
+      -- now publishes host-architecture-scoped (`docker pull --platform \<p\>
+      -- \<ref\>`), and a fixture that reads the image reference from `$2`
+      -- silently reads `--platform` instead. The `save` arm below already
+      -- parsed this way; `pull` and `push` did not, which is why a correct
+      -- production change presented as `manifest unknown` in six cases.
+      "  pull)"
+    , "    shift"
+    , "    while [[ \"${1:-}\" == --* ]]; do"
+    , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
+    , "    done"
+    , "    ref=${1:-}"
     , "    if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
     , "      if [[ -f \"$record_dir/pushed-$(target_key \"$ref\")\" ]]; then"
     , "        exit 0"
@@ -3934,7 +4087,11 @@ fakeRke2DockerScript =
     , "    exit 0"
     , "    ;;"
     , "  push)"
-    , "    target_ref=${2:-}"
+    , "    shift"
+    , "    while [[ \"${1:-}\" == --* ]]; do"
+    , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
+    , "    done"
+    , "    target_ref=${1:-}"
     , "    tag_file=\"$record_dir/tag-$(target_key \"$target_ref\")\""
     , "    source_ref=''"
     , "    if [[ -f \"$tag_file\" ]]; then"

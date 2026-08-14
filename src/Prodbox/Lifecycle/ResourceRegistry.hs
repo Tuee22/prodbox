@@ -16,6 +16,7 @@
 -- in Sprints 7.8 / nuke.
 module Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , AbsentReconcileOutcome (..)
   , capacityScaledManagedResources
   , perRunManagedResources
   , longLivedManagedResources
@@ -27,13 +28,18 @@ module Prodbox.Lifecycle.ResourceRegistry
   , pairPerRunResidue
   , pairAwsSesResidue
   , resourcesToDestroy
+  , resourcesObservedAbsent
+  , resourcesUnobserved
+  , reconcileScopeLabel
   , residueGateRefusalList
+  , absentReconcileExitCode
   , reconcileAbsent
   , managedDestroyCapability
   )
 where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, unless)
+import Data.List (intercalate, nub)
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( PlanOptions (..)
@@ -57,7 +63,9 @@ import Prodbox.Lifecycle.LiveResidue
   )
 import Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus
+  , isResidueAbsent
   , isResiduePresent
+  , isResidueUnreachable
   , residueBlocksTeardownGate
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
@@ -301,16 +309,38 @@ pairAwsSesResidue sesStatus = [(awsSesPulumiResource, sesStatus)]
 
 -- | Pure: the resources a teardown reconcile must destroy — those whose
 -- discovered status is 'ResiduePresent'. 'ResidueAbsent' is already
--- gone; 'ResidueUnreachable' is skipped for per-run resources because
--- the per-run lifecycle class treats an unreachable backend as
--- "the state died with the cluster" (the cascade's graceful-degradation
--- exception, per @lifecycle_reconciliation_doctrine.md § 3@ / § 5b).
--- Refuse-on-unreachable is the separate concern of the teardown *gates*
--- ('Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'), not of
--- this active-destroy reconciler.
+-- gone; 'ResidueUnreachable' has no destroy to run against it, because
+-- there is no readable checkpoint to destroy from (the cascade's
+-- graceful-degradation exception, per
+-- @lifecycle_reconciliation_doctrine.md § 3@ / § 5b).
+--
+-- Sprint 4.76 states the bound that the pre-4.76 haddock overstated:
+-- skipping the destroy is **not** a judgement that "the state died with
+-- the cluster", and this predicate does not license narrating it as one.
+-- 'resourcesUnobserved' carries that set to the caller, and
+-- 'absentReconcileExitCode' keeps it out of a success. Refuse-on-
+-- unreachable at the *gates* remains the separate concern of
+-- 'Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'.
 resourcesToDestroy :: [(ManagedResource, ResidueStatus)] -> [ManagedResource]
 resourcesToDestroy pairs =
   [resource | (resource, status) <- pairs, isResiduePresent status]
+
+-- | Sprint 4.76 (pure): the resources whose absence was **positively
+-- observed**. This is the only set about which a caller may narrate
+-- "gone".
+resourcesObservedAbsent :: [(ManagedResource, ResidueStatus)] -> [ManagedResource]
+resourcesObservedAbsent pairs =
+  [resource | (resource, status) <- pairs, isResidueAbsent status]
+
+-- | Sprint 4.76 (pure): the resources whose state could not be read at
+-- all. 'reconcileAbsent' still skips their destroys — that is the
+-- cascade's documented per-run graceful degradation
+-- (@lifecycle_reconciliation_doctrine.md § 3.1@ invariant 3) — but the
+-- skip is now carried out of the reconciler so the aggregate can
+-- withhold success instead of reporting an absence nobody observed.
+resourcesUnobserved :: [(ManagedResource, ResidueStatus)] -> [ManagedResource]
+resourcesUnobserved pairs =
+  [resource | (resource, status) <- pairs, isResidueUnreachable status]
 
 -- | Sprint 4.26 (pure): the registry-derived @(stack-name,
 -- destroy-command)@ list the teardown *refuse-gates* consume, replacing
@@ -331,24 +361,118 @@ residueGateRefusalList pairs =
   , residueBlocksTeardownGate status
   ]
 
+-- | Sprint 4.76: what a desired-absent reconcile actually observed and
+-- did, so the caller can aggregate rather than infer.
+--
+-- Before this sprint 'reconcileAbsent' returned a bare 'ExitCode' and
+-- an empty destroy list printed @"skipped (no live per-run residue)"@ —
+-- a claim of absence that an all-'ResidueUnreachable' input satisfies
+-- exactly as well as an all-'ResidueAbsent' one. The two inputs are now
+-- distinguishable at the type level for every caller.
+data AbsentReconcileOutcome = AbsentReconcileOutcome
+  { absentReconcileDestroyExit :: !ExitCode
+  -- ^ Exit of the destroy fold alone (not of the reconcile as a whole).
+  , absentReconcileObservedAbsent :: ![String]
+  -- ^ Resources positively observed gone. Nothing was run for these,
+  -- and saying so is honest.
+  , absentReconcileUnobserved :: ![String]
+  -- ^ Resources whose live state could not be read. Their destroys were
+  -- skipped, and their presence or absence remains unknown.
+  }
+  deriving (Eq, Show)
+
+-- | The reconcile's aggregate verdict: a failed destroy fails, and so
+-- does an unresolved observation. @lifecycle_reconciliation_doctrine.md
+-- § 5b@ phase 1 — an unreachable checkpoint "records an unresolved
+-- cleanup failure … the aggregate cannot report success".
+absentReconcileExitCode :: AbsentReconcileOutcome -> ExitCode
+absentReconcileExitCode outcome = case absentReconcileDestroyExit outcome of
+  failure@(ExitFailure _) -> failure
+  ExitSuccess
+    | null (absentReconcileUnobserved outcome) -> ExitSuccess
+    | otherwise -> ExitFailure 1
+
+-- | Sprint 4.76 (pure): the operator-visible class label for a reconcile
+-- batch, derived from the registry entries' own 'LifecycleClass' rather
+-- than restated at the call site. Before this sprint the narration said
+-- "Per-run" unconditionally, including on @prodbox aws teardown@'s
+-- 'Operational' batch.
+reconcileScopeLabel :: [(ManagedResource, ResidueStatus)] -> String
+reconcileScopeLabel pairs = case nub (map (resourceClass . fst) pairs) of
+  [PerRun] -> "Per-run"
+  [LongLived] -> "Long-lived"
+  [Operational] -> "Operational"
+  _ -> "Managed"
+
 -- | Reconcile the given (resource, status) pairs toward absent: destroy
 -- every 'ResiduePresent' resource in list order, stopping fast on the
--- first non-zero destroy. Skips 'ResidueAbsent' / 'ResidueUnreachable'
--- (see 'resourcesToDestroy'). Emits the per-run destroy narration the
--- cascade used to emit inline.
-reconcileAbsent :: FilePath -> [(ManagedResource, ResidueStatus)] -> IO ExitCode
-reconcileAbsent repoRoot pairs =
-  case resourcesToDestroy pairs of
+-- first non-zero destroy. Skips 'ResidueAbsent' and 'ResidueUnreachable'
+-- alike (see 'resourcesToDestroy') but narrates them **separately**, and
+-- reports the unobserved set to the caller so the skip can reach the
+-- aggregate exit code.
+reconcileAbsent
+  :: FilePath -> [(ManagedResource, ResidueStatus)] -> IO AbsentReconcileOutcome
+reconcileAbsent repoRoot pairs = do
+  let scope = reconcileScopeLabel pairs
+      present = resourcesToDestroy pairs
+      observedAbsent = map resourceName (resourcesObservedAbsent pairs)
+      unobserved = map resourceName (resourcesUnobserved pairs)
+  unless (null observedAbsent) $
+    writeOutputLine
+      ( scope
+          ++ " residue observed ABSENT (nothing to destroy): "
+          ++ intercalate ", " observedAbsent
+          ++ "."
+      )
+  unless (null unobserved) $
+    writeDiagnosticLine
+      ( scope
+          ++ " residue NOT OBSERVED for "
+          ++ intercalate ", " unobserved
+          ++ ": the state backend could not be read. This is not a confirmation "
+          ++ "that the resources are gone. Their destroys are skipped and this "
+          ++ "run cannot report success until the state is resolved — destroy "
+          ++ "them explicitly once the backend is readable."
+      )
+  destroyExit <- case present of
     [] -> do
-      writeOutputLine "Per-run Pulumi destroys: skipped (no live per-run residue)."
-      pure ExitSuccess
-    present -> do
       writeOutputLine
-        ( "Per-run Pulumi destroys: running "
+        ( scope
+            ++ " Pulumi destroys: none run ("
+            ++ narrateNoDestroys observedAbsent unobserved
+            ++ ")."
+        )
+      pure ExitSuccess
+    _ -> do
+      writeOutputLine
+        ( scope
+            ++ " Pulumi destroys: running "
             ++ show (length present)
             ++ " destroy(s) against MinIO..."
         )
       foldM (destroyStep repoRoot) ExitSuccess present
+  pure
+    AbsentReconcileOutcome
+      { absentReconcileDestroyExit = destroyExit
+      , absentReconcileObservedAbsent = observedAbsent
+      , absentReconcileUnobserved = unobserved
+      }
+
+-- | Why no destroy ran. Deliberately total over the two skip reasons, so
+-- an all-unobserved batch cannot borrow the all-absent sentence.
+narrateNoDestroys :: [String] -> [String] -> String
+narrateNoDestroys observedAbsent unobserved = case (observedAbsent, unobserved) of
+  ([], []) -> "no resources registered for this reconcile"
+  (_, []) -> "every registered resource was observed absent"
+  ([], _) ->
+    "no resource was observed present; "
+      ++ show (length unobserved)
+      ++ " could not be observed at all"
+  (_, _) ->
+    show (length observedAbsent)
+      ++ " observed absent, "
+      ++ show (length unobserved)
+      ++ " not observed"
 
 -- | One fold step for 'reconcileAbsent': run the resource's destroy
 -- only while the accumulated exit is still success (fail-fast), so the

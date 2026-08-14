@@ -361,7 +361,6 @@ nonDestructiveValidations =
   , ValidationHaRke2Aws
   , ValidationGatewayDaemon
   , ValidationGatewayPods
-  , ValidationGatewayPartition
   , ValidationChartsPlatform
   , ValidationResourceGuardrails
   , ValidationDaemonBootstrap

@@ -3686,6 +3686,16 @@ directly for post-bootstrap lifecycle work.
   and the `StackDescriptor` SSoT feeding the § 3.1 registry totality; for Sprint `4.41` it records
   RKE2/kubelet/systemd resource guardrails as lifecycle-owned reconcile inputs; for Sprint `4.42`
   it records the daemon-mediated post-bootstrap lifecycle boundary.
+  For Sprint `4.76` it records where the `Unreachable → refuse` refusal actually lives — split across
+  the gate, the destroy loop, and the aggregate — and replaces § 6's implementation-gap block with
+  the fail-closed `decideTagSweep` verdict algebra plus the one residual (the cascade sweep's
+  credential-absent skip). For Sprint `4.77` it records that the sweep is one query per filter set
+  unioned by ARN, because the Tagging API ANDs `TagFilters`, and corrects § 3.1 invariant 4's note
+  that `--yes` on the four stack-destroy verbs is inert.
+- `documents/engineering/streaming_doctrine.md` - for Sprint `4.76`, § 6a *A narrated skip is not a
+  narrated absence*: each skip reason gets its own sentence, the unobserved sentence goes to the
+  diagnostic stream and states what remains true, an aggregate line naming phases is derived from
+  the recorded phase outcomes, and operator advice is a function of the delete mode that is running.
 - `documents/engineering/resource_scaling_doctrine.md` - for Sprint `4.41`, host/RKE2 reservation,
   eviction-floor, observed-capacity refusal, and runtime enforcement rings.
 - `documents/engineering/host_platform_doctrine.md` - for Sprint `4.41`, host capacity observation
@@ -6566,6 +6576,7 @@ surface moves.
 **Independent Validation**: pure, no live cluster and no AWS credentials — every deleted export had
 zero production references before removal, so the change is behaviour-preserving by construction;
 `prodbox dev check` exit 0.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ### Objective
 
@@ -6631,6 +6642,7 @@ Target Agent generation tombstone` 13/13, `Sprint 4.50 authenticated decommissio
 byte-exactly**: authoring a `TargetSinkVersion` outside the internal module fails to compile
 (`GHC-01928`, illegal term-level use of the type constructor), and a second `src/` module naming the
 internal representation fails `dev check` with the boundary message. `prodbox dev check` exit 0.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ### Objective
 
@@ -6739,6 +6751,7 @@ executed. See "Scope correction" below.**
 `mkTrustedTargetSink` CAS parameter), `test/unit/ControlPlaneTargetSecretAgentExecution.hs`
 (deleted), the three registered decommission suites that constructed a trusted sink,
 `src/Prodbox/CheckCode.hs` (`retiredCitedSourcePaths`), and `prodbox.cabal`.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ### Scope correction (2026-08-08)
 
@@ -7975,14 +7988,15 @@ consumption through `certifyMeasuredProfile` closes the row; both are gated on S
 recorder producing its first artifact for any lane. Non-blocking under
 [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof).
 
-## Sprint 4.76: The Cascade Reports Absence It Did Not Observe 📋
+## Sprint 4.76: The Cascade Reports Absence It Did Not Observe ✅
 
-**Status**: Planned — Phase `4` own-surface reopen (Standard A) on the destructive lifecycle paths
-this phase owns. Registered 2026-08-11 by an operator `cluster delete --cascade --yes` run whose
-narration was read against §§ 3, 5b, and 6 of the reconciliation doctrine.
+**Status**: ✅ **Done (2026-08-11)** — Phase `4` own-surface reopen (Standard A) on the destructive
+lifecycle paths this phase owns. Registered 2026-08-11 by an operator `cluster delete --cascade
+--yes` run whose narration was read against §§ 3, 5b, and 6 of the reconciliation doctrine.
 **Implementation**: `src/Prodbox/Lifecycle/ResourceRegistry.hs`,
-`src/Prodbox/Lifecycle/K8sDrain.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
-`src/Prodbox/Lifecycle/ResidueStatus.hs`.
+`src/Prodbox/Lifecycle/K8sDrain.hs`, `src/Prodbox/Lifecycle/TagSweep.hs`,
+`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
+`src/Prodbox/Lifecycle/ResidueStatus.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/TestRunner.hs`.
 **Blocked by**: none.
 **Deployment qualification**: pending; this sprint **does** touch a Standard-P surface — destructive
 cleanup and lifecycle orchestration are both in the § "Surfaces that invalidate qualification"
@@ -8031,48 +8045,134 @@ with the postflight sweep as the only backstop and the sweep unable to fail.
 
 ### Deliverables
 
-- A three-valued cluster probe replacing `clusterReachable :: IO Bool`, and a `DrainUnobservable`
-  arm on `DrainResult` that `cascadeDecisionFromDrainResult` maps to abort on **both** substrates.
-  `src/Prodbox/TestRunner.hs` already treats `DrainSkipped` as `ExitFailure 1`; the cascade is the
-  outlier.
-- `reconcileAbsent` narrates absent and unobserved distinctly, using the existing
-  `isResidueAbsent` / `isResidueUnreachable` predicates, and returns an outcome the caller can
-  aggregate rather than a bare `ExitCode`.
-- `inferCascadeSubstrate` treats `Unreachable` as "AWS may be in scope".
-- The cascade folds phase outcomes instead of returning a hardcoded `ExitSuccess`: every independent
-  phase still runs, and the aggregate reports failure — the § 5b shape.
-- The postflight tag sweep is fail-closed on both a non-empty escapee list and an unreachable
-  Tagging API, and `prodbox nuke` gains the sweep § 5/§ 6 already assign it.
-- `renderRetainedStateNotice` takes the delete mode, so a `--cascade` run stops advising the
-  operator to run `--cascade`.
-- `residueBlocksTeardownGate` is expressed as `not . isResidueAbsent` so a future constructor
-  defaults to blocking rather than to the destructive side.
+All seven are landed.
+
+- **A three-valued cluster probe** replacing `clusterReachable :: IO Bool`. `ClusterProbe` is
+  `Reachable | ClusterAbsent evidence | ClusterUnobservable detail`, and the split is decided by the
+  pure `classifyClusterProbe` so it is pinned by unit cases rather than by a live cluster. Only a
+  **recognised** connection-establishment phrase yields `ClusterAbsent`; the default arm is
+  `ClusterUnobservable`, so a `kubectl` failure mode the classifier has never seen fails closed. The
+  evidence set deliberately contains no authentication or authorization phrase — being told
+  `Unauthorized` proves a server answered — and a unit case asserts that closed property directly
+  rather than restating the list. `DrainResult` gains `DrainUnobservable`, which
+  `cascadeDecisionFromDrainResult` maps to abort on **both** substrates;
+  `src/Prodbox/TestRunner.hs` takes the same arm as its existing `DrainSkipped → ExitFailure 1`.
+- **`reconcileAbsent` narrates absent and unobserved distinctly** and returns
+  `AbsentReconcileOutcome` (destroy exit, observed-absent names, unobserved names) instead of a bare
+  `ExitCode`. `absentReconcileExitCode` fails on a non-empty unobserved set even when every destroy
+  succeeded. Its "no destroy ran" sentence is a total function of the `(observed-absent,
+  unobserved)` pair, so an all-unobserved batch cannot borrow the all-absent wording, and the
+  unobserved sentence goes to the diagnostic stream.
+- **`inferCascadeSubstrate` treats `Unreachable` as "AWS may be in scope"** — written as
+  `all isResidueAbsent … then SubstrateHomeLocal else SubstrateAws`, so the home branch is reached
+  only from a positive observation of absence on every stack.
+- **The cascade folds phase outcomes.** `runNativeDeleteCascade` records six
+  `CascadePhaseOutcome`s (confirm-MinIO, drain, per-run destroys, test-EBS reaper, uninstall, sweep),
+  runs every phase, and returns `aggregateCascadeExit`. Per § 5c the destroys run even when the
+  drain failed — an attempt edge, not a barrier — and the destroy's success does not erase the drain
+  failure. The closing line is derived from the recorded failures, not restated.
+- **The postflight tag sweep is fail-closed**, through a pure
+  `decideTagSweep :: TagSweepScope -> Either String [TaggedResource] -> TagSweepVerdict` that is
+  total over the query result and the two owning surfaces. `TagSweepConfirmedClean` is the only
+  verdict whose rendering asserts absence. `prodbox nuke` gains the terminal sweep § 5/§ 6 assign
+  it — with **no** skip arm and **no** retained-long-lived carve-out, since destroying that class is
+  what `nuke` is for.
+- **`renderRetainedStateNotice` takes the delete mode**, so a `--cascade` run no longer closes by
+  advising the operator to run `--cascade`.
+- **`residueBlocksTeardownGate` is `not . isResidueAbsent`**, so a future constructor defaults to
+  blocking rather than to the destructive side.
+
+### What the sprint's own registration got wrong, and one thing it did not consider
+
+Two corrections, both by measurement:
+
+1. **The `reconcileAbsent` narration was not only per-run.** The row treated the
+   `"Per-run Pulumi destroys: …"` prefix as the cascade's. `prodbox aws teardown` routes its
+   **`Operational`** batch (IAM user + `aws.*` config) through the same function, so every operator
+   who has ever torn down the IAM user was told "Per-run" about it. The label is now derived from
+   the batch's own `LifecycleClass` via `reconcileScopeLabel`, so it cannot drift from the entries.
+2. **A unit case pinned the defect the sprint exists to fix.** `test/unit/Main.hs`'s "contains no
+   reachable legacy five-command teardown adapters" listed `discoverClusterTaggedAwsResources` among
+   the forbidden tokens in `src/Prodbox/CLI/Nuke.hs` — so the absence of nuke's sweep was an
+   asserted invariant, not merely an omission. It is corrected under Standard C: the sweep is not one
+   of the legacy adapters, it is a § 6b terminal obligation, and the case now asserts its
+   **presence**.
+
+The thing the row did not consider is the **credential-absent third state**. The row named two
+fail-closed conditions (non-empty escapee list, unreachable Tagging API); a missing ephemeral admin
+credential is neither. Refusing on it would fail `--cascade` on every host that has never
+provisioned an AWS substrate, so that arm stays a skip — narrated `NOT RUN`, explicitly disclaiming
+confirmation, never rendering the clean sentence. It is **registered rather than absorbed** in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ### Validation
 
-1. **Reproduction, and it is the acceptance criterion.** With RKE2 installed but not serving,
-   `prodbox cluster delete --cascade --yes` must report per-run state as *unobserved*, must not
-   print "no live per-run residue", and must exit **non-zero** while still having run the drain,
-   reaper, uninstall, and sweep phases.
-2. Unit cases pinning the new probe's classification of connection-refused vs. permission-denied vs.
-   success, and `reconcileAbsent`'s absent-vs-unobserved narration split.
-3. `prodbox dev check` exit 0 with `--enable-tests` in force; `prodbox test unit`,
-   `prodbox test integration cli` / `env` exit 0.
+1. **Reproduction, and it is the acceptance criterion.** ✅ **Live-proven 2026-08-11 on the home
+   substrate.** RKE2 was installed via `prodbox cluster reconcile` and its API server stopped, giving
+   exactly the reported scenario; `prodbox cluster delete --cascade --yes` then:
+   - reported per-run state as **unobserved** — `Per-run residue NOT OBSERVED for aws-eks,
+     aws-eks-subzone, aws-test: the state backend could not be read. This is not a confirmation that
+     the resources are gone.` and `Per-run Pulumi destroys: none run (no resource was observed
+     present; 3 could not be observed at all).`;
+   - printed the string `no live per-run residue` **zero** times;
+   - exited **1**, closing with `Unresolved phase(s): confirm-MinIO, drain`;
+   - ran every phase — drain, test-EBS reaper, uninstall, and sweep all executed, and RKE2 is fully
+     uninstalled with `.data/` preserved.
+
+   **The run also demonstrated the composing chain end to end, which the unit cases can only show
+   piecewise.** `inferCascadeSubstrate` saw three `unreachable` statuses and inferred
+   `substrate=aws`; the drain therefore attempted AWS kubeconfig materialization, failed, and was
+   recorded as a failed phase. On the pre-`4.76` predicate the same input would have inferred
+   `SubstrateHomeLocal`, where a skipped drain is success — so the identical host state would have
+   produced a clean drain, no destroys, and **exit 0**. That is the reported defect reproduced and
+   removed against live state rather than argued.
+
+   Two behaviours were confirmed live that no fixture exercises: the postflight sweep reached the
+   real AWS Tagging API, correctly carved out the retained `prodbox-pulumi-state-long-lived` bucket
+   as retained-by-design, and reported `clean (the Tagging API confirmed no escaped residue)`; and
+   the mode-aware retained-state notice closed a `--cascade` run **without** advising the operator to
+   run `--cascade`.
+2. **The reproduction as a unit case, which is what makes it falsifiable.** `reconcileAbsent` over
+   an all-`ResidueUnreachable` batch and over an all-`ResidueAbsent` batch produced the *same*
+   `ExitSuccess` and the *same* narration before this sprint. Both inputs are now asserted, side by
+   side, to differ in narration and in exit code, with a third case proving a successful destroy
+   does not absolve an unobserved sibling. ✅
+3. Unit cases pinning the probe's connection-refused / permission-denied / success classification,
+   the unrecognised-exit fail-closed default, the closed evidence set, `DrainUnobservable`'s abort,
+   the substrate inference on an unreadable backend, the phase fold, the mode-aware notice, and the
+   three-valued sweep verdict on both scopes. **25 new cases.** ✅
+4. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3357/3357** (3332 + 25)
+   plus 27/27, 33/33, 27/27 ✅; installed `prodbox test integration cli` **55/55** exit 0 ✅;
+   `prodbox test integration env` exit 0 ✅.
 
 ### Remaining Work
 
-Registered, not started. The doctrine half is a separate obligation and is **not** discharged by
-this sprint's code: § 3.1 invariant 3 states `Unreachable → refuse` for `reconcileAbsent` where the
-code skips, and § 6 states a fail-closed sweep that does not exist. Per
-[Standard L](development_plan_standards.md#l-cli-doctrine-alignment) the doctrine is not rewritten
-down to match the code; the code moves, and the doctrine text is clarified in the same change to say
-which surface owns the refusal.
+None on the code-owned surface. The doctrine half is discharged in the same change per
+[Standard L](development_plan_standards.md#l-cli-doctrine-alignment) — the code moved and the
+doctrine text says which surface owns the refusal, rather than the doctrine being rewritten down:
+`lifecycle_reconciliation_doctrine.md` § 3.1 invariant 3 now names the three owners (gate, destroy
+loop, aggregate) and records what the pre-`4.76` cascade printed; § 6 replaces its
+implementation-gap block with the verdict algebra and carries the one residual forward;
+`streaming_doctrine.md` gains § 6a, *A narrated skip is not a narrated absence*.
 
-## Sprint 4.77: Two AWS Queries Do Not Send The Filters They Name, And `--yes` Does Not Confirm 📋
+**A regression found while validating this sprint, and fixed here rather than left.**
+`prodbox test integration cli` did not pass 55/55 at the start of this sprint — it failed **8 of
+55**, identically before and after the `4.76` code, so the sprint neither caused nor masked it.
+Sprint `3.34` (2026-08-11) made `endpoints/kubernetes` a live observation on the chart-reconcile
+path and closed on `dev check` + `test unit` evidence without running the integration suite; the two
+fake-`kubectl` boundaries in `test/integration/CliSuite.hs` served no `endpoints kubernetes`, so
+every fixture reconcile refused with `endpoints "kubernetes" not found` or, in the second fake,
+with empty stdout through its catch-all arm and the message `observation was not in the expected
+form`. Both boundaries now answer with an RFC 5737 TEST-NET-1 address and the real post-DNAT port.
+This is Phase-`5` suite content under
+[Standard M](development_plan_standards.md#m-test-suite-substrates) and is recorded as a Standard-C
+correction on Sprint `3.34`'s evidence sentence, which did not claim the integration suite.
 
-**Status**: Planned — Phase `4` own-surface reopen (Standard A), same destructive-path surface as
-Sprint `4.76`, split out because the root cause is argument construction rather than observation
-folding.
+## Sprint 4.77: Two AWS Queries Do Not Send The Filters They Name, And `--yes` Does Not Confirm ✅
+
+**Status**: ✅ **Done (2026-08-11)** — Phase `4` own-surface reopen (Standard A), same
+destructive-path surface as Sprint `4.76`, split out because the root cause is argument
+construction rather than observation folding.
 **Implementation**: `src/Prodbox/Lifecycle/TagSweep.hs`, `src/Prodbox/Lifecycle/EbsVolume.hs`,
 `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
 `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
@@ -8122,31 +8222,312 @@ passing it.
 
 ### Deliverables
 
-- One `--filters` occurrence carrying all filter values; one `--tag-filters` occurrence per call,
-  with the cluster-tag and ownership-tag sweeps issued as two calls unioned by ARN.
-- `runTestScopedEbsReaper` re-filters client-side before deleting, through the already-written and
-  already-unit-tested `partitionEbsTagRows` / `testScopedEbsVolumeIdsFromTagRows`, which today have
-  no production caller. Two independent guards, neither sufficient alone.
-- `parseTagSweepPayload` treats a payload with no `ResourceTagMappingList` key as unparseable rather
-  than as an empty (clean) result.
-- `--yes` either gates the destroy (refuse when unset and stdin is not a TTY, as
-  `CLI/Pulumi.hs`'s `runPruneCorruptCheckpoint` and `CLI/Charts.hs` already do) or is removed along
-  with its help text. It must not remain a flag that reads as a confirmation and is not one.
+All four are landed.
+
+- **One `--filters` occurrence carrying all filter values.** `ebsDescribeVolumesArgs` emits the
+  option once and appends the scope's cluster value to the same list. A second unit case asserts the
+  *structural* property — no scope emits `--filters` more than once — so a future scope cannot
+  reintroduce the shape without failing.
+- **One `--tag-filters` occurrence per call, two calls unioned.** `tagSweepFilterSets` returns one
+  argv per filter set and `discoverClusterTaggedAwsResources` runs each, unioning rows through
+  `unionTaggedResources`. This closes **two** defects, not one: the argv defect the row named, and
+  the relational one it noted in passing — the Tagging API ANDs `TagFilters`, so even both-sent
+  would have asked for resources carrying *both* tags where the sweep wants either. A failure of any
+  constituent query fails the whole discovery (`sequence` before the union), so a partial union is
+  never reported as complete.
+- **`runTestScopedEbsReaper` re-filters client-side**, via `testScopedEbsReaperPlan`, which now
+  folds each volume's own tags into rows and runs them through the already-written
+  `partitionEbsTagRows` / `testScopedEbsVolumeIdsFromTagRows` — until this sprint those had no
+  production caller. The guards are independent: the argv narrows the query, the fold narrows the
+  result, and the unit case exercises the fold on inputs the argv fix alone would still have
+  deleted.
+- **`parseTagSweepPayload` fails closed.** Both non-array arms returned `Right []`, so an error
+  envelope or a renamed key was indistinguishable from a clean sweep. All three unreadable shapes
+  now return `Left`, and — because Sprint `4.76` made the sweep fail-closed — a case pins that the
+  `Left` reaches `TagSweepUnconfirmed` and exits non-zero rather than stopping at the parser.
+- **`--yes` gates the destroy.** The row offered gate-or-remove; **gate** is the right resolution
+  and the reason is not preference. `prodbox aws stack <stack> destroy --yes` is the documented
+  automation entrypoint in `CLAUDE.md` and is the `resourceDestroyCommand` string in the
+  managed-resource registry, which the teardown refusal surfaces print to operators. Removing the
+  flag would have required changing all three and would have left the automation contract narrower
+  than the doctrine. `requireDestroyConfirmation` refuses when the flag is unset, in the shape
+  `runPruneCorruptCheckpoint` has always used, at one site covering all four verbs.
+
+### What the row did not separate, and what that cost
+
+The row said `--yes` "is consumed by the fourth as a **quietness** selector
+(`| summary = pulumiLoginQuiet`)" and treated that as evidence of inertness. It is more than that:
+it means the flag *did* have an observable effect, and the effect had nothing to do with what its
+help text said. Gating alone would have left confirmation and output verbosity threaded through one
+`Bool` — so `--yes` would still be doing two unrelated jobs, and the next reader would face the same
+ambiguity. The two are now separate: `requireDestroyConfirmation` consumes the flag, and
+`destroyOutputIsQuiet` is a named constant carrying the value every automation call site already
+passed. The parameter is renamed `quietOutput` in all four sinks, so the three that ignore it are
+visibly ignoring *output verbosity* — which they have no use for, since they dispatch through the
+Lifecycle Authority rather than shelling out to `pulumi` — rather than appearing to ignore a
+confirmation.
+
+`--dry-run` is deliberately unaffected: the gate lives inside the apply closure, so a plan still
+renders without `--yes`, and the integration case pins that alongside the refusal.
 
 ### Validation
 
-1. Unit cases pinning the exact argv of `ebsDescribeVolumesArgs` and `tagFilterArgs` for every
-   scope — the defect is invisible to any test that does not assert on the argument list.
-2. A unit case proving the EBS reaper drops a volume that matches the cluster tag but not the
-   lifecycle tag, exercising the client-side re-filter independently of the argv fix.
-3. `prodbox aws stack eks destroy` without `--yes` in a non-TTY context behaves as the chosen
-   resolution specifies, pinned by an integration case.
-4. `prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env` exit 0.
+1. Unit cases pinning the exact argv of `ebsDescribeVolumesArgs` for both scopes and of
+   `tagSweepFilterSets` for named and unnamed clusters, plus the two structural
+   one-occurrence-per-option assertions. The defect is invisible to any test that does not assert on
+   the argument list. ✅
+2. A unit case proving the reaper plan drops a volume carrying the cluster tag and **not** the
+   lifecycle tag, and keeps the retained-production volume out even when it also carries the
+   test-scoped marker — exercising the client-side re-filter independently of the argv fix. A
+   companion case pins the `volume/<id>` coordinate round trip that couples the two halves. ✅
+3. `prodbox aws stack eks destroy` without `--yes` in a non-TTY context refuses with exit 1, starts
+   no Pulumi work, and names `--yes`; `--dry-run` still renders `CONFIRMED=false` without it; and
+   passing `--yes` reaches past the gate. Pinned by one integration case. ✅
+4. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3369/3369** (3357 + 12)
+   plus 27/27, 33/33, 27/27 ✅; installed `prodbox test integration cli` **56/56** exit 0 ✅;
+   `prodbox test integration env` exit 0 ✅.
 
 ### Remaining Work
 
-Registered, not started. Live AWS confirmation of the corrected argv is a Standard-O axis and is
-non-blocking; the read-only `--debug` inspection above is sufficient for code-owned closure.
+None on the code-owned surface. Live AWS confirmation of the corrected argv is a Standard-O axis and
+is non-blocking. 🧪 **Live-proof: pending** — the read-only `aws … --debug` argv inspection with
+empty credentials is the confirmation the row specifies, and it requires the AWS CLI configured on
+the host; the argv is a pure projection and is pinned exactly by the unit cases above, which is what
+closes the sprint.
+
+**A scope statement this sprint deliberately does not make.** The corrected sweep now sends the
+cluster-tag filter it always named, so it *can* see controller-created ENIs, ALBs, and security
+groups for the first time. Whether it *does* is a live-AWS question, and no claim is made here that
+the sweep is complete — § 6 already says the sweep is defence-in-depth for a controller that
+diverged from its registered family, never the ownership registry. `DEVELOPMENT_PLAN/substrates.md`
+needs no scope change: the EBS reaper's scope statement is unchanged, since the client-side
+re-filter narrows the same `EbsPerRunTest` scope the document already describes rather than widening
+it.
+
+## Sprint 4.78: Absence Decided From Free Prose, With Unanchored Markers ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `4` own-surface reopen (Standard A) on the
+observation-producer surface this phase owns through Sprints `4.76` and `4.77`.
+**Implementation**: `src/Prodbox/Observation/AbsenceMarker.hs` (**new** — the owner),
+`src/Prodbox/Minio/ObjectStore.hs`, `src/Prodbox/Lifecycle/LiveResidue.hs`,
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs`, `src/Prodbox/Lifecycle/AdminAction/KubernetesJob.hs`,
+`src/Prodbox/ControlPlane/TargetSecretWorkerProduction.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminKubernetes.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/KubernetesJob.hs`, `src/Prodbox/Aws.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface**).
+The one behavioural consequence is narrowing: messages that previously classified as *absent* on an
+unanchored numeral or the bare word `missing` now classify as *unobserved*, which the fail-closed
+teardown gate refuses on. No resource is destroyed that was not destroyed before; some that would
+have been presumed gone are now reported unobservable. Both substrate rows are already `pending`.
+**Independent Validation**: pure classifiers over strings, validated by the unit suite and a
+mutation exercise — no cluster, no AWS, no later phase. `prodbox dev check` exit 0;
+`prodbox test unit` exit 0 at main Hspec **3414/3414**; `prodbox test integration cli` **57/57**.
+**Docs updated**: none under `documents/` — the module's own Haddock cites
+[chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md), which is
+already authored and unchanged.
+
+### Objective
+
+Close the row recording that `String -> Bool` classifiers decide, from free error prose, whether a
+resource is *absent* rather than *unobserved* — the producers one hop upstream of an ADT layer that
+is otherwise sound.
+
+### The row said seven; there are nine, and one of them was already dead
+
+| Claim | Recorded | Measured |
+|---|---|---|
+| Classifiers | "Seven" | **9** — its own list enumerates 5 named plus "four `isNotFound` variants" |
+| `operationalCredentialsAbsentError`'s reachability | implied live, with a Vault-policy example | **unreachable** — see below |
+
+`readLifecycleProviderTargetCredentials`, the **sole** producer of the `Either` that classifier
+reads, is a total constant `Left` whose message contains neither `missing` nor `empty`. So the
+predicate evaluated `False` on every production input, and the row's own worked example — a Vault
+error reading *token is missing the required policy* minting `ResidueAbsent` — could not occur
+today. That does not make the row wrong about the defect; it makes the fix **behaviour-preserving**,
+which is worth knowing before touching a fail-closed teardown gate.
+
+### The shape is copied, as the row instructed
+
+`Prodbox.Observation.AbsenceMarker` generalises `classifyAwsSesPresenceOutput`: a closed
+`AbsenceProbe` set, anchored marker lists keyed per probe, and one total `reportsAbsence`. Three
+classes of correction land with it:
+
+- **Anchored numerals.** A bare `"404"` matched a request id or a byte count; `"(404)"` and
+  `"status code: 404"` do not. Same for the conditional-conflict probe's `"409"`/`"412"`.
+- **Stderr only.** The four `isNotFound` variants matched `stdout <> stderr`, so a *successful*
+  `kubectl` whose printed object happened to contain `not found` — a ConfigMap value, a condition
+  message, a log line — read as the object being absent. They now read stderr.
+- **Deleted rather than anchored.** The three `operationalCredentialsAbsentError` arms are removed,
+  not re-worded. An unresolvable credential is now `Left` / `ResidueUnreachable` — "I could not
+  observe this" — where two of them previously answered `Right False` and `ResidueAbsent`, which say
+  "I observed that it is not there".
+
+### Validation
+
+1. Four unit cases. The one that matters asserts the **direction**: across the whole closed probe
+   set, `AccessDenied`, `ExpiredToken`, `SlowDown`, and a Vault policy refusal all stay
+   *not absent* — the same reading Sprint `4.76` established when it required a recognised
+   connection-establishment phrase before minting `ClusterAbsent`. ✅
+2. A structural case requires every probe's marker set to be non-empty, lower-case, and free of
+   digits-only entries, so the defect cannot return through a new probe. ✅
+3. **The inverted test is the evidence.** `clearedDecision: a missing/empty SecretRef error is
+   cleared` asserted the defect as an invariant. It now asserts that a real Vault refusal shape is
+   **not** cleared — the fail-closed direction — under Standard C. ✅
+4. Mutation-proven: re-adding the bare `"404"` marker fails **two** cases, the specific one and the
+   structural one. ✅
+5. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at **3414/3414**;
+   `prodbox test integration cli` **57/57**. ✅
+
+### Remaining Work
+
+None on this row. **The bound is stated plainly**: matching prose is still matching prose. What
+changed is that every marker is anchored to a form the tool actually emits, the sets are keyed by
+probe so an S3 vocabulary cannot answer a Kubernetes question, and there is one place to read them.
+This does not make a wrong classification unrepresentable — the tools offer no typed channel that
+would — and no gate here can prove the registered *reasons* true.
+
+## Sprint 4.79: Two Destroy Paths Reported Success They Did Not Observe ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `4` own-surface reopen (Standard A) on the destructive
+lifecycle paths this phase owns through Sprints `4.76` and `4.77`.
+**Implementation**: `src/Prodbox/Infra/AwsSesStack.hs` (`completeDestroy`, the new pure
+`destroySummaryFromStackRemove`), `src/Prodbox/Infra/LongLivedPulumiBackend.hs`
+(`destroyLongLivedPulumiStateBucket`, `purgeLongLivedObjectsUnderPrefix`), `test/unit/AwsSesLifecycle.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface**).
+Both substrate rows are already `pending`, so nothing is invalidated. No resource is destroyed that
+was not destroyed before; what changes is that two paths which reported completion now report what
+they observed, and one refuses where it previously proceeded on an unobserved absence.
+**Independent Validation**: a pure narration fold plus two classification arms, validated by the
+unit suite — no live AWS. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec
+**3417/3417**.
+**Docs updated**: none under `documents/` —
+[lifecycle_reconciliation_doctrine.md § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+already states the rule these paths violated (*Cleanup continues without lying*).
+
+### Objective
+
+Close the row recording that `completeDestroy`/`finalizeDestroy` discard `pulumiStackRemoveEither`
+and return a hardcoded `Right "destroyed"`, and that `destroyLongLivedPulumiStateBucket` /
+`purgeLongLivedObjectsUnderPrefix` treat **any** `head-bucket` failure as `Right ()`.
+
+### The row bundled two defects of the same shape but opposite severity, and they get opposite remedies
+
+| Site | What it claimed | Remedy |
+|---|---|---|
+| `completeDestroy` | "destroyed", when the Pulumi stack entry may survive | **Report** the residue; the destroy itself had already succeeded |
+| the two `head-bucket` arms | bucket absent, on a 403 / expired credential / throttle / network fault | **Refuse**; absence was never observed |
+
+Making `completeDestroy` fail would refuse a teardown that did in fact remove every AWS resource —
+the destroy runs *before* the stack removal and had already returned `Right`. What was wrong was the
+silence, not the success, so the summary now names the surviving stack entry and tells the operator
+to re-run. The `head-bucket` arms are the opposite: nothing was observed, and
+[§ 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md) is explicit that "cannot
+observe" is never "absent". They now admit only an anchored not-found response, through Sprint
+`4.78`'s `reportsAbsence S3BucketProbe`, and refuse everything else.
+
+### Why the second half is the serious one
+
+`runAwsS3Api` returns `Left` for subprocess-start failure and every non-zero exit. So on the
+terminal node of the `nuke` decommission DAG, an expired admin credential made
+`destroyLongLivedPulumiStateBucket` answer "already gone" about the `pulumi_state_backend` bucket
+holding every encrypted checkpoint — and the caller proceeded as though the decommission had
+completed.
+
+### Validation
+
+1. Three unit cases over the extracted pure `destroySummaryFromStackRemove`, which is pure and
+   exported precisely because the defect was a *narration* — a narration nothing can observe is how
+   it survived. One asserts the deliberate decision that a failed removal still reports the AWS
+   resources destroyed, so the record says why rather than implying it. ✅
+2. The two `head-bucket` arms consume Sprint `4.78`'s classifier, whose direction case already
+   asserts that `AccessDenied`, `ExpiredToken`, `SlowDown`, and a Vault policy refusal are **not**
+   absence for every probe in the closed set. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at **3417/3417**. ✅
+
+### Remaining Work
+
+None. **One bound is stated**: the refusal arms are only as good as the marker set behind them,
+which is Sprint `4.78`'s stated bound and not re-argued here. A `head-bucket` failure mode AWS
+spells in some form not in `S3BucketProbe`'s markers now **refuses** rather than being mistaken for
+absence — the fail-closed direction, which is the one to be wrong in.
+
+## Sprint 4.80: The Cascade Sweep's Last Skip Arm Was a Policy Question, and It Is Answered ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `4` own-surface reopen (Standard A) on the destructive
+lifecycle paths this phase owns; it closes the residual Sprint `4.76` registered against itself.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`cascadeSweepCredentialAbsentExit`,
+`runCascadePostflightTagSweep`), `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface**).
+Both substrate rows are already `pending`. A host that never provisioned an AWS substrate exits 0
+exactly as before; a host whose per-run AWS state was present or unobservable now fails a cascade
+whose backstop never ran.
+**Live-proof**: pending (Standard O, non-blocking) — the `SubstrateAws` refusal arm has not been
+exercised on a live host that has AWS state *and* no admin credential. The composition is pinned by
+unit case; the field observation is not.
+**Independent Validation**: a pure two-arm decision composed with the existing pure substrate
+inference, validated by the unit suite — no cluster, no AWS. `prodbox dev check` exit 0;
+`prodbox test unit` exit 0 at main Hspec **3419/3419**.
+**Docs updated**: none under `documents/` —
+[lifecycle_reconciliation_doctrine.md § 6](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+already states the rule, and this sprint makes the code satisfy it rather than changing it.
+
+### Objective
+
+Close the row recording that the cascade's postflight tag sweep skips silently when no ephemeral
+admin AWS credential is available — the one arm Sprint `4.76` left as a skip while making the other
+two fail closed.
+
+### The row framed this correctly, and the framing is what made it solvable
+
+Sprint `4.76` registered it as **a policy question, not an honesty one**: the arm no longer claimed
+absence, so what remained open was whether the home cascade should *require* an AWS credential it
+has no other use for. Refusing outright would fail `prodbox cluster delete --cascade` on every host
+that has never provisioned an AWS substrate — the recommended wipe-and-rebuild path in `CLAUDE.md`.
+Both horns are real, which is why the row sat unowned.
+
+**The dilemma dissolves once you notice the cascade already computes the fact that decides it.**
+`inferCascadeSubstrate` — Sprint `4.17.b`, corrected by `4.76` — yields `SubstrateAws` when any
+per-run stack was *not positively observed absent*, and `SubstrateHomeLocal` only when every one of
+them was. That is exactly the distinction the policy needs, it is already computed eight lines
+earlier for the drain phase, and it needs no credential to compute:
+
+- `SubstrateHomeLocal` — every per-run AWS stack was observed absent, so this cluster lifecycle
+  created no AWS resources for the sweep to backstop. Skipping confirms nothing and needs to.
+- `SubstrateAws` — AWS state was present or unobservable, the sweep is precisely the § 6 backstop
+  for it, and "I have no credential to query with" is a case of cannot-confirm. Hard failure.
+
+No new requirement is added. The AWS-free host still exits 0; the host that actually had AWS state
+can no longer pass a cascade whose backstop never ran.
+
+### Deliverables
+
+- **`cascadeSweepCredentialAbsentExit`** — the decision as a pure total function of `Substrate`,
+  outside the `IO` arm that used to hold it as a constant.
+- **The narration follows the verdict.** The skip arm keeps its `writeOutputLine` and gains the
+  reason it is sound; the refusal arm writes a diagnostic naming what is unconfirmed and what to
+  re-run with. Neither claims absence, which is what Sprint `4.76` already fixed and this preserves.
+
+### Validation
+
+1. Two unit cases. The second is the one that carries the claim: it composes
+   `cascadeSweepCredentialAbsentExit` with `inferCascadeSubstrate` over three real residue inputs,
+   including **the exact input Sprint `4.76` found in the field** — every per-run stack
+   `ResidueUnreachable` — which now fails rather than skipping silently. Testing either half alone
+   would prove nothing about the arm. ✅
+2. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at **3419/3419**. ✅
+
+### Remaining Work
+
+None on this row. **The bound is stated**: this decides the sweep's verdict from what the *cascade*
+observed about per-run Pulumi state, not from what AWS holds. A host whose per-run stacks were all
+observed absent but which nonetheless has orphaned AWS resources from some earlier lifecycle still
+skips — correctly, because the cascade's sweep is scoped to the cluster lifecycle it is tearing
+down, and § 6 already says the sweep is defence-in-depth for a controller that diverged from its
+registered family, never the ownership registry.
 
 ## Related Documents
 

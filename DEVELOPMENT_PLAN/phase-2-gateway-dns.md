@@ -310,16 +310,25 @@ scope, stated once here rather than repeated in each (§ 1 of
 place is not copied):
 
 - It **is** a genuine property test over the real `GatewayState` folds, and its `-> []` prerequisite
-  registration is honest: it runs wholly in process, with no peer, no cluster, and no harness.
+  registration was honest: it runs wholly in process, with no peer, no cluster, and no harness.
 - It **does not** observe a partition, a restart, a peer response, or a takeover. Its emitted
   `INITIAL_OWNER_ACTIVE=true`, `PARTITION_TAKEOVER_ACCEPTED=1`, `SINGLE_WRITER_AFTER_TAKEOVER=true`,
-  `EMITTER_PIPELINE_COMPOSED`, and `OFFLINE_REPAIR_EXACT` lines are **string literals**, not rendered
-  verdicts, so a citation of one of those tokens is evidence that the pure fold composes — not that
-  the deployed runtime survived the named fault.
+  `EMITTER_PIPELINE_COMPOSED`, and `OFFLINE_REPAIR_EXACT` lines were **string literals**, not
+  rendered verdicts, so a citation of one of those tokens is evidence that the pure fold composes —
+  not that the deployed runtime survived the named fault.
 
-Neither the sprints' code deliverables nor their other validation steps are withdrawn. Sprint `5.33`
-📋 in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) owns rendering those values
-from the computed report and relocating the node to the unit suite, where its identity is accurate.
+Neither the sprints' code deliverables nor their other validation steps are withdrawn.
+
+**Resolved by Sprint `5.33` ✅ (2026-08-11)** in
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md): the emitted values are rendered
+from the computed report, and the node has **left the integration surface entirely** — it is no
+longer a `prodbox test integration` verb, no longer a member of `canonicalNativeValidations`, and
+runs in the unit suite, where its identity as an in-process property test is accurate. Every
+citation of `prodbox test integration gateway-partition` as a numbered validation step in the
+sprints named above is therefore a citation of a command that no longer exists; read each as
+evidence that the pure fold composes, which is what it always was and is now the only thing it
+claims. The unit suite pins the same properties plus one the node could not previously have: that
+its emitted lines change when its composition changes.
 
 ## Current Baseline In Worktree
 
@@ -2348,9 +2357,12 @@ Sprint `3.19` removed the derivation RPC, and Sprint `2.31` replaced the log tra
 
 - None. The code-owned surface closed 2026-06-09 and the home `gateway-daemon` and `gateway-pods`
   validations were live-proven on 2026-06-26. **Standard-C correction (2026-08-11):** the original
-  line included `gateway-partition` in that live proof. It has no live path — it is registered with
-  `-> []` prerequisites and runs wholly in process. See the note on `gateway-partition` at the head
-  of this document.
+  line included `gateway-partition` in that live proof. It has no live path — it was registered with
+  `-> []` prerequisites and ran wholly in process, and since Sprint `5.33` ✅ it is not an
+  integration verb at all. Step 4 above therefore names a command that no longer exists for that
+  node; the property it covered is pinned in the unit suite. See the note on `gateway-partition` at
+  the head of this document, which is the single place this scope is stated for all eight citing
+  sprints.
 
 ## Sprint 2.26: Cluster Federation Trust Topology and Downstream-Cluster Custody [✅ Done]
 
@@ -3646,6 +3658,7 @@ gateway core 65/65.
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/chaos_hardening_doctrine.md`,
 `documents/engineering/resource_scaling_doctrine.md`
+**Implementation**: `src/Prodbox/Gateway/Emitter/Kernel.hs` (`BoundedUnackedSuffix` and the fail-closed `appendUnacked`), `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/TestValidation.hs`. Back-filled by Sprint `0.27` from the paths this sprint's own Deliverables name.
 
 ### Objective
 
@@ -3702,6 +3715,76 @@ the fold's compaction depends on the signer succeeding and there was no hard cei
   by Sprint `8.12`. The production entrypoint stays `LegacyModelBEmitter` until qualification permits
   cutover (Standard P); this sprint does not delete the legacy continuity path.
 
+## Sprint 2.44: A Sampler That Claimed To Have Observed Stability ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `2` own-surface reopen (Standard A) on the gateway
+runtime-stability surface this phase owns. Registered by Sprint `5.33`, which found it while
+removing `gateway-partition` and deliberately did not fold it in: it is a fold defect on this
+phase's runtime surface rather than suite content, and Standard M keeps those ownerships apart.
+**Implementation**: `src/Prodbox/TestValidation.hs` (`GatewayRuntimeSampleOutcome`,
+`gatewayRuntimeSampleOutcome`, `gatewayRuntimeSampleOutcomeExit`, `gatewayRuntimeSampleExit`),
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — no process topology, capability wiring,
+deadline algebra, persistence, or cleanup surface moves. The sampler's exit codes are unchanged; what
+changes is that two of them are now distinguishable in the transcript.
+**Independent Validation**: pure unit cases over the extracted decision; no cluster, no AWS, no later
+phase. `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+**Docs updated**: none under `documents/` — no governed document describes this fold, and the
+sampler/gate split it records is stated in the function's own Haddock rather than duplicated.
+
+### Objective
+
+Close the row recording that `gatewayRuntimeSampleExit` returns success when stability was not
+observed, while `runGatewayRuntimeStabilityGateInCurrentContext` ten lines above honours the same
+`NotStableYet` constructor by retrying and then failing.
+
+### The row described the defect correctly and implied the wrong remedy
+
+Read literally — "returns success when stability was not observed" — the fix is to make it fail. That
+would be wrong, and measuring the caller is what shows it:
+`recordGatewayRuntimeStabilitySample` is invoked at **ten** points in `src/Prodbox/TestRunner.hs`,
+interleaved between suite phases to feed the recorder. It is a **sampler**, not a gate. A run that
+aborted the first time the runtime had not yet converged would never reach the gate that owns the
+verdict.
+
+So the two folds are *right to disagree* about `NotStableYet`. What was wrong is that the sampler
+disagreed **silently**: `StableObserved` and `NotStableYet` both returned a bare `ExitSuccess` with no
+output, so a sample that observed non-stability was indistinguishable from one that observed
+stability — in the exit code and in the transcript alike. The ADT's third value was discarded rather
+than recorded, which is the defect; continuing is not.
+
+### Deliverables
+
+- **The decision is a pure total function.** `gatewayRuntimeSampleOutcome` maps the report's four
+  constructors onto a four-constructor `GatewayRuntimeSampleOutcome`, and
+  `gatewayRuntimeSampleOutcomeExit` lowers that to an `ExitCode`. This follows the repository's
+  purity boundary (`CLAUDE.md` — decisions pure, effects at the interpreter) and makes the
+  distinction testable without capturing a stream.
+- **Each arm says what it saw.** The not-yet-stable arm names the observed and required sample
+  counts, states that the run continues *because this is a sampler and the gate owns the verdict*,
+  and says in terms that it **is not an observation of stability**.
+- **The bound is asserted, not described.** A unit case pins that the sampler exits 0 on
+  not-yet-stable where the gate fails, so the deliberate disagreement is a checked property rather
+  than a comment.
+
+### Validation
+
+1. `gatewayRuntimeSampleOutcome` maps `StableObserved` and `NotStableYet` to distinct outcomes — the
+   collapse this sprint removes. ✅
+2. All four outcomes are pairwise distinct, and their exits are
+   `[ExitSuccess, ExitSuccess, ExitFailure 1, ExitFailure 1]`. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3398/3398**;
+   `prodbox test integration cli` / `env` exit 0. ✅
+
+### Remaining Work
+
+None. **The bound stated plainly**: this sampler still exits 0 when stability was not observed, and
+that is deliberate. What it no longer does is claim to have observed stability. A reader of the
+transcript can now tell the two apart, which is what the row's "honoured on one path and discarded on
+the other" was really about.
+
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -3742,6 +3825,8 @@ running cluster.
 **Deployment qualification**: pending — readiness semantics are a Standard-P surface. Both rows are
 already `pending`; this sprint is a prerequisite for any home qualification run, because
 `prodbox cluster reconcile` cannot converge until it lands.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Readiness.hs`, `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, `src/Prodbox/CheckCode.hs` (`checkBrokerReadinessProjection`), `charts/bootstrap-broker/values.yaml`. Back-filled by Sprint `0.27` from the paths this sprint's own body names.
+**Docs updated**: `documents/engineering/code_quality.md`, which names this sprint for the `checkBrokerReadinessProjection` conformance gate. Back-filled by Sprint `0.27` from the governed document that cites it.
 
 ### Objective
 
@@ -4240,6 +4325,190 @@ None. All three deliverables and all four validations are landed.
 **Live-proof.** Sprint `3.34`'s validation 5 — a broker that reaches `"ready":true` on a live
 cluster — is now unblocked on its code-owned dependencies. It remains a Standard-O axis for both
 sprints and is proven by a live run, not by this closure.
+
+## Sprint 2.45: Every Durable Broker Read Had a Validity Predicate That Accepted Anything ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `2` own-surface reopen (Standard A) on the Bootstrap
+Broker durable-store boundary this phase owns through Sprints `2.33`, `2.36`, and `2.42`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/ProductionStore.hs` (`validValue` **deleted**;
+seven payload predicates added), `src/Prodbox/Bootstrap/Broker/SecretWorker.hs`
+(`secretWorkerCheckpointInvariantViolations`), `test/unit/BootstrapBrokerProductionBoundary.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P persistence-protocol surface**).
+No wire format, key, or envelope changes — every predicate is applied at the same point the old
+one was, and accepts every value the broker writes. What changes is that a *read* of a
+structurally-decodable but semantically-wrong record now returns `BootstrapStoreCorrupt` where it
+previously returned the record. Both substrate rows are already `pending`, so nothing is
+invalidated; the next qualification run must exercise the post-`2.45` read path.
+**Independent Validation**: pure predicates over values built in-process, plus the CBOR seam that
+produces an invalid one, validated by the unit suite — no cluster, no MinIO, no unsealed Vault, no
+later phase. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3407/3407**.
+**Docs updated**: none under `documents/` — the predicates' own Haddock names the doctrine
+([chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)), which is
+already authored.
+
+### Objective
+
+Close the row recording that `validValue _ = True` is the value-validity predicate for the
+Bootstrap Broker's durable reads and compare-and-swaps, so `BootstrapStoreCorrupt` — the store's
+own refusal constructor — was unreachable for every payload passed through it.
+
+### The row's enumeration was substantially wrong, and correcting it is what made the sprint tractable
+
+The row said the predicate covers "the session fence, prepared init envelope, encrypted init
+response, final unlock bundle, child custody receipt, recovery delivery, **all four journals**, the
+post-unseal handoff, and the secret-worker checkpoint" — eleven surfaces — and called it "nine
+payload types".
+
+| Surface named by the row | Predicate it actually had |
+|---|---|
+| Session fence | `validFenceObservation` — a real one |
+| Root-init journal | `validRootInit` — a real one |
+| Root-session journal | `validRootSession` — a real one |
+| Child-custody journal | `validChildCustody` — a real one |
+| Child-recovery journal | `validChildRecovery` — a real one |
+| Post-unseal handoff | `validPostUnsealHandoff` — a real one |
+| Prepared init envelope, encrypted init response, final unlock bundle, child custody receipt, child recovery delivery, secret-worker checkpoint | `validValue` |
+| *(unnamed by the row)* the durable **storage-generation binding** — `bootstrapStoreReady`, `observeOrCreateStorageGeneration`, `advanceStorageGeneration` | `validValue` |
+
+So **six** of the eleven surfaces the row listed were already defended, and the row missed the
+seventh undefended one entirely — the storage-generation object, which is the coordinate every other
+payload's binding is checked against. The measured figure is **7 payload types across 20 call
+sites**, not nine across 21.
+
+### The fix is one rule, not seven inventions
+
+These records are persisted and read back through `Serialise` (CBOR), which reconstructs each field
+positionally and **bypasses every smart constructor the type is otherwise built through**. That is
+the conversion class [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)
+names, and the same seam Sprint `1.86` closed for Dhall decoding of the cluster topology. So each
+predicate re-runs the constructors the decode skipped, plus the record's own cross-field arithmetic
+where it has any:
+
+- `validRootInitBinding` / `validChildCustodyBinding` — the bounded identifiers re-satisfy
+  `mkBootstrapTransactionId` / `mkVaultStorageGeneration`.
+- `validArtifactDigest` — the digest re-satisfies `mkArtifactDigest` (lower-hex SHA-256).
+- `validEncryptedResponse` / `validChildEncryptedReceipt` — additionally, a non-empty share list. A
+  receipt carrying no shares is the applied-but-unrecoverable state; carrying them is what the
+  record is for.
+- `validFinalUnlockBundle` — additionally `validUnlockShareThreshold`, the Shamir arithmetic
+  `mkInitRecipientCommitment` already enforces at the mint site.
+- `validSecretWorkerCheckpoint` — delegates to `secretWorkerCheckpointInvariantViolations`, placed
+  **beside the type** in `SecretWorker.hs` (where `rootInitInvariantViolations` already lives), which
+  is what lets `SecretWorkerDurableCheckpoint` stay exported abstractly.
+
+### One decision recorded rather than glossed
+
+`validUnlockShareThreshold` is a separate named function rather than an inline conjunct. A bundle
+violating it is **unconstructible** through the smart constructors, so a test could only reach it by
+crafting CBOR bytes — and asserting the composed predicate over a value no test can build would be
+an absence no input could produce, the shape
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) canonical statements 10 and
+11 forbid. Exposing the decision over its two `Natural` inputs makes the rule itself falsifiable.
+
+### Validation
+
+1. Five unit cases, each falsifiable. The CBOR bypass is **reproduced rather than assumed**: the
+   case asserts `mkArtifactDigest "not-a-sha256-digest"` is `Left`, then decodes that exact string
+   into an `ArtifactDigest` through the newtype's own generic `Serialise` shape and shows the
+   predicate refuses it. ✅
+2. Mutation-proven: restoring `validChildEncryptedReceipt _ = True` fails the receipt case with
+   `expected: False, but got: True`; restoring the file returns the suite to green. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3407/3407**. ✅
+
+### Remaining Work
+
+None on this row. **Two bounds are stated rather than implied.** First, the predicates re-run the
+constructors the decode bypassed; they do **not** verify that a carried `ArtifactDigest` is the
+digest *of the record that carries it*. That is a different and stronger property, it requires the
+canonical serialization each digest was computed over, and no producer in this module exposes one —
+recording it as unproven is more useful than implying it. Second, `validSecretWorkerCheckpoint`
+constrains exactly one of nine arms, which is a decision rather than an omission: the other eight
+carry closed constructors whose invariants are checked where they are minted, and the
+`Unobservable` arm is the only one carrying free text.
+
+## Sprint 2.46: The Refusal That Would Not Say Which Refusal It Was ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `2` own-surface reopen (Standard A) on the Bootstrap
+Broker surface this phase owns. Found by the first live Standard-P qualification campaign.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`
+(`brokerEngineErrorDiagnostic`, `brokerEngineErrorName`).
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). **The wire response is byte-identical** —
+no status, body, or route changes. The addition is a server-side diagnostic line, which is not a
+Standard-P surface by the enumeration.
+**Independent Validation**: the renderer is pure and total over a closed constructor set; the
+compiler enforces exhaustiveness, so a new engine error cannot become an unnamed refusal.
+**Docs updated**: none under `documents/` —
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md) already
+authors the *Distinguishability* class this implements.
+
+### Objective
+
+Make it possible to tell which decision refused a Bootstrap Broker request, which was not possible
+from outside the process and not possible from inside it either.
+
+### Why this became the first Phase-2 sprint rather than the second
+
+The campaign's third blocker is that `prodbox vault init` fail-closes with
+`HTTP 409 {"status":"boundary-refused"}`. Diagnosing it meant answering "which refusal is that", and
+**the answer was unavailable from every source at once**:
+
+- **On the wire**, `boundary-refused` is produced by **five** distinct engine errors —
+  `EngineProgramEvidenceRefused`, `EngineCapabilityAdmissionRefused`,
+  `EngineCapabilityExecutionRefused`, `EngineFenceAcquireRefused`, and
+  `EnginePhysicalCallRefused` — each of which discards its detail to a `_` in `boundaryReply`.
+- **In the process**, the broker pod emits **zero bytes** of log output, so there is no second
+  source to consult.
+
+That combination is worth naming precisely, because it is worse than either half. A refusal with no
+reason is recoverable if the service logs; a silent service is tolerable if its replies are
+specific. Neither was true here, on the critical bring-up path.
+
+**It also produced a wrong diagnosis before it produced a right one.** The first reading of this
+failure attributed it to `secretWorkerBypassRefused` — one of the five — on the strength of having
+grepped to it first. The evidence since gathered argues against that: `engineSecretWorkerBoundary`
+is `Just` in production, the driver is fully wired to Kubernetes, and every step of
+`driveRootInitialization` routes through `runAuthorizedSecretWorkerPhysical`, whose own arms produce
+`EngineSecretWorkerBoundaryUnavailable` or `EngineSecretWorkerCallMismatch` — neither of which is
+what was observed. Guessing among five indistinguishable candidates is what this sprint removes.
+
+### Deliverables
+
+- Every refused broker request writes one diagnostic line naming the route and the **engine error
+  constructor**, plus the boundary class for the five errors that carry one.
+- `brokerEngineErrorName` is a total case over the closed constructor set, so a newly-added engine
+  error is a **compile error here** rather than an unnamed refusal in production.
+
+### The bound, which is the design decision
+
+**This renders the constructor, never the carried detail, and that is deliberate.** The detail on a
+boundary refusal is frequently `Text.pack . show` over a typed error, and these are Vault bootstrap
+paths; a `show` that one day carries token or share material would publish it to the pod log —
+exactly the class [vault_doctrine.md § 20](../documents/engineering/vault_doctrine.md) forbids.
+Constructor names are a closed, authored, finite set and cannot carry a secret.
+
+So this answers **which decision refused**, not **why**. That is precisely the question that was
+unanswerable, and it is answered without taking on a leak risk to do it. Widening to the detail
+requires a redaction analysis of every producer and is its own work — recorded, not smuggled in
+here.
+
+**A second bound**: this covers refusals reaching `engineBrokerInterpreter`. A request refused
+earlier — by the fail-closed interpreter, or by admission before the engine — does not pass through
+this point.
+
+### Validation
+
+1. `prodbox dev check` exit 0 (formatter, linter, warning-clean build). ✅
+2. `prodbox test unit`, `test integration cli`, `test integration env` — see
+   [README.md](README.md). ✅
+3. Live: the rolled-out broker names the refusing constructor for the `vault init` path, which is
+   what the follow-up sprint consumes. 🔄
+
+### Remaining Work
+
+None on the observability row. The defect it makes diagnosable is its own work, and is deliberately
+not guessed at here.
 
 ## Related Documents
 

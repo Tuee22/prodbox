@@ -476,14 +476,14 @@ parserForPath path =
       Just $
         fmap
           (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiEksDestroy confirmed planOptions')))
-          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+          ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "test", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiTestResources) planOptionsParser)
     ["aws", "stack", "test", "destroy"] ->
       Just $
         fmap
           (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
-          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+          ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-subzone", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSubzoneResources) planOptionsParser)
     ["aws", "stack", "aws-subzone", "destroy"] ->
@@ -492,7 +492,7 @@ parserForPath path =
           ( \(confirmed, planOptions') ->
               RunNative (NativePulumi (PulumiAwsSubzoneDestroy confirmed planOptions'))
           )
-          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+          ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-ses", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSesResources) planOptionsParser)
     ["aws", "stack", "aws-ses", "destroy"] ->
@@ -501,7 +501,7 @@ parserForPath path =
           ( \(confirmed, planOptions') ->
               RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
           )
-          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+          ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-ses", "migrate-backend"] ->
       Just (fmap (RunNative . NativePulumi . PulumiAwsSesMigrateBackend) planOptionsParser)
     ["aws", "stack", "eks", "prune-corrupt-checkpoint"] ->
@@ -596,7 +596,6 @@ parserForPath path =
     ["test", "integration", "env"] -> Just (withCoverage (TestIntegration IntegrationEnv))
     ["test", "integration", "gateway-daemon"] -> Just (withCoverage (TestIntegration IntegrationGatewayDaemon))
     ["test", "integration", "gateway-pods"] -> Just gatewayPodsTestParser
-    ["test", "integration", "gateway-partition"] -> Just (withCoverage (TestIntegration IntegrationGatewayPartition))
     ["test", "integration", "control-plane-counterexample"] ->
       Just (withCoverage (TestIntegration IntegrationControlPlaneCounterexample))
     ["test", "integration", "certificate-scope"] ->
@@ -1206,6 +1205,18 @@ writeSwitchParser =
 prunePerRunCheckpointCommand :: PerRunPruneTarget -> Bool -> CommandRequest
 prunePerRunCheckpointCommand target confirmed =
   RunNative (NativePulumi (PulumiPruneCorruptCheckpoint target confirmed))
+
+-- | Sprint 1.85: the help text for @--yes@ on the four
+-- @aws stack \<stack\> destroy@ verbs.
+--
+-- "Skip confirmation prompts" described the opposite relationship. These
+-- commands are non-interactive by design (see @CLAUDE.md@), so there is no
+-- prompt to skip — and since Sprint 4.77 the flag *is* the confirmation:
+-- omitting it refuses. The text now says what the flag does, which is the half
+-- of that sprint it left open.
+destroyConfirmationHelp :: String
+destroyConfirmationHelp =
+  "Confirm the destroy (required; this command is non-interactive and has no prompt)"
 
 yesSwitchParser :: String -> Parser Bool
 yesSwitchParser helpText =
@@ -2206,7 +2217,7 @@ stackVerbGroup stackName summaryText reconcileDescription destroyDescription ext
           "destroy"
           ("Destroy the " ++ stackName ++ " stack")
           destroyDescription
-          [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+          [ flagOption "yes" (Just 'y') Nothing destroyConfirmationHelp
           , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
           , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
           ]
@@ -2552,7 +2563,6 @@ testGroupSpec =
                 ["test", "integration", "gateway-pods", "--record-profile"]
                 "Run the live measured-profile recorder after gateway validation."
             ]
-        , integrationLeaf "gateway-partition" "Run gateway partition integration tests"
         , integrationLeaf "control-plane-counterexample" "Run the frozen control-plane counterexample"
         , integrationLeaf "certificate-scope" "Verify live TLS serving and the exact presented SAN scope"
         , integrationLeaf

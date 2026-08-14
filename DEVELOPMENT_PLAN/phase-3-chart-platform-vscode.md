@@ -3576,6 +3576,275 @@ by `2.42`; they are registered separately as Sprint `2.43` on Phase `2`'s broker
 Until those land, a live run cannot reach `"ready":true`, so validation 5 stays pending on a
 dependency this sprint does not own.
 
+## Sprint 3.35: The Control-Plane Listen Port Has One Compiled Owner ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `3` own-surface reopen (Standard A) on the chart
+platform and chart-lint surface this phase owns; it closes the Haskell half Sprint `3.34` registered
+and deliberately did not absorb.
+**Implementation**: `src/Prodbox/ControlPlane/ListenPort.hs` (**new** — the owner),
+`src/Prodbox/ControlPlane/Runtime.hs`, `src/Prodbox/ControlPlane/LocalClient.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/AwsControlPlaneIsolation.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminWorker.hs`, `src/Prodbox/Gateway.hs`,
+`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestValidation.hs`,
+`src/Prodbox/Bootstrap/Broker/ChartStatics.hs` (Standard-C correction),
+`src/Prodbox/CheckCode.hs` (`checkControlPlaneListenPortOwner`), `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). Every rendered value is byte-identical —
+the binder opens the same port, the chart values carry the same number, the emitted broker Dhall is
+unchanged, and the AWS role-transport table is unchanged. This is a provenance change, not a
+behaviour change, and the unit case comparing the rendered URL to its literal form is what makes
+that claim checkable rather than asserted.
+**Independent Validation**: pure constants and renderers plus a `dev check` text rule, validated by
+the compiler, the rule's mutation exercise, and the unit suite — no cluster, no AWS, no later phase.
+`prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3410/3410**.
+**Docs updated**: none under `documents/` — the correction lands in the source that made the false
+claim, per Standard C.
+
+### Objective
+
+Close the row recording that `8600` is an unowned literal restated in eight or more places while
+`Prodbox.Bootstrap.Broker.ChartStatics` explicitly declines to own it.
+
+### The row left one question open; it is settled by measurement, not preference
+
+The row asked "whether the five roles are *required* to share one port, or whether naming the five
+constants individually anticipated divergence." They are **required** to share it:
+`runControlPlaneServer` receives the role and binds the port **without consulting it**, so a
+per-role port is not representable in the binder at all. The five constants restated one fact five
+times and could never have diverged. Giving them one owner takes nothing away, and the unit case
+pins that answer against the constants rather than leaving it in a comment.
+
+### The count is measured, and it is higher than the row's
+
+| Claim | Recorded by the row | Measured |
+|---|---|---|
+| Occurrences | "eight or more places" | **14** in `src/`, across **9** modules |
+| Named per-role constants | five | five — correct |
+| Kind of restatement | one literal | **two** — the port, and the `http://<svc>.<ns>.svc.cluster.local:<port>` URL shape authored at **9** sites |
+
+The row counted the port and missed that the URL *shape* around it was restated just as often. Both
+now have one owner: `controlPlaneListenPort` and `controlPlaneClusterServiceUrl`, with the `Text`
+projection **derived from** the `String` one rather than written twice — the one-derived-encoder rule
+of [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md).
+
+### The declining module was wrong about the value it declined to own
+
+`ChartStatics.hs` said the broker's listen port "is deployment configuration … NOT a compiled
+static", chosen "by the operator per cluster". Measured against source that was false in the
+load-bearing direction: the binder hardcoded it and every rendering path emitted the same literal
+independently, so **the declared operator choice did not exist**. The module is corrected in place
+under Standard C, and the port stays absent from it for a different and true reason — it is a
+control-plane-wide coordinate shared by six roles, not a Bootstrap-Broker identity.
+
+### Validation
+
+1. `checkControlPlaneListenPortOwner` fails any `src/` module outside the owner that spells the
+   literal. ✅
+2. **The rule named a real restatement on its first run, and it was in this sprint's own
+   correction.** The Standard-C note in `ChartStatics.hs` quoted the value in prose. It was reworded
+   rather than exempted: a comment restating a value is still a restatement
+   ([pure_fp_standards.md § 1.4](../documents/engineering/pure_fp_standards.md)), which is the same
+   reading Sprint `0.26` applied to the DNAT fact surviving only as a chart comment. ✅
+3. Mutation-proven: restoring the literal in `runControlPlaneServer`'s `bind` makes `prodbox dev
+   check` exit **1** naming the file; restoring the file returns exit 0. ✅
+4. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3410/3410**. ✅
+
+### Remaining Work
+
+None. **One bound is stated**: this is a text rule over a source region, so it stops the literal from
+re-acquiring authors; it does not make a wrong port unrepresentable. What makes the value
+single-sourced is that the binder, the rendered chart values, the emitted broker Dhall, the AWS
+role-transport table, and the loopback forward targets all read the same binding — the rule only
+keeps the shortest road back from being taken by accident.
+
+**One restatement is deliberately left in place, with its reason.** The genesis admin-intent
+endpoint in `CLI/Rke2.hs` uses the short `.svc` host form where the other nine use the
+`.svc.cluster.local` FQDN. Its port is bound to the owner; its host form is not changed, because
+both resolve and rewriting a live endpoint string is a behaviour change this sprint does not make.
+
+## Sprint 3.36: The Mirror Path Publishes The Architecture Its Name Claims ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `3` own-surface reopen (Standard A) on the in-cluster
+registry surface this phase owns. Found by the first live Standard-P qualification run.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`mirrorHostArchitectureTarget`,
+`mirrorHostArchitectureTargetFor`, `pushDockerImageWithRetry`).
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). This changes how an image is *published*,
+not which image: the same digest reaches the registry, so no component-image identity moves. It is
+adjacent to a Standard-P surface and is recorded here for that reason.
+**Live-proof**: **proven (2026-08-13).** The gap this line recorded as pending was closed by the
+same run that motivated the sprint — see Validation item 4.
+**Independent Validation**: compiler, `dev check`, and the existing suites; the defect it removes is
+a property of the argv the harness builds, which is decidable without a cluster.
+**Docs updated**: none under `documents/` — Exit Definition items 27 and 28 already state the rule
+this sprint makes true of the code.
+
+### Objective
+
+Make the mirror publication path publish the host architecture, which is what its own name says, what
+the custom-image build path beside it already does, and what Exit Definition items 27–28 require.
+
+### The defect, and why three years of green runs did not show it
+
+`mirrorHostArchitectureTarget` ran `docker pull` → `docker tag` → `docker push` with no platform
+anywhere. Under Docker's containerd image store that publishes the whole manifest **index** the pull
+produced. For a multi-architecture upstream, the index names platforms whose blobs were never
+fetched, and the push fails.
+
+**It stayed invisible because every mirror target that had published before it presents a single
+platform.** The registry carries **24** `mirroredPublicImage` entries; the **17** that published in
+the pre-fix run each resolve to one platform locally, and `keycloak-mirror` is `└─ linux/amd64` and
+pushes cleanly. The cert-manager family is the multi-platform case, and the list order is why it had
+never been the one to fail first. (The figures are derived from the registry catalogue and the local
+image tree, not counted by eye: an earlier draft of this block said "17 of 18", which was wrong on
+the total.) The asymmetry is the finding: `buildCustomImageOnce` has resolved
+`supportedHostArchitecture` and passed `renderHostArchitecture` to `docker build` since it was
+written, and the mirror path — named `mirrorHostArchitectureTarget` — never consulted either.
+
+### Deliverables
+
+- `pushDockerImageWithRetry` takes the platform and passes `--platform`. Both of its callers supply
+  it: the custom-image path from the `hostArchitecture` it already had in scope, and the mirror path
+  from a newly-resolved one.
+- `mirrorHostArchitectureTargetFor` carries the resolved platform so the pull is pinned too.
+- The retry classifier is untouched, and deliberately: the index failure is not transient, and
+  `isRetryableHarborPublicationFailure` correctly declined to retry it. A classifier that had
+  retried would have turned a deterministic failure into a slow one.
+
+### One sibling is deliberately left alone, and the recorded argv is why it is visible
+
+`harborTargetAvailableForHostArchitecture` — the availability probe that decides whether a mirror
+target already exists — is also named for the host architecture and also issues a bare
+`docker pull` with no platform. The integration fixture's recorded argv shows the asymmetry plainly:
+`pull|127.0.0.1:30080/prodbox/<target>` for the probe, against
+`pull|--platform|linux/amd64|<upstream>` for the mirror source beside it.
+
+It is **not** changed here. The probe asks "is this target present", and a platform-scoped answer to
+that question is a different question — one whose failure mode is a target being re-mirrored rather
+than a bring-up failing. Changing it would alter which images the harness decides to re-publish, on
+no evidence that the current answer is wrong. Recorded so the naming mismatch is a known, bounded
+one rather than a second instance waiting to be rediscovered by another campaign run.
+
+### The bound was stated as pending, and then closed
+
+**This block first read "no successful mirror push has been observed through this code", and that was
+correct when written.** Every already-published mirror was short-circuited by
+`harborTargetAvailableForHostArchitecture`, and the only unpublished family was the one Sprint `3.37`
+had to move — so the sprint had a correct argv and no live publish. It is recorded here rather than
+edited away, because a sprint that claims a live proof it did not take is the exact failure
+`unit_testing_policy.md` statement 11 and the Sprint `5.32` counterexample both exist to prevent.
+
+**The gap closed on the next run, and closed for both callers rather than one.** Seven publications
+went through the platform-pinned path with no failures: the five cert-manager mirror targets, and the
+custom `prodbox-runtime` image under two tags — which exercises the *other* call site,
+`buildAndPushCustomImageVariants`, that this sprint also changed. A fix validated on one of its two
+callers would have been a weaker result than it looked.
+
+### Validation
+
+1. `prodbox dev check` exit 0 (formatter, linter, warning-clean build). ✅
+2. `prodbox test unit` exit 0 at main Hspec **3430/3430**. ✅
+3. Live, negative: the error the pre-fix path produced —
+   `was found but does not provide any platform` — became
+   `does not provide the specified platform (linux/amd64)`, which is the platform-scoped push
+   reaching the platform-scoped failure. Evidence the flag takes effect. ✅
+4. Live, positive: **seven publications through the new path, zero failures**, across **both**
+   callers — the five cert-manager mirror targets (`cert-manager-{controller,webhook,cainjector,
+   acmesolver,startupapicheck}-mirror:v1.17.1`, digests `8615625f…`, `f7ad7d3c…`, `da14ecb3…`,
+   `8b71c220…`, `48048d4b…`) and the custom `prodbox-runtime` image under two tags. The in-cluster
+   registry catalogue moved 17 → 23 repositories. ✅
+
+### The change broke six integration cases, and the fixture was the defect
+
+**A correct production change presented as `manifest unknown` in six cases**, and the cause was in
+the fake boundary rather than the code. `fakeRke2DockerScript` read the image reference
+**positionally** — `ref=${2:-}` for `pull`, `target_ref=${2:-}` for `push` — so once production
+passed `docker pull --platform \<p\> \<ref\>`, the fixture read `--platform` as the reference.
+
+Two things make this worth recording rather than quietly fixing. First, **the same script already
+had the right pattern**: its `save` arm parses flags in a `while` loop, because `-o` could move. The
+file contained both the correct and the incorrect idiom, and the incorrect one was on exactly the two
+verbs this sprint touched. Second, a fixture that pins *positions* rather than *flags* is a fixture
+that fails on any correct argv change — the class
+[integration_fixture_doctrine.md](../documents/engineering/integration_fixture_doctrine.md) exists to
+bound. `pull` and `push` now parse flags; the seven assertions that pin the exact recorded argv were
+updated to the new command line, because the command line genuinely changed.
+
+### Remaining Work
+
+None.
+
+## Sprint 3.37: A Pinned Upstream Artifact That Cannot Be Published ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `3` own-surface reopen (Standard A). Found by the first
+live Standard-P qualification run, which it unblocks.
+**Implementation**: `src/Prodbox/ContainerImage.hs` (ten pins: five mirror targets and five upstream
+sources), `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (the chart-version claim).
+**Blocked by**: none.
+**Deployment qualification**: **pending — and this sprint invalidates any prior component-image
+identity.** Moving a platform component's image tag is a component-image change by Standard P's own
+enumeration, and `certManagerChartVersion` is derived from the controller tag by design, so the Helm
+chart version moves with it. A `proven` row may only bind an identity captured after this sprint.
+**Live-proof**: pending the full run in flight.
+**Independent Validation**: the pins are decidable against the upstream registry without a cluster;
+`dev check` and the unit suite cover the code-owned surface.
+**Docs updated**: [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) —
+its `γ` node stated the chart pin as `v1.16.2`, which is no longer true.
+
+### Objective
+
+Unblock the home-local qualification run, which failed deterministically at the cert-manager mirror.
+
+### The measurement, which is the whole sprint
+
+The failure looked like a prodbox defect and is not one. Every hypothesis was tested and discarded
+before the pin was touched:
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| Stale local image content | full purge, clean re-pull | still fails |
+| A multi-architecture problem in general | `alpine:3.20`, identical index shape | **exports fine** (3.7 MB) |
+| A quay.io problem | `cert-manager-controller:v1.16.1` from the same repo | **exports fine** (21.2 MB) |
+| A cert-manager problem | `v1.16.3`, `v1.16.4`, `v1.16.5`, `v1.17.1` | **all export fine** |
+| Only the controller is affected | the other four `v1.16.2` images | **all five fail** |
+
+So: **the `v1.16.2` release specifically cannot be published from this host**, while its neighbours
+in the same repository can. That is a broken upstream artifact, not a defect in this repository, and
+no amount of harness work would have fixed it.
+
+### Deliverables
+
+- The five cert-manager images move `v1.16.2` → `v1.17.1`, in both their mirror-target and
+  upstream-source positions — ten pins, kept in lockstep because
+  `certManagerChartVersion = imageTag harborCertManagerControllerImage` makes the chart follow the
+  controller tag by construction.
+- All five were verified to export at `v1.17.1` **before** the pin moved: controller 21,623,296 B,
+  webhook 18,685,440 B, cainjector 15,794,176 B, acmesolver 8,065,536 B, startupapicheck
+  14,351,872 B.
+
+### The residual this sprint records rather than closes
+
+**cert-manager is the only mirrored image family with no fallback source.** Its entries carry an
+empty alias list where, for example, `kube-rbac-proxy` carries
+`[ImageRef "gcr.io" "kubebuilder/kube-rbac-proxy" "v0.12.0"]`. The candidate-retry machinery in
+`mirrorHostArchitectureTargetFromCandidates` exists for exactly this situation and had nowhere to go.
+A search for an alternative registry serving `v1.16.2` found none — `registry.k8s.io/cert-manager/…`
+404s — so an alias would not have unblocked *this* failure, which is why the pin moved instead. It is
+recorded in the deletion ledger as its own row: a single-sourced platform component is one broken
+upstream away from blocking every bring-up, and this sprint is the proof.
+
+### Validation
+
+1. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3430/3430**. ✅
+2. Upstream exportability verified for all five images at the new pin before it landed. ✅
+3. Live home-local run through the previously-blocking mirror step — see [README.md](README.md). 🔄
+
+### Remaining Work
+
+None on the pin. The minor-version move is the operator's decision, taken deliberately over the
+smaller `v1.16.5` patch move that was also verified working.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

@@ -100,7 +100,6 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration env` | Run environment integration tests |
 | `prodbox test integration gateway-daemon` | Run gateway-daemon integration tests |
 | `prodbox test integration gateway-pods` | Run gateway pod integration tests |
-| `prodbox test integration gateway-partition` | Run gateway partition integration tests |
 | `prodbox test integration control-plane-counterexample` | Run the frozen control-plane counterexample |
 | `prodbox test integration certificate-scope` | Verify live TLS serving and the exact presented SAN scope |
 | `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |

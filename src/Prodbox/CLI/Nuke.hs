@@ -37,6 +37,7 @@ import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Version (showVersion)
+import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.CLI.Command
   ( NukeOptions (..)
   , PlanOptions (..)
@@ -73,6 +74,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withTargetSecretAgentAuthenticatedTransport
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName)
 import Prodbox.Infra.AwsSesDecommission
   ( AwsSesDecommissionPrimitive
   , AwsSesDecommissionScope (AwsSesProviderOnly, AwsSesSmtpIamOnly)
@@ -162,6 +164,7 @@ import Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus (ResidueUnreachable)
   , ResidueUnreachableReason (ResidueQueryFailed)
   )
+import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Runtime.Role
   ( RuntimeRole (TargetSecretAgentRuntime)
   )
@@ -853,7 +856,53 @@ runNukeOrchestration composition receiptPath repoRoot = do
       preparedResult <- prepareNukeDecommission composition receiptPath repoRoot adminCredentials
       case preparedResult of
         Left detail -> refuse ("decommission preparation refused: " <> detail)
-        Right prepared -> runPreparedNuke prepared
+        Right prepared -> do
+          runExit <- runPreparedNuke prepared
+          case runExit of
+            ExitFailure _ -> pure runExit
+            ExitSuccess -> runNukeTerminalTagSweep repoRoot adminCredentials
+
+-- | Sprint 4.76: the terminal scoped tag sweep that
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md § 5@ (the
+-- nuke row) and § 6b ("appends terminal absence and the required scoped
+-- tag sweep") have assigned to this command all along, and that had **no
+-- call site**: before this sprint 'TagSweep.discoverClusterTaggedAwsResources'
+-- had exactly one caller, on the @cluster delete --cascade@ path.
+--
+-- It is fail-closed with no skip arm. @nuke@ has already refused without
+-- an ephemeral admin credential by the time this runs, so "the API could
+-- not be read" is the only unconfirmed case and it fails. Unlike the
+-- cascade's sweep it applies **no** retained-long-lived carve-out
+-- ('TagSweep.TagSweepNuke'), because destroying that class transitively
+-- is what @nuke@ is for — a surviving @pulumi_state_backend@ bucket or
+-- @aws-ses@ resource is an escapee here, not a resource retained by
+-- design.
+runNukeTerminalTagSweep :: FilePath -> Credentials -> IO ExitCode
+runNukeTerminalTagSweep repoRoot adminCredentials = do
+  environment <- awsCliSubprocessEnvironment adminCredentials
+  verdict <-
+    TagSweep.decideTagSweep TagSweep.TagSweepNuke
+      <$> TagSweep.discoverClusterTaggedAwsResources
+        TagSweep.TagSweepInput
+          { TagSweep.tagSweepEnvironment = environment
+          , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+          , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+          }
+  let exit = TagSweep.tagSweepVerdictExit verdict
+      narration = TagSweep.renderTagSweepVerdict TagSweep.TagSweepNuke verdict
+  case exit of
+    ExitSuccess -> do
+      writeOutputLine narration
+      writeOutputLine
+        "prodbox nuke: total decommission converged and the terminal tag sweep confirmed absence."
+      pure ExitSuccess
+    ExitFailure _ -> do
+      writeDiagnosticLine narration
+      writeDiagnosticLine
+        ( "prodbox nuke: the decommission runner converged but the terminal tag "
+            ++ "sweep did not confirm absence, so this teardown is NOT complete."
+        )
+      pure (ExitFailure 1)
 
 requireExternalReceiptPath :: Maybe FilePath -> Either Text ExternalReceiptPath
 requireExternalReceiptPath supplied = case supplied of

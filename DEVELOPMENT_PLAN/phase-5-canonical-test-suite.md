@@ -297,10 +297,9 @@ table describes that code-owned set; it does not maintain a separate substrate-s
 | `ha-rke2-aws` | AWS, cluster, Pulumi, SSH | reachability and stale-instance repair for the three-node test stack |
 | `gateway-daemon` | cluster, curl | local daemon health/readiness/metrics and bounded drain |
 | `gateway-pods` | cluster | in-cluster gateway pod readiness and log sanity |
-| `gateway-partition` | in process | ownership/claim/yield behavior and duplicate rejection on the current representation |
 | `charts-platform` | cluster | supported chart registry/status and platform behavior |
 | `resource-guardrails` | cluster | declared pod resources, quotas/limits, and pre-mutation over-budget refusal |
-| `daemon-bootstrap` | in-process oracle | supported daemon-mediated bootstrap/object-store transport and redaction |
+| `daemon-bootstrap` | live Bootstrap Broker route surface, or a named repository fixture | supported daemon-mediated bootstrap/object-store transport and redaction. Sprint `5.33`: the unset arm probes the broker read-only and refuses when no daemon answers; it no longer emits a canned audit. The emitted block declares `AUDIT_PROVENANCE=`. |
 | `pulsar-broker` | cluster | native-protocol Pulsar produce/consume/ack behavior |
 | `keycloak-invite` | public edge, curl, AWS, Route 53; capability-derived retained-SES preparation; deferred semantic SES observations | Invite, capture, link-follow, credential setup, and OIDC login. Sprint `5.17` supplies desired-present preparation; landed Sprint `8.10` supplies exact sender/DKIM, MX/rule, and operational capture-canary list/get readiness. |
 | `charts-storage` | cluster | retained-storage pairing and chart storage behavior |
@@ -1313,6 +1312,24 @@ selects. The validation's `-> []` prerequisite registration and its in-plan desc
 code-owned transport oracle" are honest — what is over-claimed is that running it establishes the
 transport property.
 
+**Resolved by Sprint `5.33` ✅ (2026-08-11).** The unset arm now probes the Bootstrap Broker's own
+route surface — read-only `GET`s against every required route, where a served route answers
+something other than `404` — and builds the audit from what answered. Where no daemon answers it is
+a typed refusal naming the absent daemon and the address probed, per
+[bootstrap_readiness_doctrine.md § 0.5](../documents/engineering/bootstrap_readiness_doctrine.md).
+The emitted block gained `AUDIT_PROVENANCE=`, so an `observed-daemon` claim and a `fixture:` claim
+are distinguishable in the evidence rather than only in the source, and `DAEMON_AVAILABLE`,
+`LEGACY_TRANSPORTS`, `HOST_ROOT_TOKEN_FALLBACKS`, and `REDACTION` are rendered from the computed
+values.
+
+**What this changes about step 2 above.** It does not restore the claim; it narrows it correctly.
+Steps 2–4 were run against the `"pass"` fixture arm, which is unchanged and still real: it proves
+the *oracle* — that a trace containing a legacy transport, an unredacted secret, or an unavailable
+daemon is refused. They never proved that a live daemon-bootstrap run took only broker transports,
+and after `5.33` no run of this node makes that claim implicitly, because a run that measured
+nothing refuses instead of passing. The live substrate-parity proof (step 7) remains the Standard-O
+axis it always was.
+
 The sprint's structural deliverable is not withdrawn: the daemon-mediated boundary exists and the
 audit vocabulary is real. Sprint `5.33` 📋 owns making the unset arm observe or refuse.
 
@@ -1856,11 +1873,13 @@ over-claimed is the word *validates* — the command **emits** those dimensions 
 them. This is the same correction shape as Sprint `5.30`'s: the claim as registered was stronger
 than the mechanism delivers.
 
-The falsifying half is owned by Sprint `5.32` 📋, whose acceptance criterion is that a mutated frozen
-trace makes the command exit non-zero. Until it lands, this sprint's evidence may not be cited to
-fill the Counterexample column of either Deployment Qualification row
-([README.md](README.md#deployment-qualification)). No `proven` row rests on it, so nothing is
-retracted.
+The falsifying half was owned by Sprint `5.32`, and it is ✅ **Done (2026-08-11)**: its acceptance
+criterion — that a mutated frozen trace makes the command exit non-zero — now holds, against a
+committed mutation fixture. The dependency this correction recorded is therefore **discharged**;
+this sprint's evidence may be cited for the Counterexample column of a Deployment Qualification row
+once a qualification run fills it ([README.md](README.md#deployment-qualification)). No `proven` row
+rested on it, so nothing was retracted and nothing is now restored — what changed is that the
+reproducer can fail.
 
 ## Documentation Requirements
 
@@ -2459,6 +2478,24 @@ None.
   fixture rule these substitutions satisfy.
 - `documents/engineering/vault_doctrine.md` - § 20.4 is the governing statement; authored by Sprint
   `0.20`.
+- Sprint `5.33`: `documents/engineering/unit_testing_policy.md` - canonical statement 10, *a test
+  must be able to fail, and its evidence must be able to disagree with it*: the default path
+  measures, emitted evidence is rendered rather than written, and evidence declares its provenance;
+  plus statement 11, that an absence assertion is an assertion and must name the doctrine licensing
+  the absence.
+- Sprint `5.33`: `documents/engineering/integration_fixture_doctrine.md` - a fixture stands in for
+  an observation, never for the fact that an observation happened: the unset arm is not a fixture
+  arm, and the output names the source. Sprint `4.76` adds the companion rule that a boundary fake
+  must answer every observation the production path makes, and that a fake's catch-all arm is a
+  fail-open default.
+- Sprint `5.32`: `DEVELOPMENT_PLAN/README.md` § Deployment Qualification - the note recording the
+  reproducer as non-falsifying is replaced by the record that it became falsifying, and the
+  Standard-C corrections on Sprints `5.19` and `8.12` are updated to say the dependency is
+  discharged.
+- Sprint `5.33`: `DEVELOPMENT_PLAN/system-components.md` - the gateway-runtime proof-surface row
+  drops `gateway-partition`, and `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`'s head-of-document note —
+  the single place the scope is stated for all eight citing sprints — records that the command no
+  longer exists.
 
 **Product docs to create/update:**
 
@@ -2927,12 +2964,15 @@ reason, so lowering into it can only destroy one.
 None on Sprint `5.31`'s code-owned surface. Clean-room home and AWS deployment qualification remains
 pending in the global Standards O/P ledger and does not reopen this phase.
 
-## Sprint 5.32: The Frozen Counterexample Consumes Its Trace 📋
+## Sprint 5.32: The Frozen Counterexample Consumes Its Trace ✅
 
-**Status**: Planned — Phase `5` own-surface reopen (Standard A) on the canonical test suite this
-phase owns. Registered 2026-08-11 by the MISU audit that read the reproducer against Standard P.
+**Status**: ✅ **Done (2026-08-11)** — Phase `5` own-surface reopen (Standard A) on the canonical
+test suite this phase owns. Registered 2026-08-11 by the MISU audit that read the reproducer against
+Standard P.
 **Implementation**: `src/Prodbox/Test/Qualification/FrozenCounterexample.hs`,
-`src/Prodbox/Test/CounterexampleValidation.hs`.
+`src/Prodbox/Test/CounterexampleValidation.hs`,
+`test/qualification/LCPC-2026-07-11.dispositions`,
+`test/qualification/LCPC-2026-07-11.mutated.dispositions`.
 **Blocked by**: none.
 **Deployment qualification**: pending — and this sprint is a *precondition* for filling the
 Counterexample column of either row in the [Deployment Qualification ledger](README.md#deployment-qualification).
@@ -2975,35 +3015,79 @@ excluded from its own verdict.
 
 ### Deliverables
 
-- `simulateFrozenCounterexample` binds and consumes its `FrozenCounterexampleTrace`, deriving each
-  `CounterexampleResult` disposition from the frozen trace rather than from a composition constant.
-- `CounterexampleValidation` renders `NORMALIZED_ENVELOPE_EQUAL` and
-  `TEMPORAL_REPLACEMENT_QUALIFIED` from the computed values; no emitted evidence line is a literal.
-- A repository-owned **mutation fixture**: a frozen trace whose superseded dispositions have been
-  altered, committed alongside the canonical one.
+All three are landed.
+
+- **`simulateFrozenCounterexample` binds and consumes its `FrozenCounterexampleTrace`.** The trace
+  gains `frozenTraceDispositions`, read from a repository-owned file
+  (`test/qualification/LCPC-2026-07-11.dispositions`) by `parseFrozenDispositions`, which is total
+  over `CounterexampleMechanism`: a missing, duplicated, misspelled, or malformed row refuses the
+  load rather than silently shrinking the counterexample's coverage. The rows participate in the
+  trace digest, so `frozenExpectedTraceDigest` pins the canonical file and an undeclared edit
+  refuses at load.
+- **No emitted evidence line is a literal.** `NORMALIZED_ENVELOPE_EQUAL` renders from the trace's
+  carried envelope totals and `TEMPORAL_REPLACEMENT_QUALIFIED` from `temporalReportQualified`;
+  `SUPERSEDED_FAILURES` and `REPLACEMENT_CLOSURES` count the dispositions that actually hold rather
+  than the list lengths. The bound is stated rather than implied: both flags are structurally true
+  wherever the line is reached, because the trace constructor refuses diverged totals and the
+  temporal profile is a fixed sample. What changed is provenance — the line can no longer keep
+  asserting `true` if the computation changes, because it *is* the computation.
+- **A committed mutation fixture** (`test/qualification/LCPC-2026-07-11.mutated.dispositions`)
+  records `GatewayDeadlineUnderThrottle` as having been *closed* by the superseded implementation
+  rather than failed on — i.e. that there was no counterexample to reproduce. Every other row is
+  identical, so the exercise isolates the disposition the simulator must consume. It is selected by
+  `PRODBOX_TEST_FROZEN_COUNTEREXAMPLE_FIXTURE=mutated`; an unrecognised value refuses rather than
+  falling back to the canonical (passing) fixture.
+
+### Two design decisions the sprint had to make, and why
+
+**The mutation fixture is deliberately not trace-digest-pinned.** Pinning it would make the digest
+gate fire first, and the disposition consumption — the thing the exercise exists to falsify — would
+never run; the test would then prove the digest works, not that the simulator reads its argument.
+`FrozenTraceFixture` makes the exemption explicit and scoped: the other four captured digests are
+still checked for both fixtures, so the two differ in exactly the dispositions and nothing else.
+
+**The closure check now runs before the evidence artifact, and that ordering is load-bearing.**
+`mkQualificationEvidence` already refuses the same class through `validateCounterexamples` — it was
+a real gate all along, with nothing falsifiable feeding it. Built first, it would have refused the
+mutated fixture *before* the validation's own fold could, leaving that fold in exactly the
+cannot-fail shape this sprint exists to remove, one layer up. `counterexampleClosureRefusal` is
+therefore the first gate and names the offending mechanism; the artifact builder remains an
+independent second gate over the same fact.
 
 ### Validation
 
-The acceptance criterion **is** the deliverable, and it is the one the sprint cannot pass today:
+The acceptance criterion **is** the deliverable, and it now passes in both directions:
 
-1. `prodbox test integration control-plane-counterexample` exits 0 against the canonical frozen
-   trace.
-2. The same command exits **non-zero** against the mutation fixture. A reproducer that passes both
-   is not a reproducer.
-3. `prodbox dev check` exit 0 with `--enable-tests` in force; `prodbox test unit` exit 0.
+1. `prodbox test integration control-plane-counterexample` exits **0** against the canonical frozen
+   trace, emitting `SUPERSEDED_FAILURES=5`, `REPLACEMENT_CLOSURES=5`,
+   `NORMALIZED_ENVELOPE_EQUAL=true`, `TEMPORAL_REPLACEMENT_QUALIFIED=true`. ✅
+2. The same command exits **1** against the mutation fixture, with
+   `the frozen superseded implementation is not recorded as failing on:
+   GatewayDeadlineUnderThrottle=ReplacementMechanismClosed`. A reproducer that passes both is not a
+   reproducer. ✅ An unrecognised fixture selector also exits 1. ✅
+3. Unit cases: the two fixtures produce different superseded dispositions and different trace
+   digests; the parser refuses a missing / duplicated / unknown-mechanism / unknown-disposition /
+   malformed row; comments, blank lines, and row order do not change the canonical rendering. ✅
+4. An integration case pins the mutation exercise and the unrecognised-selector refusal through the
+   installed binary. ✅
+5. `prodbox dev check` exit 0 with `--enable-tests` in force ✅; `prodbox test unit` exit 0 ✅.
 
 ### Remaining Work
 
-Registered, not started. Until it lands, the Counterexample/fault-matrix column of both Deployment
-Qualification rows stays unfilled per the note in [README.md](README.md#deployment-qualification),
-and Sprints `5.19` and `8.12` carry Standard-C corrections naming this dependency.
+None on the code-owned surface. The Counterexample/fault-matrix column of both Deployment
+Qualification rows may now be filled by a qualification run: the reproducer is falsifiable, which
+was the precondition the [README note](README.md#deployment-qualification) recorded. The column
+stays `pending` because no such run has happened — that is the Standard-P campaign, not this sprint.
+The Standard-C corrections on Sprints `5.19` and `8.12` are updated to say the dependency is
+discharged.
 
-## Sprint 5.33: Two Named Validations Observe Nothing 📋
+## Sprint 5.33: Two Named Validations Observe Nothing ✅
 
-**Status**: Planned — Phase `5` own-surface reopen (Standard A) on the canonical test suite this
-phase owns, alongside Sprint `5.32`. Registered 2026-08-11 by the same audit.
+**Status**: ✅ **Done (2026-08-11)** — Phase `5` own-surface reopen (Standard A) on the canonical
+test suite this phase owns, alongside Sprint `5.32`. Registered 2026-08-11 by the same audit.
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/TestPlan.hs`,
-`test/unit/Main.hs`.
+`src/Prodbox/TestRunner.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`,
+`test/unit/Main.hs`, `test/integration/CliSuite.hs`.
 **Blocked by**: none.
 **Deployment qualification**: pending; unchanged. This sprint moves no production-composition
 surface — it changes what two suite nodes assert about themselves.
@@ -3048,36 +3132,184 @@ unit-pinned". The second is correct.
 
 ### Deliverables
 
-- `runDaemonBootstrapValidation`'s unset arm **observes or refuses**. It must not emit a canned
-  audit on a path that measured nothing; a missing fixture in a context that cannot observe is a
-  typed refusal naming what was absent, per
+All four are landed.
+
+- **`runDaemonBootstrapValidation`'s unset arm observes or refuses.** It probes the Bootstrap
+  Broker's own route surface with **read-only `GET`s**, including against the mutating routes: a
+  daemon that serves a route answers a `GET` with something other than `404` (405 for a POST-only
+  route, 401/403 for an unauthenticated one), while a route it does not serve answers `404`. That is
+  enough to observe the required-route set without issuing a single mutation — a validation may not
+  initialise Vault to prove it could. Where no daemon answers it is a typed refusal naming the
+  absent daemon and the exact address probed, per
   [bootstrap_readiness_doctrine.md § 0.5](../documents/engineering/bootstrap_readiness_doctrine.md).
-- `gateway-partition` renders its emitted values from the computed report rather than printing
-  literals, and moves to the unit suite, where its identity as an in-process property test is
-  accurate. `TestPlan.hs` drops the integration registration; `system-components.md`'s proof-surface
-  row moves with it.
-- The eight Phase-`2` sprints citing it, and Sprint `5.14`, carry Standard-C corrections naming what
-  the node did and did not establish. Their code deliverables are not withdrawn — only the evidence
-  sentence is corrected, as in Sprint `5.30`'s own registration correction.
-- `phase-2-gateway-dns.md`'s "live-proven" line is corrected to agree with this document.
+  A transport failure is a `Left` and never a status, so "nothing answered" cannot be read as "the
+  route is absent".
+- **The audit block declares its own provenance.** `AUDIT_PROVENANCE=observed-daemon` or
+  `AUDIT_PROVENANCE=fixture:<name>`, so the distinction that was invisible in the output — the unset
+  arm was *byte-identical* to the `"pass"` arm one line below it — is now stated in the evidence
+  rather than only in the source. `DAEMON_AVAILABLE`, `LEGACY_TRANSPORTS`,
+  `HOST_ROOT_TOKEN_FALLBACKS`, and `REDACTION` render from the computed values.
+- **`gateway-partition` renders its emitted values and left the integration surface.** Every line
+  derives from the composition; `PARTITION_TAKEOVER_ACCEPTED` is counted from the delta frames the
+  state machine actually produced rather than written as `1`. The node is gone from
+  `IntegrationSuite`, `TestPlan`'s `NativeValidation` and `canonicalNativeValidations`, the CLI
+  parser and command registry, and `system-components.md`'s proof-surface row; it runs in
+  `prodbox test unit`.
+- **Standard-C corrections landed** on the head-of-document note in `phase-2-gateway-dns.md` (which
+  is the single place the scope is stated for all eight citing sprints, per § 1 of
+  `documentation_standards.md`), on Sprint `2.25`'s "live-proven" line, and on Sprint `5.14`'s
+  Validation section. No code deliverable is withdrawn.
+
+### What removing the node actually changed, stated rather than glossed
+
+`prodbox test all` no longer runs `gateway-partition`, because `canonicalNativeValidations` no longer
+lists it. That is a **reduction in the canonical suite's node count and no reduction in coverage**:
+the composition it ran is executed by `prodbox test unit` on every `dev check`, which is a stricter
+gate than an integration node that declared `-> []` prerequisites and could not fail on any input.
+The unit suite additionally pins a property the integration node could not have: that the emitted
+lines change when the composition changes.
+
+Sprint `5.14`'s correction is narrowed rather than withdrawn. Its steps 2–4 ran against the `"pass"`
+fixture arm, which is unchanged and still real — it proves the *oracle* refuses a trace containing a
+legacy transport, an unredacted secret, or an unavailable daemon. They never proved that a live
+daemon-bootstrap run took only broker transports, and after this sprint no run makes that claim
+implicitly, because a run that measured nothing refuses instead of passing.
 
 ### Validation
 
-1. **Unset-fixture exercise.** With every `PRODBOX_TEST_*` unset,
-   `prodbox test integration daemon-bootstrap` must refuse rather than pass. It passes today, which
-   is the defect.
-2. `gateway-partition`'s emitted lines change when its inputs change — pinned by a unit case that
-   varies the composition and asserts the rendered output differs.
-3. `prodbox test unit` covers the relocated `gateway-partition` cases;
-   `prodbox test integration cli` / `env` exit 0 with the integration registration removed.
-4. `prodbox dev check` exit 0.
+1. **Unset-fixture exercise, and it is the acceptance criterion.** With every `PRODBOX_TEST_*`
+   unset, `prodbox test integration daemon-bootstrap` exits **1** with
+   `daemon-bootstrap validation measured nothing and refuses: … no Bootstrap Broker daemon answered
+   at http://127.0.0.1:8600/healthz`. It passed before this sprint, which was the defect. ✅
+2. `gateway-partition`'s rendered output changes with its composition — a four-member Orders renders
+   `PARTITION_MEMBERS=4` and a different block; a single-member Orders refuses naming `node-b`
+   rather than emitting the same eight lines. ✅
+3. `prodbox test unit` covers the relocated `gateway-partition` cases and the daemon-bootstrap
+   provenance/refusal cases, at main Hspec **3374/3374** ✅. `prodbox test integration cli`
+   **57/57** exit 0 with the integration registration removed (a case asserts the verb is refused
+   and absent from `test integration --help`) ✅; `prodbox test integration env` exit 0 ✅.
+4. `prodbox dev check` exit 0 ✅, after regenerating the three CLI golden files and
+   `documents/cli/commands.md`, which the removed verb changed.
 
 ### Remaining Work
 
-Registered, not started. A third node of the same family — `gatewayRuntimeSampleExit` mapping
-`NotStableYet` to `ExitSuccess` while its sibling gate ten lines away retries and then fails — is
+None on the code-owned surface. A third node of the same family — `gatewayRuntimeSampleExit` mapping
+`NotStableYet` to `ExitSuccess` while its sibling gate ten lines away retries and then fails — stays
 recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) rather than folded in
-here, because it is a fold defect on the Phase-`2` gateway surface rather than suite content.
+here, because it is a fold defect on the Phase-`2` gateway surface rather than suite content, and
+[Standard M](development_plan_standards.md#m-test-suite-substrates) keeps those ownerships apart.
+
+🧪 **Live-proof: pending** (Standard O) — the daemon-bootstrap unset arm's *observing* branch has
+been exercised only against an absent daemon on this host. A run against a cluster whose Bootstrap
+Broker is serving is the outstanding non-blocking evidence that the route-surface probe classifies a
+live broker correctly; the refusal branch, which is the one this sprint exists to create, is proven.
+
+## Sprint 5.34: Two Fixture Surfaces Whose Gates Did Not Reach Their Own Defects ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `5` own-surface reopen (Standard A) on the canonical
+suite's fixture surfaces this phase owns through Sprint `5.30`.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`tier0WriteSiteLines`),
+`test/support/Tier0Fixture.hs` (`ExistenceIsWhatIsUnderTest`, plus a Standard-C correction),
+`src/Prodbox/Vault/Host.hs` (validating `FromDhall TestSecretsAdminCredentials`),
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). No production-composition surface moves:
+`test-secrets.dhall` is a test-harness-only fixture never read by a production binary, and the
+Tier-0 write gate is developer tooling.
+**Independent Validation**: a `dev check` text rule and a pure decoder, validated by the compiler
+and the suites — no cluster, no AWS. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main
+Hspec **3420/3420**; `prodbox test integration cli` **57/57**.
+**Docs updated**: none under `documents/` — both corrections land in the source that made the claim.
+
+### Objective
+
+Close two `Pending Removal` rows on this phase's fixture surfaces: the line-local `Tier0Fixture`
+encoder gate, and `test-secrets-types.dhall`'s bare-`Text` fields.
+
+### Half one: the gate found a real escape on its first run, and two false ones
+
+Sprint `5.30` matched a `writeFile` and the sibling filename **on one source line**, and registered
+the escape in its own words — bind the path first, write to the binding later. The row declined to
+widen the text rule, on the ground that it would "trade a stated bound for an unstated one". That
+judgement was right about the danger and this sprint walked straight into it twice before getting it
+right:
+
+| Draft | What it reported | Why it was wrong |
+|---|---|---|
+| collect every name bound to a sibling path in the module | an unrelated `let path = tmpDir </> "config.dhall"` | a *different* case bound `path` to the sibling |
+| nearest-preceding binding, file-wide | a helper whose `tier0Path` is a **parameter** | it reached across definitions into a shadowed name |
+| nearest-preceding binding, **same top-level definition** | one site | correct |
+
+A third report was a *true* write-site but not a *defect*: it wrote
+`renderProjectConfigDhall …` output, which is the canonical encoder the rule's own message points
+the author at. The rule now says what it means — a write whose line names the canonical encoder is
+not hand-authored text.
+
+**The one true positive is the escape the row named.** `withBinarySiblingTier0` bound
+`takeDirectory exePath </> "prodbox.dhall"` and wrote to it two lines later. All three callers
+already passed `renderProjectConfigDhall` output, so nothing on disk changes; the helper now takes a
+`Tier0Fixture`, so its **type** says so and a caller cannot hand it hand-authored text without
+`rawTier0Fixture` and a named reason.
+
+`RawTier0Reason` gains `ExistenceIsWhatIsUnderTest` — the test-mode preflight refuses on the
+config's *presence* and never decodes it, so rendering a complete config there would assert more
+than the gate reads. The arm is checked, not recorded: it refuses an empty payload.
+
+**A Standard-C correction lands with it.** `tier0FixturePath`'s Haddock said the binary-sibling
+filename "appears exactly once in the test tree, here, so a `dev check` rule can hold *one encoder*
+by refusing the literal anywhere else". Measured: **six files, 109 occurrences**, 90 of them in
+`test/unit/Main.hs`. No such rule was ever possible; the sentence described an intention.
+
+### Half two: the prescribed check is not available, and the reason is the finding
+
+The row names three defects, of which one is closable and one is not, for a reason worth recording:
+
+- **`TestSecrets::{=}` type-checks to an entirely empty fixture.** Not closable at decode:
+  `defaultTestSecrets` **is** all-empty, it is what the generated schema's `default` record carries,
+  and a unit case round-trips it back through this decoder. A decoder refusing empty would refuse
+  the schema's own default.
+- **`access_key_id` / `secret_access_key` are both `Text`, so transposing them type-checks.**
+  Closable — the two are distinguishable by shape — and now a decode refusal, in the shape Sprint
+  `1.86` established.
+- **Emptiness is silently tolerated by the harness's prefer-non-empty fallback.** Downstream of the
+  decoder; not addressed here, and not claimed to be.
+
+**The transposition check had to become one-sided, and that is the sprint's real finding.** The
+symmetric rule — also require `access_key_id` to *have* the id shape — was written first, and it
+refuses this repository's own integration fixtures. Those fixtures **cannot** be given a
+structurally-valid id, because `scannedCredentialViolations` (Sprint `1.75`, the
+[vault_doctrine.md](../documents/engineering/vault_doctrine.md) § 20.5 mechanical outer ring) fails
+the build for any **tracked** file carrying that shape. The two rules are in direct opposition and
+the credential scanner is the one that must win.
+
+What survives is the more valuable half: a transposition of *placeholder* values goes unremarked,
+and a transposition of *real* operator credentials — the case that costs an afternoon, because AWS
+answers `InvalidClientTokenId` and that reads like a revoked credential — puts a real access-key id
+into `secret_access_key` and is refused.
+
+### Validation
+
+1. The widened Tier-0 gate reported **four** sites on its first run: one true escape, two false
+   positives that drove the bound to its final form, and one canonical-encoder write. All four are
+   recorded above rather than silently patched away. ✅
+2. Three decoder cases: a correct pair decodes, the same two values swapped are refused, and a
+   placeholder pair still decodes — the third pins the one-sidedness and *why*, so the conflict with
+   the credential scanner cannot be quietly "fixed" later by making the rule symmetric. The
+   synthetic key id is assembled from fragments at run time, per § 20.4, so this tracked file does
+   not itself carry the scanned shape. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at **3420/3420**;
+   `prodbox test integration cli` **57/57** — the last of which is load-bearing here, because the
+   symmetric draft broke **two** integration cases and that is how the conflict was found. ✅
+
+### Remaining Work
+
+None on either row. **Two bounds are stated.** The Tier-0 gate reaches one hop within one top-level
+definition: a path assembled across two bindings, threaded through a function parameter, or built
+from a list still escapes, and widening further would trade a stated bound for an unstated one —
+which is Sprint `5.30`'s own reasoning, now with three worked examples behind it. And the
+`TestSecrets` decoder refuses a present-and-malformed secret, never an absent one, so the all-empty
+fixture the row objects to still decodes; that half of the row is closed by **argument** — it is the
+schema's own default and cannot be refused — rather than by code.
 
 ## Related Documents
 

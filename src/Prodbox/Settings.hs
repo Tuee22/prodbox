@@ -28,6 +28,14 @@ module Prodbox.Settings
   , TestTopology (..)
   , TestTopologyError (..)
   , ValidatedSettings (..)
+  , ValidatedCoordinates (..)
+  , AcmeAccount (..)
+  , validatedCoordinatesFor
+  , requireAcmeAccount
+  , requireHomeZoneId
+  , requireOperationalAwsRegion
+  , homeZoneIdTextForRendering
+  , operationalAwsRegionTextForRendering
   , SeedInForceOutcome (..)
   , defaultConfigFile
   , defaultTestTopology
@@ -75,7 +83,7 @@ import Control.Exception (SomeException, displayException, try)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.Char (isDigit, isHexDigit, toLower)
+import Data.Char (toLower)
 import Data.Char qualified as Char
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -158,6 +166,32 @@ import Prodbox.Repo
   , canonicalConfigPaths
   , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
+  )
+import Prodbox.Settings.Coordinate
+  ( AcmeDirectoryUrl
+  , AwsRegion
+  , CoordinateError
+  , DnsLabel
+  , DnsTtl
+  , EmailAddress
+  , IpLiteral
+  , Route53ZoneId
+  , S3BucketName
+  , SafeRelativePath
+  , awsRegionText
+  , mkAcmeDirectoryUrl
+  , mkAwsRegion
+  , mkDnsLabel
+  , mkDnsTtl
+  , mkEmailAddress
+  , mkIpLiteral
+  , mkRoute53ZoneId
+  , mkS3BucketName
+  , mkSafeRelativePath
+  , normalizeCoordinateText
+  , renderCoordinateError
+  , route53ZoneIdText
+  , traverseOptionalCoordinate
   )
 import Prodbox.Settings.SecretRef
   ( PromptSpec (..)
@@ -423,6 +457,86 @@ data ValidatedSettings = ValidatedSettings
   -- ^ Sprint 1.83: the parsed public-edge projection, built by the one parse
   -- validation performs rather than re-derived from the raw record at each
   -- use. See 'ValidatedPublicEdge'.
+  , validatedCoordinates :: ValidatedCoordinates
+  -- ^ Sprint 1.89: the remaining Tier-0 coordinates, parsed once by the same
+  -- validation. Sprint 1.83 did this for the public edge and stopped there;
+  -- this is the rest of the surface that row described. See
+  -- 'ValidatedCoordinates'.
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 1.89: every Tier-0 coordinate whose invariant is decided by
+-- validation, carried as the type that decision established.
+--
+-- __Why a record rather than narrower fields on 'ConfigFile'.__ 'ConfigFile' is
+-- the Dhall wire record; its field types are the authored file's types. Retyping
+-- them would change every generated @prodbox.dhall@, which Standard P counts as
+-- a generated-config identity change. This record sits one ring in — built by
+-- 'validateConfig', which is already the sole minter of 'ValidatedSettings' —
+-- so the narrowing is real for every consumer while the authored bytes are
+-- untouched.
+--
+-- __Why so many 'Maybe's.__ Blank is the correct state for most of these on a
+-- home-only host: no SES identity, no AWS subzone, no long-lived state backend,
+-- no ACME account. 'Nothing' means the operator declared none, and is
+-- structurally distinct from a value that failed to parse — which is a refusal,
+-- not a 'Nothing'. The two fields that are not optional
+-- ('coordinateDemoTtl' and 'coordinateManualPvHostRoot') are the two the local
+-- tier has always required.
+--
+-- __What this does not carry.__ The public edge ('validatedPublicEdge'), the
+-- resource plan ('validatedAllocatedPlan'), the cluster topology (smart-
+-- constructed at decode by Sprint 1.86), and the component graph each already
+-- have a retained parse of their own; duplicating them here would create a
+-- second copy that could disagree with the first.
+data ValidatedCoordinates = ValidatedCoordinates
+  { coordinateHomeZoneId :: !(Maybe Route53ZoneId)
+  -- ^ @route53.zone_id@. Before Sprint 1.89 this was checked only for
+  -- emptiness, and only on the AWS tier — while the structurally identical
+  -- @aws_substrate.hosted_zone_id@ below was shape-checked on every load.
+  , coordinateAwsSubstrateZoneId :: !(Maybe Route53ZoneId)
+  -- ^ @aws_substrate.hosted_zone_id@.
+  , coordinateOperationalAwsRegion :: !(Maybe AwsRegion)
+  -- ^ @aws.region@. No shape rule existed for this field anywhere before
+  -- Sprint 1.89; a typo reached the AWS SDK.
+  , coordinatePulumiBackendRegion :: !(Maybe AwsRegion)
+  -- ^ @pulumi_state_backend.region@ — the only field of its section with no
+  -- check at all, while both its siblings had one.
+  , coordinatePulumiBackendBucket :: !(Maybe S3BucketName)
+  -- ^ @pulumi_state_backend.bucket_name@.
+  , coordinatePulumiBackendKeyPrefix :: !SafeRelativePath
+  -- ^ @pulumi_state_backend.key_prefix@, concatenated into object keys.
+  , coordinateSesSenderDomain :: !(Maybe Fqdn)
+  -- ^ @ses.sender_domain@.
+  , coordinateSesReceiveSubdomain :: !(Maybe DnsLabel)
+  -- ^ @ses.receive_subdomain@.
+  , coordinateSesCaptureBucket :: !(Maybe S3BucketName)
+  -- ^ @ses.capture_bucket@.
+  , coordinateDemoTtl :: !DnsTtl
+  -- ^ @domain.demo_ttl@.
+  , coordinateBootstrapPublicIp :: !(Maybe IpLiteral)
+  -- ^ @deployment.bootstrap_public_ip_override@.
+  , coordinateManualPvHostRoot :: !SafeRelativePath
+  -- ^ @storage.manual_pv_host_root@, before it is joined onto the repository
+  -- root. 'resolvedManualPvHostRoot' carries the joined absolute result; this
+  -- carries the proof that joining it cannot escape.
+  , coordinateAcmeAccount :: !(Maybe AcmeAccount)
+  -- ^ @acme.email@ and @acme.server@ as one value, because a half-configured
+  -- ACME account is not a usable one.
+  }
+  deriving (Eq, Show)
+
+-- | An ACME account's non-secret coordinates. Both halves or neither: the ACME
+-- registration needs a contact and a directory, and a config carrying one
+-- without the other has configured nothing.
+--
+-- The external-account-binding key pair beside these in @acme@ stays a
+-- 'SecretRef' and is deliberately absent here — this record is the non-secret
+-- projection, and Standard P forbids secret material entering a value that
+-- qualification evidence may digest.
+data AcmeAccount = AcmeAccount
+  { acmeAccountEmail :: !EmailAddress
+  , acmeAccountDirectoryUrl :: !AcmeDirectoryUrl
   }
   deriving (Eq, Show)
 
@@ -447,8 +561,10 @@ data ValidatedServedHost = ValidatedServedHost
 -- host__ — @aws_substrate.subzone_name@ is required by the AWS tier
 -- ('validateAwsBootstrapConfig') and deliberately not by the local tier. Before
 -- Sprint 1.83 that absence was carried as the empty string, so a config validated
--- only by the local tier reached 'Prodbox.PublicEdge.substratePublicFqdn' and
--- received @\"\"@ — a served hostname that is not one.
+-- only by the local tier reached the former @Prodbox.PublicEdge.substratePublicFqdn@
+-- and received @\"\"@ — a served hostname that is not one. Sprint 1.87 deleted
+-- that accessor; 'Prodbox.PublicEdge.requireSubstrateServedHost' is now the only
+-- way to obtain a substrate's served host.
 data ValidatedPublicEdge = ValidatedPublicEdge
   { validatedHomeServedHost :: !ValidatedServedHost
   , validatedAwsServedHost :: !(Maybe ValidatedServedHost)
@@ -907,13 +1023,271 @@ validateConfig repoRoot config = do
     -- same call inside `validateLocalConfig` above is the refusal; this is the
     -- value, and it is the only one any consumer sees.
     publicEdge <- validatedPublicEdgeFor (domain config) (aws_substrate config)
+    -- Sprint 1.89: the same move as the line above, for the rest of the
+    -- coordinate surface. `validateLocalConfig` refuses on exactly these rules;
+    -- this is the value it refused on.
+    coordinates <- validatedCoordinatesFor config
     pure
       ValidatedSettings
         { validatedConfig = config
         , resolvedManualPvHostRoot = resolvedManualRoot
         , validatedAllocatedPlan = allocatedPlan
         , validatedPublicEdge = publicEdge
+        , validatedCoordinates = coordinates
         }
+
+-- | Sprint 1.89: build every Tier-0 coordinate, or refuse naming the field.
+--
+-- This is the builder behind the refusal-only section validators below, in
+-- exactly the relationship Sprint 1.83 established between
+-- 'validateConfiguredCertScope' and 'validatedPublicEdgeFor': each
+-- @validate*Section@ is now @void@ over the corresponding builder, so there is
+-- one rule per coordinate rather than a rule and a re-derivation that can drift.
+--
+-- The order matches 'validateLocalConfig' so the first refusal a config meets is
+-- the same through either entry point.
+validatedCoordinatesFor :: ConfigFile -> Either String ValidatedCoordinates
+validatedCoordinatesFor config = do
+  demoTtl <- demoTtlCoordinateFor (domain config)
+  (substrateZoneId, _) <- awsSubstrateCoordinatesFor (aws_substrate config)
+  (senderDomain, receiveSubdomain, captureBucket) <-
+    sesCoordinatesFor (ses config)
+  bootstrapIp <- bootstrapPublicIpCoordinateFor (deployment config)
+  manualPvRoot <- storageCoordinateFor (storage config)
+  (backendBucket, backendRegion, backendKeyPrefix) <-
+    pulumiStateBackendCoordinatesFor (pulumi_state_backend config)
+  homeZoneId <- homeZoneIdCoordinateFor (route53 config)
+  acmeAccount <- acmeAccountCoordinateFor (acme config)
+  operationalRegion <- awsRegionCoordinateFor "aws.region" (aws config)
+  Right
+    ValidatedCoordinates
+      { coordinateHomeZoneId = homeZoneId
+      , coordinateAwsSubstrateZoneId = substrateZoneId
+      , coordinateOperationalAwsRegion = operationalRegion
+      , coordinatePulumiBackendRegion = backendRegion
+      , coordinatePulumiBackendBucket = backendBucket
+      , coordinatePulumiBackendKeyPrefix = backendKeyPrefix
+      , coordinateSesSenderDomain = senderDomain
+      , coordinateSesReceiveSubdomain = receiveSubdomain
+      , coordinateSesCaptureBucket = captureBucket
+      , coordinateDemoTtl = demoTtl
+      , coordinateBootstrapPublicIp = bootstrapIp
+      , coordinateManualPvHostRoot = manualPvRoot
+      , coordinateAcmeAccount = acmeAccount
+      }
+
+-- | Sprint 1.89: the ACME account, for a caller that needs one.
+--
+-- The pair is optional in config because a home-only host configures no ACME
+-- account; it is required by the flows that issue certificates. This is where
+-- those flows turn "declared" into "present", so the pure manifest renderers
+-- downstream take an 'AcmeAccount' and have no absent case to render.
+requireAcmeAccount :: ValidatedSettings -> Either String AcmeAccount
+requireAcmeAccount settings =
+  maybe
+    (Left "acme.email and acme.server must be configured to issue certificates")
+    Right
+    (coordinateAcmeAccount (validatedCoordinates settings))
+
+-- | Sprint 1.89: the home Route 53 zone id, for a caller that needs one.
+--
+-- Optional in config (a home-only host that never touches AWS declares none),
+-- required by every flow that reads or writes a home DNS record. This is the
+-- one place that turns the first into the second.
+requireHomeZoneId :: ValidatedSettings -> Either String Route53ZoneId
+requireHomeZoneId settings =
+  maybe
+    (Left "route53.zone_id must be configured to reach the home Route 53 zone")
+    Right
+    (coordinateHomeZoneId (validatedCoordinates settings))
+
+-- | Sprint 1.89: the home zone id as text, or empty when none is configured.
+--
+-- __This is a tolerance, and it is named so it is visible.__ Every consumer that
+-- can refuse does, through 'requireHomeZoneId'. This exists for the two that
+-- cannot, and the set is closed at two:
+--
+--   1. @Prodbox.Gateway.renderGatewayConfigTemplate@ — @prodbox gateway
+--      config-gen@, which emits a __starter template the operator edits__. It
+--      already renders @\"replace-with-home-cluster-id\"@ and @\"\/path\/to\/…\"@
+--      placeholders, so a blank coordinate is the same kind of blank the
+--      operator is being asked to fill in.
+--   2. @Prodbox.TestValidation.renderGatewayValidationConfigDhall@ — the
+--      /validation/ daemon config, whose @dns_write_gate@ names a zone the
+--      harness never writes through.
+--
+-- Neither is a production DNS path and neither has an error channel. Reaching
+-- for this anywhere else re-creates exactly the empty-string inhabitant Sprints
+-- 1.84 and 1.87 spent two passes removing, which is why
+-- @checkTier0CoordinateReads@ pins the call sites rather than trusting this
+-- comment.
+homeZoneIdTextForRendering :: ValidatedSettings -> Text
+homeZoneIdTextForRendering settings =
+  maybe Text.empty route53ZoneIdText (coordinateHomeZoneId (validatedCoordinates settings))
+
+-- | Sprint 1.89: the operational region as text, or empty when none is
+-- configured. The same closed tolerance as 'homeZoneIdTextForRendering', for the
+-- same two renderers.
+operationalAwsRegionTextForRendering :: ValidatedSettings -> Text
+operationalAwsRegionTextForRendering settings =
+  maybe Text.empty awsRegionText (coordinateOperationalAwsRegion (validatedCoordinates settings))
+
+-- | Sprint 1.89: the operational AWS region, for a caller that needs one.
+requireOperationalAwsRegion :: ValidatedSettings -> Either String AwsRegion
+requireOperationalAwsRegion settings =
+  maybe
+    (Left "aws.region must be configured. Run `prodbox aws setup`.")
+    Right
+    (coordinateOperationalAwsRegion (validatedCoordinates settings))
+
+-- | Attach a field name to a coordinate refusal.
+--
+-- Every coordinate message in this module is produced here, which is why
+-- 'CoordinateError' carries no field name of its own: the algebra knows the
+-- rule and the call site knows the field, and joining them at one point is what
+-- keeps the messages identical to the ones these rules produced before they
+-- were types.
+coordinateField
+  :: String -> Either CoordinateError coordinate -> Either String coordinate
+coordinateField fieldName =
+  mapLeft (\err -> fieldName ++ " " ++ renderCoordinateError err)
+
+-- | An optional coordinate: blank stays blank, present must parse.
+optionalCoordinateField
+  :: String
+  -> (Text -> Either CoordinateError coordinate)
+  -> Text
+  -> Either String (Maybe coordinate)
+optionalCoordinateField fieldName build rawValue =
+  coordinateField
+    fieldName
+    (traverseOptionalCoordinate build (normalizeCoordinateText rawValue))
+
+demoTtlCoordinateFor :: DomainSection -> Either String DnsTtl
+demoTtlCoordinateFor domainSection =
+  coordinateField "domain.demo_ttl" (mkDnsTtl (demo_ttl domainSection))
+
+awsSubstrateCoordinatesFor
+  :: AwsSubstrateSection -> Either String (Maybe Route53ZoneId, Maybe Fqdn)
+awsSubstrateCoordinatesFor section = do
+  -- Field order matches the refusal order this section has always had, so the
+  -- first message a malformed pair produces is unchanged.
+  subzone <- optionalFqdnCoordinate "aws_substrate.subzone_name" (subzone_name section)
+  zoneId <-
+    optionalCoordinateField
+      "aws_substrate.hosted_zone_id"
+      mkRoute53ZoneId
+      (hosted_zone_id section)
+  Right (zoneId, subzone)
+
+sesCoordinatesFor
+  :: SesSection -> Either String (Maybe Fqdn, Maybe DnsLabel, Maybe S3BucketName)
+sesCoordinatesFor section = do
+  senderDomain <- optionalFqdnCoordinate "ses.sender_domain" (sender_domain section)
+  receiveSubdomain <-
+    optionalCoordinateField "ses.receive_subdomain" mkDnsLabel (receive_subdomain section)
+  captureBucket <-
+    optionalCoordinateField "ses.capture_bucket" mkS3BucketName (capture_bucket section)
+  Right (senderDomain, receiveSubdomain, captureBucket)
+
+-- | An optional dotted name, minted through the repository's existing FQDN
+-- constructor rather than a second rule of the same shape.
+optionalFqdnCoordinate :: String -> Text -> Either String (Maybe Fqdn)
+optionalFqdnCoordinate fieldName rawValue =
+  case normalizeCoordinateText rawValue of
+    Nothing -> Right Nothing
+    Just value ->
+      mapLeft
+        (const (fieldName ++ " must be a valid fully qualified domain name"))
+        (Just <$> mkFqdn value)
+
+bootstrapPublicIpCoordinateFor :: DeploymentSection -> Either String (Maybe IpLiteral)
+bootstrapPublicIpCoordinateFor section =
+  coordinateField
+    "deployment.bootstrap_public_ip_override"
+    ( traverseOptionalCoordinate
+        mkIpLiteral
+        (normalizeMaybeText (bootstrap_public_ip_override section))
+    )
+
+storageCoordinateFor :: StorageSection -> Either String SafeRelativePath
+storageCoordinateFor section =
+  coordinateField
+    "storage.manual_pv_host_root"
+    (mkSafeRelativePath (manual_pv_host_root section))
+
+pulumiStateBackendCoordinatesFor
+  :: PulumiStateBackendSection
+  -> Either String (Maybe S3BucketName, Maybe AwsRegion, SafeRelativePath)
+pulumiStateBackendCoordinatesFor section = do
+  bucket <-
+    optionalCoordinateField
+      "pulumi_state_backend.bucket_name"
+      mkS3BucketName
+      (psbBucketName section)
+  -- Sprint 1.89: this field had no rule at all. Its two siblings did.
+  region <-
+    optionalCoordinateField "pulumi_state_backend.region" mkAwsRegion (psbRegion section)
+  keyPrefix <-
+    coordinateField
+      "pulumi_state_backend.key_prefix"
+      (mkSafeRelativePath (psbKeyPrefix section))
+  Right (bucket, region, keyPrefix)
+
+-- | Sprint 1.89: @route53.zone_id@ gains the shape rule
+-- @aws_substrate.hosted_zone_id@ has always had.
+--
+-- It stays /optional/ here, and that is not a weakening: an empty home zone id
+-- is the correct state for a host that never touches AWS, which is why
+-- 'validateLocalConfig' never required it and why requiring it now would refuse
+-- configs that work. What changes is that a non-empty value must be a zone id.
+-- The AWS tier's existing @requireNonEmpty@ still supplies the presence rule
+-- where presence is genuinely required.
+homeZoneIdCoordinateFor :: Route53Section -> Either String (Maybe Route53ZoneId)
+homeZoneIdCoordinateFor section =
+  optionalCoordinateField "route53.zone_id" mkRoute53ZoneId (zone_id section)
+
+-- | Sprint 1.89: the ACME contact and directory, both or neither.
+--
+-- Before this the pair was checked for emptiness on the AWS tier and for
+-- external-account-binding consistency by 'validateAcmeBinding'; neither looked
+-- at the shape of either value, so @acme.email = \"operator\"@ and
+-- @acme.server = \"acme.zerossl.com\"@ both decoded and both failed later at the
+-- ACME registration.
+-- __The half-set pair is not an error, and measuring the repository is what
+-- established that.__ This function was first written to refuse a config with
+-- one half set, on the reasoning that a half-configured account is not a usable
+-- one. That rule refuses @prodbox config generate@'s own output:
+-- 'defaultConfigFile' ships @acme.server@ as the ZeroSSL directory and
+-- @acme.email@ as @\"\"@, so /every/ home-only config is half-set by
+-- construction. The two halves are not symmetric — the directory has a
+-- compiled-in default and the contact is the operator's to supply — so the
+-- account is configured exactly when the contact is. Each half is still
+-- shape-checked independently whenever it is non-empty, which is what catches a
+-- malformed default server or a contact that is not an address.
+acmeAccountCoordinateFor :: AcmeSection -> Either String (Maybe AcmeAccount)
+acmeAccountCoordinateFor section = do
+  parsedEmail <- optionalCoordinateField "acme.email" mkEmailAddress (email section)
+  parsedServer <- optionalCoordinateField "acme.server" mkAcmeDirectoryUrl (server section)
+  Right
+    ( AcmeAccount
+        <$> parsedEmail
+        <*> parsedServer
+    )
+
+-- | Sprint 1.89: @aws.region@ gains a shape rule.
+--
+-- 'validateAwsCredentialsRef' checks the three 'SecretRef' fields beside this
+-- one and has never touched the region; 'validateOperationalAwsCredentials'
+-- checks it for emptiness on AWS-touching flows only. So on every local load the
+-- region was entirely undecided, and the first thing to notice a typo was the
+-- AWS endpoint resolver.
+-- The field name is a parameter because 'validateAwsCredentialsRef' is
+-- prefix-parameterised; passing @\"aws.region\"@ from here and @prefix ++
+-- \".region\"@ from there would be two names for one field waiting to disagree.
+awsRegionCoordinateFor :: String -> AwsCredentialsRef -> Either String (Maybe AwsRegion)
+awsRegionCoordinateFor fieldName refs =
+  optionalCoordinateField fieldName mkAwsRegion (awsCredentialRegion refs)
 
 -- | Purely-local config invariants. No operational AWS credentials, Route 53
 -- zone, or ACME account are required here, so a host with an empty @aws.*@
@@ -941,10 +1315,17 @@ validateConfig repoRoot config = do
 -- and the companion to Sprint 1.79 — the same record, the other partial fold.
 --
 -- Note the bound honestly: making the fold total says every field is *visited*,
--- not that every field is *well-typed*. The ~30 `Text` and ~40 `Natural` fields
--- carrying unstated invariants are recorded in the deletion ledger as their own
--- unowned row; a total validator is a prerequisite for narrowing them, not a
--- substitute.
+-- not that every field is *well-typed*.
+--
+-- Sprint 1.89 closed the second half. Every coordinate this fold decides is now
+-- decided by a smart constructor in "Prodbox.Settings.Coordinate" whose result
+-- 'validateConfig' keeps as 'ValidatedCoordinates', so a consumer reads the
+-- parsed value rather than re-reading the raw field. The counts this Haddock
+-- used to carry — "~30 `Text` and ~40 `Natural`" — were restatements and both
+-- were wrong; Sprint 1.88 measured 27 and 18 against them. They are not restated
+-- here, because the registry `checkTier0CoordinateReads` enforces is the
+-- inventory, and a number in prose beside it is exactly the drift that made the
+-- original figures wrong.
 validateLocalConfig :: ConfigFile -> Either String ()
 validateLocalConfig
   ( ConfigFile
@@ -972,18 +1353,24 @@ validateLocalConfig
     validateStorageSection storageSection
     validatePulumiStateBackendSection pulumiStateBackendSection
     validateComponentNodes componentNodes
-    -- `route53` and `acme` carry no purely-local invariant: an empty zone id and
-    -- an empty ACME account are the correct state for a host that never touches
-    -- AWS. Their required-ness is the AWS tier's, and
-    -- 'validateAwsBootstrapConfig' checks it there. Bound and named here so the
-    -- decision is visible rather than an omission.
-    ignoreLocallyUnconstrained route53Section acmeSection
+    validateLocallyOptionalCoordinates route53Section acmeSection
 
--- | Sections with no purely-local invariant. Exists so 'validateLocalConfig' can
--- bind every field of the record without an unused binding, which is what makes
--- the compiler notice a field nobody decided about.
-ignoreLocallyUnconstrained :: Route53Section -> AcmeSection -> Either String ()
-ignoreLocallyUnconstrained _ _ = Right ()
+-- | Sprint 1.89: the two sections with no purely-local /presence/ rule.
+--
+-- This function replaces @ignoreLocallyUnconstrained@, whose name and comment
+-- both said these sections "carry no purely-local invariant". That was true of
+-- presence and false of shape, and the difference mattered: an empty
+-- @route53.zone_id@ and an empty ACME account are the correct state for a host
+-- that never touches AWS — but @route53.zone_id = \"not-a-zone\"@ was not
+-- correct anywhere, and nothing anywhere refused it. The AWS tier's
+-- 'validateAwsBootstrapConfig' supplies the presence rule; this supplies the
+-- shape rule that was missing, on every load, for a value that is only ever
+-- optional.
+validateLocallyOptionalCoordinates
+  :: Route53Section -> AcmeSection -> Either String ()
+validateLocallyOptionalCoordinates route53Section acmeSection = do
+  void (homeZoneIdCoordinateFor route53Section)
+  void (acmeAccountCoordinateFor acmeSection)
 
 -- | Sprint 1.81: the AWS substrate coordinates. Both fields are legitimately
 -- empty on a home-only host — and @hosted_zone_id@ is legitimately empty even
@@ -992,46 +1379,26 @@ ignoreLocallyUnconstrained _ _ = Right ()
 -- refuses only a value that is present and malformed; it deliberately does not
 -- require the two to be set together.
 validateAwsSubstrateSection :: AwsSubstrateSection -> Either String ()
-validateAwsSubstrateSection section = do
-  validateOptionalFqdnField
-    "aws_substrate.subzone_name"
-    (normalizeOptionalText (subzone_name section))
-  validateOptionalHostedZoneIdField
-    "aws_substrate.hosted_zone_id"
-    (normalizeOptionalText (hosted_zone_id section))
+validateAwsSubstrateSection = void . awsSubstrateCoordinatesFor
 
 -- | Sprint 1.81: the SES identity coordinates. Empty is the correct state for a
 -- host with no SES workflow, so each field is checked only when set.
 validateSesSection :: SesSection -> Either String ()
-validateSesSection section = do
-  validateOptionalFqdnField
-    "ses.sender_domain"
-    (normalizeOptionalText (sender_domain section))
-  validateOptionalDnsLabelField
-    "ses.receive_subdomain"
-    (normalizeOptionalText (receive_subdomain section))
-  validateOptionalS3BucketField
-    "ses.capture_bucket"
-    (normalizeOptionalText (capture_bucket section))
+validateSesSection = void . sesCoordinatesFor
 
 -- | Sprint 1.81: the manual-PV host root is joined onto the repository root by
 -- 'validateConfig', so a value that escapes it is a path traversal expressed as
 -- config. It must be a safe relative path: non-empty, not absolute, and with no
 -- @..@ segment.
 validateStorageSection :: StorageSection -> Either String ()
-validateStorageSection section =
-  validateSafeRelativePath "storage.manual_pv_host_root" (manual_pv_host_root section)
+validateStorageSection = void . storageCoordinateFor
 
 -- | Sprint 1.81: the long-lived Pulumi state backend. Bucket and region are
 -- empty until the backend is provisioned, so they are checked only when set; the
 -- key prefix is always present and must be a safe relative path, because it is
 -- concatenated into object keys.
 validatePulumiStateBackendSection :: PulumiStateBackendSection -> Either String ()
-validatePulumiStateBackendSection section = do
-  validateOptionalS3BucketField
-    "pulumi_state_backend.bucket_name"
-    (normalizeOptionalText (psbBucketName section))
-  validateSafeRelativePath "pulumi_state_backend.key_prefix" (psbKeyPrefix section)
+validatePulumiStateBackendSection = void . pulumiStateBackendCoordinatesFor
 
 -- | Sprint 1.81: the component graph is validated at DECODE rather than only at
 -- projection. Before this, an authored graph with a cycle, a dangling edge, or a
@@ -1042,74 +1409,6 @@ validateComponentNodes nodes =
   case validateComponentGraph nodes of
     Left err -> Left ("components: " ++ renderComponentGraphError err)
     Right _ -> Right ()
-
--- | A path that may be joined onto a trusted root without leaving it.
-validateSafeRelativePath :: String -> Text -> Either String ()
-validateSafeRelativePath fieldName rawValue
-  | Text.null value = Left (fieldName ++ " must not be empty")
-  | Text.isPrefixOf "/" value = Left (fieldName ++ " must be a relative path, not absolute")
-  | ".." `elem` segments = Left (fieldName ++ " must not contain a `..` segment")
-  | otherwise = Right ()
- where
-  value = Text.strip rawValue
-  segments = Text.splitOn "/" value
-
-validateOptionalFqdnField :: String -> Maybe Text -> Either String ()
-validateOptionalFqdnField _ Nothing = Right ()
-validateOptionalFqdnField fieldName (Just value)
-  | isValidFqdnText value = Right ()
-  | otherwise = Left (fieldName ++ " must be a valid fully qualified domain name")
-
-validateOptionalDnsLabelField :: String -> Maybe Text -> Either String ()
-validateOptionalDnsLabelField _ Nothing = Right ()
-validateOptionalDnsLabelField fieldName (Just value)
-  | isValidDnsLabel value = Right ()
-  | otherwise = Left (fieldName ++ " must be a single DNS label")
-
-validateOptionalHostedZoneIdField :: String -> Maybe Text -> Either String ()
-validateOptionalHostedZoneIdField _ Nothing = Right ()
-validateOptionalHostedZoneIdField fieldName (Just value)
-  | Text.isPrefixOf "Z" value
-  , Text.length value >= 2
-  , Text.all (\character -> Char.isAsciiUpper character || Char.isDigit character) value =
-      Right ()
-  | otherwise = Left (fieldName ++ " must look like a Route 53 hosted-zone id (for example Z1234)")
-
-validateOptionalS3BucketField :: String -> Maybe Text -> Either String ()
-validateOptionalS3BucketField _ Nothing = Right ()
-validateOptionalS3BucketField fieldName (Just value)
-  | Text.length value >= 3
-  , Text.length value <= 63
-  , Text.all
-      ( \character -> Char.isAsciiLower character || Char.isDigit character || character `elem` ("-." :: String)
-      )
-      value
-  , not (Text.isPrefixOf "-" value)
-  , not (Text.isSuffixOf "-" value) =
-      Right ()
-  | otherwise = Left (fieldName ++ " must be a valid S3 bucket name")
-
--- | A dotted name with at least two labels, each a valid DNS label.
-isValidFqdnText :: Text -> Bool
-isValidFqdnText value =
-  length labels >= 2 && all isValidDnsLabel labels
- where
-  labels = Text.splitOn "." value
-
-isValidDnsLabel :: Text -> Bool
-isValidDnsLabel label =
-  not (Text.null label)
-    && Text.length label <= 63
-    && Text.all
-      ( \character ->
-          Char.isAsciiLower character
-            || Char.isAsciiUpper character
-            || Char.isDigit character
-            || character == '-'
-      )
-      label
-    && not (Text.isPrefixOf "-" label)
-    && not (Text.isSuffixOf "-" label)
 
 mapLeft :: (left -> left') -> Either left right -> Either left' right
 mapLeft f value = case value of
@@ -1129,8 +1428,8 @@ validateAwsBootstrapConfig config = do
   validateAcmeBinding (acme config)
   -- Sprint 1.81: the AWS-substrate public hostname is required on THIS tier and
   -- only on this tier. It used to be checked by a partial `error` at its point of
-  -- use in 'Prodbox.PublicEdge.substratePublicFqdn', which turned a config
-  -- mistake into a crash. It is not checked in 'validateLocalConfig' because an
+  -- use in the former @Prodbox.PublicEdge.substratePublicFqdn@, which turned a
+  -- config mistake into a crash. It is not checked in 'validateLocalConfig' because an
   -- empty `subzone_name` is the correct state for a home-only host.
   requireNonEmpty "aws_substrate.subzone_name" (subzone_name (aws_substrate config))
 
@@ -1159,10 +1458,8 @@ validatePublicEdgeDeployment deploymentSection = do
     "deployment.websocket_scaling"
     (websocket_scaling deploymentSection)
  where
-  validateBootstrapOverride =
-    validateOptionalIpAddressField
-      "deployment.bootstrap_public_ip_override"
-      (normalizeMaybeText (bootstrap_public_ip_override deploymentSection))
+  -- Sprint 1.89: one rule, shared with the builder that keeps the value.
+  validateBootstrapOverride = void (bootstrapPublicIpCoordinateFor deploymentSection)
   -- Sprint 1.80: a total match over the union. The "must be l2 or bgp when set"
   -- arm is gone because there is nothing left for it to reject — Dhall refuses a
   -- misspelling at type-check. What remains is the cross-field rule Dhall cannot
@@ -1190,75 +1487,18 @@ validateBgpPeer :: Int -> MetallbBgpPeer -> Either String ()
 validateBgpPeer index peer = do
   requireNonEmpty fieldPrefixName (peer_name peer)
   requireNonEmpty fieldPrefixAddress (peer_address peer)
-  validateOptionalIpAddressField fieldPrefixAddress (normalizeOptionalText (peer_address peer))
+  validateOptionalIpAddressField fieldPrefixAddress (normalizeCoordinateText (peer_address peer))
  where
   fieldPrefix = "deployment.public_edge_bgp_peers[" ++ show index ++ "]"
   fieldPrefixName = fieldPrefix ++ ".peer_name"
   fieldPrefixAddress = fieldPrefix ++ ".peer_address"
 
+-- | Sprint 1.89: the rule now lives in "Prodbox.Settings.Coordinate"; this is
+-- the field-naming wrapper the BGP-peer fold still wants, because a peer's
+-- address is refused with its index in the message.
 validateOptionalIpAddressField :: String -> Maybe Text -> Either String ()
-validateOptionalIpAddressField _ Nothing = Right ()
-validateOptionalIpAddressField fieldName (Just value)
-  | isValidIpLiteral (Text.strip value) = Right ()
-  | otherwise = Left (fieldName ++ " must be a valid IP address when set")
-
-isValidIpLiteral :: Text -> Bool
-isValidIpLiteral value =
-  isValidIpv4Literal value || isValidIpv6Literal value
-
-isValidIpv4Literal :: Text -> Bool
-isValidIpv4Literal value =
-  case Text.splitOn "." value of
-    [firstOctet, secondOctet, thirdOctet, fourthOctet] ->
-      all isValidIpv4Octet [firstOctet, secondOctet, thirdOctet, fourthOctet]
-    _ -> False
-
-isValidIpv4Octet :: Text -> Bool
-isValidIpv4Octet octet =
-  not (Text.null octet)
-    && Text.all isDigit octet
-    && case reads (Text.unpack octet) of
-      [(value, "")] -> value >= (0 :: Int) && value <= 255
-      _ -> False
-
-isValidIpv6Literal :: Text -> Bool
-isValidIpv6Literal value =
-  case Text.splitOn "::" value of
-    [groupsText] ->
-      let groups = splitIpv6Groups groupsText
-       in not (null groups) && isValidIpv6GroupList groups && ipv6GroupWidth groups == 8
-    [leftText, rightText] ->
-      let leftGroups = splitIpv6Groups leftText
-          rightGroups = splitIpv6Groups rightText
-          totalWidth = ipv6GroupWidth leftGroups + ipv6GroupWidth rightGroups
-       in isValidIpv6GroupList leftGroups
-            && isValidIpv6GroupList rightGroups
-            && totalWidth < 8
-    _ -> False
-
-splitIpv6Groups :: Text -> [Text]
-splitIpv6Groups value
-  | Text.null value = []
-  | otherwise = Text.splitOn ":" value
-
-isValidIpv6GroupList :: [Text] -> Bool
-isValidIpv6GroupList groups =
-  and (zipWith validateGroup [0 :: Int ..] groups)
- where
-  lastIndex = length groups - 1
-  validateGroup index group
-    | Text.null group = False
-    | isValidIpv4Literal group = index == lastIndex
-    | otherwise = isValidIpv6Hextet group
-
-isValidIpv6Hextet :: Text -> Bool
-isValidIpv6Hextet group =
-  let lengthValue = Text.length group
-   in lengthValue >= 1 && lengthValue <= 4 && Text.all isHexDigit group
-
-ipv6GroupWidth :: [Text] -> Int
-ipv6GroupWidth =
-  sum . map (\group -> if isValidIpv4Literal group then 2 else 1)
+validateOptionalIpAddressField fieldName maybeValue =
+  coordinateField fieldName (void (traverseOptionalCoordinate mkIpLiteral maybeValue))
 
 -- | Sprint 2.35: the served host must be covered by the configured certificate
 -- scope set, and every configured scope must be well-formed — a wildcard only at
@@ -1306,11 +1546,17 @@ validatedPublicEdgeFor domainSection awsSection
 --
 -- 'Nothing' is reachable only for 'SubstrateAws' on a config the AWS tier never
 -- validated, which is exactly the state Sprint 1.81 left representable as the
--- empty string. Every caller that has an error channel now consumes it through
--- 'Prodbox.PublicEdge.requireSubstratePublicFqdn' and refuses. The bound worth
--- stating: 'Prodbox.PublicEdge.substratePublicFqdn' still answers @\"\"@ here,
--- because its remaining consumers are pure renderers with nowhere to put a
--- refusal; narrowing it is a registered follow-up, not a claim this makes.
+-- empty string. Every caller consumes it through
+-- 'Prodbox.PublicEdge.requireSubstrateServedHost' (or its string- and
+-- scope-projecting siblings) and refuses.
+--
+-- Sprint 1.87 removed the bound that used to be stated here. The former
+-- @Prodbox.PublicEdge.substratePublicFqdn@, which answered @\"\"@ for this
+-- 'Nothing', is deleted: the public-edge renderers take a 'ValidatedServedHost'
+-- rather than a @ValidatedSettings@ and a 'Prodbox.Substrate.Substrate', so
+-- there is no longer a pure renderer with nowhere to put a refusal — the
+-- refusal happens before the renderer is reached, and the renderer's host
+-- argument has no empty inhabitant.
 substrateServedHost :: ValidatedSettings -> Substrate -> Maybe ValidatedServedHost
 substrateServedHost settings substrate = case substrate of
   SubstrateHomeLocal -> Just (validatedHomeServedHost edge)
@@ -1360,6 +1606,22 @@ certScopeSetForServedHost domainSection awsSection servedHost = do
 -- template derives from (Sprint 2.35). Empty @cert_scopes@ yields exactly the
 -- served host, so the rendered dnsNames are behavior-identical until an operator
 -- widens scope.
+-- __Sprint 1.85: kept as a named contract, deliberately.__ Sprint 1.83 replaced
+-- this function's one production consumer (the keycloak @dnsNames@ projection)
+-- with 'certScopeSetDnsNames' over the scope set 'ValidatedServedHost' already
+-- carries, leaving it reachable only from tests. The ledger recorded the choice
+-- — inline it into the contract cases, or keep it — so that it was made rather
+-- than inherited.
+--
+-- It is kept, and made load-bearing rather than merely retained. This is not the
+-- guard-shaped defect Sprint 1.82 closed: nothing reads as enforced while
+-- enforcing nothing, because it is a one-line projection of
+-- 'certScopeSetForServedHost', which /is/ production-reachable through
+-- 'validatedPublicEdgeFor'. A unit case now asserts that for a validated config
+-- this contract and the carried scope set agree on both substrates, which pins
+-- the provenance property Sprint 1.83 established: the carried set /is/ the
+-- parse, not a second derivation free to drift from it. Inlining it would have
+-- deleted the only place that agreement is stated.
 certDnsNamesForServedHost
   :: DomainSection -> AwsSubstrateSection -> Text -> Either String [Text]
 certDnsNamesForServedHost domainSection awsSection servedHost =
@@ -1381,10 +1643,8 @@ parentZoneName :: Text -> Text
 parentZoneName name = Text.drop 1 (Text.dropWhile (/= '.') (Text.strip name))
 
 validateDemoTtl :: Natural -> Either String ()
-validateDemoTtl ttl
-  | ttl < 30 = Left "domain.demo_ttl must be between 30 and 86400"
-  | ttl > 86400 = Left "domain.demo_ttl must be between 30 and 86400"
-  | otherwise = Right ()
+validateDemoTtl ttl =
+  coordinateField "domain.demo_ttl" (void (mkDnsTtl ttl))
 
 -- | Sprint 7.15: the ZeroSSL external-account-binding (EAB) key ID and HMAC
 -- key are no longer plaintext @Optional Text@; they are @SecretRef.Vault@
@@ -1409,6 +1669,11 @@ validateAwsCredentialsRef prefix refs = do
   validateVaultRef (prefix ++ ".access_key_id") (awsCredentialAccessKeyId refs)
   validateVaultRef (prefix ++ ".secret_access_key") (awsCredentialSecretAccessKey refs)
   mapM_ (validateVaultRef (prefix ++ ".session_token")) (awsCredentialSessionToken refs)
+  -- Sprint 1.89: the fourth field. This function checked the three 'SecretRef's
+  -- and skipped the region beside them, so on a local load the region was
+  -- decided by nothing at all — the AWS tier's 'validateOperationalAwsCredentials'
+  -- checks only that it is non-empty, and only when an AWS flow runs.
+  void (awsRegionCoordinateFor (prefix ++ ".region") refs)
 
 validateVaultRef :: String -> SecretRef -> Either String ()
 validateVaultRef fieldName ref =
@@ -1416,14 +1681,10 @@ validateVaultRef fieldName ref =
     SecretRefVault _ -> Right ()
     _ -> Left (fieldName ++ " must be a SecretRef.Vault reference")
 
-normalizeOptionalText :: Text -> Maybe Text
-normalizeOptionalText value =
-  if Text.strip value == ""
-    then Nothing
-    else Just value
-
+-- | Sprint 1.89: the blank-is-absent rule now has one implementation
+-- ('normalizeCoordinateText'); this lifts it over an already-optional field.
 normalizeMaybeText :: Maybe Text -> Maybe Text
-normalizeMaybeText maybeValue = maybeValue >>= normalizeOptionalText
+normalizeMaybeText maybeValue = maybeValue >>= normalizeCoordinateText
 
 isZeroSslServer :: Text -> Bool
 isZeroSslServer serverUrl =

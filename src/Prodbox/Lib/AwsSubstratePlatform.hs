@@ -187,11 +187,12 @@ import Prodbox.Lifecycle.ReadinessObservation
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , ConfigFile (..)
+  ( ConfigFile (..)
   , DeploymentSection (..)
   , ValidatedSettings (..)
+  , requireOperationalAwsRegion
   )
+import Prodbox.Settings.Coordinate (AwsRegion, awsRegionText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -544,9 +545,11 @@ awsLoadBalancerControllerServiceAccountName = "aws-load-balancer-controller"
 --   3. Adds the eks-charts Helm repo and installs the controller chart
 --      with `serviceAccount.create=false` (we own the service account).
 --   4. Waits for the controller deployment to become ready.
+-- Sprint 1.90: the region is an 'AwsRegion', so the empty inhabitant this
+-- function used to be handed is unrepresentable rather than defaulted.
 ensureAwsLoadBalancerControllerRuntime
-  :: FilePath -> String -> AwsEksTestStackSnapshot -> IO ExitCode
-ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
+  :: FilePath -> AwsRegion -> AwsEksTestStackSnapshot -> IO ExitCode
+ensureAwsLoadBalancerControllerRuntime repoRoot region snapshot
   | null (eksSnapshotAwsLbControllerRoleArn snapshot) =
       failWith
         "AWS LB Controller role ARN is empty; the AWS EKS Pulumi stack must be re-provisioned at or after Sprint 7.5.b.ii.b before installing the controller."
@@ -568,7 +571,7 @@ ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
           case repoExit of
             ExitFailure _ -> pure repoExit
             ExitSuccess -> do
-              installExit <- helmUpgradeInstall defaultRegion snapshot
+              installExit <- helmUpgradeInstall region snapshot
               case installExit of
                 ExitFailure _ -> pure installExit
                 ExitSuccess -> waitForDeployment awsLoadBalancerControllerNamespace awsLoadBalancerControllerReleaseName
@@ -643,8 +646,8 @@ ensureHelmRepoAdded repoName repoUrl = do
         , subprocessWorkingDirectory = Nothing
         }
 
-helmUpgradeInstall :: String -> AwsEksTestStackSnapshot -> IO ExitCode
-helmUpgradeInstall defaultRegion snapshot =
+helmUpgradeInstall :: AwsRegion -> AwsEksTestStackSnapshot -> IO ExitCode
+helmUpgradeInstall region snapshot =
   runStreaming
     Subprocess
       { subprocessPath = "helm"
@@ -669,7 +672,10 @@ helmUpgradeInstall defaultRegion snapshot =
           , "--set-string"
           , "serviceAccount.name=" ++ awsLoadBalancerControllerServiceAccountName
           , "--set-string"
-          , "region=" ++ extractRegionFromArn defaultRegion (eksSnapshotAwsLbControllerRoleArn snapshot)
+          , "region="
+              ++ extractRegionFromArn
+                (Text.unpack (awsRegionText region))
+                (eksSnapshotAwsLbControllerRoleArn snapshot)
           , "--set-string"
           , "vpcId=" ++ eksSnapshotVpcId snapshot
           ]
@@ -1261,7 +1267,10 @@ runAwsSubstratePlatformStep
 runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endpoint step =
   case step of
     StepAwsLoadBalancerControllerRuntime ->
-      ensureAwsLoadBalancerControllerRuntime repoRoot (awsDefaultRegion settings) snapshot
+      case requireOperationalAwsRegion settings of
+        Left err -> failWith err
+        Right region ->
+          ensureAwsLoadBalancerControllerRuntime repoRoot region snapshot
     StepAwsClusterBaseReady -> pure ExitSuccess
     StepAwsRetainedStorage -> ensureAwsSubstrateRetainedStorage repoRoot snapshot
     StepAwsMinioRuntimeBootstrap ->
@@ -1357,13 +1366,6 @@ withRequiredGatewayEndpoint step endpoint action =
             ++ "` requires the scoped gateway Service port-forward endpoint."
         )
     Just value -> action value
-
-awsDefaultRegion :: ValidatedSettings -> String
-awsDefaultRegion settings =
-  let configured =
-        Text.unpack
-          (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
-   in if null configured then "us-east-1" else configured
 
 requireAwsComponentReadiness
   :: FilePath
@@ -1936,7 +1938,15 @@ runSequentially (step : rest) = do
 -- We preserve empty segments during parsing (unlike `words`-style helpers
 -- that collapse adjacent delimiters) so the account number isn't
 -- mistakenly returned as the region; when the region segment is empty
--- the caller's `defaultRegion` is used.
+-- the caller's fallback is used.
+--
+-- __Sprint 1.90: read the sentence above carefully — the fallback is the
+-- normal path, not the exceptional one.__ IRSA role ARNs never embed a
+-- region, so the caller's value is what reaches the controller on every
+-- ordinary install. That is why the caller now supplies an 'AwsRegion'
+-- resolved from config: before this sprint it supplied @us-east-1@ whenever
+-- @aws.region@ was unset, which was not a rare degradation but the value
+-- every unconfigured install would have shipped.
 extractRegionFromArn :: String -> String -> String
 extractRegionFromArn defaultRegion arn =
   case splitKeepingEmpty ':' arn of

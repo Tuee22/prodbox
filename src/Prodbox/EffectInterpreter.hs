@@ -76,15 +76,16 @@ import Prodbox.Ses.Readiness
   ( AwsSesReadinessScope (..)
   )
 import Prodbox.Settings
-  ( ConfigFile (..)
-  , Credentials (..)
-  , Route53Section (..)
+  ( Credentials (..)
+  , ValidatedCoordinates (..)
   , ValidatedSettings (..)
   , loadConfigFile
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
   , validateOperationalAwsCredentials
+  , validatedCoordinates
   )
+import Prodbox.Settings.Coordinate (route53ZoneIdText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -554,7 +555,11 @@ runValidation context awsCredentialBoundary validation =
     case settingsResult of
       Left err -> pure (Failure err)
       Right settings -> do
-        let zoneId = zone_id (route53 (validatedConfig settings))
+        let zoneId =
+              maybe
+                Text.empty
+                route53ZoneIdText
+                (coordinateHomeZoneId (validatedCoordinates settings))
         result <-
           dispatchHostProviderIntentFresh
             LifecycleAuthorityOperator

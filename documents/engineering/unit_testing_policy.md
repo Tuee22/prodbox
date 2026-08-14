@@ -38,6 +38,32 @@ current-revision deployment evidence are owned only by the
    backup receipt ordering, retention refusal, and digest-tombstone compaction.
 9. A revision that changes deployment behavior is not closed by unit/fake evidence alone. It must
    satisfy [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+10. **A test must be able to fail, and its evidence must be able to disagree with it** (Sprint
+    `5.33`, 2026-08-11). Three properties, each of which was violated in the shipped suite:
+    - **The default path measures.** A fixture-selected node's *unset* arm — the one CI and a bare
+      invocation take — may not be equivalent to its passing fixture arm. It observes, or it
+      refuses naming what was absent. `runDaemonBootstrapValidation`'s unset arm was byte-identical
+      to its `"pass"` arm, one line apart.
+    - **Emitted evidence is rendered, not written.** A line of the form `KEY=value` in a
+      validation's output must be a projection of the value the verdict was computed from. A string
+      literal reports the same thing for every input and cannot contradict the code beside it;
+      `gateway-partition` emitted eight such lines, and `simulateFrozenCounterexample` returned a
+      constant the validation then checked against itself.
+    - **Evidence declares its provenance.** Where a node can run from either an observation or a
+      fixture, the output says which (`AUDIT_PROVENANCE=observed-daemon` vs `fixture:<name>`).
+      Otherwise the two are distinguishable only by reading the source, which is where the
+      equivalence hid.
+
+    The corollary for reviewers is a question rather than a rule: *what input would make this node
+    fail?* If the answer is "none", the node is a renderer, and calling it a validation is the
+    defect — not the code it renders.
+11. **A registration is an assertion, and a lint can hold a defect in place** (Sprint `4.76`,
+    2026-08-11). A `shouldNotContain` over source text asserts an absence as an invariant. The
+    legacy-adapter scan in `test/unit/Main.hs` forbade `discoverClusterTaggedAwsResources` in
+    `src/Prodbox/CLI/Nuke.hs`, which made the missing terminal tag sweep that
+    [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 5 and § 6b
+    assign to `nuke` an asserted property rather than an omission. Absence assertions must name the
+    doctrine that licenses the absence, so that a doctrine change surfaces them.
 
 ## 1. The Interpreter-Only Mocking Doctrine
 

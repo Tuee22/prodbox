@@ -63,6 +63,9 @@ module Prodbox.Config.Tier0
 
     -- * Schema-from-Haskell render (pure)
   , renderProjectConfigDhall
+  , tier0RecordWitness
+  , tier0WitnessPrefix
+  , stampTier0Witness
   , renderProdboxContextDhall
 
     -- * Floor projection (pure)
@@ -85,9 +88,13 @@ module Prodbox.Config.Tier0
 where
 
 import Control.Exception (SomeException, displayException, try)
+import Crypto.Hash.SHA256 qualified as SHA256
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Void (Void)
 import Dhall
@@ -99,6 +106,7 @@ import Dhall.Core (Expr)
 import Dhall.Core qualified as Core
 import Dhall.Src (Src)
 import GHC.Generics (Generic)
+import Numeric (showHex)
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Capacity.Allocation (compileResourcePlanUncertified)
 import Prodbox.Capacity.Config (ResourceVector, resource_plan)
@@ -624,12 +632,75 @@ type DhallExpr = Expr Src Void
 -- regardless — the historical unguarded body is emitted so this renderer stays
 -- total and never forces the partial capacity projection.
 renderProjectConfigDhall :: ProdboxProjectConfig -> Text
-renderProjectConfigDhall config =
+renderProjectConfigDhall unstamped =
   case compileResourcePlanUncertified plan of
     Right _ -> tier0Header <> planGuardedConfigBody config (concurrentPlanDraws plan)
     Left _ -> tier0Header <> plainConfigBody config
  where
+  -- Sprint 0.29: the generator stamps the record's own witness before
+  -- rendering, so the emitted file carries a value derived from the record it
+  -- represents. See 'stampTier0Witness'.
+  config = stampTier0Witness unstamped
   plan = resource_plan (capacity (parameters config))
+
+-- | Sprint 0.29 (pure). The generator-stamped witness over a Tier-0 record's
+-- semantic content.
+--
+-- __What this closes.__ Sprint @0.24@'s drift gate compares the sibling
+-- @prodbox.dhall@'s text against the canonical re-render of the record it
+-- decodes to. That catches representational drift, and its first mutation
+-- exercise proved it cannot catch a hand edit to a **primitive that round-trips
+-- unchanged**: a re-typed @route53.zone_id@ decodes to that value and re-renders
+-- to that value, so the edited file *is* the generator's output for the record it
+-- carries. No text comparison can separate the two, because there is nothing to
+-- compare — the file is self-consistent.
+--
+-- The witness breaks that self-consistency by carrying a value the record's own
+-- content determines. After a hand edit the file holds the *old* witness beside
+-- the *new* primitive; the drift gate re-renders the decoded record, stamps a
+-- witness computed from the edited content, and the two disagree. The existing
+-- text comparison then fires — no new gate is needed, only a field that cannot
+-- be edited consistently by hand.
+--
+-- __The digest covers @parameters@ and @context@ and not @witness@__, which is
+-- forced rather than chosen: a witness over a record containing itself has no
+-- fixed point. That is also the bound. An operator who edits a primitive *and*
+-- recomputes the witness defeats this, exactly as they would defeat any in-file
+-- stamp; what it removes is the silent edit, not the deliberate one.
+--
+-- Tier-0 carries no secret values (`tier0CarriesNoSecretValues` is the decode
+-- gate that keeps it so), so digesting the rendered record introduces no
+-- plaintext-secret hash — the prohibition
+-- [Standard P](../../../DEVELOPMENT_PLAN/development_plan_standards.md) places on
+-- evidence digests.
+tier0RecordWitness :: ProdboxProjectConfig -> Text
+tier0RecordWitness config =
+  tier0WitnessPrefix
+    <> sha256Hex
+      ( TextEncoding.encodeUtf8
+          ( Core.pretty (injectedValue (Dhall.inject @ProdboxParameters) (parameters config))
+              <> "\n"
+              <> renderProdboxContextDhall (context config)
+          )
+      )
+
+-- | Sprint 0.29: the witness scheme identifier. A future scheme appends a new
+-- prefix rather than silently changing what the same-shaped string means.
+tier0WitnessPrefix :: Text
+tier0WitnessPrefix = "prodbox-tier0-witness-v1:"
+
+-- | Sprint 0.29 (pure). Replace a record's witness list with its computed
+-- witness. Idempotent: the digest ignores the witness field, so stamping a
+-- stamped record yields the same record.
+stampTier0Witness :: ProdboxProjectConfig -> ProdboxProjectConfig
+stampTier0Witness config = config {witness = [tier0RecordWitness config]}
+
+sha256Hex :: ByteString -> Text
+sha256Hex = Text.pack . concatMap renderByte . ByteString.unpack . SHA256.hash
+ where
+  renderByte byte =
+    let rendered = showHex byte ""
+     in if length rendered == 1 then '0' : rendered else rendered
 
 -- | Sprint 5.30: the @context@ sub-record rendered by the same generic encoder
 -- the whole document uses.

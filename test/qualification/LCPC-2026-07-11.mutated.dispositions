@@ -1,0 +1,27 @@
+# LCPC-2026-07-11 — MUTATION FIXTURE. This file is deliberately wrong.
+#
+# Sprint 5.32's acceptance criterion is that
+# `prodbox test integration control-plane-counterexample` exits 0 against the
+# canonical dispositions beside this file and NON-ZERO against these. A
+# reproducer that passes both is not a reproducer.
+#
+# The mutation: `GatewayDeadlineUnderThrottle` records the superseded
+# implementation as having CLOSED the mechanism rather than having failed on it
+# — i.e. it claims there was no counterexample to reproduce. Every other row is
+# byte-identical to the canonical file, so the exercise isolates the disposition
+# that `simulateFrozenCounterexample` must consume. Before Sprint 5.32 that
+# function discarded its trace entirely, so this file and the canonical one
+# produced identical output and identical exit codes.
+#
+# It is loaded only through `MutatedFrozenTrace`, which the validation selects
+# from `PRODBOX_TEST_FROZEN_COUNTEREXAMPLE_FIXTURE=mutated`. That fixture is
+# deliberately not trace-digest-pinned: pinning it would make the digest gate
+# fire first and the disposition consumption — the thing under test — would
+# never run. Every other captured digest is still checked, so the two fixtures
+# differ in exactly one disposition and nothing else.
+
+AbsentGetAuthorityCasMismatch           superseded-failure-observed    replacement-mechanism-closed
+GatewayDeadlineUnderThrottle            replacement-mechanism-closed   replacement-mechanism-closed
+SelectedTargetAuthorityEndpointMismatch superseded-failure-observed    replacement-mechanism-closed
+AppliedButResponseLostRetainedOperation superseded-failure-observed    replacement-mechanism-closed
+FailedSiblingSkipsIndependentRestore    superseded-failure-observed    replacement-mechanism-closed

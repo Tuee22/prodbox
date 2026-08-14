@@ -52,6 +52,10 @@ import Prodbox.Minio.ObjectStoreTypes
   , VersionedObject (..)
   , defaultObjectStoreBucket
   )
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Service
   ( AsServiceError
   , runMinIOWithEnv
@@ -403,11 +407,12 @@ parseObjectVersion payload =
         _ -> Left "failed to parse get-object generation JSON: ETag is absent"
     Right _ -> Left "failed to parse get-object generation JSON: root is not an object"
 
+-- | Sprint 4.78: the marker set moved to the one owner,
+-- 'Prodbox.Observation.AbsenceMarker'. The bare @"404"@ substring is gone: it
+-- matched any message carrying that numeral anywhere, including request ids and
+-- byte counts, and minted "the object is absent" from it.
 isNoSuchKeyOutput :: ProcessOutput -> Bool
-isNoSuchKeyOutput output =
-  any (`Text.isInfixOf` stderrText) ["NoSuchKey", "Not Found", "404"]
- where
-  stderrText = Text.pack (processStderr output)
+isNoSuchKeyOutput output = reportsAbsence S3ObjectProbe (processStderr output)
 
 -- | A @NoSuchBucket@ response is a DEFINITIVE statement that the object is
 -- absent (the storage location does not exist), unlike a connection/credential
@@ -415,22 +420,13 @@ isNoSuchKeyOutput output =
 -- @Left@. 'getObject' treats this as @Right Nothing@ so first-ever bring-up
 -- (before the @prodbox-state@ bucket exists) seeds the SSoT instead of aborting.
 isNoSuchBucketOutput :: ProcessOutput -> Bool
-isNoSuchBucketOutput output =
-  any (`Text.isInfixOf` stderrText) ["NoSuchBucket", "The specified bucket does not exist"]
- where
-  stderrText = Text.pack (processStderr output)
+isNoSuchBucketOutput output = reportsAbsence S3BucketProbe (processStderr output)
 
+-- | Sprint 4.78: as above — the bare @"412"@ and @"409"@ substrings are
+-- replaced by the anchored forms an AWS CLI response actually carries.
 isConditionalConflictOutput :: ProcessOutput -> Bool
 isConditionalConflictOutput output =
-  any
-    (`Text.isInfixOf` stderrText)
-    [ "PreconditionFailed"
-    , "ConditionalRequestConflict"
-    , "412"
-    , "409"
-    ]
- where
-  stderrText = Text.pack (processStderr output)
+  reportsAbsence S3ConditionalConflictProbe (processStderr output)
 
 trim :: String -> String
 trim =

@@ -5919,10 +5919,645 @@ None on this sprint's surface. Two facts worth recording rather than leaving to 
   this sprint's build and fixed here. The lesson is the build-cache one: a warning-clean result is
   only as complete as the set of modules the run actually compiled.
 
+## Sprint 1.84: Every Caller Of The Empty Hostname Now Refuses ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `1` own-surface reopen (Standard A) on the public-edge
+config surface this phase owns; it closes the residual Sprint `1.83` registered against itself.
+**Implementation**: `src/Prodbox/PublicEdge.hs` (`substratePublicFqdn` unexported),
+`src/Prodbox/Host.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — no process topology, capability wiring,
+deadline algebra, persistence, or cleanup surface moves. What changes is that six code paths refuse
+where they previously rendered an empty hostname; a substrate that declares a served host behaves
+identically.
+**Independent Validation**: the whole change is a pure call-site refactor validated by the compiler
+plus the existing suites — no cluster, no AWS, no later phase. `prodbox dev check` exit 0;
+`prodbox test unit` exit 0.
+**Docs updated**: none under `documents/` — no governed document names this accessor; the behaviour
+it governs (a substrate without a served host is a refusal) was already stated by Sprint `1.83`.
+
+### Objective
+
+Close the row recording that `substratePublicFqdn` has a total `String` signature over a projection
+that is `Maybe`, answering `""` where the projection says "no served host".
+
+### The row's cascade estimate was wrong in both directions
+
+The row said the conversion "cascades through `substratePublicRouteUrl`,
+`substrateIdentityIssuerUrl`, and roughly a dozen **pure manifest renderers** … that have no error
+channel", and recorded that this was *measured by attempting it*. Re-measured:
+
+| Claim | Recorded | Measured |
+|---|---|---|
+| Direct `substratePublicFqdn` call sites | "roughly a dozen" pure renderers | **6**, of which **4** already sat in `IO ExitCode` |
+| Genuinely pure renderers among them | most | **2** — and both are called from `IO` one frame up |
+| Sites reached via `substratePublicRouteUrl` | counted in the dozen | **~10**, a separate wrapper with its own cascade |
+
+So the estimate was too high for the direct sites and missed that the real cascade is behind a
+*different* function. Four sites needed nothing but the accessor swapped; the two pure renderers
+needed a parameter, and their callers had an error channel to resolve in.
+
+### Deliverables
+
+- **All six direct call sites refuse.** `runHostPublicEdge`, `reconcileKeycloakRealmSecrets`,
+  `runWebsocketUpgradeValidation`, and `runKeycloakInviteValidation` resolve through
+  `requireSubstratePublicFqdn` and `failWith` the existing single-wording refusal.
+- **The two pure renderers take a resolved host.** `publicHttpRouteUrl` and
+  `adminPublicEdgeManifestItems` now receive a `String`; their IO callers
+  (`assertPublicHttpRedirect`, `ensureAdminPublicEdgeRoutes`) resolve and refuse, each split into a
+  thin resolving wrapper plus an `…At` worker so the refusal is visible at the boundary.
+- **`substratePublicFqdn` is module-private.** It is no longer exported, so the empty-string answer
+  cannot acquire a new caller. Its one surviving consumer is `substratePublicRouteUrl`, inside the
+  same module.
+
+### Why the accessor is unexported rather than deleted
+
+Deleting it requires converting `substratePublicRouteUrl`'s ~10 sites in the same change. That is
+the coupled-big-bang shape this plan has twice recorded as the thing to avoid (Sprint `4.74`
+declined it for the Vault CAS primitive; Sprint `1.83` declined it here). Unexporting delivers the
+property that actually matters while the remaining row is open — **no new caller can reach the
+empty string** — without forcing ten call sites into a refactor whose own measurement has not been
+taken. The `substratePublicRouteUrl` cascade stays a `Pending Removal` row, re-scoped with the
+measured count.
+
+### Validation
+
+1. The compiler is the proof for the call-site conversion: `substratePublicFqdn` is absent from the
+   export list, so any surviving external caller is a build error. ✅
+2. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3395/3395**;
+   `prodbox test integration cli` / `env` exit 0. ✅
+3. One unit case moved with the signature — the AWS admin-route renderer is now handed its host
+   rather than reaching for it, which is the same assertion over an explicit input. ✅
+
+### Remaining Work
+
+None on this row. The re-scoped successor is registered: `substratePublicRouteUrl` still calls the
+private accessor and still renders `https:///path` for a substrate with no served host, across ~10
+call sites. That is a smaller and better-measured row than the one this sprint closed.
+
+## Sprint 1.85: Two Surfaces That Described Themselves Wrongly ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `1` own-surface reopen (Standard A) on the config and
+CLI-parser surfaces this phase owns. Two small `Pending Removal` rows, closed together because both
+are a stated description disagreeing with the thing it describes.
+**Implementation**: `src/Prodbox/Settings.hs` (`certDnsNamesForServedHost` Haddock),
+`src/Prodbox/CLI/Spec.hs` (`destroyConfirmationHelp` and its five call sites), `test/unit/Main.hs`,
+`test/golden/cli/*`, `documents/cli/commands.md`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — no production-composition surface moves.
+The CLI change is help text and the config change is documentation plus one new assertion; no
+parser accepts or rejects anything it did not before.
+**Independent Validation**: pure unit cases plus the regenerated CLI goldens; no cluster, no AWS, no
+later phase. `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+**Docs updated**: `documents/cli/commands.md` (regenerated from the typed command registry).
+
+### Objective
+
+Close two rows whose common shape is a **description that contradicts the behaviour it describes**.
+
+### Deliverable 1 — `certDnsNamesForServedHost` is kept, and made load-bearing
+
+Sprint `1.83` replaced this function's one production consumer with `certScopeSetDnsNames` over the
+scope set `ValidatedServedHost` already carries, leaving it reachable only from tests. The row
+recorded the choice — inline it into the contract cases, or keep it — *so that it was made rather
+than inherited*.
+
+**It is kept.** It is not the guard-shaped defect Sprint `1.82` closed: nothing reads as enforced
+while enforcing nothing, because it is a one-line projection of `certScopeSetForServedHost`, which
+**is** production-reachable through `validatedPublicEdgeFor`. Keeping it is only defensible if it
+does something, so it now does: a unit case asserts that for a validated config this contract and
+the **carried** scope set agree on both substrates. That pins the provenance property Sprint `1.83`
+established — the carried set *is* the parse, not a second derivation free to drift from it — and
+inlining the function would have deleted the only place that agreement is stated.
+
+The row also said it was "exercised only by the Sprint `2.35` contract cases"; there are **five**,
+not two. Three of them carried the same three-line comment **verbatim three times**, which this
+sprint removes.
+
+### Deliverable 2 — `--yes` says what it does
+
+Sprint `4.77` made `--yes` load-bearing on the four `aws stack <stack> destroy` verbs: omitting it
+now refuses. Its help text still read **"Skip confirmation prompts"**, which describes the opposite
+relationship — these commands are non-interactive by design, so there is no prompt to skip, and the
+flag *is* the confirmation rather than a way to bypass one. `4.77` recorded this as the half it left
+open, because `yesSwitchParser` is shared with verbs that genuinely do prompt.
+
+The resolution keeps the shared parser and gives the destroy verbs their own text through a named
+constant, `destroyConfirmationHelp`. Both the parser and the typed command registry read it, so the
+`--help` page and `documents/cli/commands.md` cannot disagree.
+
+### Validation
+
+1. `prodbox aws stack eks destroy --help` renders
+   `Confirm the destroy (required; this command is non-interactive and has no prompt)`. ✅
+2. The dnsNames contract is asserted to agree with the carried scope set on both substrates. ✅
+3. Three CLI golden files and `documents/cli/commands.md` regenerated from the typed registry, so
+   the help text has one source. ✅
+4. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3396/3396**;
+   `prodbox test integration cli` / `env` exit 0. ✅
+
+### Remaining Work
+
+None. Neither row leaves a residual — the help-text row was explicitly scoped to the four destroy
+verbs, and the three `prune-corrupt-checkpoint` verbs keep "Skip confirmation prompts" correctly:
+`runPruneCorruptCheckpoint` refuses without the flag in the same way, but that verb was never
+described as prompting, so its text is accurate as written.
+
+## Sprint 1.86: Decode Is The Smart Constructor ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `1` own-surface reopen (Standard A) on the cluster-
+topology config surface this phase owns.
+**Implementation**: `src/Prodbox/Cluster/Topology.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). No production-composition surface moves and
+no rendered artifact changes — `ToDhall` is untouched, so every generated `prodbox.dhall` is
+byte-identical. What changes is which *inputs* decode: a config the smart constructors would have
+rejected now fails at decode instead of surviving to a post-hoc check.
+**Independent Validation**: pure decoder cases over hand-written Dhall expressions, with a
+well-formed control so a refusal is the invariant firing rather than a malformed expression. No
+cluster, no AWS, no later phase.
+**Docs updated**: `documents/engineering/cluster_topology_doctrine.md` § 2.2, which stated the region
+rather than the guarantee and can now state the guarantee.
+
+### Objective
+
+Close the row recording that `MachineId`, `Machine`, and `ClusterTopology` are exported abstractly to
+force their smart constructors **and** derive `FromDhall`, so decode is a second, unchecked
+constructor and the opacity stops at the decode seam —
+[chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)'s conversion
+class.
+
+### The row's prescribed shape was measured and not taken
+
+The row proposed "a `Raw*` DTO decoded then narrowed through `mkMachine`, the shape
+`Prodbox.ControlPlane.Capacity` and `Prodbox.Gateway.Settings` already use". Measured, that shape
+**cascades**: the decoded field lives on `ProdboxParameters` (Tier-0) and `ConfigFile`, both of which
+derive `FromDhall` generically over the whole record. Removing the instance from `ClusterTopology`
+forces a parallel `Raw` record for each of those two large types and every type between — the
+coupled-big-bang shape this plan has repeatedly declined.
+
+A **validating decoder** puts the narrowing at the same seam with none of that cascade, and is
+strictly stronger than the DTO: with a `Raw*` DTO the wide value exists between decode and narrow,
+whereas here there is no window in which it exists at all. `narrowingDecoder` runs a decoder's result
+through a smart constructor and reports a refusal as a Dhall **extract error**, so the failure
+arrives through the same channel a type mismatch would.
+
+### Deliverables
+
+- `MachineId`, `Machine`, `KindTopology`, `Rke2Topology`, `EksTopology`, and `ClusterTopology` no
+  longer derive `FromDhall`. Each has a hand-written instance that decodes the wire shape through
+  `record`/`field`/`union` and narrows through the constructor that owns its invariant —
+  `mkMachineId`, `mkMachine` (rule f), the non-empty rke2 rule, and `mkEksTopology`'s in-cluster
+  residency rule.
+- `ToDhall` is deliberately untouched, so rendering is unchanged and no generated config moves.
+- `validateClusterTopology` stays. It is no longer the only thing standing between a decoded value
+  and its invariants, but it remains the check for values built by other means, and removing it
+  would trade a cheap total check for nothing.
+
+### Validation
+
+1. Three decoder cases: a well-formed machine decodes (the control, so a refusal below is the
+   invariant firing and not a malformed expression); a worker/machine substrate mismatch fails the
+   decode naming `does not match machine substrate`; an all-whitespace `machine_id` fails naming
+   `machine_id must be non-empty`. Each previously produced a value the type claims cannot exist. ✅
+2. `prodbox dev check` exit 0 — including the repo's `Avoid case inside lambda body` style rule,
+   which the first draft violated and which was satisfied by extracting three named narrowing
+   helpers rather than by suppressing it. ✅
+3. `prodbox test unit` exit 0 at main Hspec **3397/3397**; `prodbox test integration cli` / `env`
+   exit 0. ✅
+
+### Remaining Work
+
+None. **One bound is worth stating**: this closes the seam for Dhall decoding, which is the only
+decode path these types have. A value constructed by record syntax inside this module still bypasses
+the constructors — that is what module-private construction is for, and the types remain exported
+abstractly so no other module can do it.
+
+## Sprint 1.87: The Empty Served Host Becomes Unconstructible ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `1` own-surface reopen (Standard A) on the public-edge
+config surface this phase owns; it closes the re-scoped successor Sprint `1.84` registered against
+itself, and with it the last Phase-`1` `Pending Removal` row on this surface.
+**Implementation**: `src/Prodbox/PublicEdge.hs` (`substratePublicFqdn` **deleted**;
+`requireSubstrateServedHost` added; both renderers retyped), `src/Prodbox/TestValidation.hs`,
+`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Settings.hs` (three stale haddock references),
+`src/Prodbox/Host.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — no process topology, capability wiring,
+deadline algebra, queueing/admission, resource envelope, persistence protocol, lifecycle
+orchestration, destructive cleanup, or substrate routing surface moves. Every rendered URL is
+byte-identical for a substrate that declares a served host; what changes is that a substrate that
+declares none refuses at a resolution boundary instead of rendering `https:///path` sixteen frames
+later.
+**Independent Validation**: a pure call-site retyping validated by the compiler plus the existing
+suites — no cluster, no AWS, no unsealed Vault, no later phase. `prodbox dev check` exit 0;
+`prodbox test unit` exit 0 at main Hspec **3399/3399** plus 27/27, 33/33, 27/27;
+`prodbox test integration cli` **57/57** and `env` exit 0.
+**Docs updated**: none under `documents/` — no governed document names these accessors; the
+behaviour they govern (a substrate without a served host is a refusal) was stated by Sprint `1.83`
+and is unchanged.
+
+### Objective
+
+Close the row recording that `substratePublicRouteUrl` renders `https:///path` for a substrate with
+no served host, across the call sites Sprint `1.84` measured as the remainder of its cascade.
+
+### The row prescribed a resolved `String`; the delivered shape is stronger, and it costs nothing
+
+The row's stated remedy was "the same move `1.84` made twice — resolve at the IO caller, hand the
+pure renderer a `String`, after which `substratePublicFqdn` can be deleted outright rather than
+merely hidden." Following it literally would have left `""` a well-typed inhabitant of the
+renderer's host argument: the refusal would live entirely in the discipline of every present and
+future caller, which is the property Sprint `1.84` already had and recorded as insufficient.
+
+The renderers instead take a `ValidatedServedHost`, the value `Prodbox.Settings.validateConfig`
+already builds. It carries an `Fqdn` — a hidden-constructor newtype minted only by `mkFqdn`, which
+refuses an empty name. So `https:///path` is not refused, it is **unconstructible**: the argument
+has no inhabitant that produces it. This was free, because the type already existed and
+`substrateServedHost` already returned it; the deleted accessor's whole body was
+`maybe "" servedHostString` over exactly that value.
+
+### The count is stated rather than estimated
+
+| Claim | Recorded by the row | Measured |
+|---|---|---|
+| `substratePublicRouteUrl` call sites | "~10" | **11** |
+| `substrateIdentityIssuerUrl` call sites | folded into the same ~10 | **5**, a separate wrapper |
+| Files | `TestValidation.hs`, `CLI/Rke2.hs` | the same two — 14 sites and 2 respectively |
+| Sites needing a new refusal | all of them | **0** — every one already sat in `IO ExitCode`, `IO (Either String _)`, or an `Either` do-block |
+
+The last row is the finding. The row's premise was that these are "pure renderers reached from IO
+callers" with no error channel, which is true of the *renderers* and false of the *frames that call
+them*: eight resolution points cover all sixteen sites, and every one of them already had a
+`failWith` or a `Left` in scope. Nothing needed an error channel invented for it.
+
+### Deliverables
+
+- **`substratePublicFqdn` is deleted.** Not unexported — gone. `requireSubstrateServedHost` is now
+  the only way to obtain a substrate's served host, and `requireSubstratePublicFqdn` /
+  `requireSubstrateCertScopeSet` are projections of it rather than three parallel `maybe` folds over
+  the same `Maybe`.
+- **Both renderers take the parsed host.** `substratePublicRouteUrl :: ValidatedServedHost ->
+  PublicEdgeRoute -> String` and `substrateIdentityIssuerUrl :: ValidatedServedHost -> String`.
+- **Eight resolution points cover sixteen sites.** `withSubstrateServedHost` in
+  `TestValidation.hs` resolves once per validation entrypoint and refuses with the existing single
+  wording; `fetchInviteOidcClaims` resolves inside its `Either` do-block;
+  `ensureAdminPublicEdgeRoutes` resolves once for the whole admin manifest set.
+- **Four functions stopped taking `ValidatedSettings` and `Substrate` altogether** —
+  `adminPublicEdgeManifestItems`, `adminSecurityPolicyManifest`, `adminOidcProviderManifest`,
+  `publicHttpRedirectMatches`, plus `assertOidcProtectedRoute`,
+  `redirectHeadersContainOidcContract`, `oidcRedirectFragments`, `completeDirectOidcLogin`, and
+  `assertPublicHttpRedirectAt`. They carried the config only to re-derive a host their caller had
+  already resolved, which is the provenance defect Sprint `1.83` named. A manifest can no longer
+  disagree with the host its caller resolved, because it is not given the means to.
+
+### Validation
+
+1. The compiler is the proof for the conversion: the accessor is gone from the module, so any
+   surviving caller is a build error, and the renderers' argument type admits no empty value. ✅
+2. `prodbox dev check` exit 0 (warning-clean, so the two now-unused `ValidatedSettings`/`Substrate`
+   parameters had to be removed rather than left). ✅
+3. `prodbox test unit` exit 0 at main Hspec **3399/3399**; `prodbox test integration cli` **57/57**;
+   `env` exit 0. ✅
+4. **Mutation-proven, and the mutation corrected the sprint's own account.** The new unit case
+   asserts `mkFqdn "" == Left EmptyName`, because that is the premise licensing the absence — and
+   per [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) canonical
+   statements 10 and 11, asserting `not (isPrefixOf "https:///" rendered)` directly would have been
+   an absence no input could produce, asserted as though it were a property of the renderer.
+   Deleting `mkFqdn`'s empty check fails the case. ✅
+
+### The mutation found a second anchor the sprint did not know it had
+
+With `mkFqdn`'s `Text.null` arm removed, `mkFqdn ""` does not return an `Fqdn` — it returns
+`Left (NameTooFewLabels "")`, because the empty string splits to a single label and the `< 2 labels`
+rule rejects it independently. So the structural guarantee has **two** anchors, not one, and a
+single-line weakening of the first does not restore the empty-host rendering. This is recorded
+because the sprint's own reasoning had assumed one anchor; the unit case pins the specific
+constructor precisely so that either anchor moving is visible rather than absorbed.
+
+### Remaining Work
+
+None, and no successor is registered. This is the terminal sprint of the `1.83` → `1.84` → `1.87`
+chain: `1.83` carried the parsed edge into `ValidatedSettings`, `1.84` converted the six direct
+sites and hid the accessor, and this deletes it along with the last shape that could produce an
+empty served hostname.
+
+## Sprint 1.88: One Production Constructor For `ValidatedSettings` ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `1` own-surface reopen (Standard A) on the Tier-0 config
+surface this phase owns.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`defaultResourceStatusSettings` **deleted**,
+`resourceStatusLines` narrowed), `src/Prodbox/CheckCode.hs` (`checkValidatedSettingsMinter`),
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). No production-composition surface moves:
+`prodbox cluster status` renders byte-identical output (verified live), no rendered manifest, wire
+format, or generated `prodbox.dhall` changes, and no process, deadline, admission, persistence, or
+cleanup behaviour is touched.
+**Independent Validation**: a call-site narrowing plus a `dev check` rule, validated by the compiler,
+the rule's own mutation exercise, and the existing suites — no cluster, no AWS, no later phase.
+`prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3402/3402**.
+**Docs updated**: none under `documents/` — the rule's own Haddock carries its bound, and
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) and
+[resource_scaling_doctrine.md](../documents/engineering/resource_scaling_doctrine.md) § 2C already
+state the doctrines it cites.
+
+### Objective
+
+Close the two facts the 2026-08-11 extension added to the Tier-0 narrowed-types row: that
+`ValidatedSettings` exports its constructor, so "no proof ⇒ no `ValidatedSettings`" is a property of
+`validateConfig` rather than of the type; and that a production site obtained one while skipping
+`validateConfig` entirely, getting its resource plan by `error`-ing on failure.
+
+### The measurement, taken before deciding anything
+
+| Claim in the row | Recorded | Measured |
+|---|---|---|
+| `Text` Tier-0 fields carrying unstated invariants | "roughly 30" | **27** |
+| `Natural` Tier-0 fields | "40" | **18** |
+| Raw `validatedConfig` read sites | "74" | **56** (`src/`) |
+| `ValidatedSettings` constructor applications, whole tree | not stated | **3** — `validateConfig`, one production forge, one test fixture |
+
+The last line is the one that decided the sprint. The row reads as though the exported constructor
+were a diffuse risk across the tree; there was exactly **one** production site exploiting it. That
+makes the guarantee closable now, independently of the per-field retyping the rest of the row
+describes.
+
+### Deliverables
+
+- **The forging site is deleted, not guarded.** `resourceStatusLines` read two of
+  `ValidatedSettings`' four fields; the wide signature was the entire reason
+  `prodbox cluster status` fabricated a record no validation had produced. It now takes the manual PV
+  root and the allocated plan it actually reads, so there is nothing left to fabricate — and **two
+  `error` calls left a production path** with it. The compile failure it used to `error` on is now a
+  value the caller renders as `RESOURCE_PLAN=unavailable:<reason>`.
+- **`checkValidatedSettingsMinter` keeps the seam closed.** Any `src/` module other than
+  `Prodbox.Settings` that assigns a `ValidatedSettings` field fails `prodbox dev check`.
+- **The rule catches record *update*, not just construction.** It keys on field assignment rather
+  than on the constructor name, because `settings { validatedAllocatedPlan = forged }` forges the
+  same claim and never spells `ValidatedSettings`.
+
+### The bound is stated, not implied
+
+This is **a compiled rule over a source region, not a property of the type** — the same wording
+Sprint `4.74` used for the Vault CAS rule, and for the same reason. The constructor stays exported
+because `test/unit/Main.hs` builds fixture settings *purely* at 40 call sites and `validateConfig` is
+`IO`; routing those through it is a coupled change with its own measurement to take. Scoping to
+`src/` follows the `RoundTripWitness` and target-sink boundaries: a test fixture may mint, and a test
+module cannot be imported by production code
+([resource_scaling_doctrine.md § 2C](../documents/engineering/resource_scaling_doctrine.md), "The
+region of Ring 2").
+
+Three unit cases hold what the rule cannot: that it admits `Settings.hs`, that it refuses both a
+construction and an update elsewhere, that it does **not** fire on a field read, and that its field
+list names every field of the record — a field added without a row there is a hole, and there is no
+way to derive the field set from the type at run time.
+
+### Validation
+
+1. Mutation-proven: re-introducing a forged `ValidatedSettings` in `src/Prodbox/CLI/Rke2.hs` makes
+   `prodbox dev check` exit **1** naming the file and the field; removing it restores exit 0 and the
+   file byte-exactly. ✅
+2. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3402/3402**. ✅
+3. `prodbox cluster status` run live on this host renders the same seven `RESOURCE_*` lines through
+   the narrowed reader. ✅
+
+### Remaining Work
+
+None on the two facts this sprint owns. **The per-field narrowing is re-scoped rather than absorbed**,
+with the corrected measurements above: 27 `Text` and 18 `Natural` fields across 56 raw read sites.
+Two facts settle its shape and neither was in the original row:
+
+- Retyping the fields **in Dhall** changes the generated `prodbox.dhall`, which is a Standard-P
+  generated-config identity change — the consequence Sprint `0.29` had to record. The non-cascading
+  shape is the one Sprint `1.83` established instead: carry the *parsed projection* on
+  `ValidatedSettings`, built by the one validation, leaving the wire format byte-identical.
+- The row's third extension fact — that the carried plan is always tagged
+  `UncertifiedUntilFirstProfile` — is **not** a property of the deleted path. `validateConfig` itself
+  calls `compileResourcePlanUncertified`. It is already owned as its own row by Sprint `4.75`
+  (`dhall/capacity/measured/` holds only `Schema.dhall`, so no profile exists for any lane), and is
+  named there rather than duplicated here.
+
+## Sprint 1.89: The Tier-0 Coordinates Keep Their Parse ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `1` own-surface reopen (Standard A) on the Tier-0 config
+surface this phase owns. Closes the last unowned row in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+**Implementation**: `src/Prodbox/Settings/Coordinate.hs` (**new** — the coordinate algebra),
+`src/Prodbox/Settings.hs` (`ValidatedCoordinates`, `validatedCoordinatesFor`, the section validators
+re-expressed as builders), `src/Prodbox/CheckCode.hs` (`checkTier0CoordinateReads`), and the eleven
+consumer modules listed under Deliverables; `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). **No generated-config identity change**: the
+Dhall wire record is untouched — no field is retyped, no schema alternative added, and
+`prodbox config generate` emits the same bytes for the same record, including Sprint `0.29`'s
+witness. Nothing in process topology, capability wiring, deadline composition, admission,
+persistence protocol, lifecycle orchestration, or cleanup moves. What does move is *refusal*: five
+coordinates that previously decoded now refuse a malformed value (see The new decisions).
+**Independent Validation**: a decode-time narrowing plus a `dev check` rule, validated by the
+compiler, the rule's own mutation exercise, and the existing suites — no cluster, no AWS, no later
+phase. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3430/3430**.
+**Docs updated**: [config_doctrine.md](../documents/engineering/config_doctrine.md) — the Tier-0
+validation surface now names the coordinate algebra and what it does and does not decide.
+
+### Objective
+
+Close the per-field remainder Sprint `1.88` split off, in the shape that sprint settled on: carry the
+*parsed projection* on `ValidatedSettings`, built by the one validation, leaving the wire format
+byte-identical.
+
+### The measurement, taken before deciding anything
+
+The row described one defect. There are two, and separating them is what made the fix small.
+
+| | Fields | What was actually true |
+|---|---|---|
+| **Decided and discarded** | 9 | `validateLocalConfig` already refused a malformed value and returned `()`. The parse happened; the proof did not survive it — the exact defect Sprint `1.83` closed for the public edge and no further. |
+| **Never decided at all** | 5 | `aws.region`, `pulumi_state_backend.region`, `route53.zone_id`, `acme.email`, `acme.server` reached live AWS, ACME, and Route 53 calls having been checked, at most, for emptiness. |
+
+Two of the five are worth naming individually because neither is a gap in an obscure corner:
+
+- **`route53.zone_id` was the less-defended of two structurally identical fields.**
+  `aws_substrate.hosted_zone_id` has been shape-checked on every load since Sprint `1.81`;
+  `route53.zone_id` — the zone every *home* DNS write uses — had only a `requireNonEmpty` on the AWS
+  tier. The same kind of value, and the two disagreed about what a valid one is.
+- **`pulumi_state_backend.region` had no rule anywhere**, while both its siblings in the same
+  three-field section had one. It is read straight into an S3 client.
+
+### Deliverables
+
+- **`Prodbox.Settings.Coordinate`** — nine smart-constructed types (`AwsRegion`, `Route53ZoneId`,
+  `S3BucketName`, `DnsLabel`, `DnsTtl`, `IpLiteral`, `EmailAddress`, `AcmeDirectoryUrl`,
+  `SafeRelativePath`), constructors unexported. Every rule that already existed is moved
+  character-for-character rather than reimplemented; only the five above are new.
+- **`ValidatedCoordinates` on `ValidatedSettings`**, built by `validateConfig` — the sole minter —
+  from `validatedCoordinatesFor`. Each `validate*Section` is now `void` over the corresponding
+  builder, so there is one rule per coordinate rather than a rule and a re-derivation that can drift.
+  That is Sprint `1.83`'s relationship between `validateConfiguredCertScope` and
+  `validatedPublicEdgeFor`, applied to the rest of the surface.
+- **35 coordinate reads across 11 modules** now read the projection — `Prodbox.CLI.Rke2`,
+  `Prodbox.TestValidation`, `Prodbox.Gateway`, `Prodbox.Lib.ChartPlatform`,
+  `Prodbox.Lib.AwsSubstratePlatform`, `Prodbox.PublicEdge`, `Prodbox.Dns`,
+  `Prodbox.EffectInterpreter`, `Prodbox.Ses.Capture`, `Prodbox.Infra.AwsEksTestStack`,
+  `Prodbox.Infra.AwsEksSubzoneStack` — plus **5 served-host reads in 4 modules** that were still
+  re-reading `domain.demo_fqdn` beside the parsed `Fqdn` Sprint `1.83` had already put there.
+- **Seven use-site re-decisions are deleted, not moved.** `valuesForGateway`'s
+  `when (null awsRegion)` and `when (… && null zoneId)`, `withEksKubeconfig`'s
+  `error "aws.region is empty"`, and `resolveAwsEksSubzoneStackConfig`'s `Text.null` pair are gone
+  because an `AwsRegion` and a `Route53ZoneId` have no empty inhabitant — the state they tested for
+  is unrepresentable rather than merely unlikely.
+- **`acmeClusterIssuerSpec` takes the parsed account and region**, not a `ValidatedSettings` to
+  re-read them from. This is Sprint `1.87`'s finding applied where it still held: handing a pure
+  renderer raw `Text` leaves `""` a well-typed inhabitant of every argument, so the refusal lives in
+  caller discipline. A ClusterIssuer with a blank ACME contact applies cleanly and fails at
+  registration.
+- **`checkTier0CoordinateReads`** fails `prodbox dev check` for any `src/` module that reaches a
+  registered coordinate through a `ValidatedSettings`, by either spelling that exists — the direct
+  chain and the local alias.
+
+### Two things the sprint got wrong first, and what corrected them
+
+**The both-or-neither ACME rule was refused by the repository's own generated config.** The account
+was first modelled as a pair that must be wholly set or wholly absent, on the reasoning that a
+half-configured account is not a usable one. `defaultConfigFile` — and therefore every
+`prodbox config generate` output, including the one beside the binary on this host — ships
+`acme.server` as the ZeroSSL directory and `acme.email` as `""`. The rule refused it. The two halves
+are **not symmetric**: the directory has a compiled-in default and the contact is the operator's to
+supply, so the account is configured exactly when the contact is. Each half is still shape-checked
+independently. A unit case now pins that the default config produces no account *and no error*.
+
+**The gate's first form produced a false positive, and the fix was a rename rather than a weaker
+rule.** `Prodbox.CLI.Rke2` binds `config` to a `validatedConfig` in one function and to a
+`loadConfigFile` result in another; the alias rule could not tell them apart. The unvalidated binding
+is now `unvalidatedConfig`, which makes the module's two config provenances textually distinct —
+which is what the rule needs, and what a reader needed anyway.
+
+### The bounds are stated, not implied
+
+- **These are shape rules.** An `AwsRegion` is a well-formed region name, not a region this account
+  can reach. Shape is what config validation can decide without a network; separating it from
+  reachability is the point, and a typo now fails at decode naming the field instead of inside an
+  AWS SDK error, or not at all.
+- **`checkTier0CoordinateReads` is a compiled rule over a source region, not a property of the
+  type** — the same bound `checkValidatedSettingsMinter` and Sprint `4.74`'s CAS rule carry. It sees
+  the two spellings that exist; a module that passed a *section* to a helper would escape it.
+- **Reads of an unvalidated `ConfigFile` are deliberately unregistered.** `Prodbox.Aws` builds a
+  config from operator answers and `resolveRetainedManualPvRoot` reads one before validation is
+  available. Raw is the only thing there is to read and no decision is discarded; registering those
+  would make the rule refuse correct code.
+- **The empty-string tolerance survives at exactly two renderers**, named in
+  `homeZoneIdTextForRendering`'s Haddock: `prodbox gateway config-gen`'s starter template, which
+  already emits `replace-with-…` placeholders, and the validation daemon config, whose
+  `dns_write_gate` names a zone the harness never writes through. Neither is a production DNS path
+  and neither has an error channel.
+- **`awsDefaultRegion`'s `us-east-1` fallback is retained deliberately and is not narrowed here.** It
+  is a silent substitution — absent becomes a specific real region — which is a different defect
+  class from a malformed value, and changing it moves where AWS flows fail rather than what they
+  accept. It is recorded as its own ledger row rather than absorbed.
+
+### Validation
+
+1. Mutation-proven: re-introducing `zone_id (route53 (validatedConfig settings))` in a `src/` module
+   makes `prodbox dev check` exit **1** naming the file and the field; the alias spelling
+   (`let config = validatedConfig settings`) is caught by the same rule, which is the spelling four
+   modules actually used. ✅
+2. `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint docs` exit 0. ✅
+3. `prodbox test unit` exit 0 at main Hspec **3430/3430** (this sprint adds 10) plus 27/27, 33/33,
+   27/27. ✅
+5. The generated config is unchanged, **run rather than asserted**: `prodbox config generate` exits 0
+   and re-emits the binary-sibling `prodbox.dhall` byte-identically —
+   `sha256 ef2fd964b971c5114d6036a63ee9c62351b51af80514fdcc5be84cdf82314b9e` before and after — which
+   is the evidence behind this sprint's `Deployment qualification: pending (not invalidated)` line
+   rather than an inference from "we did not touch the schema". Sprint `0.24`'s drift gate and
+   `0.29`'s witness both hold on the same file. ✅
+6. `prodbox test integration cli` **57/57** and `env` exit 0, both from a clean post-sprint run. ✅
+
+### Remaining Work
+
+None on this row; it moves to `Completed`. Two residuals are **recorded rather than absorbed**, each
+with the measurement that made absorbing it the wrong call: `awsDefaultRegion`'s silent regional
+default, and the `Prodbox.Infra.AwsSesStack` / `Prodbox.Aws` functions that take a bare `ConfigFile`
+and validate it internally rather than receiving a `ValidatedSettings` — a different shape from this
+row's, and one whose fix is a signature change across a provisioning surface.
+
+## Sprint 1.90: The Invented Region ✅
+
+**Status**: ✅ **Done (2026-08-13)** — Phase `1` own-surface reopen (Standard A). Closes the
+`awsDefaultRegion` row Sprint `1.89` recorded rather than absorbed.
+**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs` (`awsDefaultRegion` **deleted**;
+`ensureAwsLoadBalancerControllerRuntime` and `helmUpgradeInstall` narrowed to `AwsRegion`).
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated). No rendered manifest changes for a
+*configured* region — the same `region=` value reaches the AWS Load Balancer Controller chart. What
+changes is the unconfigured case, which now refuses instead of installing.
+**Independent Validation**: compiler plus the existing suites; the change is a refusal on a path
+whose two neighbouring refusals are already exercised.
+**Docs updated**: none under `documents/` — the doctrine (Exit Definition item 5's "no production
+config-backed admin path", Standard M's no-silent-substitution rule) already states the rule; this
+makes the code honour it.
+
+### Objective
+
+Delete a silent substitution: an unset `aws.region` became the literal `us-east-1` rather than a
+refusal, so an AWS flow launched against a region nobody configured was indistinguishable from one
+deliberately configured for `us-east-1`.
+
+### The measurement corrected the row twice, in opposite directions
+
+Sprint `1.89` declined to absorb this row on the stated ground that "changing it moves **where
+several AWS flows fail** rather than what they accept" and would need a measurement of which callers
+depend on reaching an AWS endpoint before the region is configured. Both halves of that were wrong.
+
+| Recorded | Measured |
+|---|---|
+| "several AWS flows" | **one** caller — `StepAwsLoadBalancerControllerRuntime` |
+| the default is a fallback for a rare case | **the default is the normal path** |
+
+The first correction makes the change small. The second makes it more serious than the row implied,
+and it comes from `extractRegionFromArn`'s own Haddock: IAM role ARNs **do not embed a region**, so
+for the IRSA role ARN this code passes, the region segment is always empty and the caller's value is
+always what reaches the chart. `us-east-1` was therefore not a degraded fallback taken occasionally
+— it is the region every unconfigured install would have shipped to the AWS Load Balancer Controller.
+
+**And the sole caller already fail-closes twice on its own arguments**, on an empty LB-controller
+role ARN and an empty cluster name, both with `failWith`. The error channel the row worried about
+inventing was already there and already used; the region was the one field of the three that
+answered a guess instead.
+
+### Deliverables
+
+- `awsDefaultRegion` is **deleted**, not guarded. It existed only to supply the invented value.
+- `ensureAwsLoadBalancerControllerRuntime` and `helmUpgradeInstall` take an `AwsRegion`, so the empty
+  and the invented inhabitant are both unrepresentable rather than defaulted — the shape Sprints
+  `1.87` and `1.89` established.
+- The step arm resolves through `requireOperationalAwsRegion` and refuses with its remedy
+  (`Run `prodbox aws setup`.`) when the coordinate is absent.
+
+### The bound
+
+This makes the region *present and well-formed*, not *correct for this cluster*. A configured
+`us-east-1` against an `eu-west-1` EKS cluster is still a configuration mistake this cannot see;
+what it removes is the case where nobody chose at all. The stronger check — agreeing the configured
+region with the cluster's own — needs a live coordinate from the EKS snapshot and is not attempted
+here.
+
+### Validation
+
+1. `prodbox dev check` exit 0 (warning-clean build). ✅
+2. `prodbox test unit`, `test integration cli`, `test integration env` — see
+   [README.md](README.md). ✅
+
+### Remaining Work
+
+None; the row moves to `Completed`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
+- `documents/engineering/config_doctrine.md` - the Tier-0 validation surface names the coordinate
+  algebra, what it decides (shape), and what it does not (reachability).
 - `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and its registered-real-values
   table are the rule this constant now satisfies; the doctrine itself is authored by Sprint `0.20`.
 - `documents/engineering/code_quality.md` - § Committed Values describes the scan this sprint

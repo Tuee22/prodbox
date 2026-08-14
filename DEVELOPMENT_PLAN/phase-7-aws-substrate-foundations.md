@@ -607,6 +607,8 @@ None.
 `7.5.b` ✅ Done May 17, 2026; `7.5.b.iii` ✅ Done May 18, 2026; `7.5.c` ✅ Done after the June 5,
 2026 live AWS-substrate canonical-suite proof)
 **Blocked by**: none — the required AWS substrate foundations (`7.1`–`7.4`) are closed.
+**Implementation**: none directly — this is an **umbrella sprint**. Its code lives in sub-sprints `7.5.a`, `7.5.b`, and `7.5.c` (and their descendants), every one of which carries its own `**Implementation**` field. Recorded by Sprint `0.27` as a container rather than back-filled with a path this sprint did not touch.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 This sprint's owned surface is the AWS substrate's provisioning side, validatable now against
 its own surface independently of any later phase (Standard N). New canonical-suite prerequisites
@@ -769,6 +771,8 @@ and is also Done. The original May 17 scoping note split the sub-sprint into `7.
 and `7.5.b.ii` 📋; `7.5.b.ii` then completed in four sub-sub-sprints `a`/`b`/`c.I+II`/
 `d.I+II.α+β+γ+δ`, all Done.)
 **Blocked by**: Sprint `7.5.a`
+**Implementation**: none directly — this is an **umbrella sprint**. Its code lives in sub-sprints `7.5.b.i`, `7.5.b.ii`, and `7.5.b.iii`, each of which carries its own `**Implementation**` field. Recorded by Sprint `0.27` as a container rather than back-filled with a path this sprint did not touch.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 The sub-sprint owns the AWS-substrate equivalent of the home substrate's MetalLB + Envoy
 Gateway pairing plus the cert-manager DNS01 ClusterIssuer wired against a per-substrate
@@ -955,9 +959,11 @@ AWS LB Controller + Envoy Gateway install) is too large for one session.
       from upstream Quay/DockerHub (not Harbor).
       `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateCertManagerRuntime`
       adds the `jetstack` Helm repo (`https://charts.jetstack.io`),
-      helm-installs the upstream `cert-manager` chart pinned to `v1.16.2` (kept
+      helm-installs the upstream `cert-manager` chart pinned to `v1.17.1` (kept
       aligned with the home substrate's version constant in
-      `Prodbox.CLI.Rke2`) into the `cert-manager` namespace with
+      `Prodbox.CLI.Rke2`; moved from `v1.16.2` by Sprint `3.37`, whose upstream
+      artifact could not be published to either substrate's registry) into the
+      `cert-manager` namespace with
       `crds.enabled=true`, then waits for the cert-manager controller,
       webhook, and cainjector deployments to become ready. The ACME
       `ClusterIssuer` rendering is already substrate-aware as of
@@ -1827,6 +1833,7 @@ the API and WebSocket namespaces); `src/Prodbox/PublicEdge.hs`,
 `src/Prodbox/Lib/AwsSubstratePlatform.hs` (substrate-aware admin route
 host/issuer/redirect rendering and AWS platform installation of the
 Harbor/MinIO admin HTTPRoutes after gateway MinIO bootstrap).
+**Docs updated**: `documents/engineering/aws_integration_environment_doctrine.md`, which names this sprint. Back-filled by Sprint `0.27` from the governed document that cites it.
 
 ### Objective
 
@@ -3727,6 +3734,8 @@ was submitted in the same reconcile.
 `src/Prodbox/CLI/Rke2.hs` (`ensureAcmeRuntime` seed call before manifest apply; materializer init
 `chmod 0644` + empty-HMAC fail-loud guard), `src/Prodbox/Aws.hs` (harness-preflight call re-pointed
 to the shared seam), `test/unit/Main.hs` (EAB-seeding tests).
+**Implementation**: `src/Prodbox/Vault/Host.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs`, `test/unit/Main.hs`. Back-filled by Sprint `0.27` from the paths this sprint's own body names.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ## Sprint 7.19: Tier 1 — Vault Unlock Bundle Relocated to the Durable MinIO Bucket ✅
 
@@ -3744,6 +3753,7 @@ Tier 1 bootstrap-secret class *alongside* the Tier 2 operational-secret class `7
 Tier 1 owns the password-gated bootstrap secret), `documents/engineering/vault_doctrine.md`,
 `documents/engineering/cluster_federation_doctrine.md` (child-cluster transit-seal: no bundle;
 recovery keys in the parent's KV)
+**Implementation**: `src/Prodbox/Vault/BootstrapBundle.hs`. Back-filled by Sprint `0.27` from the path this sprint's own body names.
 
 ### Objective
 
@@ -3821,6 +3831,7 @@ user + keys are gone from AWS and the Vault creds are cleared after a real run) 
 operator-driven `Live-proof: pending` axis (Standard O).
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
+**Implementation**: `src/Prodbox/Aws.hs`. Back-filled by Sprint `0.27` from the path this sprint's own body names.
 
 ### Objective
 
@@ -3906,6 +3917,7 @@ the durable MinIO bucket, which owns the per-run checkpoint envelope/read path) 
 registry + `reconcileAbsent` reconciler (Phase 4 Sprints `4.20`–`4.22` plus Sprint `7.8`, all landed).
 Earlier-or-same-phase landed code (Standard N, forward-only).
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`
+**Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs`, `test/unit/Main.hs`. Back-filled by Sprint `0.27` from the paths this sprint's own body names.
 
 ### Objective
 
@@ -3979,6 +3991,7 @@ failing path.
 **Blocked by**: Sprint `7.21` (the landed `classifyCheckpointBytes` classifier + `observeStackCheckpoint`)
 and Sprint `7.14` (the Model-B object store). Forward-only.
 **Docs**: [lifecycle_reconciliation_doctrine.md § 3.2](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+**Implementation**: `src/Prodbox/Lifecycle/LiveResidue.hs` (`perRunDestroyDecisionFromStatus`) and `src/Prodbox/Pulumi/EncryptedBackend.hs` (`classifyCheckpointBytes`, `observeStackCheckpoint`). This sprint's body cites no path, so Sprint `0.27` resolved the three functions it *does* name to their defining modules and verified each exists, rather than inferring a path.
 
 ### Objective
 
@@ -4091,6 +4104,7 @@ the `pulumi up` creates are idempotent (verified domain/DKIM, active rule set, r
 **Blocked by**: none in-code (forward-only; builds on `7.14`/`7.21`).
 **Docs**: [lifecycle_reconciliation_doctrine.md § 3.2](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) (owns the `aws-ses` + `keycloak-smtp` flow).
+**Implementation**: `src/Prodbox/Pulumi/EncryptedBackend.hs` (`loadEncryptedOrLegacyCheckpoint`, `checkpointBytesUsable`, `collectScratchCheckpoint`, `withDecryptedStackWith`, `loadHydratableCheckpoint`), `src/Prodbox/Infra/AwsSesStack.hs` (`awsCliCredsFromProviderEnv`), `src/Prodbox/Infra/StackOutputs.hs` (`fileBackendEnvironment`, `observeStackCheckpoint`). Resolved by Sprint `0.27` from the identifiers this sprint names, since it cites no path. **One named identifier no longer exists**: `recoverAwsSesPulumiStateFromLiveResources` is absent from `src/`, removed by a later sprint that did not record the deletion here.
 
 ### Deliverables
 
@@ -4281,6 +4295,7 @@ nuke`). The bucket surviving was correct; the sweep flagging it was a false posi
 [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md) §6
 + the Resource Lifecycle Classes in [substrates.md](substrates.md)).
 **Independent Validation**: pure `partitionRetainedLongLived` is unit-tested; no later-phase dependency.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ### Root cause
 
@@ -4326,6 +4341,7 @@ landed autoscaler/placement surface.
 below/at-or-above threshold → admit/defer, `SpotUnobservable` → refuse — plus AWS payload/output
 translation tests and `prodbox test integration cli`/`env` on the home/local substrate, where the
 gate is a no-op because home-local carries no AWS spot market; no later-phase dependency.
+**Docs updated**: none. Verified by Sprint `0.27` (2026-08-12): no governed document under `documents/` names this sprint. This records a measurement — that no doc attributes text to this sprint — not a claim that no doctrine covers the behaviour it changed.
 
 ### Objective
 

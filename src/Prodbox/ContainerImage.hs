@@ -272,7 +272,7 @@ harborKubeRbacProxyImage :: ImageRef
 harborKubeRbacProxyImage = harborImageRefFromRepository "kube-rbac-proxy-mirror" "v0.12.0"
 
 harborCertManagerControllerImage :: ImageRef
-harborCertManagerControllerImage = harborImageRefFromRepository "cert-manager-controller-mirror" "v1.16.2"
+harborCertManagerControllerImage = harborImageRefFromRepository "cert-manager-controller-mirror" "v1.17.1"
 
 -- | Sprint 7.12: the cert-manager Helm chart version, sourced from the
 -- single cert-manager controller image tag so chart + image stay in
@@ -283,16 +283,16 @@ certManagerChartVersion :: String
 certManagerChartVersion = imageTag harborCertManagerControllerImage
 
 harborCertManagerWebhookImage :: ImageRef
-harborCertManagerWebhookImage = harborImageRefFromRepository "cert-manager-webhook-mirror" "v1.16.2"
+harborCertManagerWebhookImage = harborImageRefFromRepository "cert-manager-webhook-mirror" "v1.17.1"
 
 harborCertManagerCainjectorImage :: ImageRef
-harborCertManagerCainjectorImage = harborImageRefFromRepository "cert-manager-cainjector-mirror" "v1.16.2"
+harborCertManagerCainjectorImage = harborImageRefFromRepository "cert-manager-cainjector-mirror" "v1.17.1"
 
 harborCertManagerAcmesolverImage :: ImageRef
-harborCertManagerAcmesolverImage = harborImageRefFromRepository "cert-manager-acmesolver-mirror" "v1.16.2"
+harborCertManagerAcmesolverImage = harborImageRefFromRepository "cert-manager-acmesolver-mirror" "v1.17.1"
 
 harborCertManagerStartupApiCheckImage :: ImageRef
-harborCertManagerStartupApiCheckImage = harborImageRefFromRepository "cert-manager-startupapicheck-mirror" "v1.16.2"
+harborCertManagerStartupApiCheckImage = harborImageRefFromRepository "cert-manager-startupapicheck-mirror" "v1.17.1"
 
 canonicalImagePlatforms :: [(String, String)]
 canonicalImagePlatforms =
@@ -395,23 +395,23 @@ requiredPublicImageMirrors =
       [ImageRef "gcr.io" "kubebuilder/kube-rbac-proxy" "v0.12.0"]
       harborKubeRbacProxyImage
   , mirroredPublicImage
-      (ImageRef "quay.io" "jetstack/cert-manager-controller" "v1.16.2")
+      (ImageRef "quay.io" "jetstack/cert-manager-controller" "v1.17.1")
       []
       harborCertManagerControllerImage
   , mirroredPublicImage
-      (ImageRef "quay.io" "jetstack/cert-manager-webhook" "v1.16.2")
+      (ImageRef "quay.io" "jetstack/cert-manager-webhook" "v1.17.1")
       []
       harborCertManagerWebhookImage
   , mirroredPublicImage
-      (ImageRef "quay.io" "jetstack/cert-manager-cainjector" "v1.16.2")
+      (ImageRef "quay.io" "jetstack/cert-manager-cainjector" "v1.17.1")
       []
       harborCertManagerCainjectorImage
   , mirroredPublicImage
-      (ImageRef "quay.io" "jetstack/cert-manager-acmesolver" "v1.16.2")
+      (ImageRef "quay.io" "jetstack/cert-manager-acmesolver" "v1.17.1")
       []
       harborCertManagerAcmesolverImage
   , mirroredPublicImage
-      (ImageRef "quay.io" "jetstack/cert-manager-startupapicheck" "v1.16.2")
+      (ImageRef "quay.io" "jetstack/cert-manager-startupapicheck" "v1.17.1")
       []
       harborCertManagerStartupApiCheckImage
   ]

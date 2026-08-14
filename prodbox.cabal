@@ -190,6 +190,7 @@ library
         Prodbox.ControlPlane.EksClientAuthClient
         Prodbox.ControlPlane.Interpreter
         Prodbox.ControlPlane.InClusterAuthorityStore
+        Prodbox.ControlPlane.ListenPort
         Prodbox.ControlPlane.LocalClient
         Prodbox.ControlPlane.LifecycleAuthorityAuthentication
         Prodbox.ControlPlane.MigrationEndpoint
@@ -450,6 +451,7 @@ library
         Prodbox.Minio.RootCredential
         Prodbox.Naming
         Prodbox.Native
+        Prodbox.Observation.AbsenceMarker
         Prodbox.PostgresPlatform
         Prodbox.Prerequisite
         Prodbox.PrerequisiteId
@@ -470,6 +472,7 @@ library
         Prodbox.Secret.VaultInventory
         Prodbox.Service
         Prodbox.Settings
+        Prodbox.Settings.Coordinate
         Prodbox.Settings.SecretRef
         Prodbox.Scaling.Autoscaler
         Prodbox.Scaling.Spot

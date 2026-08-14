@@ -1765,18 +1765,23 @@ return `QualificationPendingLiveEvidence`, which fails **safe**: it can never cl
 has not observed. The typed 8-assertion / 23-fault / two-substrate artifact is real; what is absent
 is a path by which any of it can fail.
 
-The falsifying half is owned by Sprint `5.32` 📋. Until it lands, this sprint's counterexample line
-may not be cited to fill the Counterexample column of either Deployment Qualification row
-([README.md](README.md#deployment-qualification)); both rows are already
-`pending`, so nothing is retracted.
+The falsifying half was owned by Sprint `5.32`, and it is ✅ **Done (2026-08-11)**: the reproducer
+now consumes a repository-owned frozen trace and exits non-zero against a committed mutation
+fixture. This sprint's counterexample line may therefore be cited for the Counterexample column of a
+Deployment Qualification row once a qualification run fills it
+([README.md](README.md#deployment-qualification)); both rows remain `pending` because no such run
+has happened. The narrower observation above is unchanged and still stands:
+`codeLocalQualificationStatus` ignores its argument and can only report
+`QualificationPendingLiveEvidence`, which fails safe.
 
 ### Remaining Work
 
 - None on the sprint-owned code surface. Live qualification remains Pending until both substrate
   campaigns and the full fault matrix are recorded; it does not change phase status but does gate
   deployment-ready/seamless claims.
-- The counterexample-falsifiability dependency recorded above is owned by Sprint `5.32` 📋 and does
-  not reopen this phase (Standard N: a later-registered sprint never blocks an earlier phase).
+- The counterexample-falsifiability dependency recorded above was owned by Sprint `5.32` ✅
+  (2026-08-11) and is discharged. It never reopened this phase (Standard N: a later-registered
+  sprint never blocks an earlier phase).
 
 ## Documentation Requirements
 

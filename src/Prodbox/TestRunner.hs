@@ -607,7 +607,6 @@ testScopeForTopologySuite suiteName =
     "env" -> Right (TestIntegration IntegrationEnv)
     "gateway-daemon" -> Right (TestIntegration IntegrationGatewayDaemon)
     "gateway-pods" -> Right (TestIntegration IntegrationGatewayPods)
-    "gateway-partition" -> Right (TestIntegration IntegrationGatewayPartition)
     "control-plane-counterexample" -> Right (TestIntegration IntegrationControlPlaneCounterexample)
     "ha-rke2-aws" -> Right (TestIntegration IntegrationHaRke2Aws)
     "lifecycle" -> Right (TestIntegration IntegrationLifecycle)
@@ -942,6 +941,11 @@ awsHarnessCleanupPlan repoRoot environment suitePlan = do
     pure $ case result of
       K8sDrain.DrainSucceeded -> ExitSuccess
       K8sDrain.DrainSkipped _ -> ExitFailure 1
+      -- Sprint 4.76: an undecidable cluster probe is a cleanup failure
+      -- here for the same reason a skipped drain always has been — the
+      -- EKS cluster is the source of the AWS resources this node exists
+      -- to release, and "I could not tell" is not "there was nothing".
+      K8sDrain.DrainUnobservable _ -> ExitFailure 1
       K8sDrain.DrainTimedOut _ -> ExitFailure 1
       K8sDrain.DrainFailed _ -> ExitFailure 1
   runDnsValidationZoneSweep = destroyValidationHostedZones repoRoot environment
@@ -2017,7 +2021,6 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationHaRke2Aws -> GatewayRuntimeNoBoundary
     ValidationGatewayDaemon -> GatewayRuntimeNoBoundary
     ValidationGatewayPods -> GatewayRuntimeNoBoundary
-    ValidationGatewayPartition -> GatewayRuntimeNoBoundary
     ValidationControlPlaneCounterexample -> GatewayRuntimeNoBoundary
     ValidationCertificateScope -> GatewayRuntimeNoBoundary
     ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary

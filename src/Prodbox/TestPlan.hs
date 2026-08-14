@@ -42,7 +42,6 @@ data NativeValidation
   | ValidationHaRke2Aws
   | ValidationGatewayDaemon
   | ValidationGatewayPods
-  | ValidationGatewayPartition
   | ValidationControlPlaneCounterexample
   | ValidationCertificateScope
   | ValidationCleanRoomHandoff
@@ -230,12 +229,6 @@ testExecutionPlan substrate scope =
             "integration-gateway-pods"
             [ValidationGatewayPods]
             True
-        IntegrationGatewayPartition ->
-          nativeNamedSuite
-            "integration gateway-partition"
-            "integration-gateway-partition"
-            [ValidationGatewayPartition]
-            False
         IntegrationControlPlaneCounterexample ->
           nativeNamedSuite
             "integration control-plane-counterexample"
@@ -426,7 +419,6 @@ canonicalNativeValidations =
   , ValidationPulumi
   , ValidationHaRke2Aws
   , ValidationGatewayDaemon
-  , ValidationGatewayPartition
   , ValidationControlPlaneCounterexample
   , ValidationCertificateScope
   , ValidationCleanRoomHandoff
@@ -475,8 +467,6 @@ validationInitialPrerequisites validation =
     ValidationGatewayDaemon -> clusterPrerequisites ++ [ToolCurl]
     -- gateway-pods inspects in-cluster pods: cluster only.
     ValidationGatewayPods -> clusterPrerequisites
-    -- gateway-partition is fully in-process: no prerequisites.
-    ValidationGatewayPartition -> []
     ValidationControlPlaneCounterexample -> []
     ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
     ValidationCleanRoomHandoff -> []
@@ -515,7 +505,6 @@ validationDeferredPrerequisites validation =
     ValidationHaRke2Aws -> [PulumiLoggedIn]
     ValidationGatewayDaemon -> []
     ValidationGatewayPods -> []
-    ValidationGatewayPartition -> []
     ValidationControlPlaneCounterexample -> []
     ValidationCertificateScope -> []
     ValidationCleanRoomHandoff -> []
@@ -633,7 +622,6 @@ nativeValidationId validation =
     ValidationHaRke2Aws -> "ha-rke2-aws"
     ValidationGatewayDaemon -> "gateway-daemon"
     ValidationGatewayPods -> "gateway-pods"
-    ValidationGatewayPartition -> "gateway-partition"
     ValidationControlPlaneCounterexample -> "control-plane-counterexample"
     ValidationCertificateScope -> "certificate-scope"
     ValidationCleanRoomHandoff -> "clean-room-handoff"

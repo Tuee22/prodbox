@@ -2537,6 +2537,7 @@ set — status values, relative links, generated-section harmony, and the sectio
 gate over the new § 24.
 **Docs to update**: `documents/engineering/chaos_hardening_doctrine.md`,
 `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/code_quality.md`.
+**Implementation**: `documents/engineering/chaos_hardening_doctrine.md` (§ 24 and its § 12 ledger row), `documents/engineering/helm_chart_platform_doctrine.md` and `documents/engineering/code_quality.md` (the in-place probe/route single-source correction). Documentation-only: this sprint compiles nothing, so the Standard-H field names the governed documents it authored rather than a `src/` path it did not touch. Back-filled by Sprint `0.27` from this sprint's own body.
 
 ### Objective
 
@@ -2601,10 +2602,306 @@ between a rendered value and its compiled owner, not correctness of the owner. I
 caught this outage: with the owner still saying `443`, the cluster breaks identically. § 24 exists
 because the failure was a layer error, and no gate over literals detects a layer error.
 
+## Sprint 0.27: Every Sprint Names What It Touched, And A Gate Keeps It That Way ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `0` own-surface reopen (Standard A) on the plan-document
+metadata surface this phase already owns through Sprint `0.21`, which made `**Status**:` values and
+cited-source-path existence machine gates and struck `**Referenced by**:` repository-wide. It neither
+recloses nor reopens the phase on any other account.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`planSprintBlocks`, `sprintBlockMissingFields`,
+`checkSprintRequiredFields`, wired into `runGovernedDocChecks`), `test/unit/Main.hs`, and the
+back-filled header fields in `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
+`DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, and
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — this sprint changes plan documentation and
+a developer-tooling gate; it moves no production-composition surface. Note that `SourceIdentity`
+binds governed documentation, so these edits do move the source-manifest digest a future `proven` row
+would bind.
+**Independent Validation**: `prodbox dev lint docs` exit 0 on the back-filled plan, and a mutation
+exercise that deletes one back-filled field and confirms the gate names the sprint; pure unit cases
+over `planSprintBlocks` / `sprintBlockMissingFields`. No cluster, no AWS, no later phase.
+**Docs updated**: none under `documents/` — the standards this gate enforces
+([Standard H](development_plan_standards.md#h-sprint-status-format),
+[Standard G](development_plan_standards.md#g-phase-documentation-requirements)) already say what the
+gate now checks, so restating them would be the § 1 duplication
+[documentation_standards.md](../documents/documentation_standards.md) forbids.
+
+### Objective
+
+Close the `Pending Removal` row recording that `Done` sprints state closures which cannot be audited
+against source, and close it in the shape Sprint `0.21` established: measure, back-fill from
+evidence, then make the requirement mechanical so the debt cannot recur.
+
+### The row's measurements were wrong, and correcting them is half the sprint
+
+The row read: **19** `Done` sprints carry no `**Implementation**` line and **39** carry no docs line,
+"among the 19 are Sprints `4.50` and `1.62`". Re-measured across all **359** sprint blocks — every
+one of which is `Done`, so the population is the whole plan:
+
+| Claim | Recorded | Measured |
+|---|---|---|
+| No `Implementation` field in any form | 19 | **11** |
+| `Implementation` present, heading non-standard | — | **4** |
+| No docs field in any form | 39 | **10** |
+
+The 4-row category is the one the original count missed and the reason the headline number was
+inflated. Sprint `1.62` writes `**Implementation** (landed):` and the Phase-7 increments write
+`**Implementation (Increment A, 2026-07-26)**:`; both name their paths, and both fail a naive
+`^\*\*Implementation\*\*:` match. **Sprint `4.50` is not in any of the three categories** — it names
+its paths under increment headings — so the row's own example was wrong.
+
+This is recorded rather than quietly corrected because the same mistake was available to this
+sprint: the first measurement taken here returned 13/2/10 and put `1.62` in the *missing* column,
+for exactly the reason the original row did. The gate's predicate accepts all three heading forms
+precisely so it cannot re-report a formatting difference as missing evidence.
+
+### Deliverables
+
+- **Every one of the 359 sprint blocks carries both fields.** Back-filled from each sprint's own
+  body, never by inference — the row's own warning is that a fabricated path is worse than a missing
+  one, since `checkPlanCitedSourcePaths` will either fail the build on a path that does not exist or
+  silently point a reader at the wrong module.
+- **Three back-fill categories, each stated as what it is** rather than flattened into a path list:
+  - *Named in the sprint's body* (8 sprints) — `2.37`, `2.39`, `7.18`–`7.21` and the docs fields —
+    taken verbatim and verified to exist in the worktree.
+  - *Resolved from named identifiers* (2 sprints) — `7.22` and `7.23` cite no path at all, so the
+    functions they do name were resolved to their defining modules by search. This surfaced a
+    finding: `recoverAwsSesPulumiStateFromLiveResources`, which Sprint `7.23` names, is **absent
+    from `src/`** — removed by a later sprint that did not record the deletion. The field says so.
+  - *Umbrella sprints* (2 sprints) — `7.5` and `7.5.b` have no code of their own; every one of their
+    sub-sprints carries its own `Implementation`. Their field points at the sub-sprints and says
+    they are containers, which is the honest answer and not the one a path-shaped field invites.
+- **A `dev docs check` gate**, `checkSprintRequiredFields`, wired into `runGovernedDocChecks`
+  alongside Sprint `0.21`'s status-value and cited-path gates. Its predicate is fenced-block-aware
+  and accepts every heading form the plan actually uses.
+- **A docs field of `none` is a measurement, not a shrug.** For the 8 sprints where no governed
+  document names them, the field records that this was verified by search on a date — distinguishing
+  "no doc attributes text to this sprint" from "no doctrine covers the behaviour it changed", which
+  are different facts and only the first was checked.
+
+### Validation
+
+1. Every sprint block in `DEVELOPMENT_PLAN/phase-*.md` carries both fields: re-scan returns empty
+   for both. ✅
+2. **Mutation exercise.** Deleting Sprint `0.26`'s back-filled `**Implementation**` line makes
+   `prodbox dev lint docs` exit 1 naming `Sprint 0.26`; restoring it returns exit 0 and the file is
+   byte-identical by md5. A gate whose first run finds nothing has had its region drawn to fit the
+   code, so this is the evidence that it fires. ✅
+3. Eight unit cases over the pure halves, including the two non-standard heading forms that caused
+   the original overcount, a fenced-block negative, and a prose line that merely begins with bold. ✅
+4. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3382/3382**. ✅
+
+### Remaining Work
+
+None. The row is closed by back-fill plus gate; the ledger entry moves to `Completed` carrying the
+corrected measurements.
+
+**What this gate does not do, stated rather than implied.** It checks that a field is *present*, not
+that its contents are true. A sprint naming a path it did not touch passes this gate and fails
+`checkPlanCitedSourcePaths` only if the path does not exist. Closing that gap would require binding
+each sprint to a diff, which this repository's squashed history cannot support — recorded here so
+the bound is stated rather than assumed.
+
+## Sprint 0.28: Three Gates Whose Region Was Drawn To Fit The Code ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `0` own-surface reopen (Standard A) on the gate-region
+surface this phase owns; Phase `0`'s owner column has named "conversion boundaries and gate regions"
+since Sprint `0.25`.
+**Implementation**: `src/Prodbox/CheckCode.hs` (`awsCreateVerbs`, `destructivePlanOptionsArms`,
+`planOptionsProjectionExemptions`, `scopedPathMissingViolation`, `productionEnvVarRegistry`,
+`productionEnvVarNamesIn`, `isEnvironmentVariableName`, `checkProductionEnvVarReads`),
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (not invalidated) — developer tooling only; no
+production-composition surface moves. No runtime behaviour changes; the three gates observe more.
+**Independent Validation**: four mutation exercises (unregistered env read, registry entry with no
+call site, create-verb outside its owner, missing scoped file), each restoring byte-exactly by md5;
+nine unit cases. No cluster, no AWS, no later phase.
+**Docs updated**: `documents/engineering/lifecycle_reconciliation_doctrine.md` § 3.1 invariants 1 and
+4, which state each gate's region and must move with it.
+
+### Objective
+
+Close the `Pending Removal` row recording that three `check-code` gates back claims materially wider
+than the region they scan. The row's own framing is the constraint: *"closing the row means deciding
+what the registry owes, not lengthening a substring list."*
+
+### Deliverables
+
+- **`awsCreateVerbs` gains the six verbs measured outside it** — `create-volume`,
+  `create-receipt-rule-set`, `put-bucket-policy`, `put-object`, `put-public-access-block`,
+  `request-service-quota-increase` — each against the owner module measured to contain its
+  subprocess literal. The bound is unchanged in kind and only in extent, and the Haddock says so: a
+  substring allowlist over a stated region is a
+  [§ 22](../documents/engineering/chaos_hardening_doctrine.md) region claim, not a totality proof.
+- **`destructivePlanOptionsArms` goes from 2 constructors to 9**, and the region from 3 files to 7.
+  A unit case had pinned the table to exactly `["Rke2Delete", "NativeNuke"]` — the two-constructor
+  region was an *asserted invariant* while seven destructive constructors dispatched outside it, the
+  same shape Sprint `4.76` found in the `nuke` sweep. It carries a Standard-C correction.
+- **Both scoped gates fail closed on a missing file.** Each answered a missing scoped path with
+  `pure []`, so a rename silently emptied the gate's region while the gate kept passing — the
+  fail-open shape this doctrine names, applied to the gates themselves.
+- **`checkEnvVarConfigReads` is joined by a registry rather than widened.** The row asks for the
+  registry, and a whole-file `lookupEnv` ban could not have been extended to
+  `src/Prodbox/CLI/Rke2.hs` anyway: its reads are legitimate production reads that do not reach
+  Tier-0 config, so adding the file would have failed the gate rather than described it. The new
+  `checkProductionEnvVarReads` is a **bijection** over all of `src/` and `app/`, in the
+  legacy-escape-registry idiom: an unregistered read fails, a read outside its registered owner
+  fails, and a registry entry with no surviving call site fails.
+
+### What the measurement found that neither document recorded
+
+The ledger row named four unguarded `PRODBOX_*` reads in `src/Prodbox/CLI/Rke2.hs`, and `CLAUDE.md`
+names the same four. The measured set is **12** non-`PRODBOX_TEST_` names:
+
+| Where | Count | Recorded before |
+|---|---|---|
+| `src/Prodbox/CLI/Rke2.hs` | 5 (the four named, with the LB-IP pair counted as one) | yes |
+| `src/Prodbox/CLI/Interactive.hs` | 1 (`PRODBOX_ALLOW_NON_TTY_INTERACTIVE`) | yes |
+| `src/Prodbox/CLI/Nuke.hs` | 1 (`PRODBOX_NUKE_PLAN`) | **no** |
+| `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsSesStack.hs` | 5 (`PRODBOX_PULUMI_AWS_*`) | **no** |
+
+Seven names that neither the ledger row nor `CLAUDE.md` mentions. None reaches Tier-0 resolution —
+the five `PRODBOX_PULUMI_AWS_*` names carry an already-resolved credential into the `pulumi`
+subprocess environment, which is transport rather than configuration — so the standing Tier-0 claim
+survives. What does not survive is the *inventory*, and the registry replaces it with something that
+cannot silently fall out of date.
+
+### The gate's first run produced one false positive, recorded rather than patched away
+
+It flagged `"PRODBOX_ID="` in `src/Prodbox/CLI/Rke2.hs`. That is a `--dry-run` plan **key** rendered
+as `KEY=value` and never passed to `lookupEnv`. The exclusion is `isEnvironmentVariableName`, a
+property of environment names — POSIX forbids `=` in one — rather than a path exemption or a
+trailing-`=` heuristic, so it stays true for a plan key nobody has written yet.
+
+Widening `destructivePlanOptionsArms` produced a second: `commandPrerequisites` in
+`src/Prodbox/Native.hs` binds `AwsTeardown _ _`, and it is a pure projection from a command to its
+`PrerequisiteId`s with no options to honour. It is exempted as a **`(path, constructor)` pair**, in
+Sprint `4.66`'s idiom. The pair is the unit because a bare constructor exemption would also excuse
+the real dispatch site in `src/Prodbox/Aws.hs` — which is now inside the region and binds properly, a
+fact a unit case asserts directly.
+
+### Validation
+
+1. **Four mutation exercises**, each restoring byte-exactly by md5: renaming a registered env read to
+   an unregistered name fires the unregistered arm; adding a registry entry nothing reads fires the
+   orphan arm; a `create-volume` literal in a non-owner module fires the create-site gate; moving a
+   scoped file out of the worktree fires the new fail-closed arm. A gate whose first run finds
+   nothing has had its region drawn to fit the code. ✅
+2. Nine unit cases covering the six new verbs, the IAM-projection narrowing, the nine destructive
+   constructors, the plan-key exclusion, the `PRODBOX_TEST_` exclusion, owner resolution, and the
+   five-name Rke2 count. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3391/3391**. ✅
+
+### Remaining Work
+
+None on the row. **Two bounds are stated rather than implied**, because widening a region is not the
+same as closing a class:
+
+- `awsCreateVerbs` is still a substring allowlist. A create verb nobody has thought of is still
+  invisible to it, and § 3.1 invariant 1's totality claim still rests on the registry, not on this
+  lint. What changed is that the six verbs *already known* to be outside it no longer are.
+- `checkProductionEnvVarReads` proves every `PRODBOX_*` read is registered and owned. It does not
+  prove the registry's *reasons* are true — that `PRODBOX_PULUMI_AWS_*` is transport rather than
+  configuration is an argument in a Haddock, not a property a gate can check.
+
+## Sprint 0.29: The Tier-0 Witness Closes The Round-Tripping Hand Edit ✅
+
+**Status**: ✅ **Done (2026-08-12)** — Phase `0` own-surface reopen (Standard A) on the Tier-0
+config-gate surface Sprint `0.24` opened. It closes that sprint's own recorded residual.
+**Implementation**: `src/Prodbox/Config/Tier0.hs` (`tier0RecordWitness`, `tier0WitnessPrefix`,
+`stampTier0Witness`, and the stamping step inside `renderProjectConfigDhall`), `test/unit/Main.hs`,
+`test/unit/Tier0PlanAssert.hs`.
+**Blocked by**: none.
+**Deployment qualification**: **pending, and this sprint moves the surface.** Stamping a witness
+changes the content of **every** generated `prodbox.dhall`, which is a Standard-P
+generated-config-identity change by the enumeration in
+[Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+Both substrate rows are already `pending`, so nothing is invalidated, but a future qualification run
+must bind the post-`0.29` generated-config identity and may not carry forward one recorded before it.
+This consequence is why Sprint `0.24` declined to fold the work in: its declared scope was a
+developer-tooling check touching no production-composition surface, and this is not that.
+**Independent Validation**: the mutation exercise below on the live binary-sibling
+`prodbox.dhall` — no cluster, no AWS, no later phase — plus pure unit cases over the witness
+algebra. `prodbox dev check` exit 0; `prodbox test unit` exit 0.
+**Docs updated**: `documents/engineering/config_doctrine.md` (the Tier-0 drift-gate bound).
+
+### Objective
+
+Close the `Pending Removal` row recording that a hand edit to a binary-sibling `prodbox.dhall`
+**primitive that round-trips unchanged** is undetected.
+
+### Why no text comparison could have closed it
+
+Sprint `0.24`'s gate decodes the sibling file, re-renders the decoded record through the one
+canonical generator, and compares text. Its first mutation exercise proved the bound: a re-typed
+`route53.zone_id` decodes to that value and re-renders to that value, so **the edited file *is* the
+generator's output for the record it carries**. There is nothing for the comparison to disagree with
+— the file is self-consistent. The row's own note says the class needs "a generator-stamped witness
+over the record, for which the Tier-0 `witness` field already exists".
+
+### Deliverables
+
+- **`renderProjectConfigDhall` stamps the record's own witness before rendering.** Because both
+  body renderers inject the whole `ProdboxProjectConfig`, stamping upstream reaches the guarded and
+  the plain body without touching either.
+- **The digest covers `parameters` and `context` and not `witness`.** That is forced rather than
+  chosen: a witness over a record containing itself has no fixed point. It also makes
+  `stampTier0Witness` idempotent, which a unit case pins.
+- **No new gate.** Stamping makes the *existing* Sprint-`0.24` comparison catch the class: after a
+  hand edit the file holds the **old** witness beside the **new** primitive, the gate re-renders the
+  decoded record and stamps a witness computed from the edited content, and the two disagree. The
+  right fix here was a field that cannot be edited consistently by hand, not a second gate.
+- **A versioned prefix**, `prodbox-tier0-witness-v1:`, so a later scheme appends rather than silently
+  changing what an identically-shaped string means.
+
+### The round-trip property is restated truthfully, not preserved by sleight of hand
+
+Five assertions across three test modules asserted `decode ∘ render == id`. That is no longer the
+property; the property is `decode ∘ render == stampTier0Witness`, and the cases now say so. Writing
+it this way keeps the stamping visible in the test rather than hiding it behind a fixture that
+already carries the right witness — and the two round-trip cases additionally assert that
+`parameters` and `context` are unchanged, so "identity outside the witness" stays pinned rather than
+being absorbed into the new wording.
+
+### Validation
+
+1. **Mutation exercise on the live sibling config, and it is the acceptance criterion.** With
+   `.build/prodbox.dhall` freshly generated and `dev check` clean, hand-editing `route53.zone_id` to
+   a value that decodes and re-renders unchanged makes `prodbox dev check` exit 1 with
+   `has drifted from the generator's canonical rendering at line 4121, field `witness``. Restoring
+   the file returns exit 0 and it is byte-identical by md5. Before this sprint the identical edit
+   left the gate clean. ✅
+2. Unit cases: stamping is idempotent and ignores a pre-existing witness; the value carries its
+   scheme prefix; a changed primitive changes the witness; a record carrying the pre-edit witness is
+   detectably stale while rendering identically to the correctly-stamped one; and the stamp changes
+   no field but `witness`. ✅
+3. `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3395/3395**. ✅
+
+### Remaining Work
+
+None on the row. **The bound is stated rather than implied**: an operator who edits a primitive *and*
+recomputes the witness defeats this, exactly as they would defeat any in-file stamp. What it removes
+is the *silent* edit — the one that leaves a self-consistent file and no evidence — not the
+deliberate one. Closing that would require a signature over a key the file does not carry, which is
+a different sprint on a different surface.
+
+A second consequence worth stating: the gate now fails on any `prodbox.dhall` generated **before**
+this sprint, because those carry `witness = []`. That is correct behaviour and not a migration
+hazard — the file is git-ignored, binary-owned, and regenerated by `prodbox config generate` after
+removing it — but `config generate` is idempotent and leaves an existing file untouched, so the
+remedy is `rm` then generate rather than generate alone.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
+- ✅ Sprint `0.29`: `documents/engineering/config_doctrine.md` - the Tier-0 drift gate's bound, and
+  the generator-stamped witness that closes the round-tripping hand-edit class.
+- ✅ Sprint `0.28`: `documents/engineering/lifecycle_reconciliation_doctrine.md` - § 3.1 invariants 1
+  and 4 record each gate's region, so they move when the region does.
 - ✅ Sprint `0.26`: `documents/engineering/chaos_hardening_doctrine.md` - new § 24 "An observation
   has a layer" (SSoT for the observation-layer rule) and a § 12 ledger row. Appended, so no bound
   citation moves.

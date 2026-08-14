@@ -17,6 +17,7 @@ module Prodbox.Infra.AwsSesStack
   , defaultAwsSesTargetSelection
   , mkAwsSesTargetSelection
   , classifyAwsSesPresenceOutput
+  , destroySummaryFromStackRemove
   , observeAwsSesCheckpoint
   , observeAwsSesCheckpointWithAuthentication
   , ensureAwsSesStackResources
@@ -1097,12 +1098,12 @@ awsCliCredsFromProviderEnv environment =
       Nothing -> env
 
 destroyAwsSesStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsSesStack repoRoot summary = do
+destroyAwsSesStack repoRoot quietOutput = do
   authenticated <-
     withHostLifecycleAuthorityAuthentication
       LifecycleAuthorityOperator
       repoRoot
-      (\authentication -> destroyAwsSesStackWithAuthentication authentication repoRoot summary)
+      (\authentication -> destroyAwsSesStackWithAuthentication authentication repoRoot quietOutput)
   case authenticated of
     Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
     Right exitCode -> pure exitCode
@@ -1112,8 +1113,8 @@ destroyAwsSesStackWithAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsSesStackWithAuthentication authentication repoRoot summary = do
-  statusResult <- destroyAwsSesStackStatus authentication repoRoot summary
+destroyAwsSesStackWithAuthentication authentication repoRoot quietOutput = do
+  statusResult <- destroyAwsSesStackStatus authentication repoRoot quietOutput
   case statusResult of
     Left err -> failWith err
     Right status -> do
@@ -1469,7 +1470,7 @@ destroyAwsSesStackStatus
   -> FilePath
   -> Bool
   -> IO (Either String String)
-destroyAwsSesStackStatus authentication repoRoot summary = do
+destroyAwsSesStackStatus authentication repoRoot quietOutput = do
   currentSnapshot <-
     fetchAwsSesStackSnapshotFromBackendWithAuthentication authentication repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
@@ -1490,7 +1491,8 @@ destroyAwsSesStackStatus authentication repoRoot summary = do
           projectDir
           adminCreds
           backendEnvironment
-          (\environment -> runDestroyAwsSesPulumiCycle repoRoot projectDir environment currentSnapshot summary)
+          ( \environment -> runDestroyAwsSesPulumiCycle repoRoot projectDir environment currentSnapshot quietOutput
+          )
       pure $ case backendResult of
         Left err -> Left (renderEncryptedBackendError err)
         Right status -> Right status
@@ -1502,8 +1504,8 @@ runDestroyAwsSesPulumiCycle
   -> Maybe AwsSesStackSnapshot
   -> Bool
   -> IO (Either String String)
-runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot summary = do
-  loginResult <- pulumiLoginEither projectDir baseEnvironment summary
+runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot quietOutput = do
+  loginResult <- pulumiLoginEither projectDir baseEnvironment quietOutput
   case loginResult of
     Left err
       | currentSnapshot == Nothing
@@ -1522,10 +1524,10 @@ runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot 
               case syncExit of
                 ExitFailure _ -> pure (Left "pulumi config set failed")
                 ExitSuccess -> do
-                  destroyResult <- pulumiDestroyEither projectDir baseEnvironment summary
+                  destroyResult <- pulumiDestroyEither projectDir baseEnvironment quietOutput
                   case destroyResult of
                     Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                    Right () -> completeDestroy repoRoot projectDir baseEnvironment summary
+                    Right () -> completeDestroy repoRoot projectDir baseEnvironment quietOutput
         PulumiStackMissing ->
           case currentSnapshot of
             Nothing -> pure (Right "already absent from the long-lived Pulumi backend")
@@ -1533,23 +1535,56 @@ runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot 
         PulumiStackSelectFailed detail ->
           pure (Left ("pulumi stack select failed: " ++ detail))
 
+-- | Sprint 4.79: the @pulumi stack rm@ result is __bound__.
+--
+-- It used to be discarded with @_ <-@ and followed by an unconditional
+-- @Right \"destroyed\"@, so a failed stack removal was reported to the operator
+-- as a completed destroy — on the terminal node of the @nuke@ decommission DAG.
+-- The destroy itself had already succeeded at that point, which is why the
+-- outcome is __reported__ rather than turned into a hard failure: the AWS
+-- resources are gone, and what survives is a Pulumi stack entry naming them.
+-- Calling that "destroyed" was the defect; calling it a failure would refuse a
+-- teardown that did in fact remove every resource.
+--
+-- [lifecycle_reconciliation_doctrine.md § 3](../../../documents/engineering/lifecycle_reconciliation_doctrine.md)
+-- — /Cleanup continues without lying/ — is exactly this shape.
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)
-completeDestroy _repoRoot projectDir environment summary = do
-  _ <- pulumiStackRemoveEither projectDir environment False summary
-  finalizeDestroy
+completeDestroy _repoRoot projectDir environment quietOutput = do
+  removeResult <- pulumiStackRemoveEither projectDir environment False quietOutput
+  pure (Right (destroySummaryFromStackRemove removeResult))
+
+-- | The pure half of 'completeDestroy': what the operator is told, given
+-- whether the stack entry was removed.
+--
+-- Pure and exported so the distinction is testable without a Pulumi backend —
+-- the defect was a narration, and a narration nothing can observe is how it
+-- survived.
+destroySummaryFromStackRemove :: Either String () -> String
+destroySummaryFromStackRemove removeResult = case removeResult of
+  Right () -> destroyedSummary
+  Left err ->
+    destroyedSummary
+      ++ "; the Pulumi stack entry was NOT removed and remains in the "
+      ++ "long-lived backend ("
+      ++ err
+      ++ "). Every AWS resource was destroyed; re-run the destroy to clear the "
+      ++ "stack entry."
 
 finalizeDestroy :: IO (Either String String)
-finalizeDestroy = pure (Right "destroyed")
+finalizeDestroy = pure (Right destroyedSummary)
+
+destroyedSummary :: String
+destroyedSummary = "destroyed"
 
 pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiLoginEither projectDir environment summary
-  | summary = pulumiLoginQuiet projectDir environment
+pulumiLoginEither projectDir environment quietOutput
+  | quietOutput = pulumiLoginQuiet projectDir environment
   | otherwise = exitToEither "pulumi login" <$> pulumiLogin projectDir environment
 
 pulumiDestroyEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
-pulumiDestroyEither projectDir environment summary
-  | summary = pulumiDestroyQuiet projectDir environment
+pulumiDestroyEither projectDir environment quietOutput
+  | quietOutput = pulumiDestroyQuiet projectDir environment
   | otherwise =
       exitToEither "pulumi destroy"
         <$> runPulumiCommand
@@ -1559,8 +1594,8 @@ pulumiDestroyEither projectDir environment summary
 
 pulumiStackRemoveEither
   :: FilePath -> [(String, String)] -> Bool -> Bool -> IO (Either String ())
-pulumiStackRemoveEither projectDir environment force summary
-  | summary = pulumiStackRemoveQuiet projectDir environment force
+pulumiStackRemoveEither projectDir environment force quietOutput
+  | quietOutput = pulumiStackRemoveQuiet projectDir environment force
   | otherwise =
       exitToEither "pulumi stack rm"
         <$> runPulumiCommand

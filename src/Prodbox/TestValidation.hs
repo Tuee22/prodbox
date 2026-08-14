@@ -14,6 +14,9 @@ module Prodbox.TestValidation
   , refreshGatewayRuntimeStabilityMonitor
   , resumeGatewayRuntimeStabilityMonitor
   , recordGatewayRuntimeStabilitySample
+  , GatewayRuntimeSampleOutcome (..)
+  , gatewayRuntimeSampleOutcome
+  , gatewayRuntimeSampleOutcomeExit
   , resetGatewayRuntimeStabilityHealthyWindow
   , runGatewayRuntimeStabilityGate
   , recordGatewayMeasuredProfile
@@ -33,6 +36,13 @@ module Prodbox.TestValidation
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
   , gatewayPartitionValidationReport
+  , gatewayPartitionLegacyReport
+  , gatewayPartitionLegacyReportFor
+  , gatewayPartitionCanonicalMembers
+  , DaemonBootstrapAuditProvenance (..)
+  , daemonBootstrapBrokerBaseUrl
+  , daemonBootstrapRequiredRoutes
+  , daemonBootstrapHostRootTokenPatterns
   , renderGatewayValidationConfigDhall
   , demoOidcSessionValidationAgentManifest
   )
@@ -80,7 +90,8 @@ import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
-import Data.Char (isAsciiUpper)
+import Data.Char (isAsciiUpper, isSpace)
+import Data.Either (lefts, rights)
 import Data.Foldable (asum)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
@@ -148,6 +159,7 @@ import Prodbox.ControlPlane.Deadline qualified as Deadline
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityTestHarness)
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.ProviderCaller
   ( dispatchHostProviderIntentFresh
   , renderProviderCallerError
@@ -200,8 +212,10 @@ import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , publicFqdn
   , publicRoutePathPrefix
+  , requireSubstratePublicFqdn
+  , requireSubstrateServedHost
+  , servedHostString
   , substrateIdentityIssuerUrl
-  , substratePublicFqdn
   , substratePublicRouteUrl
   , substrateServedHostMissing
   )
@@ -250,17 +264,22 @@ import Prodbox.Pulsar.TopicResidue
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , DomainSection (..)
-  , Route53Section (..)
+  ( ValidatedCoordinates (..)
+  , ValidatedServedHost (..)
   , ValidatedSettings (..)
   , aws
-  , domain
+  , homeZoneIdTextForRendering
+  , requireHomeZoneId
   , resolveLifecycleProviderCredentials
-  , route53
   , validateAndLoadSettings
+  , validatedCoordinates
   )
 import Prodbox.Settings qualified
+import Prodbox.Settings.Coordinate
+  ( awsRegionText
+  , dnsTtlSeconds
+  , route53ZoneIdText
+  )
 import Prodbox.Subprocess
   ( BackgroundProcess
   , BoundedSubprocessLimits (..)
@@ -356,27 +375,70 @@ data SealedVaultAuditInput = SealedVaultAuditInput
   }
   deriving (Eq, Show)
 
+-- | Sprint 5.33: where a daemon-bootstrap audit's trace came from.
+--
+-- The audit block previously said nothing about its own provenance, which is
+-- how its unset arm — the one CI and a bare
+-- @prodbox test integration daemon-bootstrap@ take — could be byte-identical to
+-- its @"pass"@ fixture arm without that being visible in the output.
+data DaemonBootstrapAuditProvenance
+  = -- | The Bootstrap Broker daemon was probed live and answered; the transport
+    -- lines below are the observation.
+    DaemonBootstrapObservedDaemon
+  | -- | A named repository fixture supplied the trace. Carries the fixture
+    -- name so the emitted evidence says which.
+    DaemonBootstrapFixtureTrace !String
+  deriving (Eq, Show)
+
+renderDaemonBootstrapProvenance :: DaemonBootstrapAuditProvenance -> String
+renderDaemonBootstrapProvenance provenance = case provenance of
+  DaemonBootstrapObservedDaemon -> "observed-daemon"
+  DaemonBootstrapFixtureTrace name -> "fixture:" ++ name
+
 data DaemonBootstrapAuditInput = DaemonBootstrapAuditInput
-  { daemonBootstrapDaemonAvailable :: Bool
+  { daemonBootstrapProvenance :: DaemonBootstrapAuditProvenance
+  , daemonBootstrapDaemonAvailable :: Bool
   , daemonBootstrapObservedTransports :: [String]
   , daemonBootstrapObservedOutput :: [String]
   , daemonBootstrapRequiredDaemonPaths :: [String]
   }
   deriving (Eq, Show)
 
+-- | Sprint 5.33: the one place the Bootstrap Broker's host-local base URL is
+-- written. It was restated inline on every transport line below.
+daemonBootstrapBrokerBaseUrl :: String
+daemonBootstrapBrokerBaseUrl = "http://127.0.0.1:" ++ show controlPlaneListenPort
+
+-- | The broker routes a daemon-bootstrap run must have travelled. This is a
+-- *requirement*, not an observation: it is the compiled set the audit checks
+-- the trace against.
+daemonBootstrapRequiredRoutes :: [BrokerRoute]
+daemonBootstrapRequiredRoutes =
+  [ BrokerVaultInitialize
+  , BrokerVaultStatus
+  , BrokerVaultSeal
+  , BrokerVaultRotateUnlockBundle
+  , BrokerVaultRotateTransitKey
+  , BrokerVaultPkiStatus
+  , BrokerVaultPkiIssueTestCertificate
+  ]
+
 defaultDaemonBootstrapAuditInput :: DaemonBootstrapAuditInput
 defaultDaemonBootstrapAuditInput =
   DaemonBootstrapAuditInput
-    { daemonBootstrapDaemonAvailable = True
+    { daemonBootstrapProvenance = DaemonBootstrapFixtureTrace "pass"
+    , daemonBootstrapDaemonAvailable = True
     , daemonBootstrapObservedTransports =
         [ "TOKENREQUEST audience=prodbox-bootstrap-broker duration=10m"
-        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultInitialize
-        , "GET http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultStatus
-        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultSeal
-        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultRotateUnlockBundle
-        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultRotateTransitKey
-        , "GET http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultPkiStatus
-        , "POST http://127.0.0.1:8600" ++ brokerRoutePath BrokerVaultPkiIssueTestCertificate
+        , "POST " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultInitialize
+        , "GET " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultStatus
+        , "POST " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultSeal
+        , "POST " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultRotateUnlockBundle
+        , "POST " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultRotateTransitKey
+        , "GET " ++ daemonBootstrapBrokerBaseUrl ++ brokerRoutePath BrokerVaultPkiStatus
+        , "POST "
+            ++ daemonBootstrapBrokerBaseUrl
+            ++ brokerRoutePath BrokerVaultPkiIssueTestCertificate
         , "ATTACH pod/bootstrap-secret-worker framed-stdin"
         ]
     , daemonBootstrapObservedOutput =
@@ -385,15 +447,7 @@ defaultDaemonBootstrapAuditInput =
         , "request_password=redacted"
         , "response_root_token=redacted"
         ]
-    , daemonBootstrapRequiredDaemonPaths =
-        [ brokerRoutePath BrokerVaultInitialize
-        , brokerRoutePath BrokerVaultStatus
-        , brokerRoutePath BrokerVaultSeal
-        , brokerRoutePath BrokerVaultRotateUnlockBundle
-        , brokerRoutePath BrokerVaultRotateTransitKey
-        , brokerRoutePath BrokerVaultPkiStatus
-        , brokerRoutePath BrokerVaultPkiIssueTestCertificate
-        ]
+    , daemonBootstrapRequiredDaemonPaths = map brokerRoutePath daemonBootstrapRequiredRoutes
     }
 
 daemonBootstrapForbiddenPatterns :: [String]
@@ -454,12 +508,30 @@ daemonBootstrapAuditReport input = do
   Right $
     unlines
       [ "DAEMON_BOOTSTRAP_VALIDATION"
-      , "DAEMON_AVAILABLE=true"
+      , -- Sprint 5.33: the block declares where its trace came from, so an
+        -- `observed-daemon` claim and a `fixture:` claim are distinguishable in
+        -- the evidence rather than only in the source.
+        "AUDIT_PROVENANCE=" ++ renderDaemonBootstrapProvenance (daemonBootstrapProvenance input)
+      , "DAEMON_AVAILABLE=" ++ (if daemonBootstrapDaemonAvailable input then "true" else "false")
       , "DAEMON_PATHS=" ++ intercalate "," (daemonBootstrapRequiredDaemonPaths input)
-      , "LEGACY_TRANSPORTS=0"
-      , "HOST_ROOT_TOKEN_FALLBACKS=0"
-      , "REDACTION=ok"
+      , "LEGACY_TRANSPORTS=" ++ show (length forbiddenLegacy)
+      , "HOST_ROOT_TOKEN_FALLBACKS=" ++ show (length hostRootTokenFallbacks)
+      , "REDACTION=" ++ (if null leakedSecrets then "ok" else "leaked")
       ]
+ where
+  hostRootTokenFallbacks =
+    filter
+      (`isInfixOf` unlines (daemonBootstrapObservedTransports input ++ daemonBootstrapObservedOutput input))
+      daemonBootstrapHostRootTokenPatterns
+
+-- | The subset of 'daemonBootstrapForbiddenPatterns' the audit reports
+-- separately as host-root-token fallbacks. Derived from that list rather than
+-- restated, so a pattern cannot be counted in one line and missed by the other.
+daemonBootstrapHostRootTokenPatterns :: [String]
+daemonBootstrapHostRootTokenPatterns =
+  filter
+    (\forbidden -> any (`isInfixOf` forbidden) ["root-token", "host Vault", "HOST_VAULT_TOKEN"])
+    daemonBootstrapForbiddenPatterns
 
 defaultSealedVaultAuditInput :: SealedVaultAuditInput
 defaultSealedVaultAuditInput =
@@ -1066,16 +1138,85 @@ runGatewayRuntimeStabilityGateInCurrentContext context recorder =
         failWith
           ("Gateway runtime stability is unobservable: " ++ renderGatewayRuntimeStabilityReport report)
 
+-- | The exit of one stability __sample__, as distinct from the stability
+-- __gate__ ('runGatewayRuntimeStabilityGateInCurrentContext').
+--
+-- Sprint 2.44: the two folds disagreed about 'NotStableYet' and only one of them
+-- was wrong to. The gate retries and then fails, which is right — it is asked
+-- for a verdict. The sampler is interleaved between suite phases roughly ten
+-- times per run to feed the recorder, and a run that aborted the first time the
+-- runtime had not yet converged would never reach the gate at all. So the
+-- sampler continues, and that is deliberate.
+--
+-- What was wrong is that it continued __silently__: 'StableObserved' and
+-- 'NotStableYet' both returned 'ExitSuccess' with no output, so a sample that
+-- observed non-stability was indistinguishable from one that observed
+-- stability, in the exit code and in the transcript alike. The ADT's third value
+-- was discarded rather than recorded. Each arm now says what it saw, so the four
+-- constructors produce four distinguishable outcomes.
+--
+-- The bound, stated rather than implied: this still exits 0 on 'NotStableYet'.
+-- The row that scheduled this read the defect as "returns success when stability
+-- was not observed", which is an accurate description and the wrong remedy for a
+-- sampler — the fix is that it no longer claims to have observed stability, not
+-- that it fails.
+-- | Sprint 2.44 (pure): what one sample decided, total over the report's four
+-- constructors. Split out from the interpreter below so the distinction the old
+-- fold collapsed is testable without capturing a stream.
+data GatewayRuntimeSampleOutcome
+  = SampleObservedStable !Natural
+  | -- | Observed, and stability was __not__ present. Continues; see
+    -- 'gatewayRuntimeSampleExit'.
+    SampleObservedNotYetStable !Natural !Natural
+  | SampleObservedUnhealthy
+  | SampleUnobservable
+  deriving (Eq, Show)
+
+-- | Sprint 2.44 (pure). Exposed for unit tests.
+gatewayRuntimeSampleOutcome :: GatewayRuntimeStabilityReport -> GatewayRuntimeSampleOutcome
+gatewayRuntimeSampleOutcome report = case report of
+  StableObserved samples -> SampleObservedStable samples
+  NotStableYet samples required -> SampleObservedNotYetStable samples required
+  RuntimeUnhealthy _ -> SampleObservedUnhealthy
+  StabilityUnreachable _ -> SampleUnobservable
+
+-- | Sprint 2.44 (pure). Whether a sample's outcome fails the step. Exposed so
+-- the sampler/gate disagreement is asserted rather than described.
+gatewayRuntimeSampleOutcomeExit :: GatewayRuntimeSampleOutcome -> ExitCode
+gatewayRuntimeSampleOutcomeExit outcome = case outcome of
+  SampleObservedStable _ -> ExitSuccess
+  SampleObservedNotYetStable _ _ -> ExitSuccess
+  SampleObservedUnhealthy -> ExitFailure 1
+  SampleUnobservable -> ExitFailure 1
+
 gatewayRuntimeSampleExit :: GatewayRuntimeStabilityReport -> IO ExitCode
 gatewayRuntimeSampleExit report =
-  case report of
-    RuntimeUnhealthy _ ->
+  case gatewayRuntimeSampleOutcome report of
+    SampleObservedUnhealthy ->
       failWith ("Gateway runtime is unhealthy: " ++ renderGatewayRuntimeStabilityReport report)
-    StabilityUnreachable _ ->
+    SampleUnobservable ->
       failWith
         ("Gateway runtime stability is unobservable: " ++ renderGatewayRuntimeStabilityReport report)
-    StableObserved _ -> pure ExitSuccess
-    NotStableYet _ _ -> pure ExitSuccess
+    SampleObservedStable samples -> do
+      writeDiagnosticLine
+        ( "Gateway runtime stability sample: stable ("
+            ++ show samples
+            ++ " samples). "
+            ++ renderGatewayRuntimeStabilityReport report
+        )
+      pure ExitSuccess
+    SampleObservedNotYetStable samples required -> do
+      writeDiagnosticLine
+        ( "Gateway runtime stability sample: NOT yet stable ("
+            ++ show samples
+            ++ " of "
+            ++ show required
+            ++ " required samples) — recorded, and the run continues because this "
+            ++ "is a sampler and the stability gate owns the verdict. This is not "
+            ++ "an observation of stability. "
+            ++ renderGatewayRuntimeStabilityReport report
+        )
+      pure ExitSuccess
 
 observeGatewayRuntimeStability
   :: GatewayRuntimeKubectlContext
@@ -1246,7 +1387,6 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
           repoRoot
           environment
           maybeGatewayStability
-      ValidationGatewayPartition -> runGatewayPartitionValidation
       ValidationControlPlaneCounterexample -> runControlPlaneCounterexampleValidation repoRoot
       ValidationCertificateScope -> runCertificateScopeServingValidation repoRoot substrate
       ValidationCleanRoomHandoff -> runCleanRoomHandoffValidation repoRoot
@@ -1643,11 +1783,26 @@ runSealedVaultValidation repoRoot environment = do
                     )
                     restore
 
+-- | Sprint 5.33: the unset arm observes or refuses.
+--
+-- It used to be **byte-identical** to the @"pass"@ fixture arm below — the same
+-- expression, one line apart — so the path CI and a bare
+-- @prodbox test integration daemon-bootstrap@ take emitted a canned audit with
+-- @DAEMON_AVAILABLE=true@ as a literal in
+-- 'defaultDaemonBootstrapAuditInput' and no observation anywhere in the
+-- function. Sprint `5.14`'s @Validation@ section rests entirely on this node.
+--
+-- The unset arm now probes the Bootstrap Broker's own route surface and builds
+-- the audit from what answered. When no daemon answers it is a typed refusal
+-- naming what was absent, per
+-- @documents/engineering/bootstrap_readiness_doctrine.md § 0.5@ — never a
+-- canned pass. The fixture arms keep their fixture provenance, which the
+-- emitted block now states.
 runDaemonBootstrapValidation :: IO ExitCode
 runDaemonBootstrapValidation = do
   fixture <- lookupEnv "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
   case fixture of
-    Nothing -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
+    Nothing -> runObservedDaemonBootstrapAudit
     Just "pass" -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
     Just "legacy-minio-port-forward" ->
       emitDaemonBootstrapAudit
@@ -1676,6 +1831,113 @@ runDaemonBootstrapValidation = do
           { daemonBootstrapDaemonAvailable = False
           }
     Just other -> failWith ("unknown PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT fixture: " ++ other)
+
+-- | Sprint 5.33: observe the live Bootstrap Broker daemon, or refuse naming
+-- what was absent.
+--
+-- The observation is deliberately read-only: every probe is a @GET@, including
+-- against the mutating routes. A daemon that serves a route answers a @GET@ on
+-- it with *something other than 404* (405 for a POST-only route, 401/403 for an
+-- unauthenticated one); a route the daemon does not serve answers 404. That
+-- distinction is enough to observe the required-route surface without issuing a
+-- single mutation, which is the whole point — a validation may not initialise
+-- Vault to prove it could.
+runObservedDaemonBootstrapAudit :: IO ExitCode
+runObservedDaemonBootstrapAudit = do
+  healthProbe <- probeBrokerRouteStatus BrokerHealth
+  case healthProbe of
+    Left err ->
+      failWith
+        ( "daemon-bootstrap validation measured nothing and refuses: no "
+            ++ "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT fixture was selected and no Bootstrap "
+            ++ "Broker daemon answered at "
+            ++ daemonBootstrapBrokerBaseUrl
+            ++ brokerRoutePath BrokerHealth
+            ++ " ("
+            ++ err
+            ++ "). Run it against a cluster whose broker is serving, or select a "
+            ++ "repository fixture explicitly."
+        )
+    Right healthStatus -> do
+      routeProbes <- traverse probeRequiredRoute daemonBootstrapRequiredRoutes
+      let served = rights routeProbes
+          unobservable = lefts routeProbes
+      case unobservable of
+        (firstError : _) ->
+          failWith
+            ( "daemon-bootstrap validation could not observe the broker's route surface: "
+                ++ firstError
+            )
+        [] ->
+          emitDaemonBootstrapAudit
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapProvenance = DaemonBootstrapObservedDaemon
+              , daemonBootstrapDaemonAvailable = True
+              , daemonBootstrapObservedTransports = served
+              , daemonBootstrapObservedOutput =
+                  [ "daemon-bootstrap probe=route-surface"
+                  , "broker_health_status=" ++ show healthStatus
+                  ]
+              }
+ where
+  probeRequiredRoute route = do
+    probe <- probeBrokerRouteStatus route
+    pure $ case probe of
+      Left err -> Left (brokerRoutePath route ++ ": " ++ err)
+      Right 404 ->
+        Left
+          ( "the daemon does not serve "
+              ++ brokerRoutePath route
+              ++ " (404); this broker cannot have carried a daemon-bootstrap run"
+          )
+      Right status ->
+        Right
+          ( "OBSERVED "
+              ++ show status
+              ++ " GET "
+              ++ daemonBootstrapBrokerBaseUrl
+              ++ brokerRoutePath route
+          )
+
+-- | Read-only @GET@ probe of one broker route, reporting the HTTP status the
+-- daemon answered with. A transport failure is a @Left@ and never a status,
+-- so "nothing answered" cannot be read as "the route is absent".
+probeBrokerRouteStatus :: BrokerRoute -> IO (Either String Int)
+probeBrokerRouteStatus route = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments =
+            [ "-sS"
+            , "--max-time"
+            , "5"
+            , "-o"
+            , "/dev/null"
+            , "-w"
+            , "%{http_code}"
+            , daemonBootstrapBrokerBaseUrl ++ brokerRoutePath route
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
+        }
+  pure $ case result of
+    Failure err -> Left ("failed to start `curl`: " ++ err)
+    Success output -> case processExitCode output of
+      ExitFailure code ->
+        Left
+          ( "`curl` exited with code "
+              ++ show code
+              ++ ": "
+              ++ unwords (words (processStderr output))
+          )
+      ExitSuccess -> case reads (filter (not . isSpace) (processStdout output)) of
+        [(status, "")] -> Right status
+        _ ->
+          Left
+            ( "`curl` reported an unreadable HTTP status: "
+                ++ show (processStdout output)
+            )
 
 runSealedVaultAssertions :: FilePath -> [(String, String)] -> IO ExitCode
 runSealedVaultAssertions repoRoot environment =
@@ -2480,16 +2742,6 @@ provisionAndVerifyAwsTestStack repoRoot environment =
         ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
     , verifyAwsTestSnapshot repoRoot
     ]
-
-runGatewayPartitionValidation :: IO ExitCode
-runGatewayPartitionValidation = do
-  result <- gatewayPartitionValidationReport
-  case result of
-    Left err -> failWith err
-    Right report -> do
-      writeOutput report
-      pure ExitSuccess
-
 gatewayPartitionValidationReport :: IO (Either String String)
 gatewayPartitionValidationReport =
   case gatewayPartitionLegacyReport of
@@ -2498,8 +2750,31 @@ gatewayPartitionValidationReport =
       composed <- gatewayPartitionEmitterReport
       pure ((legacyReport ++) <$> composed)
 
+-- | Sprint 5.33: the canonical member set the shipped @gateway-partition@
+-- report composes over. Exposed as a named value so a unit case can vary the
+-- composition and observe the rendered output change — which is the property
+-- that was untestable while every emitted line was a literal.
+gatewayPartitionCanonicalMembers :: [(String, Word64)]
+gatewayPartitionCanonicalMembers = [("node-a", 0), ("node-b", 1), ("node-c", 2)]
+
 gatewayPartitionLegacyReport :: Either String String
-gatewayPartitionLegacyReport = do
+gatewayPartitionLegacyReport =
+  gatewayPartitionLegacyReportFor gatewayPartitionCanonicalMembers
+
+-- | Sprint 5.33: the pure partition composition, parameterized on its member
+-- set and rendering every emitted value from what it computed.
+--
+-- The report block used to be eight string literals — @INITIAL_OWNER_ACTIVE=true@,
+-- @PARTITION_TAKEOVER_ACCEPTED=1@, @SINGLE_WRITER_AFTER_TAKEOVER=true@ and the
+-- rest — emitted after the invariants were asserted. The underlying property
+-- test is sound and the invariant assertions are real; what was unsound is that
+-- the *evidence* said the same thing for every input, and eight `Done` Phase-`2`
+-- sprints cite this node's numbered output for commit-before-peer-response,
+-- restart, and partition-takeover properties that no peer, restart, or
+-- partition was present to exercise. Those citations carry Standard-C
+-- corrections; the code deliverables they cover are not withdrawn.
+gatewayPartitionLegacyReportFor :: [(String, Word64)] -> Either String String
+gatewayPartitionLegacyReportFor members = do
   memoryPlan <-
     Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "gateway"
   bounds <-
@@ -2515,10 +2790,7 @@ gatewayPartitionLegacyReport = do
             { GatewayState.rawOrdersDocument = "gateway-partition-v2"
             , GatewayState.rawOrdersVersion = 2
             , GatewayState.rawOrdersMembers =
-                [ rawMember "node-a" 0
-                , rawMember "node-b" 1
-                , rawMember "node-c" 2
-                ]
+                [rawMember nodeName rank | (nodeName, rank) <- members]
             }
       )
   nodeA <- resolveNode orders "node-a"
@@ -2564,6 +2836,14 @@ gatewayPartitionLegacyReport = do
       boundedFrames =
         GatewayState.deltaFrameAssertionCount claimAFrame == 1
           && GatewayState.deltaFrameAssertionCount claimBFrame == 1
+      -- Sprint 5.33: counted from the frames the composition actually
+      -- produced, not written as `1` and `0`. An ownership claim that the
+      -- state machine admitted carries an assertion in its delta frame; one it
+      -- refused does not.
+      appliedTakeoverFrames = [claimBFrame]
+      acceptedTakeovers =
+        length [frame | frame <- appliedTakeoverFrames, GatewayState.deltaFrameAssertionCount frame > 0]
+      rejectedTakeovers = length appliedTakeoverFrames - acceptedTakeovers
   ensurePartitionInvariant
     initialOwnerActive
     "initial claim did not activate DNS-write authority for node-a"
@@ -2581,14 +2861,16 @@ gatewayPartitionLegacyReport = do
     unlines
       [ "GATEWAY_PARTITION_VALIDATION"
       , "FORMAL_MODEL_DELEGATED=false"
-      , "INITIAL_OWNER_ACTIVE=true"
-      , "PARTITION_TAKEOVER_ACCEPTED=1"
-      , "PARTITION_TAKEOVER_REJECTED=0"
-      , "SINGLE_WRITER_AFTER_TAKEOVER=true"
-      , "REJOIN_YIELD_RECORDED=true"
-      , "BOUNDED_DELTA_IDEMPOTENT=true"
+      , "PARTITION_MEMBERS=" ++ show (length (GatewayState.validatedOrdersMemberIds orders))
+      , "INITIAL_OWNER_ACTIVE=" ++ renderPartitionFlag initialOwnerActive
+      , "PARTITION_TAKEOVER_ACCEPTED=" ++ show acceptedTakeovers
+      , "PARTITION_TAKEOVER_REJECTED=" ++ show rejectedTakeovers
+      , "SINGLE_WRITER_AFTER_TAKEOVER=" ++ renderPartitionFlag singleWriterAfterTakeover
+      , "REJOIN_YIELD_RECORDED=" ++ renderPartitionFlag yieldPersisted
+      , "BOUNDED_DELTA_IDEMPOTENT=" ++ renderPartitionFlag idempotentMerge
       ]
  where
+  renderPartitionFlag flag = if flag then "true" else "false"
   rawMember nodeName rank =
     GatewayState.RawGatewayMember
       { GatewayState.rawMemberNodeId = Text.pack nodeName
@@ -3557,13 +3839,29 @@ ensurePartitionInvariant :: Bool -> String -> Either String ()
 ensurePartitionInvariant condition err =
   if condition then Right () else Left err
 
+-- | Sprint 1.87: resolve the substrate's served host at an IO boundary that has
+-- an error channel, or refuse with the canonical wording from
+-- 'Prodbox.PublicEdge.substrateServedHostMissing'.
+--
+-- Every public-edge URL renderer now consumes the resolved
+-- 'ValidatedServedHost' rather than reaching for @ValidatedSettings@ and a
+-- 'Substrate', so a substrate that declares no served host refuses here instead
+-- of rendering @https:\/\/\/path@ into a curl argument twenty lines later.
+withSubstrateServedHost
+  :: ValidatedSettings
+  -> Substrate
+  -> (ValidatedServedHost -> IO ExitCode)
+  -> IO ExitCode
+withSubstrateServedHost settings substrate act =
+  either failWith act (requireSubstrateServedHost settings substrate)
+
 runChartsVscodeValidation :: FilePath -> Substrate -> IO ExitCode
 runChartsVscodeValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
-      let vscodeUrl = substratePublicRouteUrl settings substrate PublicRouteVscode
+    Right settings -> withSubstrateServedHost settings substrate $ \servedHost -> do
+      let vscodeUrl = substratePublicRouteUrl servedHost PublicRouteVscode
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
@@ -3586,7 +3884,7 @@ runChartsVscodeValidation repoRoot substrate = do
                   , subprocessEnvironment = Nothing
                   , subprocessWorkingDirectory = Just repoRoot
                   }
-                (oidcRedirectFragments settings substrate (vscodeUrl ++ "/oauth2/callback"))
+                (oidcRedirectFragments servedHost (vscodeUrl ++ "/oauth2/callback"))
                 chartsVscodeCurlAttempts
                 chartsVscodeCurlDelayMicroseconds
             ]
@@ -3596,8 +3894,8 @@ runChartsApiValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
-      let apiUrl = substratePublicRouteUrl settings substrate PublicRouteApi
+    Right settings -> withSubstrateServedHost settings substrate $ \servedHost -> do
+      let apiUrl = substratePublicRouteUrl servedHost PublicRouteApi
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
@@ -3675,7 +3973,7 @@ runAdminRoutesValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
+    Right settings -> withSubstrateServedHost settings substrate $ \servedHost -> do
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
@@ -3684,58 +3982,57 @@ runAdminRoutesValidation repoRoot substrate = do
           -- OIDC admin route is gone; the MinIO console is the only admin route.
           assertOidcProtectedRoute
             repoRoot
-            settings
-            substrate
-            (substratePublicRouteUrl settings substrate PublicRouteMinio)
-            (substratePublicRouteUrl settings substrate PublicRouteMinio ++ "/oauth2/callback")
+            servedHost
+            (substratePublicRouteUrl servedHost PublicRouteMinio)
+            (substratePublicRouteUrl servedHost PublicRouteMinio ++ "/oauth2/callback")
             "MinIO admin route did not preserve the shared-host auth contract"
 
 runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-runKeycloakPublicHostValidation repoRoot settings substrate = do
-  let websocketStartUrl = substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/start"
-      websocketCallbackUrl = substratePublicRouteUrl settings substrate PublicRouteWebsocket ++ "/oidc/callback"
-      issuerUrl = substrateIdentityIssuerUrl settings substrate
-      authUrl = substratePublicRouteUrl settings substrate PublicRouteAuth
-  redirectExit <-
-    assertOidcProtectedRoute
-      repoRoot
-      settings
-      substrate
-      websocketStartUrl
-      websocketCallbackUrl
-      "direct OIDC redirect did not preserve the shared-host auth contract"
-  case redirectExit of
-    ExitFailure _ -> pure redirectExit
-    ExitSuccess -> do
-      metadataResult <-
-        runJsonCommand
-          (jsonCurlSpec repoRoot [] (issuerUrl ++ "/.well-known/openid-configuration"))
-      case metadataResult of
-        Left err -> failWith err
-        Right metadataPayload ->
-          case keycloakWellKnownSummary metadataPayload of
-            Left err -> failWith err
-            Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
-              if and
-                [ issuerValue == issuerUrl
-                , (authUrl ++ "/") `isInfixOf` authorizationEndpoint
-                , (authUrl ++ "/") `isInfixOf` tokenEndpoint
-                , (authUrl ++ "/") `isInfixOf` jwksUriValue
-                ]
-                then
-                  assertHttpStatusIn
-                    (statusOnlyCurlSpec repoRoot [] (authUrl ++ "/health/ready"))
-                    ["404"]
-                else
-                  failWith
-                    ( "Keycloak well-known metadata did not preserve the shared-host auth contract: "
-                        ++ show
-                          [ issuerValue
-                          , authorizationEndpoint
-                          , tokenEndpoint
-                          , jwksUriValue
-                          ]
-                    )
+runKeycloakPublicHostValidation repoRoot settings substrate =
+  withSubstrateServedHost settings substrate $ \servedHost -> do
+    let websocketStartUrl = substratePublicRouteUrl servedHost PublicRouteWebsocket ++ "/oidc/start"
+        websocketCallbackUrl = substratePublicRouteUrl servedHost PublicRouteWebsocket ++ "/oidc/callback"
+        issuerUrl = substrateIdentityIssuerUrl servedHost
+        authUrl = substratePublicRouteUrl servedHost PublicRouteAuth
+    redirectExit <-
+      assertOidcProtectedRoute
+        repoRoot
+        servedHost
+        websocketStartUrl
+        websocketCallbackUrl
+        "direct OIDC redirect did not preserve the shared-host auth contract"
+    case redirectExit of
+      ExitFailure _ -> pure redirectExit
+      ExitSuccess -> do
+        metadataResult <-
+          runJsonCommand
+            (jsonCurlSpec repoRoot [] (issuerUrl ++ "/.well-known/openid-configuration"))
+        case metadataResult of
+          Left err -> failWith err
+          Right metadataPayload ->
+            case keycloakWellKnownSummary metadataPayload of
+              Left err -> failWith err
+              Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
+                if and
+                  [ issuerValue == issuerUrl
+                  , (authUrl ++ "/") `isInfixOf` authorizationEndpoint
+                  , (authUrl ++ "/") `isInfixOf` tokenEndpoint
+                  , (authUrl ++ "/") `isInfixOf` jwksUriValue
+                  ]
+                  then
+                    assertHttpStatusIn
+                      (statusOnlyCurlSpec repoRoot [] (authUrl ++ "/health/ready"))
+                      ["404"]
+                  else
+                    failWith
+                      ( "Keycloak well-known metadata did not preserve the shared-host auth contract: "
+                          ++ show
+                            [ issuerValue
+                            , authorizationEndpoint
+                            , tokenEndpoint
+                            , jwksUriValue
+                            ]
+                      )
 
 waitForKeycloakTokenEndpointReady :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
 waitForKeycloakTokenEndpointReady repoRoot settings substrate = do
@@ -3751,33 +4048,39 @@ waitForKeycloakTokenEndpointReady repoRoot settings substrate = do
 -- can hold stale secrets that diverged from Vault — yielding a persistent
 -- @invalid_client_credentials@ 401. This patches the live realm to match Vault.
 reconcileKeycloakRealmSecrets :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-reconcileKeycloakRealmSecrets repoRoot settings substrate = do
-  reconcileResult <-
-    Prodbox.UsersAdmin.reconcileRealmOidcSecretsAtPublicHost
-      repoRoot
-      (Text.pack (substratePublicFqdn settings substrate))
-  case reconcileResult of
+reconcileKeycloakRealmSecrets repoRoot settings substrate =
+  -- Sprint 1.84: a substrate with no declared served host is a refusal, not a
+  -- reconcile against the empty hostname.
+  case requireSubstratePublicFqdn settings substrate of
     Left err -> failWith err
-    Right () -> pure ExitSuccess
+    Right publicHost -> do
+      reconcileResult <-
+        Prodbox.UsersAdmin.reconcileRealmOidcSecretsAtPublicHost
+          repoRoot
+          (Text.pack publicHost)
+      case reconcileResult of
+        Left err -> failWith err
+        Right () -> pure ExitSuccess
 
 runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode
-runDirectOidcSessionValidation repoRoot settings substrate = do
-  sessionResult <- completeDirectOidcLogin repoRoot settings substrate
-  case sessionResult of
-    Left err -> failWith err
-    Right sessionPayload ->
-      case directOidcSessionSummary sessionPayload of
-        Left err -> failWith err
-        Right (carrierValue, issuerValue, maybeUsername) ->
-          if carrierValue == "cookie-session"
-            && issuerValue == substrateIdentityIssuerUrl settings substrate
-            && maybeUsername == Just "demo-user"
-            then pure ExitSuccess
-            else
-              failWith
-                ( "direct OIDC session payload did not match the documented carrier or issuer boundary: "
-                    ++ show (carrierValue, issuerValue, maybeUsername)
-                )
+runDirectOidcSessionValidation repoRoot settings substrate =
+  withSubstrateServedHost settings substrate $ \servedHost -> do
+    sessionResult <- completeDirectOidcLogin repoRoot servedHost
+    case sessionResult of
+      Left err -> failWith err
+      Right sessionPayload ->
+        case directOidcSessionSummary sessionPayload of
+          Left err -> failWith err
+          Right (carrierValue, issuerValue, maybeUsername) ->
+            if carrierValue == "cookie-session"
+              && issuerValue == substrateIdentityIssuerUrl servedHost
+              && maybeUsername == Just "demo-user"
+              then pure ExitSuccess
+              else
+                failWith
+                  ( "direct OIDC session payload did not match the documented carrier or issuer boundary: "
+                      ++ show (carrierValue, issuerValue, maybeUsername)
+                  )
 
 runWebsocketUpgradeValidation
   :: FilePath
@@ -3787,11 +4090,30 @@ runWebsocketUpgradeValidation
   -> String
   -> String
   -> IO ExitCode
-runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken websocketToken = do
+runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken websocketToken =
+  -- Sprint 1.84: a substrate with no declared served host is a refusal, not a
+  -- WebSocket dial against the empty hostname.
+  case requireSubstratePublicFqdn settings substrate of
+    Left err -> failWith err
+    Right websocketHost ->
+      runWebsocketUpgradeValidationAt
+        repoRoot
+        environment
+        apiToken
+        websocketToken
+        websocketHost
+
+runWebsocketUpgradeValidationAt
+  :: FilePath
+  -> [(String, String)]
+  -> String
+  -> String
+  -> String
+  -> IO ExitCode
+runWebsocketUpgradeValidationAt repoRoot environment apiToken websocketToken websocketHost = do
   nonce <- validationNonce
   let sessionId = "ws-" ++ nonce
       messageBody = "message-" ++ nonce
-      websocketHost = substratePublicFqdn settings substrate
   initialChecksExit <-
     runSequentially
       [ assertHttpStatusIn
@@ -3948,11 +4270,11 @@ runWebsocketUpgradeValidation repoRoot environment settings substrate apiToken w
             )
             (closeManagedWebsocketConnection firstConnection)
 
-completeDirectOidcLogin :: FilePath -> ValidatedSettings -> Substrate -> IO (Either String Value)
-completeDirectOidcLogin repoRoot settings substrate =
+completeDirectOidcLogin :: FilePath -> ValidatedServedHost -> IO (Either String Value)
+completeDirectOidcLogin repoRoot servedHost =
   runDemoOidcSessionValidationAgent
     repoRoot
-    (substratePublicRouteUrl settings substrate PublicRouteWebsocket)
+    (substratePublicRouteUrl servedHost PublicRouteWebsocket)
 
 -- | Run the browser-style password login inside a one-shot, exact Vault
 -- consumer. The host submits only a secret-free Job and receives the final
@@ -4660,13 +4982,12 @@ websocketStateSnapshot payload =
 
 assertOidcProtectedRoute
   :: FilePath
-  -> ValidatedSettings
-  -> Substrate
+  -> ValidatedServedHost
   -> String
   -> String
   -> String
   -> IO ExitCode
-assertOidcProtectedRoute repoRoot settings substrate requestUrl callbackUrl failurePrefix = do
+assertOidcProtectedRoute repoRoot servedHost requestUrl callbackUrl failurePrefix = do
   redirectResult <-
     runTextCommand
       Subprocess
@@ -4678,21 +4999,21 @@ assertOidcProtectedRoute repoRoot settings substrate requestUrl callbackUrl fail
   case redirectResult of
     Left err -> failWith err
     Right redirectHeaders ->
-      if redirectHeadersContainOidcContract settings substrate callbackUrl redirectHeaders
+      if redirectHeadersContainOidcContract servedHost callbackUrl redirectHeaders
         then pure ExitSuccess
         else failWith (failurePrefix ++ ": " ++ redirectHeaders)
 
-redirectHeadersContainOidcContract :: ValidatedSettings -> Substrate -> String -> String -> Bool
-redirectHeadersContainOidcContract settings substrate callbackUrl redirectHeaders =
+redirectHeadersContainOidcContract :: ValidatedServedHost -> String -> String -> Bool
+redirectHeadersContainOidcContract servedHost callbackUrl redirectHeaders =
   let loweredRedirectHeaders = map toLowerAscii redirectHeaders
-   in all (`isInfixOf` loweredRedirectHeaders) (oidcRedirectFragments settings substrate callbackUrl)
+   in all (`isInfixOf` loweredRedirectHeaders) (oidcRedirectFragments servedHost callbackUrl)
 
-oidcRedirectFragments :: ValidatedSettings -> Substrate -> String -> [String]
-oidcRedirectFragments settings substrate callbackUrl =
+oidcRedirectFragments :: ValidatedServedHost -> String -> [String]
+oidcRedirectFragments servedHost callbackUrl =
   map
     (map toLowerAscii)
     [ "HTTP/"
-    , "Location: " ++ substrateIdentityIssuerUrl settings substrate ++ "/protocol/openid-connect/auth"
+    , "Location: " ++ substrateIdentityIssuerUrl servedHost ++ "/protocol/openid-connect/auth"
     , "redirect_uri=" ++ encodeRedirectUri callbackUrl
     ]
 
@@ -4748,53 +5069,56 @@ runPublicDnsValidation repoRoot _substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
-      zoneEvidence <-
-        dispatchHostProviderIntentFresh
-          LifecycleAuthorityTestHarness
-          repoRoot
-          "validation-public-dns-zone"
-          ( ObserveProviderReadiness
-              (ProviderReadinessRoute53Zone (zone_id (route53 (validatedConfig settings))))
-          )
-      let zonePayloadResult = case zoneEvidence of
-            Left err -> Left (renderProviderCallerError err)
-            Right evidence -> decodeRoute53ZoneEvidence evidence
-      case zonePayloadResult of
-        Left err -> failWith err
-        Right payload ->
-          case hostedZoneDelegation payload of
-            Left err -> failWith err
-            Right (zoneName, expectedNameservers) -> do
-              digResult <-
-                runTextCommand
-                  Subprocess
-                    { subprocessPath = "dig"
-                    , subprocessArguments = ["+short", "NS", zoneName]
-                    , subprocessEnvironment = Nothing
-                    , subprocessWorkingDirectory = Just repoRoot
-                    }
-              case digResult of
-                Left err -> failWith err
-                Right stdoutText -> do
-                  let actualNameservers = sort (map normalizeDnsValue (filter (/= "") (lines stdoutText)))
-                      expectedNormalized = sort (map normalizeDnsValue expectedNameservers)
-                  if actualNameservers == expectedNormalized
-                    then do
-                      publicIpResult <- fetchPublicIp
-                      case publicIpResult of
-                        Left err -> failWith err
-                        Right publicIp ->
-                          verifyConfiguredPublicDnsRecords repoRoot settings publicIp
-                    else
-                      failWith
-                        ( "Public NS delegation mismatch for "
-                            ++ zoneName
-                            ++ ": expected "
-                            ++ show expectedNormalized
-                            ++ " but found "
-                            ++ show actualNameservers
-                        )
+    -- Sprint 1.89: refuse before dispatching rather than observe the zone `""`.
+    Right settings -> case requireHomeZoneId settings of
+      Left err -> failWith err
+      Right homeZoneId -> do
+        zoneEvidence <-
+          dispatchHostProviderIntentFresh
+            LifecycleAuthorityTestHarness
+            repoRoot
+            "validation-public-dns-zone"
+            ( ObserveProviderReadiness
+                (ProviderReadinessRoute53Zone (route53ZoneIdText homeZoneId))
+            )
+        let zonePayloadResult = case zoneEvidence of
+              Left err -> Left (renderProviderCallerError err)
+              Right evidence -> decodeRoute53ZoneEvidence evidence
+        case zonePayloadResult of
+          Left err -> failWith err
+          Right payload ->
+            case hostedZoneDelegation payload of
+              Left err -> failWith err
+              Right (zoneName, expectedNameservers) -> do
+                digResult <-
+                  runTextCommand
+                    Subprocess
+                      { subprocessPath = "dig"
+                      , subprocessArguments = ["+short", "NS", zoneName]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                case digResult of
+                  Left err -> failWith err
+                  Right stdoutText -> do
+                    let actualNameservers = sort (map normalizeDnsValue (filter (/= "") (lines stdoutText)))
+                        expectedNormalized = sort (map normalizeDnsValue expectedNameservers)
+                    if actualNameservers == expectedNormalized
+                      then do
+                        publicIpResult <- fetchPublicIp
+                        case publicIpResult of
+                          Left err -> failWith err
+                          Right publicIp ->
+                            verifyConfiguredPublicDnsRecords repoRoot settings publicIp
+                      else
+                        failWith
+                          ( "Public NS delegation mismatch for "
+                              ++ zoneName
+                              ++ ": expected "
+                              ++ show expectedNormalized
+                              ++ " but found "
+                              ++ show actualNameservers
+                          )
 
 runCertificateScopeServingValidation :: FilePath -> Substrate -> IO ExitCode
 runCertificateScopeServingValidation repoRoot substrate = do
@@ -5033,28 +5357,32 @@ runDnsAwsValidation repoRoot = do
 
 configuredHostedZoneName
   :: FilePath -> [(String, String)] -> ValidatedSettings -> IO (Either String String)
-configuredHostedZoneName repoRoot awsEnvironment settings = do
-  zonePayloadResult <-
-    runJsonCommand
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments =
-            [ "route53"
-            , "get-hosted-zone"
-            , "--id"
-            , textValue (zone_id (route53 (validatedConfig settings)))
-            , "--output"
-            , "json"
-            ]
-        , subprocessEnvironment = Just awsEnvironment
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  case zonePayloadResult of
+configuredHostedZoneName repoRoot awsEnvironment settings =
+  -- Sprint 1.89: `get-hosted-zone --id ""` is a request nobody meant to make.
+  case requireHomeZoneId settings of
     Left err -> pure (Left err)
-    Right payload ->
-      case hostedZoneDelegation payload of
+    Right homeZoneId -> do
+      zonePayloadResult <-
+        runJsonCommand
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                [ "route53"
+                , "get-hosted-zone"
+                , "--id"
+                , textValue (route53ZoneIdText homeZoneId)
+                , "--output"
+                , "json"
+                ]
+            , subprocessEnvironment = Just awsEnvironment
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      case zonePayloadResult of
         Left err -> pure (Left err)
-        Right (zoneName, _) -> pure (Right (trimTrailingDot zoneName))
+        Right payload ->
+          case hostedZoneDelegation payload of
+            Left err -> pure (Left err)
+            Right (zoneName, _) -> pure (Right (trimTrailingDot zoneName))
 
 cleanupDnsAwsValidation
   :: FilePath
@@ -5315,11 +5643,16 @@ renderGatewayValidationConfigDhall settings nodeId ordersPath =
       "    , event_keys = [] : List { name : Text, value : " ++ secretRefType ++ " }"
     , "    , lifecycle_authority = None { authority_scope : Text, endpoint : Text }"
     , "    , dns_write_gate = Some"
-    , "        { zone_id = " ++ dhallText (Text.unpack (zone_id (route53 (validatedConfig settings))))
+    , "        { zone_id = " ++ dhallText (Text.unpack (homeZoneIdTextForRendering settings))
     , "        , fqdn = " ++ dhallText (publicFqdn settings)
-    , "        , ttl = " ++ show (demo_ttl (domain (validatedConfig settings)))
+    , "        , ttl = " ++ show (dnsTtlSeconds (coordinateDemoTtl (validatedCoordinates settings)))
     , "        , aws_region = "
-        ++ dhallText (Text.unpack (awsCredentialRegion (aws (validatedConfig settings))))
+        ++ dhallText
+          ( maybe
+              ""
+              (Text.unpack . awsRegionText)
+              (coordinateOperationalAwsRegion (validatedCoordinates settings))
+          )
     , "        }"
     , -- Sprint 3.18: the gateway daemon decoder types these credential fields as
       -- Vault-backed SecretRefs, not Text. The validation config carries no real
@@ -5727,31 +6060,47 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
 
 assertPublicHttpRedirect
   :: FilePath -> ValidatedSettings -> Substrate -> PublicEdgeRoute -> IO ExitCode
-assertPublicHttpRedirect repoRoot settings substrate route = do
+assertPublicHttpRedirect repoRoot settings substrate route =
+  -- Sprint 1.84: resolve here, where there is an error channel, and hand the
+  -- pure renderer a host it can render.
+  -- Sprint 1.87: carry the resolved 'ValidatedServedHost' rather than its string
+  -- projection, so the HTTPS half of this comparison consumes the same
+  -- resolution as the HTTP half instead of re-deriving it.
+  case requireSubstrateServedHost settings substrate of
+    Left err -> failWith err
+    Right servedHost -> assertPublicHttpRedirectAt repoRoot servedHost route
+
+assertPublicHttpRedirectAt
+  :: FilePath -> ValidatedServedHost -> PublicEdgeRoute -> IO ExitCode
+assertPublicHttpRedirectAt repoRoot servedHost route = do
+  let publicHost = servedHostString servedHost
   result <-
     runTextCommand
       Subprocess
         { subprocessPath = "curl"
         , subprocessArguments =
-            ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings substrate route]
+            ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl publicHost route]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Just repoRoot
         }
   case result of
     Left err -> failWith err
     Right headers ->
-      if publicHttpRedirectMatches settings substrate route headers
+      if publicHttpRedirectMatches servedHost route headers
         then pure ExitSuccess
         else failWith ("public HTTP redirect did not target the canonical HTTPS route: " ++ headers)
 
-publicHttpRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
-publicHttpRouteUrl settings substrate route =
-  "http://" ++ substratePublicFqdn settings substrate ++ publicRoutePathPrefix route
+-- | Sprint 1.84: takes the resolved served host rather than reaching for it.
+-- The pure renderer has no error channel, so the resolution moves to its IO
+-- caller, which does — that is the whole shape of this sprint.
+publicHttpRouteUrl :: String -> PublicEdgeRoute -> String
+publicHttpRouteUrl publicHost route =
+  "http://" ++ publicHost ++ publicRoutePathPrefix route
 
-publicHttpRedirectMatches :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String -> Bool
-publicHttpRedirectMatches settings substrate route headers =
+publicHttpRedirectMatches :: ValidatedServedHost -> PublicEdgeRoute -> String -> Bool
+publicHttpRedirectMatches servedHost route headers =
   let lowered = map toLowerAscii headers
-      target = map toLowerAscii ("location: " ++ substratePublicRouteUrl settings substrate route)
+      target = map toLowerAscii ("location: " ++ substratePublicRouteUrl servedHost route)
       permanentStatus =
         any
           (`isInfixOf` lowered)
@@ -5951,12 +6300,15 @@ runKeycloakInviteValidation repoRoot substrate _environment = do
                           (Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings))
                       )
                   )
-              keycloakPublicHost = substratePublicFqdn settings substrate
-          if null subdomain
-            then
+          -- Sprint 1.84: the served host is resolved through the refusing
+          -- accessor, beside the subdomain guard that already refuses on the
+          -- same shape of missing config.
+          case (null subdomain, requireSubstratePublicFqdn settings substrate) of
+            (True, _) ->
               failWith
                 "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox.dhall."
-            else do
+            (False, Left err) -> failWith err
+            (False, Right keycloakPublicHost) -> do
               let recipient = "test-" ++ nonce ++ "@" ++ subdomain
                   invitePassword = inviteCredentialPassword nonce
               writeOutputLine ("KEYCLOAK_INVITE_PUBLIC_FQDN=" ++ keycloakPublicHost)
@@ -6208,9 +6560,10 @@ fetchInviteOidcClaims repoRoot settings substrate recipient password = do
     Left err -> pure (Left err)
     Right token ->
       pure $ do
+        servedHost <- requireSubstrateServedHost settings substrate
         claimsPayload <- decodeJwtPayload token
         assertInviteOidcClaims
-          (substrateIdentityIssuerUrl settings substrate)
+          (substrateIdentityIssuerUrl servedHost)
           recipient
           claimsPayload
 

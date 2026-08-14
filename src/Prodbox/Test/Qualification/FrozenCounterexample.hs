@@ -11,6 +11,8 @@ module Prodbox.Test.Qualification.FrozenCounterexample
   , CounterexampleResult (..)
   , FrozenComponent (..)
   , FrozenComponentImage
+  , FrozenMechanismDisposition (..)
+  , FrozenTraceFixture (..)
   , OpaqueFixtureBinding
   , FrozenCounterexampleTrace
   , FrozenTraceError (..)
@@ -22,6 +24,9 @@ module Prodbox.Test.Qualification.FrozenCounterexample
   , frozenExpectedEnvelopeDigest
   , frozenExpectedLoadFaultDigest
   , frozenExpectedTraceDigest
+  , frozenTraceFixturePath
+  , parseFrozenDispositions
+  , renderFrozenDisposition
   , mkFrozenComponentImage
   , mkAuthorityReceiptBinding
   , mkAuthorityGenerationBinding
@@ -29,11 +34,14 @@ module Prodbox.Test.Qualification.FrozenCounterexample
   , loadFrozenCounterexampleTrace
   , frozenTraceDigest
   , frozenTraceSourceIdentity
+  , frozenTraceDispositions
   , frozenTraceEnvelopeTotals
+  , frozenTraceNormalizedEnvelopeEqual
   , simulateFrozenCounterexample
   )
 where
 
+import Control.Exception (IOException, try)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -43,6 +51,7 @@ import Data.List (group, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Text.IO qualified as TextIO
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Test.Qualification.SourceIdentity
@@ -60,6 +69,7 @@ import Prodbox.Test.Qualification.SourceManifest
   ( SourceManifestCaptureError
   , captureCommittedSourceIdentity
   )
+import System.FilePath ((</>))
 
 frozenCounterexampleId :: Text
 frozenCounterexampleId = "LCPC-2026-07-11"
@@ -120,8 +130,114 @@ data CounterexampleResult = CounterexampleResult
   }
   deriving stock (Eq, Ord, Show)
 
-data Composition = SupersededGatewayComposition | ReplacementSeparatedComposition
-  deriving stock (Eq, Show)
+-- | Sprint 5.32: one mechanism's recorded dispositions, read from a
+-- repository-owned frozen input rather than regenerated in this module.
+--
+-- [Standard P](../../../../DEVELOPMENT_PLAN/development_plan_standards.md)'s
+-- counterexample rule requires the artifact to record the "expected failure
+-- against the frozen superseded implementation" and the replacement pass. Those
+-- are two facts per mechanism, and until this sprint neither was an input:
+-- 'simulateFrozenCounterexample' discarded its trace to a @_@ wildcard and
+-- regenerated both halves from an in-module constant, so the validation that
+-- checks them was comparing the generator's output against the generator.
+data FrozenMechanismDisposition = FrozenMechanismDisposition
+  { frozenMechanism :: !CounterexampleMechanism
+  , frozenSupersededDisposition :: !CounterexampleDisposition
+  , frozenReplacementDisposition :: !CounterexampleDisposition
+  }
+  deriving stock (Eq, Ord, Show)
+
+-- | Sprint 5.32: which repository-owned frozen input to load.
+data FrozenTraceFixture
+  = -- | The canonical frozen trace. Its computed trace digest must equal
+    -- 'frozenExpectedTraceDigest', so an undeclared edit to any frozen input —
+    -- including the disposition file — refuses at load.
+    CanonicalFrozenTrace
+  | -- | The committed mutation fixture, whose superseded dispositions are
+    -- altered. It is deliberately **not** digest-pinned: pinning it would make
+    -- the digest gate fire first, and the disposition consumption — the thing
+    -- the mutation exercise is there to falsify — would never run. Every other
+    -- captured digest is still checked, so the two fixtures differ in exactly
+    -- the dispositions and nothing else.
+    MutatedFrozenTrace
+  deriving stock (Bounded, Enum, Eq, Show)
+
+frozenTraceFixturePath :: FilePath -> FrozenTraceFixture -> FilePath
+frozenTraceFixturePath repoRoot fixture =
+  repoRoot </> "test" </> "qualification" </> case fixture of
+    CanonicalFrozenTrace -> "LCPC-2026-07-11.dispositions"
+    MutatedFrozenTrace -> "LCPC-2026-07-11.mutated.dispositions"
+
+-- | Parse the frozen disposition file. Total over
+-- 'CounterexampleMechanism': every mechanism must appear exactly once, and an
+-- unknown mechanism or disposition name refuses rather than being skipped —
+-- otherwise a typo would silently shrink the counterexample's coverage.
+parseFrozenDispositions :: Text -> Either FrozenTraceError [FrozenMechanismDisposition]
+parseFrozenDispositions contents = do
+  rows <- traverse parseRow significantLines
+  case duplicateValues (map frozenMechanism rows) of
+    duplicate : _ -> Left (FrozenTraceDispositionDuplicate duplicate)
+    [] -> Right ()
+  let present = sort (map frozenMechanism rows)
+      required = [minBound .. maxBound]
+  if present == required
+    then Right (sortOnMechanism rows)
+    else
+      Left
+        ( FrozenTraceDispositionInventoryIncomplete
+            [mechanism | mechanism <- required, mechanism `notElem` present]
+        )
+ where
+  significantLines =
+    [ trimmed
+    | rawLine <- Text.lines contents
+    , let trimmed = Text.strip rawLine
+    , not (Text.null trimmed)
+    , not ("#" `Text.isPrefixOf` trimmed)
+    ]
+  parseRow line = case Text.words line of
+    [mechanismWord, supersededWord, replacementWord] ->
+      FrozenMechanismDisposition
+        <$> parseMechanism mechanismWord
+        <*> parseDisposition supersededWord
+        <*> parseDisposition replacementWord
+    _ -> Left (FrozenTraceDispositionMalformed line)
+  sortOnMechanism rows =
+    [row | mechanism <- [minBound .. maxBound], row <- rows, frozenMechanism row == mechanism]
+
+parseMechanism :: Text -> Either FrozenTraceError CounterexampleMechanism
+parseMechanism word =
+  case [mechanism | mechanism <- [minBound .. maxBound], renderMechanism mechanism == word] of
+    mechanism : _ -> Right mechanism
+    [] -> Left (FrozenTraceDispositionUnknownMechanism word)
+
+parseDisposition :: Text -> Either FrozenTraceError CounterexampleDisposition
+parseDisposition word =
+  case word of
+    "superseded-failure-observed" -> Right SupersededFailureObserved
+    "replacement-mechanism-closed" -> Right ReplacementMechanismClosed
+    _ -> Left (FrozenTraceDispositionUnknownDisposition word)
+
+renderMechanism :: CounterexampleMechanism -> Text
+renderMechanism = Text.pack . show
+
+renderDisposition :: CounterexampleDisposition -> Text
+renderDisposition disposition = case disposition of
+  SupersededFailureObserved -> "superseded-failure-observed"
+  ReplacementMechanismClosed -> "replacement-mechanism-closed"
+
+-- | Canonical rendering of one disposition row. This is what enters the trace
+-- digest, so the digest is bound to the file's meaning rather than to its
+-- bytes: reordering rows or reflowing whitespace does not change the digest,
+-- and changing a disposition does.
+renderFrozenDisposition :: FrozenMechanismDisposition -> Text
+renderFrozenDisposition row =
+  Text.intercalate
+    " "
+    [ renderMechanism (frozenMechanism row)
+    , renderDisposition (frozenSupersededDisposition row)
+    , renderDisposition (frozenReplacementDisposition row)
+    ]
 
 data ResourceVector = ResourceVector
   { resourceCpuMilli :: !Natural
@@ -142,6 +258,11 @@ data FrozenCounterexampleTrace = FrozenCounterexampleTrace
   { frozenTraceSourceIdentity :: !SourceIdentity
   , frozenTraceImages :: ![FrozenComponentImage]
   , frozenTraceOpaqueBindings :: ![OpaqueFixtureBinding]
+  , frozenTraceDispositions :: ![FrozenMechanismDisposition]
+  -- ^ Sprint 5.32: read from the repository-owned frozen input. This is what
+  -- 'simulateFrozenCounterexample' consumes.
+  , frozenTraceSupersededEnvelopeTotal :: !ResourceVector
+  , frozenTraceReplacementEnvelopeTotal :: !ResourceVector
   , frozenTraceGeneratedConfigDigest :: !PublicSha256
   , frozenTraceTopologyDigest :: !PublicSha256
   , frozenTraceEnvelopeDigest :: !PublicSha256
@@ -149,6 +270,18 @@ data FrozenCounterexampleTrace = FrozenCounterexampleTrace
   , frozenTraceDigest :: !Text
   }
   deriving stock (Eq, Show)
+
+-- | Sprint 5.32: the normalized-envelope equality the evidence line reports,
+-- read off the carried totals rather than printed as a literal.
+--
+-- Its bound, stated rather than implied: 'buildFrozenCounterexampleTrace'
+-- refuses a trace whose totals diverge, so any trace that exists satisfies
+-- this. What changed is provenance, not the answer — the line can no longer
+-- keep asserting @true@ if the totals or their comparison change, because it
+-- is now that comparison.
+frozenTraceNormalizedEnvelopeEqual :: FrozenCounterexampleTrace -> Bool
+frozenTraceNormalizedEnvelopeEqual trace =
+  frozenTraceSupersededEnvelopeTotal trace == frozenTraceReplacementEnvelopeTotal trace
 
 data FrozenTraceError
   = FrozenTraceSourceCaptureFailed !SourceManifestCaptureError
@@ -165,6 +298,12 @@ data FrozenTraceError
   | FrozenTraceOpaqueBindingMissing
   | FrozenTraceOpaqueBindingDuplicate !Text
   | FrozenTraceEnvelopeTotalsDiverged !ResourceVector !ResourceVector
+  | FrozenTraceDispositionFileUnreadable !FilePath !Text
+  | FrozenTraceDispositionMalformed !Text
+  | FrozenTraceDispositionUnknownMechanism !Text
+  | FrozenTraceDispositionUnknownDisposition !Text
+  | FrozenTraceDispositionDuplicate !CounterexampleMechanism
+  | FrozenTraceDispositionInventoryIncomplete ![CounterexampleMechanism]
   deriving stock (Eq, Show)
 
 mkFrozenComponentImage
@@ -196,26 +335,37 @@ mkVaultHmacBinding value =
 
 loadFrozenCounterexampleTrace
   :: FilePath
+  -> FrozenTraceFixture
   -> [FrozenComponentImage]
   -> [OpaqueFixtureBinding]
   -> IO (Either FrozenTraceError FrozenCounterexampleTrace)
-loadFrozenCounterexampleTrace repoRoot images opaqueBindings = do
+loadFrozenCounterexampleTrace repoRoot fixture images opaqueBindings = do
+  let dispositionPath = frozenTraceFixturePath repoRoot fixture
+  readResult <-
+    try (TextIO.readFile dispositionPath) :: IO (Either IOException Text)
   sourceResult <-
     captureCommittedSourceIdentity
       repoRoot
       (Text.unpack frozenSupersededGitHead)
       []
-  pure $ case sourceResult of
-    Left err -> Left (FrozenTraceSourceCaptureFailed err)
-    Right sourceIdentity ->
-      buildFrozenCounterexampleTrace sourceIdentity images opaqueBindings
+  pure $ do
+    contents <-
+      either
+        (Left . FrozenTraceDispositionFileUnreadable dispositionPath . Text.pack . show)
+        Right
+        readResult
+    dispositions <- parseFrozenDispositions contents
+    sourceIdentity <- either (Left . FrozenTraceSourceCaptureFailed) Right sourceResult
+    buildFrozenCounterexampleTrace fixture sourceIdentity dispositions images opaqueBindings
 
 buildFrozenCounterexampleTrace
-  :: SourceIdentity
+  :: FrozenTraceFixture
+  -> SourceIdentity
+  -> [FrozenMechanismDisposition]
   -> [FrozenComponentImage]
   -> [OpaqueFixtureBinding]
   -> Either FrozenTraceError FrozenCounterexampleTrace
-buildFrozenCounterexampleTrace sourceIdentity images opaqueBindings = do
+buildFrozenCounterexampleTrace fixture sourceIdentity dispositions images opaqueBindings = do
   validateFrozenSourceIdentity sourceIdentity
   validateImages images
   validateOpaqueBindings opaqueBindings
@@ -238,6 +388,7 @@ buildFrozenCounterexampleTrace sourceIdentity images opaqueBindings = do
                 ]
                   ++ map renderImage (sort images)
                   ++ map renderOpaqueBinding (sort opaqueBindings)
+                  ++ map renderFrozenDisposition dispositions
               )
           )
   validateCapturedDigest
@@ -256,7 +407,13 @@ buildFrozenCounterexampleTrace sourceIdentity images opaqueBindings = do
     "load-fault-schedule"
     frozenExpectedLoadFaultDigest
     (renderPublicSha256 loadFaultDigest)
-  validateCapturedDigest "trace" frozenExpectedTraceDigest traceDigest
+  -- Sprint 5.32: the trace digest is pinned for the canonical fixture only.
+  -- See 'MutatedFrozenTrace' for why pinning the mutation fixture would defeat
+  -- the exercise it exists for.
+  case fixture of
+    CanonicalFrozenTrace ->
+      validateCapturedDigest "trace" frozenExpectedTraceDigest traceDigest
+    MutatedFrozenTrace -> Right ()
   if supersededTotal == replacementTotal
     then
       Right
@@ -264,6 +421,9 @@ buildFrozenCounterexampleTrace sourceIdentity images opaqueBindings = do
           { frozenTraceSourceIdentity = sourceIdentity
           , frozenTraceImages = sort images
           , frozenTraceOpaqueBindings = sort opaqueBindings
+          , frozenTraceDispositions = dispositions
+          , frozenTraceSupersededEnvelopeTotal = supersededTotal
+          , frozenTraceReplacementEnvelopeTotal = replacementTotal
           , frozenTraceGeneratedConfigDigest = generatedConfigDigest
           , frozenTraceTopologyDigest = topologyDigest
           , frozenTraceEnvelopeDigest = envelopeDigest
@@ -288,8 +448,12 @@ frozenExpectedEnvelopeDigest = "f2f19df4e986b082f10c8bb4e88a3352fd9dc42ba6bb59a1
 frozenExpectedLoadFaultDigest :: Text
 frozenExpectedLoadFaultDigest = "434a69bedca1292ec0b2dbfbae304f98fdd0ba32fd555b045f47df9496709007"
 
+-- | Sprint 5.32 recomputed this after the repository-owned disposition rows
+-- entered the digest. The prior value
+-- @1566e0110dc3a080bfb2bef4dfa1c5615e676b26df1cb9f806fb8b6e8103d552@ bound a
+-- trace whose dispositions were an in-module constant rather than an input.
 frozenExpectedTraceDigest :: Text
-frozenExpectedTraceDigest = "1566e0110dc3a080bfb2bef4dfa1c5615e676b26df1cb9f806fb8b6e8103d552"
+frozenExpectedTraceDigest = "5834b7823117b0e40905f7dbd1911e468c2280624c2021bbabc700652b59ce17"
 
 validateCapturedDigest
   :: Text -> Text -> Text -> Either FrozenTraceError ()
@@ -391,23 +555,28 @@ frozenTraceEnvelopeTotals =
         then Right (superseded, replacement)
         else Left (FrozenTraceEnvelopeTotalsDiverged superseded replacement)
 
+-- | Sprint 5.32: project the frozen trace's recorded dispositions into the two
+-- result sets the counterexample validation compares.
+--
+-- It now **binds and consumes** its argument. The pre-5.32 body discarded the
+-- trace to a @_@ wildcard and returned @(simulateComposition Superseded,
+-- simulateComposition Replacement)@ — two constants — so
+-- 'Prodbox.Test.CounterexampleValidation' then checked that the halves agreed
+-- with the dispositions this function had just written, and @complete@ was
+-- @True@ for every input. That is
+-- [chaos_hardening_doctrine.md § 12](../../../../documents/engineering/chaos_hardening_doctrine.md)'s
+-- cardinal rule reached through the mechanism written to enforce it.
 simulateFrozenCounterexample
   :: FrozenCounterexampleTrace
   -> ([CounterexampleResult], [CounterexampleResult])
-simulateFrozenCounterexample _ =
-  ( simulateComposition SupersededGatewayComposition
-  , simulateComposition ReplacementSeparatedComposition
+simulateFrozenCounterexample trace =
+  ( [ CounterexampleResult (frozenMechanism row) (frozenSupersededDisposition row)
+    | row <- frozenTraceDispositions trace
+    ]
+  , [ CounterexampleResult (frozenMechanism row) (frozenReplacementDisposition row)
+    | row <- frozenTraceDispositions trace
+    ]
   )
-
-simulateComposition :: Composition -> [CounterexampleResult]
-simulateComposition composition =
-  [ CounterexampleResult mechanism disposition
-  | mechanism <- [minBound .. maxBound]
-  ]
- where
-  disposition = case composition of
-    SupersededGatewayComposition -> SupersededFailureObserved
-    ReplacementSeparatedComposition -> ReplacementMechanismClosed
 
 supersededEnvelope :: [EnvelopeSlice]
 supersededEnvelope =

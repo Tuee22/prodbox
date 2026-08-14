@@ -1,0 +1,31 @@
+# LCPC-2026-07-11 — canonical frozen counterexample dispositions.
+#
+# Standard P's counterexample rule requires the repository-owned reproducer to
+# record, per mechanism, the EXPECTED FAILURE AGAINST THE FROZEN SUPERSEDED
+# IMPLEMENTATION and the replacement pass. This file is that record. It is an
+# INPUT to `simulateFrozenCounterexample`, not a restatement of its output:
+# before Sprint 5.32 both halves were regenerated in-module from a composition
+# constant, so the validation that checks them could not fail.
+#
+# Format: one row per CounterexampleMechanism, whitespace-separated.
+#
+#   <mechanism> <superseded-disposition> <replacement-disposition>
+#
+# Dispositions are `superseded-failure-observed` or
+# `replacement-mechanism-closed`. Every mechanism in the compiled
+# `CounterexampleMechanism` enumeration must appear exactly once; a missing,
+# duplicated, or misspelled entry refuses the load rather than shrinking the
+# counterexample's coverage silently.
+#
+# These rows participate in the frozen trace digest pinned by
+# `frozenExpectedTraceDigest`, so an undeclared edit here refuses at load. The
+# committed mutation fixture beside this file
+# (`LCPC-2026-07-11.mutated.dispositions`) is the deliberate exception; see
+# `FrozenTraceFixture` in
+# `src/Prodbox/Test/Qualification/FrozenCounterexample.hs`.
+
+AbsentGetAuthorityCasMismatch           superseded-failure-observed  replacement-mechanism-closed
+GatewayDeadlineUnderThrottle            superseded-failure-observed  replacement-mechanism-closed
+SelectedTargetAuthorityEndpointMismatch superseded-failure-observed  replacement-mechanism-closed
+AppliedButResponseLostRetainedOperation superseded-failure-observed  replacement-mechanism-closed
+FailedSiblingSkipsIndependentRestore    superseded-failure-observed  replacement-mechanism-closed

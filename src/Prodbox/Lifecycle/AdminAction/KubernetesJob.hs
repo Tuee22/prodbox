@@ -65,6 +65,10 @@ import Prodbox.Lifecycle.AdminAction.Protocol
   )
 import Prodbox.Lifecycle.Authority.AdminAction (AdminAction (..))
 import Prodbox.Lifecycle.Lease (authorityTimeMicros)
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -589,11 +593,13 @@ observeServiceAccountUid connection = do
           | Text.null (Text.strip uid) -> Left "Admin Action ServiceAccount UID is empty"
           | otherwise -> Right uid
 
+-- | Sprint 4.78: keyed through the one owner, and scoped to __stderr__.
+-- It used to match against @stdout <> stderr@, so a kubectl command that
+-- succeeded and printed an object whose own content contained @not found@ —
+-- a ConfigMap value, a container log line, a condition message — was read as
+-- the object being absent.
 isNotFound :: ProcessOutput -> Bool
-isNotFound output =
-  let combined = processStdout output <> processStderr output
-   in "NotFound" `Text.isInfixOf` Text.pack combined
-        || "not found" `Text.isInfixOf` Text.toLower (Text.pack combined)
+isNotFound output = reportsAbsence KubernetesObjectProbe (processStderr output)
 
 kubectl :: AdminActionJobConnection -> [String] -> Subprocess
 kubectl connection arguments =

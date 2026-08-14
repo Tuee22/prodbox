@@ -67,8 +67,8 @@ import Prodbox.Infra.SubstrateKubectl (withSubstrateKubectlEnvironment)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.PublicEdge
-  ( resolveSubstrateHostedZoneId
-  , substratePublicFqdn
+  ( requireSubstratePublicFqdn
+  , resolveSubstrateHostedZoneId
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -200,18 +200,23 @@ runHostPublicEdge repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
-    Right settings -> do
-      let publicHost = substratePublicFqdn settings substrate
-      writeOutputLine ("PUBLIC_EDGE_SUBSTRATE=" ++ substrateId substrate)
-      hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
-      case hostedZoneResult of
-        Left err -> failWith err
-        Right hostedZoneId ->
-          withSubstrateKubectlEnvironment
-            repoRoot
-            settings
-            substrate
-            (processWithHostedZone settings publicHost hostedZoneId)
+    -- Sprint 1.84: refuse rather than render an empty hostname. This caller
+    -- has always had an error channel; it simply was never offered the answer,
+    -- because the former `substratePublicFqdn` returned `""` for "this
+    -- substrate declares no served host". Sprint 1.87 deleted that accessor.
+    Right settings -> case requireSubstratePublicFqdn settings substrate of
+      Left err -> failWith err
+      Right publicHost -> do
+        writeOutputLine ("PUBLIC_EDGE_SUBSTRATE=" ++ substrateId substrate)
+        hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
+        case hostedZoneResult of
+          Left err -> failWith err
+          Right hostedZoneId ->
+            withSubstrateKubectlEnvironment
+              repoRoot
+              settings
+              substrate
+              (processWithHostedZone settings publicHost hostedZoneId)
  where
   processWithHostedZone settings publicHost hostedZoneId = do
     publicIpResult <- fetchPublicIp

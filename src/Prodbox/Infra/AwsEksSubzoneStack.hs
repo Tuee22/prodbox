@@ -42,13 +42,14 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Settings
-  ( AwsSubstrateSection (subzone_name)
-  , Route53Section (zone_id)
-  , ValidatedSettings (validatedConfig)
-  , aws_substrate
-  , route53
+  ( ValidatedCoordinates (coordinateHomeZoneId)
+  , ValidatedPublicEdge (validatedAwsServedHost)
+  , ValidatedServedHost (servedHostFqdn)
+  , ValidatedSettings (validatedCoordinates, validatedPublicEdge)
   , validateAndLoadSettings
   )
+import Prodbox.Settings.Coordinate (route53ZoneIdText)
+import Prodbox.Tls.CertScope (fqdnText)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 
 awsEksSubzoneStackName :: String
@@ -88,16 +89,16 @@ ensureAwsEksSubzoneStackResourcesWithAuthentication authentication repoRoot = do
   dispatchConfigured authentication "operator-reconcile-aws-eks-subzone" True config
 
 destroyAwsEksSubzoneStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsEksSubzoneStack repoRoot summary =
+destroyAwsEksSubzoneStack repoRoot quietOutput =
   withOperatorLifecycleAuthority repoRoot $ \authentication ->
-    destroyAwsEksSubzoneStackWithAuthentication authentication repoRoot summary
+    destroyAwsEksSubzoneStackWithAuthentication authentication repoRoot quietOutput
 
 destroyAwsEksSubzoneStackWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsEksSubzoneStackWithAuthentication authentication repoRoot _summary = do
+destroyAwsEksSubzoneStackWithAuthentication authentication repoRoot _quietOutput = do
   config <- resolveAwsEksSubzoneStackConfig repoRoot
   dispatchConfigured authentication "operator-destroy-aws-eks-subzone" False config
 
@@ -146,12 +147,20 @@ resolveAwsEksSubzoneStackConfig repoRoot = do
   settings <- validateAndLoadSettings repoRoot
   pure $ do
     validated <- settings
-    let config = validatedConfig validated
-        parentZone = Text.strip (zone_id (route53 config))
-        subzone = Text.strip (subzone_name (aws_substrate config))
-    if Text.null parentZone || Text.null subzone
-      then Left "route53.zone_id and aws_substrate.subzone_name must be configured"
-      else Right (AwsEksSubzoneStackConfig parentZone subzone)
+    -- Sprint 1.89: both coordinates come from the parsed projection, so this
+    -- refuses a malformed parent zone rather than passing it to Pulumi. The
+    -- presence rule stays here, where it belongs: the subzone stack needs both,
+    -- while the config as a whole requires neither.
+    let coordinates = validatedCoordinates validated
+        parentZone = fmap route53ZoneIdText (coordinateHomeZoneId coordinates)
+        subzone =
+          fmap
+            (fqdnText . servedHostFqdn)
+            (validatedAwsServedHost (validatedPublicEdge validated))
+    case (parentZone, subzone) of
+      (Just parentZoneId, Just subzoneName) ->
+        Right (AwsEksSubzoneStackConfig parentZoneId subzoneName)
+      _ -> Left "route53.zone_id and aws_substrate.subzone_name must be configured"
 
 withOperatorLifecycleAuthority
   :: FilePath

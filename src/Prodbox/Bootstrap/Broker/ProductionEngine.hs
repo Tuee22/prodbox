@@ -56,6 +56,7 @@ import Prodbox.Bootstrap.Broker.Engine
   )
 import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceAcquireDecision (..)
+  , BootstrapFenceAcquireRefusal (..)
   , BootstrapFenceStoreObservation
   , BootstrapLeaseObservation (..)
   , BootstrapSessionFence
@@ -211,6 +212,7 @@ import Prodbox.Bootstrap.Broker.Types
   , rootAccessorInventoryGeneration
   , rootInitStorageGeneration
   )
+import Prodbox.CLI.Output (writeDiagnosticLine)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders (..)
   , mkAuthenticatedClientTransport
@@ -266,6 +268,7 @@ import Prodbox.ControlPlane.Deadline
   , monotonicInstantMicros
   )
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrlText)
 import Prodbox.ControlPlane.RequestAuthentication (mkRequestNonce)
 import Prodbox.ControlPlane.RetainedAuthentication
   ( readRetainedAuthorityEpoch
@@ -474,11 +477,11 @@ currentClientAuthorityTime = do
 
 targetSecretAgentServiceEndpoint :: Text
 targetSecretAgentServiceEndpoint =
-  "http://target-secret-agent.target-secret-agent.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "target-secret-agent" "target-secret-agent"
 
 lifecycleAuthorityServiceEndpoint :: Text
 lifecycleAuthorityServiceEndpoint =
-  "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "lifecycle-authority" "lifecycle-authority"
 
 productionBoundary
   :: BootstrapBrokerSettings
@@ -895,6 +898,22 @@ freshRootSessionId = do
         (mkRootSessionId ("root-session-" <> lowerHexBytes bytes))
     )
 
+-- | Sprint 2.47: the closed refusal set, named without its payload.
+--
+-- 'BootstrapFenceAcquireOverlap' and 'BootstrapFenceAcquireExpiredPredecessor'
+-- each carry a 'BootstrapSessionFence', which carries the owner nonce — a
+-- 32-byte ownership token. The constructor name distinguishes the five causes
+-- without publishing it, which is the same rule Sprint 2.46 applied one level
+-- up.
+bootstrapFenceAcquireRefusalName :: BootstrapFenceAcquireRefusal -> String
+bootstrapFenceAcquireRefusalName refusal = case refusal of
+  BootstrapFenceAcquireRequestDeadlineExpired ->
+    "BootstrapFenceAcquireRequestDeadlineExpired"
+  BootstrapFenceAcquireDeadlineRefused _ -> "BootstrapFenceAcquireDeadlineRefused"
+  BootstrapFenceAcquireStoreUnobservable _ -> "BootstrapFenceAcquireStoreUnobservable"
+  BootstrapFenceAcquireOverlap _ -> "BootstrapFenceAcquireOverlap"
+  BootstrapFenceAcquireExpiredPredecessor _ -> "BootstrapFenceAcquireExpiredPredecessor"
+
 acquireFence
   :: OwnerNonce
   -> BootstrapStoreBoundary IO
@@ -926,7 +945,15 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
             Left failure -> pure (Left (storeBoundaryError failure))
             Right observation ->
               case decideBootstrapFenceAcquire monotonicNow requestDeadline clock request observation of
-                BootstrapFenceAcquireRefused refusal -> boundaryRefused (Text.pack (show refusal))
+                BootstrapFenceAcquireRefused refusal -> do
+                  -- Sprint 2.47: name which of the five fence refusals fired.
+                  -- Constructor only: two of them carry a BootstrapSessionFence,
+                  -- which carries the owner nonce.
+                  writeDiagnosticLine
+                    ( "bootstrap-broker fence acquire refused: "
+                        ++ bootstrapFenceAcquireRefusalName refusal
+                    )
+                  boundaryRefused (Text.pack (show refusal))
                 BootstrapFenceAcquireResume fence -> ensureLease fence
                 BootstrapFenceAcquireCas plan -> do
                   applied <- casBootstrapSessionFence store plan
@@ -940,9 +967,11 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
   ensureLease fence = do
     observed <- kubernetesEnsureBootstrapLease kubernetes requestDeadline fence
     now <- realMonotonicNow
-    pure $ case confirmBootstrapLease now fence observed of
-      Left refusal -> Left (EngineBoundaryRefused (Text.pack (show refusal)))
-      Right _ -> Right fence
+    case confirmBootstrapLease now fence observed of
+      Left refusal -> do
+        writeDiagnosticLine "bootstrap-broker fence acquire refused: lease not confirmed"
+        pure (Left (EngineBoundaryRefused (Text.pack (show refusal))))
+      Right _ -> pure (Right fence)
 
 observeFenceUse
   :: BootstrapStoreBoundary IO

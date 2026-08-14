@@ -444,7 +444,6 @@ commandPathOfRequest request =
                     IntegrationEnv -> ["env"]
                     IntegrationGatewayDaemon -> ["gateway-daemon"]
                     IntegrationGatewayPods -> ["gateway-pods"]
-                    IntegrationGatewayPartition -> ["gateway-partition"]
                     IntegrationControlPlaneCounterexample -> ["control-plane-counterexample"]
                     IntegrationCertificateScope -> ["certificate-scope"]
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]

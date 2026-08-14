@@ -269,6 +269,11 @@ import Prodbox.ControlPlane.InClusterAuthorityStore
   , newInClusterAuthorityStore
   )
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.ListenPort
+  ( controlPlaneClusterServiceUrlText
+  , controlPlaneListenPort
+  , controlPlaneListenPortNumber
+  )
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( mkProjectionImportHandlerWithApplicator
   , resolvingProjectionImportHandler
@@ -1969,15 +1974,15 @@ freshReplayAttempt = do
 
 authorityBackupServiceEndpoint :: Text
 authorityBackupServiceEndpoint =
-  "http://authority-backup.authority-backup.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "authority-backup" "authority-backup"
 
 providerWorkerServiceEndpoint :: Text
 providerWorkerServiceEndpoint =
-  "http://provider-worker.provider-worker.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "provider-worker" "provider-worker"
 
 lifecycleAuthorityServiceEndpoint :: Text
 lifecycleAuthorityServiceEndpoint =
-  "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "lifecycle-authority" "lifecycle-authority"
 
 lifecycleAuthorityTargetControllerTokenFile :: FilePath
 lifecycleAuthorityTargetControllerTokenFile =
@@ -1985,7 +1990,7 @@ lifecycleAuthorityTargetControllerTokenFile =
 
 targetSecretAgentServiceEndpoint :: Text
 targetSecretAgentServiceEndpoint =
-  "http://target-secret-agent.target-secret-agent.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "target-secret-agent" "target-secret-agent"
 
 targetDecommissionInventoryMaximumResponseBytes :: Int
 targetDecommissionInventoryMaximumResponseBytes = 64 * 1024
@@ -2305,7 +2310,7 @@ runRolePlan role options vaultConfig vaultSession validatedStore clusterId agent
               , "CONFIG_PATH=" ++ controlPlaneConfigPath options
               , "CONFIG_SCHEMA_VERSION=7"
               , "CONFIG_RUNTIME_ROLE=" ++ runtimeRoleName role
-              , "LISTENER=0.0.0.0:8600"
+              , "LISTENER=0.0.0.0:" ++ show controlPlaneListenPort
               , "ROLE_ROUTE_COUNT=" ++ show (length (routesForRole role))
               , "READINESS=" ++ readinessPlan role
               ]
@@ -3170,7 +3175,12 @@ runControlPlaneServer role interpreter = case controlPlaneCapacityPlan of
   open = do
     listener <- socket AF_INET Stream defaultProtocol
     setSocketOption listener ReuseAddr 1
-    bind listener (SockAddrInet 8600 (tupleToHostAddress (0, 0, 0, 0)))
+    bind
+      listener
+      ( SockAddrInet
+          controlPlaneListenPortNumber
+          (tupleToHostAddress (0, 0, 0, 0))
+      )
     listen listener 32
     pure listener
 

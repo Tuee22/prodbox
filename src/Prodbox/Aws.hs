@@ -189,6 +189,7 @@ import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , absentReconcileExitCode
   , managedDestroyCapability
   , pairAwsSesResidue
   , pairPerRunResidue
@@ -1811,8 +1812,14 @@ applyAwsTeardown repoRoot input = do
                       && ResidueStatus.isResiduePresent status
                 )
                 operationalPairs
-        reconcileExit <- reconcileAbsent repoRoot operationalPairs
-        case reconcileExit of
+        reconcileOutcome <- reconcileAbsent repoRoot operationalPairs
+        -- Sprint 4.76: the reconcile now reports what it observed, not
+        -- just how the destroys exited. The `unreachable` gate above has
+        -- already refused an unobserved operational resource, so
+        -- `absentReconcileExitCode`'s unobserved arm is unreachable from
+        -- here; consuming the aggregate rather than the destroy exit
+        -- keeps that true if the gate above is ever narrowed.
+        case absentReconcileExitCode reconcileOutcome of
           ExitFailure code ->
             pure
               ( Left
@@ -3280,7 +3287,9 @@ operationalCredentialsCleared repoRoot = do
   credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   pure $
     case credentialsResult of
-      Left err -> operationalCredentialsAbsentError err
+      -- Sprint 4.78: see 'operationalCredentialsClearedDecision'. This caller
+      -- has no IAM-user probe, so an unresolvable credential is not cleared.
+      Left _ -> False
       Right credentials -> not (operationalCredentialsConfigured credentials)
 
 -- | Sprint 7.24: the preflight-resilient counterpart of
@@ -3309,34 +3318,61 @@ operationalCredentialsClearedAtPreflight repoRoot adminCreds = do
 -- e.g. host Vault unreachable) → cleared ONLY when the IAM user is confirmed
 -- absent (@Right False@); otherwise NOT cleared, preserving fail-closed.
 -- Unit-testable, no IO.
+-- Sprint 4.78: the @Left \"missing\"\/\"empty\"@ arm is __deleted__, and the
+-- measurement that justifies it is worth more than the deletion. That arm
+-- matched the words @missing@ or @empty@ anywhere in a lowercased error, so a
+-- Vault refusal reading @token is missing the required policy@ would have
+-- answered "the operational credentials are cleared" — the fail-open direction
+-- on a teardown gate whose own comment says that would strand the operational
+-- IAM user.
+--
+-- Measured, it was also __unreachable__: the sole producer of this @Either@,
+-- 'readLifecycleProviderTargetCredentials', is a total constant @Left@ whose
+-- message contains neither word, so the arm evaluated 'False' on every
+-- production input and control always fell through to the IAM-user probe below.
+-- Deleting it is therefore behaviour-preserving today and closes the road by
+-- which a future error message could take it.
+--
+-- What remains is the fail-closed rule the doc comment above already describes:
+-- an unresolvable credential means cleared __only__ when the IAM user is
+-- confirmed absent.
 operationalCredentialsClearedDecision :: Either String Credentials -> Either String Bool -> Bool
 operationalCredentialsClearedDecision credentialsResult iamUserExistsResult =
   case credentialsResult of
     Right credentials -> not (operationalCredentialsConfigured credentials)
-    Left err
-      | operationalCredentialsAbsentError err -> True
-      | otherwise -> iamUserExistsResult == Right False
+    Left _ -> iamUserExistsResult == Right False
 
 operationalCredentialsConfiguredFromVault :: FilePath -> ConfigFile -> IO (Either String Bool)
 operationalCredentialsConfiguredFromVault repoRoot _config = do
   credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   pure $ operationalCredentialsConfiguredResult credentialsResult
 
+-- Sprint 4.78: the prose-matching @Left@ arm is deleted here for the same
+-- measured reason as in 'operationalCredentialsClearedDecision'. An
+-- unresolvable credential is now @Left@ — "I could not observe this" — rather
+-- than @Right False@, which said "I observed that it is not configured".
 operationalCredentialsConfiguredResult :: Either String Credentials -> Either String Bool
 operationalCredentialsConfiguredResult credentialsResult =
   case credentialsResult of
-    Left err
-      | operationalCredentialsAbsentError err -> Right False
-      | otherwise -> Left err
+    Left err -> Left err
     Right credentials -> Right (operationalCredentialsConfigured credentials)
 
+-- Sprint 4.78: __this is the site the ledger row named__, and the one with
+-- teeth: it minted 'ResidueAbsent' — the constructor that satisfies the
+-- fail-closed teardown gate — from the words @missing@ or @empty@ appearing
+-- anywhere in an error message. A Vault refusal reading @token is missing the
+-- required policy@ took it, and the gate's own comment says that would strand
+-- the operational IAM user.
+--
+-- The arm is deleted. An unresolvable credential is 'ResidueUnreachable', which
+-- is what it always was: measured, the sole producer of this @Either@ is a
+-- total constant @Left@ carrying neither word, so no production input ever
+-- reached the absent arm and this is behaviour-preserving today.
 operationalAwsConfigResidueFromCredentialsResult
   :: Either String Credentials -> ResidueStatus.ResidueStatus
 operationalAwsConfigResidueFromCredentialsResult credentialsResult =
   case credentialsResult of
-    Left err
-      | operationalCredentialsAbsentError err -> ResidueStatus.ResidueAbsent
-      | otherwise -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
+    Left err -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
     Right credentials -> operationalAwsConfigResidueFromKey (access_key_id credentials)
 
 -- | Sprint 7.24: refine the @operational-aws-config@ residue against the
@@ -3365,12 +3401,6 @@ refineAwsConfigResidueAgainstIamUser iamUserStatus rawAwsConfigStatus =
     (ResidueStatus.ResidueAbsent, ResidueStatus.ResidueUnreachable _) ->
       ResidueStatus.ResidueAbsent
     _ -> rawAwsConfigStatus
-
-operationalCredentialsAbsentError :: String -> Bool
-operationalCredentialsAbsentError err =
-  any (`Text.isInfixOf` rendered) ["missing", "empty"]
- where
-  rendered = Text.toLower (Text.pack err)
 
 readLifecycleProviderTargetCredentials :: FilePath -> IO (Either String Credentials)
 readLifecycleProviderTargetCredentials _repoRoot =

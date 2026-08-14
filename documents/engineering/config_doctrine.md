@@ -629,9 +629,10 @@ Two honest limits on that gate:
   What the four newly-covered sections check: SES identity fields when set, a `manual_pv_host_root`
   that cannot escape the root it is joined onto, a state-backend bucket and a key prefix that is
   safe to concatenate into object keys, and the component graph validated at decode rather than at
-  bring-up. Note the bound: a total fold says every field is *visited*, not that every field is
-  *well-typed*. The ~30 `Text` and ~40 `Natural` fields carrying unstated invariants remain their
-  own scheduled work; a total validator is a prerequisite for narrowing them, not a substitute.
+  bring-up. The bound this paragraph used to state — that a total fold says every field is *visited*,
+  not that every field is *well-typed* — was true until Sprint `1.89` and is corrected below rather
+  than left standing. The counts it carried ("~30 `Text` and ~40 `Natural`") were restatements and
+  both were wrong; Sprint `1.88` measured 27 and 18.
 - **The payload renderer used to be partial too, and no longer is (Sprint `1.79`).**
   `renderConfigDhall` was a hand-written field-by-field emitter that produced `Config::{…}` and
   never emitted `components`; Dhall record completion then refilled the field from the schema
@@ -670,12 +671,34 @@ Two honest limits on that gate:
   [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md): a typed value crossing out of a
   region must be reconstructed by exactly one derived encoder, and here there were four. Tightening a
   type does not update a second encoder; it only makes it wrong.
-- **`ValidatedSettings` carries the raw record.** Its one genuine proof is the opaque
-  `AllocatedResourcePlan` (§ 2C Ring 2 of [resource_scaling_doctrine.md](./resource_scaling_doctrine.md)),
-  which cannot be constructed without the capacity compile succeeding. Every other field rides along
-  as the `Text` / `Natural` / `List` it decoded as, and is re-read raw at the point of use. So
-  "validated settings" means *the capacity plan is proven and some other checks have run*, not
-  *every field is known good*.
+- **`ValidatedSettings` carries the raw record, and now also carries the parses taken over it
+  (Sprint `1.89`).** It has three proofs rather than one: the opaque `AllocatedResourcePlan`
+  (§ 2C Ring 2 of [resource_scaling_doctrine.md](./resource_scaling_doctrine.md)), which cannot be
+  constructed without the capacity compile succeeding; `ValidatedPublicEdge` (Sprint `1.83`); and
+  `ValidatedCoordinates`, which holds every Tier-0 coordinate as the type its decision established —
+  `AwsRegion`, `Route53ZoneId`, `S3BucketName`, `DnsLabel`, `DnsTtl`, `IpLiteral`, `EmailAddress`,
+  `AcmeDirectoryUrl`, `SafeRelativePath`, all built only through the smart constructors in
+  `Prodbox.Settings.Coordinate`. `validateConfig` is the sole minter, and
+  `checkTier0CoordinateReads` fails `prodbox dev check` for any `src/` module that reaches a
+  registered coordinate through a `ValidatedSettings` rather than through the projection.
+
+  Before Sprint `1.89` this paragraph read "every other field rides along as the `Text` / `Natural` /
+  `List` it decoded as, and is re-read raw at the point of use". That was accurate and is no longer,
+  so it is corrected here rather than left to be quietly outgrown.
+
+  **Three bounds, because the guarantee is narrower than "validated" suggests.** First, these are
+  *shape* rules: an `AwsRegion` is a well-formed region name, not a region this account can reach.
+  Shape is what config validation can decide without a network. Second, the gate is a compiled rule
+  over a source region, not a property of the type — a module that passed a *section* to a helper
+  would escape it. Third, the narrowing happens one ring in from the authored file: Dhall has no
+  refinement types, so `route53.zone_id` is still `Text` on the wire, and retyping it there would
+  change every generated `prodbox.dhall` — a Standard-P generated-config identity change. The wire
+  format is deliberately untouched.
+
+  What remains raw is the rest of the record: the capacity profile identifiers, the component graph's
+  interior, and the fields no coordinate rule applies to. So "validated settings" now means *the
+  capacity plan is proven, the public edge is parsed, and every registered coordinate is the type its
+  rule established* — not *every field is known good*.
 
 Neither limit is a reason to distrust the config in normal operation — the generator emits sound
 values. Both are reasons not to read "decoded" or "validated" as "illegal states are
@@ -707,13 +730,38 @@ What that gate does and does not close, stated with the same care as the two lim
   leaves the emitted `concurrentDraws` list stale. That list is the Ring-1 `assert`'s own input, so
   before this gate a hand-edited plan left Ring 1 quietly proving the fit of draws the plan no
   longer implies.
-- It does **not** close a hand edit to a primitive that round-trips unchanged — a re-typed
+- It did **not** close a hand edit to a primitive that round-trips unchanged — a re-typed
   `route53.zone_id` or `acme.server` decodes to that value and re-renders to that value, so the
   edited file *is* the generator's output for the record it carries. No text comparison can
-  separate the two. Closing that class needs a generator-stamped witness over the record (the
-  Tier-0 `witness` field exists for exactly this kind of attestation), which changes generated
-  config content and is therefore a Standard-P generated-config-identity change, not a
-  developer-tooling one. It is registered as a scheduled gap, not silently absorbed here.
+  separate the two.
+
+### The generator-stamped witness (Sprint `0.29`)
+
+That class is closed by making the file carry a value its own content determines.
+`renderProjectConfigDhall` stamps `witness = [ "prodbox-tier0-witness-v1:<sha256>" ]`, the digest
+taken over the canonical Dhall rendering of `parameters` and `context`.
+
+**The digest excludes `witness` itself**, which is forced rather than chosen: a witness over a record
+containing itself has no fixed point. It also makes stamping idempotent.
+
+**No new gate was added.** The § 4 comparison above now catches the class on its own: after a hand
+edit the file holds the *old* witness beside the *new* primitive; the gate re-renders the decoded
+record, stamps a witness computed from the edited content, and the two disagree, so the comparison
+reports the differing field as `witness`. The right fix was a field that cannot be edited
+consistently by hand, not a second check.
+
+**Two consequences, stated rather than implied.**
+
+- This changes the content of every generated `prodbox.dhall`, so it is a Standard-P
+  generated-config-identity change. A qualification run must bind the post-`0.29` identity and may
+  not carry forward one recorded before it.
+- An operator who edits a primitive *and* recomputes the witness defeats it, as they would defeat any
+  in-file stamp. What is removed is the *silent* edit — the one leaving a self-consistent file and no
+  evidence — not the deliberate one. Closing that needs a signature over a key the file does not
+  carry.
+
+The round-trip property is correspondingly restated: `decode ∘ render` is `stampTier0Witness`, not
+`id`. Outside the witness field it remains identity, and the unit cases assert both halves.
 
 ## 5. Dhall imports
 

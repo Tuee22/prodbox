@@ -69,8 +69,6 @@ module Prodbox.Lifecycle.LiveResidue
 where
 
 import Control.Exception qualified
-import Data.Char (toLower)
-import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
@@ -103,6 +101,10 @@ import Prodbox.Lifecycle.ResidueStatus
   , ResidueStatus (..)
   , ResidueUnreachableReason (..)
   , renderResidueUnreachableReason
+  )
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
   )
 import Prodbox.Pulumi.EncryptedBackend
   ( CheckpointObservability (..)
@@ -772,14 +774,12 @@ stackOutputsErrorDetail err = case err of
 -- MinIO backend (a 404 @NoSuchBucket@ / @code=NotFound@ when listing
 -- stacks). A never-created bucket is authoritative evidence of "nothing
 -- to destroy" (Absent), not an unobservable backend (Unreachable).
+-- | Sprint 4.78: keyed through the one owner,
+-- 'Prodbox.Observation.AbsenceMarker'. The two-marker conjunction it replaces
+-- was already anchored and is preserved in spirit — @could not list bucket@
+-- remains a marker — but the decision now lives beside the other seven.
 isMissingStateBackendBucketMessage :: String -> Bool
-isMissingStateBackendBucketMessage detail =
-  "nosuchbucket" `isInfixOf` normalized
-    || ( "could not list bucket" `isInfixOf` normalized
-           && "code=notfound" `isInfixOf` normalized
-       )
- where
-  normalized = map toLower detail
+isMissingStateBackendBucketMessage = reportsAbsence PulumiStateBackendBucketProbe
 
 -- | Map 'StackOutputsError' values onto the MinIO-flavoured
 -- 'ResidueUnreachableReason' (subprocess + command failures → backend

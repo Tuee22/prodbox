@@ -22,8 +22,13 @@ module Prodbox.CLI.Rke2
   , reconcileAcmeEabFixture
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
+  , CascadePhaseOutcome (..)
+  , DeleteMode (..)
+  , aggregateCascadeExit
   , cascadeOrderNarration
   , inferCascadeSubstrate
+  , cascadeSweepCredentialAbsentExit
+  , retainedStateNoticePerRunLine
   , isMinioSecretKeyArgumentSafe
   , OperationalAwsCredentialGate (..)
   , buildNativeDeletePlan
@@ -88,7 +93,7 @@ import Control.Exception
   , displayException
   , try
   )
-import Control.Monad (foldM, unless)
+import Control.Monad (foldM)
 import Data.Aeson
   ( Value
   , encode
@@ -234,6 +239,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.ProviderCaller
   ( dispatchHostProviderIntentFresh
   , renderProviderCallerError
@@ -383,9 +389,10 @@ import Prodbox.PublicEdge
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
   , requireSubstrateCertScopeSet
+  , requireSubstrateServedHost
   , resolveSubstrateHostedZoneId
+  , servedHostString
   , substrateIdentityIssuerUrl
-  , substratePublicFqdn
   , substratePublicRouteUrl
   )
 import Prodbox.Result (Result (..))
@@ -397,22 +404,21 @@ import Prodbox.Retry
   )
 import Prodbox.Service (isRetryableTransientFailure)
 import Prodbox.Settings
-  ( AcmeSection (..)
-  , AwsCredentialsRef (..)
+  ( AcmeAccount (..)
+  , AcmeSection (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
   , MetallbBgpPeer (..)
   , PublicEdgeAdvertisementMode (..)
   , PulumiStateBackendSection (..)
-  , Route53Section (..)
+  , ValidatedCoordinates (..)
+  , ValidatedServedHost (..)
   , ValidatedSettings (..)
   , acme
-  , aws
   , defaultConfigFile
   , eab_hmac_key
   , eab_key_id
-  , email
   , loadConfigFile
   , loadUnencryptedBasics
   , manual_pv_host_root
@@ -421,14 +427,23 @@ import Prodbox.Settings
   , region
   , renderPublicEdgeAdvertisementMode
   , renderSeedInForceOutcome
-  , server
+  , requireAcmeAccount
+  , requireOperationalAwsRegion
   , storage
   , validateAndLoadBootstrapSettings
   , validateAndLoadSettings
   , validateOperationalAwsCredentials
   , validatedConfig
-  , validatedPublicEdgeFor
+  , validatedCoordinates
   , validatedResourcePlan
+  )
+import Prodbox.Settings.Coordinate
+  ( AwsRegion
+  , acmeDirectoryUrlText
+  , awsRegionText
+  , emailAddressText
+  , route53ZoneIdText
+  , s3BucketNameText
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -991,7 +1006,12 @@ runClusterStatus repoRoot = do
     Left err -> failWith err
     Right serviceOutput -> do
       writeOutputLine ("RKE2_SERVICE=" ++ serviceStatusLine serviceOutput)
-      mapM_ writeOutputLine =<< resourceStatusLines repoRoot defaultResourceStatusSettings
+      statusLines <-
+        either
+          (\err -> pure ["RESOURCE_PLAN=unavailable:" ++ err])
+          (resourceStatusLines repoRoot defaultResourceStatusRoot)
+          defaultResourceStatusPlan
+      mapM_ writeOutputLine statusLines
       (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
       writeOutputLine vaultLine
       pure (processExitCode serviceOutput)
@@ -1000,37 +1020,38 @@ runClusterStatus repoRoot = do
     case trimWhitespace (processStdout output) of
       "" -> trimWhitespace (outputDetail output)
       status -> status
-  defaultResourceStatusSettings =
-    ValidatedSettings
-      { validatedConfig = defaultConfigFile
-      , resolvedManualPvHostRoot = ".data"
-      , validatedAllocatedPlan =
-          either
-            (error . CapacityAllocation.renderCompileError)
-            id
-            (CapacityAllocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
-      , -- Sprint 1.83: `resourceStatusLines` reads only the capacity plan and the
-        -- manual PV root, but the record is total, so the public-edge projection
-        -- is built from the same default config rather than faked. The default
-        -- config's served host is well-formed, so this cannot fail; a `Left`
-        -- here would mean `defaultConfigFile` itself stopped validating, which
-        -- the config suite already refuses.
-        validatedPublicEdge =
-          either
-            error
-            id
-            ( validatedPublicEdgeFor
-                (domain defaultConfigFile)
-                (aws_substrate defaultConfigFile)
-            )
-      }
+  -- Sprint 1.88: this used to fabricate a whole `ValidatedSettings` — the only
+  -- production site that constructed one without running `validateConfig` — so
+  -- that it could pass it to a function reading two of its four fields. Two
+  -- `error` calls on a `prodbox cluster status` path went with it. The status
+  -- reader now takes exactly what it reads, so there is nothing left to
+  -- fabricate and the compile failure is a value this arm renders.
+  defaultResourceStatusRoot = ".data"
+  defaultResourceStatusPlan =
+    mapLeftToString
+      CapacityAllocation.renderCompileError
+      (CapacityAllocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
 
-resourceStatusLines :: FilePath -> ValidatedSettings -> IO [String]
-resourceStatusLines repoRoot settings = do
-  observedResult <- observeHostCapacity repoRoot (resolvedManualPvHostRoot settings)
-  let plan = validatedResourcePlan settings
+mapLeftToString :: (err -> String) -> Either err right -> Either String right
+mapLeftToString render value = case value of
+  Left err -> Left (render err)
+  Right result -> Right result
+
+-- | Sprint 1.88: takes the allocated plan and the manual PV root it actually
+-- reads, rather than a whole 'ValidatedSettings' of which it read two fields.
+--
+-- The narrowing is what lets `ValidatedSettings` have exactly one production
+-- constructor: the wide signature was the entire reason
+-- `prodbox cluster status` fabricated a record no validation had produced.
+resourceStatusLines
+  :: FilePath -> FilePath -> CapacityAllocation.SomeAllocatedPlan -> IO [String]
+resourceStatusLines repoRoot manualPvHostRoot allocatedPlan = do
+  observedResult <- observeHostCapacity repoRoot manualPvHostRoot
+  let plan = case allocatedPlan of
+        CapacityAllocation.SomeAllocatedPlan _ allocated ->
+          CapacityAllocation.allocatedPlanSource allocated
       authored = Capacity.host_capacity plan
-      allocatable = CapacityAllocation.planAllocatable (validatedAllocatedPlan settings)
+      allocatable = CapacityAllocation.planAllocatable allocatedPlan
       baseLines =
         [ "RESOURCE_HOST_AUTHORED=" ++ renderResourceVectorRuntime authored
         , "RESOURCE_RKE2_RESERVED=" ++ renderResourceVectorRuntime (Capacity.rke2_reserved plan)
@@ -1047,7 +1068,7 @@ resourceStatusLines repoRoot settings = do
              , "RESOURCE_HOST_CAPACITY="
                  ++ case CapacityAllocation.compileResourcePlanAgainstObserved
                    observed
-                   (validatedAllocatedPlan settings) of
+                   allocatedPlan of
                    Right _ -> "sufficient"
                    Left _ -> "insufficient"
              ]
@@ -2807,7 +2828,15 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
           , genesisIntentImageDigest = Text.pack rollout
           , genesisIntentAuthorityScope = basicsClusterId basics
           , genesisIntentAuthorityEndpoint =
-              "http://lifecycle-authority.lifecycle-authority.svc:8600"
+              -- Sprint 3.35: the port is the compiled owner. The host form is
+              -- deliberately the short `.svc` one this call site has always
+              -- used, not `controlPlaneClusterServiceUrl`'s FQDN — binding the
+              -- port is the drift this sprint closes; changing a resolvable
+              -- host form is a behaviour change it does not make.
+              Text.pack
+                ( "http://lifecycle-authority.lifecycle-authority.svc:"
+                    ++ show controlPlaneListenPort
+                )
           , genesisIntentSelectedAgent = selectedAgent
           , genesisIntentDeadline = deadline
           }
@@ -2846,7 +2875,7 @@ firstReconcileIamParameters _basics settings credentials credentialClass =
         firstText
           ( mkTlsRetentionIamParameters
               backendRegion
-              (psbBucketName backend)
+              backendBucket
               [Text.pack (publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet)]
           )
     GatewayDnsCredential ->
@@ -2864,10 +2893,14 @@ firstReconcileIamParameters _basics settings credentials credentialClass =
     SesSmtpRetainedCustodyCredential ->
       pure (Left "SES SMTP custody is not a home first-reconcile member")
  where
-  config = validatedConfig settings
-  backend = pulumi_state_backend config
-  backendRegion = psbRegion backend
-  homeZoneId = zone_id (route53 config)
+  coordinates = validatedCoordinates settings
+  -- Sprint 1.89: both coordinates come from the parsed projection. Neither had
+  -- a shape rule before: `pulumi_state_backend.region` had no validation at all
+  -- and `route53.zone_id` had only an emptiness check on the AWS tier, so this
+  -- IAM parameter pair was assembled from two entirely undecided strings.
+  backendRegion = maybe Text.empty awsRegionText (coordinatePulumiBackendRegion coordinates)
+  backendBucket = maybe Text.empty s3BucketNameText (coordinatePulumiBackendBucket coordinates)
+  homeZoneId = maybe Text.empty route53ZoneIdText (coordinateHomeZoneId coordinates)
   firstText :: (Show err) => Either err value -> Either Text.Text value
   firstText = either (Left . Text.pack . show) Right
 
@@ -3007,8 +3040,16 @@ runNativeLocalUninstall repoRoot = do
     , removeCalicoEndpointStatusResidue
     , removeManagedKubeconfig
     , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-    , renderRetainedStateNotice repoRoot retainedManualPvRoot
+    , renderRetainedStateNotice DeleteModeLocalUninstall retainedManualPvRoot
     ]
+
+-- | Sprint 4.76: which form of @prodbox cluster delete@ is running.
+-- Narration that differs between the two forms takes this rather than
+-- re-deriving it from 'Rke2DeleteFlags' at each site.
+data DeleteMode
+  = DeleteModeLocalUninstall
+  | DeleteModeCascade
+  deriving (Eq, Show)
 
 -- | Sprint 4.17.a + 4.40 canonical cascade order:
 -- confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep.
@@ -3053,6 +3094,30 @@ cascadeOrderNarration :: String
 cascadeOrderNarration =
   "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep"
 
+-- | Sprint 4.76: one cascade phase's name and verdict. The cascade folds
+-- these rather than short-circuiting, because
+-- @lifecycle_reconciliation_doctrine.md § 5b@ / § 5c require that a
+-- failed or skipped earlier phase neither suppress a later independent
+-- phase's attempt nor be erased by that attempt's success — "both
+-- outcomes remain in the aggregate report".
+data CascadePhaseOutcome = CascadePhaseOutcome
+  { cascadePhaseName :: String
+  , cascadePhaseExit :: ExitCode
+  }
+  deriving (Eq, Show)
+
+-- | Pure: the cascade's aggregate verdict over its recorded phases.
+-- Exposed so a unit case can pin "one failed phase fails the run" without
+-- driving the IO orchestration.
+aggregateCascadeExit :: [CascadePhaseOutcome] -> ExitCode
+aggregateCascadeExit outcomes
+  | null (failedCascadePhases outcomes) = ExitSuccess
+  | otherwise = ExitFailure 1
+
+failedCascadePhases :: [CascadePhaseOutcome] -> [String]
+failedCascadePhases outcomes =
+  [cascadePhaseName outcome | outcome <- outcomes, cascadePhaseExit outcome /= ExitSuccess]
+
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
   writeOutputLine cascadeOrderNarration
@@ -3079,45 +3144,65 @@ runNativeDeleteCascade repoRoot = do
   -- Step 2: K8s drain. Runs before per-run destroys so in-cluster
   -- controllers (AWS LBC, EBS CSI) release their AWS-side ENIs / ALBs /
   -- EBS volumes while still alive. Substrate is inferred from per-run
-  -- residue presence (Sprint 4.17.b): any AWS per-run stack with residue
-  -- means the EKS cluster is in scope and the drain must target the
-  -- substrate's own kubeconfig instead of the local RKE2 cluster's.
+  -- residue observation (Sprint 4.17.b, corrected by Sprint 4.76): any
+  -- per-run stack not positively observed absent means the EKS cluster
+  -- may be in scope, so the drain must target the substrate's own
+  -- kubeconfig instead of the local RKE2 cluster's.
   let cascadeSubstrate = inferCascadeSubstrate eksStatus subzoneStatus testStatus
   drainExit <- runCascadeDrainPhase repoRoot cascadeSubstrate
-  case drainExit of
-    ExitFailure _ -> pure drainExit
-    ExitSuccess -> do
-      -- Step 3: per-run Pulumi destroys (fail-fast). Controller-owned
-      -- AWS resources are now drained, so subnet / VPC deletes succeed
-      -- without DependencyViolation. Sprint 4.21: routed through the
-      -- managed-resource registry's `reconcileAbsent` (destroys the
-      -- present per-run stacks; skips absent/unreachable per the
-      -- per-run graceful-degradation rule).
-      destroyExit <- ResourceRegistry.reconcileAbsent repoRoot perRunPairs
-      case destroyExit of
-        ExitFailure _ -> pure destroyExit
-        ExitSuccess -> do
-          -- Step 4: Sprint 4.40 test-scoped EBS reaper. After per-run
-          -- stack destroys, sweep only
-          -- test-scoped EBS volumes. Retained-production EBS survives by
-          -- tag policy and by the reaper's test-scoped discover filter.
-          runCascadeTestEbsReaper repoRoot
-          -- Step 5: RKE2 uninstall + cluster-substrate cleanup.
-          retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
-          uninstallExit <-
-            runSequentially
-              [ deleteRke2ClusterSubstrate repoRoot
-              , removeCalicoEndpointStatusResidue
-              , removeManagedKubeconfig
-              , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-              , renderRetainedStateNotice repoRoot retainedManualPvRoot
-              ]
-          case uninstallExit of
-            ExitFailure _ -> pure uninstallExit
-            ExitSuccess -> do
-              -- Step 6: postflight cluster-tag sweep (best effort).
-              runCascadePostflightTagSweep repoRoot
-              pure ExitSuccess
+  -- Step 3: per-run Pulumi destroys. Runs even when the drain failed:
+  -- doctrine § 5c makes drain→destroy an *attempt* edge, so last-resort
+  -- provider cleanup still makes progress and the drain failure is not
+  -- erased by the destroy's success.
+  destroyOutcome <- ResourceRegistry.reconcileAbsent repoRoot perRunPairs
+  -- Step 4: Sprint 4.40 test-scoped EBS reaper. Retained-production EBS
+  -- survives by tag policy and by the reaper's test-scoped filter.
+  reaperExit <- runCascadeTestEbsReaper repoRoot
+  -- Step 5: RKE2 uninstall + cluster-substrate cleanup.
+  retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
+  uninstallExit <-
+    runSequentially
+      [ deleteRke2ClusterSubstrate repoRoot
+      , removeCalicoEndpointStatusResidue
+      , removeManagedKubeconfig
+      , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
+      , renderRetainedStateNotice DeleteModeCascade retainedManualPvRoot
+      ]
+  -- Step 6: postflight cluster-tag sweep. Fail-closed since Sprint 4.76
+  -- (doctrine § 6): a non-empty escapee list or an unreachable Tagging
+  -- API is a hard failure, not a diagnostic. Sprint 4.80 closed the last
+  -- skip arm the same way, using the substrate already inferred above:
+  -- a missing admin credential is a cannot-confirm only when this cluster
+  -- lifecycle actually had AWS state in scope.
+  sweepExit <- runCascadePostflightTagSweep repoRoot cascadeSubstrate
+  let phases =
+        [ CascadePhaseOutcome "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
+        , CascadePhaseOutcome "drain" drainExit
+        , CascadePhaseOutcome "per-run destroys" (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
+        , CascadePhaseOutcome "test-EBS reaper" reaperExit
+        , CascadePhaseOutcome "uninstall" uninstallExit
+        , CascadePhaseOutcome "sweep" sweepExit
+        ]
+      aggregate = aggregateCascadeExit phases
+  case failedCascadePhases phases of
+    [] -> writeOutputLine "cluster delete --cascade: every phase reported success."
+    failures ->
+      writeDiagnosticLine
+        ( "cluster delete --cascade did NOT complete cleanly. Unresolved phase(s): "
+            ++ intercalate ", " failures
+            ++ ". Every phase above still ran; the aggregate reports failure because "
+            ++ "at least one of them could not confirm the outcome it is responsible for."
+        )
+  pure aggregate
+
+-- | Sprint 4.76: the confirm-MinIO phase's own verdict, distinct from the
+-- destroy fold's. An unobserved per-run stack leaves authority state
+-- unresolved (@lifecycle_reconciliation_doctrine.md § 5b@ phase 1), which
+-- fails this phase even when nothing needed destroying.
+perRunResidueObservationExit :: ResourceRegistry.AbsentReconcileOutcome -> ExitCode
+perRunResidueObservationExit outcome
+  | null (ResourceRegistry.absentReconcileUnobserved outcome) = ExitSuccess
+  | otherwise = ExitFailure 1
 
 -- Sprint 4.21: the per-run cascade inventory (which present stacks to
 -- destroy, in canonical order) moved into the managed-resource registry
@@ -3126,23 +3211,30 @@ runNativeDeleteCascade repoRoot = do
 -- 'Prodbox.Lifecycle.ResourceRegistry.reconcileAbsent'.
 
 -- | Sprint 4.17.b: derive the cascade's substrate from per-run residue
--- presence. Any per-run AWS stack with @ResiduePresent@ residue means
--- the AWS substrate is in scope (the EKS cluster is alive and the
--- substrate-platform install's controllers may have created AWS-side
--- ENIs / ALBs / EBS volumes that the drain phase must release). The
--- home substrate is the fallback when no per-run AWS residue is
--- detected.
+-- observation. Any per-run AWS stack that was **not positively observed
+-- absent** means the AWS substrate may be in scope (the EKS cluster may
+-- be alive and the substrate-platform install's controllers may have
+-- created AWS-side ENIs / ALBs / EBS volumes that the drain phase must
+-- release). The home substrate is the fallback only when every per-run
+-- stack was observed absent.
+--
+-- Sprint 4.76 corrected the predicate. It tested 'isResiduePresent', so
+-- an all-@ResidueUnreachable@ input — the exact case where the backend
+-- could not be read — inferred @SubstrateHomeLocal@, which is precisely
+-- the branch on which a skipped drain is treated as success. Reading
+-- "I could not observe the AWS stacks" as "there are no AWS stacks"
+-- selected the more permissive branch on the weaker evidence.
 inferCascadeSubstrate
   :: ResidueStatus.ResidueStatus
   -> ResidueStatus.ResidueStatus
   -> ResidueStatus.ResidueStatus
   -> Substrate
 inferCascadeSubstrate eksStatus subzoneStatus testStatus =
-  if any
-    ResidueStatus.isResiduePresent
+  if all
+    ResidueStatus.isResidueAbsent
     [eksStatus, subzoneStatus, testStatus]
-    then SubstrateAws
-    else SubstrateHomeLocal
+    then SubstrateHomeLocal
+    else SubstrateAws
 
 -- | Sprint 4.17.a/4.17.b helper: the K8s drain phase extracted from the
 -- prior single-block cascade so step 2 of the canonical order is
@@ -3260,13 +3352,18 @@ buildDrainEnvironment _repoRoot substrate maybeAwsKubeconfig = do
     (SubstrateAws, Just kubeconfigPath) ->
       pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
 
-runCascadeTestEbsReaper :: FilePath -> IO ()
+-- | Sprint 4.76: the reaper reports an exit code instead of unit, so a
+-- failed query or delete reaches the cascade's phase fold. A missing
+-- ephemeral admin credential remains a skip (there is no AWS session to
+-- query with, and the reaper is not a sweep-owning surface under § 6).
+runCascadeTestEbsReaper :: FilePath -> IO ExitCode
 runCascadeTestEbsReaper repoRoot = do
   adminResult <- loadAdminAwsCredentials repoRoot
   case adminResult of
-    Left _ ->
+    Left _ -> do
       writeOutputLine
         "Test-scoped EBS reaper: skipped (no ephemeral admin AWS credential available)."
+      pure ExitSuccess
     Right adminCredentials -> do
       environment <- adminAwsEnvironment adminCredentials
       result <-
@@ -3277,46 +3374,85 @@ runCascadeTestEbsReaper repoRoot = do
             , EbsVolume.testEbsReaperClusterName = awsEksCanonicalClusterName
             }
       case result of
-        Left err ->
-          writeOutputLine
-            ("Test-scoped EBS reaper: query/delete failed (continuing): " ++ err)
-        Right report ->
+        Left err -> do
+          writeDiagnosticLine
+            ("Test-scoped EBS reaper: query/delete failed: " ++ err)
+          pure (ExitFailure 1)
+        Right report -> do
           writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
+          pure ExitSuccess
 
--- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
--- the canonical cascade. Best-effort: a non-zero sweep exit is reported
--- as a diagnostic so the operator can resolve any cluster-tagged
--- residue, but the cascade itself succeeded. Per
--- @documents/engineering/lifecycle_reconciliation_doctrine.md §6@, the
+-- | Sprint 4.17 helper, made fail-closed by Sprint 4.76: the postflight
+-- cluster-tag sweep of the canonical cascade. Per
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md § 6@ the
 -- sweep is the backstop for K8s-operator-created AWS resources that
--- escape the drain.
+-- escape the drain, and **a required tag sweep is fail-closed**: a
+-- non-empty escapee list or a Tagging API that cannot be read is a hard
+-- failure, never a silent pass. Before Sprint 4.76 this function
+-- returned @IO ()@, so neither outcome could reach the exit code, and
+-- its own Haddock cited § 6 as licensing that.
 --
--- The sweep runs when admin AWS credentials are present in
--- @aws_admin_for_test_simulation.*@. When they are absent (operator
--- has not yet bootstrapped admin credentials, or is running on a
--- home-only cluster with no AWS substrate provisioned), the sweep
--- emits a single-line diagnostic and the cascade continues — the
--- absence of admin credentials is itself evidence that no AWS resources
--- could have been created by this cluster lifecycle.
+-- The one remaining skip is a missing ephemeral admin credential: there
+-- is no AWS session to query with, so no query is attempted. That arm is
+-- narrated as a skip — it does **not** claim the sweep was clean — and
+-- whether it should refuse outright is registered in
+-- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ rather than decided
+-- here, because refusing would make @--cascade@ fail on every host that
+-- has never provisioned an AWS substrate.
+-- | Sprint 4.80: the credential-absent arm's verdict, decided rather than
+-- fixed.
 --
--- Best-effort: when admin credentials are present the sweep calls the
--- AWS Resource Tagging API for any resource carrying the canonical
--- @aws-eks-test-cluster@ Kubernetes cluster tag or the
--- @prodbox.io/managed-by=prodbox@ ownership tag. A non-zero sweep is
--- reported with the structured refusal block so the operator can
--- resolve any cluster-tagged residue, but the cascade itself still
--- returns 'ExitSuccess' — destructive lifecycle commands do not retry
--- on a postflight diagnostic per
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 6@.
-runCascadePostflightTagSweep :: FilePath -> IO ()
-runCascadePostflightTagSweep repoRoot = do
+-- Sprint 4.76 left this arm a skip and registered the reason as a __policy__
+-- question rather than an honesty one: the arm no longer claimed absence, but
+-- refusing outright would have failed @prodbox cluster delete --cascade@ on
+-- every host that has never provisioned an AWS substrate — the recommended
+-- wipe-and-rebuild path in @CLAUDE.md@.
+--
+-- The question is answerable without adding a requirement, because the cascade
+-- already computes the fact that decides it. 'inferCascadeSubstrate' (Sprint
+-- @4.17.b@, corrected by @4.76@) yields 'SubstrateAws' when any per-run stack
+-- was __not positively observed absent__, and 'SubstrateHomeLocal' only when
+-- every one of them was. So:
+--
+--   * 'SubstrateHomeLocal' — every per-run AWS stack was observed absent, so
+--     this cluster lifecycle created no AWS resources for the sweep to
+--     backstop. A skip confirms nothing and needs to confirm nothing.
+--   * 'SubstrateAws' — AWS state was present or unobservable, the sweep is
+--     exactly the § 6 backstop for it, and "I have no credential to query
+--     with" is a case of cannot-confirm. That is a hard failure.
+--
+-- The AWS-free host keeps exiting 0, and the host that actually had AWS state
+-- can no longer pass a cascade whose backstop never ran.
+cascadeSweepCredentialAbsentExit :: Substrate -> ExitCode
+cascadeSweepCredentialAbsentExit substrate = case substrate of
+  SubstrateHomeLocal -> ExitSuccess
+  SubstrateAws -> ExitFailure 1
+
+runCascadePostflightTagSweep :: FilePath -> Substrate -> IO ExitCode
+runCascadePostflightTagSweep repoRoot cascadeSubstrate = do
   adminResult <- loadAdminAwsCredentials repoRoot
   case adminResult of
     Left _ -> do
-      writeOutputLine
-        "Postflight tag sweep: skipped (no ephemeral admin AWS credential available \
-        \— no test-secrets.dhall and no TTY — so no AWS resources could have been \
-        \created by this cluster lifecycle)."
+      let exit = cascadeSweepCredentialAbsentExit cascadeSubstrate
+          narration =
+            "Postflight tag sweep: NOT RUN (no ephemeral admin AWS credential available \
+            \— no test-secrets.dhall and no TTY — so no Tagging API query was attempted). \
+            \This is not a confirmation that no AWS residue exists."
+      case exit of
+        ExitSuccess ->
+          writeOutputLine
+            ( narration
+                ++ " Every per-run AWS stack was observed absent, so this cluster \
+                   \lifecycle created no AWS resources for the sweep to backstop."
+            )
+        ExitFailure _ ->
+          writeDiagnosticLine
+            ( narration
+                ++ " Per-run AWS state was present or could not be observed, so the \
+                   \sweep is the backstop for it and its absence is unconfirmed. \
+                   \Re-run with an admin AWS credential available."
+            )
+      pure exit
     Right adminCredentials -> do
       environment <- adminAwsEnvironment adminCredentials
       let input =
@@ -3325,46 +3461,32 @@ runCascadePostflightTagSweep repoRoot = do
               , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
               , TagSweep.tagSweepWorkingDirectory = Just repoRoot
               }
-      sweepResult <- TagSweep.discoverClusterTaggedAwsResources input
-      case sweepResult of
-        Left err ->
-          writeOutputLine
-            ("Postflight tag sweep: query failed (continuing): " ++ err)
-        Right resources -> do
-          -- Sprint 7.26: carve out intentionally-RETAINED long-lived shared
-          -- infrastructure (the `pulumi_state_backend` bucket + `aws-ses`) —
-          -- `cluster delete --cascade` keeps these by design (only `prodbox nuke`
-          -- destroys them), so they are NOT escaped residue. Refuse only on the
-          -- genuine per-run/cluster escapees.
-          let (retained, escaped) = TagSweep.partitionRetainedLongLived resources
-              retainedArns = nub (map TagSweep.taggedResourceArn retained)
-          unless (null retainedArns) $
-            writeOutputLine
-              ( "Postflight tag sweep: "
-                  ++ show (length retainedArns)
-                  ++ " intentionally-retained long-lived resource(s) left in place by design "
-                  ++ "(destroyed only by `prodbox nuke`): "
-                  ++ intercalate ", " retainedArns
-                  ++ "."
-              )
-          if null escaped
-            then
-              writeOutputLine
-                "Postflight tag sweep: clean (no per-run or cluster-tagged AWS residue escaped)."
-            else do
-              writeOutputLine
-                ( "Postflight tag sweep: "
-                    ++ show (length escaped)
-                    ++ " resource(s) still tagged — operator action required:"
-                )
-              writeOutputLine (TagSweep.renderTagSweepRefusal escaped)
+      -- Sprint 7.26: `TagSweepCascade` carves out intentionally-RETAINED
+      -- long-lived shared infrastructure (the `pulumi_state_backend`
+      -- bucket + `aws-ses`) — `cluster delete --cascade` keeps these by
+      -- design, so they are NOT escaped residue.
+      verdict <-
+        TagSweep.decideTagSweep TagSweep.TagSweepCascade
+          <$> TagSweep.discoverClusterTaggedAwsResources input
+      let exit = TagSweep.tagSweepVerdictExit verdict
+      case exit of
+        ExitSuccess -> writeOutputLine (TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict)
+        ExitFailure _ -> writeDiagnosticLine (TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict)
+      pure exit
 
+-- Sprint 1.89: the binding is named for its provenance. This reads a config
+-- 'validateConfig' has not seen and cannot see — the retained manual-PV root
+-- must be resolvable while validation itself is unavailable — so raw is the only
+-- thing there is to read here and no decision is being discarded. The name
+-- `config` would have made this indistinguishable from the validated binding
+-- elsewhere in this module, which is what @checkTier0CoordinateReads@ discovered.
 resolveRetainedManualPvRoot :: FilePath -> IO FilePath
 resolveRetainedManualPvRoot repoRoot = do
   configResult <- loadConfigFile repoRoot
   let configuredRoot =
         case configResult of
-          Right config -> Text.unpack (manual_pv_host_root (storage config))
+          Right unvalidatedConfig ->
+            Text.unpack (manual_pv_host_root (storage unvalidatedConfig))
           Left _ -> Text.unpack (manual_pv_host_root (storage defaultConfigFile))
   makeAbsolute (repoRoot </> configuredRoot)
 
@@ -5512,7 +5634,24 @@ gatewayBootstrapNamespaceManifest namespace =
 
 ensureAdminPublicEdgeRoutes
   :: FilePath -> ValidatedSettings -> Substrate -> String -> String -> IO ExitCode
-ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = do
+ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue =
+  -- Sprint 1.84: resolve the served host here, where there is an error channel,
+  -- rather than letting the pure manifest renderer answer `""`.
+  -- Sprint 1.87: carry the resolved 'ValidatedServedHost' rather than only its
+  -- string projection, so the SecurityPolicy renderer downstream consumes this
+  -- resolution instead of performing its own.
+  case requireSubstrateServedHost settings substrate of
+    Left err -> failWith err
+    Right servedHost ->
+      ensureAdminPublicEdgeRoutesAt repoRoot servedHost prodboxId labelValue
+
+ensureAdminPublicEdgeRoutesAt
+  :: FilePath
+  -> ValidatedServedHost
+  -> String
+  -> String
+  -> IO ExitCode
+ensureAdminPublicEdgeRoutesAt repoRoot servedHost prodboxId labelValue = do
   staleCleanup <-
     deleteMaterializerAndObservePodAbsence
       repoRoot
@@ -5523,7 +5662,7 @@ ensureAdminPublicEdgeRoutes repoRoot settings substrate prodboxId labelValue = d
     ExitSuccess ->
       withTemporaryJsonManifest
         "prodbox-admin-public-edge"
-        (adminPublicEdgeManifestItems settings substrate prodboxId labelValue)
+        (adminPublicEdgeManifestItems servedHost prodboxId labelValue)
         ( \manifestPath -> do
             outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
             case outputResult of
@@ -5624,9 +5763,17 @@ preferFirstFailure first second = case first of
   ExitFailure _ -> first
   ExitSuccess -> second
 
+-- | Sprint 1.87: the @ValidatedSettings@ and 'Substrate' parameters are gone.
+-- They existed only so the SecurityPolicy renderer could re-derive the served
+-- host its caller had already resolved; it now consumes the resolved
+-- 'ValidatedServedHost' directly, and nothing in this manifest set reads the
+-- config again.
 adminPublicEdgeManifestItems
-  :: ValidatedSettings -> Substrate -> String -> String -> [Value]
-adminPublicEdgeManifestItems settings substrate prodboxId labelValue =
+  :: ValidatedServedHost
+  -> String
+  -> String
+  -> [Value]
+adminPublicEdgeManifestItems servedHost prodboxId labelValue =
   -- The single-binary registry:2 has no web UI, so there is no admin edge route
   -- for it (the former OIDC-gated /harbor surface is gone). Only the MinIO
   -- console admin route remains.  Its Secret is projected inside the target
@@ -5640,17 +5787,16 @@ adminPublicEdgeManifestItems settings substrate prodboxId labelValue =
            minioConsoleServicePort
            prodboxId
            labelValue
-           (substratePublicFqdn settings substrate)
+           (servedHostString servedHost)
        , adminSecurityPolicyManifest
            minioNamespace
            minioAdminSecurityPolicyName
            minioAdminRouteName
            minioAdminClientSecretName
-           (substratePublicRouteUrl settings substrate PublicRouteMinio)
+           (substratePublicRouteUrl servedHost PublicRouteMinio)
            prodboxId
            labelValue
-           substrate
-           settings
+           servedHost
        ]
 
 -- | Exact consumer-side projection for the MinIO Envoy SecurityPolicy.  The
@@ -5892,10 +6038,9 @@ adminSecurityPolicyManifest
   -> String
   -> String
   -> String
-  -> Substrate
-  -> ValidatedSettings
+  -> ValidatedServedHost
   -> Value
-adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl prodboxId labelValue substrate settings =
+adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl prodboxId labelValue servedHost =
   object
     [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
     , "kind" .= ("SecurityPolicy" :: String)
@@ -5919,7 +6064,7 @@ adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl pr
                  )
           , "oidc"
               .= object
-                [ "provider" .= adminOidcProviderManifest settings substrate
+                [ "provider" .= adminOidcProviderManifest servedHost
                 , "clientID" .= keycloakVscodeClientId
                 , "clientSecret" .= object ["name" .= secretName]
                 , "redirectURL" .= (baseUrl ++ "/oauth2/callback")
@@ -5928,15 +6073,15 @@ adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl pr
           ]
     ]
 
-adminOidcProviderManifest :: ValidatedSettings -> Substrate -> Value
-adminOidcProviderManifest settings substrate =
+adminOidcProviderManifest :: ValidatedServedHost -> Value
+adminOidcProviderManifest servedHost =
   object
     [ "issuer" .= issuer
     , "authorizationEndpoint" .= (issuer ++ "/protocol/openid-connect/auth")
     , "tokenEndpoint" .= sharedKeycloakInternalTokenEndpoint
     ]
  where
-  issuer = substrateIdentityIssuerUrl settings substrate
+  issuer = substrateIdentityIssuerUrl servedHost
 
 sharedKeycloakInternalTokenEndpoint :: String
 sharedKeycloakInternalTokenEndpoint =
@@ -6396,18 +6541,16 @@ ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue =
       -- `aws_substrate.hosted_zone_id` is empty — which the pure reader answered
       -- with a crash.
       hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
-      case hostedZoneResult of
+      -- Sprint 1.89: the manifest render is now a decision too, so the two
+      -- refusals resolve at the same point rather than one of them being a
+      -- blank field inside an applied ClusterIssuer.
+      case hostedZoneResult >>= \hostedZoneId ->
+        acmeRuntimeManifestWith substrate settings hostedZoneId prodboxId labelValue of
         Left detail -> failWith detail
-        Right hostedZoneId ->
+        Right acmeManifests ->
           withTemporaryJsonManifest
             "prodbox-acme-runtime"
-            ( acmeRuntimeManifestWith
-                substrate
-                settings
-                hostedZoneId
-                prodboxId
-                labelValue
-            )
+            acmeManifests
             ( \manifestPath -> do
                 applyExit <-
                   runCommand
@@ -6658,20 +6801,27 @@ observeMaterializedSecretMetadata repoRoot namespace secretName label = do
 --
 -- EAB material is not an argument: the exact in-cluster materializer reads
 -- both fields and patches the one registered ClusterIssuer.
+-- Sprint 1.89: refuses instead of rendering when the ACME account or the
+-- operational region is unconfigured. Both were previously rendered as whatever
+-- the raw field held, which on a home-only config is the empty string — a
+-- ClusterIssuer whose contact and region are blank applies cleanly and fails at
+-- ACME registration.
 acmeRuntimeManifestWith
-  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
+  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> Either String [Value]
 acmeRuntimeManifestWith substrate settings hostedZoneId prodboxId labelValue =
-  credentialResources
-    ++ acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue
+  (credentialResources ++)
+    <$> acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue
  where
   credentialResources = case substrate of
     SubstrateHomeLocal -> homeDns01MaterializerManifests prodboxId labelValue
     SubstrateAws -> awsDns01TargetMaterializerManifests prodboxId labelValue
 
 acmeCommonRuntimeResources
-  :: ValidatedSettings -> Text.Text -> String -> String -> [Value]
-acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue =
-  clusterIssuer : eabMaterializerResources
+  :: ValidatedSettings -> Text.Text -> String -> String -> Either String [Value]
+acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue = do
+  acmeAccount <- requireAcmeAccount settings
+  awsRegion <- requireOperationalAwsRegion settings
+  Right (clusterIssuer acmeAccount awsRegion : eabMaterializerResources)
  where
   acmeConfig = acme (validatedConfig settings)
   -- Sprint 7.15: when EAB is configured, render the Vault-login materializer
@@ -6684,10 +6834,10 @@ acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue =
     case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
       (Just _, Just _) -> acmeEabMaterializerManifests prodboxId labelValue
       _ -> []
-  clusterIssuer =
+  clusterIssuer acmeAccount awsRegion =
     clusterIssuerResource
       publicEdgeClusterIssuerName
-      (acmeClusterIssuerSpec settings hostedZoneId)
+      (acmeClusterIssuerSpec acmeAccount awsRegion hostedZoneId)
   clusterIssuerResource issuerName issuerSpec =
     object
       [ "apiVersion" .= ("cert-manager.io/v1" :: String)
@@ -7214,18 +7364,22 @@ acmeRoute53Solver awsRegion hostedZoneId =
 -- configured, the namespace-scoped one-shot materializer patches the exact
 -- @externalAccountBinding@ from its in-memory Vault projection.  Neither EAB
 -- field is representable at this host rendering boundary.
-acmeClusterIssuerSpec :: ValidatedSettings -> Text.Text -> Value
-acmeClusterIssuerSpec settings hostedZoneId =
+-- Sprint 1.89: the renderer takes the parsed account and region rather than a
+-- 'ValidatedSettings' it re-reads them from.
+--
+-- This is the shape Sprint 1.87 established and the reason it gave: handing a
+-- pure renderer the raw @Text@ leaves @\"\"@ a well-typed inhabitant of every
+-- argument, so the refusal lives in caller discipline. An 'AcmeAccount' and an
+-- 'AwsRegion' have no empty inhabitant, so a ClusterIssuer with a blank contact
+-- or a blank region is unconstructible here rather than merely unlikely.
+acmeClusterIssuerSpec :: AcmeAccount -> AwsRegion -> Text.Text -> Value
+acmeClusterIssuerSpec acmeAccount awsRegion hostedZoneId =
   object
-    [ "server" .= Text.unpack (server acmeConfig)
-    , "email" .= Text.unpack (email acmeConfig)
+    [ "server" .= Text.unpack (acmeDirectoryUrlText (acmeAccountDirectoryUrl acmeAccount))
+    , "email" .= Text.unpack (emailAddressText (acmeAccountEmail acmeAccount))
     , "privateKeySecretRef" .= object ["name" .= zerosslAccountKeySecretName]
-    , "solvers" .= [acmeRoute53Solver (awsCredentialRegion awsConfig) hostedZoneId]
+    , "solvers" .= [acmeRoute53Solver (awsRegionText awsRegion) hostedZoneId]
     ]
- where
-  config = validatedConfig settings
-  awsConfig = aws config
-  acmeConfig = acme config
 
 ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode
 ensurePostgresOperatorRuntime repoRoot prodboxId labelValue = do
@@ -7817,7 +7971,11 @@ buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs =
         ExitFailure _ -> pure buildExit
         ExitSuccess ->
           runSequentially
-            [ pushDockerImageWithRetry repoRoot tagRef ("custom image " ++ tagRef)
+            [ pushDockerImageWithRetry
+                repoRoot
+                (renderHostArchitecture hostArchitecture)
+                tagRef
+                ("custom image " ++ tagRef)
             | tagRef <- taggedRefs
             ]
 
@@ -7854,11 +8012,23 @@ buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
                 ++ outputDetail output
             )
 
-pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
-pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttempts customImagePushRetryPolicy)
+-- | Sprint 3.36: publish exactly the host architecture, which is what this
+-- lifecycle supports and what the caller above is named for.
+--
+-- The @--platform@ flag is not a refinement of the previous behaviour, it is the
+-- behaviour the surrounding code already claimed. @docker push \<tag\>@ under the
+-- containerd image store pushes the whole manifest __index__ the pull produced;
+-- for a multi-architecture upstream that index names platforms whose blobs were
+-- never fetched, and the push fails naming none of them. Pushing a
+-- platform-specific manifest as a single-platform image is the operation Exit
+-- Definition items 27 and 28 describe: an amd64 host publishes amd64, cross-arch
+-- emulation and mixed-arch closure are out of scope.
+pushDockerImageWithRetry :: FilePath -> String -> String -> String -> IO ExitCode
+pushDockerImageWithRetry repoRoot platform imageRef description =
+  go (retryPolicyMaxAttempts customImagePushRetryPolicy)
  where
   go attemptsRemaining = do
-    outputResult <- captureDockerToolOutput repoRoot ["push", imageRef]
+    outputResult <- captureDockerToolOutput repoRoot ["push", "--platform", platform, imageRef]
     case outputResult of
       Left err -> failWith err
       Right output ->
@@ -7956,8 +8126,20 @@ mirrorHostArchitectureTargetFromCandidates repoRoot sourceCandidates target = go
           remainingSources
 
 mirrorHostArchitectureTarget :: FilePath -> String -> String -> IO (Either String ())
-mirrorHostArchitectureTarget repoRoot source target = do
-  pullResult <- captureDockerToolOutput repoRoot ["pull", source]
+mirrorHostArchitectureTarget repoRoot source target =
+  case supportedHostArchitecture of
+    Left err -> pure (Left err)
+    Right hostArchitecture ->
+      mirrorHostArchitectureTargetFor
+        repoRoot
+        (renderHostArchitecture hostArchitecture)
+        source
+        target
+
+mirrorHostArchitectureTargetFor
+  :: FilePath -> String -> String -> String -> IO (Either String ())
+mirrorHostArchitectureTargetFor repoRoot platform source target = do
+  pullResult <- captureDockerToolOutput repoRoot ["pull", "--platform", platform, source]
   case pullResult of
     Left err -> pure (Left err)
     Right pullOutput ->
@@ -7984,7 +8166,12 @@ mirrorHostArchitectureTarget repoRoot source target = do
                     ExitFailure _ -> pure (Left (outputDetail tagOutput))
                     ExitSuccess ->
                       do
-                        pushExit <- pushDockerImageWithRetry repoRoot target ("mirror target " ++ target)
+                        pushExit <-
+                          pushDockerImageWithRetry
+                            repoRoot
+                            platform
+                            target
+                            ("mirror target " ++ target)
                         case pushExit of
                           ExitSuccess -> pure (Right ())
                           ExitFailure _ -> pure (Left ("push failed for " ++ target))
@@ -8351,19 +8538,31 @@ removeManagedKubeconfig = do
                 "Managed kubeconfig"
                 "left in place because it does not target the local RKE2 API"
 
-renderRetainedStateNotice :: FilePath -> FilePath -> IO ExitCode
-renderRetainedStateNotice _repoRoot retainedManualPvRoot = do
+-- | Sprint 4.76: the retained-state notice takes the delete mode it is
+-- narrating for. Both delete paths share the uninstall step list, and the
+-- notice used to close with advice to run @--cascade@ — which a
+-- @--cascade@ run had, by then, already done. Its per-run sentence is now
+-- a total function of the mode.
+renderRetainedStateNotice :: DeleteMode -> FilePath -> IO ExitCode
+renderRetainedStateNotice mode retainedManualPvRoot = do
   writeOutputLine "Local cluster uninstalled. Preserved host state:"
   writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
   writeOutputLine ("  - `.data/` (MinIO-backed per-run Pulumi state) is preserved")
   writeOutputLine ("  - Vault durable PV: " ++ retainedManualPvRoot </> "vault" </> "vault" </> "0")
-  writeOutputLine
-    "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`."
+  writeOutputLine (retainedStateNoticePerRunLine mode)
   -- Sprint 3.13 chunk 16: the @.prodbox-state/charts/@ chart-state root is
   -- gone; chart secrets and gateway event keys now live in k8s @Secret@s
   -- materialized by the gateway daemon. Nothing under @.prodbox-state/@
   -- is preserved by the supported lifecycle any more.
   pure ExitSuccess
+
+-- | Pure: the per-run AWS sentence for each delete mode.
+retainedStateNoticePerRunLine :: DeleteMode -> String
+retainedStateNoticePerRunLine mode = case mode of
+  DeleteModeLocalUninstall ->
+    "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`."
+  DeleteModeCascade ->
+    "Per-run AWS stack destroys were attempted earlier in this cascade; see the per-run destroy and postflight sweep phases above for what each one reported. Any stack whose state could not be observed is still destroyable via `prodbox aws stack <name> destroy --yes` once the backend is readable."
 
 reportDeleteStep :: String -> String -> IO ExitCode
 reportDeleteStep label status = do

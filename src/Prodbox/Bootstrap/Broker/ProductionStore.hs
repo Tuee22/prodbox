@@ -27,6 +27,15 @@ module Prodbox.Bootstrap.Broker.ProductionStore
   , observeProductionTransitRotationJournal
   , planProductionTransitRotation
   , completeProductionTransitRotation
+
+    -- * Durable-value validity (Sprint 2.45)
+  , validArtifactDigest
+  , validRootInitBinding
+  , validChildCustodyBinding
+  , validChildEncryptedReceipt
+  , validFinalUnlockBundle
+  , validUnlockShareThreshold
+  , validSecretWorkerCheckpoint
   )
 where
 
@@ -82,10 +91,12 @@ import Prodbox.Bootstrap.Broker.Request (RequestDigest)
 import Prodbox.Bootstrap.Broker.SecretWorker
   ( RawSecretWorkerReceipt (..)
   , SecretFreeWorkerRequest
+  , SecretWorkerDurableCheckpoint
   , SecretWorkerDurableResult
   , SecretWorkerOperation (..)
   , SecretWorkerOutcome (..)
   , durableWorkerSessionAccessor
+  , secretWorkerCheckpointInvariantViolations
   , secretWorkerDurableResultOperation
   , secretWorkerRequestDigest
   , secretWorkerRequestFenceGeneration
@@ -106,8 +117,11 @@ import Prodbox.Bootstrap.Broker.StoreBoundary
   )
 import Prodbox.Bootstrap.Broker.Types
   ( ArtifactDigest
+  , ChildCustodyBinding (..)
   , ChildEncryptedReceipt (..)
-  , ChildRecoveryDelivery
+  , ChildRecoveryDelivery (..)
+  , EncryptedInitResponseReceipt
+  , FinalUnlockBundle
   , PreparedInitEnvelope
   , RootInitBinding (..)
   , StoreVersion (..)
@@ -115,12 +129,24 @@ import Prodbox.Bootstrap.Broker.Types
   , childCustodyStorageGeneration
   , childRecoveryDeliveryBinding
   , encryptedResponseBinding
+  , encryptedResponseReceiptDigest
+  , encryptedResponseShares
   , finalUnlockBundleBinding
+  , finalUnlockBundleDigest
+  , finalUnlockBundleShareCount
+  , finalUnlockBundleThreshold
   , mkArtifactDigest
   , mkBootstrapTransactionId
+  , mkDeliveryNonce
   , mkVaultStorageGeneration
   , postUnsealHandoffGeneration
   , preparedInitBinding
+  , preparedInitEnvelopeDigest
+  , preparedInitPristineObservationDigest
+  , renderArtifactDigest
+  , renderBootstrapTransactionId
+  , renderDeliveryNonce
+  , renderVaultStorageGeneration
   , resetAmbiguousBinding
   , rootInitStorageGeneration
   )
@@ -502,7 +528,7 @@ bootstrapStoreReady settings = do
     readValue
       config
       (Settings.vaultStorageGenerationKey keys)
-      validValue
+      validRootInitBinding
       :: IO (Either StoreBoundaryError (StoreReadBack RootInitBinding))
   pure $ case (listed, generation) of
     (Right _, Right (StoreObjectPresent {})) -> True
@@ -573,7 +599,7 @@ boundary config keys generationKey =
           version
           value
     , readPreparedInitEnvelope = \binding ->
-        readBound config preparedKey validValue ((== binding) . preparedInitBinding)
+        readBound config preparedKey validPreparedInit ((== binding) . preparedInitBinding)
     , createPreparedInitEnvelope = \permit value ->
         createBound
           config
@@ -581,7 +607,7 @@ boundary config keys generationKey =
           BootstrapStoreCreatePreparedInitEnvelope
           permit
           (rootInitStorageGeneration (preparedInitBinding value))
-          validValue
+          validPreparedInit
           value
     , deletePreparedInitEnvelope = \permit binding version ->
         deleteBound
@@ -593,7 +619,7 @@ boundary config keys generationKey =
           version
           (Proxy :: Proxy PreparedInitEnvelope)
     , readEncryptedInitResponse = \binding ->
-        readBound config responseKey validValue ((== binding) . encryptedResponseBinding)
+        readBound config responseKey validEncryptedResponse ((== binding) . encryptedResponseBinding)
     , createEncryptedInitResponse = \permit value ->
         createBound
           config
@@ -601,16 +627,16 @@ boundary config keys generationKey =
           BootstrapStoreCreateEncryptedInitResponse
           permit
           (rootInitStorageGeneration (encryptedResponseBinding value))
-          validValue
+          validEncryptedResponse
           value
     , readFinalUnlockBundle = \binding ->
-        readBound config bundleKey validValue ((== binding) . finalUnlockBundleBinding)
+        readBound config bundleKey validFinalUnlockBundle ((== binding) . finalUnlockBundleBinding)
     , promoteFinalUnlockBundle = \permit response value -> do
         observed <-
           readBound
             config
             responseKey
-            validValue
+            validEncryptedResponse
             ((== encryptedResponseBinding response) . encryptedResponseBinding)
         case observed of
           Right (StoreObjectPresent _ _ actual)
@@ -621,7 +647,7 @@ boundary config keys generationKey =
                   BootstrapStorePromoteFinalUnlockBundle
                   permit
                   (rootInitStorageGeneration (finalUnlockBundleBinding value))
-                  validValue
+                  validFinalUnlockBundle
                   value
           Right _ -> pure (Left BootstrapStoreBindingMismatch)
           Left failure -> pure (Left failure)
@@ -632,7 +658,7 @@ boundary config keys generationKey =
           BootstrapStoreCasFinalUnlockBundle
           permit
           (rootInitStorageGeneration (finalUnlockBundleBinding value))
-          validValue
+          validFinalUnlockBundle
           version
           value
     , readRootSessionJournal = \generation ->
@@ -664,7 +690,7 @@ boundary config keys generationKey =
         readBound
           config
           childReceiptKey
-          validValue
+          validChildEncryptedReceipt
           ((== binding) . childEncryptedReceiptBinding)
     , createChildEncryptedReceipt = \permit value ->
         createBound
@@ -675,7 +701,7 @@ boundary config keys generationKey =
           ( childCustodyStorageGeneration
               (childEncryptedReceiptBinding value)
           )
-          validValue
+          validChildEncryptedReceipt
           value
     , deleteChildEncryptedReceipt = \permit binding version ->
         deleteBound
@@ -715,7 +741,7 @@ boundary config keys generationKey =
         readBound
           config
           childRecoveryDeliveryKey
-          validValue
+          validChildRecoveryDelivery
           ((== binding) . childRecoveryDeliveryBinding)
     , createChildRecoveryDelivery = \permit value ->
         createBound
@@ -726,7 +752,7 @@ boundary config keys generationKey =
           ( childCustodyStorageGeneration
               (childRecoveryDeliveryBinding value)
           )
-          validValue
+          validChildRecoveryDelivery
           value
     , deleteChildRecoveryDelivery = \permit binding version ->
         deleteBound
@@ -790,7 +816,7 @@ boundary config keys generationKey =
           version
           value
     , readSecretWorkerCheckpoint =
-        readValue config secretWorkerCheckpointKey validValue
+        readValue config secretWorkerCheckpointKey validSecretWorkerCheckpoint
     , createSecretWorkerCheckpoint = \permit value ->
         createBound
           config
@@ -798,7 +824,7 @@ boundary config keys generationKey =
           BootstrapStoreCreateSecretWorkerCheckpoint
           permit
           (storeMutationPermitStorageGeneration permit)
-          validValue
+          validSecretWorkerCheckpoint
           value
     , casSecretWorkerCheckpoint = \permit version value ->
         casBound
@@ -807,7 +833,7 @@ boundary config keys generationKey =
           BootstrapStoreCasSecretWorkerCheckpoint
           permit
           (storeMutationPermitStorageGeneration permit)
-          validValue
+          validSecretWorkerCheckpoint
           version
           value
     }
@@ -825,8 +851,123 @@ boundary config keys generationKey =
   postUnsealHandoffKey = Settings.postUnsealHandoffKey keys
   secretWorkerCheckpointKey = Settings.secretWorkerCheckpointKey keys
 
-validValue :: value -> Bool
-validValue _ = True
+-- | Sprint 2.45: the validity predicate every durable read and CAS applies.
+--
+-- Until this sprint it was @validValue _ = True@, so any structurally-decodable
+-- record was accepted as valid and @BootstrapStoreCorrupt@ was unreachable for
+-- the seven payload types below. The fix is not per-payload invention: these
+-- records are persisted and read back through @Serialise@ (CBOR), which
+-- reconstructs each field positionally and __bypasses every smart constructor
+-- the type is otherwise built through__. That is the conversion class
+-- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- names, and the same seam Sprint 1.86 closed for Dhall decoding of the cluster
+-- topology.
+--
+-- So the rule each predicate implements is one rule: __re-run the constructors
+-- the decode bypassed__, plus the record's own cross-field arithmetic where it
+-- has any. A digest that is not lower-hex SHA-256, an identifier that is empty
+-- or over its length bound, or an unlock bundle whose threshold exceeds its
+-- share count now reaches the caller as @BootstrapStoreCorrupt@ rather than as
+-- a value the broker acts on.
+validSmartConstructedText
+  :: (value -> Text) -> (Text -> Either err value) -> value -> Bool
+validSmartConstructedText render construct value =
+  case construct (render value) of
+    Left _ -> False
+    Right _ -> True
+
+validArtifactDigest :: ArtifactDigest -> Bool
+validArtifactDigest = validSmartConstructedText renderArtifactDigest mkArtifactDigest
+
+-- | The generation binding every root-init-scoped payload carries. Both halves
+-- are bounded identifiers minted by smart constructors the CBOR decode skips.
+validRootInitBinding :: RootInitBinding -> Bool
+validRootInitBinding binding =
+  validSmartConstructedText
+    renderBootstrapTransactionId
+    mkBootstrapTransactionId
+    (rootInitTransactionId binding)
+    && validSmartConstructedText
+      renderVaultStorageGeneration
+      mkVaultStorageGeneration
+      (rootInitStorageGeneration binding)
+
+validChildCustodyBinding :: ChildCustodyBinding -> Bool
+validChildCustodyBinding binding =
+  validSmartConstructedText
+    renderVaultStorageGeneration
+    mkVaultStorageGeneration
+    (childCustodyStorageGeneration binding)
+    && validSmartConstructedText
+      renderBootstrapTransactionId
+      mkBootstrapTransactionId
+      (childCustodyTransactionId binding)
+
+validPreparedInit :: PreparedInitEnvelope -> Bool
+validPreparedInit prepared =
+  validRootInitBinding (preparedInitBinding prepared)
+    && validArtifactDigest (preparedInitPristineObservationDigest prepared)
+    && validArtifactDigest (preparedInitEnvelopeDigest prepared)
+
+-- | The encrypted @\/sys\/init@ response. An empty share list is rejected
+-- because the receipt exists to carry the recovery shares: a receipt with none
+-- is the applied-but-unrecoverable state, not a valid record.
+validEncryptedResponse :: EncryptedInitResponseReceipt -> Bool
+validEncryptedResponse receipt =
+  validRootInitBinding (encryptedResponseBinding receipt)
+    && not (null (encryptedResponseShares receipt))
+    && validArtifactDigest (encryptedResponseReceiptDigest receipt)
+
+-- | The final unlock bundle. This is the one payload carrying arithmetic the
+-- type does not state: a Shamir threshold above the share count describes a
+-- bundle that can never be reassembled, and a zero threshold describes one that
+-- needs no share at all.
+validFinalUnlockBundle :: FinalUnlockBundle -> Bool
+validFinalUnlockBundle bundle =
+  validRootInitBinding (finalUnlockBundleBinding bundle)
+    && validArtifactDigest (finalUnlockBundleDigest bundle)
+    && validUnlockShareThreshold
+      (finalUnlockBundleThreshold bundle)
+      (finalUnlockBundleShareCount bundle)
+
+-- | The Shamir arithmetic 'Prodbox.Bootstrap.Broker.Types.mkInitRecipientCommitment'
+-- already enforces at the mint site, restated here because the CBOR decode does
+-- not go through it.
+--
+-- It is a separate named function rather than an inline conjunct for a reason
+-- worth stating: a bundle violating it is __unconstructible__ through the
+-- smart constructors, so a test could only reach it by crafting CBOR bytes.
+-- Exposing the decision over its two 'Natural' inputs makes the rule itself
+-- falsifiable, which the composed predicate over an unconstructible value would
+-- not be ([unit_testing_policy.md](../../../../documents/engineering/unit_testing_policy.md)
+-- canonical statement 10).
+validUnlockShareThreshold :: Natural -> Natural -> Bool
+validUnlockShareThreshold threshold shareCount =
+  threshold > 0 && threshold <= shareCount
+
+validChildEncryptedReceipt :: ChildEncryptedReceipt -> Bool
+validChildEncryptedReceipt receipt =
+  validChildCustodyBinding (childEncryptedReceiptBinding receipt)
+    && not (null (childEncryptedReceiptShares receipt))
+    && validArtifactDigest (childEncryptedReceiptDigest receipt)
+
+validChildRecoveryDelivery :: ChildRecoveryDelivery -> Bool
+validChildRecoveryDelivery delivery =
+  validChildCustodyBinding (childRecoveryDeliveryBinding delivery)
+    && validSmartConstructedText
+      renderDeliveryNonce
+      mkDeliveryNonce
+      (childRecoveryDeliveryNonce delivery)
+    && validArtifactDigest (childRecoveryDeliveryDigest delivery)
+
+-- | The secret-worker checkpoint. Its arms carry no smart-constructed scalar of
+-- their own, but one of them carries a free-text reason for an unobservable
+-- checkpoint — and a persisted \"cannot observe\" that says nothing is the
+-- distinguishability defect
+-- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- names, durably recorded. Every other arm is accepted.
+validSecretWorkerCheckpoint :: SecretWorkerDurableCheckpoint -> Bool
+validSecretWorkerCheckpoint = null . secretWorkerCheckpointInvariantViolations
 
 validRootInit :: RootInitState -> Bool
 validRootInit = null . rootInitInvariantViolations
@@ -1144,7 +1285,7 @@ observeOrCreateStorageGeneration
   -> Text
   -> IO (Either StoreBoundaryError RootInitBinding)
 observeOrCreateStorageGeneration config key = do
-  observed <- readValue config key validValue
+  observed <- readValue config key validRootInitBinding
   case observed of
     Left failure -> pure (Left failure)
     Right (StoreObjectPresent _ _ binding) -> pure (Right binding)
@@ -1159,7 +1300,7 @@ observeOrCreateStorageGeneration config key = do
             createValue
               config
               key
-              validValue
+              validRootInitBinding
               RootInitBinding
                 { rootInitTransactionId = transactionId
                 , rootInitStorageGeneration = storageGeneration
@@ -1190,7 +1331,7 @@ advanceStorageGeneration config key permit expected replacement =
     permit of
     Left failure -> pure (Left failure)
     Right () -> do
-      observed <- readValue config key validValue
+      observed <- readValue config key validRootInitBinding
       case observed of
         Left failure -> pure (Left failure)
         Right StoreObjectAbsent -> pure (Left BootstrapStoreReadBackMismatch)
@@ -1198,7 +1339,7 @@ advanceStorageGeneration config key permit expected replacement =
           | actual == replacement -> pure (Right replacement)
           | actual /= expected -> pure (Left BootstrapStoreBindingMismatch)
           | otherwise -> do
-              written <- casValue config key validValue version replacement
+              written <- casValue config key validRootInitBinding version replacement
               pure $ case written of
                 Left failure -> Left failure
                 Right (StoreWriteApplied _ _ actualReplacement)

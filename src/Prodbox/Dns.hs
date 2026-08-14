@@ -55,11 +55,12 @@ import Prodbox.PublicEdge
   , sharedPublicHostFqdns
   )
 import Prodbox.Settings
-  ( Route53Section (..)
+  ( ValidatedCoordinates (..)
   , ValidatedSettings (..)
-  , route53
   , validateAndLoadSettings
+  , validatedCoordinates
   )
+import Prodbox.Settings.Coordinate (route53ZoneIdText)
 import Prodbox.Substrate (Substrate (..))
 import System.Exit
   ( ExitCode (..)
@@ -168,7 +169,11 @@ queryHomeGatewayDnsRecordValues settings fqdn = do
     Right state -> do
       observed <-
         decodeHomeGatewayDnsObservation
-          (zone_id (route53 (validatedConfig settings)))
+          ( maybe
+              Text.empty
+              route53ZoneIdText
+              (coordinateHomeZoneId (validatedCoordinates settings))
+          )
           fqdn
           state
       if homeGatewayDnsObservationWritable observed

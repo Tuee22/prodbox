@@ -39,7 +39,7 @@ import CertificateScopeServing (certificateScopeServingSuite)
 import CleanRoomHandoff (cleanRoomHandoffSuite)
 import CleanupRun (cleanupRunSuite)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception (finally)
+import Control.Exception (SomeException, finally, try)
 import Control.Monad (forM_, unless, when)
 import ControlPlaneAdminActionAuthorityExecutionEndpoint
   ( controlPlaneAdminActionAuthorityExecutionEndpointSuite
@@ -91,9 +91,11 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isDigit, toLower)
 import Data.Either (isLeft, isRight)
 import Data.IORef
-  ( modifyIORef'
+  ( IORef
+  , modifyIORef'
   , newIORef
   , readIORef
   , writeIORef
@@ -259,6 +261,7 @@ import Prodbox.Bootstrap.Broker.Readiness
   , observerPeriodMicros
   , unobservedBrokerReadinessFacts
   )
+import Prodbox.Bootstrap.Broker.Routes (brokerRoutePath)
 import Prodbox.Bootstrap.Broker.Settings qualified as BrokerSettings
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
@@ -334,7 +337,9 @@ import Prodbox.CLI.Pulumi
   , runPulumiCommandWithGate
   )
 import Prodbox.CLI.Rke2
-  ( GatewayFullModeProbe (..)
+  ( CascadePhaseOutcome (..)
+  , DeleteMode (..)
+  , GatewayFullModeProbe (..)
   , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
   , ReconcileStepId (..)
@@ -346,9 +351,11 @@ import Prodbox.CLI.Rke2
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
+  , aggregateCascadeExit
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
   , cascadeOrderNarration
+  , cascadeSweepCredentialAbsentExit
   , classifyBrokerVaultUnsealedStatus
   , classifyGatewayFullModeProbe
   , classifyRegistryStorageEdgeProbe
@@ -372,6 +379,7 @@ import Prodbox.CLI.Rke2
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
   , renderRke2SystemdResourceDropIn
+  , retainedStateNoticePerRunLine
   , retainedStorageInventoryEntries
   , stepsForComponent
   )
@@ -397,6 +405,7 @@ import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
+  , ProductionEnvVarRead (..)
   , awsCreateSiteViolations
   , awsCreateVerbs
   , boundSectionCitationsInLine
@@ -412,16 +421,23 @@ import Prodbox.CheckCode
   , governedDocStatusViolations
   , headingSectionNumber
   , iamCreateSiteViolations
+  , iamCreateVerbs
   , inlineCodeSpansInLine
   , inlineRetrySubstringListViolations
   , isCitedSourcePath
+  , isEnvironmentVariableName
   , isRelativeLinkTarget
   , listRepoOwnedPaths
   , matchesSprintToken
   , parseGeneratedSectionsField
   , parseGovernedDocStatusField
   , planOptionsHonoredViolations
+  , planOptionsProjectionExemptions
+  , planSprintBlocks
   , prodboxMarkerKeysPresent
+  , productionEnvVarNamesIn
+  , productionEnvVarOwnersFor
+  , productionEnvVarRegistry
   , pulumiCreateSiteViolations
   , relativeLinkResolves
   , removedLegacyTransportSourcePaths
@@ -429,6 +445,7 @@ import Prodbox.CheckCode
   , scannedCredentialPatternsPresent
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
+  , sprintBlockMissingFields
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , substrateImagePinningViolations
@@ -543,8 +560,11 @@ import Prodbox.Config.Tier0
   , loadDaemonBinaryContext
   , projectBasics
   , renderProjectConfigDhall
+  , stampTier0Witness
   , tier0CarriesNoSecretValues
+  , tier0RecordWitness
   , tier0SecretValueFields
+  , tier0WitnessPrefix
   , writeTier0AtPath
   )
 import Prodbox.Config.Tier0 qualified as Tier0
@@ -561,6 +581,18 @@ import Prodbox.ControlPlane.CapabilityRequirement
   , resolveRequirement
   )
 import Prodbox.ControlPlane.Client (controlPlaneEndpointText)
+import Prodbox.ControlPlane.ListenPort
+  ( controlPlaneClusterServiceUrl
+  , controlPlaneClusterServiceUrlText
+  , controlPlaneListenPort
+  )
+import Prodbox.ControlPlane.LocalClient
+  ( authorityBackupRemotePort
+  , lifecycleAuthorityRemotePort
+  , providerWorkerRemotePort
+  , targetSecretAgentRemotePort
+  , tlsRetentionRemotePort
+  )
 import Prodbox.ControlPlane.Observation
   ( ExternalEvidence (..)
   , RoundTripWitness
@@ -770,8 +802,11 @@ import Prodbox.Lifecycle.FederatedVault
   )
 import Prodbox.Lifecycle.K8sDrain
   ( CascadeDecision (..)
+  , ClusterProbe (..)
   , DrainResult (..)
   , cascadeDecisionFromDrainResult
+  , classifyClusterProbe
+  , clusterAbsenceEvidencePhrases
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
   )
@@ -825,6 +860,11 @@ import Prodbox.Naming
 import Prodbox.Native
   ( commandPrerequisites
   )
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , absenceProbeMarkers
+  , reportsAbsence
+  )
 import Prodbox.PostgresPlatform
   ( patroniPersistentVolumeClaimName
   , patroniPrimaryServiceName
@@ -840,10 +880,16 @@ import Prodbox.PrerequisiteId
   , prerequisiteIdText
   )
 import Prodbox.PublicEdge
-  ( publicEdgeClusterIssuerName
+  ( authPathPrefix
+  , canonicalPublicRouteCatalog
+  , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
+  , publicRoutePathPrefix
   , requireSubstrateCertScopeSet
   , requireSubstratePublicFqdn
+  , requireSubstrateServedHost
+  , substrateIdentityIssuerUrl
+  , substratePublicRouteUrl
   )
 import Prodbox.Pulsar.Client qualified as PulsarClient
 import Prodbox.Pulsar.Codec qualified as PulsarCodec
@@ -925,6 +971,12 @@ import Prodbox.Settings
   , ValidatedSettings (..)
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
+  , coordinateAcmeAccount
+  , coordinateAwsSubstrateZoneId
+  , coordinateDemoTtl
+  , coordinateHomeZoneId
+  , coordinateOperationalAwsRegion
+  , coordinatePulumiBackendRegion
   , decodeConfigDhallBytes
   , defaultConfigFile
   , defaultTestTopology
@@ -936,6 +988,9 @@ import Prodbox.Settings
   , renderConfigDhall
   , renderPublicEdgeAdvertisementMode
   , renderSettingsDisplay
+  , requireAcmeAccount
+  , requireOperationalAwsRegion
+  , servedHostCertScopes
   , substrateServedHost
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
@@ -946,7 +1001,14 @@ import Prodbox.Settings
   , validateLocalConfig
   , validatePublicEdgeDeployment
   , validateTestTopology
+  , validatedCoordinates
+  , validatedCoordinatesFor
   , validatedPublicEdgeFor
+  )
+import Prodbox.Settings.Coordinate
+  ( awsRegionText
+  , dnsTtlSeconds
+  , route53ZoneIdText
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -971,6 +1033,9 @@ import Prodbox.Substrate
   , fixedScalingPolicyBySubstrate
   )
 import Prodbox.Test.CleanupRun (CleanupDependencyKind (..))
+import Prodbox.Test.GatewayRuntimeStability
+  ( GatewayRuntimeStabilityReport (NotStableYet, StableObserved)
+  )
 import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
@@ -1025,15 +1090,24 @@ import Prodbox.TestTopology
   )
 import Prodbox.TestValidation
   ( DaemonBootstrapAuditInput (..)
+  , DaemonBootstrapAuditProvenance (..)
+  , GatewayRuntimeSampleOutcome (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
   , assertInviteOidcClaims
   , daemonBootstrapAuditReport
+  , daemonBootstrapBrokerBaseUrl
   , daemonBootstrapForbiddenPatterns
+  , daemonBootstrapRequiredRoutes
   , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
   , demoOidcSessionValidationAgentManifest
+  , gatewayPartitionCanonicalMembers
+  , gatewayPartitionLegacyReport
+  , gatewayPartitionLegacyReportFor
   , gatewayPartitionValidationReport
+  , gatewayRuntimeSampleOutcome
+  , gatewayRuntimeSampleOutcomeExit
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
   , resourceGuardrailReport
@@ -1043,7 +1117,13 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   , volumeRebindReport
   )
-import Prodbox.Tls.CertScope (fqdnText, impliedBy)
+import Prodbox.Tls.CertScope
+  ( ScopeError (..)
+  , certScopeSetDnsNames
+  , fqdnText
+  , impliedBy
+  , mkFqdn
+  )
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -1195,9 +1275,12 @@ import TargetCommitSmtp (targetCommitSmtpSuite)
 import TemporalQualification (temporalQualificationSuite)
 import TestSupport
 import Tier0Fixture
-  ( RawTier0Reason (ExercisesGeneratedSchemaImport)
+  ( RawTier0Reason (ExercisesGeneratedSchemaImport, ExistenceIsWhatIsUnderTest)
+  , Tier0Fixture
+  , rawTier0Fixture
   , rawTier0Parameters
   , tier0Fixture
+  , tier0FixturePath
   , tier0FixtureWithParameters
   , writeTier0Fixture
   )
@@ -1206,11 +1289,22 @@ import Tier0PlanAssert (tier0PlanAssertSuite)
 import VaultSession (vaultSessionSuite)
 import VaultSessionSafety (vaultSessionSafetySuite)
 
-withBinarySiblingTier0 :: String -> IO a -> IO a
-withBinarySiblingTier0 contents action =
+-- | Sprint 5.34: takes a 'Tier0Fixture' rather than a raw 'String', and writes
+-- it through 'writeTier0Fixture'.
+--
+-- This was the one true instance of the escape Sprint 5.30 registered against
+-- its own gate — bind the sibling path, write to the binding on a later line —
+-- and the widened gate found it. All three callers already passed
+-- @renderProjectConfigDhall@ output, so nothing about what lands on disk
+-- changes; what changes is that the helper's TYPE now says so, and a caller
+-- cannot hand it hand-authored text without going through 'rawTier0Fixture'
+-- and naming a reason.
+withBinarySiblingTier0 :: Tier0Fixture -> IO a -> IO a
+withBinarySiblingTier0 fixture action =
   withMVar binarySiblingTier0Lock $ \_ -> do
     exePath <- getExecutablePath
-    let tier0Path = takeDirectory exePath </> "prodbox.dhall"
+    let tier0Directory = takeDirectory exePath
+        tier0Path = tier0FixturePath tier0Directory
     previousExists <- doesFileExist tier0Path
     previousContents <-
       case previousExists of
@@ -1221,7 +1315,7 @@ withBinarySiblingTier0 contents action =
         -- an earlier suite test). Forcing the contents closes the handle first.
         True -> Just <$> readFile' tier0Path
         False -> pure Nothing
-    writeFile tier0Path contents
+    writeTier0Fixture tier0Directory fixture
     action `finally` restoreBinarySiblingTier0 tier0Path previousContents
 
 -- Tasty may execute otherwise-unrelated examples concurrently. All three tests
@@ -3733,21 +3827,67 @@ unitSuite = do
         result <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         result `shouldSatisfy` isLeft
   describe "Tier 0 binary-owned prodbox.dhall (Sprint 1.39)" $ do
-    it "round-trips: decode . encode == id for the Tier-0 record" $
+    it "round-trips: decode . encode == stamp for the Tier-0 record" $
       withSystemTempDirectory "prodbox-tier0-roundtrip" $ \tmpDir -> do
         -- The schema is emitted from the Haskell record (one typed SoT) via the
         -- same Dhall.inject mechanism; rendering then decoding must yield the
         -- original record back.
+        --
+        -- Sprint 0.29 states the property truthfully rather than keeping the
+        -- older `== id` wording: the generator stamps the record's witness, so
+        -- the round trip is `decode . render == stampTier0Witness`. Writing it
+        -- this way keeps the stamping visible in the test instead of hiding it
+        -- behind a fixture that already carries the right witness.
         let tier0Path = tmpDir </> "prodbox.dhall"
         writeFile tier0Path (Text.unpack (renderProjectConfigDhall sampleTier0Child))
         decoded <- Dhall.inputFile Dhall.auto tier0Path :: IO ProdboxProjectConfig
-        decoded `shouldBe` sampleTier0Child
-    it "round-trips: the default Tier-0 record decodes to defaultProjectConfig" $
+        decoded `shouldBe` stampTier0Witness sampleTier0Child
+        -- Everything outside the witness is still identity.
+        parameters decoded `shouldBe` parameters sampleTier0Child
+        context decoded `shouldBe` context sampleTier0Child
+    it "round-trips: the default Tier-0 record decodes to the stamped default" $
       withSystemTempDirectory "prodbox-tier0-roundtrip" $ \tmpDir -> do
         let tier0Path = tmpDir </> "prodbox.dhall"
         writeFile tier0Path (Text.unpack (renderProjectConfigDhall defaultProjectConfig))
         decoded <- Dhall.inputFile Dhall.auto tier0Path :: IO ProdboxProjectConfig
-        decoded `shouldBe` defaultProjectConfig
+        decoded `shouldBe` stampTier0Witness defaultProjectConfig
+
+    describe "Sprint 0.29 Tier-0 generator-stamped witness" $ do
+      it "stamping is idempotent, because the digest excludes the witness" $ do
+        stampTier0Witness (stampTier0Witness sampleTier0Child)
+          `shouldBe` stampTier0Witness sampleTier0Child
+        -- A record carrying somebody else's witness stamps to the same value:
+        -- the digest is a function of `parameters` and `context` alone.
+        stampTier0Witness sampleTier0Child {witness = ["stale"]}
+          `shouldBe` stampTier0Witness sampleTier0Child
+
+      it "carries its scheme identifier, so a later scheme cannot be mistaken for this one" $
+        tier0RecordWitness sampleTier0Child `shouldSatisfy` Text.isPrefixOf tier0WitnessPrefix
+
+      it "a changed primitive changes the witness — the class Sprint 0.24 could not catch" $ do
+        -- The premise of the round-trip class: an edited primitive decodes to
+        -- that value and re-renders to that value, so no text comparison can
+        -- separate the edited file from a generated one. The witness can,
+        -- because the file then holds the OLD witness beside the NEW primitive.
+        let edited =
+              sampleTier0Child
+                { context =
+                    (context sampleTier0Child)
+                      { cluster_id = "prodbox-mutated-round-trip"
+                      }
+                }
+        tier0RecordWitness edited `shouldNotBe` tier0RecordWitness sampleTier0Child
+        -- And a file carrying the pre-edit witness is detectably stale: the
+        -- generator's canonical rendering of the decoded record disagrees.
+        let stale = edited {witness = witness (stampTier0Witness sampleTier0Child)}
+        witness stale `shouldNotBe` witness (stampTier0Witness stale)
+        renderProjectConfigDhall stale `shouldBe` renderProjectConfigDhall edited
+
+      it "the witness is the only field the stamp changes" $ do
+        let stamped = stampTier0Witness sampleTier0Child
+        parameters stamped `shouldBe` parameters sampleTier0Child
+        context stamped `shouldBe` context sampleTier0Child
+        length (witness stamped) `shouldBe` 1
     it "projects the floor deterministically from the Tier-0 context" $ do
       -- The floor derivation is a pure function of the Tier-0 context (the
       -- parameters / witness never reach the floor), so it is identical across
@@ -3989,7 +4129,9 @@ unitSuite = do
           Left err -> expectationFailure ("expected container default to decode, got: " ++ err)
           Right (source, projectConfig) -> do
             source `shouldBe` Tier0FromContainerDefault containerDefault
-            projectConfig `shouldBe` defaultDaemonProjectConfig
+            -- Sprint 0.29: the file was written through the stamping generator,
+            -- so it decodes to the stamped record.
+            projectConfig `shouldBe` stampTier0Witness defaultDaemonProjectConfig
             Tier0.context_kind (Tier0.context projectConfig) `shouldBe` Daemon
     it "the decoded daemon Tier-0 context carries no secret values" $
       withSystemTempDirectory "prodbox-tier0-daemon-secretfree" $ \tmpDir -> do
@@ -4027,7 +4169,7 @@ unitSuite = do
           Left err -> expectationFailure ("expected ConfigMap decode, got: " ++ err)
           Right (source, projectConfig) -> do
             source `shouldBe` Tier0FromConfigMap (daemonConfigMapTier0Path configMapDir)
-            projectConfig `shouldBe` overwritten
+            projectConfig `shouldBe` stampTier0Witness overwritten
             Tier0.cluster_id (Tier0.context projectConfig) `shouldBe` "prodbox-configmap-override"
     it "falls back to the compiled-in default when no file is present" $
       withSystemTempDirectory "prodbox-tier0-compiled-fallback" $ \tmpDir -> do
@@ -4255,6 +4397,52 @@ unitSuite = do
           (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
         decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
         decoded `shouldBe` defaultTestSecrets
+    it "Sprint 5.34: a transposed admin credential pair is refused at decode" $
+      withSystemTempDirectory "prodbox-schema-transposed" $ \tmpDir -> do
+        -- The row that scheduled this named the defect exactly: `access_key_id`
+        -- and `secret_access_key` are both Text, so transposing them
+        -- type-checks. They are distinguishable by shape, so the transposition
+        -- is detectable -- and is now a decode refusal rather than an
+        -- InvalidClientTokenId from AWS that reads like a revoked credential.
+        --
+        -- The values below are synthetic and structurally valid: a 20-character
+        -- AKIA-prefixed id and a 40-character secret, assembled here rather than
+        -- spelled contiguously so this tracked file does not itself carry a
+        -- scanned credential shape (vault_doctrine.md section 20.4).
+        let syntheticKeyId = "AKIA" ++ replicate 16 'Q'
+            syntheticSecret = replicate 40 'z'
+            fixture keyId secret =
+              unlines
+                [ "let TestSecrets = ./test-secrets-types.dhall"
+                , "in  TestSecrets::{ aws_admin_for_test_simulation ="
+                , "      { access_key_id = \"" ++ keyId ++ "\""
+                , "      , secret_access_key = \"" ++ secret ++ "\""
+                , "      , session_token = None Text"
+                , "      , region = \"us-east-1\""
+                , "      } }"
+                ]
+            decodeFixture body = do
+              writeFile
+                (tmpDir </> "test-secrets-types.dhall")
+                (Text.unpack renderTestSecretsTypesDhall)
+              writeFile (tmpDir </> "test-secrets.dhall") body
+              try
+                (Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets)
+                :: IO (Either SomeException TestSecrets)
+        correct <- decodeFixture (fixture syntheticKeyId syntheticSecret)
+        correct `shouldSatisfy` isRight
+        -- The same two values, swapped. This is the whole finding.
+        transposed <- decodeFixture (fixture syntheticSecret syntheticKeyId)
+        transposed `shouldSatisfy` isLeft
+        -- The check is ONE-SIDED, and this pins why rather than leaving it in a
+        -- comment. The symmetric rule -- also require access_key_id to have the
+        -- id shape -- refuses this repository's own integration fixtures, and
+        -- those fixtures cannot be given a valid id because
+        -- `scannedCredentialViolations` fails the build for any TRACKED file
+        -- carrying that shape. The two rules are in direct opposition and the
+        -- credential scanner wins, so a placeholder pair must still decode.
+        placeholders <- decodeFixture (fixture "placeholder-id" "placeholder-secret")
+        placeholders `shouldSatisfy` isRight
     it "round-trips: a populated acme_eab block decodes through the GENERATED test schema" $
       withSystemTempDirectory "prodbox-schema-roundtrip-eab" $ \tmpDir -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
@@ -4534,7 +4722,7 @@ unitSuite = do
         -- shamir, no parent) == sampleRootBasics. The floor itself selects the
         -- Authority-owned path; there is no object-absence, marker, or direct
         -- MinIO fallback after Tier-0 exists.
-        withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall defaultProjectConfig)) $ do
+        withBinarySiblingTier0 (tier0Fixture defaultProjectConfig) $ do
           result <-
             loadConfigForSettingsWith
               (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
@@ -4542,7 +4730,7 @@ unitSuite = do
           result `shouldBe` Right roundTripConfigFile
     it "propagates an unobservable Authority config without filesystem fallback" $
       withSystemTempDirectory "prodbox-config-loader-fail-closed" $ \tmpDir -> do
-        withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall defaultProjectConfig)) $ do
+        withBinarySiblingTier0 (tier0Fixture defaultProjectConfig) $ do
           result <-
             loadConfigForSettingsWith
               (\_ -> pure (Left "Authority config is unobservable"))
@@ -6142,7 +6330,6 @@ unitSuite = do
                            , "pulumi"
                            , "ha-rke2-aws"
                            , "gateway-daemon"
-                           , "gateway-partition"
                            , "control-plane-counterexample"
                            , "certificate-scope"
                            , "clean-room-handoff"
@@ -6574,30 +6761,33 @@ unitSuite = do
     -- force PolicyFull for ANY non-empty validation set on AWS, including
     -- credential-free ones. The tier now follows declared capabilities.
     it "does NOT acquire the IAM harness for a credential-free validation on the AWS substrate" $ do
-      -- gateway-partition is fully in-process and declares NO prerequisites,
-      -- so it engages no AWS credentials. On the AWS substrate it must still
-      -- get tier Nothing (no harness), pinning the deleted blanket override.
-      validationInitialPrerequisites ValidationGatewayPartition `shouldBe` []
-      validationDeferredPrerequisites ValidationGatewayPartition `shouldBe` []
-      case testExecutionPlan SubstrateAws (TestIntegration IntegrationGatewayPartition) of
+      -- control-plane-counterexample is fully in-process and declares NO
+      -- prerequisites, so it engages no AWS credentials. On the AWS substrate
+      -- it must still get tier Nothing (no harness), pinning the deleted
+      -- blanket override. (Sprint 5.33 moved gateway-partition — the exemplar
+      -- this case used to name — out of the integration surface entirely, so
+      -- the property is pinned on the remaining credential-free node.)
+      validationInitialPrerequisites ValidationControlPlaneCounterexample `shouldBe` []
+      validationDeferredPrerequisites ValidationControlPlaneCounterexample `shouldBe` []
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationControlPlaneCounterexample) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
-              nativeSuiteId suitePlan `shouldBe` "integration-gateway-partition"
+              nativeSuiteId suitePlan `shouldBe` "integration-control-plane-counterexample"
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
-            DelegatedSuite _ -> expectationFailure "expected native gateway-partition plan"
+            DelegatedSuite _ -> expectationFailure "expected native counterexample plan"
       -- And on the home substrate it is likewise harness-free.
-      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationGatewayPartition) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationControlPlaneCounterexample) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan ->
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Nothing
-            DelegatedSuite _ -> expectationFailure "expected native gateway-partition plan"
+            DelegatedSuite _ -> expectationFailure "expected native counterexample plan"
       -- Direct derivation: a credential-free validation never engages the
       -- harness regardless of substrate.
-      derivedManagedAwsHarnessPolicyTier SubstrateAws [ValidationGatewayPartition]
+      derivedManagedAwsHarnessPolicyTier SubstrateAws [ValidationControlPlaneCounterexample]
         `shouldBe` Nothing
-      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationGatewayPartition]
+      derivedManagedAwsHarnessPolicyTier SubstrateHomeLocal [ValidationControlPlaneCounterexample]
         `shouldBe` Nothing
 
     it "derives the IAM-harness tier from declared capabilities, not a substrate blanket" $ do
@@ -6659,14 +6849,88 @@ unitSuite = do
         chartsValidations
         `shouldBe` True
 
-    it "keeps gateway-partition on a native validation path distinct from tla-check" $ do
+    it "Sprint 5.33: gateway-partition is a unit-suite property test, not an integration node" $ do
+      -- Standard C. This case previously asserted the *presence* of
+      -- `ValidationGatewayPartition -> runGatewayPartitionValidation` in the
+      -- integration dispatch. The node is a pure in-process composition over
+      -- the real GatewayState folds — a legitimate property test — but it was
+      -- registered as a named integration validation and cited as numbered
+      -- `Validation` evidence in eight `Done` Phase-2 sprints for
+      -- commit-before-peer-response, restart, and partition-takeover
+      -- properties that no peer, restart, or partition was present to
+      -- exercise. It now lives here, where its identity is accurate.
       repoRoot <- getCurrentDirectory
       validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
-
-      validationSource `shouldContain` "ValidationGatewayPartition -> runGatewayPartitionValidation"
+      planSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestPlan.hs")
       validationSource `shouldContain` "FORMAL_MODEL_DELEGATED=false"
-      validationSource
-        `shouldNotContain` "ValidationGatewayPartition -> runNativeCliCommandForExitCode repoRoot environment [\"tla-check\"]"
+      validationSource `shouldNotContain` "ValidationGatewayPartition"
+      planSource `shouldNotContain` "IntegrationGatewayPartition"
+      planSource `shouldNotContain` "integration-gateway-partition"
+
+    it "Sprint 5.33: gateway-partition's emitted lines change when its composition changes" $ do
+      -- The falsifiability the node lacked. Every emitted line was a string
+      -- literal, so no input could alter the output; they are now rendered
+      -- from the computed values, and a composition that cannot satisfy the
+      -- invariants produces a refusal naming the invariant instead of the same
+      -- eight `true`/`1`/`0` lines.
+      canonical <- case gatewayPartitionLegacyReport of
+        Left err -> expectationFailure err >> pure ""
+        Right report -> pure report
+      canonical `shouldContain` "PARTITION_MEMBERS=3"
+      canonical `shouldContain` "INITIAL_OWNER_ACTIVE=true"
+      canonical `shouldContain` "PARTITION_TAKEOVER_ACCEPTED=1"
+
+      -- A four-member Orders renders a different member count from the same
+      -- code path, so the block is downstream of the composition.
+      let widened = gatewayPartitionCanonicalMembers ++ [("node-d", 3)]
+      case gatewayPartitionLegacyReportFor widened of
+        Left err -> expectationFailure ("widened composition should still close: " ++ err)
+        Right report -> do
+          report `shouldContain` "PARTITION_MEMBERS=4"
+          report `shouldNotBe` canonical
+
+      -- A composition without the peer that performs the takeover cannot
+      -- report a takeover; it refuses, naming what it could not resolve.
+      case gatewayPartitionLegacyReportFor [("node-a", 0)] of
+        Right report ->
+          expectationFailure
+            ("a single-member composition must not report a partition takeover: " ++ report)
+        Left err -> err `shouldContain` "node-b"
+
+    it "Sprint 5.33: the daemon-bootstrap audit block declares its own provenance" $ do
+      -- The defect this replaces: the unset arm of `runDaemonBootstrapValidation`
+      -- was byte-identical to its `"pass"` fixture arm, and the emitted block
+      -- said nothing about which had run. `DAEMON_AVAILABLE=true` was a literal
+      -- in the default input and another literal in the report.
+      case daemonBootstrapAuditReport defaultDaemonBootstrapAuditInput of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "AUDIT_PROVENANCE=fixture:pass"
+          report `shouldContain` "DAEMON_AVAILABLE=true"
+      let observedInput =
+            defaultDaemonBootstrapAuditInput
+              { daemonBootstrapProvenance = DaemonBootstrapObservedDaemon
+              }
+      case daemonBootstrapAuditReport observedInput of
+        Left err -> expectationFailure err
+        Right report -> report `shouldContain` "AUDIT_PROVENANCE=observed-daemon"
+
+    it "Sprint 5.33: an unavailable daemon refuses instead of rendering DAEMON_AVAILABLE=true" $
+      case daemonBootstrapAuditReport
+        defaultDaemonBootstrapAuditInput {daemonBootstrapDaemonAvailable = False} of
+        Right report -> expectationFailure ("expected a refusal, got: " ++ report)
+        Left err -> err `shouldContain` "unavailable daemon"
+
+    it "Sprint 5.33: the broker base URL has one owner rather than nine restatements" $ do
+      -- Every transport line in the default audit input spelled
+      -- `http://127.0.0.1:8600` separately.
+      daemonBootstrapBrokerBaseUrl `shouldBe` "http://127.0.0.1:8600"
+      mapM_
+        ( \route ->
+            daemonBootstrapRequiredDaemonPaths defaultDaemonBootstrapAuditInput
+              `shouldContain` [brokerRoutePath route]
+        )
+        daemonBootstrapRequiredRoutes
 
     it "composes gateway-partition through the bounded emitter and signed peer recovery path" $ do
       result <- gatewayPartitionValidationReport
@@ -8827,7 +9091,7 @@ unitSuite = do
                     { cluster_id = homeClusterId
                     }
               }
-      withBinarySiblingTier0 (Text.unpack (renderProjectConfigDhall homeTier0)) $ do
+      withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
         homeResult <-
           buildChartDeploymentPlanForSubstrate
             SubstrateHomeLocal
@@ -10580,27 +10844,84 @@ unitSuite = do
 
     it "reconcileAbsent destroys present resources in order and stops fast on failure" $ do
       destroyed <- newIORef ([] :: [String])
-      let mk name code =
-            ResourceRegistry.ManagedResource
-              { ResourceRegistry.resourceName = name
-              , ResourceRegistry.resourceClass = ResourceClass.PerRun
-              , ResourceRegistry.resourceEnsureCommand = Nothing
-              , ResourceRegistry.resourceEnsurePresent = Nothing
-              , ResourceRegistry.resourceDestroyCommand = "prodbox aws stack " ++ name ++ " destroy --yes"
-              , ResourceRegistry.resourceDestroyCapability = ResourceRegistry.managedDestroyCapability name
-              , ResourceRegistry.resourceDestroy = \_ -> do
-                  modifyIORef' destroyed (++ [name])
-                  pure code
-              }
-          pairs =
-            [ (mk "first" ExitSuccess, residueFixturePresent)
-            , (mk "skipped-absent" ExitSuccess, Residue.ResidueAbsent)
-            , (mk "boom" (ExitFailure 1), residueFixturePresent)
-            , (mk "after-failure" ExitSuccess, residueFixturePresent)
+      let pairs =
+            [ (registryFixtureResource "first" ExitSuccess destroyed, residueFixturePresent)
+            , (registryFixtureResource "skipped-absent" ExitSuccess destroyed, Residue.ResidueAbsent)
+            , (registryFixtureResource "boom" (ExitFailure 1) destroyed, residueFixturePresent)
+            , (registryFixtureResource "after-failure" ExitSuccess destroyed, residueFixturePresent)
             ]
       outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
-      outcome `shouldBe` ExitFailure 1
+      ResourceRegistry.absentReconcileDestroyExit outcome `shouldBe` ExitFailure 1
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
       readIORef destroyed `shouldReturn` ["first", "boom"]
+
+  describe "Sprint 4.76 reconcileAbsent separates observed-absent from unobserved" $ do
+    let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+
+    it "resourcesObservedAbsent and resourcesUnobserved partition the skipped set" $ do
+      let pairs =
+            ResourceRegistry.pairPerRunResidue Residue.ResidueAbsent minioDown residueFixturePresent
+      map ResourceRegistry.resourceName (ResourceRegistry.resourcesObservedAbsent pairs)
+        `shouldBe` ["aws-eks"]
+      map ResourceRegistry.resourceName (ResourceRegistry.resourcesUnobserved pairs)
+        `shouldBe` ["aws-eks-subzone"]
+      map ResourceRegistry.resourceName (ResourceRegistry.resourcesToDestroy pairs)
+        `shouldBe` ["aws-test"]
+
+    it "an all-absent reconcile succeeds and reports no unobserved resource" $ do
+      destroyed <- newIORef ([] :: [String])
+      let pairs =
+            [ (registryFixtureResource "eks" ExitSuccess destroyed, Residue.ResidueAbsent)
+            , (registryFixtureResource "test" ExitSuccess destroyed, Residue.ResidueAbsent)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      ResourceRegistry.absentReconcileObservedAbsent outcome `shouldBe` ["eks", "test"]
+      ResourceRegistry.absentReconcileUnobserved outcome `shouldBe` []
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitSuccess
+      readIORef destroyed `shouldReturn` []
+
+    it "an all-unobserved reconcile runs no destroy and CANNOT report success" $ do
+      -- The reproduction: before Sprint 4.76 this input and the all-absent
+      -- input above produced the same ExitSuccess and the same
+      -- "no live per-run residue" line.
+      destroyed <- newIORef ([] :: [String])
+      let pairs =
+            [ (registryFixtureResource "eks" ExitSuccess destroyed, minioDown)
+            , (registryFixtureResource "test" ExitSuccess destroyed, minioDown)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      ResourceRegistry.absentReconcileObservedAbsent outcome `shouldBe` []
+      ResourceRegistry.absentReconcileUnobserved outcome `shouldBe` ["eks", "test"]
+      -- The destroy fold itself is clean; the reconcile is not.
+      ResourceRegistry.absentReconcileDestroyExit outcome `shouldBe` ExitSuccess
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+      readIORef destroyed `shouldReturn` []
+
+    it "a successful destroy does not absolve a sibling that was never observed" $ do
+      destroyed <- newIORef ([] :: [String])
+      let pairs =
+            [ (registryFixtureResource "eks" ExitSuccess destroyed, residueFixturePresent)
+            , (registryFixtureResource "test" ExitSuccess destroyed, minioDown)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      ResourceRegistry.absentReconcileDestroyExit outcome `shouldBe` ExitSuccess
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+      readIORef destroyed `shouldReturn` ["eks"]
+
+    it "the scope label is derived from the registry entries' own lifecycle class" $ do
+      destroyed <- newIORef ([] :: [String])
+      let perRun = registryFixtureResource "eks" ExitSuccess destroyed
+          operational =
+            (registryFixtureResource "operational-iam-user" ExitSuccess destroyed)
+              { ResourceRegistry.resourceClass = ResourceClass.Operational
+              }
+      ResourceRegistry.reconcileScopeLabel [(perRun, Residue.ResidueAbsent)]
+        `shouldBe` "Per-run"
+      ResourceRegistry.reconcileScopeLabel [(operational, Residue.ResidueAbsent)]
+        `shouldBe` "Operational"
+      ResourceRegistry.reconcileScopeLabel
+        [(perRun, Residue.ResidueAbsent), (operational, Residue.ResidueAbsent)]
+        `shouldBe` "Managed"
 
   describe "Sprint 4.26 destructive commands route through runPlanWithOptions" $ do
     let defaultFlags =
@@ -10766,8 +11087,21 @@ unitSuite = do
       planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" rke2Source `shouldBe` []
       planOptionsHonoredViolations "src/Prodbox/Native.hs" nativeSource `shouldBe` []
 
-    it "covers Rke2Delete and NativeNuke as destructive arms" $
-      map fst destructivePlanOptionsArms `shouldBe` ["Rke2Delete", "NativeNuke"]
+    it "Sprint 0.28: covers every destructive arm, not just the original two" $ do
+      -- Standard C. This case pinned the table to exactly `["Rke2Delete",
+      -- "NativeNuke"]`, which made the two-constructor region an asserted
+      -- invariant while seven destructive `PlanOptions`-carrying constructors
+      -- dispatched outside it.
+      take 2 (map fst destructivePlanOptionsArms) `shouldBe` ["Rke2Delete", "NativeNuke"]
+      length destructivePlanOptionsArms `shouldBe` 9
+
+    it "Sprint 0.28: the projection exemption is a (path, constructor) pair" $ do
+      -- A bare constructor exemption would also excuse the real dispatch site
+      -- in src/Prodbox/Aws.hs, which is inside the region and binds properly.
+      map (\(path, name, _) -> (path, name)) planOptionsProjectionExemptions
+        `shouldBe` [("src/Prodbox/Native.hs", "AwsTeardown")]
+      awsSource <- readFile "src/Prodbox/Aws.hs"
+      planOptionsHonoredViolations "src/Prodbox/Aws.hs" awsSource `shouldBe` []
 
   describe "Sprint 4.26 nuke step-4 tag sweep is fail-closed" $ do
     it "a non-empty tag sweep aborts nuke (ExitFailure surfaced)" $
@@ -10955,6 +11289,78 @@ unitSuite = do
       ClusterTopology.validateClusterTopology
         (ClusterTopology.mkRke2Topology (ClusterTopology.defaultMachine :| []))
         `shouldBe` Right ()
+
+    it "Sprint 2.44: a stability sample distinguishes stable from not-yet-stable" $ do
+      -- The defect: `gatewayRuntimeSampleExit` mapped BOTH `StableObserved` and
+      -- `NotStableYet` to a silent `ExitSuccess`, so a sample that observed
+      -- non-stability was indistinguishable from one that observed stability —
+      -- while the gate ten lines above honoured the same constructor by
+      -- retrying and then failing.
+      gatewayRuntimeSampleOutcome (StableObserved 3) `shouldBe` SampleObservedStable 3
+      gatewayRuntimeSampleOutcome (NotStableYet 1 3) `shouldBe` SampleObservedNotYetStable 1 3
+      SampleObservedStable 3 `shouldNotBe` SampleObservedNotYetStable 1 3
+
+      -- The sampler deliberately continues on not-yet-stable where the gate
+      -- fails: a run that aborted the first time the runtime had not converged
+      -- would never reach the gate at all. The bound is asserted, not just
+      -- described in a comment.
+      let outcomes =
+            [ SampleObservedStable 3
+            , SampleObservedNotYetStable 1 3
+            , SampleObservedUnhealthy
+            , SampleUnobservable
+            ]
+      length (nub outcomes) `shouldBe` 4
+      map gatewayRuntimeSampleOutcomeExit outcomes
+        `shouldBe` [ExitSuccess, ExitSuccess, ExitFailure 1, ExitFailure 1]
+
+    it "Sprint 1.86: decode narrows through the smart constructors" $ do
+      -- The defect this closes: `MachineId`, `Machine`, and `ClusterTopology`
+      -- were exported abstractly to force their smart constructors AND derived
+      -- `FromDhall`, so decode was a second, unchecked constructor and the
+      -- opacity stopped at the decode seam. Each expression below is one its
+      -- smart constructor refuses; each must now fail the DECODE rather than
+      -- produce a value the type claims cannot exist.
+      let substrateUnion = "< LinuxCpu | LinuxCuda | AppleMetal | CudaWindows >"
+          machineExpr identifier machineSub workerSub =
+            Text.concat
+              [ "{ machine_id = \""
+              , identifier
+              , "\""
+              , ", machine_substrate = "
+              , substrateUnion
+              , "."
+              , machineSub
+              , ", compute_worker = { worker_substrate = "
+              , substrateUnion
+              , "."
+              , workerSub
+              , ", manages_all_local_devices = True } }"
+              ]
+          decodesMachine expression = do
+            outcome <-
+              try (Dhall.input Dhall.auto expression)
+                :: IO (Either SomeException ClusterTopology.Machine)
+            pure (either (Left . show) Right outcome)
+
+      -- Control: a well-formed machine still decodes, so a refusal below is the
+      -- invariant firing rather than the expression being malformed.
+      wellFormed <- decodesMachine (machineExpr "linux-a" "LinuxCpu" "LinuxCpu")
+      wellFormed `shouldSatisfy` isRight
+
+      -- `mkMachine` rule f: the worker substrate must match the machine's.
+      mismatched <- decodesMachine (machineExpr "linux-a" "LinuxCpu" "AppleMetal")
+      case mismatched of
+        Right _ ->
+          expectationFailure
+            "a worker/machine substrate mismatch must fail the decode, not survive it"
+        Left err -> err `shouldContain` "does not match machine substrate"
+
+      -- `mkMachineId` refuses an empty identifier.
+      emptyIdentifier <- decodesMachine (machineExpr "   " "LinuxCpu" "LinuxCpu")
+      case emptyIdentifier of
+        Right _ -> expectationFailure "an empty machine_id must fail the decode"
+        Left err -> err `shouldContain` "machine_id must be non-empty"
 
     it "rejects a worker whose substrate does not match its machine" $
       case ClusterTopology.mkMachineId "linux-a" of
@@ -11189,11 +11595,25 @@ unitSuite = do
 
     it "checks the preflight through the path-injected filesystem seam" $
       withSystemTempDirectory "prodbox-test-preflight" $ \tmpDir -> do
-        let productionPath = tmpDir </> "prodbox.dhall"
+        let productionPath = tier0FixturePath tmpDir
             testTopologyPath = tmpDir </> "prodbox.test.dhall"
         testModePreflightAtPath productionPath `shouldReturn` TestGateClear
         testModePreflightAtPaths productionPath testTopologyPath `shouldReturn` TestGateClear
-        writeFile productionPath "production config placeholder"
+        -- Sprint 5.34: this write is the one instance of the escape Sprint 5.30
+        -- registered against its own gate — bind the sibling path, write to the
+        -- binding on a later line — and the widened gate found it on its first
+        -- run. It routes through the fixture owner with its reason declared,
+        -- rather than being exempted: the gate refuses when the file EXISTS and
+        -- never decodes it, so rendering a complete config here would assert
+        -- more than the gate reads.
+        writeTier0Fixture
+          tmpDir
+          ( rawTier0Fixture
+              ( ExistenceIsWhatIsUnderTest
+                  "the test-mode preflight refuses on presence, never on content"
+              )
+              "production config placeholder"
+          )
         testModePreflightAtPath productionPath
           `shouldReturn` TestGateRefuse (ProductionConfigPresent productionPath)
         testModePreflightAtPaths productionPath testTopologyPath `shouldReturn` TestGateClear
@@ -11381,8 +11801,23 @@ unitSuite = do
         (Right True)
         `shouldBe` True
 
-    it "clearedDecision: a missing/empty SecretRef error is cleared" $
-      operationalCredentialsClearedDecision (Left "operational aws.* is missing") (Right True)
+    it "clearedDecision: Sprint 4.78 — an error saying 'missing' is NOT cleared on its own" $ do
+      -- This case is inverted from what it asserted before Sprint 4.78, and the
+      -- inversion is the point. The decision used to read the words `missing`
+      -- or `empty` out of an arbitrary error string and answer "cleared" — the
+      -- fail-OPEN direction on a teardown gate whose own comment says that
+      -- would strand the operational IAM user. The exact string below is a real
+      -- Vault refusal shape, not a contrived one.
+      operationalCredentialsClearedDecision
+        (Left "permission denied: token is missing the required policy")
+        (Right True)
+        `shouldBe` False
+      -- An unresolvable credential is cleared only when the IAM user is
+      -- independently confirmed absent, which is the rule the doc comment
+      -- always described.
+      operationalCredentialsClearedDecision
+        (Left "operational aws.* is missing")
+        (Right False)
         `shouldBe` True
 
     it "clearedDecision: Vault down + IAM user absent is cleared (preflight unblock)" $
@@ -11530,10 +11965,203 @@ unitSuite = do
         `shouldBe` SubstrateAws
 
     it
-      "ResidueUnreachable on every stack → SubstrateHomeLocal (per-run lifecycle class treats unreachable as absent)"
+      "Sprint 4.76: ResidueUnreachable on every stack → SubstrateAws (AWS may be in scope)"
       $ do
+        -- This is the composing step of the Sprint 4.76 defect. The
+        -- pre-4.76 predicate tested `isResiduePresent`, so an unreadable
+        -- backend inferred SubstrateHomeLocal — the one branch on which a
+        -- skipped drain is treated as success. The weakest evidence
+        -- selected the most permissive branch.
         let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
-        inferCascadeSubstrate minioDown minioDown minioDown `shouldBe` SubstrateHomeLocal
+        inferCascadeSubstrate minioDown minioDown minioDown `shouldBe` SubstrateAws
+
+    it "Sprint 4.76: one unobserved stack among observed-absent siblings still means AWS" $ do
+      let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+      inferCascadeSubstrate Residue.ResidueAbsent minioDown Residue.ResidueAbsent
+        `shouldBe` SubstrateAws
+
+    it "Sprint 4.80: a missing sweep credential is cannot-confirm only when AWS was in scope" $ do
+      -- Sprint 4.76 left the sweep's credential-absent arm an unconditional
+      -- skip and registered the reason as a POLICY question: refusing outright
+      -- would fail `cluster delete --cascade` on every host that never
+      -- provisioned an AWS substrate, which is the recommended wipe-and-rebuild
+      -- path. The question is settled without adding a requirement, because the
+      -- cascade already computes the fact that decides it.
+      cascadeSweepCredentialAbsentExit SubstrateHomeLocal `shouldBe` ExitSuccess
+      cascadeSweepCredentialAbsentExit SubstrateAws `shouldBe` ExitFailure 1
+
+    it "Sprint 4.80: the sweep verdict composes with the substrate the cascade infers" $ do
+      -- The composition is what carries the claim, not either half: an
+      -- all-absent observation skips the sweep and still exits 0, while the
+      -- exact input Sprint 4.76 found in the field -- every per-run stack
+      -- unobservable -- now fails rather than skipping silently.
+      let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+      cascadeSweepCredentialAbsentExit
+        ( inferCascadeSubstrate
+            Residue.ResidueAbsent
+            Residue.ResidueAbsent
+            Residue.ResidueAbsent
+        )
+        `shouldBe` ExitSuccess
+      cascadeSweepCredentialAbsentExit
+        (inferCascadeSubstrate minioDown minioDown minioDown)
+        `shouldBe` ExitFailure 1
+      cascadeSweepCredentialAbsentExit
+        ( inferCascadeSubstrate
+            residueFixturePresent
+            Residue.ResidueAbsent
+            Residue.ResidueAbsent
+        )
+        `shouldBe` ExitFailure 1
+
+  describe "Sprint 4.76 cascade phase fold" $ do
+    let phase name exit = CascadePhaseOutcome {cascadePhaseName = name, cascadePhaseExit = exit}
+
+    it "an all-success phase list aggregates to success" $
+      aggregateCascadeExit
+        [phase "drain" ExitSuccess, phase "sweep" ExitSuccess]
+        `shouldBe` ExitSuccess
+
+    it "one failed phase fails the aggregate even when later phases succeed" $
+      -- Doctrine § 5c: the destroy attempt does not erase the drain
+      -- failure; both outcomes remain in the aggregate report.
+      aggregateCascadeExit
+        [ phase "confirm-MinIO" (ExitFailure 1)
+        , phase "drain" ExitSuccess
+        , phase "per-run destroys" ExitSuccess
+        , phase "uninstall" ExitSuccess
+        , phase "sweep" ExitSuccess
+        ]
+        `shouldBe` ExitFailure 1
+
+    it "an empty phase list is not a success claim about anything" $
+      -- Degenerate, but pinned: nothing ran, so nothing failed.
+      aggregateCascadeExit [] `shouldBe` ExitSuccess
+
+  describe "Sprint 4.76 retained-state notice is mode-aware" $ do
+    it "the local uninstall still advises --cascade" $
+      retainedStateNoticePerRunLine DeleteModeLocalUninstall
+        `shouldContain` "prodbox cluster delete --cascade"
+
+    it "a --cascade run does not advise running --cascade" $
+      retainedStateNoticePerRunLine DeleteModeCascade
+        `shouldNotContain` "prodbox cluster delete --cascade"
+
+    it "the cascade line does not claim the per-run destroys succeeded" $
+      retainedStateNoticePerRunLine DeleteModeCascade
+        `shouldContain` "attempted"
+
+  describe "Sprint 4.76 fail-closed tag sweep decision" $ do
+    let escapee =
+          TagSweep.TaggedResource
+            { TagSweep.taggedResourceArn = "arn:aws:ec2:us-east-1:1:security-group/sg-1"
+            , TagSweep.taggedResourceMatchedTagKey = "kubernetes.io/cluster/aws-eks-test-cluster"
+            , TagSweep.taggedResourceMatchedTagValue = "owned"
+            }
+        retainedRow =
+          TagSweep.TaggedResource
+            { TagSweep.taggedResourceArn = "arn:aws:s3:::pulumi-state-backend"
+            , TagSweep.taggedResourceMatchedTagKey = "prodbox.io/role"
+            , TagSweep.taggedResourceMatchedTagValue = "long-lived-pulumi-state"
+            }
+
+    it "an unreadable Tagging API is UNCONFIRMED and fails, on both scopes" $ do
+      let cascadeVerdict = TagSweep.decideTagSweep TagSweep.TagSweepCascade (Left "AccessDenied")
+          nukeVerdict = TagSweep.decideTagSweep TagSweep.TagSweepNuke (Left "AccessDenied")
+      cascadeVerdict `shouldBe` TagSweep.TagSweepUnconfirmed "AccessDenied"
+      nukeVerdict `shouldBe` TagSweep.TagSweepUnconfirmed "AccessDenied"
+      TagSweep.tagSweepVerdictExit cascadeVerdict `shouldBe` ExitFailure 1
+      TagSweep.tagSweepVerdictExit nukeVerdict `shouldBe` ExitFailure 1
+
+    it "an unconfirmed sweep never renders the clean sentence" $ do
+      let narration =
+            TagSweep.renderTagSweepVerdict
+              TagSweep.TagSweepCascade
+              (TagSweep.decideTagSweep TagSweep.TagSweepCascade (Left "throttled"))
+      narration `shouldContain` "UNCONFIRMED"
+      narration `shouldNotContain` "confirmed no escaped residue"
+
+    it "a non-empty escapee list fails" $ do
+      let verdict = TagSweep.decideTagSweep TagSweep.TagSweepCascade (Right [escapee])
+      TagSweep.tagSweepVerdictExit verdict `shouldBe` ExitFailure 1
+
+    it "the cascade carves out retained long-lived rows; nuke does not" $ do
+      TagSweep.decideTagSweep TagSweep.TagSweepCascade (Right [retainedRow])
+        `shouldBe` TagSweep.TagSweepConfirmedClean [retainedRow]
+      TagSweep.decideTagSweep TagSweep.TagSweepNuke (Right [retainedRow])
+        `shouldBe` TagSweep.TagSweepEscaped [] [retainedRow]
+      TagSweep.tagSweepVerdictExit
+        (TagSweep.decideTagSweep TagSweep.TagSweepNuke (Right [retainedRow]))
+        `shouldBe` ExitFailure 1
+
+    it "an empty result is the only confirmed-clean input for nuke" $
+      TagSweep.decideTagSweep TagSweep.TagSweepNuke (Right [])
+        `shouldBe` TagSweep.TagSweepConfirmedClean []
+
+  describe "Sprint 4.77 the tag sweep sends the filters it names" $ do
+    let sweepInput clusterName =
+          TagSweep.TagSweepInput
+            { TagSweep.tagSweepEnvironment = []
+            , TagSweep.tagSweepClusterName = clusterName
+            , TagSweep.tagSweepWorkingDirectory = Nothing
+            }
+
+    it "issues one query per filter, because the Tagging API ANDs TagFilters" $
+      -- Before Sprint 4.77 this was ONE query with `--tag-filters` twice.
+      -- The AWS CLI's last-wins parsing dropped the cluster filter entirely,
+      -- so the sweep never saw the controller-created ENIs / ALBs / security
+      -- groups it exists to backstop; and even both-sent would have asked for
+      -- resources carrying BOTH tags, when the sweep wants either.
+      TagSweep.tagSweepFilterSets (sweepInput (Just "aws-eks-test-cluster"))
+        `shouldBe` [ ["--tag-filters", "Key=prodbox.io/managed-by,Values=prodbox"]
+                   , ["--tag-filters", "Key=kubernetes.io/cluster/aws-eks-test-cluster"]
+                   ]
+
+    it "every query carries exactly one --tag-filters occurrence" $
+      mapM_
+        ( \filterSet ->
+            length (filter (== "--tag-filters") filterSet) `shouldBe` 1
+        )
+        (TagSweep.tagSweepFilterSets (sweepInput (Just "aws-eks-test-cluster")))
+
+    it "an unnamed cluster drops that query rather than the option's value" $
+      TagSweep.tagSweepFilterSets (sweepInput Nothing)
+        `shouldBe` [["--tag-filters", "Key=prodbox.io/managed-by,Values=prodbox"]]
+
+    it "unions the per-query results by row, so a doubly-tagged resource appears once" $ do
+      let arn = "arn:aws:ec2:us-east-1:1:security-group/sg-1"
+          ownershipRow = TagSweep.TaggedResource arn "prodbox.io/managed-by" "prodbox"
+          clusterRow =
+            TagSweep.TaggedResource arn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
+      TagSweep.unionTaggedResources
+        [[ownershipRow, clusterRow], [clusterRow]]
+        `shouldBe` [ownershipRow, clusterRow]
+
+  describe "Sprint 4.77 an unreadable tag-sweep payload is unparseable, not empty" $ do
+    it "a payload with no ResourceTagMappingList key refuses" $
+      case TagSweep.parseTagSweepPayload "{\"Message\":\"AccessDenied\"}" of
+        Left detail -> detail `shouldContain` "ResourceTagMappingList"
+        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+
+    it "a payload whose ResourceTagMappingList is not an array refuses" $
+      case TagSweep.parseTagSweepPayload "{\"ResourceTagMappingList\":null}" of
+        Left detail -> detail `shouldContain` "not an array"
+        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+
+    it "a non-object payload refuses" $
+      case TagSweep.parseTagSweepPayload "[]" of
+        Left detail -> detail `shouldContain` "not a JSON object"
+        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+
+    it "an empty ResourceTagMappingList is still a genuinely clean answer" $
+      TagSweep.parseTagSweepPayload "{\"ResourceTagMappingList\":[]}" `shouldBe` Right []
+
+    it "a refused payload reaches TagSweepUnconfirmed rather than a clean sweep" $ do
+      let verdict =
+            TagSweep.decideTagSweep
+              TagSweep.TagSweepCascade
+              (TagSweep.parseTagSweepPayload "{\"Message\":\"AccessDenied\"}")
+      TagSweep.tagSweepVerdictExit verdict `shouldBe` ExitFailure 1
 
   describe "Sprint 4.16 StackOutputs pulumi-shape parsing" $ do
     it "parseListStacksPayload decodes an empty JSON array as no stacks" $
@@ -12298,7 +12926,11 @@ unitSuite = do
                    , "Name=tag:prodbox.io/lifecycle,Values=retained-ebs"
                    ]
 
-    it "builds test-scoped describe-volumes filters with the EKS ownership tag" $
+    it "Sprint 4.77: test-scoped describe-volumes sends ONE --filters carrying all three values" $
+      -- The pre-4.77 argv repeated `--filters`, and the AWS CLI parses
+      -- list-valued options with `store`, so only the last occurrence was
+      -- sent: AWS received the cluster-ownership filter alone and neither
+      -- prodbox tag. Asserting the exact list is the only way to see it.
       EbsVolume.ebsDescribeVolumesArgs (EbsVolume.EbsPerRunTest "aws-eks-test-cluster")
         `shouldBe` [ "ec2"
                    , "describe-volumes"
@@ -12307,9 +12939,18 @@ unitSuite = do
                    , "--filters"
                    , "Name=tag:prodbox.io/managed-by,Values=prodbox"
                    , "Name=tag:prodbox.io/lifecycle,Values=per-run-test"
-                   , "--filters"
                    , "Name=tag:kubernetes.io/cluster/aws-eks-test-cluster,Values=owned"
                    ]
+
+    it "Sprint 4.77: no describe-volumes scope repeats an option the CLI parses with store" $
+      mapM_
+        ( \scope ->
+            length (filter (== "--filters") (EbsVolume.ebsDescribeVolumesArgs scope))
+              `shouldBe` 1
+        )
+        [ EbsVolume.EbsRetainedProduction
+        , EbsVolume.EbsPerRunTest "aws-eks-test-cluster"
+        ]
 
     it "parses ec2 describe-volumes JSON into typed volume ids and states" $
       EbsVolume.parseDescribeVolumesPayload
@@ -12448,6 +13089,56 @@ unitSuite = do
             ]
       EbsVolume.testScopedEbsVolumeIdsFromTagRows "aws-eks-test-cluster" rows
         `shouldBe` [EbsVolume.EbsVolumeId "vol-test"]
+
+    it "Sprint 4.77: the reaper plan drops a cluster-tagged volume with no lifecycle tag" $ do
+      -- The second, independent guard. Before Sprint 4.77 the plan was
+      -- `map ebsVolumeId` over everything describe-volumes returned, so any
+      -- volume that reached the response was deleted. This exercises the
+      -- client-side re-filter on its own: the argv could be perfect and this
+      -- volume would still have to be dropped, because it carries the cluster
+      -- ownership tag and NOT `prodbox.io/lifecycle=per-run-test`.
+      let clusterTagged =
+            EbsVolume.EbsVolume
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-cluster-only"
+              , EbsVolume.ebsVolumeState = "available"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+              , EbsVolume.ebsVolumeTags =
+                  [("kubernetes.io/cluster/aws-eks-test-cluster", "owned")]
+              }
+          testScoped =
+            clusterTagged
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-test-scoped"
+              , EbsVolume.ebsVolumeTags =
+                  [ ("kubernetes.io/cluster/aws-eks-test-cluster", "owned")
+                  , ("prodbox.io/lifecycle", "per-run-test")
+                  ]
+              }
+          retainedProduction =
+            clusterTagged
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-retained"
+              , EbsVolume.ebsVolumeTags =
+                  [ ("kubernetes.io/cluster/aws-eks-test-cluster", "owned")
+                  , ("prodbox.io/lifecycle", "per-run-test")
+                  , ("prodbox.io/lifecycle", "retained-ebs")
+                  ]
+              }
+          plan =
+            EbsVolume.testScopedEbsReaperPlan
+              "aws-eks-test-cluster"
+              [clusterTagged, testScoped, retainedProduction]
+      EbsVolume.testEbsReaperVolumeIds plan
+        `shouldBe` [EbsVolume.EbsVolumeId "vol-test-scoped"]
+
+    it "Sprint 4.77: the tag-row coordinate round-trips through the volume-id projection" $ do
+      -- `ebsVolumeTagRows` writes the `volume/<id>` resource form because
+      -- describe-volumes reports no ARN; `testScopedEbsVolumeIdsFromTagRows`
+      -- reads it back via `ebsVolumeIdFromArn`. Pinning the round trip keeps
+      -- that coupling from being an assumption.
+      let volumeId = EbsVolume.EbsVolumeId "vol-round-trip"
+      EbsVolume.ebsVolumeIdFromArn (EbsVolume.ebsVolumeResourceCoordinate volumeId)
+        `shouldBe` Just volumeId
+      EbsVolume.ebsVolumeIdFromArn "arn:aws:ec2:us-east-1:123:volume/vol-round-trip"
+        `shouldBe` Just volumeId
 
     it "builds an idempotent no-op plan when no test-scoped volumes are discovered" $ do
       let plan = EbsVolume.testScopedEbsReaperPlan "aws-eks-test-cluster" []
@@ -13266,31 +13957,44 @@ unitSuite = do
           `shouldBe` Right (ReadinessProbePending "EKS has no observable nodes")
         Prodbox.Lib.AwsSubstratePlatform.classifyEksNodesReadiness "node-a:False\n"
           `shouldBe` Right (ReadinessProbePending "EKS nodes are not Ready: node-a:False")
-      it "renders AWS admin routes on the AWS subzone host and issuer" $ do
-        let rendered =
-              BL8.unpack
-                ( encode
-                    ( adminPublicEdgeManifestItems
-                        (testValidatedSettings "/tmp/prodbox/.data")
-                        SubstrateAws
-                        "prodbox-test"
-                        "prodbox-test"
+      it "renders AWS admin routes on the AWS subzone host and issuer" $
+        -- Sprint 1.84: the renderer takes the resolved served host rather than
+        -- reaching for one that may not exist. The caller resolves; the pure
+        -- renderer renders.
+        -- Sprint 1.87: the resolution is exercised here rather than restated as
+        -- a literal. The renderer's only host input is the
+        -- 'ValidatedServedHost' this resolution produces, so the assertions
+        -- below now pin the resolved AWS subzone host and not a string the test
+        -- chose; and the former @ValidatedSettings@/'Substrate' parameters are
+        -- gone, so a manifest cannot re-derive a different host from them.
+        case requireSubstrateServedHost
+          (testValidatedSettings "/tmp/prodbox/.data")
+          SubstrateAws of
+          Left err -> expectationFailure err
+          Right servedHost -> do
+            let rendered =
+                  BL8.unpack
+                    ( encode
+                        ( adminPublicEdgeManifestItems
+                            servedHost
+                            "prodbox-test"
+                            "prodbox-test"
+                        )
                     )
-                )
-        rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
-        -- registry:2 has no web UI, so only the MinIO console admin route is
-        -- rendered; the former /harbor OIDC route is gone.
-        rendered
-          `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/minio/oauth2/callback\""
-        rendered
-          `shouldNotContain` "/harbor/oauth2/callback"
-        rendered
-          `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
-        rendered
-          `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
-        rendered `shouldContain` "minio-admin-oidc-materializer"
-        rendered `shouldContain` "secret/vscode/oidc/vscode"
-        rendered `shouldNotContain` "stringData"
+            rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
+            -- registry:2 has no web UI, so only the MinIO console admin route
+            -- is rendered; the former /harbor OIDC route is gone.
+            rendered
+              `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/minio/oauth2/callback\""
+            rendered
+              `shouldNotContain` "/harbor/oauth2/callback"
+            rendered
+              `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
+            rendered
+              `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
+            rendered `shouldContain` "minio-admin-oidc-materializer"
+            rendered `shouldContain` "secret/vscode/oidc/vscode"
+            rendered `shouldNotContain` "stringData"
       it
         "places the union runtime-image build after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
         $ do
@@ -13725,6 +14429,13 @@ unitSuite = do
     let settings = testValidatedSettings "/tmp"
         zoneId = "ZHOSTEDZONE"
         baseConfig = validatedConfig settings
+        -- Sprint 1.89: the renderer takes the parsed account and region, so the
+        -- case supplies them the same way production does rather than handing
+        -- the renderer a settings record to re-read.
+        fixtureAcmeAccount = either error id (requireAcmeAccount settings)
+        fixtureAwsRegion = either error id (requireOperationalAwsRegion settings)
+        renderedManifests substrate s =
+          either error id (acmeRuntimeManifestWith substrate s zoneId "pid" "lbl")
         -- EAB references are exact SecretRef.Vault values. Both fields are
         -- projected and consumed inside the materializer Pod; neither is a
         -- host renderer argument.
@@ -13754,22 +14465,22 @@ unitSuite = do
             }
 
     it "the issuer spec renders acme.server (ZeroSSL) and the ZeroSSL account key" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
       rendered `shouldContain` "https://acme.zerossl.com/v2/DV90"
       rendered `shouldContain` "zerossl-account-key"
 
     it "the issuer spec references the DNS-01 Route 53 solver secret and hosted zone" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec settings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
       rendered `shouldContain` "route53-credentials"
       rendered `shouldContain` "ZHOSTEDZONE"
 
     it "keeps both EAB fields out of the host-rendered issuer spec" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec eabSettings zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
       rendered `shouldNotContain` "externalAccountBinding"
       rendered `shouldNotContain` "keyID"
 
     it "acmeRuntimeManifestWith renders the EAB materializer Job and the single issuer" $ do
-      let manifests = acmeRuntimeManifestWith SubstrateHomeLocal eabSettings zoneId "pid" "lbl"
+      let manifests = renderedManifests SubstrateHomeLocal eabSettings
           rendered = BL8.unpack (encode manifests)
       clusterIssuerNamesIn manifests `shouldBe` [publicEdgeClusterIssuerName]
       -- Home DNS01 credentials are projected by an exact Vault consumer in
@@ -13793,13 +14504,13 @@ unitSuite = do
     it "acmeRuntimeManifestWith omits the EAB materializer when EAB is not configured" $ do
       let rendered =
             BL8.unpack
-              (encode (acmeRuntimeManifestWith SubstrateHomeLocal noEabSettings zoneId "pid" "lbl"))
+              (encode (renderedManifests SubstrateHomeLocal noEabSettings))
       rendered `shouldNotContain` "acme-eab-secret-materializer"
 
     it "projects only the run-scoped AWS DNS01 generation on the EKS target" $ do
       let rendered =
             BL8.unpack
-              (encode (acmeRuntimeManifestWith SubstrateAws noEabSettings zoneId "pid" "lbl"))
+              (encode (renderedManifests SubstrateAws noEabSettings))
       rendered `shouldContain` "aws-dns01-target-materializer"
       rendered `shouldContain` "secret/aws/cert-manager/aws/dns01"
       rendered `shouldContain` "aws-cert-manager-run"
@@ -14401,6 +15112,123 @@ unitSuite = do
         filter (`notElem` retiredCitedSourcePaths) removedLegacyTransportSourcePaths
           `shouldBe` []
 
+    describe "Sprint 0.28 widened check-code gate regions" $ do
+      it "registers the six AWS create verbs that were outside the table" $
+        mapM_
+          (\verb -> map fst awsCreateVerbs `shouldContain` [verb])
+          [ "create-volume"
+          , "create-receipt-rule-set"
+          , "put-bucket-policy"
+          , "put-object"
+          , "put-public-access-block"
+          , "request-service-quota-increase"
+          ]
+
+      it "keeps the IAM projection from silently absorbing a Service Quotas verb" $
+        -- `request-service-quota-increase` is also solely owned by Aws.hs, so an
+        -- owner-equality test alone would relabel it as IAM.
+        iamCreateVerbs `shouldNotContain` ["request-service-quota-increase"]
+
+      it "registers every destructive PlanOptions-carrying constructor" $
+        mapM_
+          (\name -> map fst destructivePlanOptionsArms `shouldContain` [name])
+          [ "Rke2Delete"
+          , "NativeNuke"
+          , "PulumiEksDestroy"
+          , "PulumiTestDestroy"
+          , "PulumiAwsSubzoneDestroy"
+          , "PulumiAwsSesDestroy"
+          , "ChartsDelete"
+          , "UsersRevoke"
+          , "AwsTeardown"
+          ]
+
+      it "reads a production env name only when it can be one" $ do
+        -- The gate's first run flagged `PRODBOX_ID=`, a `--dry-run` plan key.
+        -- POSIX forbids `=` in an environment variable name, so the exclusion
+        -- is a property of names rather than a path exemption.
+        isEnvironmentVariableName "PRODBOX_PULUMI_METALLB_POOL" `shouldBe` True
+        isEnvironmentVariableName "PRODBOX_ID=" `shouldBe` False
+        isEnvironmentVariableName "" `shouldBe` False
+        productionEnvVarNamesIn "x = \"PRODBOX_ID=\" ++ y" `shouldBe` []
+
+      it "excludes the PRODBOX_TEST_ fixture family from the production registry" $
+        productionEnvVarNamesIn "a = \"PRODBOX_TEST_THING\"" `shouldBe` []
+
+      it "collects a real production read" $
+        productionEnvVarNamesIn "a = lookupEnv \"PRODBOX_RKE2_CONTAINERD_SOCKET\""
+          `shouldBe` ["PRODBOX_RKE2_CONTAINERD_SOCKET"]
+
+      it "resolves a registered name to its owner modules" $ do
+        productionEnvVarOwnersFor "PRODBOX_PULUMI_METALLB_POOL"
+          `shouldBe` Just ["src/Prodbox/CLI/Rke2.hs"]
+        productionEnvVarOwnersFor "PRODBOX_NOT_REGISTERED" `shouldBe` Nothing
+
+      it "registers all five Rke2 reads the guidance counted as four" $
+        -- CLAUDE.md counts the LB-IP pair as one item; the measured name count
+        -- in that module is five.
+        length
+          [ entry
+          | entry <- productionEnvVarRegistry
+          , productionEnvVarOwners entry == ["src/Prodbox/CLI/Rke2.hs"]
+          ]
+          `shouldBe` 5
+
+    describe "Sprint 0.27 Standard-H sprint field gate" $ do
+      let block heading fields = unlines (("## Sprint " ++ heading) : fields ++ ["", "### Objective", "body"])
+
+      it "splits a plan document into sprint blocks" $
+        map
+          fst
+          (planSprintBlocks (block "1.1: A" ["**Status**: Done"] ++ block "1.2: B" ["**Status**: Done"]))
+          `shouldBe` ["## Sprint 1.1: A", "## Sprint 1.2: B"]
+
+      it "reports both fields missing when a block carries neither" $
+        sprintBlockMissingFields (block "1.1: A" ["**Status**: Done"])
+          `shouldBe` ["Implementation", "Docs"]
+
+      it "accepts the plain heading form" $
+        sprintBlockMissingFields
+          (block "1.1: A" ["**Implementation**: `src/X.hs`", "**Docs to update**: `d.md`"])
+          `shouldBe` []
+
+      it "accepts a qualifier after the closing bold, as Sprint 1.62 writes it" $
+        -- `**Implementation** (landed): …` names its paths. A stricter rule
+        -- would report a formatting difference as missing evidence, which is
+        -- how the ledger row this gate closes came to overcount.
+        sprintBlockMissingFields
+          (block "1.62: A" ["**Implementation** (landed): `src/X.hs`", "**Docs updated**: none."])
+          `shouldBe` []
+
+      it "accepts a qualifier inside the bold, as the Phase-7 increments write it" $
+        sprintBlockMissingFields
+          ( block
+              "4.50: A"
+              [ "**Implementation (Increment A, 2026-07-26)**: `src/X.hs`"
+              , "**Docs to update**: `d.md`"
+              ]
+          )
+          `shouldBe` []
+
+      it "rejects a heading that never closes its bold or reaches a colon" $ do
+        sprintBlockMissingFields (block "1.1: A" ["**Implementation `src/X.hs`", "**Docs**: d"])
+          `shouldBe` ["Implementation"]
+        sprintBlockMissingFields (block "1.1: A" ["**Implementation** `src/X.hs`", "**Docs**: d"])
+          `shouldBe` ["Implementation"]
+
+      it "does not accept a field mentioned only inside a fenced block" $
+        sprintBlockMissingFields
+          ( block
+              "1.1: A"
+              ["**Docs**: d", "```markdown", "**Implementation**: `src/X.hs`", "```"]
+          )
+          `shouldBe` ["Implementation"]
+
+      it "does not confuse a prose line that merely starts with bold" $
+        sprintBlockMissingFields
+          (block "1.1: A" ["**Implementation notes are below**: see § 2", "**Docs**: d"])
+          `shouldBe` []
+
     describe "Sprint 0.22 headingSectionNumber / documentSectionNumbers" $ do
       it "reads a plain numbered heading" $
         headingSectionNumber "## 7. Testing Implications" `shouldBe` Just "7"
@@ -14713,6 +15541,71 @@ unitSuite = do
       deleteReclaimPvcBindings
         "prodbox|minio-0\nvault|vault-0\nmalformed\n|empty-namespace\nempty-name|\n"
         `shouldBe` [("prodbox", "minio-0"), ("vault", "vault-0")]
+
+    it "Sprint 4.76 DrainUnobservable aborts rather than continuing" $ do
+      let result = cascadeDecisionFromDrainResult (DrainUnobservable "kubeconfig context is stale")
+      case result of
+        CascadeAbort reason -> do
+          reason `shouldContain` "could not observe"
+          reason `shouldContain` "kubeconfig context is stale"
+          reason `shouldNotContain` "nothing to drain"
+        _ -> expectationFailure ("expected CascadeAbort, got: " ++ show result)
+
+  describe "Sprint 4.76 three-valued cluster probe" $ do
+    let probeOutput exitCode stderrText =
+          Result.Success
+            ProcessOutput
+              { processExitCode = exitCode
+              , processStdout = ""
+              , processStderr = stderrText
+              }
+
+    it "a serving API server is reachable" $
+      classifyClusterProbe (probeOutput ExitSuccess "")
+        `shouldBe` ClusterReachable
+
+    it "connection-refused is a positive observation of absence" $
+      classifyClusterProbe
+        ( probeOutput
+            (ExitFailure 1)
+            "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?\ndial tcp 127.0.0.1:6443: connect: connection refused\n"
+        )
+        `shouldBe` ClusterAbsent "connection refused"
+
+    it "permission-denied is UNOBSERVABLE, not absence" $ do
+      -- The Sprint 4.76 defect in one case: `clusterReachable :: IO Bool`
+      -- returned False here, and the caller read False as "the cluster is
+      -- gone". Being refused proves a server answered.
+      let probe =
+            classifyClusterProbe
+              ( probeOutput
+                  (ExitFailure 1)
+                  "error: You must be logged in to the server (Unauthorized)\n"
+              )
+      case probe of
+        ClusterUnobservable detail -> detail `shouldContain` "Unauthorized"
+        _ -> expectationFailure ("expected ClusterUnobservable, got: " ++ show probe)
+
+    it "an unrecognised non-zero exit fails closed to unobservable" $
+      case classifyClusterProbe (probeOutput (ExitFailure 7) "something nobody has seen before\n") of
+        ClusterUnobservable _ -> pure ()
+        other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
+
+    it "a probe that could not be started is unobservable" $
+      case classifyClusterProbe (Result.Failure "kubectl: no such file") of
+        ClusterUnobservable detail -> detail `shouldContain` "kubectl"
+        other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
+
+    it "no absence-evidence phrase names an authentication or authorization refusal" $
+      -- The evidence set decides which exits may be read as "gone". A
+      -- phrase matching an auth refusal would reintroduce the defect.
+      mapM_
+        ( \phrase ->
+            mapM_
+              (\forbidden -> phrase `shouldNotContain` forbidden)
+              ["unauthorized", "forbidden", "denied", "credential", "certificate"]
+        )
+        clusterAbsenceEvidencePhrases
 
   describe "Sprint 5.28 dns-aws validation hosted-zone ownership" $ do
     it "projects only validation-owned zones out of a listing" $ do
@@ -15318,6 +16211,296 @@ unitSuite = do
           ("src/Prodbox/Gateway/Daemon.hs", "-- no witness here")
           `shouldBe` []
 
+    describe "Sprint 4.78 anchored absence markers" $ do
+      it "refuses a bare status numeral appearing anywhere in a message" $ do
+        -- The defect class, exactly: before this sprint `isNoSuchKeyOutput`
+        -- matched a bare "404" substring, so any message carrying that numeral
+        -- for an unrelated reason minted "the object is absent". Same for the
+        -- conditional-conflict probe's bare "409"/"412".
+        reportsAbsence S3ObjectProbe "upload id 5404abc failed: AccessDenied"
+          `shouldBe` False
+        reportsAbsence S3ObjectProbe "read 40412 bytes before connection reset"
+          `shouldBe` False
+        reportsAbsence S3ConditionalConflictProbe "request id 1409f timed out"
+          `shouldBe` False
+
+      it "admits the anchored forms the tools actually emit" $ do
+        reportsAbsence S3ObjectProbe "An error occurred (NoSuchKey) when calling GetObject"
+          `shouldBe` True
+        reportsAbsence S3ObjectProbe "An error occurred (404) when calling HeadObject"
+          `shouldBe` True
+        reportsAbsence S3BucketProbe "An error occurred (NoSuchBucket) when calling GetObject"
+          `shouldBe` True
+        reportsAbsence
+          S3ConditionalConflictProbe
+          "An error occurred (PreconditionFailed) when calling PutObject"
+          `shouldBe` True
+        reportsAbsence
+          KubernetesObjectProbe
+          "Error from server (NotFound): jobs.batch \"x\" not found"
+          `shouldBe` True
+
+      it "keeps an authorization or credential refusal unobserved for every probe" $
+        -- The direction that matters, asserted across the whole closed probe
+        -- set rather than for the one probe that happened to be read. Being
+        -- told AccessDenied or ExpiredToken proves a server answered, which is
+        -- the same reading Sprint 4.76 established for the cluster probe.
+        mapM_
+          ( \probe -> do
+              reportsAbsence probe "An error occurred (AccessDenied) when calling GetObject"
+                `shouldBe` False
+              reportsAbsence probe "An error occurred (ExpiredToken) when calling GetObject"
+                `shouldBe` False
+              reportsAbsence probe "An error occurred (SlowDown) when calling GetObject"
+                `shouldBe` False
+              reportsAbsence probe "permission denied: token is missing the required policy"
+                `shouldBe` False
+          )
+          [minBound .. maxBound :: AbsenceProbe]
+
+      it "gives every probe a non-empty, lower-case, non-numeral-only marker set" $
+        -- A probe added without markers would classify nothing as absent, which
+        -- is fail-closed but silent. A marker that is only digits is the defect
+        -- this sprint removed, so neither is admitted by construction.
+        mapM_
+          ( \probe -> do
+              absenceProbeMarkers probe `shouldSatisfy` (not . null)
+              absenceProbeMarkers probe
+                `shouldSatisfy` all (\marker -> marker == map toLower marker)
+              absenceProbeMarkers probe
+                `shouldSatisfy` all (not . all isDigit)
+          )
+          [minBound .. maxBound :: AbsenceProbe]
+
+    describe "Sprint 3.35 control-plane listen-port owner" $ do
+      it "admits the owner and refuses every other src module" $ do
+        Prodbox.CheckCode.controlPlaneListenPortLiteralViolations
+          ("src/Prodbox/ControlPlane/ListenPort.hs", "controlPlaneListenPort = 8600")
+          `shouldBe` []
+        Prodbox.CheckCode.controlPlaneListenPortLiteralViolations
+          ("src/Prodbox/ControlPlane/Runtime.hs", "bind listener (SockAddrInet 8600 addr)")
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.controlPlaneListenPortLiteralViolations
+          ("src/Prodbox/Lib/ChartPlatform.hs", "\"port\" .= (8600 :: Int)")
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.controlPlaneListenPortLiteralViolations
+          ( "src/Prodbox/ControlPlane/Runtime.hs"
+          , "bind listener (SockAddrInet controlPlaneListenPortNumber addr)"
+          )
+          `shouldBe` []
+
+      it "keeps the five per-role client ports equal to the one compiled owner" $
+        -- The row that scheduled this sprint left open whether the five roles
+        -- are *required* to share one port or whether naming five constants
+        -- anticipated divergence. They are required: `runControlPlaneServer`
+        -- receives the role and binds without consulting it, so a per-role port
+        -- is not representable in the binder. This pins that answer against the
+        -- constants rather than leaving it in a comment.
+        [ lifecycleAuthorityRemotePort
+        , targetSecretAgentRemotePort
+        , providerWorkerRemotePort
+        , authorityBackupRemotePort
+        , tlsRetentionRemotePort
+        ]
+          `shouldBe` replicate 5 controlPlaneListenPort
+
+      it "renders an in-cluster role endpoint from the owned port" $ do
+        controlPlaneClusterServiceUrl "lifecycle-authority" "lifecycle-authority"
+          `shouldBe` "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
+        -- Derived, not a second encoder: the Text projection must agree with
+        -- the String one on every input, which is the property that keeps the
+        -- URL shape single-sourced.
+        controlPlaneClusterServiceUrlText "authority-backup" "authority-backup"
+          `shouldBe` Text.pack
+            (controlPlaneClusterServiceUrl "authority-backup" "authority-backup")
+
+    describe "Sprint 1.88 ValidatedSettings minting boundary" $ do
+      it "admits validateConfig's own module and refuses every other src module" $ do
+        Prodbox.CheckCode.validatedSettingsMinterViolations
+          ("src/Prodbox/Settings.hs", "ValidatedSettings\n  { validatedConfig = config\n  }")
+          `shouldBe` []
+        -- The site this sprint deleted: `prodbox cluster status` built a record
+        -- validateConfig had never produced, and got its plan by `error`-ing.
+        Prodbox.CheckCode.validatedSettingsMinterViolations
+          ("src/Prodbox/CLI/Rke2.hs", "ValidatedSettings\n  { validatedConfig = defaultConfigFile\n  }")
+          `shouldSatisfy` ((== 1) . length)
+        -- A record UPDATE forges the same claim and is caught by the same rule,
+        -- which is why the predicate keys on field assignment rather than on the
+        -- constructor name.
+        Prodbox.CheckCode.validatedSettingsMinterViolations
+          ("src/Prodbox/Lib/ChartPlatform.hs", "settings { validatedAllocatedPlan = forged }")
+          `shouldSatisfy` ((== 1) . length)
+
+      it "does not mistake a field READ for a construction" $
+        -- Every one of the 56 raw read sites in src/ spells the accessor
+        -- without an `=`. If this ever stopped being true the rule would fire
+        -- on ordinary reads, so the discrimination is asserted rather than
+        -- assumed.
+        Prodbox.CheckCode.validatedSettingsMinterViolations
+          ( "src/Prodbox/Lib/ChartPlatform.hs"
+          , "let config = validatedConfig settings\n    plan = validatedAllocatedPlan settings"
+          )
+          `shouldBe` []
+
+      it "names every field of the record, so an added field cannot escape it" $
+        -- The rule discriminates construction from use by field assignment, so
+        -- a field absent from this list is a hole: a module could assign it and
+        -- pass. There is no way to derive the field set from the type at run
+        -- time, so the correspondence is pinned here and the list carries the
+        -- same requirement in its Haddock.
+        sort Prodbox.CheckCode.validatedSettingsConstructionFields
+          `shouldBe` sort
+            [ "validatedConfig"
+            , "resolvedManualPvHostRoot"
+            , "validatedAllocatedPlan"
+            , "validatedPublicEdge"
+            , "validatedCoordinates"
+            ]
+
+  describe "Sprint 1.89 Tier-0 coordinate narrowing" $ do
+    let coordinatesOf = validatedCoordinatesFor
+        refusedWith fragment = either (isInfixOf fragment) (const False)
+        withRoute53 value =
+          testValidatedConfigFile {route53 = Route53Section {zone_id = value}}
+        withBackend section =
+          testValidatedConfigFile {pulumi_state_backend = section}
+        withAcme section = testValidatedConfigFile {acme = section}
+        withAws value =
+          testValidatedConfigFile
+            { aws = (aws testValidatedConfigFile) {awsCredentialRegion = value}
+            }
+
+    describe "the decisions that did not exist before this sprint" $ do
+      -- Each case below refuses a value that decoded cleanly at every prior
+      -- revision. That is the point of the sprint: these fields reached live
+      -- AWS, ACME, and Route 53 calls having been checked, at most, for
+      -- emptiness.
+
+      it "refuses a home zone id that is not a zone id, and tolerates an unset one" $ do
+        -- The asymmetry this closes: `aws_substrate.hosted_zone_id` has always
+        -- been shape-checked and `route53.zone_id` -- the same kind of value,
+        -- used by every home DNS write -- never was.
+        coordinatesOf (withRoute53 "") `shouldSatisfy` isRight
+        coordinatesOf (withRoute53 "Z1234567890ABC") `shouldSatisfy` isRight
+        coordinatesOf (withRoute53 "not-a-zone-id")
+          `shouldSatisfy` refusedWith "route53.zone_id"
+
+      it "refuses an operational AWS region that is not a region" $ do
+        coordinatesOf (withAws "") `shouldSatisfy` isRight
+        coordinatesOf (withAws "us-east-1") `shouldSatisfy` isRight
+        coordinatesOf (withAws "ap-southeast-2") `shouldSatisfy` isRight
+        coordinatesOf (withAws "us-gov-west-1") `shouldSatisfy` isRight
+        coordinatesOf (withAws "US-East-1")
+          `shouldSatisfy` refusedWith "aws.region"
+        coordinatesOf (withAws "useast1")
+          `shouldSatisfy` refusedWith "aws.region"
+
+      it "refuses a state-backend region, the one field of its section with no rule" $ do
+        -- `bucket_name` and `key_prefix` were both checked; `region` was not
+        -- checked anywhere, and it is read straight into an S3 client.
+        coordinatesOf (withBackend (PulumiStateBackendSection "" "" "pulumi/"))
+          `shouldSatisfy` isRight
+        coordinatesOf (withBackend (PulumiStateBackendSection "" "ca-central-1" "pulumi/"))
+          `shouldSatisfy` isRight
+        coordinatesOf (withBackend (PulumiStateBackendSection "" "Canada" "pulumi/"))
+          `shouldSatisfy` refusedWith "pulumi_state_backend.region"
+
+      it "refuses an ACME contact that is not an address and a directory that is not https" $ do
+        let acmeWith emailValue serverValue =
+              (acme testValidatedConfigFile) {email = emailValue, server = serverValue}
+            zerossl = "https://acme.zerossl.com/v2/DV90"
+        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" zerossl))
+          `shouldSatisfy` isRight
+        coordinatesOf (withAcme (acmeWith "ops" zerossl))
+          `shouldSatisfy` refusedWith "acme.email"
+        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" "acme.zerossl.com"))
+          `shouldSatisfy` refusedWith "acme.server"
+        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" "http://acme.zerossl.com/v2"))
+          `shouldSatisfy` refusedWith "acme.server"
+
+    describe "the half-set ACME pair, which the repository's own default is" $
+      it "is not an error, and yields no account rather than a partial one" $ do
+        -- This case exists because the first rule written for this sprint
+        -- refused a half-set pair, and that rule refuses `prodbox config
+        -- generate`'s own output: `defaultConfigFile` ships the ZeroSSL
+        -- directory and an empty contact. The two halves are not symmetric.
+        let defaultAcme = acme defaultConfigFile
+        email defaultAcme `shouldBe` ""
+        server defaultAcme `shouldNotBe` ""
+        fmap coordinateAcmeAccount (coordinatesOf (withAcme defaultAcme))
+          `shouldBe` Right Nothing
+
+    describe "the parse is retained rather than repeated" $ do
+      it "carries every coordinate the fixture config declares" $ do
+        let coordinates = validatedCoordinates (testValidatedSettings "/tmp")
+        fmap route53ZoneIdText (coordinateHomeZoneId coordinates)
+          `shouldBe` Just "Z1234567890ABC"
+        fmap route53ZoneIdText (coordinateAwsSubstrateZoneId coordinates)
+          `shouldBe` Just "ZAWSSUBZONE123"
+        fmap awsRegionText (coordinateOperationalAwsRegion coordinates)
+          `shouldBe` Just "us-east-1"
+        fmap awsRegionText (coordinatePulumiBackendRegion coordinates)
+          `shouldBe` Just "ca-central-1"
+        dnsTtlSeconds (coordinateDemoTtl coordinates) `shouldBe` 60
+
+      it "agrees with the raw config it was built from" $ do
+        -- A fixture that record-updates `validatedConfig` without rebuilding
+        -- the coordinates would carry a projection its own config does not
+        -- produce. The fixture derives both from one builder for exactly this
+        -- reason; this pins that it did.
+        let settings = testValidatedSettings "/tmp"
+        Right (validatedCoordinates settings)
+          `shouldBe` coordinatesOf (validatedConfig settings)
+
+    describe "the gate over raw reads" $ do
+      it "flags the direct chain and the local alias alike" $ do
+        -- The alias spelling is the one a direct-chain rule misses, and it is
+        -- the spelling four modules actually used.
+        Prodbox.CheckCode.tier0CoordinateReadViolations
+          ("src/Prodbox/Example.hs", "zone_id (route53 (validatedConfig settings))")
+          `shouldNotBe` []
+        Prodbox.CheckCode.tier0CoordinateReadViolations
+          ( "src/Prodbox/Example.hs"
+          , "  config = validatedConfig settings\n  zoneId = zone_id (route53 config)"
+          )
+          `shouldNotBe` []
+
+      it "does not flag a read of a config validation never saw" $
+        -- `Prodbox.Aws` builds a config from operator answers and
+        -- `resolveRetainedManualPvRoot` reads one before validation is
+        -- available. Raw is the only thing there is to read, and no decision is
+        -- discarded, so registering those would make the rule refuse correct
+        -- code.
+        Prodbox.CheckCode.tier0CoordinateReadViolations
+          ( "src/Prodbox/Example.hs"
+          , "manual_pv_host_root (storage defaultConfigFile)"
+          )
+          `shouldBe` []
+
+      it "names every coordinate that has a parsed projection" $
+        -- Same requirement, and same reason, as the ValidatedSettings field
+        -- pin above: a coordinate given a projection and left out of the
+        -- registry is a field the rule cannot see.
+        sort (map fst Prodbox.CheckCode.tier0CoordinateReadRegistry)
+          `shouldBe` sort
+            [ "zone_id"
+            , "hosted_zone_id"
+            , "subzone_name"
+            , "awsCredentialRegion"
+            , "psbRegion"
+            , "psbBucketName"
+            , "psbKeyPrefix"
+            , "sender_domain"
+            , "receive_subdomain"
+            , "capture_bucket"
+            , "demo_fqdn"
+            , "demo_ttl"
+            , "manual_pv_host_root"
+            , "email"
+            , "server"
+            , "bootstrap_public_ip_override"
+            ]
+
   describe "Sprint 1.75 committed-value mechanical outer ring" $ do
     -- Every fixture below is assembled at run time from fragments.
     -- This module is itself a tracked file, so spelling a scanned shape
@@ -15748,16 +16931,27 @@ unitSuite = do
     it "advertises apply only through the complete production composition" $
       case Nuke.productionDecommissionAvailability of
         Nuke.ProductionDecommissionReady _ -> pure ()
-    it "contains no reachable legacy five-command teardown adapters" $ do
+    it "contains no reachable legacy teardown adapters" $ do
       source <- readFile "src/Prodbox/CLI/Nuke.hs"
       mapM_
         (source `shouldNotContain`)
         [ "runNativeDeleteCascade"
         , "runPulumiCommand"
         , "applyAwsTeardown"
-        , "discoverClusterTaggedAwsResources"
         , "destroyLongLivedPulumiStateBucket"
         ]
+    it "Sprint 4.76: carries the terminal tag sweep doctrine assigns it" $ do
+      -- Standard C. This assertion previously ran with the opposite
+      -- polarity: `discoverClusterTaggedAwsResources` sat in the
+      -- forbidden list above, pinning the absence of the sweep that
+      -- lifecycle_reconciliation_doctrine.md § 5 (the nuke row) and § 6b
+      -- ("appends terminal absence and the required scoped tag sweep")
+      -- have always assigned to this command. The sweep is not one of the
+      -- legacy five-command adapters; it is a terminal obligation, and it
+      -- is fail-closed with no retained-long-lived carve-out.
+      source <- readFile "src/Prodbox/CLI/Nuke.hs"
+      source `shouldContain` "discoverClusterTaggedAwsResources"
+      source `shouldContain` "TagSweepNuke"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches the Pulumi stack descriptor SSoT" $
@@ -16608,8 +17802,9 @@ unitSuite = do
         `shouldSatisfy` isCertScopeError "not covered"
 
     it "Sprint 1.83: a home-only config carries no AWS served host at all" $ do
-      -- Before 1.83 this state was carried as the empty string, and
+      -- Before 1.83 this state was carried as the empty string, and the former
       -- `substratePublicFqdn settings SubstrateAws` returned it as a hostname.
+      -- Sprint 1.87 deleted that accessor outright.
       let homeOnly =
             validatedPublicEdgeFor
               (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
@@ -16657,6 +17852,71 @@ unitSuite = do
             `shouldSatisfy` either (const True) (const False)
           requireSubstratePublicFqdn settings SubstrateHomeLocal
             `shouldBe` Right (Text.unpack (demo_fqdn (domain homeOnlyConfig)))
+    it "Sprint 1.87: the empty served host is unconstructible, not merely refused" $ do
+      -- The `https:///path` rendering the deleted `substratePublicFqdn`
+      -- produced is now unrepresentable rather than checked for:
+      -- `substratePublicRouteUrl` takes a `ValidatedServedHost`, whose `Fqdn` is
+      -- minted only by `mkFqdn`.
+      --
+      -- Asserting `not (isPrefixOf "https:///" rendered)` would be exactly the
+      -- shape unit_testing_policy.md canonical statements 10 and 11 forbid: an
+      -- absence with no input that could produce it, asserted as though it were
+      -- a property of the renderer. What licenses that absence is `mkFqdn`
+      -- rejecting an empty name, and THAT is falsifiable — so it is what is
+      -- asserted here. Weakening `mkFqdn` fails this case rather than silently
+      -- restoring the empty-host rendering downstream.
+      mkFqdn "" `shouldBe` Left EmptyName
+      mkFqdn "   " `shouldBe` Left EmptyName
+      let homeOnlyConfig =
+            defaultConfigFile
+              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""}
+              }
+      validated <- validateConfig "." homeOnlyConfig
+      case validated of
+        Left err -> expectationFailure ("expected a home-only config to validate, got: " ++ err)
+        Right settings -> do
+          -- The one config state that used to reach the empty rendering: a
+          -- home-only config asked for its AWS substrate. The only way to
+          -- obtain the renderer's argument refuses.
+          requireSubstrateServedHost settings SubstrateAws
+            `shouldSatisfy` either (const True) (const False)
+          case requireSubstrateServedHost settings SubstrateHomeLocal of
+            Left err -> expectationFailure ("expected a home served host, got: " ++ err)
+            Right servedHost -> do
+              mapM_
+                ( \route ->
+                    substratePublicRouteUrl servedHost route
+                      `shouldBe` ( "https://"
+                                     ++ Text.unpack (demo_fqdn (domain homeOnlyConfig))
+                                     ++ publicRoutePathPrefix route
+                                 )
+                )
+                canonicalPublicRouteCatalog
+              substrateIdentityIssuerUrl servedHost
+                `shouldBe` ( "https://"
+                               ++ Text.unpack (demo_fqdn (domain homeOnlyConfig))
+                               ++ authPathPrefix
+                               ++ "/realms/prodbox"
+                           )
+    it "Sprint 1.85: the dnsNames contract agrees with the scope set production carries" $ do
+      -- This is what makes `certDnsNamesForServedHost` load-bearing rather than
+      -- a function with no production caller. Sprint 1.83 replaced its one
+      -- consumer with `certScopeSetDnsNames` over the scope set
+      -- `ValidatedServedHost` carries; the contract is the same derivation
+      -- taken standalone. Asserting they agree pins the provenance property
+      -- 1.83 established — the carried set IS the parse, not a second
+      -- derivation that could drift from it.
+      let settings = testValidatedSettings ".data"
+          config = validatedConfig settings
+          agreesOn substrate servedHost =
+            case substrateServedHost settings substrate of
+              Nothing -> expectationFailure ("expected a served host for " ++ show substrate)
+              Just served ->
+                certDnsNamesForServedHost (domain config) (aws_substrate config) servedHost
+                  `shouldBe` Right (certScopeSetDnsNames (servedHostCertScopes served))
+      agreesOn SubstrateHomeLocal "test.resolvefintech.com"
+      agreesOn SubstrateAws "aws.test.resolvefintech.com"
+
     it "Sprint 2.35: certDnsNamesForServedHost defaults to the served host (behavior-identical)" $
       certDnsNamesForServedHost
         (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
@@ -16680,12 +17940,7 @@ unitSuite = do
       -- On the AWS substrate the served host is the subzone, so the default
       -- certificate covers exactly the subzone FQDN (behavior-identical to the
       -- prior single `.Values.gateway.host` on that substrate).
-      -- On the AWS substrate the served host is the subzone, so the default
-      -- certificate covers exactly the subzone FQDN (behavior-identical to the
-      -- prior single `.Values.gateway.host` on that substrate).
-      -- On the AWS substrate the served host is the subzone, so the default
-      -- certificate covers exactly the subzone FQDN (behavior-identical to the
-      -- prior single `.Values.gateway.host` on that substrate).
+      -- Sprint 1.85 removed two verbatim duplicates of this comment.
       certDnsNamesForServedHost
         (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
         (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
@@ -17201,6 +18456,27 @@ residueFixtureS3Reason = Residue.ResidueBackendS3Unreachable "credentials missin
 residueFixturePresent :: Residue.ResidueStatus
 residueFixturePresent = Residue.ResiduePresent residueFixtureDetails
 
+-- | Sprint 4.76 helper: a registry entry whose destroy appends its own
+-- name to the supplied log and returns the supplied exit code, so a
+-- reconcile's *observation* handling can be asserted independently of
+-- which destroys it chose to run.
+registryFixtureResource
+  :: String -> ExitCode -> IORef [String] -> ResourceRegistry.ManagedResource
+registryFixtureResource name code destroyed =
+  ResourceRegistry.ManagedResource
+    { ResourceRegistry.resourceName = name
+    , ResourceRegistry.resourceClass = ResourceClass.PerRun
+    , ResourceRegistry.resourceEnsureCommand = Nothing
+    , ResourceRegistry.resourceEnsurePresent = Nothing
+    , ResourceRegistry.resourceDestroyCommand =
+        "prodbox aws stack " ++ name ++ " destroy --yes"
+    , ResourceRegistry.resourceDestroyCapability =
+        ResourceRegistry.managedDestroyCapability name
+    , ResourceRegistry.resourceDestroy = \_ -> do
+        modifyIORef' destroyed (++ [name])
+        pure code
+    }
+
 -- | Sprint 4.16 helper: 'ResiduePresent' value with the given stack
 -- name embedded in the details. Suitable for tests that need to assert
 -- on the canonical destroy command list returned by
@@ -17544,6 +18820,12 @@ testValidatedSettings manualRoot =
               (domain testValidatedConfigFile)
               (aws_substrate testValidatedConfigFile)
           )
+    , -- Sprint 1.89: same rule as the field above. The coordinates are derived
+      -- from this fixture's own config through the production builder, so a
+      -- fixture cannot carry a parsed coordinate its raw config would not
+      -- produce.
+      validatedCoordinates =
+        either error id (validatedCoordinatesFor testValidatedConfigFile)
     }
 
 testValidatedConfigFile :: ConfigFile
@@ -17571,6 +18853,12 @@ testValidatedConfigFile =
           , demo_ttl = 60
           , cert_scopes = []
           }
+    , -- Sprint 1.89: the fixture now carries the ACME contact as well as the
+      -- directory. It already carried a zone id, a region, and a subzone, so it
+      -- described an AWS-capable host in every respect except this one; leaving
+      -- the contact blank made 'coordinateAcmeAccount' `Nothing` and the ACME
+      -- renderer cases below untestable against a coherent config.
+      acme = (acme defaultConfigFile) {email = "ops@resolvefintech.com"}
     , deployment = validDeploymentSection
     , storage = StorageSection {manual_pv_host_root = ".data"}
     , pulumi_state_backend =

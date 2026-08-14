@@ -13,6 +13,13 @@ module Prodbox.CheckCode
   , checkCreateCallSiteCoverage
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
+  , checkProductionEnvVarReads
+  , productionEnvVarRegistry
+  , ProductionEnvVarRead (..)
+  , productionEnvVarNamesIn
+  , productionEnvVarOwnersFor
+  , isEnvironmentVariableName
+  , planOptionsProjectionExemptions
   , doctrineViolationsInPaths
   , extractMarkdownLinkTargets
   , extractStringLiterals
@@ -30,6 +37,8 @@ module Prodbox.CheckCode
   , boundSectionCitationsInLine
   , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
+  , planSprintBlocks
+  , sprintBlockMissingFields
   , documentSectionNumbers
   , headingSectionNumber
   , governedDocStatusValues
@@ -60,6 +69,11 @@ module Prodbox.CheckCode
   , roundTripWitnessInternalSourceViolations
   , dnsOwnerAuthorityInternalSourceViolations
   , vaultCasClassificationViolations
+  , tier0CoordinateReadRegistry
+  , tier0CoordinateReadViolations
+  , validatedSettingsConstructionFields
+  , validatedSettingsMinterViolations
+  , controlPlaneListenPortLiteralViolations
   , controlPlaneReplyStatusViolations
   , dependencyAdmissionInternalSourceViolations
   , responseObligationViolations
@@ -96,6 +110,7 @@ import Data.List
   , isSuffixOf
   , nub
   , sort
+  , stripPrefix
   , tails
   )
 import Data.Text qualified as Text
@@ -555,12 +570,14 @@ runGovernedDocChecks repoRoot = do
   statusViolations <- checkGovernedDocStatusValues repoRoot
   citedPathViolations <- checkPlanCitedSourcePaths repoRoot
   sectionCitationViolations <- checkDoctrineSectionCitations repoRoot
+  sprintFieldViolations <- checkSprintRequiredFields repoRoot
   pure
     ( harmonyViolations
         ++ linkViolations
         ++ statusViolations
         ++ citedPathViolations
         ++ sectionCitationViolations
+        ++ sprintFieldViolations
     )
 
 runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
@@ -1421,6 +1438,10 @@ runDoctrineAlignmentCheck repoRoot = do
   -- 'awsCreateSiteViolations') is a doctrine-alignment check, so it is
   -- wired here rather than alongside the Haskell-style lints.
   createCallSiteViolations <- checkCreateCallSiteCoverage repoRoot
+  -- Sprint 0.28: the production `PRODBOX_*` read registry. Wired beside the
+  -- create-site coverage gate because it is the same shape — a registry the
+  -- worktree must agree with, rather than a claim about it.
+  productionEnvVarViolations <- checkProductionEnvVarReads repoRoot
   -- Sprint 7.12: substrate equivalence is a structural invariant — a shared
   -- platform component's chart version / image must come from the single
   -- 'Prodbox.ContainerImage' pin, never be re-pinned on a per-substrate
@@ -1431,6 +1452,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) inlineRetryListViolations
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
+    ++ map ("- " ++) productionEnvVarViolations
     ++ map ("- " ++) substrateImagePinningViolations' of
     [] -> pure ExitSuccess
     violations ->
@@ -1478,6 +1500,9 @@ haskellStyleViolations repoRoot = do
   replyStatusViolations <- checkControlPlaneReplyStatusCoverage repoRoot
   committedValueViolations <- checkCommittedValueHygiene repoRoot
   vaultCasFindings <- checkVaultCasClassification repoRoot
+  validatedSettingsFindings <- checkValidatedSettingsMinter repoRoot
+  tier0CoordinateFindings <- checkTier0CoordinateReads repoRoot
+  listenPortFindings <- checkControlPlaneListenPortOwner repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1507,6 +1532,9 @@ haskellStyleViolations repoRoot = do
         ++ replyStatusViolations
         ++ committedValueViolations
         ++ vaultCasFindings
+        ++ validatedSettingsFindings
+        ++ tier0CoordinateFindings
+        ++ listenPortFindings
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -1657,6 +1685,225 @@ checkRoundTripWitnessBoundary repoRoot = do
           contents <- readFileStrict (repoRoot </> path)
           pure (roundTripWitnessInternalSourceViolations (path, contents))
       )
+
+-- | Sprint 3.35: the control-plane role listen port has one compiled owner,
+-- 'Prodbox.ControlPlane.ListenPort.controlPlaneListenPort'. This rule is the
+-- Haskell half of the region Sprint 3.34's @chartTemplatePortLiteralViolations@
+-- opened over chart templates: before both, the value existed only as a literal
+-- restated in fourteen places across nine modules, so there was nothing for any
+-- restatement to drift from.
+--
+-- __The bound is stated__: this is a text rule over @src\/@, so it stops the
+-- literal from re-acquiring authors; it does not make a wrong port
+-- unrepresentable. What makes the value single-sourced is that the binder, the
+-- rendered chart values, the embedded broker Dhall, the AWS role-transport
+-- table, and the loopback forward targets now all read the same binding.
+checkControlPlaneListenPortOwner :: FilePath -> IO [String]
+checkControlPlaneListenPortOwner repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (controlPlaneListenPortLiteralViolations (path, contents))
+      )
+
+controlPlaneListenPortLiteralViolations :: (FilePath, String) -> [String]
+controlPlaneListenPortLiteralViolations (path, contents) =
+  [ path
+      ++ " spells the control-plane listen port literal `"
+      ++ controlPlaneListenPortLiteral
+      ++ "`. It has one compiled owner: import"
+      ++ " Prodbox.ControlPlane.ListenPort (controlPlaneListenPort) and read it,"
+      ++ " or use controlPlaneClusterServiceUrl for an in-cluster role endpoint."
+  | controlPlaneListenPortLiteral `isInfixOf` contents
+  , path `notElem` controlPlaneListenPortOwnerPaths
+  ]
+
+controlPlaneListenPortLiteral :: String
+controlPlaneListenPortLiteral = "8600"
+
+controlPlaneListenPortOwnerPaths :: [FilePath]
+controlPlaneListenPortOwnerPaths = ["src/Prodbox/ControlPlane/ListenPort.hs"]
+
+-- | Sprint 1.88: a 'Prodbox.Settings.ValidatedSettings' asserts that
+-- @validateConfig@ ran and every Tier-0 invariant it decides was satisfied.
+-- Before this sprint that was a property of 'validateConfig' rather than of the
+-- value: the constructor is exported, and one production site
+-- (@defaultResourceStatusSettings@ in @src\/Prodbox\/CLI\/Rke2.hs@) built a
+-- record no validation had produced, obtaining its resource plan by @error@-ing
+-- on failure. That site is gone — the status reader takes the two fields it
+-- reads — and this rule keeps the seam closed.
+--
+-- __The bound is stated rather than implied__: this is a compiled rule over a
+-- source region, not a property of the type. The constructor stays exported
+-- because @test\/unit\/Main.hs@ builds fixture settings purely at 40 call sites,
+-- and routing those through the @IO@ @validateConfig@ is a coupled change with
+-- its own measurement to take. Scoped to @src\/@ for the same reason as the
+-- round-trip witness and the target-sink boundary: a test fixture may mint, and
+-- a test module cannot be imported by production code
+-- (@resource_scaling_doctrine.md@ § 2C, "The region of Ring 2").
+checkValidatedSettingsMinter :: FilePath -> IO [String]
+checkValidatedSettingsMinter repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (validatedSettingsMinterViolations (path, contents))
+      )
+
+validatedSettingsMinterViolations :: (FilePath, String) -> [String]
+validatedSettingsMinterViolations (path, contents) =
+  [ path
+      ++ " assigns `"
+      ++ fieldName
+      ++ "`, which builds or updates a ValidatedSettings outside validateConfig."
+      ++ " A ValidatedSettings is the claim that every Tier-0 invariant was"
+      ++ " decided; Prodbox.Settings.validateConfig is the only production site"
+      ++ " entitled to make it."
+  | fieldName <- validatedSettingsConstructionFields
+  , (fieldName ++ " =") `isInfixOf` contents
+  , path `notElem` validatedSettingsMinterAllowedPaths
+  ]
+
+-- | The field names whose /assignment/ means a 'ValidatedSettings' is being
+-- built or record-updated. Reads use the same names as accessors and carry no
+-- @=@, so this discriminates construction from use without parsing.
+--
+-- Positional coupling is deliberate: this list must name every field of the
+-- record, and a field added without a row here is a hole in the rule. The unit
+-- case beside it pins that correspondence.
+validatedSettingsConstructionFields :: [String]
+validatedSettingsConstructionFields =
+  [ "validatedConfig"
+  , "resolvedManualPvHostRoot"
+  , "validatedAllocatedPlan"
+  , "validatedPublicEdge"
+  , "validatedCoordinates"
+  ]
+
+validatedSettingsMinterAllowedPaths :: [FilePath]
+validatedSettingsMinterAllowedPaths = ["src/Prodbox/Settings.hs"]
+
+-- | Sprint 1.89: a module holding a 'Prodbox.Settings.ValidatedSettings' reads
+-- a Tier-0 coordinate through its parsed projection, or not at all.
+--
+-- The defect this closes is not that the raw fields exist — they are the Dhall
+-- wire record and must — but that validation decided them and then every
+-- consumer re-read the undecided text beside the decision. Sprint 1.83 fixed
+-- that for the public edge and the pattern did not spread on its own: three
+-- sprints later the served host was still being re-read from
+-- @domain.demo_fqdn@ in four places.
+--
+-- __What this proves and what it does not.__ It proves no @src\/@ module reaches
+-- a registered coordinate field through a 'ValidatedSettings', by either of the
+-- two spellings that exist — the direct chain, and the local alias
+-- (@let config = validatedConfig settings@) that the direct-chain rule alone
+-- would miss. It does not prove the field is unreachable: a module could pass
+-- the section itself to a helper, and a rule over source text cannot see that.
+-- The bound is stated because it is a compiled rule over a source region, not a
+-- property of the type — the same bound 'checkValidatedSettingsMinter' carries
+-- and for the same reason.
+--
+-- Reads of an /unvalidated/ 'Prodbox.Settings.ConfigFile' are deliberately not
+-- registered. @Prodbox.Aws@ builds a config from operator answers and
+-- @Prodbox.CLI.Rke2.resolveRetainedManualPvRoot@ reads one that
+-- 'Prodbox.Settings.validateConfig' has not seen and cannot see; in both, raw
+-- is the only thing there is to read, and there is no discarded decision.
+checkTier0CoordinateReads :: FilePath -> IO [String]
+checkTier0CoordinateReads repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path `notElem` tier0CoordinateReadAllowedPaths
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (tier0CoordinateReadViolations (path, contents))
+      )
+
+tier0CoordinateReadViolations :: (FilePath, String) -> [String]
+tier0CoordinateReadViolations (path, contents) =
+  [ path
+      ++ " reads the raw Tier-0 field `"
+      ++ field
+      ++ "` from a ValidatedSettings ("
+      ++ chain
+      ++ "). Validation already decided this coordinate; read the parsed"
+      ++ " projection on Prodbox.Settings.ValidatedCoordinates instead of the"
+      ++ " undecided text beside it."
+  | (field, section) <- tier0CoordinateReadRegistry
+  , holder <- validatedConfigHolders contents
+  , let chain = field ++ " (" ++ section ++ " " ++ holder
+  , chain `isInfixOf` contents
+  ]
+
+-- | The spellings by which a module can hold the decoded record of a
+-- 'ValidatedSettings': the accessor applied inline, and any local name bound to
+-- it.
+validatedConfigHolders :: String -> [String]
+validatedConfigHolders contents =
+  "(validatedConfig" : [alias | alias <- aliases, not (null alias)]
+ where
+  aliases =
+    [ takeWhile (\character -> not (isSpace character)) (dropWhile isSpace line)
+    | line <- lines contents
+    , "= validatedConfig " `isInfixOf` line
+    ]
+
+-- | The coordinate fields with a parsed projection, keyed by the section
+-- accessor that reaches them.
+--
+-- Positional coupling is deliberate, exactly as in
+-- 'validatedSettingsConstructionFields': a field given a projection on
+-- 'Prodbox.Settings.ValidatedCoordinates' and not added here is a hole in the
+-- rule, and the unit case beside it pins that correspondence against the
+-- record.
+tier0CoordinateReadRegistry :: [(String, String)]
+tier0CoordinateReadRegistry =
+  [ ("zone_id", "route53")
+  , ("hosted_zone_id", "aws_substrate")
+  , ("subzone_name", "aws_substrate")
+  , ("awsCredentialRegion", "aws")
+  , ("psbRegion", "pulumi_state_backend")
+  , ("psbBucketName", "pulumi_state_backend")
+  , ("psbKeyPrefix", "pulumi_state_backend")
+  , ("sender_domain", "ses")
+  , ("receive_subdomain", "ses")
+  , ("capture_bucket", "ses")
+  , ("demo_fqdn", "domain")
+  , ("demo_ttl", "domain")
+  , ("manual_pv_host_root", "storage")
+  , ("email", "acme")
+  , ("server", "acme")
+  , ("bootstrap_public_ip_override", "deployment")
+  ]
+
+-- | 'Prodbox.Settings' is where the projections are built, so it necessarily
+-- reads every raw field this rule forbids elsewhere. 'Prodbox.CheckCode' names
+-- the fields in the registry above.
+tier0CoordinateReadAllowedPaths :: [FilePath]
+tier0CoordinateReadAllowedPaths =
+  [ "src/Prodbox/Settings.hs"
+  , "src/Prodbox/CheckCode.hs"
+  ]
 
 -- | Sprint 3.32: a 'DnsOwnerAuthority' asserts that the running process /is/
 -- the named DNS owner.  A destroy consumes it instead of comparing two
@@ -2161,13 +2408,135 @@ tier0EncoderViolations = concatMap check
         ++ show lineNumber
         ++ " writes hand-authored text to a Tier-0 `"
         ++ tier0SiblingFileName
-        ++ "`. Write it with `Tier0Fixture.writeTier0Fixture`, whose value is"
+        ++ "`"
+        ++ via
+        ++ ". Write it with `Tier0Fixture.writeTier0Fixture`, whose value is"
         ++ " rendered by the one canonical encoder, so a schema change is a"
         ++ " compile error rather than a runtime decode failure (Sprint 5.30)."
-    | (lineNumber, line) <- zip [1 :: Int ..] (lines contents)
-    , "writeFile" `isInfixOf` line
-    , tier0SiblingFileName `isInfixOf` line
+    | (lineNumber, via) <- tier0WriteSiteLines contents
     ]
+
+-- | Sprint 5.34: the Tier-0 write sites in one source file, as
+-- @(line, how it was reached)@.
+--
+-- Sprint 5.30 matched a @writeFile@ and the sibling filename on __one__ source
+-- line, and registered the escape in its own words: bind the path first, write
+-- to the binding on a later line, and the rule sees nothing. That escape is now
+-- closed. A binding whose right-hand side names the sibling file is collected,
+-- and a later @writeFile@ applied to that name is a violation naming the
+-- binding it travelled through.
+--
+-- __The bound moves from one line to one hop, and it is still stated rather
+-- than implied.__ A path assembled across two bindings, passed through a
+-- function parameter, or built from a list still escapes. That is deliberate:
+-- widening further would trade a stated bound for an unstated one, which is the
+-- reason Sprint `5.30` gave for not widening at all. The structural guarantee
+-- carries the weight — a fixture is a typed value, so a schema change is a
+-- compile error — and this rule keeps the two shortest roads back from being
+-- taken by accident rather than the one.
+tier0WriteSiteLines :: String -> [(Int, String)]
+tier0WriteSiteLines contents =
+  [ (lineNumber, reachedVia)
+  | (lineNumber, line) <- numberedLines
+  , "writeFile" `isInfixOf` line
+  , not (rendersThroughCanonicalEncoder line)
+  , reachedVia <-
+      if tier0SiblingFileName `isInfixOf` line
+        then [""]
+        else
+          [ " through the binding `" ++ name ++ "`"
+          | Just name <- [writtenBindingName line]
+          , nearestBindingNamesSibling name lineNumber
+          ]
+  ]
+ where
+  numberedLines = zip [1 :: Int ..] (lines contents)
+
+  -- The rule's own message says "hand-authored text", and a write whose content
+  -- comes from the canonical encoder is not that. Sprint 5.34's widened rule
+  -- named such a site on its first run, and exempting it is the rule agreeing
+  -- with what it claims rather than a carve-out: `renderProjectConfigDhall` IS
+  -- the one canonical generator the message points the author at.
+  --
+  -- __Bound__: this reads the write line only. A rendered value bound on an
+  -- earlier line and written on a later one is still reported, which is the
+  -- fail-loud direction — the author is told to route it through
+  -- `writeTier0Fixture`, which is where it belongs anyway.
+  rendersThroughCanonicalEncoder line =
+    any
+      (`isInfixOf` line)
+      ["renderProjectConfigDhall", "tier0FixtureText", "writeTier0Fixture"]
+
+  -- The name in `writeFile <name>`, when the argument is a bare identifier.
+  writtenBindingName line = case dropWhile (/= "writeFile") (words line) of
+    (_ : argument : _) | isBindingName argument -> Just argument
+    _ -> Nothing
+
+  -- Does the nearest preceding binding of this name, __within the same
+  -- top-level definition__, name the sibling file?
+  --
+  -- Both restrictions were arrived at by the rule reporting something untrue,
+  -- and both are recorded rather than quietly folded in:
+  --
+  --   * /Nearest preceding/ rather than anywhere-in-file. The first draft
+  --     collected every name ever bound to a sibling path in the module and
+  --     flagged any `writeFile` of that name, making an unrelated
+  --     @let path = tmpDir \<\/\> "config.dhall"@ a violation because a different
+  --     case bound @path@ to the sibling.
+  --   * /Same top-level definition/. Nearest-preceding alone still reached
+  --     across definitions into a helper whose @tier0Path@ is a __parameter__,
+  --     shadowing an earlier @let@ of that name in a different function.
+  --
+  -- Both are the unstated bound Sprint `5.30` declined to take, arrived at by
+  -- accident. The bound that remains is stated: one hop, one definition.
+  nearestBindingNamesSibling name lineNumber =
+    case [ bindingLine
+         | (bindingNumber, bindingLine) <- numberedLines
+         , bindingNumber >= enclosingDefinitionStart lineNumber
+         , bindingNumber < lineNumber
+         , simpleBindingName bindingLine == Just name
+         ] of
+      [] -> False
+      bindings -> maybe False (isInfixOf tier0SiblingFileName) (lastMaybe bindings)
+
+  -- The first line of the top-level definition enclosing this line: the last
+  -- line at or before it that starts in column 0 with an identifier character.
+  enclosingDefinitionStart lineNumber =
+    maybe
+      1
+      id
+      ( lastMaybe
+          [ candidateNumber
+          | (candidateNumber, candidateLine) <- numberedLines
+          , candidateNumber <= lineNumber
+          , startsTopLevelDefinition candidateLine
+          ]
+      )
+
+  startsTopLevelDefinition line = case line of
+    (firstCharacter : _) -> isAlpha firstCharacter
+    [] -> False
+
+lastMaybe :: [value] -> Maybe value
+lastMaybe = foldl (\_ value -> Just value) Nothing
+
+isBindingName :: String -> Bool
+isBindingName name = case name of
+  [] -> False
+  (firstCharacter : _) ->
+    isAlpha firstCharacter
+      && all
+        (\character -> isAlphaNum character || character `elem` ("_'" :: String))
+        name
+
+-- | The bound name in a @  name = ...@ or @  let name = ...@ line, if the line
+-- has that shape. 'Nothing' for anything else.
+simpleBindingName :: String -> Maybe String
+simpleBindingName line =
+  case words (dropWhile isSpace line) of
+    ("let" : name : "=" : _) | isBindingName name -> Just name
+    (name : "=" : _) | isBindingName name -> Just name
+    _ -> Nothing
 
 tier0FixtureModulePath :: FilePath
 tier0FixtureModulePath = "test/support/Tier0Fixture.hs"
@@ -2855,7 +3224,7 @@ checkEnvVarConfigReads repoRoot =
           let fullPath = repoRoot </> relativePath
           fileExists <- doesFileExist fullPath
           if not fileExists
-            then pure []
+            then pure [scopedPathMissingViolation "checkEnvVarConfigReads" relativePath]
             else do
               contents <- readFileStrict fullPath
               let tokens = tokenizeSource (stripStringLiterals contents)
@@ -3079,6 +3448,43 @@ destructivePlanOptionsArms :: [(String, Int)]
 destructivePlanOptionsArms =
   [ ("Rke2Delete", 2)
   , ("NativeNuke", 1)
+  , -- Sprint 0.28: the seven destructive `PlanOptions`-carrying constructors
+    -- that dispatched outside this table. The position is the constructor's
+    -- 1-based options argument, read from its declaration in
+    -- `src/Prodbox/CLI/Command.hs`.
+    ("PulumiEksDestroy", 2)
+  , ("PulumiTestDestroy", 2)
+  , ("PulumiAwsSubzoneDestroy", 2)
+  , ("PulumiAwsSesDestroy", 2)
+  , ("ChartsDelete", 4)
+  , ("UsersRevoke", 3)
+  , ("AwsTeardown", 1)
+  ]
+
+-- | Sprint 0.28 (pure). The @(path, constructor)@ pairs where a wildcard
+-- options binder is correct, with the reason each is correct.
+--
+-- The lint's subject is a *dispatch* arm — one that runs the command and must
+-- therefore thread @--dry-run@ / @--plan-file@ into 'runPlanWithOptions'. A
+-- *projection* arm maps the same constructor to something else entirely and has
+-- no options to honour. Widening the region in Sprint 0.28 surfaced exactly one
+-- such arm, and it is exempted by named pair rather than by dropping the
+-- constructor or narrowing the region back — the shape Sprint 4.66 used when its
+-- own gate's first run produced two false positives.
+--
+-- A bare constructor exemption would be wrong: it would also excuse the real
+-- dispatch site. The pair is the unit because the pair is what is safe.
+planOptionsProjectionExemptions :: [(FilePath, String, String)]
+planOptionsProjectionExemptions =
+  [
+    ( "src/Prodbox/Native.hs"
+    , "AwsTeardown"
+    , "commandPrerequisites is a pure projection from a command to its "
+        ++ "PrerequisiteIds; it does not dispatch, so it has no PlanOptions to "
+        ++ "honour. The dispatching arm is applyAwsTeardown in "
+        ++ "src/Prodbox/Aws.hs, which binds and threads them and is inside "
+        ++ "this gate's region."
+    )
   ]
 
 -- | Sprint 4.26 (pure): given a scanned file's relative path and its
@@ -3106,9 +3512,14 @@ planOptionsHonoredViolations relativePath contents =
       ++ "into runPlanWithOptions (or read NukeOptions) instead. See "
       ++ "lifecycle_reconciliation_doctrine.md § 3.1."
   | (constructorName, optionsPosition) <- destructivePlanOptionsArms
+  , (relativePath, constructorName) `notElem` exemptPairs
   , wildcardBinder <- wildcardBindersAt constructorName optionsPosition
   ]
  where
+  exemptPairs =
+    [ (path, constructorName)
+    | (path, constructorName, _reason) <- planOptionsProjectionExemptions
+    ]
   tokens = tokenizeSource (stripStringLiterals contents)
   -- For each occurrence of @constructorName@ in the token stream, the
   -- binder at @optionsPosition@ (1-based, relative to the constructor)
@@ -3140,15 +3551,22 @@ checkPlanOptionsHonored repoRoot =
           let fullPath = repoRoot </> relativePath
           fileExists <- doesFileExist fullPath
           if not fileExists
-            then pure []
+            then pure [scopedPathMissingViolation "checkPlanOptionsHonored" relativePath]
             else do
               contents <- readFileStrict fullPath
               pure (planOptionsHonoredViolations relativePath contents)
       )
  where
+  -- Sprint 0.28 widened the region. It named three files while seven
+  -- destructive `PlanOptions`-carrying constructors dispatched elsewhere; the
+  -- CLI modules that own them are now scanned too.
   scopedPaths =
     [ "src/Prodbox/CLI/Rke2.hs"
     , "src/Prodbox/CLI/Nuke.hs"
+    , "src/Prodbox/CLI/Pulumi.hs"
+    , "src/Prodbox/CLI/Charts.hs"
+    , "src/Prodbox/CLI/Users.hs"
+    , "src/Prodbox/Aws.hs"
     , "src/Prodbox/Native.hs"
     ]
 
@@ -3991,6 +4409,281 @@ citedSourcePathsInDoc contents =
     , isCitedSourcePath codeSpan
     ]
 
+-- | Sprint 0.28: one registered production @PRODBOX_*@ environment read.
+data ProductionEnvVarRead = ProductionEnvVarRead
+  { productionEnvVarName :: String
+  , productionEnvVarOwners :: [FilePath]
+  , productionEnvVarReason :: String
+  }
+
+-- | Sprint 0.28: every @PRODBOX_*@ name a production module may read, with the
+-- module(s) that may read it and why.
+--
+-- This replaces a claim with a registry. @checkEnvVarConfigReads@ forbids
+-- @lookupEnv@ outright in five named config modules, which is a sound rule about
+-- Tier-0 config and says nothing about the rest of @src/@ — and the rest of
+-- @src/@ is where the production reads are. Both this repository's `CLAUDE.md`
+-- and the ledger row that scheduled this work stated the inventory, and the
+-- measured set is wider than either: **12** non-@PRODBOX_TEST_@ names, of which
+-- five live in @src\/Prodbox\/CLI\/Rke2.hs@ (the four the guidance names, with
+-- the LB-IP pair counted as one) and **seven** more that neither document
+-- mentions at all.
+--
+-- The gate is a bijection, in the idiom of the legacy-escape registry: an
+-- unregistered read fails, a read outside its owner fails, and a registry entry
+-- with no surviving call site fails. @PRODBOX_TEST_@ names are out of scope —
+-- they select repository fixtures rather than configure a running system, and
+-- Sprint 5.33's rule that a fixture's unset arm must observe or refuse is what
+-- governs them.
+productionEnvVarRegistry :: [ProductionEnvVarRead]
+productionEnvVarRegistry =
+  [ ProductionEnvVarRead
+      "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
+      ["src/Prodbox/CLI/Interactive.hs"]
+      "Operator escape for the TTY guard on interactive-only commands."
+  , ProductionEnvVarRead
+      "PRODBOX_NUKE_PLAN"
+      ["src/Prodbox/CLI/Nuke.hs"]
+      "Plan-file destination for `prodbox nuke --dry-run`."
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_METALLB_POOL"
+      ["src/Prodbox/CLI/Rke2.hs"]
+      "Substitutes for live LAN detection when rendering the MetalLB pool. \
+      \Load-bearing for host networking on the home substrate."
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_EDGE_LB_IP"
+      ["src/Prodbox/CLI/Rke2.hs"]
+      "Substitutes for live LAN detection when rendering the edge LB address."
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_INGRESS_LB_IP"
+      ["src/Prodbox/CLI/Rke2.hs"]
+      "Substitutes for live LAN detection when rendering the ingress LB address."
+  , ProductionEnvVarRead
+      "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
+      ["src/Prodbox/CLI/Rke2.hs"]
+      "Relocates the Calico endpoint-status root the teardown path sweeps."
+  , ProductionEnvVarRead
+      "PRODBOX_RKE2_CONTAINERD_SOCKET"
+      ["src/Prodbox/CLI/Rke2.hs"]
+      "Relocates the containerd socket the registry-mirror config targets."
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+      pulumiCredentialOwners
+      pulumiCredentialReason
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY"
+      pulumiCredentialOwners
+      pulumiCredentialReason
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_AWS_SESSION_TOKEN"
+      pulumiCredentialOwners
+      pulumiCredentialReason
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_AWS_REGION"
+      pulumiCredentialOwners
+      pulumiCredentialReason
+  , ProductionEnvVarRead
+      "PRODBOX_PULUMI_AWS_DEFAULT_REGION"
+      pulumiCredentialOwners
+      pulumiCredentialReason
+  ]
+ where
+  pulumiCredentialOwners =
+    [ "src/Prodbox/Infra/AwsEksTestStack.hs"
+    , "src/Prodbox/Infra/AwsSesStack.hs"
+    ]
+  pulumiCredentialReason =
+    "Carries the already-resolved AWS credential into the `pulumi` subprocess \
+    \environment. It is a transport for a value the caller already holds, not a \
+    \configuration source, so it does not reach Tier-0 resolution."
+
+-- | Sprint 0.28 (pure). The files a production @PRODBOX_*@ read may appear in,
+-- keyed by name. Exposed for unit tests.
+productionEnvVarOwnersFor :: String -> Maybe [FilePath]
+productionEnvVarOwnersFor name =
+  productionEnvVarOwners
+    <$> find ((== name) . productionEnvVarName) productionEnvVarRegistry
+
+-- | Sprint 0.28 (pure). Whether a literal can be an environment variable name
+-- at all.
+--
+-- POSIX forbids @=@ in a name, and every name this repository reads is
+-- upper-snake. The predicate exists because the gate's first run flagged
+-- @"PRODBOX_ID="@ in @src\/Prodbox\/CLI\/Rke2.hs@, which is a @--dry-run@ plan
+-- **key** rendered as @KEY=value@ and never passed to @lookupEnv@. That is a
+-- false positive, and it is excluded by a property of environment names rather
+-- than by a path exemption or a trailing-@=@ heuristic — the distinction being
+-- that this rule stays true for a plan key nobody has written yet.
+isEnvironmentVariableName :: String -> Bool
+isEnvironmentVariableName candidate =
+  not (null candidate)
+    && all (\character -> isAsciiUpper character || isDigit character || character == '_') candidate
+
+-- | Sprint 0.28 (pure). The @PRODBOX_*@ names a source file references,
+-- excluding the @PRODBOX_TEST_@ fixture family. Exposed for unit tests.
+productionEnvVarNamesIn :: String -> [String]
+productionEnvVarNamesIn contents =
+  dedupeSorted
+    [ literal
+    | literal <- extractStringLiterals contents
+    , "PRODBOX_" `isPrefixOf` literal
+    , not ("PRODBOX_TEST_" `isPrefixOf` literal)
+    , isEnvironmentVariableName literal
+    ]
+
+-- | Sprint 0.28 (IO). The production environment-read registry bijection.
+checkProductionEnvVarReads :: FilePath -> IO [String]
+checkProductionEnvVarReads repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanPath path =
+        (".hs" `isSuffixOf` path)
+          && any (`isPrefixOf` path) ["src/", "app/"]
+          && path /= forbidLintSelfPath
+  scanned <-
+    forM
+      [path | path <- repoPaths, scanPath path]
+      ( \relativePath -> do
+          contents <- readFileStrict (repoRoot </> relativePath)
+          pure (relativePath, productionEnvVarNamesIn contents)
+      )
+  let observed = [(path, name) | (path, names) <- scanned, name <- names]
+      unregistered =
+        [ path
+            ++ " reads the production environment variable `"
+            ++ name
+            ++ "`, which is not in `productionEnvVarRegistry`. Register it with "
+            ++ "its owner module and the reason it is not Tier-0 configuration, "
+            ++ "or remove the read (config_doctrine.md § 10)."
+        | (path, name) <- observed
+        , productionEnvVarOwnersFor name == Nothing
+        ]
+      outsideOwner =
+        [ path
+            ++ " reads `"
+            ++ name
+            ++ "`, which is registered to "
+            ++ intercalate ", " owners
+            ++ ". Move the read into an owner module or widen the registry entry."
+        | (path, name) <- observed
+        , Just owners <- [productionEnvVarOwnersFor name]
+        , path `notElem` owners
+        ]
+      orphanEntries =
+        [ "`productionEnvVarRegistry` registers `"
+            ++ productionEnvVarName entry
+            ++ "`, which no scanned production module reads. Remove the entry so "
+            ++ "the registry stays a description of the worktree."
+        | entry <- productionEnvVarRegistry
+        , productionEnvVarName entry `notElem` map snd observed
+        ]
+  pure (unregistered ++ outsideOwner ++ orphanEntries)
+
+-- | Sprint 0.28 (pure). The violation a path-scoped gate emits when one of its
+-- scoped files is not in the worktree.
+--
+-- Every scoped gate previously answered a missing file with @pure []@, so a
+-- rename silently emptied the gate's region while the gate kept passing — the
+-- fail-open shape the doctrine names, applied to the gates themselves. A gate
+-- that cannot find what it was told to scan has not observed compliance; it has
+-- observed nothing.
+scopedPathMissingViolation :: String -> FilePath -> String
+scopedPathMissingViolation gateName relativePath =
+  gateName
+    ++ " is scoped to `"
+    ++ relativePath
+    ++ "`, which is not in the worktree. A scoped gate cannot silently shrink "
+    ++ "its own region: update the gate's `scopedPaths` in the same change that "
+    ++ "moved or deleted the file, so the region stays a stated fact rather than "
+    ++ "an accident of which files happen to exist."
+
+-- | Sprint 0.27 (pure). The Standard-H header fields a sprint block is
+-- missing, given that block's body.
+--
+-- Every sprint in the plan is @Done@, and
+-- [Standard H](../../DEVELOPMENT_PLAN/development_plan_standards.md#h-sprint-status-format)
+-- makes @**Implementation**@ required for @Done@ while
+-- [Standard G](../../DEVELOPMENT_PLAN/development_plan_standards.md#g-phase-documentation-requirements)
+-- makes the docs field the mechanism by which "the plan must not claim a sprint
+-- is done if the listed docs are stale" can be checked at all. A block carrying
+-- neither states a closure that cannot be audited against source.
+--
+-- The predicate deliberately accepts every heading form the plan actually uses
+-- — @**Implementation**:@, @**Implementation** (landed):@, and
+-- @**Implementation (Increment A, 2026-07-26)**:@ — because all three name
+-- paths, and a stricter rule would report a formatting difference as missing
+-- evidence. That distinction is not hypothetical: the ledger row this gate
+-- closes counted 19 missing @Implementation@ fields where the measured figure
+-- is 11 absent outright and 4 more carrying a non-standard heading, and it
+-- named Sprint @4.50@ as an example when @4.50@ does name its paths.
+sprintBlockMissingFields :: String -> [String]
+sprintBlockMissingFields body =
+  [ name
+  | name <- ["Implementation", "Docs"]
+  , not (any (declaresField name) (stripFencedCodeBlocks (lines body)))
+  ]
+ where
+  declaresField name lineText = case stripPrefix ("**" ++ name) lineText of
+    Nothing -> False
+    Just rest ->
+      -- The heading may carry a qualifier before or after the closing `**`;
+      -- what it may not do is omit the closing `**` or the colon.
+      case afterClosingBold rest of
+        Nothing -> False
+        Just afterBold -> ':' `elem` takeWhile (/= '`') afterBold
+
+  afterClosingBold text = case text of
+    [] -> Nothing
+    ('*' : '*' : remaining) -> Just remaining
+    (_ : remaining) -> afterClosingBold remaining
+
+-- | Sprint 0.27 (pure). Split a plan document into @(sprint heading, body)@
+-- pairs. Exposed for unit tests.
+planSprintBlocks :: String -> [(String, String)]
+planSprintBlocks contents = go (lines contents) Nothing []
+ where
+  go [] current acc = reverse (close current acc)
+  go (lineText : rest) current acc
+    | "## Sprint " `isPrefixOf` lineText = go rest (Just (lineText, [])) (close current acc)
+    | otherwise = case current of
+        Nothing -> go rest Nothing acc
+        Just (heading, collected) -> go rest (Just (heading, lineText : collected)) acc
+  close Nothing acc = acc
+  close (Just (heading, collected)) acc = (heading, unlines (reverse collected)) : acc
+
+-- | Sprint 0.27 (IO wrapper). Every sprint block in @DEVELOPMENT_PLAN/phase-*.md@
+-- carries its Standard-H @Implementation@ and docs fields.
+--
+-- Back-filling the debt once would have left it free to recur; this is the
+-- gate that makes the plan's own closure requirement mechanical, in the same
+-- idiom as Sprint @0.21@'s status-value and cited-path gates directly below.
+checkSprintRequiredFields :: FilePath -> IO [String]
+checkSprintRequiredFields repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let planPaths =
+        [ path
+        | path <- repoPaths
+        , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
+        , ".md" `isSuffixOf` path
+        ]
+  fmap concat $
+    forM planPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure
+        [ relativePath
+            ++ " "
+            ++ takeWhile (/= ':') (drop 3 heading)
+            ++ " is missing its Standard-H `**"
+            ++ missing
+            ++ "**` field. Every sprint in this plan is `Done`, and Standard H "
+            ++ "requires `Implementation` for `Done` while Standard G requires the "
+            ++ "docs list. Name what the sprint actually touched — never infer a "
+            ++ "path, because `checkPlanCitedSourcePaths` will either fail on a "
+            ++ "path that does not exist or silently point a reader at the wrong "
+            ++ "module."
+        | (heading, body) <- planSprintBlocks contents
+        , missing <- sprintBlockMissingFields body
+        ]
+
 -- | Sprint 0.21 (IO wrapper). The cited-source-path existence check over
 -- @DEVELOPMENT_PLAN/@ — the mechanical form of the evidence sweep that has
 -- repeatedly found real defects by hand (Sprints @4.51@, @4.53@, @5.18@,
@@ -4294,6 +4987,19 @@ pulumiCreateSiteViolations registeredNames commandContents =
 -- they are subprocess string-literal arguments (e.g. @aws iam
 -- create-user@). Exposed for unit tests; consumed by
 -- 'awsCreateSiteViolations'.
+--
+-- __Sprint 0.28 widened the region.__ Until this sprint the table held seven
+-- verbs, and § 3.1 invariant 1's totality claim was cited over it. Six further
+-- verbs that create or mutate real AWS resources were shelled out in @src/@ and
+-- outside the table entirely — @create-volume@, @create-receipt-rule-set@,
+-- @put-bucket-policy@, @put-object@, @put-public-access-block@, and
+-- @request-service-quota-increase@ — so the gate was silent about them. Each is
+-- now registered against the owner module measured to contain it. The bound is
+-- unchanged in kind and only in extent: this is a substring allowlist over a
+-- stated region ([chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)),
+-- not a totality proof, and a verb nobody has thought of is still invisible to
+-- it. What the widening buys is that the six verbs already known to be outside
+-- it no longer are.
 awsCreateVerbs :: [(String, [FilePath])]
 awsCreateVerbs =
   [ ("create-user", ["src/Prodbox/Aws.hs"])
@@ -4317,13 +5023,39 @@ awsCreateVerbs =
       , "src/Prodbox/ControlPlane/ProviderProduction.hs"
       ]
     )
+  , -- Sprint 0.28: the six verbs measured outside the pre-0.28 table. Each
+    -- owner below is where the verb's subprocess literal actually lives, not
+    -- where it arguably belongs.
+    ("create-volume", ["src/Prodbox/Lifecycle/EbsVolume.hs"])
+  , ("create-receipt-rule-set", ["src/Prodbox/ControlPlane/ProviderProduction.hs"])
+  , ("put-bucket-policy", ["src/Prodbox/ControlPlane/ProviderProduction.hs"])
+  ,
+    ( "put-object"
+    ,
+      [ "src/Prodbox/ControlPlane/ProviderProduction.hs"
+      , "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
+      , "src/Prodbox/Infra/MinioBackend.hs"
+      ]
+    )
+  , ("put-public-access-block", ["src/Prodbox/Infra/LongLivedPulumiBackend.hs"])
+  , ("request-service-quota-increase", ["src/Prodbox/Aws.hs"])
   ]
 
 -- | The operational-IAM creation verbs. Retained for unit-test
 -- back-compatibility; the IAM verbs are the @src/Prodbox/Aws.hs@-owned
--- entries of 'awsCreateVerbs'. Exposed for unit tests.
+-- entries of 'awsCreateVerbs'.
+--
+-- Sprint 0.28 narrowed the projection to the verbs that are actually IAM:
+-- @request-service-quota-increase@ is also solely owned by
+-- @src/Prodbox/Aws.hs@ but is a Service Quotas call, so an owner-equality
+-- test alone would have silently relabelled it as IAM.
 iamCreateVerbs :: [String]
-iamCreateVerbs = [verb | (verb, owners) <- awsCreateVerbs, owners == ["src/Prodbox/Aws.hs"]]
+iamCreateVerbs =
+  [ verb
+  | (verb, owners) <- awsCreateVerbs
+  , owners == ["src/Prodbox/Aws.hs"]
+  , verb /= "request-service-quota-increase"
+  ]
 
 -- | Sprint 4.27 (pure). Given a scanned file's relative path and its raw
 -- contents, emit a violation for any 'awsCreateVerbs' verb that appears

@@ -11,6 +11,7 @@ import Data.IORef
   , newIORef
   , readIORef
   )
+import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.Infra.AwsEksTestStack
@@ -23,6 +24,7 @@ import Prodbox.Infra.AwsSesStack
   , awsSesPresenceInventoryComplete
   , awsSesTargetSelectionForSink
   , defaultAwsSesTargetSelection
+  , destroySummaryFromStackRemove
   , parseAwsSesStackFromOutputs
   )
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -34,7 +36,31 @@ import Prodbox.Lifecycle.CheckpointAuthority
 import TestSupport
 
 awsSesLifecycleSuite :: SuiteBuilder ()
-awsSesLifecycleSuite =
+awsSesLifecycleSuite = do
+  describe "Sprint 4.79 the SES destroy reports what it observed" $ do
+    it "says destroyed only when the stack entry was actually removed" $
+      destroySummaryFromStackRemove (Right ()) `shouldBe` "destroyed"
+
+    it "names the surviving stack entry when removal failed" $ do
+      -- Before this sprint `pulumi stack rm`'s result was discarded with `_ <-`
+      -- and followed by an unconditional `Right "destroyed"`, so a failed
+      -- removal was reported as a completed destroy on the terminal node of the
+      -- `nuke` decommission DAG.
+      let summary =
+            destroySummaryFromStackRemove
+              (Left "pulumi stack rm exited with code 255")
+      summary `shouldSatisfy` isInfixOf "NOT removed"
+      summary `shouldSatisfy` isInfixOf "pulumi stack rm exited with code 255"
+      summary `shouldNotBe` "destroyed"
+
+    it "still reports the AWS resources destroyed, because they were" $
+      -- The decision recorded rather than glossed: the destroy had already
+      -- succeeded when the removal ran, so refusing here would fail a teardown
+      -- that did remove every resource. What was wrong was the silence, not the
+      -- success.
+      destroySummaryFromStackRemove (Left "boom")
+        `shouldSatisfy` isPrefixOf "destroyed"
+
   describe "Sprint 4.47 frozen pre-cutover SES counterexample" $ do
     it "records the superseded non-credential ordering without a production capability" $
       frozenAwsSesDesiredPresentStages

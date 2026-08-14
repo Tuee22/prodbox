@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module BootstrapBrokerProductionBoundary
@@ -5,6 +8,7 @@ module BootstrapBrokerProductionBoundary
   )
 where
 
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Exception (toException)
 import Control.Monad (forM_)
 import Data.Aeson (Value, encode, object, (.=))
@@ -17,6 +21,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), addUTCTime, secondsToDiffTime)
+import GHC.Generics (Generic)
 import Network.HTTP.Client
   ( HttpException (..)
   , HttpExceptionContent (..)
@@ -55,6 +60,12 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerPodAnnotationsForRequest
   , workerPodDeleteOptions
   )
+import Prodbox.Bootstrap.Broker.ProductionStore
+  ( validArtifactDigest
+  , validChildEncryptedReceipt
+  , validRootInitBinding
+  , validUnlockShareThreshold
+  )
 import Prodbox.Bootstrap.Broker.Request
   ( BrokerServiceIdentity
   , mkBrokerServiceIdentity
@@ -78,6 +89,8 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , mkWorkerServiceAccount
   , mkWorkerSessionAccessor
   , mkWorkerSessionId
+  , secretWorkerCheckpointInvariantViolations
+  , unobservableWorkerCheckpoint
   )
 import Prodbox.Bootstrap.Broker.Server
   ( BrokerAuthenticationFailure (..)
@@ -91,7 +104,15 @@ import Prodbox.Bootstrap.Broker.TokenReview
   )
 import Prodbox.Bootstrap.Broker.Types
   ( ArtifactDigest
+  , ChildCustodyBinding (..)
+  , ChildEncryptedReceipt (..)
+  , RootInitBinding (..)
   , mkArtifactDigest
+  , mkBootstrapTransactionId
+  , mkBurnTokenCiphertext
+  , mkChildId
+  , mkCustodyGeneration
+  , mkPgpEncryptedShare
   , mkVaultStorageGeneration
   , renderArtifactDigest
   )
@@ -439,6 +460,126 @@ bootstrapBrokerProductionBoundarySuite = do
         Text.unpack reason `shouldNotContain` Text.unpack bearerToken
         Text.unpack reason `shouldNotContain` "Authorization"
         Text.unpack reason `shouldNotContain` "Bearer"
+
+  describe "Sprint 2.45 durable-value validity at the broker store boundary" $ do
+    -- Before this sprint the predicate applied to every read and CAS of these
+    -- payloads was `validValue _ = True`, so `BootstrapStoreCorrupt` was
+    -- unreachable for them and any structurally-decodable record was acted on.
+    --
+    -- The cases below are written against the seam that actually produces an
+    -- invalid value in production. These types are built through smart
+    -- constructors, so an invalid one cannot be *constructed* — which is
+    -- precisely why a predicate over constructed values would be unfalsifiable
+    -- and would repeat the defect. They are persisted and read back through
+    -- `Serialise`, which reconstructs each field positionally and bypasses
+    -- those constructors. Round-tripping a crafted `Text` through the newtype's
+    -- own CBOR instance is that bypass, exercised directly.
+
+    it "reproduces the smart-constructor bypass CBOR decoding performs" $ do
+      -- The premise the whole sprint rests on, asserted rather than assumed:
+      -- `mkArtifactDigest` refuses a non-SHA-256 value, and the CBOR decode
+      -- produces one anyway.
+      mkArtifactDigest "not-a-sha256-digest" `shouldSatisfy` isLeft
+      let bypassed = cborRoundTripText "not-a-sha256-digest" :: ArtifactDigest
+      renderArtifactDigest bypassed `shouldBe` "not-a-sha256-digest"
+      validArtifactDigest bypassed `shouldBe` False
+      validArtifactDigest (mustRight (mkArtifactDigest (digest 'a'))) `shouldBe` True
+
+    it "refuses a root-init binding whose identifiers decode past their constructors" $ do
+      validRootInitBinding validRootBinding `shouldBe` True
+      validRootInitBinding
+        validRootBinding {rootInitTransactionId = cborRoundTripText ""}
+        `shouldBe` False
+      validRootInitBinding
+        validRootBinding {rootInitStorageGeneration = cborRoundTripText ""}
+        `shouldBe` False
+
+    it "refuses a child custody receipt carrying no encrypted share" $ do
+      -- Not a constructor bypass: the share list is a plain field, and a
+      -- receipt with no shares is the applied-but-unrecoverable state. The
+      -- custody receipt exists to carry the shares.
+      validChildEncryptedReceipt validReceipt `shouldBe` True
+      validChildEncryptedReceipt validReceipt {childEncryptedReceiptShares = []}
+        `shouldBe` False
+      validChildEncryptedReceipt
+        validReceipt {childEncryptedReceiptDigest = cborRoundTripText "short"}
+        `shouldBe` False
+
+    it "refuses an unlock-bundle threshold its share count cannot meet" $ do
+      -- The one payload carrying arithmetic the type does not state: a
+      -- threshold above the share count describes a bundle that can never be
+      -- reassembled, and a zero threshold one needing no share at all.
+      -- `mkInitRecipientCommitment` already refuses both, so a violating bundle
+      -- is unconstructible through the smart constructors and only the CBOR
+      -- decode can produce one. The decision is therefore asserted over its two
+      -- inputs -- the falsifiable form -- rather than over a value no test can
+      -- build, which is the bound `validUnlockShareThreshold`'s own Haddock
+      -- states.
+      validUnlockShareThreshold 3 5 `shouldBe` True
+      validUnlockShareThreshold 5 5 `shouldBe` True
+      validUnlockShareThreshold 6 5 `shouldBe` False
+      validUnlockShareThreshold 0 5 `shouldBe` False
+      validUnlockShareThreshold 0 0 `shouldBe` False
+
+    it "refuses a durably-recorded unobservable checkpoint that records no reason" $ do
+      -- A persisted "cannot observe" that says nothing is indistinguishable
+      -- from one whose reason was lost, which is the distinguishability class
+      -- chaos_hardening_doctrine.md section 23 names -- here written to the
+      -- store rather than to a log.
+      secretWorkerCheckpointInvariantViolations
+        (unobservableWorkerCheckpoint "Kubernetes API request failed: connection timed out")
+        `shouldBe` []
+      secretWorkerCheckpointInvariantViolations (unobservableWorkerCheckpoint "")
+        `shouldSatisfy` ((== 1) . length)
+      secretWorkerCheckpointInvariantViolations (unobservableWorkerCheckpoint "   \n\t ")
+        `shouldSatisfy` ((== 1) . length)
+
+-- | The CBOR bypass, isolated.
+--
+-- Every smart-constructed newtype exercised here wraps a single `Text` and gets
+-- its `Serialise` instance by @deriving anyclass@, i.e. from `Generic`. So the
+-- wire shape is the generic one for a single-constructor single-field type, not
+-- a bare `Text` -- `TextWrapper` reproduces exactly that shape, which is why
+-- encoding it and decoding at the newtype is byte-for-byte what the object
+-- store does when it reads a persisted record.
+--
+-- This is the whole premise of Sprint 2.45 made executable: the value that
+-- comes back out of the store never went through the constructor that would
+-- have refused it.
+newtype TextWrapper = TextWrapper Text.Text
+  deriving stock (Generic)
+  deriving anyclass (Serialise)
+
+cborRoundTripText :: (Serialise value) => Text.Text -> value
+cborRoundTripText raw =
+  either (error . show) id (deserialiseOrFail (serialise (TextWrapper raw)))
+
+validRootBinding :: RootInitBinding
+validRootBinding =
+  RootInitBinding
+    { rootInitTransactionId = mustRight (mkBootstrapTransactionId "bootstrap-2045")
+    , rootInitStorageGeneration = mustRight (mkVaultStorageGeneration "vault-2045")
+    }
+
+validCustodyBinding :: ChildCustodyBinding
+validCustodyBinding =
+  ChildCustodyBinding
+    { childCustodyChildId = mustRight (mkChildId "child-2045")
+    , childCustodyStorageGeneration = mustRight (mkVaultStorageGeneration "vault-2045")
+    , childCustodyGeneration = mustRight (mkCustodyGeneration 1)
+    , childCustodyTransactionId = mustRight (mkBootstrapTransactionId "bootstrap-2045")
+    }
+
+validReceipt :: ChildEncryptedReceipt
+validReceipt =
+  ChildEncryptedReceipt
+    { childEncryptedReceiptBinding = validCustodyBinding
+    , childEncryptedReceiptShares =
+        [mustRight (mkPgpEncryptedShare (TextEncoding.encodeUtf8 "share-a"))]
+    , childEncryptedReceiptBurnToken =
+        mustRight (mkBurnTokenCiphertext (TextEncoding.encodeUtf8 "burn"))
+    , childEncryptedReceiptDigest = mustRight (mkArtifactDigest (digest 'b'))
+    }
 
 -- | Sprint 2.43: the namespace the broker chart deploys into.
 brokerNamespace :: Text.Text

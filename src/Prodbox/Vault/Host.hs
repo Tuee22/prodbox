@@ -30,9 +30,11 @@ where
 
 import Control.Exception (SomeException, bracket_, try)
 import Data.ByteString qualified as BS
+import Data.Char qualified as Char
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Dhall (FromDhall, ToDhall, auto, inputFile)
+import Dhall qualified
 import GHC.Generics (Generic)
 import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine, writeOutputLine)
 import Prodbox.Http.Client (HttpError, renderHttpError)
@@ -329,7 +331,97 @@ data TestSecretsAdminCredentials = TestSecretsAdminCredentials
   }
   deriving (Eq, Generic, Show)
 
-instance FromDhall TestSecretsAdminCredentials
+-- | Sprint 5.34: a __validating__ decoder, because the generic one made the
+-- fixture's worst confusion type-check.
+--
+-- @access_key_id@ and @secret_access_key@ are both @Text@, so transposing them
+-- decodes cleanly and the harness then presents an AWS secret as an access-key
+-- id. The mistake is silent at every layer below: AWS answers
+-- @InvalidClientTokenId@, which is indistinguishable from a revoked credential.
+--
+-- The two values are distinguishable by shape — an AWS access-key id is 20
+-- upper-case alphanumerics beginning @AKIA@ or @ASIA@, a secret is 40 characters
+-- and is not of that form — so the transposition is __detectable__ and is now
+-- refused at the decode seam. This is the same move Sprint @1.86@ made for
+-- 'Prodbox.Cluster.Topology.Machine': the wide value is read through
+-- @record@\/@field@ and narrowed by the constructor owning the invariant.
+--
+-- __The check is one-sided, and the reason is a conflict worth recording.__ The
+-- symmetric rule — also require @access_key_id@ to /have/ the access-key-id
+-- shape — was written first and is not available: it refuses this repository's
+-- own integration fixtures, and those fixtures cannot be given a
+-- structurally-valid id, because @scannedCredentialViolations@ (Sprint @1.75@,
+-- the @vault_doctrine.md@ § 20.5 mechanical outer ring) fails the build for any
+-- __tracked__ file carrying that shape. So the two rules are in direct
+-- opposition, and the credential scanner is the one that must win.
+--
+-- What survives is strictly the more valuable half. A transposition of
+-- __placeholder__ values is undetectable and now goes unremarked; a
+-- transposition of __real__ operator credentials — the case that costs an
+-- afternoon, because AWS answers @InvalidClientTokenId@ — puts a real
+-- access-key id into @secret_access_key@ and is refused.
+--
+-- __An empty field is admitted, deliberately.__ 'defaultTestSecrets' is
+-- all-empty by construction — it is what the generated schema's @default@
+-- record carries, and a unit case round-trips it back through this decoder — so
+-- refusing empty would refuse the schema's own default. The rule is the one
+-- 'Prodbox.Settings.validateAwsSubstrateSection' already uses: refuse a value
+-- that is __present and malformed__, never one that is absent.
+instance FromDhall TestSecretsAdminCredentials where
+  autoWith options =
+    narrowingTestSecretsDecoder
+      ( Dhall.record
+          ( (,,,)
+              <$> Dhall.field "access_key_id" (Dhall.autoWith options)
+              <*> Dhall.field "secret_access_key" (Dhall.autoWith options)
+              <*> Dhall.field "session_token" (Dhall.autoWith options)
+              <*> Dhall.field "region" (Dhall.autoWith options)
+          )
+      )
+      narrowTestSecretsAdminCredentials
+
+narrowTestSecretsAdminCredentials
+  :: (Text, Text, Maybe Text, Text) -> Either String TestSecretsAdminCredentials
+narrowTestSecretsAdminCredentials (keyId, secret, sessionToken, credentialRegion)
+  | looksLikeAwsAccessKeyId secret =
+      Left
+        ( "aws_admin_for_test_simulation.secret_access_key has the shape of an "
+            ++ "access-key id"
+            ++ transpositionHint
+        )
+  | otherwise =
+      Right
+        TestSecretsAdminCredentials
+          { access_key_id = keyId
+          , secret_access_key = secret
+          , session_token = sessionToken
+          , region = credentialRegion
+          }
+ where
+  transpositionHint =
+    ". The two fields are both Text, so transposing them type-checks; that is "
+      ++ "what this refusal exists to catch. No value is echoed."
+
+-- | The documented AWS access-key-id shape. Kept narrow on purpose: it is used
+-- to tell two fixture fields apart, not to validate a credential.
+looksLikeAwsAccessKeyId :: Text -> Bool
+looksLikeAwsAccessKeyId value =
+  Text.length trimmed == 20
+    && any (`Text.isPrefixOf` trimmed) ["AKIA", "ASIA"]
+    && Text.all (\character -> Char.isAsciiUpper character || Char.isDigit character) trimmed
+ where
+  trimmed = Text.strip value
+
+narrowingTestSecretsDecoder
+  :: Dhall.Decoder wide -> (wide -> Either String narrow) -> Dhall.Decoder narrow
+narrowingTestSecretsDecoder base narrow =
+  base
+    { Dhall.extract = \expression -> Dhall.fromMonadic $ do
+        wide <- Dhall.toMonadic (Dhall.extract base expression)
+        case narrow wide of
+          Right narrowed -> pure narrowed
+          Left err -> Dhall.toMonadic (Dhall.extractError (Text.pack err))
+    }
 
 instance ToDhall TestSecretsAdminCredentials
 

@@ -17,22 +17,27 @@
 -- PVCs, and the postflight tag sweep should return clean.
 module Prodbox.Lifecycle.K8sDrain
   ( CascadeDecision (..)
+  , ClusterProbe (..)
   , DrainTimeout (..)
   , DrainResult (..)
   , K8sDrainEnv (..)
   , cascadeDecisionFromDrainResult
-  , clusterReachable
+  , classifyClusterProbe
+  , clusterAbsenceEvidencePhrases
   , collectSurvivors
   , defaultDrainTimeout
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
   , drainAwsAffectingK8sResources
+  , probeCluster
+  , renderClusterProbe
   , renderDrainTimeoutRefusal
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Data.List (intercalate)
+import Data.Char (toLower)
+import Data.List (intercalate, isInfixOf)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -67,24 +72,104 @@ data K8sDrainEnv = K8sDrainEnv
 --   * 'DrainSucceeded' — cluster was reachable, the targeted K8s
 --     resources were deleted, and the bounded poll loop observed
 --     them gone before the deadline.
---   * 'DrainSkipped' — cluster was unreachable on the quick probe
---     'clusterReachable'. No delete was attempted; the cascade
---     caller treats this as a success-with-reason because the K8s
---     controllers that would have owned AWS resources are already
---     gone, and the postflight tag sweep is the backstop.
+--   * 'DrainSkipped' — the API server was positively observed to be
+--     serving nothing ('ClusterAbsent'). No delete was attempted; the
+--     cascade caller treats this as a success-with-reason on the home
+--     substrate because the K8s controllers that would have owned AWS
+--     resources are already gone, and the postflight tag sweep is the
+--     backstop.
+--   * 'DrainUnobservable' — Sprint 4.76. The probe could not decide
+--     whether a cluster is there ('ClusterUnobservable'): a denied
+--     credential, a stale context, an expired token, or a probe that
+--     could not be started all land here. Before Sprint 4.76 this state
+--     did not exist — 'clusterReachable' returned @False@ for every
+--     non-zero @kubectl@ exit, so "I was refused" was reported as "the
+--     cluster is gone" and the cascade continued on the branch where a
+--     skipped drain is success. It aborts on **both** substrates,
+--     matching @src/Prodbox/TestRunner.hs@, which has always treated
+--     even 'DrainSkipped' as @ExitFailure 1@.
 --   * 'DrainTimedOut' — cluster was reachable and the delete
 --     succeeded, but the bounded poll loop still saw surviving
 --     resources at the deadline. Carries the list of surviving
 --     resources by @Kind/namespace/name@.
 --   * 'DrainFailed' — cluster was reachable AND a delete or poll
---     step errored. This is the only outcome that should fail a
---     cascade.
+--     step errored.
 data DrainResult
   = DrainSucceeded
   | DrainSkipped String
+  | DrainUnobservable String
   | DrainTimedOut [String]
   | DrainFailed String
   deriving (Eq, Show)
+
+-- | Sprint 4.76: the three-valued Kubernetes API-server observation that
+-- replaces @clusterReachable :: K8sDrainEnv -> IO Bool@.
+--
+-- The @Bool@ manufactured certainty it did not have. @kubectl
+-- cluster-info@ exits non-zero for "nothing is listening on this
+-- address", for "your credential was refused", and for "this context
+-- names a cluster that no longer exists" alike, and the caller then
+-- read every one of them as "the cluster is gone" — the
+-- @IO Bool@ producer collapse
+-- [chaos_hardening_doctrine.md § 23](chaos_hardening_doctrine.md) names
+-- as where conversions fail.
+--
+-- Only a **recognised** absence shape yields 'ClusterAbsent'; every
+-- other non-zero exit — and a probe that could not be started at all —
+-- yields 'ClusterUnobservable'. The default is the uncertain arm, so a
+-- @kubectl@ failure mode this classifier has never seen fails closed.
+data ClusterProbe
+  = -- | The API server answered.
+    ClusterReachable
+  | -- | Positively observed: nothing is serving at the configured
+    -- address. Carries the evidence phrase that decided it.
+    ClusterAbsent !String
+  | -- | The probe could not decide. Carries the underlying detail.
+    ClusterUnobservable !String
+  deriving (Eq, Show)
+
+renderClusterProbe :: ClusterProbe -> String
+renderClusterProbe probe = case probe of
+  ClusterReachable -> "reachable"
+  ClusterAbsent evidence -> "absent (" ++ evidence ++ ")"
+  ClusterUnobservable detail -> "unobservable (" ++ detail ++ ")"
+
+-- | The closed set of @kubectl@ / client-go transport phrases that
+-- positively evidence "no API server is serving at this address". Every
+-- entry is a connection-establishment failure: the address was reached
+-- and nothing answered, or the name/route does not resolve. An
+-- authentication or authorization refusal is deliberately **not** here —
+-- being told @Unauthorized@ proves a server answered.
+clusterAbsenceEvidencePhrases :: [String]
+clusterAbsenceEvidencePhrases =
+  [ "connection refused"
+  , "connect: no route to host"
+  , "connect: network is unreachable"
+  , "no such host"
+  , "server could not find the requested resource"
+  , "the connection to the server localhost:8080 was refused"
+  ]
+
+-- | Pure classifier for the probe subprocess result, so the
+-- connection-refused / permission-denied / success split is pinned by a
+-- unit case rather than by a live cluster.
+classifyClusterProbe :: Result ProcessOutput -> ClusterProbe
+classifyClusterProbe result = case result of
+  Failure err -> ClusterUnobservable ("failed to start `kubectl`: " ++ err)
+  Success output -> case processExitCode output of
+    ExitSuccess -> ClusterReachable
+    ExitFailure code ->
+      let combined = processStderr output ++ "\n" ++ processStdout output
+          lowered = map toLower combined
+       in case [phrase | phrase <- clusterAbsenceEvidencePhrases, phrase `isInfixOf` lowered] of
+            (evidence : _) -> ClusterAbsent evidence
+            [] ->
+              ClusterUnobservable
+                ( "`kubectl cluster-info` exited with code "
+                    ++ show code
+                    ++ " and no recognised absence evidence: "
+                    ++ unwords (words combined)
+                )
 
 -- | The cascade caller's view of the drain outcome. Mirrors the
 -- skip-is-success invariant from the lifecycle doctrine: both
@@ -104,6 +189,13 @@ cascadeDecisionFromDrainResult :: DrainResult -> CascadeDecision
 cascadeDecisionFromDrainResult result = case result of
   DrainSucceeded -> CascadeContinue Nothing
   DrainSkipped reason -> CascadeContinue (Just reason)
+  DrainUnobservable detail ->
+    CascadeAbort
+      ( "K8s drain could not observe whether a cluster is present: "
+          ++ detail
+          ++ " This is not evidence that the cluster is gone, so the drain "
+          ++ "cannot be recorded as skipped-because-nothing-to-drain."
+      )
   DrainTimedOut survivors ->
     CascadeAbort
       ( "K8s drain timed out with surviving resources: "
@@ -111,16 +203,15 @@ cascadeDecisionFromDrainResult result = case result of
       )
   DrainFailed err -> CascadeAbort ("K8s drain failed: " ++ err)
 
--- | Probe whether the Kubernetes API server is reachable. Runs
--- @kubectl cluster-info --request-timeout=5s@ and returns 'False'
--- on any non-zero exit or subprocess 'Failure'. The probe does
--- **not** parse stderr — connection-refused, permission-denied,
--- and stale-context errors are all collapsed into "unreachable",
--- which is the only signal the cascade caller needs.
-clusterReachable :: K8sDrainEnv -> IO Bool
-clusterReachable env = do
-  result <-
-    captureSubprocessResult
+-- | Sprint 4.76: observe whether a Kubernetes API server is serving.
+-- Runs @kubectl cluster-info --request-timeout=5s@ and classifies the
+-- result through the pure 'classifyClusterProbe', so "nothing is
+-- listening" and "I was refused" are different answers rather than one
+-- @False@.
+probeCluster :: K8sDrainEnv -> IO ClusterProbe
+probeCluster env =
+  classifyClusterProbe
+    <$> captureSubprocessResult
       Subprocess
         { subprocessPath = "kubectl"
         , subprocessArguments =
@@ -130,26 +221,30 @@ clusterReachable env = do
         , subprocessEnvironment = Just (drainEnvironment env)
         , subprocessWorkingDirectory = drainWorkingDirectory env
         }
-  pure $ case result of
-    Failure _ -> False
-    Success output -> case processExitCode output of
-      ExitSuccess -> True
-      ExitFailure _ -> False
 
 -- | Delete every K8s resource whose deletion is required for
 -- AWS-side unwind, then poll for the cluster to settle. Begins with
--- a 'clusterReachable' probe so an already-gone cluster yields
--- 'DrainSkipped' instead of failing the cascade. Returns
+-- a 'probeCluster' observation so a positively-absent cluster yields
+-- 'DrainSkipped', an undecidable probe yields 'DrainUnobservable', and
+-- only a serving API server proceeds to the delete phase. Returns
 -- 'DrainSucceeded' when the cluster is reachable and clean before
 -- the deadline, 'DrainTimedOut' when at least one resource survives,
 -- or 'DrainFailed' when kubectl errors out during the delete phase.
 drainAwsAffectingK8sResources
   :: K8sDrainEnv -> DrainTimeout -> IO DrainResult
 drainAwsAffectingK8sResources env timeout = do
-  reachable <- clusterReachable env
-  if not reachable
-    then pure (DrainSkipped "Kubernetes API server not reachable; nothing to drain.")
-    else do
+  probe <- probeCluster env
+  case probe of
+    ClusterAbsent evidence ->
+      pure
+        ( DrainSkipped
+            ( "Kubernetes API server observed absent ("
+                ++ evidence
+                ++ "); nothing to drain."
+            )
+        )
+    ClusterUnobservable detail -> pure (DrainUnobservable detail)
+    ClusterReachable -> do
       deleteResult <- deleteAwsAffectingResources env
       case deleteResult of
         Left err -> pure (DrainFailed err)

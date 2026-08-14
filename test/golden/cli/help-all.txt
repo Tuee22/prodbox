@@ -94,7 +94,7 @@ prodbox aws stack eks destroy - Destroy the eks stack
 
 Destroy the EKS validation stack.
 Options:
-- --yes, -y - Skip confirmation prompts
+- --yes, -y - Confirm the destroy (required; this command is non-interactive and has no prompt)
 - --dry-run - Render the destroy plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
@@ -127,7 +127,7 @@ prodbox aws stack test destroy - Destroy the test stack
 
 Destroy the HA RKE2 validation stack.
 Options:
-- --yes, -y - Skip confirmation prompts
+- --yes, -y - Confirm the destroy (required; this command is non-interactive and has no prompt)
 - --dry-run - Render the destroy plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
@@ -160,7 +160,7 @@ prodbox aws stack aws-subzone destroy - Destroy the aws-subzone stack
 
 Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
 Options:
-- --yes, -y - Skip confirmation prompts
+- --yes, -y - Confirm the destroy (required; this command is non-interactive and has no prompt)
 - --dry-run - Render the destroy plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
@@ -193,7 +193,7 @@ prodbox aws stack aws-ses destroy - Destroy the aws-ses stack
 
 Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user).
 Options:
-- --yes, -y - Skip confirmation prompts
+- --yes, -y - Confirm the destroy (required; this command is non-interactive and has no prompt)
 - --dry-run - Render the destroy plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
 
@@ -899,18 +899,6 @@ Options:
 Examples:
 - prodbox test integration gateway-pods  # Run gateway pod integration tests.
 - prodbox test integration gateway-pods --record-profile  # Run the live measured-profile recorder after gateway validation.
-
-## prodbox test integration gateway-partition
-prodbox test integration gateway-partition - Run gateway partition integration tests
-
-Run gateway partition integration tests
-Options:
-- --coverage - Enable coverage reporting for the selected test scope
-- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
-- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
-
-Examples:
-- prodbox test integration gateway-partition  # Run the `gateway-partition` integration suite.
 
 ## prodbox test integration control-plane-counterexample
 prodbox test integration control-plane-counterexample - Run the frozen control-plane counterexample

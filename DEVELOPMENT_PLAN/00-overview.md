@@ -466,11 +466,11 @@ fake, or a stub; AWS-substrate coverage of suite content is orthogonal and track
 | Phase | Focus | Current result | Independent validation |
 |-------|-------|----------------|------------------------|
 | 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. Sprint `0.18` adds the configurable certificate-scope governance surface on that same documentation surface (an additional governance sprint, no further reclose). | Documentation lint/check and canonical quality gate; no runtime dependency. |
-| 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
-| 2 | Gateway Runtime and DNS Ownership | ✅ **Reclosed 2026-08-11 on Sprint `2.42` (Standard A/N)** — the own-surface reopen on the Bootstrap Broker readiness contract this phase owns through Sprints `2.39`/`2.40` is closed. `kubernetesObserveBootstrapLease` discarded its typed transport failure, so a dropped packet, a `403`, and a `404` all reached the operator as one sentence while `/healthz` answered 200. All six discarding sites now carry their detail and `requestKubernetes` classifies the caught exception onto a closed, payload-free label set rather than `show`-ing it, because the request carries a bearer token and the readiness body is operator-visible. Prior reclose on Sprint `2.41` (2026-08-07). ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
-| 3 | Chart Platform and Public Workload Delivery | ✅ **Reclosed 2026-08-11 on Sprint `3.34` (Standard A/N)** — the Kubernetes API egress coordinate has one compiled owner observed from `endpoints/kubernetes` (post-DNAT address and port together), both charts bind it through `.Values`, and the chart-lint region widens to every repo-owned template under a closed port-key set; its first run named 77 findings, reconciling with the 79 measured less the two already migrated. `dev check` 0, `test unit` 0. Validation 5 stays 🧪 Standard-O pending on Sprint `2.43`. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint. The Kubernetes API egress coordinate has no compiled owner, so three sites each author their own `443` while the API endpoint listens on `6443` post-DNAT; `3.34` derives it from `endpoints/kubernetes` and widens the chart lint to every repo-owned template, closing a region in which no gate reads a `networkpolicy.yaml` for content. Edits a live production rendering path. Prior reclose on Sprint `3.33` (2026-08-09). ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
-| 4 | Lifecycle Hardening and Pulumi Decoupling | 🔄 **Reopened 2026-08-11 on Sprints `4.76`/`4.77` (Standard A/N)** — an own-surface reopen on the destructive lifecycle paths this phase owns. A `cluster delete --cascade --yes` run narrated three `unreachable` per-run statuses as "no live per-run residue" and exited 0; the folds beneath it collapse "cannot observe" into "absent" at four seams, the postflight tag sweep returns `IO ()` so a non-empty escapee list cannot reach the exit code, and `prodbox nuke` — the doctrine's other sweep-owning surface — has no sweep. `4.77` additionally covers two AWS argv builders whose repeated filter option means the filters they name are never sent, and an `--yes` flag on four stack-destroy verbs that is wildcarded at three sinks and used as a quietness selector at the fourth. Prior state — ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. `4.73` routes the SES DNS writer through the typed `DnsRecordProgram` under its own `LongLived` owner, with a total owner/type matrix, canonical CNAME/MX value forms, and a propagation barrier that keeps the batch's single wait; `4.74` gives the Vault CAS seam the `ModelBCas*`-style vocabulary and a build rule enforcing it, after finding four callers classifying wrongly where the row said none classified at all; `4.75` owns the authored control-plane service time and corrects the haddock that called it measured. Prior reclosures stand. | Pure capacity/admission and deadline folds, the owner/type matrix and CAS classifier as total pure functions, socket-pair proofs of the `429`/`408` replies with no listener, mutation exercises on the `dev check` gates, and the installed `cli` integration suite — no live infrastructure. The live Route 53 read-back and the control-plane measured profile remain Standard-O axes. |
-| 5 | Canonical Test Suite | 🔄 **Reopened 2026-08-11 on Sprints `5.32`/`5.33` (Standard A/N)** — an own-surface reopen on the suite content this phase owns (Standard M). Three named validations cannot fail: the `LCPC-2026-07-11` reproducer Standard P depends on discards its frozen-trace argument and asserts what its own generator wrote; `daemon-bootstrap`'s unset arm is byte-identical to its `"pass"` fixture; and `gateway-partition` — a legitimate in-process property test — emits literal `=true`/`=1` strings and is cited as live evidence in eight Phase-`2` sprints. Both Deployment Qualification rows are already `pending`, so no `proven` claim is retracted; the Counterexample column stays unfilled until `5.32` lands. Prior state — ✅ Reclosed on Sprint `5.31` (2026-08-09). The final fixture drifts are corrected and the installed integration surface is green; clean-room deployment qualification remains pending under Standards O/P. | Installed `cli`/`env` integration **55/55** and canonical `prodbox test unit` exit 0 with main Hspec **3255/3255**, using fake/local proof with no later-phase or live-infrastructure dependency. |
+| 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed on Sprint `1.89` (2026-08-13)** — `1.89` gave the Tier-0 coordinates a retained parse: `ValidatedCoordinates` on `ValidatedSettings`, built by `validateConfig` from nine smart-constructed types, with the Dhall wire format byte-identical so no generated-config identity change occurs. It closes the ledger's last unowned row. Nine coordinates were *decided and discarded*; five were **never decided at all**, including `route53.zone_id` — less defended than the structurally identical `aws_substrate.hosted_zone_id` — and `pulumi_state_backend.region`, which had no rule anywhere while both its siblings did. Seven use-site re-decisions are deleted rather than moved, because the narrowed types have no empty inhabitant. Two drafts were refused by the repository itself: a both-or-neither ACME rule that rejects `prodbox config generate`'s own output, and a `dev check` rule whose first run flagged a correct read (fixed by renaming a binding, not weakening the rule). Prior: ✅ **Reclosed on Sprints `1.87` and `1.88` (2026-08-13)** — `1.88` gave `ValidatedSettings` one production constructor: the single site that forged one without running `validateConfig` (and got its resource plan by `error`-ing) is deleted by narrowing `resourceStatusLines` to the two fields it read, and a `dev check` rule keying on field *assignment* keeps the seam closed for record updates as well as constructions. The bound is stated — a compiled rule over a source region, not a property of the type. `1.87` — an own-surface reopen closing the re-scoped successor `1.84` registered against itself. `substratePublicRouteUrl` rendered `https:///path` for a substrate declaring no served host; the renderers now take the `ValidatedServedHost` that `validateConfig` already builds, whose `Fqdn` is minted only by `mkFqdn`, so the empty rendering is **unconstructible** rather than refused, and `substratePublicFqdn` is **deleted**. The row prescribed a resolved `String`, which would have left `""` well-typed and the refusal in caller discipline. Its premise was also wrong: all 16 sites resolve at eight points that already had an error channel, and nine functions stopped taking `ValidatedSettings`/`Substrate` entirely. Prior: ✅ **Reclosed on Sprint `1.84` (2026-08-12)** — an own-surface reopen closing the residual Sprint `1.83` registered against itself: `substratePublicFqdn` answered `""` where its own projection says "no served host". All six direct call sites refuse through `requireSubstratePublicFqdn`; the two pure renderers take a resolved host from an IO caller that resolves; the accessor is unexported so the empty string cannot gain a new caller. Deletion is deferred as its own re-scoped row (`substratePublicRouteUrl`, ~10 sites) rather than folded into one coupled change. Prior: ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
+| 2 | Gateway Runtime and DNS Ownership | ✅ **Reclosed on Sprint `2.45` (2026-08-13)** — an own-surface reopen deleting `validValue _ = True`, the validity predicate on every durable Bootstrap-Broker read and CAS, which made `BootstrapStoreCorrupt` unreachable for seven payload types across 20 sites. Each now re-runs the smart constructors the CBOR decode bypasses. The row was wrong about scope: six of the eleven surfaces it listed already had real predicates, and it missed the seventh undefended one. Prior: ✅ **Reclosed on Sprint `2.44` (2026-08-12)** — an own-surface reopen closing the fold defect Sprint `5.33` found: `gatewayRuntimeSampleExit` mapped both `StableObserved` and `NotStableYet` to a silent `ExitSuccess`, while the gate ten lines above retried and failed on the same constructor. The row's remedy — make it fail — was measured and declined; the function is a sampler invoked ten times per run. The decision is now pure and total, each arm names what it saw, and the deliberate sampler/gate disagreement is asserted. Prior: ✅ **Reclosed 2026-08-11 on Sprint `2.42` (Standard A/N)** — the own-surface reopen on the Bootstrap Broker readiness contract this phase owns through Sprints `2.39`/`2.40` is closed. `kubernetesObserveBootstrapLease` discarded its typed transport failure, so a dropped packet, a `403`, and a `404` all reached the operator as one sentence while `/healthz` answered 200. All six discarding sites now carry their detail and `requestKubernetes` classifies the caught exception onto a closed, payload-free label set rather than `show`-ing it, because the request carries a bearer token and the readiness body is operator-visible. Prior reclose on Sprint `2.41` (2026-08-07). ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
+| 3 | Chart Platform and Public Workload Delivery | ✅ **Reclosed on Sprints `3.36` and `3.37` (2026-08-13)** — **Sprints `3.36` ✅ and `3.37` ✅**, both found by the **first live Standard-P qualification run** — the first time this plan has gained work from running the system rather than reading it. `prodbox test all --substrate home-local` failed deterministically, twice, at the cert-manager mirror. **`3.36`**: `mirrorHostArchitectureTarget` passed no platform to `docker pull`/`docker push`, so under the containerd image store it published the whole manifest **index**; for a multi-architecture upstream that index names platforms whose blobs were never fetched. Invisible until now because **every one of the 17 mirror targets that had published before it presents a single platform locally** (the registry carries 24 entries in total). The asymmetry is the finding: the custom-image *build* path beside it has always resolved `supportedHostArchitecture`, and the mirror path — named for it — never consulted it. The sprint **records that it has no successful-publish proof**, because the working mirrors were already in the registry and were skipped. **`3.37`** is a sprint whose entire content is a measurement that exonerates this repository: five hypotheses tested and discarded before a pin moved — stale local content (purged, re-pulled, still fails), multi-arch in general (`alpine:3.20`, identical index shape, fine), quay.io (`v1.16.1` same repo, fine), cert-manager (`v1.16.3/4/5`, `v1.17.1`, all fine), controller-only (all five `v1.16.2` images fail). A specific upstream release is unpublishable and no harness work would have fixed it; the pin moves to `v1.17.1`, which **invalidates any prior component-image identity** since `certManagerChartVersion` is derived from the controller tag. One unowned residual recorded: cert-manager is the only mirrored platform component with **no fallback source**, and `3.37` is the proof that this matters. Prior reclose on Sprint `3.35` (2026-08-13) — an own-surface reopen giving the control-plane listen port and the in-cluster role-URL shape one compiled owner (`Prodbox.ControlPlane.ListenPort`), enforced by `checkControlPlaneListenPortOwner` and mutation-proven against the binder. The row's open question is answered by measurement: `runControlPlaneServer` binds without consulting the role it is handed, so the five per-role constants could never have diverged. `ChartStatics.hs`, which called the port operator-chosen deployment configuration while the binder hardcoded it, is corrected under Standard C. Rendered output byte-identical. Prior: ✅ **Reclosed 2026-08-11 on Sprint `3.34` (Standard A/N)** — the Kubernetes API egress coordinate has one compiled owner observed from `endpoints/kubernetes` (post-DNAT address and port together), both charts bind it through `.Values`, and the chart-lint region widens to every repo-owned template under a closed port-key set; its first run named 77 findings, reconciling with the 79 measured less the two already migrated. `dev check` 0, `test unit` 0. Validation 5 stays 🧪 Standard-O pending on Sprint `2.43`. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint. The Kubernetes API egress coordinate has no compiled owner, so three sites each author their own `443` while the API endpoint listens on `6443` post-DNAT; `3.34` derives it from `endpoints/kubernetes` and widens the chart lint to every repo-owned template, closing a region in which no gate reads a `networkpolicy.yaml` for content. Edits a live production rendering path. Prior reclose on Sprint `3.33` (2026-08-09). ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed on Sprints `4.78`, `4.79`, and `4.80` (2026-08-13)** — the own-surface reopen on the observation-producer and destructive-cleanup surfaces closes, taking this phase's last three unowned rows. Nine prose classifiers become one anchored, probe-keyed owner; two destroy paths get opposite remedies for the same shape (report vs refuse), decided rather than defaulted; and the sweep's last skip arm is resolved from the substrate the cascade already infers, adding no requirement. Prior: -08-11 on Sprints `4.76`/`4.77` (Standard A/N)** — the own-surface reopen on the destructive lifecycle paths this phase owns closes. `4.76`: the cascade's four "cannot observe → absent" folds are each three-valued with the **uncertain arm as the default** — `ClusterProbe` reads a positive absence only from a recognised connection-establishment phrase, `inferCascadeSubstrate` releases the home branch only when every stack was observed absent, `reconcileAbsent` returns observed-absent and unobserved separately so an unresolved observation fails the aggregate, and the cascade folds six phase outcomes while still running every phase. The postflight sweep is fail-closed through one total `decideTagSweep`, and `prodbox nuke` gains the terminal sweep § 5/§ 6b assign it — whose **absence a unit case had asserted as an invariant**. `4.77`: one `--filters`/`--tag-filters` occurrence per call with the cluster and ownership sweeps issued as two calls unioned by ARN (the Tagging API ANDs `TagFilters`, so the intended OR was never one call), a client-side re-filter in the EBS reaper through a classifier that had no production caller, a fail-closed payload parse, and `--yes` gated at one site across all four destroy verbs with the quietness selector it had doubled as split out. Prior state — ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. `4.73` routes the SES DNS writer through the typed `DnsRecordProgram` under its own `LongLived` owner, with a total owner/type matrix, canonical CNAME/MX value forms, and a propagation barrier that keeps the batch's single wait; `4.74` gives the Vault CAS seam the `ModelBCas*`-style vocabulary and a build rule enforcing it, after finding four callers classifying wrongly where the row said none classified at all; `4.75` owns the authored control-plane service time and corrects the haddock that called it measured. Prior reclosures stand. | Pure capacity/admission and deadline folds, the owner/type matrix and CAS classifier as total pure functions, socket-pair proofs of the `429`/`408` replies with no listener, mutation exercises on the `dev check` gates, and the installed `cli` integration suite — no live infrastructure. The live Route 53 read-back and the control-plane measured profile remain Standard-O axes. |
+| 5 | Canonical Test Suite | ✅ **Reclosed on Sprint `5.34` (2026-08-13)** — an own-surface reopen closing this phase's two remaining unowned rows. The Tier-0 write gate widens from one line to one hop within one top-level definition (two drafts produced false positives first; all are recorded), and the test-secrets credential guard is one-sided because the symmetric rule is forbidden by the repository's own credential scanner. Prior: ✅ **Reclosed 2026-08-11 on Sprints `5.32`/`5.33` (Standard A/N)** — the own-surface reopen on the suite content this phase owns (Standard M) closes. `5.32`: the `LCPC-2026-07-11` reproducer consumes a repository-owned frozen trace whose per-mechanism dispositions are parsed totally over the mechanism enumeration and bound into the trace digest, and a committed mutation fixture makes the command exit non-zero. The mutation fixture is deliberately not digest-pinned, because pinning it would make the digest gate fire first and the disposition consumption — the thing under test — would never run. `5.33`: `daemon-bootstrap`'s unset arm probes the Bootstrap Broker's route surface with read-only `GET`s and refuses, naming the absent daemon, when nothing answers; the audit block declares `AUDIT_PROVENANCE=`. `gateway-partition` renders its values from the composition and left the integration surface for the unit suite, reducing the canonical node set and no coverage. Both Deployment Qualification rows were already `pending`, so no `proven` claim is retracted; the Counterexample column may now be filled by a qualification run. Prior state — ✅ Reclosed on Sprint `5.31` (2026-08-09). The final fixture drifts are corrected and the installed integration surface is green; clean-room deployment qualification remains pending under Standards O/P. | Installed `cli` integration **57/57** and `env` exit 0, canonical `prodbox test unit` exit 0 with main Hspec **3374/3374**, plus the mutation exercise against the committed frozen fixture and the unset-fixture refusal — all fake/local, with no later-phase or live-infrastructure dependency. |
 | 6 | Final Clean-Room Rerun and Handoff | ✅ Reclosed on Sprint `6.4` (2026-08-02): exact-prefix cutover/restore/cleanup, rollback refusal, installed-binary plan, and retired-transport absence are validated; destructive aggregates remain qualification. | Focused 8/8, installed command exit 0, unit 3028/3028, generated docs, and `dev check` exit 0. |
 | 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic ownership, target DNS01, public-A Provider intents, and fault dispositions are code-locally complete. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ✅ Reclosed on Sprint `8.12` (2026-08-02): the durable SES workflow and non-partial invite fault/qualification artifact are code-locally complete; live qualification remains Standards O/P. | Invite 8/8, daemon lifecycle 27/27, unit 3067/3067, installed CLI/environment 55/55 twice, and `prodbox dev check` exit 0. |
@@ -482,28 +482,210 @@ history is consolidated in [README.md → Closure Status](README.md#closure-stat
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-08-11 — Phases `4` and `5` reopen on their own surfaces):**
+**Current head state (2026-08-13, third entry — Phase `3` reopens and recloses on Sprints `3.36`
+and `3.37`; every phase stays closed):**
+
+- **Both sprints were found by the first live Standard-P qualification run**, which is the first time
+  the plan has gained work from running the system rather than reading it. `prodbox test all
+  --substrate home-local` failed deterministically, twice, at the cert-manager mirror.
+- **Sprint `3.36`**: the mirror publication path passed no platform to `docker pull`/`docker push`,
+  so it published the whole manifest index. Invisible until now because **every mirror target that
+  had published before it presents a single platform** (17 of 24 entries). The custom-image build path beside it had always pinned the host
+  architecture; the mirror path, named for it, never did. The sprint first recorded **no successful-publish
+  proof** — the working mirrors were skipped — and the gap closed on the next run: seven publications,
+  zero failures, across **both** of its callers.
+- **Sprint `3.37`**: five hypotheses tested and discarded before a pin moved — stale cache,
+  multi-arch in general, quay.io, cert-manager, controller-only. The conclusion is that the pinned
+  `v1.16.2` release is unpublishable upstream while its neighbours are fine. The pin moves to
+  `v1.17.1`, which **invalidates any prior component-image identity**.
+- **One unowned residual recorded**: cert-manager is the only mirrored platform component with no
+  fallback source, and `3.37` is the proof that this matters.
+
+**Previous head state (2026-08-13, second entry — Phase `1` reopens and recloses on Sprint `1.89`;
+every phase stays closed):**
+
+- **Sprint `1.89` ✅ closes the ledger's last unowned row** by giving the Tier-0 coordinates a
+  retained parse: `ValidatedCoordinates` on `ValidatedSettings`, built by `validateConfig` from nine
+  smart-constructed types in the new `Prodbox.Settings.Coordinate`. The Dhall wire format is
+  **byte-identical** — no field retyped, no schema alternative added — so no Standard-P
+  generated-config identity change occurs. Counts, derived from the table:
+  pending **63 → 64**, unowned **1 → 2**, completed **289 → 290**. The unowned count rising as the
+  last unowned row closes is stated as the net increase it is, because the available alternative
+  framing is true of the row and false of the count.
+- **The row described one defect and there are two.** Nine coordinates were *decided and discarded*;
+  five were **never decided at all**. Two of those five matter: `route53.zone_id` — the zone every
+  home DNS write uses — was checked only for emptiness while the structurally identical
+  `aws_substrate.hosted_zone_id` had been shape-checked on every load since Sprint `1.81`; and
+  `pulumi_state_backend.region` had no rule anywhere while both its siblings in the same three-field
+  section had one, and it is read straight into an S3 client.
+- **Two drafts were refused by the repository itself, and both refusals are worth more than the
+  fix.** The ACME account modelled as both-or-neither refuses `prodbox config generate`'s own output,
+  because `defaultConfigFile` ships the ZeroSSL directory with an empty contact; the halves are not
+  symmetric. And the new `dev check` rule's first run flagged a *correct* read, because one module
+  bound `config` to both a validated and an unvalidated config — fixed by renaming the binding, not
+  by weakening the rule.
+
+**Previous head state (2026-08-13 — Phases `1`–`5` reopen and reclose; every phase stays closed):**
+
+- **Sprints `1.87` ✅, `1.88` ✅, `2.45` ✅, `3.35` ✅, `4.78` ✅, `4.79` ✅, `4.80` ✅, and `5.34` ✅
+  work the `Pending Removal` ledger** in phase-numerical order as own-surface reopens, and
+  **the unowned count reaches 1**: pending **71 → 63**, unowned **9 → 1**, completed **280 → 289**.
+  The survivor is the per-field Tier-0 narrowing remainder Sprint `1.88` split off, kept open
+  deliberately: retyping those fields in Dhall is a Standard-P generated-config identity change.
+- **Three sprints found their row's prescribed remedy unavailable or wrong.** `2.45`'s row listed
+  eleven surfaces of which six already had real predicates, and missed the seventh undefended one.
+  `4.78`'s worked example was measured **unreachable**, which is what made deleting three arms on a
+  fail-closed teardown gate behaviour-preserving. `5.34`'s prescribed symmetric credential check is
+  **not available at all**: it refuses this repository's own integration fixtures, which cannot carry
+  a valid AWS key shape because Sprint `1.75`'s credential scanner fails the build for any tracked
+  file that does. Two repository rules in direct opposition; the scanner wins.
+- **Two rows were closed by argument rather than by code, and say so.** `4.80` answered a policy
+  question with machinery the cascade already had, adding no requirement; `5.34` established that
+  an all-empty `TestSecrets` fixture cannot be refused at decode, because it *is* the generated
+  schema's own `default`. `1.87` closes the re-scoped successor Sprint `1.84` registered against
+  itself; `1.88` **splits** the Tier-0 narrowed-types row, closing its type-guarantee half in place.
+  `2.45` closed the Bootstrap-Broker durable-validity row.
+
+- **A value with no owner cannot be drifted from, and the module that declined to own it was wrong
+  about it.** The control-plane listen port was a literal in 14 places across 9 modules while
+  `ChartStatics.hs` called it operator-chosen deployment configuration — and the binder hardcoded it,
+  so the declared choice did not exist. The row's open question is answered by measurement: a
+  per-role port is not representable in `runControlPlaneServer`, so the five per-role constants could
+  never have diverged. The URL *shape* around the port was restated just as often and now derives
+  from one encoder too.
+- **A refusal constructor that could not be produced.** `validValue _ = True` was the validity
+  predicate on every durable Bootstrap-Broker read and CAS, so `BootstrapStoreCorrupt` was
+  unreachable for the payloads passing through it. The row listed eleven surfaces and called them
+  "nine payload types"; six already had real predicates and it **missed** the seventh undefended one
+  — the storage-generation binding every other payload is checked against. Measured: 7 types, 20
+  sites. The fix is one rule: these records are read back through CBOR, which bypasses every smart
+  constructor they are otherwise built through, so each predicate re-runs exactly those.
+- **`ValidatedSettings` now has one production constructor.** Its row read as though the exported
+  constructor were a diffuse risk across the tree; there were exactly **three** applications
+  tree-wide. The one production forge built a record no validation had produced so it could call a
+  function reading two of its four fields, and got its plan by `error`-ing — **deleted rather than
+  guarded** by narrowing the reader, taking two production `error` calls with it. A `dev check` rule
+  keys on field *assignment*, so a record update is caught too. The bound is stated as what it is: a
+  compiled rule over a source region, not a property of the type. All three of the row's counts were
+  restatements and all three were wrong (30/40/74 recorded, 27/18/56 measured).
+- **The empty served hostname is now unconstructible rather than refused.** The row prescribed
+  handing the pure renderer a resolved `String`, which leaves `""` a well-typed inhabitant and the
+  refusal in caller discipline — the property `1.84` already had and recorded as insufficient. The
+  renderers take the `ValidatedServedHost` that `validateConfig` already builds, whose `Fqdn` is
+  minted only by `mkFqdn`; `substratePublicFqdn` is **deleted**. The stronger shape cost nothing —
+  the accessor's whole body was `maybe "" servedHostString` over that same value.
+- **The row's premise was wrong, and that is the finding.** It called the sites "pure renderers
+  reached from IO callers": true of the renderers, false of the frames calling them. All 16 sites
+  resolve at **eight** points that already held a `failWith` or a `Left`, and nine functions stopped
+  taking `ValidatedSettings`/`Substrate` entirely because they carried the config only to re-derive a
+  host their caller had resolved.
+- **The pending total is corrected by derivation.** The 2026-08-12 entry recorded `73 → 66`; counted
+  from the table the figure was `78 → 71`. The unowned and completed counts in that entry are exact;
+  only the total was wrong, by five — the same *inventory stated in prose* class that pass named
+  three times in one day. The derivation now sits beside the count in the ledger.
+
+**Previous head state (2026-08-12 — Phase `0` reopens and recloses; every phase stays closed):**
+
+- **Sprints `0.27` ✅, `0.28` ✅, `0.29` ✅, `1.84` ✅, `1.85` ✅, `1.86` ✅, and `2.44` ✅ work the
+  `Pending Removal` ledger**, the plan's own stated next axis, in phase-numerical order as
+  own-surface reopens. Unowned count **16 → 9**, pending ~~**73 → 66**~~ **78 → 71** (corrected
+  2026-08-13 by derivation); eight rows closed and one re-scoped successor added.
+- **Two rows had the wrong remedy written into them**, and measuring the caller showed it both
+  times: `1.86`'s `Raw*` DTO cascades into two generically-derived records, and `2.44`'s
+  "make it fail" would abort every suite run before the gate that owns the verdict was reached —
+  the sampler is right to continue; it was wrong to continue *silently*.
+- **`1.86` declined the shape its row prescribed, after measuring it.** A `Raw*` DTO narrowed after
+  decode cascades into `ProdboxParameters` and `ConfigFile`, both deriving `FromDhall` generically.
+  A validating decoder reaches the same seam with no cascade and is stronger — the DTO leaves a
+  window in which the unchecked value exists, and this leaves none.
+- **`1.85` closed two rows whose shape is a description contradicting what it describes** — a
+  Haddock implying a production role that Sprint `1.83` removed, and a `--yes` help string reading
+  "Skip confirmation prompts" on four verbs with no prompt where Sprint `4.77` made the flag *be*
+  the confirmation. Neither closed by deletion: the contract function is kept and made load-bearing,
+  and the help text fixed without touching the parser shared with verbs that do prompt.
+- **Three of the four rows were wrong about their own measurements**, and `1.84`'s was wrong in both
+  directions at once: it estimated "roughly a dozen pure manifest renderers with no error channel"
+  and recorded that as measured, where the truth is six direct sites, four already in `IO ExitCode`,
+  only two pure — and the real ten-site cascade sits behind a different function the row folded into
+  the same count. `1.84` closes the six and **unexports** the accessor so the empty-string answer
+  cannot gain a new caller; deleting it would require the ten in one coupled change, which Sprints
+  `4.74` and `1.83` each declined.
+- **`0.29` closes a class with a field rather than a gate**, and is the pass's one Standard-P move.
+  No text comparison could catch a hand edit to a Tier-0 primitive that round-trips unchanged — the
+  edited file *is* the generator's output for the record it carries. Stamping a content-derived
+  witness makes the file no longer self-consistent after an edit, so the **existing** Sprint-`0.24`
+  comparison catches it with no second check. It changes the content of every generated
+  `prodbox.dhall`, so a qualification run must bind the post-`0.29` config identity.
+- **Both rows understated their own defect, in opposite directions, for one reason: each stated an
+  inventory in prose instead of deriving it.** `0.27` recorded 19/39 missing Standard-H fields
+  against **11/10** measured, plus a 4-sprint category it had no name for; `0.28` recorded four
+  unguarded `PRODBOX_*` reads against **12** measured. Both are now derived by a registry the
+  worktree must agree with.
+- **The same mistake was available to this pass and was made once**: the first Standard-H
+  measurement mis-classified Sprint `1.62` exactly as the original row did, because a naive match
+  does not see `**Implementation** (landed):`. The gate accepts all three heading forms for that
+  reason.
+- **A third assertion found holding a defect in place**, after Sprint `4.76`'s `nuke` sweep and
+  Sprint `5.33`'s `gateway-partition` registration: a unit case pinned
+  `destructivePlanOptionsArms` to two constructors while seven dispatched outside the region.
+  `unit_testing_policy.md` statement 11 now names the class.
+
+**Prior head state (2026-08-11, second entry — Phases `4` and `5` reclose; every phase is
+closed):**
+
+- **All four sprints the 2026-08-11 audit registered are ✅ Done**, on the conditions their
+  own-surface reopens existed to remove. Phase `4` recloses on `4.76`/`4.77`; Phase `5` on
+  `5.32`/`5.33`. The unowned `Pending Removal` count moves **14 → 16** while the pending total falls
+  **79 → 73**: every row closed had an owner, and both rows added are unowned residuals declined
+  with a stated reason.
+- **A gate can hold a defect in place as firmly as it can catch one, and that is the finding to
+  carry forward.** A unit case listed `discoverClusterTaggedAwsResources` among tokens forbidden in
+  `src/Prodbox/CLI/Nuke.hs`, so the absence of the terminal tag sweep that
+  [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+  § 5 and § 6b have always assigned to `nuke` was an **asserted invariant**. It was found by reading
+  the doctrine against the gate, not by reading the code.
+- **The reported narration defect was the smallest of four that composed.** Beneath it,
+  `inferCascadeSubstrate` read an unreadable backend as the home substrate — the branch where a
+  skipped drain is success; `clusterReachable :: IO Bool` made a refused credential
+  indistinguishable from a departed cluster; and the sweep returned `IO ()`. Each is now three-valued
+  with the **uncertain arm as the default** rather than as a recognised special case, which is the
+  producer-layer correction [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)
+  calls for.
+- **The qualification machinery was the serious half, and it is now falsifiable.** The
+  `LCPC-2026-07-11` reproducer consumes a repository-owned frozen trace whose dispositions are
+  digest-bound, and a committed mutation fixture makes the command exit non-zero. Both Deployment
+  Qualification rows were already `pending`, so **nothing is retracted** — the standing prohibition
+  lifts instead: the Counterexample column may now be filled by a qualification run, where before it
+  could not be filled by anything. Sprints `5.19` and `8.12`'s Standard-C corrections are updated to
+  say the dependency is discharged.
+- **Four sprints move Standard-P surfaces**: `4.76` and `4.77` touch destructive cleanup and
+  lifecycle orchestration; `5.32` and `5.33` change which qualification inputs can fail, and `5.33`
+  changes the canonical suite's node set by moving `gateway-partition` to the unit suite. All rows
+  are already `pending`, so nothing is invalidated, but a future qualification run must exercise the
+  post-`4.77` cascade and must not carry forward a cleanup result recorded when the sweep could not
+  fail.
+- **A pre-existing regression was found while validating and fixed here.** `prodbox test integration
+  cli` was failing 8 of 55 before this work began — Sprint `3.34` made `endpoints/kubernetes` a live
+  observation and closed without running the integration suite, and neither fake `kubectl` served
+  it. The failing set was identical before and after the `4.76` code, so no sprint here caused it.
+- **Sprint `4.76`'s reproduction was run live.** With RKE2 installed and its API server stopped,
+  `prodbox cluster delete --cascade --yes` reported per-run state as unobserved, never printed "no
+  live per-run residue", exited 1 naming the unresolved phases, and still ran the drain, reaper,
+  uninstall, and sweep. The same input inferred `substrate=aws` where the pre-`4.76` predicate would
+  have inferred home-local and exited 0, so the composing chain is demonstrated against live state
+  rather than argued.
+
+**Prior head state (2026-08-11, first entry — Phases `4` and `5` reopen on their own surfaces):**
 
 - **A lifecycle narration defect and three unfalsifiable validations are the same defect shape.** A
   `cluster delete --cascade --yes` run on a host with RKE2 installed but not serving narrated three
-  `unreachable` per-run statuses as "no live per-run residue" and exited 0. Phase `4` reopens on
-  Sprints `4.76`/`4.77` 📋; Phase `5` reopens on Sprints `5.32`/`5.33` 📋. Neither reopen blocks the
-  other and neither blocks any earlier phase (Standard N).
-- **The type layer is not the problem, which is the useful finding.** ~45 observation-shaped ADTs
-  were enumerated and nearly all give their uncertain constructor its own arm. The collapses are one
+  `unreachable` per-run statuses as "no live per-run residue" and exited 0. Phase `4` reopened on
+  Sprints `4.76`/`4.77`; Phase `5` on `5.32`/`5.33`. Neither reopen blocked the other or any earlier
+  phase (Standard N).
+- **The type layer was not the problem, which is the useful finding.** ~45 observation-shaped ADTs
+  were enumerated and nearly all give their uncertain constructor its own arm. The collapses were one
   hop upstream in the **producers** — `IO Bool` probes and `String -> Bool` prose sniffers that
-  decide which constructor to mint, so `ResidueUnreachable` is often never reached because the
-  classifier already said `Absent`. This is
-  [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md), which
-  already names conversions as where this project's MISU work has actually failed.
-- **The qualification machinery is the serious half.** The `LCPC-2026-07-11` reproducer named by
-  Standard P discards its trace argument, so the mechanism written to keep fake-interpreter evidence
-  out of qualification cannot itself fail. Both Deployment Qualification rows are already `pending`,
-  so **nothing is retracted**; the Counterexample column may not be filled until Sprint `5.32` lands,
-  and Sprints `5.19` and `8.12` carry Standard-C corrections recording that dependency.
-- **Two sprints move Standard-P surfaces**: `4.76` and `4.77` both touch destructive cleanup and
-  lifecycle orchestration. Both rows are already `pending`, so nothing is invalidated, but a future
-  qualification run must exercise the post-`4.77` cascade.
+  decide which constructor to mint.
 
 **Prior head state (2026-08-10, second entry — every phase is closed):**
 

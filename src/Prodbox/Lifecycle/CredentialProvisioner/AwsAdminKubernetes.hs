@@ -80,6 +80,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   )
 import Prodbox.Lifecycle.Lease (authorityTimeMicros)
 import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -762,10 +766,13 @@ findStatus name = find (\(ContainerStatusDto actual _ _) -> actual == name)
 mapContains :: Map Text Text -> Map Text Text -> Bool
 mapContains expected actual = all (\(key, value) -> Map.lookup key actual == Just value) (Map.toList expected)
 
+-- | Sprint 4.78: keyed through the one owner, and scoped to __stderr__.
+-- It used to match against @stdout <> stderr@, so a kubectl command that
+-- succeeded and printed an object whose own content contained @not found@ —
+-- a ConfigMap value, a container log line, a condition message — was read as
+-- the object being absent.
 isNotFound :: ProcessOutput -> Bool
-isNotFound output =
-  let combined = Text.toLower (Text.pack (processStdout output <> processStderr output))
-   in "notfound" `Text.isInfixOf` combined || "not found" `Text.isInfixOf` combined
+isNotFound output = reportsAbsence KubernetesObjectProbe (processStderr output)
 
 boundedField :: Text -> Int -> Text -> Either AwsAdminKubernetesError Text
 boundedField name maximumLength raw =

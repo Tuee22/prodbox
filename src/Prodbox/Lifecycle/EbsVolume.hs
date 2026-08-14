@@ -31,6 +31,9 @@ module Prodbox.Lifecycle.EbsVolume
   , ebsDiscoverResultToResidue
   , testScopedEbsVolumeIdsFromTagRows
   , testScopedEbsReaperPlan
+  , ebsVolumeTagRows
+  , ebsVolumeResourceCoordinate
+  , ebsVolumeIdFromArn
   , renderTestScopedEbsReaperReport
   , discoverEbsVolumes
   , ensureRetainedEbsVolumes
@@ -136,6 +139,21 @@ ebsManagedResourceName = "aws-ebs-volumes"
 ebsPersistentVolumeTagKey :: String
 ebsPersistentVolumeTagKey = "prodbox.io/persistent-volume"
 
+-- | Sprint 4.77: **one** @--filters@ occurrence carrying every filter value.
+--
+-- The AWS CLI parses list-valued options with @store@, so a repeated option
+-- *replaces* the earlier occurrence rather than accumulating. This builder
+-- previously emitted @--filters@ twice under 'EbsPerRunTest', so the request
+-- AWS actually received carried only @kubernetes.io\/cluster\/\<name\>=owned@ —
+-- the ownership and lifecycle filters were dropped on the wire while the
+-- source read as though all three were sent. Measured:
+--
+-- > aws ec2 describe-volumes --filters A B --filters C
+-- >   -> body: Filter.1.Name = C          (A and B never sent)
+--
+-- The defect is invisible to any test that does not assert on the argument
+-- list, which is why 'ebsDescribeVolumesArgs' is pinned exactly for both
+-- scopes.
 ebsDescribeVolumesArgs :: EbsVolumeScope -> [String]
 ebsDescribeVolumesArgs scope =
   [ "ec2"
@@ -143,19 +161,17 @@ ebsDescribeVolumesArgs scope =
   , "--output"
   , "json"
   , "--filters"
-  , tagFilter TagSweep.prodboxManagedByTagKey TagSweep.prodboxManagedByTagValue
-  , tagFilter TagSweep.ebsLifecycleTagKey lifecycleValue
   ]
-    ++ clusterFilter
+    ++ [ tagFilter TagSweep.prodboxManagedByTagKey TagSweep.prodboxManagedByTagValue
+       , tagFilter TagSweep.ebsLifecycleTagKey lifecycleValue
+       ]
+    ++ clusterFilterValues
  where
-  (lifecycleValue, clusterFilter) = case scope of
+  (lifecycleValue, clusterFilterValues) = case scope of
     EbsRetainedProduction -> (TagSweep.ebsRetainedLifecycleValue, [])
     EbsPerRunTest clusterName ->
       ( TagSweep.ebsTestScopedLifecycleValue
-      ,
-        [ "--filters"
-        , tagFilter (TagSweep.ebsClusterOwnedTagKey clusterName) "owned"
-        ]
+      , [tagFilter (TagSweep.ebsClusterOwnedTagKey clusterName) "owned"]
       )
 
 ebsDeleteVolumeArgs :: EbsVolumeId -> [String]
@@ -353,11 +369,44 @@ testScopedEbsVolumeIdsFromTagRows clusterName resources =
     , Just volumeId <- [ebsVolumeIdFromArn (TagSweep.taggedResourceArn resource)]
     ]
 
+-- | Sprint 4.77: project a discovered volume's own tags into the tag-row shape
+-- 'TagSweep.partitionEbsTagRows' decides over, so the client-side re-filter
+-- reuses the already-unit-tested classifier rather than restating it.
+--
+-- The ARN field carries the @volume\/\<id\>@ resource form rather than a full
+-- ARN, because @ec2 describe-volumes@ reports a volume id and not an ARN, and
+-- the account and region are not observed here. That form is exactly what
+-- 'ebsVolumeIdFromArn' projects back out — a unit case asserts the round trip
+-- rather than leaving the coupling implicit.
+ebsVolumeTagRows :: EbsVolume -> [TagSweep.TaggedResource]
+ebsVolumeTagRows volume =
+  [ TagSweep.TaggedResource
+      { TagSweep.taggedResourceArn = ebsVolumeResourceCoordinate (ebsVolumeId volume)
+      , TagSweep.taggedResourceMatchedTagKey = key
+      , TagSweep.taggedResourceMatchedTagValue = value
+      }
+  | (key, value) <- ebsVolumeTags volume
+  ]
+
+ebsVolumeResourceCoordinate :: EbsVolumeId -> String
+ebsVolumeResourceCoordinate volumeId = "volume/" ++ unEbsVolumeId volumeId
+
+-- | Sprint 4.77: the reaper's plan is now a **client-side re-filter** over the
+-- volumes' own tags, not @map 'ebsVolumeId'@ over whatever @describe-volumes@
+-- returned.
+--
+-- Taking every returned volume was contained only by an accident: the argv
+-- defect above meant AWS filtered on the cluster tag alone, and
+-- prodbox-created retained volumes happen to be tagged without that tag. One
+-- retained volume gaining a cluster tag would have made this delete production
+-- EBS. The two guards are now independent — the argv narrows the query, and
+-- this fold narrows the result — and neither is sufficient alone.
 testScopedEbsReaperPlan :: String -> [EbsVolume] -> TestEbsReaperPlan
 testScopedEbsReaperPlan clusterName volumes =
   TestEbsReaperPlan
     { testEbsReaperScope = EbsPerRunTest clusterName
-    , testEbsReaperVolumeIds = map ebsVolumeId volumes
+    , testEbsReaperVolumeIds =
+        testScopedEbsVolumeIdsFromTagRows clusterName (concatMap ebsVolumeTagRows volumes)
     }
 
 renderTestScopedEbsReaperReport :: TestEbsReaperReport -> String

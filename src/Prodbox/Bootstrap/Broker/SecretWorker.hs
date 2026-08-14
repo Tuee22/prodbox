@@ -156,6 +156,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
     -- * Restart/disconnect recovery
   , SecretWorkerInterruption (..)
   , SecretWorkerDurableCheckpoint
+  , secretWorkerCheckpointInvariantViolations
   , secretWorkerIntentCheckpoint
   , noSecretWorkerReceipt
   , receiptCapturedCheckpoint
@@ -1348,6 +1349,40 @@ data SecretWorkerDurableCheckpoint
   | InternalWorkerAbsent !AbsentSecretWorker
   | InternalWorkerCheckpointUnobservable !Text
   deriving stock (Eq, Show)
+
+-- | Sprint 2.45: what a durably-stored checkpoint owes, stated beside the type
+-- rather than at the store boundary — the placement
+-- 'Prodbox.Bootstrap.Broker.Custody.rootInitInvariantViolations' already uses,
+-- and the reason this type can stay exported abstractly.
+--
+-- The checkpoint is persisted and read back through @Serialise@, which
+-- reconstructs it positionally and bypasses the constructors above. Only one
+-- arm carries a value those constructors would have constrained: an
+-- unobservable checkpoint's reason. A durably-recorded \"cannot observe\" that
+-- says nothing is the distinguishability defect
+-- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- names, written to the store — the reader cannot tell it from a checkpoint
+-- whose reason was lost in transit.
+--
+-- The list is empty for every other arm, and that is a decision rather than an
+-- omission: their payloads are themselves closed constructors whose own
+-- invariants (the request/result operation binding, for one) are checked where
+-- they are minted.
+secretWorkerCheckpointInvariantViolations
+  :: SecretWorkerDurableCheckpoint -> [Text]
+secretWorkerCheckpointInvariantViolations checkpoint = case checkpoint of
+  InternalWorkerCheckpointUnobservable reason
+    | Text.null (Text.strip reason) ->
+        [Text.pack "secret-worker checkpoint is unobservable but records no reason"]
+    | otherwise -> []
+  InternalWorkerIntent _ -> []
+  InternalNoWorkerReceipt _ -> []
+  InternalWorkerAuthoritativelyRecovered _ _ -> []
+  InternalReceiptCaptured _ -> []
+  InternalSessionRevoked _ -> []
+  InternalWorkerExited _ -> []
+  InternalWorkerDeleted _ -> []
+  InternalWorkerAbsent _ -> []
 
 secretWorkerIntentCheckpoint
   :: SecretWorkerIntent -> SecretWorkerDurableCheckpoint

@@ -494,7 +494,6 @@ data IntegrationSuite
   | IntegrationEnv
   | IntegrationGatewayDaemon
   | IntegrationGatewayPods
-  | IntegrationGatewayPartition
   | IntegrationControlPlaneCounterexample
   | IntegrationCertificateScope
   | IntegrationCleanRoomHandoff

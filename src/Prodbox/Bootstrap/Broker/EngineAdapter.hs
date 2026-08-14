@@ -43,6 +43,7 @@ import Prodbox.Bootstrap.Broker.Server
 import Prodbox.Bootstrap.Broker.StoreBoundary
   ( StoreBoundaryError (..)
   )
+import Prodbox.CLI.Output (writeDiagnosticLine)
 
 engineBrokerInterpreter :: BrokerEngine IO -> BrokerInterpreter
 engineBrokerInterpreter engine =
@@ -56,9 +57,80 @@ engineBrokerInterpreter engine =
           body
           (replyStatusFor route response)
           (encodeSomeBrokerResponse response)
-      Left failure ->
+      Left failure -> do
+        -- Sprint 2.46: name the refusal server-side before it becomes a reply.
+        -- Five distinct engine errors collapse to one wire body, so without
+        -- this the operator cannot tell which decision refused.
+        writeDiagnosticLine (brokerEngineErrorDiagnostic route failure)
         let (status, responseBody) = engineErrorReply failure
          in boundedReply context route body status responseBody
+
+-- | Sprint 2.46: a secret-safe, total name for a refusal.
+--
+-- __This deliberately renders the constructor, not the carried detail.__ The
+-- detail on a boundary refusal is frequently @Text.pack . show@ over a typed
+-- error, and these are Vault bootstrap paths; a @show@ that one day carries
+-- token or share material would publish it to the pod log, which is the exact
+-- class [vault_doctrine.md § 20](../../../documents/engineering/vault_doctrine.md)
+-- forbids. Constructor names are a closed, authored, finite set and cannot
+-- carry a secret.
+--
+-- __The bound, therefore:__ this answers /which decision refused/, not /why/.
+-- That is the question that was unanswerable — `boundary-refused` on the wire
+-- is produced by five different engine errors — and it is answered without
+-- taking on a leak risk to do it. Widening to the detail needs a redaction
+-- analysis of every producer, which is its own work.
+brokerEngineErrorDiagnostic :: BrokerRoute -> BrokerEngineError -> String
+brokerEngineErrorDiagnostic route failure =
+  "bootstrap-broker refused "
+    ++ brokerRoutePath route
+    ++ ": "
+    ++ brokerEngineErrorName failure
+    ++ boundaryDetailClass failure
+ where
+  boundaryDetailClass value = case value of
+    EngineProgramEvidenceRefused boundary -> " (" ++ boundaryName boundary ++ ")"
+    EngineCapabilityAdmissionRefused boundary -> " (" ++ boundaryName boundary ++ ")"
+    EngineCapabilityExecutionRefused boundary -> " (" ++ boundaryName boundary ++ ")"
+    EngineFenceAcquireRefused boundary -> " (" ++ boundaryName boundary ++ ")"
+    EnginePhysicalCallRefused boundary -> " (" ++ boundaryName boundary ++ ")"
+    _ -> ""
+  boundaryName boundary = case boundary of
+    EngineBoundaryUnavailable _ -> "boundary-unavailable"
+    EngineBoundaryRefused _ -> "boundary-refused"
+    EngineBoundaryAmbiguous _ -> "boundary-ambiguous"
+
+-- | The closed constructor set, spelled out so a new engine error is a compile
+-- error here rather than an unnamed refusal in production.
+brokerEngineErrorName :: BrokerEngineError -> String
+brokerEngineErrorName failure = case failure of
+  EngineUnknownRoute -> "EngineUnknownRoute"
+  EngineWrongMethod _ -> "EngineWrongMethod"
+  EngineBodyRequired _ -> "EngineBodyRequired"
+  EngineBodyForbidden _ -> "EngineBodyForbidden"
+  EngineProtocolRefused _ -> "EngineProtocolRefused"
+  EngineProgramEvidenceRefused _ -> "EngineProgramEvidenceRefused"
+  EngineEvidenceGenerationMismatch _ -> "EngineEvidenceGenerationMismatch"
+  EngineCapabilityAdmissionRefused _ -> "EngineCapabilityAdmissionRefused"
+  EngineCapabilityExecutionRefused _ -> "EngineCapabilityExecutionRefused"
+  EngineFenceAcquireRefused _ -> "EngineFenceAcquireRefused"
+  EngineFenceBindingMismatch -> "EngineFenceBindingMismatch"
+  EngineFenceUseRefused _ -> "EngineFenceUseRefused"
+  EngineSecretWorkerRefused _ -> "EngineSecretWorkerRefused"
+  EngineSecretWorkerBoundaryUnavailable -> "EngineSecretWorkerBoundaryUnavailable"
+  EngineSecretWorkerCallMismatch -> "EngineSecretWorkerCallMismatch"
+  EnginePgpBoundaryRefused _ -> "EnginePgpBoundaryRefused"
+  EnginePgpBoundaryUnavailable -> "EnginePgpBoundaryUnavailable"
+  EngineGeneratedRootScopeLost -> "EngineGeneratedRootScopeLost"
+  EnginePhysicalCallRefused _ -> "EnginePhysicalCallRefused"
+  EngineStoreRefused _ -> "EngineStoreRefused"
+  EngineStoreReadBackMismatch -> "EngineStoreReadBackMismatch"
+  EngineStoreVersionConflict -> "EngineStoreVersionConflict"
+  EngineCustodyTransitionRefused _ -> "EngineCustodyTransitionRefused"
+  EngineCustodyPlanLimitExceeded -> "EngineCustodyPlanLimitExceeded"
+  EngineInitializationAmbiguous _ -> "EngineInitializationAmbiguous"
+  EngineMutationReceiptMismatch -> "EngineMutationReceiptMismatch"
+  EngineResponseEvidenceMismatch _ -> "EngineResponseEvidenceMismatch"
 
 -- | The reply status for a successfully interpreted call.
 --

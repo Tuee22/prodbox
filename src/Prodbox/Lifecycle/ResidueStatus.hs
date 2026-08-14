@@ -193,6 +193,13 @@ isResidueUnreachable _ = False
 -- refusal *message*, rendered at the call site. The @--cascade@ path
 -- keeps its own graceful-degradation handling in
 -- 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy' and does not use this gate.
+--
+-- Sprint 4.76 expresses it as @not . isResidueAbsent@ rather than as
+-- @present || unreachable@. The two agree on today's three constructors
+-- and disagree about a fourth: the disjunction defaults an added
+-- constructor to the destructive side (does not block), while this form
+-- defaults it to blocking. Only a positive observation of absence
+-- releases the gate, which is the invariant the disjunction was
+-- enumerating.
 residueBlocksTeardownGate :: ResidueStatus -> Bool
-residueBlocksTeardownGate status =
-  isResiduePresent status || isResidueUnreachable status
+residueBlocksTeardownGate = not . isResidueAbsent

@@ -10,7 +10,16 @@
 -- substrate's temporary ambient context cannot redirect retained authority
 -- traffic.
 module Prodbox.ControlPlane.LocalClient
-  ( LocalLifecycleAuthorityError (..)
+  ( -- * Per-role remote ports (Sprint 3.35)
+
+  --   All five are the one compiled 'controlPlaneListenPort'; exported so the
+  --   unit suite can pin that against the constants rather than in a comment.
+    authorityBackupRemotePort
+  , lifecycleAuthorityRemotePort
+  , providerWorkerRemotePort
+  , targetSecretAgentRemotePort
+  , tlsRetentionRemotePort
+  , LocalLifecycleAuthorityError (..)
   , renderLocalLifecycleAuthorityError
   , withLocalLifecycleAuthorityClient
   , withLocalLifecycleAuthorityAuthenticatedTransport
@@ -68,6 +77,7 @@ import Prodbox.ControlPlane.Client
   , mkTlsRetentionEndpoint
   , newControlPlaneClient
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client
   ( HttpConfig (..)
@@ -415,8 +425,13 @@ lifecycleAuthorityNamespace = "lifecycle-authority"
 lifecycleAuthorityService :: String
 lifecycleAuthorityService = "lifecycle-authority"
 
+-- | Sprint 3.35: all five per-role ports are the one compiled
+-- 'controlPlaneListenPort'. They stay separately named because each is read
+-- beside its own namespace/service pair, but they no longer restate the value:
+-- a per-role port is not representable in @runControlPlaneServer@, which binds
+-- without consulting the role it is given.
 lifecycleAuthorityRemotePort :: Int
-lifecycleAuthorityRemotePort = 8600
+lifecycleAuthorityRemotePort = controlPlaneListenPort
 
 targetSecretAgentNamespace :: String
 targetSecretAgentNamespace = "target-secret-agent"
@@ -425,7 +440,7 @@ targetSecretAgentService :: String
 targetSecretAgentService = "target-secret-agent"
 
 targetSecretAgentRemotePort :: Int
-targetSecretAgentRemotePort = 8600
+targetSecretAgentRemotePort = controlPlaneListenPort
 
 providerWorkerNamespace :: String
 providerWorkerNamespace = "provider-worker"
@@ -434,7 +449,7 @@ providerWorkerService :: String
 providerWorkerService = "provider-worker"
 
 providerWorkerRemotePort :: Int
-providerWorkerRemotePort = 8600
+providerWorkerRemotePort = controlPlaneListenPort
 
 authorityBackupNamespace :: String
 authorityBackupNamespace = "authority-backup"
@@ -443,7 +458,7 @@ authorityBackupService :: String
 authorityBackupService = "authority-backup"
 
 authorityBackupRemotePort :: Int
-authorityBackupRemotePort = 8600
+authorityBackupRemotePort = controlPlaneListenPort
 
 tlsRetentionNamespace :: String
 tlsRetentionNamespace = "tls-retention"
@@ -452,7 +467,7 @@ tlsRetentionService :: String
 tlsRetentionService = "tls-retention"
 
 tlsRetentionRemotePort :: Int
-tlsRetentionRemotePort = 8600
+tlsRetentionRemotePort = controlPlaneListenPort
 
 readinessAttempts :: Int
 readinessAttempts = 240

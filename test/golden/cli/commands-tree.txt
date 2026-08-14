@@ -114,7 +114,6 @@ prodbox
       env
       gateway-daemon
       gateway-pods
-      gateway-partition
       control-plane-counterexample
       certificate-scope
       clean-room-handoff

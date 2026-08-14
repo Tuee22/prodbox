@@ -17,11 +17,11 @@ module Prodbox.PublicEdge
   , sharedPublicHostFqdns
   , resolveSubstrateHostedZoneId
   , substrateIdentityIssuerUrl
-  , substratePublicFqdn
   , substratePublicRouteUrl
   , substrateServedHostMissing
   , requireSubstratePublicFqdn
   , requireSubstrateCertScopeSet
+  , requireSubstrateServedHost
   , servedHostString
   , vscodePathPrefix
   , websocketOidcPathPrefix
@@ -42,15 +42,15 @@ import Prodbox.Lifecycle.LiveResidue
   , publicEdgeTlsRetentionPrefix
   )
 import Prodbox.Settings
-  ( AwsSubstrateSection (..)
-  , ConfigFile (..)
-  , DomainSection (..)
-  , Route53Section (..)
+  ( ValidatedCoordinates (..)
+  , ValidatedPublicEdge (..)
   , ValidatedServedHost (..)
   , ValidatedSettings (..)
   , substrateServedHost
-  , validatedConfig
+  , validatedCoordinates
+  , validatedPublicEdge
   )
+import Prodbox.Settings.Coordinate (route53ZoneIdText)
 import Prodbox.Substrate (Substrate (..), substrateId)
 import Prodbox.Tls.CertScope (CertScopeSet, fqdnText, renderCertScopeSet)
 
@@ -101,9 +101,15 @@ publicRoutePathPrefix route =
     PublicRouteWebsocket -> websocketPathPrefix
     PublicRouteMinio -> minioPathPrefix
 
+-- | The home substrate's served host.
+--
+-- Sprint 1.89: this read @domain.demo_fqdn@ and stripped it, which re-derived a
+-- value 'validatedPublicEdge' already carried in parsed form — the exact
+-- re-derivation Sprint 1.83 created that field to end, left behind because the
+-- string here looked too small to be worth routing. It is the same value: the
+-- 'Fqdn' is minted from this field by the one validation.
 publicFqdn :: ValidatedSettings -> String
-publicFqdn settings =
-  Text.unpack (Text.strip (demo_fqdn (domain (validatedConfig settings))))
+publicFqdn = servedHostString . validatedHomeServedHost . validatedPublicEdge
 
 publicRouteUrl :: ValidatedSettings -> PublicEdgeRoute -> String
 publicRouteUrl settings route =
@@ -115,50 +121,48 @@ identityIssuerUrl settings = publicRouteUrl settings PublicRouteAuth ++ "/realms
 sharedPublicHostFqdns :: ValidatedSettings -> [String]
 sharedPublicHostFqdns settings = [publicFqdn settings]
 
--- | The served public hostname for a substrate, or 'Nothing' when this config
--- declares none for it.
---
--- Sprint 1.83: this reads the parse 'Prodbox.Settings.validateConfig' performed
--- rather than the raw field. Sprint 1.81 removed the crash arm and left the
--- empty string in its place, with the honest note that a config validated only
--- by the LOCAL tier still reaches the AWS arm — @aws_substrate.subzone_name@ is
--- required by 'Prodbox.Settings.validateAwsBootstrapConfig', the AWS tier, and
--- deliberately not by the local one, because empty is the correct state for a
--- home-only host. The state is real; what was wrong was representing it as a
--- served hostname. It is now 'Nothing', and a caller must say what to do about
--- it.
-substratePublicFqdn :: ValidatedSettings -> Substrate -> String
-substratePublicFqdn settings substrate =
-  maybe "" servedHostString (substrateServedHost settings substrate)
-
 -- | The served host as the string the renderers below want.
 servedHostString :: ValidatedServedHost -> String
 servedHostString = Text.unpack . fqdnText . servedHostFqdn
 
--- | 'substratePublicFqdn' for a caller that has an error channel: the substrate
--- either has a served host or the config does not declare one, and the second
--- case is a refusal rather than an empty hostname.
+-- | The substrate's served host for a caller that has an error channel: the
+-- substrate either has a served host or the config does not declare one, and
+-- the second case is a refusal rather than an empty hostname.
 --
--- Sprint 1.83 introduces this as the __replacement__ accessor and converts the
--- callers that already sit in an @Either@; the remaining consumers reach
--- 'substratePublicFqdn' from pure renderers with no error channel, and
--- converting those is registered in
--- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ rather than folded in here.
-requireSubstratePublicFqdn :: ValidatedSettings -> Substrate -> Either String String
-requireSubstratePublicFqdn settings substrate =
+-- Sprint 1.83 introduced the string-projecting 'requireSubstratePublicFqdn'
+-- below and converted the callers that already sat in an @Either@. Sprint 1.84
+-- converted the six direct consumers of the former empty-string accessor and
+-- made that accessor module-private. Sprint 1.87 removes it outright and makes
+-- this the __only__ way to obtain a substrate's served host: the renderers
+-- below take a 'ValidatedServedHost' rather than a @ValidatedSettings@ and a
+-- 'Substrate', so \"this config declares no served host for that substrate\" is
+-- no longer one of their inputs and @https:\/\/\/path@ is not a string any of
+-- them can produce.
+--
+-- The state itself is real and unchanged: @aws_substrate.subzone_name@ is
+-- required by 'Prodbox.Settings.validateAwsBootstrapConfig', the AWS config
+-- tier, and deliberately not by the local one, because declaring no AWS served
+-- host is the correct state for a home-only host. What Sprints 1.81–1.87
+-- removed is representing that state as a served hostname.
+requireSubstrateServedHost
+  :: ValidatedSettings -> Substrate -> Either String ValidatedServedHost
+requireSubstrateServedHost settings substrate =
   maybe
     (Left (substrateServedHostMissing substrate))
-    (Right . servedHostString)
+    Right
     (substrateServedHost settings substrate)
+
+-- | The served hostname a substrate declares, for a caller that wants the bare
+-- string rather than the parsed host.
+requireSubstratePublicFqdn :: ValidatedSettings -> Substrate -> Either String String
+requireSubstratePublicFqdn settings substrate =
+  servedHostString <$> requireSubstrateServedHost settings substrate
 
 -- | The certificate scope set the substrate's served host projects, read from
 -- the parse config validation performed rather than re-derived from raw text.
 requireSubstrateCertScopeSet :: ValidatedSettings -> Substrate -> Either String CertScopeSet
 requireSubstrateCertScopeSet settings substrate =
-  maybe
-    (Left (substrateServedHostMissing substrate))
-    (Right . servedHostCertScopes)
-    (substrateServedHost settings substrate)
+  servedHostCertScopes <$> requireSubstrateServedHost settings substrate
 
 -- | The one wording for \"this config declares no served host for that
 -- substrate\", so the same state does not get three different messages.
@@ -168,9 +172,19 @@ substrateServedHostMissing substrate =
     ++ " public FQDN is not configured: aws_substrate.subzone_name is required by "
     ++ "the AWS config tier and this config was validated only locally"
 
-substratePublicRouteUrl :: ValidatedSettings -> Substrate -> PublicEdgeRoute -> String
-substratePublicRouteUrl settings substrate route =
-  "https://" ++ substratePublicFqdn settings substrate ++ publicRoutePathPrefix route
+-- | The canonical HTTPS URL of a public-edge route on a substrate's served
+-- host.
+--
+-- Sprint 1.87: the host argument is a 'ValidatedServedHost', which carries a
+-- 'Prodbox.Tls.CertScope.Fqdn' — a hidden-constructor newtype minted only by
+-- 'Prodbox.Tls.CertScope.mkFqdn', which rejects the empty string. The former
+-- @https:\/\/\/path@ rendering is therefore not merely refused here, it is
+-- unconstructible: there is no inhabitant of this argument that produces it.
+-- Callers resolve through 'requireSubstrateServedHost' at whichever boundary
+-- has an error channel.
+substratePublicRouteUrl :: ValidatedServedHost -> PublicEdgeRoute -> String
+substratePublicRouteUrl servedHost route =
+  "https://" ++ servedHostString servedHost ++ publicRoutePathPrefix route
 
 -- | The single cert-manager ACME @ClusterIssuer@ that the public-edge
 -- @Certificate@ references at chart deploy time. prodbox uses ZeroSSL as
@@ -213,9 +227,9 @@ renderRetentionScopePathSegment =
     . Text.replace "*" "%2A"
     . renderCertScopeSet
 
-substrateIdentityIssuerUrl :: ValidatedSettings -> Substrate -> String
-substrateIdentityIssuerUrl settings substrate =
-  substratePublicRouteUrl settings substrate PublicRouteAuth ++ "/realms/prodbox"
+substrateIdentityIssuerUrl :: ValidatedServedHost -> String
+substrateIdentityIssuerUrl servedHost =
+  substratePublicRouteUrl servedHost PublicRouteAuth ++ "/realms/prodbox"
 
 -- | IO-context resolver for the hosted zone. For the AWS substrate this
 -- falls back to the live aws-eks-subzone Pulumi stack snapshot when the
@@ -249,13 +263,23 @@ resolveSubstrateHostedZoneId
 resolveSubstrateHostedZoneId repoRoot settings substrate =
   case substrate of
     SubstrateHomeLocal ->
-      pure (Right (zone_id (route53 (validatedConfig settings))))
+      -- Sprint 1.89: the home zone id is the parsed coordinate rather than the
+      -- raw field. It stays `Maybe` here because an unset home zone is the
+      -- correct state for a host that never touches AWS; what changed is that a
+      -- SET value has been through 'mkRoute53ZoneId', so this can no longer
+      -- return a string that is not a zone id.
+      pure $ case coordinateHomeZoneId (validatedCoordinates settings) of
+        Just zoneId -> Right (route53ZoneIdText zoneId)
+        Nothing ->
+          Left
+            "resolveSubstrateHostedZoneId: route53.zone_id is empty. Set it in \
+            \prodbox.dhall to name the home substrate's Route 53 hosted zone."
     SubstrateAws -> do
       let configured =
-            Text.strip (hosted_zone_id (aws_substrate (validatedConfig settings)))
-      if not (Text.null configured)
-        then pure (Right configured)
-        else do
+            fmap route53ZoneIdText (coordinateAwsSubstrateZoneId (validatedCoordinates settings))
+      case configured of
+        Just zoneId -> pure (Right zoneId)
+        Nothing -> do
           -- Sprint 4.18: read the hosted zone ID from the live
           -- aws-eks-subzone Pulumi outputs rather than the legacy
           -- `.prodbox-state/aws-eks-subzone/stack-snapshot.json` file.

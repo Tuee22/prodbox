@@ -26,6 +26,7 @@ where
 import Data.Char (isAsciiLower, isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 
 data AwsControlPlaneRole
   = AwsBootstrapBroker
@@ -118,7 +119,12 @@ data AwsFaultDisposition = AwsFaultDisposition
 
 canonicalAwsRoleTransports :: [AwsRoleTransport]
 canonicalAwsRoleTransports =
-  [ AwsRoleTransport AwsBootstrapBroker AwsEksService "bootstrap-broker" "bootstrap-broker" 8600
+  [ AwsRoleTransport
+      AwsBootstrapBroker
+      AwsEksService
+      "bootstrap-broker"
+      "bootstrap-broker"
+      controlPlaneListenPort
   , AwsRoleTransport AwsGatewayDiagnostics AwsEksService "gateway" "gateway-daemon" 8080
   , AwsRoleTransport AwsTargetSecretAgent AwsEksService "target-secret-agent" "target-secret-agent" 8704
   , AwsRoleTransport

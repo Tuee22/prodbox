@@ -5,13 +5,33 @@
 -- ServiceAccount, the bootstrap-only Vault Kubernetes-auth role, and the
 -- constant-time liveness/readiness probe paths.
 --
--- The broker's listen port is deployment configuration (@listener.listen_port@
--- in the mounted broker Dhall), NOT a compiled static, so it is deliberately
--- absent here: unlike the gateway, the broker binds a loopback-restricted
--- Service whose port the operator chooses per cluster. What IS compiled is the
--- broker's identity and its probe contract, which must never drift from the
--- Gateway Runtime's (they are physically separate workloads with distinct
--- identities and failure domains) nor from the closed 'BrokerRoute' registry.
+-- __Standard-C correction (Sprint 3.35, 2026-08-13).__ This module used to say
+-- that the broker's listen port is deployment configuration
+-- (@listener.listen_port@ in the mounted broker Dhall), "NOT a compiled static",
+-- chosen by the operator per cluster, and that it is therefore deliberately
+-- absent here. Measured against source, that was false in the load-bearing
+-- direction: 'Prodbox.ControlPlane.Runtime.runControlPlaneServer' — the one
+-- server every control-plane role including this one is served by — bound a
+-- port literal without consulting the role it was handed, and every rendering
+-- path emitted the same literal independently. So the declared operator choice
+-- did not exist, and the value had no owner for its restatements to drift from.
+--
+-- (The value is deliberately not spelled in this comment. Sprint 3.35's
+-- @checkControlPlaneListenPortOwner@ named this file on its first run for
+-- exactly that — a comment restating a value is still a restatement, per
+-- [pure_fp_standards.md § 1.4](../../../../documents/engineering/pure_fp_standards.md).)
+--
+-- The port now has a compiled owner,
+-- 'Prodbox.ControlPlane.ListenPort.controlPlaneListenPort', which the binder,
+-- the rendered chart values, and the emitted broker Dhall all read. It stays
+-- absent from this module for a different and true reason: it is a
+-- control-plane-wide coordinate shared by six roles, not a Bootstrap-Broker
+-- identity, so it belongs to the module that owns it rather than to this one.
+--
+-- What IS compiled here is the broker's identity and its probe contract, which
+-- must never drift from the Gateway Runtime's (they are physically separate
+-- workloads with distinct identities and failure domains) nor from the closed
+-- 'BrokerRoute' registry.
 --
 -- The ServiceAccount name and the Vault role are the SAME identity
 -- ('VaultRoleBootstrapBroker'): the Pod authenticates to Vault Kubernetes auth

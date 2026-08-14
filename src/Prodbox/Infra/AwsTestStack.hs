@@ -116,16 +116,16 @@ ensureAwsTestStackResourcesWithAuthentication authentication _repoRoot = do
         )
 
 destroyAwsTestStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsTestStack repoRoot summary =
+destroyAwsTestStack repoRoot quietOutput =
   withOperatorLifecycleAuthority repoRoot $ \authentication ->
-    destroyAwsTestStackWithAuthentication authentication repoRoot summary
+    destroyAwsTestStackWithAuthentication authentication repoRoot quietOutput
 
 destroyAwsTestStackWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsTestStackWithAuthentication authentication _repoRoot _summary =
+destroyAwsTestStackWithAuthentication authentication _repoRoot _quietOutput =
   case ( mkProviderStackRef "aws-test"
        , mkProviderRevision 1
        , mkAwsTestProviderStackConfig "127.0.0.1/32"

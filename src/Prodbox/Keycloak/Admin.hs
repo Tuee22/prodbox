@@ -68,8 +68,13 @@ import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Header (hAuthorization, hContentType)
 import Network.HTTP.Types.Status (Status (..))
 import Prodbox.Result (Result (..))
-import Prodbox.Settings (DomainSection (..), ValidatedSettings (..), demo_fqdn, domain)
+import Prodbox.Settings
+  ( ValidatedPublicEdge (..)
+  , ValidatedServedHost (..)
+  , ValidatedSettings (..)
+  )
 import Prodbox.Settings qualified as Settings
+import Prodbox.Tls.CertScope (fqdnText)
 
 -- | A live Keycloak admin client. Holds a shared TLS manager, the resolved base URL
 -- (e.g. `https://test.resolvefintech.com/auth`), the target realm, and the admin
@@ -143,7 +148,7 @@ instance ToJSON UserRecord where
 -- the admin client aligned with the chart's `keycloak.httpRelativePath` constant.
 buildKeycloakBaseUrl :: ValidatedSettings -> Text
 buildKeycloakBaseUrl settings =
-  buildKeycloakBaseUrlForHost (demo_fqdn (domain (validatedConfig settings)))
+  buildKeycloakBaseUrlForHost (servedHostText settings)
 
 buildKeycloakBaseUrlForHost :: Text -> Text
 buildKeycloakBaseUrlForHost publicHost =
@@ -167,7 +172,17 @@ withKeycloakClient
   -> (KeycloakClient -> IO a)
   -> IO a
 withKeycloakClient settings =
-  withKeycloakClientAtPublicHost (demo_fqdn (domain (validatedConfig settings)))
+  withKeycloakClientAtPublicHost (servedHostText settings)
+
+-- | Sprint 1.89: the home substrate's served host, from the parse
+-- 'Prodbox.Settings.validateConfig' already performed.
+--
+-- Both call sites read @domain.demo_fqdn@ raw and handed it to a function whose
+-- first act was to strip it — a strip that the 'Fqdn' minter has already done,
+-- on a value it has also proved is a hostname.
+servedHostText :: ValidatedSettings -> Text
+servedHostText =
+  fqdnText . servedHostFqdn . validatedHomeServedHost . validatedPublicEdge
 
 withKeycloakClientAtPublicHost
   :: Text
@@ -626,8 +641,8 @@ renderHttpFailure label code body =
 _unusedSettings :: ValidatedSettings -> ()
 _unusedSettings _ = ()
 
-_unusedDomainSection :: DomainSection -> ()
-_unusedDomainSection _ = ()
+_unusedServedHost :: ValidatedServedHost -> ()
+_unusedServedHost _ = ()
 
 _unusedSettingsModule :: ()
 _unusedSettingsModule = Settings.supportedPublicHostname `seq` ()

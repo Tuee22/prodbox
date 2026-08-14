@@ -31,6 +31,7 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutput
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrl)
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter
   ( InterpreterContext (..)
@@ -53,15 +54,17 @@ import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , DomainSection (..)
-  , Route53Section (..)
+  ( ValidatedCoordinates (..)
+  , ValidatedPublicEdge (..)
+  , ValidatedServedHost (..)
   , ValidatedSettings (..)
-  , aws
-  , domain
-  , route53
+  , homeZoneIdTextForRendering
+  , operationalAwsRegionTextForRendering
   , validateAndLoadSettings
+  , validatedCoordinates
   )
+import Prodbox.Settings.Coordinate (dnsTtlSeconds)
+import Prodbox.Tls.CertScope (fqdnText)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
 
@@ -202,14 +205,20 @@ renderGatewayConfigTemplate settings nodeId =
     , "  , lifecycle_authority ="
     , "      Some"
     , "        { authority_scope = \"replace-with-home-cluster-id\""
-    , "        , endpoint = \"http://lifecycle-authority.gateway.svc.cluster.local:8600\""
+    , "        , endpoint = \""
+        ++ controlPlaneClusterServiceUrl "lifecycle-authority" "gateway"
+        ++ "\""
     , "        }"
     , "  , dns_write_gate ="
     , "      Some"
-    , "        { zone_id = " ++ show (Text.unpack (zone_id (route53 config)))
+    , "        { zone_id = " ++ show (Text.unpack (homeZoneIdTextForRendering settings))
     , "        , fqdn = " ++ show (preferredGatewayFqdn settings)
-    , "        , ttl = " ++ show (fromIntegral (demo_ttl (domain config)) :: Integer)
-    , "        , aws_region = " ++ show (Text.unpack (awsCredentialRegion (aws config)))
+    , "        , ttl = "
+        ++ show
+          ( fromIntegral (dnsTtlSeconds (coordinateDemoTtl (validatedCoordinates settings)))
+              :: Integer
+          )
+    , "        , aws_region = " ++ show (Text.unpack (operationalAwsRegionTextForRendering settings))
     , "        }"
     , "  , aws_creds ="
     , "      Some"
@@ -219,7 +228,7 @@ renderGatewayConfigTemplate settings nodeId =
     , indent 12 (renderVaultSecretRef "secret" "aws/gateway-dns" "secret_access_key")
     , "        , session_token ="
     , indent 12 (renderOptionalVaultSecretRef "secret" "aws/gateway-dns" "session_token")
-    , "        , region = " ++ show (Text.unpack (awsCredentialRegion (aws config)))
+    , "        , region = " ++ show (Text.unpack (operationalAwsRegionTextForRendering settings))
     , "        }"
     , "  , minio_creds ="
     , "      Some"
@@ -240,8 +249,6 @@ renderGatewayConfigTemplate settings nodeId =
     , "  }"
     , "}"
     ]
- where
-  config = validatedConfig settings
 
 renderVaultSecretRef :: String -> String -> String -> String
 renderVaultSecretRef mount path field =
@@ -462,11 +469,11 @@ renderIntegralText value =
     Left floatingValue -> show floatingValue
     Right integerValue -> show integerValue
 
+-- | Sprint 1.89: the served host from the parsed public edge, not the raw
+-- @domain.demo_fqdn@ this re-read beside it.
 preferredGatewayFqdn :: ValidatedSettings -> String
-preferredGatewayFqdn settings =
-  Text.unpack (demo_fqdn (domain config))
- where
-  config = validatedConfig settings
+preferredGatewayFqdn =
+  Text.unpack . fqdnText . servedHostFqdn . validatedHomeServedHost . validatedPublicEdge
 
 boolText :: Bool -> String
 boolText True = "true"

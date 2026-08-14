@@ -33,11 +33,11 @@ import Data.Vector qualified as Vector
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Readiness (sesCaptureKeyPrefix)
 import Prodbox.Settings
-  ( SesSection (..)
+  ( ValidatedCoordinates (..)
   , ValidatedSettings (..)
-  , capture_bucket
-  , ses
+  , validatedCoordinates
   )
+import Prodbox.Settings.Coordinate (s3BucketNameText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -71,7 +71,11 @@ pollSesCapture
   -- ^ deadline in seconds (e.g. 60)
   -> IO (Result CapturedEmail)
 pollSesCapture environment settings recipient deadlineSeconds =
-  let bucket = Text.unpack (Text.strip (capture_bucket (ses (validatedConfig settings))))
+  let bucket =
+        maybe
+          ""
+          (Text.unpack . s3BucketNameText)
+          (coordinateSesCaptureBucket (validatedCoordinates settings))
    in if null bucket
         then
           pure
@@ -104,7 +108,11 @@ pollSesCapture environment settings recipient deadlineSeconds =
 -- | Hard-delete a captured email object after the validation arm consumes it.
 deleteCapturedEmail :: [(String, String)] -> ValidatedSettings -> Text -> IO (Result ())
 deleteCapturedEmail environment settings keyText =
-  let bucket = Text.unpack (Text.strip (capture_bucket (ses (validatedConfig settings))))
+  let bucket =
+        maybe
+          ""
+          (Text.unpack . s3BucketNameText)
+          (coordinateSesCaptureBucket (validatedCoordinates settings))
    in if null bucket
         then pure (Failure "deleteCapturedEmail: ses.capture_bucket is empty.")
         else do

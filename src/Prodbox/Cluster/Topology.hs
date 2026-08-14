@@ -39,7 +39,17 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Dhall (FromDhall, ToDhall)
+import Dhall
+  ( Decoder (..)
+  , FromDhall (..)
+  , ToDhall
+  , constructor
+  , extractError
+  , field
+  , record
+  , union
+  )
+import Dhall.Marshal.Decode (fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Cluster.Substrate
@@ -51,7 +61,7 @@ import Prodbox.Cluster.Substrate
 
 newtype MachineId = MachineId {machineIdText :: Text}
   deriving stock (Eq, Ord, Show, Generic)
-  deriving newtype (FromDhall, ToDhall)
+  deriving newtype (ToDhall)
 
 data ComputeWorker = ComputeWorker
   { worker_substrate :: WorkerSubstrate
@@ -64,30 +74,30 @@ data Machine = Machine
   , machine_substrate :: WorkerSubstrate
   , compute_worker :: ComputeWorker
   }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Generic, ToDhall)
 
 data KindTopology = KindTopology
   { machine :: Machine
   , node_count :: Natural
   }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Generic, ToDhall)
 
 data Rke2Topology = Rke2Topology
   { machines :: [Machine]
   }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Generic, ToDhall)
 
 data EksTopology = EksTopology
   { node_group_size :: Natural
   , eks_substrate :: WorkerSubstrate
   }
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Generic, ToDhall)
 
 data ClusterTopology
   = Kind KindTopology
   | Rke2 Rke2Topology
   | Eks EksTopology
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Generic, ToDhall)
 
 data ClusterType
   = ClusterTypeKind
@@ -101,6 +111,99 @@ data TopologyError
   | Rke2TopologyEmpty
   | EksHostResidentSubstrate WorkerSubstrate
   deriving (Eq, Show)
+
+-- | Sprint 1.86: run a decoder's result through a smart constructor, so a Dhall
+-- value that the constructor would reject fails the __decode__ rather than
+-- producing a value the type claims cannot exist.
+--
+-- Before this sprint 'MachineId', 'Machine', and 'ClusterTopology' were
+-- exported abstractly to force their smart constructors and also derived
+-- @FromDhall@ — so decode was a second, unchecked constructor and the opacity
+-- stopped at the decode seam. That is the conversion class
+-- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- names: a typed guarantee handed across a boundary that does not honour it.
+--
+-- The ledger row proposed a @Raw*@ DTO narrowed after decode, the shape
+-- 'Prodbox.ControlPlane.Capacity' uses. Measured, that shape cascades: the
+-- decoded field lives on @ProdboxParameters@ and @ConfigFile@, both of which
+-- derive @FromDhall@ generically, so removing the instance forces a parallel
+-- @Raw@ record for each of them. A validating decoder puts the narrowing at the
+-- same seam with none of that cascade, and is strictly stronger than a
+-- post-decode check because there is no window in which the wide value exists.
+narrowingDecoder :: Decoder a -> (a -> Either TopologyError b) -> Decoder b
+narrowingDecoder base narrow =
+  base
+    { extract = \expression -> fromMonadic $ do
+        wide <- toMonadic (extract base expression)
+        case narrow wide of
+          Right narrowed -> pure narrowed
+          Left err -> toMonadic (extractError (Text.pack (renderTopologyError err)))
+    }
+
+instance FromDhall MachineId where
+  autoWith options = narrowingDecoder (autoWith options) mkMachineId
+
+instance FromDhall Machine where
+  autoWith options =
+    narrowingDecoder
+      ( record
+          ( (,,)
+              <$> field "machine_id" (autoWith options)
+              <*> field "machine_substrate" (autoWith options)
+              <*> field "compute_worker" (autoWith options)
+          )
+      )
+      narrowMachine
+
+-- | Sprint 1.86: 'mkMachine' rule f, reached at the decode seam.
+narrowMachine :: (MachineId, WorkerSubstrate, ComputeWorker) -> Either TopologyError Machine
+narrowMachine (identifier, substrate, worker) = mkMachine identifier substrate worker
+
+instance FromDhall KindTopology where
+  autoWith options =
+    record
+      ( KindTopology
+          <$> field "machine" (autoWith options)
+          <*> field "node_count" (autoWith options)
+      )
+
+instance FromDhall Rke2Topology where
+  autoWith options =
+    narrowingDecoder (record (field "machines" (autoWith options))) narrowRke2Machines
+
+-- | Sprint 1.86: an rke2 topology needs at least one machine, which is what
+-- 'validateClusterTopology' checked after the fact and the decoder now enforces.
+narrowRke2Machines :: [Machine] -> Either TopologyError Rke2Topology
+narrowRke2Machines decoded = case decoded of
+  [] -> Left Rke2TopologyEmpty
+  _ -> Right Rke2Topology {machines = decoded}
+
+instance FromDhall EksTopology where
+  autoWith options =
+    narrowingDecoder
+      ( record
+          ( (,)
+              <$> field "node_group_size" (autoWith options)
+              <*> field "eks_substrate" (autoWith options)
+          )
+      )
+      narrowEksTopology
+
+-- | Sprint 1.86: the same in-cluster-residency rule 'mkEksTopology' applies,
+-- reached at the decode seam instead of only through the constructor.
+narrowEksTopology :: (Natural, WorkerSubstrate) -> Either TopologyError EksTopology
+narrowEksTopology (size, substrate)
+  | residencyIsInCluster (residencyOf substrate) =
+      Right EksTopology {node_group_size = size, eks_substrate = substrate}
+  | otherwise = Left (EksHostResidentSubstrate substrate)
+
+instance FromDhall ClusterTopology where
+  autoWith options =
+    union
+      ( (Kind <$> constructor "Kind" (autoWith options))
+          <> (Rke2 <$> constructor "Rke2" (autoWith options))
+          <> (Eks <$> constructor "Eks" (autoWith options))
+      )
 
 mkMachineId :: Text -> Either TopologyError MachineId
 mkMachineId raw

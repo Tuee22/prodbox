@@ -64,6 +64,7 @@ import Prodbox.ControlPlane.Client
   )
 import Prodbox.ControlPlane.ClosedSession (finishClosedSession)
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
+import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrlText)
 import Prodbox.ControlPlane.ProjectedServiceAccountIdentity
   ( decodeProjectedServiceAccountIdentity
   , projectedServiceAccountIdentityMatches
@@ -1025,7 +1026,7 @@ workerVaultAuthPath = "kubernetes"
 
 targetSecretAgentServiceEndpoint :: Text
 targetSecretAgentServiceEndpoint =
-  "http://target-secret-agent.target-secret-agent.svc.cluster.local:8600"
+  controlPlaneClusterServiceUrlText "target-secret-agent" "target-secret-agent"
 
 workerTargetJobMaximumRuntimeSeconds :: Natural
 workerTargetJobMaximumRuntimeSeconds = 180

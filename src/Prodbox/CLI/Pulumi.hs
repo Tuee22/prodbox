@@ -87,41 +87,53 @@ runPulumiCommandWithGate gate repoRoot command =
         planOptions
         (buildPulumiExecutionPlan "eks-resources" False)
         (\_ -> runGatedPulumiApply gate (EksStack.ensureAwsEksTestStackResources repoRoot))
-    PulumiEksDestroy summary planOptions ->
+    PulumiEksDestroy confirmed planOptions ->
       runPlanWithOptions
         planOptions
-        (buildPulumiExecutionPlan "eks-destroy" summary)
-        (\_ -> runGatedPulumiApply gate (EksStack.destroyAwsEksTestStack repoRoot summary))
+        (buildPulumiExecutionPlan "eks-destroy" confirmed)
+        ( \_ ->
+            requireDestroyConfirmation "prodbox aws stack eks destroy" confirmed $
+              runGatedPulumiApply gate (EksStack.destroyAwsEksTestStack repoRoot destroyOutputIsQuiet)
+        )
     PulumiTestResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "test-resources" False)
         (\_ -> runGatedPulumiApply gate (TestStack.ensureAwsTestStackResources repoRoot))
-    PulumiTestDestroy summary planOptions ->
+    PulumiTestDestroy confirmed planOptions ->
       runPlanWithOptions
         planOptions
-        (buildPulumiExecutionPlan "test-destroy" summary)
-        (\_ -> runGatedPulumiApply gate (TestStack.destroyAwsTestStack repoRoot summary))
+        (buildPulumiExecutionPlan "test-destroy" confirmed)
+        ( \_ ->
+            requireDestroyConfirmation "prodbox aws stack test destroy" confirmed $
+              runGatedPulumiApply gate (TestStack.destroyAwsTestStack repoRoot destroyOutputIsQuiet)
+        )
     PulumiAwsSubzoneResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-subzone-resources" False)
         (\_ -> runGatedPulumiApply gate (SubzoneStack.ensureAwsEksSubzoneStackResources repoRoot))
-    PulumiAwsSubzoneDestroy summary planOptions ->
+    PulumiAwsSubzoneDestroy confirmed planOptions ->
       runPlanWithOptions
         planOptions
-        (buildPulumiExecutionPlan "aws-subzone-destroy" summary)
-        (\_ -> runGatedPulumiApply gate (SubzoneStack.destroyAwsEksSubzoneStack repoRoot summary))
+        (buildPulumiExecutionPlan "aws-subzone-destroy" confirmed)
+        ( \_ ->
+            requireDestroyConfirmation "prodbox aws stack aws-subzone destroy" confirmed $
+              runGatedPulumiApply gate (SubzoneStack.destroyAwsEksSubzoneStack repoRoot destroyOutputIsQuiet)
+        )
     PulumiAwsSesResources planOptions ->
       runPlanWithOptions
         planOptions
         (buildPulumiExecutionPlan "aws-ses-resources" False)
         (\_ -> runGatedPulumiApply gate (SesStack.ensureAwsSesStackResources repoRoot))
-    PulumiAwsSesDestroy summary planOptions ->
+    PulumiAwsSesDestroy confirmed planOptions ->
       runPlanWithOptions
         planOptions
-        (buildPulumiExecutionPlan "aws-ses-destroy" summary)
-        (\_ -> runGatedPulumiApply gate (SesStack.destroyAwsSesStack repoRoot summary))
+        (buildPulumiExecutionPlan "aws-ses-destroy" confirmed)
+        ( \_ ->
+            requireDestroyConfirmation "prodbox aws stack aws-ses destroy" confirmed $
+              runGatedPulumiApply gate (SesStack.destroyAwsSesStack repoRoot destroyOutputIsQuiet)
+        )
     PulumiAwsSesMigrateBackend planOptions ->
       runPlanWithOptions
         planOptions
@@ -129,6 +141,44 @@ runPulumiCommandWithGate gate repoRoot command =
         (\_ -> runGatedPulumiApply gate (SesStack.migrateAwsSesStackBackend repoRoot))
     PulumiPruneCorruptCheckpoint target confirmed ->
       runGatedPulumiApply gate (runPruneCorruptCheckpoint repoRoot target confirmed)
+
+-- | Sprint 4.77: @--yes@ on the four @aws stack \<stack\> destroy@ verbs now
+-- gates the destroy, in the shape 'runPruneCorruptCheckpoint' below has always
+-- used.
+--
+-- The flag was parsed as @confirmed@ with help text "Skip confirmation
+-- prompts", renamed @summary@ at dispatch, wildcarded by three of the four
+-- sinks, and consumed by the fourth (@aws-ses@) as a **quietness** selector.
+-- Omitting it was therefore byte-identical to passing it: a surface
+-- advertising a safety property it did not have. These commands are
+-- deliberately non-interactive (see @CLAUDE.md@), so the fix is not a prompt —
+-- it is making the flag load-bearing, so the flag and the effect agree.
+--
+-- @--dry-run@ is unaffected: the gate lives inside the apply closure, so a plan
+-- still renders without @--yes@.
+requireDestroyConfirmation :: String -> Bool -> IO ExitCode -> IO ExitCode
+requireDestroyConfirmation commandName confirmed destroy
+  | confirmed = destroy
+  | otherwise = do
+      writeDiagnosticLine
+        ( "Refusing to destroy without confirmation: `"
+            ++ commandName
+            ++ "` deletes live AWS resources. This command is non-interactive by "
+            ++ "design, so `--yes` IS the confirmation rather than a way to skip "
+            ++ "one. Re-run with --yes, or use --dry-run to see the plan."
+        )
+      pure (ExitFailure 1)
+
+-- | Sprint 4.77: the stack destroys run under the lifecycle-local quiet path.
+--
+-- This was previously the @--yes@ flag's second, undeclared job at the
+-- @aws-ses@ sink (@| summary = pulumiLoginQuiet@). Confirmation and output
+-- verbosity are unrelated decisions, and threading one value through both is
+-- how the flag came to have an observable effect that had nothing to do with
+-- what its help text said. Naming the constant separates them; the value is the
+-- one every automation call site already passed.
+destroyOutputIsQuiet :: Bool
+destroyOutputIsQuiet = True
 
 -- | Sprint 7.22: clear a genuinely-corrupt per-run encrypted Pulumi
 -- checkpoint via 'pruneCorruptPerRunCheckpoint' (which observes first and

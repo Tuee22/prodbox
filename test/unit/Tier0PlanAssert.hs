@@ -32,15 +32,20 @@ import Prodbox.Config.Tier0
   , ProdboxProjectConfig (..)
   , defaultProjectConfig
   , renderProjectConfigDhall
+  , stampTier0Witness
   )
 import TestSupport
 
 tier0PlanAssertSuite :: SuiteBuilder ()
 tier0PlanAssertSuite =
   describe "Sprint 1.72 Ring-1 over-commit shim (assertPlanValid)" $ do
-    it "round-trips the guarded default rendering back to the same config" $
+    it "round-trips the guarded default rendering back to the stamped config" $
+      -- Sprint 0.29: the generator stamps the record's witness, so the round
+      -- trip is `decode . render == stampTier0Witness` rather than `== id`.
+      -- The Ring-1 assert this suite covers is unaffected: the witness is a
+      -- `List Text` the lemma preamble never reads.
       Dhall.input Dhall.auto (renderProjectConfigDhall defaultProjectConfig)
-        `shouldReturn` defaultProjectConfig
+        `shouldReturn` stampTier0Witness defaultProjectConfig
     it "rejects a host-shrinking hand-edit at the Dhall assert (Ring 1)" $ do
       let corrupted =
             Text.replace

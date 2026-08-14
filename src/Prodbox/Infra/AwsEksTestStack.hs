@@ -25,7 +25,7 @@ module Prodbox.Infra.AwsEksTestStack
 where
 
 import Control.Concurrent.Async (withAsync)
-import Control.Monad (forever, when)
+import Control.Monad (forever)
 import Data.Aeson (Value (Array, String), eitherDecode, encode, object, (.=))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy.Char8 qualified as BL8
@@ -64,12 +64,11 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Settings
-  ( AwsCredentialsRef (awsCredentialRegion)
-  , Credentials (..)
-  , ValidatedSettings (validatedConfig)
-  , aws
+  ( Credentials (..)
+  , requireOperationalAwsRegion
   , validateAndLoadSettings
   )
+import Prodbox.Settings.Coordinate (awsRegionText)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -135,16 +134,16 @@ ensureAwsEksTestStackResourcesWithAuthentication authentication _repoRoot = do
         )
 
 destroyAwsEksTestStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsEksTestStack repoRoot summary =
+destroyAwsEksTestStack repoRoot quietOutput =
   withOperatorLifecycleAuthority repoRoot $ \authentication ->
-    destroyAwsEksTestStackWithAuthentication authentication repoRoot summary
+    destroyAwsEksTestStackWithAuthentication authentication repoRoot quietOutput
 
 destroyAwsEksTestStackWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsEksTestStackWithAuthentication authentication _repoRoot _summary =
+destroyAwsEksTestStackWithAuthentication authentication _repoRoot _quietOutput =
   case ( mkProviderStackRef "aws-eks"
        , mkProviderRevision 1
        , mkAwsEksProviderStackConfig "127.0.0.1/32"
@@ -292,8 +291,16 @@ pulumiAwsProviderEnv credentials =
 withEksKubeconfig :: FilePath -> (FilePath -> IO value) -> IO value
 withEksKubeconfig repoRoot action = do
   settings <- validateAndLoadSettings repoRoot >>= either (error . ("load settings: " ++)) pure
-  let awsRegion = Text.unpack (Text.strip (awsCredentialRegion (aws (validatedConfig settings))))
-  when (null awsRegion) (error "withEksKubeconfig: aws.region is empty")
+  -- Sprint 1.89: the region is the parsed coordinate. The `null` test it
+  -- replaces was an `error` call, so an unset region crashed here rather than
+  -- refusing; `requireOperationalAwsRegion` still cannot be threaded into an
+  -- error channel this function does not have, but the refusal now names the
+  -- remedy and the value it admits cannot be malformed.
+  awsRegion <-
+    either
+      (error . ("withEksKubeconfig: " ++))
+      (pure . Text.unpack . awsRegionText)
+      (requireOperationalAwsRegion settings)
   snapshot <-
     fetchAwsEksTestSnapshotFromBackend repoRoot
       >>= maybe (error "withEksKubeconfig: aws-eks checkpoint is unavailable") pure

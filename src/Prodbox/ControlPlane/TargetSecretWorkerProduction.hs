@@ -122,6 +122,10 @@ import Prodbox.ControlPlane.VaultServiceSessionJournal
   ( vaultServiceSessionJournalRepository
   )
 import Prodbox.Error (errorMsg)
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , FramedSubprocessExchangeError (..)
@@ -1007,11 +1011,13 @@ isAlreadyExists output =
    in "AlreadyExists" `Text.isInfixOf` combined
         || "already exists" `Text.isInfixOf` Text.toLower combined
 
+-- | Sprint 4.78: keyed through the one owner, and scoped to __stderr__.
+-- It used to match against @stdout <> stderr@, so a kubectl command that
+-- succeeded and printed an object whose own content contained @not found@ —
+-- a ConfigMap value, a container log line, a condition message — was read as
+-- the object being absent.
 isNotFound :: ProcessOutput -> Bool
-isNotFound output =
-  let combined = Text.pack (processStdout output <> processStderr output)
-   in "NotFound" `Text.isInfixOf` combined
-        || "not found" `Text.isInfixOf` Text.toLower combined
+isNotFound output = reportsAbsence KubernetesObjectProbe (processStderr output)
 
 bounded :: Text -> Text
 bounded = Text.take 256

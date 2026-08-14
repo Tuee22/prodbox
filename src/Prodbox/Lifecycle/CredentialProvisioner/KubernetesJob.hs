@@ -113,6 +113,10 @@ import Prodbox.Lifecycle.TargetCommitIntent
   ( mkTargetValueDigest
   , targetValueDigestText
   )
+import Prodbox.Observation.AbsenceMarker
+  ( AbsenceProbe (..)
+  , reportsAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -1231,10 +1235,13 @@ serviceAccountRawPath intent =
           (credentialProvisionerIntentServiceAccount intent)
       )
 
+-- | Sprint 4.78: keyed through the one owner, and scoped to __stderr__.
+-- It used to match against @stdout <> stderr@, so a kubectl command that
+-- succeeded and printed an object whose own content contained @not found@ —
+-- a ConfigMap value, a container log line, a condition message — was read as
+-- the object being absent.
 isNotFound :: ProcessOutput -> Bool
-isNotFound output =
-  let combined = Text.toLower (Text.pack (processStdout output <> processStderr output))
-   in "notfound" `Text.isInfixOf` combined || "not found" `Text.isInfixOf` combined
+isNotFound output = reportsAbsence KubernetesObjectProbe (processStderr output)
 
 findContainer :: Text -> [ContainerDto] -> Maybe ContainerDto
 findContainer name = find (\(ContainerDto actual _) -> actual == name)

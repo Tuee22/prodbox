@@ -141,6 +141,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withTargetSecretAgentAuthenticatedTransport
   , withTlsRetentionAuthenticatedTransport
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.Route
   ( controlPlaneRoutePath
   , routesForRole
@@ -250,15 +251,14 @@ import Prodbox.Service
   , serviceErrorMessage
   )
 import Prodbox.Settings
-  ( AwsCredentialsRef (..)
-  , ConfigFile (..)
+  ( ConfigFile (..)
   , DeploymentSection (..)
-  , PulumiStateBackendSection (..)
-  , Route53Section (..)
+  , ValidatedCoordinates (..)
   , ValidatedSettings (..)
   , validateAndLoadSettings
   , validatedResourcePlan
   )
+import Prodbox.Settings.Coordinate (awsRegionText, s3BucketNameText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -2033,13 +2033,17 @@ resolveRootPublicFqdn substrate settings _chartName =
 
 resolveGatewayHostedZoneIdForSubstrate
   :: Substrate -> FilePath -> ValidatedSettings -> IO (Either String (Maybe String))
-resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings =
-  case substrate of
-    SubstrateHomeLocal ->
-      pure (Right (Just (Text.unpack (zone_id (route53 (validatedConfig settings))))))
-    SubstrateAws -> do
-      hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
-      pure (fmap (Just . Text.unpack) hostedZoneResult)
+-- Sprint 1.89: both substrates go through the one resolver.
+--
+-- The home arm used to read @route53.zone_id@ raw and wrap it in @Just@
+-- unconditionally, so an unset zone produced @Just ""@ — a hosted-zone id that
+-- is not one — and the refusal lived two functions away in 'valuesForGateway',
+-- as a @null@ test on a string. 'resolveSubstrateHostedZoneId' now refuses on
+-- both substrates, which is what lets that test be deleted rather than
+-- duplicated.
+resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings = do
+  hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
+  pure (fmap (Just . Text.unpack) hostedZoneResult)
 
 -- | Render the non-secret daemon-frame Tier-0 document mounted beside the
 -- runtime @config.dhall@. The home identity comes from the established
@@ -2693,7 +2697,7 @@ valuesForBootstrapBrokerWithParent clusterId maybeParent namespace rootChart may
                     , "successThreshold" .= (1 :: Int)
                     ]
               ]
-        , "listener" .= object ["port" .= (8600 :: Int)]
+        , "listener" .= object ["port" .= controlPlaneListenPort]
         , "config"
             .= object
               [ "brokerDhall"
@@ -2712,7 +2716,9 @@ renderBootstrapBrokerConfigDhall clusterId maybeParent statics =
     ++ renderDhallText "http://vault.vault.svc.cluster.local:8200"
     ++ ", service_identity = "
     ++ renderDhallText (BrokerChartStatics.brokerStaticClientServiceAccount statics)
-    ++ ", listener = { listen_host = \"127.0.0.1\", listen_port = 8600 }"
+    ++ ", listener = { listen_host = \"127.0.0.1\", listen_port = "
+    ++ show controlPlaneListenPort
+    ++ " }"
     ++ ", bootstrap_store = "
     ++ "{ store_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
     ++ ", store_bucket = \"prodbox-state\""
@@ -2813,7 +2819,7 @@ valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue va
               , "readiness" .= readinessPath
               ]
         , "probeTiming" .= controlPlaneProbeTimingValue
-        , "listener" .= object ["port" .= (8600 :: Int)]
+        , "listener" .= object ["port" .= controlPlaneListenPort]
         , "config"
             .= object
               [ "roleDhall"
@@ -3025,15 +3031,27 @@ valuesForTargetSecretAgent clusterId namespace rootChart maybeRuntimeImage =
  where
   s = TargetSecretAgentStatics.targetSecretAgentChartStatics
 
+-- | Sprint 1.89: the dedicated adapter's backend coordinates, from the parsed
+-- projection.
+--
+-- The two @Text.null@ tests this replaced were the only thing standing between a
+-- malformed bucket name and an S3 call, because @pulumi_state_backend.region@
+-- had no validation rule anywhere and the bucket's rule discarded its result.
+-- What remains here is the /presence/ decision, which is genuinely this
+-- function's: an adapter needs a backend, while the config as a whole does not.
 dedicatedAdapterBackend :: ValidatedSettings -> Either String (Text.Text, Text.Text)
 dedicatedAdapterBackend settings = do
-  let backend = pulumi_state_backend (validatedConfig settings)
-      bucket = Text.strip (psbBucketName backend)
-      region = Text.strip (psbRegion backend)
-  when
-    (Text.null bucket)
-    (Left "pulumi_state_backend.bucket_name is required for a dedicated adapter")
-  when (Text.null region) (Left "pulumi_state_backend.region is required for a dedicated adapter")
+  let coordinates = validatedCoordinates settings
+  bucket <-
+    maybe
+      (Left "pulumi_state_backend.bucket_name is required for a dedicated adapter")
+      (Right . s3BucketNameText)
+      (coordinatePulumiBackendBucket coordinates)
+  region <-
+    maybe
+      (Left "pulumi_state_backend.region is required for a dedicated adapter")
+      (Right . awsRegionText)
+      (coordinatePulumiBackendRegion coordinates)
   Right (bucket, region)
 
 roleStoreTypeDhall :: String
@@ -3125,14 +3143,18 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
   -- arrives empty; the chart no longer reads or writes a k8s Secret for these
   -- fields.
   let config = validatedConfig settings
-      operationalAws = aws config
-      awsRegion = Text.unpack (awsCredentialRegion operationalAws)
   runtimeMemoryPlan <-
     Capacity.runtimeMemoryPlanForProfile (capacity config) "gateway"
-  when (null awsRegion) (Left "gateway chart requires aws_region in settings")
-  when
-    (substrate == SubstrateHomeLocal && null zoneId)
-    (Left "gateway chart requires route53_zone_id in settings")
+  -- Sprint 1.89: the region is the parsed coordinate. The `null` test that used
+  -- to stand here is gone rather than restated: an 'AwsRegion' has no empty
+  -- inhabitant, so "present and well-formed" is the only state this binding can
+  -- be in, and "absent" is the refusal below. The companion `null zoneId` test
+  -- is gone for the same reason — 'resolveSubstrateHostedZoneId' now refuses on
+  -- both substrates, so the string reaching `zoneId` cannot be empty.
+  awsRegion <-
+    case coordinateOperationalAwsRegion (validatedCoordinates settings) of
+      Just region -> Right (Text.unpack (awsRegionText region))
+      Nothing -> Left "gateway chart requires aws.region in settings"
   resolvedGatewayImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -3193,7 +3215,8 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
               , "endpoint"
                   .= ( "http://lifecycle-authority."
                          ++ namespace
-                         ++ ".svc.cluster.local:8600"
+                         ++ ".svc.cluster.local:"
+                         ++ show controlPlaneListenPort
                      )
               ]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion

@@ -591,20 +591,38 @@ Five invariants make the topology leak-proof and idempotent:
    resource `Present → destroy → re-observe`, `Absent → skip`,
    `Unreachable → refuse`.
 
-   **Where the refusal lives, and the implementation gap (recorded 2026-08-11).** The refusal is a
-   property of the *teardown decision*, not of the active-destroy loop. The gate combinator
-   `residueBlocksTeardownGate` ("present **or** unreachable → block") owns it, and
-   `reconcileAbsent`'s own filter keeps only `ResiduePresent`, so on the cascade path
-   `ResidueUnreachable` is **skipped** rather than refused — which is the documented per-run
-   graceful-degradation exception named in invariant 2 and § 5b. Two things follow, and neither is a
-   licence to read this arm as optional. First, a caller that skips must not *narrate* the skip as
-   absence: § 3 layer 1 is *Cleanup continues without lying*, and § 5b phase 1 requires the aggregate
-   to withhold success until the authority is observed. Second, the cascade does neither today — it
-   prints "no live per-run residue" on an all-`Unreachable` input and exits 0. That is a code gap,
-   scheduled as Sprint `4.76` in
-   [DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
-   per [Standard L](../../DEVELOPMENT_PLAN/development_plan_standards.md#l-cli-doctrine-alignment),
-   **not** a reason to soften this arm.
+   **Where the refusal lives (Sprint `4.76`, 2026-08-11).** The refusal is a property of the
+   *teardown decision*, not of the active-destroy loop, and it is split across three owners that
+   must be read together:
+
+   - **The gate** `residueBlocksTeardownGate` releases only on a positive observation of absence.
+     It is written `not . isResidueAbsent` rather than `present || unreachable`; the two agree on
+     today's three constructors and disagree about a fourth, and only the former defaults an added
+     constructor to blocking.
+   - **The destroy loop** `reconcileAbsent` keeps only `ResiduePresent`, so on the cascade path
+     `ResidueUnreachable` runs no destroy — the documented per-run graceful-degradation exception
+     named in invariant 2 and § 5b. There is no readable checkpoint to destroy from; skipping is
+     the only available action.
+   - **The aggregate** is what makes the skip sound. `reconcileAbsent` returns an
+     `AbsentReconcileOutcome` carrying the observed-absent and the unobserved sets separately, and
+     `absentReconcileExitCode` fails on a non-empty unobserved set even when every destroy
+     succeeded. The cascade records confirm-MinIO as its own phase outcome from that set.
+
+   Skipping the destroy is permitted; **narrating the skip as absence is not**. § 3 layer 1 is
+   *Cleanup continues without lying*, and § 5b phase 1 requires the aggregate to withhold success
+   until the authority is observed.
+
+   **What this replaced.** Until Sprint `4.76` the cascade printed
+   `Per-run Pulumi destroys: skipped (no live per-run residue).` on an all-`Unreachable` input and
+   exited 0, because `resourcesToDestroy`'s empty result was narrated as absence and the exit was a
+   hardcoded `ExitSuccess`. Three further conversions composed with it and are also closed:
+   `inferCascadeSubstrate` tested `isResiduePresent`, so an unreadable backend inferred
+   `SubstrateHomeLocal` — the one branch on which a skipped drain is success; `clusterReachable ::
+   IO Bool` returned `False` for every non-zero `kubectl` exit, so a refused credential was
+   indistinguishable from a departed cluster; and the postflight sweep returned `IO ()`, so nothing
+   it found could reach the exit code. The cluster probe is now the three-valued `ClusterProbe`
+   whose `ClusterAbsent` arm requires a recognised connection-establishment phrase and whose default
+   is `ClusterUnobservable`, feeding a `DrainUnobservable` arm that aborts on both substrates.
 
    `prodbox cluster delete --cascade` reconciles
    `PerRun` (default `cluster delete` is a pure local uninstall and
@@ -623,13 +641,26 @@ Five invariants make the topology leak-proof and idempotent:
    from binding the `PlanOptions` argument to a `_` wildcard (which would
    silently drop `--dry-run` / `--plan-file`). The rule is total as
    doctrine; **as enforcement it has invariant 1's shape and invariant 1's
-   region** (§ 22). The lint's `destructivePlanOptionsArms` table names
-   two constructors and its scan covers three files, so a destructive
-   constructor outside that table — `PulumiEksDestroy`,
-   `PulumiTestDestroy`, `PulumiAwsSubzoneDestroy`, `PulumiAwsSesDestroy`,
-   `ChartsDelete`, `UsersRevoke`, `AwsTeardown` — is unguarded today, and
-   a token scan cannot see an argument that is bound and then ignored
-   (which is how `--yes` on the four stack-destroy verbs became inert).
+   region** (§ 22). Until Sprint `0.28` the lint's
+   `destructivePlanOptionsArms` table named two constructors and its scan
+   covered three files, so seven destructive constructors —
+   `PulumiEksDestroy`, `PulumiTestDestroy`, `PulumiAwsSubzoneDestroy`,
+   `PulumiAwsSesDestroy`, `ChartsDelete`, `UsersRevoke`, `AwsTeardown` —
+   dispatched outside it. All seven are now in the table and their
+   dispatching modules inside the region, with one `(path, constructor)`
+   exemption for `commandPrerequisites`, a pure projection that has no
+   options to honour. Both scoped gates also **fail closed on a missing
+   scoped file** since `0.28`, where each previously answered `pure []`
+   and let a rename silently empty its own region. What remains true is
+   that a token scan cannot see an argument that is bound and then ignored
+   (which is how `--yes` on the four stack-destroy verbs became inert —
+   parsed as `confirmed`, renamed `summary` at dispatch, wildcarded by
+   three sinks and consumed by the fourth as a quietness selector, so
+   omitting it was byte-identical to passing it. Sprint `4.77` made the
+   flag load-bearing through a single `requireDestroyConfirmation` gate
+   covering all four verbs and split the quietness selector out into its
+   own named constant; the **lint** gap that let it happen is unchanged
+   and stays tracked below).
    The coverage gap is tracked in
    [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The
    cascade's per-run sweep is **derived from** `perRunManagedResources`
@@ -1363,24 +1394,45 @@ absence of residue" is treated as "residue may be present," never as
 The tag sweep lives at `src/Prodbox/Lifecycle/TagSweep.hs` (introduced
 in Sprint 4.11; extended for the full cluster-tag scan in Sprint 4.12).
 
-**Implementation gap, recorded 2026-08-11 (Standard C).** Neither half of the paragraph above holds
-in the current worktree, and the divergence is unusually sharp because the code cites this section as
-its authority for the opposite behaviour:
+**How the rule is implemented (Sprint `4.76`, 2026-08-11).** The verdict is a pure three-valued
+decision, `decideTagSweep :: TagSweepScope -> Either String [TaggedResource] -> TagSweepVerdict`,
+total over the query result and over the two owning surfaces, so the fail-closed rule is a property
+of one function rather than of each call site's `case`:
 
-- `runCascadePostflightTagSweep :: FilePath -> IO ()` returns unit, so a non-empty escapee list and
-  an unreachable Tagging API are both narrated and then discarded; the cascade returns
-  `ExitSuccess` regardless. Its Haddock states this and cites "§ 6" while doing so.
-- `prodbox nuke` has **no sweep call at all**. The "step-4 tag sweep" named above does not exist;
-  `discoverClusterTaggedAwsResources` has exactly one caller, on the `cluster delete --cascade` path.
-- The sweep that does run never sends its cluster-tag filter: `tagFilterArgs` passes `--tag-filters`
-  twice and the AWS CLI's last-wins parsing drops the first, so the sweep is blind to precisely the
-  controller-created resources it exists to backstop.
+- `TagSweepConfirmedClean` — the API answered and nothing escaped. This is the **only** verdict that
+  renders a sentence asserting absence.
+- `TagSweepEscaped` — the API answered and something escaped. Exit non-zero.
+- `TagSweepUnconfirmed` — the API could not be read. Exit non-zero. "Could not observe the absence of
+  residue" is treated as "residue may be present," never as "residue is absent."
 
-Per [Standard L](../../DEVELOPMENT_PLAN/development_plan_standards.md#l-cli-doctrine-alignment) the
-doctrine is **not** rewritten down to match the code. The gap is scheduled as Sprints `4.76` (the
-fail-closed sweep and the `nuke` surface) and `4.77` (the argv defect) in
-[DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md).
-Until they land, a green sweep line is not evidence of absence, and no cleanup claim may rest on one.
+`TagSweepCascade` applies the retained-long-lived carve-out (§ 5e); `TagSweepNuke` applies none,
+because destroying that class transitively is what `nuke` is for, so a surviving
+`pulumi_state_backend` bucket is an escapee there rather than a resource retained by design.
+`prodbox nuke` runs the terminal sweep after the decommission runner converges, with **no skip arm**:
+the command has already refused without an ephemeral admin credential by that point.
+
+**One residual, recorded rather than absorbed (Standard C).** The cascade's sweep retains a skip arm
+for a missing ephemeral admin credential — there is no AWS session to query with, and refusing would
+fail `--cascade` on every host that has never provisioned an AWS substrate. That arm narrates
+`NOT RUN` and explicitly disclaims confirmation; it does not render the clean sentence. Whether it
+should refuse outright is registered in
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
+rather than decided here.
+
+**The sweep sends the filters it names (Sprint `4.77`, 2026-08-11).** Until this sprint the sweep
+issued one `get-resources` call with `--tag-filters` passed twice; the AWS CLI parses list-valued
+options with `store`, so only the last occurrence reached AWS and the
+`kubernetes.io/cluster/<name>` filter was never sent — leaving the sweep structurally blind to
+exactly the controller-created ENIs, ALBs, and security groups it exists to backstop. The Tagging
+API also **ANDs** the `TagFilters` within one call, so even both-sent would have asked for resources
+carrying *both* tags where the sweep wants either. The sweep is therefore **one query per filter
+set, unioned by ARN** (`tagSweepFilterSets` → `runTagSweepQuery` → `unionTaggedResources`), and a
+failure of any constituent query fails the whole discovery so a partial union is never reported as
+complete.
+
+This widens what the sweep can see; it does not make the sweep an ownership authority. The
+paragraph above still governs: exact child-family and record observation with destroy/read-back
+remains mandatory even when the sweep is empty.
 
 ### 6a. IAM Is Registry-Owned, Not Tag-Sweep-Owned
 

@@ -76,9 +76,18 @@ newtype Tier0Fixture = Tier0Fixture String
 tier0FixtureText :: Tier0Fixture -> String
 tier0FixtureText (Tier0Fixture text) = text
 
--- | The derived path. The binary-sibling filename appears exactly once in the
--- test tree, here, so a `dev check` rule can hold "one encoder" by refusing the
--- literal anywhere else.
+-- | The derived path.
+--
+-- __Standard-C correction (Sprint 5.34, 2026-08-13).__ This said the
+-- binary-sibling filename "appears exactly once in the test tree, here, so a
+-- `dev check` rule can hold \"one encoder\" by refusing the literal anywhere
+-- else". Measured, it appears in six test files and 107 times in total — 90 of
+-- them in @test\/unit\/Main.hs@ — so no rule refusing the literal elsewhere was
+-- ever possible, and the sentence described an intention rather than the tree.
+--
+-- What the gate actually holds is narrower and is stated where it lives
+-- ('Prodbox.CheckCode.tier0WriteSiteLines'): a @writeFile@ of hand-authored
+-- text to this path, reached directly or through one binding, is refused.
 tier0FixturePath :: FilePath -> FilePath
 tier0FixturePath directory = directory </> "prodbox.dhall"
 
@@ -129,6 +138,14 @@ data RawTier0Reason
     -- payload names the field and how it is violated. That is precisely what a
     -- well-typed Haskell value cannot express.
     MustNotTypeCheckAgainst String
+  | -- | Sprint 5.34: the assertion is about the file's EXISTENCE, not its
+    -- content — the test-mode preflight gate refuses when a production
+    -- binary-sibling config is present and never decodes it. Rendering a
+    -- complete valid config here would assert more than the gate reads and
+    -- would couple this case to every future schema change, which is the
+    -- coupling `tier0Fixture` exists to create where content /is/ read and to
+    -- avoid where it is not. The payload names what is under test.
+    ExistenceIsWhatIsUnderTest String
   deriving stock (Eq, Show)
 
 -- | Admit hand-authored text, with its reason.
@@ -149,6 +166,11 @@ rawTier0Fixture reason text = case reason of
   MustNotTypeCheckAgainst violated
     | null violated ->
         error "rawTier0Fixture MustNotTypeCheckAgainst must name the field it violates"
+    | otherwise -> Tier0Fixture text
+  ExistenceIsWhatIsUnderTest underTest
+    | null underTest ->
+        error
+          "rawTier0Fixture ExistenceIsWhatIsUnderTest must name what is under test"
     | otherwise -> Tier0Fixture text
 
 generatedSchemaPath :: String

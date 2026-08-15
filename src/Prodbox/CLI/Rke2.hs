@@ -23,6 +23,9 @@ module Prodbox.CLI.Rke2
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
   , CascadePhaseOutcome (..)
+  , independentPhase
+  , derivedPhase
+  , renderFailedCascadePhases
   , DeleteMode (..)
   , aggregateCascadeExit
   , cascadeOrderNarration
@@ -50,6 +53,7 @@ module Prodbox.CLI.Rke2
   , classifyRegistryStorageEdgeProbe
   , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
+  , classifyKubernetesReadiness
   , classifyGatewayFullModeProbe
   , gatewayDaemonWorkloadRefs
   , gatewayNamespace
@@ -2433,7 +2437,14 @@ nativeComponentReadinessTarget repoRoot settings component =
     ComponentChartWebsocket -> unsupportedNativeReadiness component
     ComponentChartGateway -> unsupportedNativeReadiness component
     ComponentChartBootstrapBroker ->
-      deploymentRolloutTarget component "bootstrap-broker" "bootstrap-broker"
+      Right
+        ( ResourceExistsTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [DeploymentRevisionObserved "bootstrap-broker" "bootstrap-broker"]
+            )
+        )
     ComponentChartLifecycleAuthority ->
       Right
         ( RolloutCompleteTarget
@@ -2492,6 +2503,7 @@ observeRke2ServiceActiveOnce repoRoot = do
 
 data KubernetesReadinessCheck
   = DeploymentAvailable String String
+  | DeploymentRevisionObserved String String
   | StatefulSetReady String String
   | DaemonSetReady String String
   | CrdEstablished String
@@ -2535,6 +2547,12 @@ kubernetesReadinessArguments check =
         namespace
         name
         "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
+    DeploymentRevisionObserved namespace name ->
+      namespacedGetArguments
+        "deployment"
+        namespace
+        name
+        "jsonpath={.metadata.generation}:{.status.observedGeneration}:{.spec.replicas}:{.status.updatedReplicas}"
     StatefulSetReady namespace name ->
       namespacedGetArguments
         "statefulset"
@@ -2573,6 +2591,7 @@ classifyKubernetesReadiness
 classifyKubernetesReadiness check raw =
   case check of
     DeploymentAvailable _ _ -> conditionResult
+    DeploymentRevisionObserved _ _ -> deploymentRevisionResult
     CrdEstablished _ -> conditionResult
     StatefulSetReady _ _ -> replicaResult
     DaemonSetReady _ _ -> replicaResult
@@ -2584,6 +2603,15 @@ classifyKubernetesReadiness check raw =
     case mapM readMaybe (splitOnColon raw) :: Maybe [Int] of
       Just [desired, ready, updated]
         | desired > 0 && ready >= desired && updated >= desired -> Right ReadinessProbeReady
+      _ -> Right (pendingResult raw)
+  deploymentRevisionResult =
+    case mapM readMaybe (splitOnColon raw) :: Maybe [Int] of
+      Just [generation, observedGeneration, desired, updated]
+        | generation > 0
+            && observedGeneration == generation
+            && desired > 0
+            && updated >= desired ->
+            Right ReadinessProbeReady
       _ -> Right (pendingResult raw)
   pendingResult detail =
     ReadinessProbePending
@@ -2798,6 +2826,11 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       (Left "The runtime image has no immutable Docker image digest.")
       Right
       (resolvedCustomImageRolloutToken image)
+  runtimeDigest <-
+    maybe
+      (Left "The runtime image manifest has no config digest.")
+      Right
+      (resolvedCustomImageRuntimeDigest image)
   selectedAgent <-
     either
       (Left . Text.unpack)
@@ -2825,7 +2858,7 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       parameters =
         GenesisAwsAdminIntentParameters
           { genesisIntentIamParameters = iamParameters
-          , genesisIntentImageDigest = Text.pack rollout
+          , genesisIntentImageDigest = Text.pack runtimeDigest
           , genesisIntentAuthorityScope = basicsClusterId basics
           , genesisIntentAuthorityEndpoint =
               -- Sprint 3.35: the port is the compiled owner. The host form is
@@ -2843,7 +2876,9 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       kubernetes =
         productionAwsAdminKubernetesBoundary
           connection
-          (Text.pack (resolvedCustomImageRepository image))
+          ( Text.pack
+              (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
+          )
           resources
           heartbeat
   Right (coordinate, parameters, kubernetes)
@@ -3103,8 +3138,54 @@ cascadeOrderNarration =
 data CascadePhaseOutcome = CascadePhaseOutcome
   { cascadePhaseName :: String
   , cascadePhaseExit :: ExitCode
+  , cascadePhaseDerivedFrom :: Maybe String
+  -- ^ Sprint 4.82: the phase whose failure caused this one, when it did.
+  --
+  -- One unobservable authority used to produce two failed phases that read as
+  -- peers: @Unresolved phase(s): confirm-MinIO, drain@ presents a single cause
+  -- as two independent problems, and an operator cannot tell from that line
+  -- whether they have one fault or two. Class-D distinguishability,
+  -- @chaos_hardening_doctrine.md § 21@ — the outcome type could not express
+  -- @failed because an earlier phase could not be observed@, so it did not.
   }
   deriving (Eq, Show)
+
+-- | A phase that failed on its own merits.
+independentPhase :: String -> ExitCode -> CascadePhaseOutcome
+independentPhase name exit =
+  CascadePhaseOutcome
+    { cascadePhaseName = name
+    , cascadePhaseExit = exit
+    , cascadePhaseDerivedFrom = Nothing
+    }
+
+-- | A phase whose failure is downstream of another phase's. The edge is only
+-- recorded when this phase actually failed AND the named phase failed; a
+-- succeeding phase is never attributed to anything.
+derivedPhase :: String -> ExitCode -> String -> [CascadePhaseOutcome] -> CascadePhaseOutcome
+derivedPhase name exit cause earlier =
+  CascadePhaseOutcome
+    { cascadePhaseName = name
+    , cascadePhaseExit = exit
+    , cascadePhaseDerivedFrom =
+        if exit /= ExitSuccess && any causeFailed earlier then Just cause else Nothing
+    }
+ where
+  causeFailed outcome =
+    cascadePhaseName outcome == cause && cascadePhaseExit outcome /= ExitSuccess
+
+-- | Sprint 4.82: render the failed-phase list so a derived failure is not
+-- narrated as an independent one.
+renderFailedCascadePhases :: [CascadePhaseOutcome] -> String
+renderFailedCascadePhases outcomes =
+  intercalate
+    ", "
+    [ case cascadePhaseDerivedFrom outcome of
+        Nothing -> cascadePhaseName outcome
+        Just cause -> cascadePhaseName outcome ++ " (downstream of " ++ cause ++ ")"
+    | outcome <- outcomes
+    , cascadePhaseExit outcome /= ExitSuccess
+    ]
 
 -- | Pure: the cascade's aggregate verdict over its recorded phases.
 -- Exposed so a unit case can pin "one failed phase fails the run" without
@@ -3125,20 +3206,47 @@ runNativeDeleteCascade repoRoot = do
   -- encrypted checkpoints through the sole in-cluster Lifecycle Authority
   -- repository. No alternate Gateway or host object-store transport exists.
   perRun <- queryPerRunResidueStatuses repoRoot
-  let eksStatus = perRunAwsEksTest perRun
-      subzoneStatus = perRunAwsEksSubzone perRun
-      testStatus = perRunAwsTest perRun
-      -- Sprint 4.21: pair the per-run managed resources with their
-      -- already-batched statuses; `reconcileAbsent` destroys the present
-      -- ones (canonical order) using the same PulumiCommands as before.
-      perRunPairs = ResourceRegistry.pairPerRunResidue eksStatus subzoneStatus testStatus
+  -- Sprint 4.81: the observation carries the authority that answered; the
+  -- status is projected only where a status-shaped consumer needs it, so the
+  -- layer survives to the narration instead of being erased at the first use.
+  let eksObservation = perRunAwsEksTest perRun
+      subzoneObservation = perRunAwsEksSubzone perRun
+      testObservation = perRunAwsTest perRun
+  -- Sprint 4.82: when the retained checkpoint store could not answer, ask the
+  -- authority that owns the question actually being consumed. The credential
+  -- for this is the one the postflight sweep already loads.
+  awsAnswer <-
+    if perRunNeedsAwsLayer [eksObservation, subzoneObservation, testObservation]
+      then queryAwsLayerForPerRun repoRoot
+      else
+        pure
+          ( ResidueStatus.AwsLayerNotConsulted
+              "the retained checkpoint store answered for every per-run stack"
+          )
+  let eksResolution = ResidueStatus.resolveResidueAcrossLayers eksObservation awsAnswer
+      subzoneResolution = ResidueStatus.resolveResidueAcrossLayers subzoneObservation awsAnswer
+      testResolution = ResidueStatus.resolveResidueAcrossLayers testObservation awsAnswer
+      resolutions = [eksResolution, subzoneResolution, testResolution]
+      -- Sprint 3.38: projected one by one rather than by destructuring a
+      -- three-element list literal. The list pattern was irrefutable only to a
+      -- reader, so it was an incomplete uni-pattern that `-Werror` rejects the
+      -- moment this module is recompiled rather than served from cache.
+      resolvedEks = ResidueStatus.residueResolutionStatus eksResolution
+      resolvedSubzone = ResidueStatus.residueResolutionStatus subzoneResolution
+      resolvedTest = ResidueStatus.residueResolutionStatus testResolution
+      -- Sprint 4.21: pair the per-run managed resources with their statuses;
+      -- `reconcileAbsent` destroys the present ones (canonical order).
+      -- Sprint 4.82: the statuses are the cross-layer resolved ones, so a
+      -- stack AWS positively reports gone is not queued for a destroy that
+      -- has no checkpoint to run from.
+      perRunPairs = ResourceRegistry.pairPerRunResidue resolvedEks resolvedSubzone resolvedTest
       liveSummary =
         intercalate
           ", "
-          ( [ "aws-eks=" ++ ResidueStatus.renderResidueStatus eksStatus
-            , "aws-eks-subzone=" ++ ResidueStatus.renderResidueStatus subzoneStatus
-            , "aws-test=" ++ ResidueStatus.renderResidueStatus testStatus
-            ]
+          ( zipWith
+              (\name resolution -> name ++ "=" ++ ResidueStatus.renderResidueResolution resolution)
+              ["aws-eks", "aws-eks-subzone", "aws-test"]
+              resolutions
           )
   writeOutputLine ("Per-run residue status: " ++ liveSummary)
   -- Step 2: K8s drain. Runs before per-run destroys so in-cluster
@@ -3148,7 +3256,12 @@ runNativeDeleteCascade repoRoot = do
   -- per-run stack not positively observed absent means the EKS cluster
   -- may be in scope, so the drain must target the substrate's own
   -- kubeconfig instead of the local RKE2 cluster's.
-  let cascadeSubstrate = inferCascadeSubstrate eksStatus subzoneStatus testStatus
+  -- Sprint 4.82: inferred from the RESOLVED answers, so a host whose per-run
+  -- stacks AWS positively reports absent infers `SubstrateHomeLocal` and its
+  -- skipped drain is correctly success. Before this sprint one non-observation
+  -- produced two failed phases: it forced `SubstrateAws` here, and the AWS
+  -- drain then failed on the same unreachable authority.
+  let cascadeSubstrate = inferCascadeSubstrate resolvedEks resolvedSubzone resolvedTest
   drainExit <- runCascadeDrainPhase repoRoot cascadeSubstrate
   -- Step 3: per-run Pulumi destroys. Runs even when the drain failed:
   -- doctrine § 5c makes drain→destroy an *attempt* edge, so last-resort
@@ -3176,20 +3289,24 @@ runNativeDeleteCascade repoRoot = do
   -- lifecycle actually had AWS state in scope.
   sweepExit <- runCascadePostflightTagSweep repoRoot cascadeSubstrate
   let phases =
-        [ CascadePhaseOutcome "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
-        , CascadePhaseOutcome "drain" drainExit
-        , CascadePhaseOutcome "per-run destroys" (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
-        , CascadePhaseOutcome "test-EBS reaper" reaperExit
-        , CascadePhaseOutcome "uninstall" uninstallExit
-        , CascadePhaseOutcome "sweep" sweepExit
-        ]
+        confirmPhase
+          : derivedPhase "drain" drainExit "confirm-MinIO" [confirmPhase]
+          : [ independentPhase
+                "per-run destroys"
+                (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
+            , independentPhase "test-EBS reaper" reaperExit
+            , independentPhase "uninstall" uninstallExit
+            , independentPhase "sweep" sweepExit
+            ]
+      confirmPhase =
+        independentPhase "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
       aggregate = aggregateCascadeExit phases
   case failedCascadePhases phases of
     [] -> writeOutputLine "cluster delete --cascade: every phase reported success."
-    failures ->
+    _ ->
       writeDiagnosticLine
         ( "cluster delete --cascade did NOT complete cleanly. Unresolved phase(s): "
-            ++ intercalate ", " failures
+            ++ renderFailedCascadePhases phases
             ++ ". Every phase above still ran; the aggregate reports failure because "
             ++ "at least one of them could not confirm the outcome it is responsible for."
         )
@@ -3427,6 +3544,53 @@ cascadeSweepCredentialAbsentExit :: Substrate -> ExitCode
 cascadeSweepCredentialAbsentExit substrate = case substrate of
   SubstrateHomeLocal -> ExitSuccess
   SubstrateAws -> ExitFailure 1
+
+-- | Sprint 4.82: consult AWS as the second layer when the retained checkpoint
+-- store could not answer.
+--
+-- The cascade already loads this credential for its postflight sweep and has
+-- always had it available at this point; before this sprint it was never used
+-- for the residue question, so the command reached the Tagging API, learned
+-- that no prodbox-owned AWS resources exist, and still exited non-zero saying
+-- it could not confirm. That is the layer defect
+-- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- names: the question consumed is /do these AWS resources exist/, and only AWS
+-- can answer it.
+--
+-- A missing credential is 'AwsLayerNotConsulted', never an absence.
+queryAwsLayerForPerRun :: FilePath -> IO ResidueStatus.AwsLayerAnswer
+queryAwsLayerForPerRun repoRoot = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left detail ->
+      pure
+        ( ResidueStatus.AwsLayerNotConsulted
+            ("no ephemeral admin AWS credential available: " ++ detail)
+        )
+    Right adminCredentials -> do
+      environment <- adminAwsEnvironment adminCredentials
+      let input =
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = environment
+              , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+              , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+              }
+      discovered <- TagSweep.discoverClusterTaggedAwsResources input
+      pure $ case discovered of
+        Left detail -> ResidueStatus.AwsLayerUnobservable detail
+        Right [] -> ResidueStatus.AwsLayerNoResources
+        Right resources ->
+          ResidueStatus.AwsLayerResourcesPresent
+            (map TagSweep.taggedResourceArn resources)
+
+-- | Sprint 4.82: the AWS layer is consulted exactly when the authority layer
+-- failed to answer for at least one stack, and not otherwise.
+--
+-- Stated as its own pure predicate so the "we did not need to ask" case is a
+-- decision with a reason rather than an absent branch.
+perRunNeedsAwsLayer :: [ResidueStatus.ResidueObservation] -> Bool
+perRunNeedsAwsLayer =
+  any (ResidueStatus.isResidueUnreachable . ResidueStatus.residueObservationStatus)
 
 runCascadePostflightTagSweep :: FilePath -> Substrate -> IO ExitCode
 runCascadePostflightTagSweep repoRoot cascadeSubstrate = do
@@ -6607,11 +6771,13 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
     (_, Left detail) -> pure (Left detail)
     (_, Right Nothing) -> pure (Left "The runtime image is unavailable for ACME EAB ingress.")
     (Right basics, Right (Just image)) ->
-      case resolvedCustomImageRolloutToken image of
-        Nothing -> pure (Left "The runtime image has no immutable digest for ACME EAB ingress.")
+      case resolvedCustomImageRuntimeDigest image of
+        Nothing -> pure (Left "The runtime image manifest has no config digest for ACME EAB ingress.")
         Just digest -> do
           let operationId = "acme-eab-fixture-" <> basicsClusterId basics
-              repository = Text.pack (resolvedCustomImageRepository image)
+              repository =
+                Text.pack
+                  (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
               currentImageDigest = Text.pack digest
               jobs =
                 kubernetesExternalMaterialJobBoundary

@@ -11,6 +11,7 @@ where
 
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.List (intercalate)
 import Prodbox.Bootstrap.Broker.Engine
   ( BrokerEngine
   , BrokerEngineError (..)
@@ -23,6 +24,11 @@ import Prodbox.Bootstrap.Broker.Engine
   , mkEngineExecutionContext
   , prepareBrokerCall
   , someBrokerResponseIsUnreadyProbe
+  )
+import Prodbox.Bootstrap.Broker.EngineSecretWorker
+  ( EngineSecretWorkerError (..)
+  , secretWorkerBindingFieldName
+  , secretWorkerBindingSiteName
   )
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerRoute
@@ -116,7 +122,8 @@ brokerEngineErrorName failure = case failure of
   EngineFenceAcquireRefused _ -> "EngineFenceAcquireRefused"
   EngineFenceBindingMismatch -> "EngineFenceBindingMismatch"
   EngineFenceUseRefused _ -> "EngineFenceUseRefused"
-  EngineSecretWorkerRefused _ -> "EngineSecretWorkerRefused"
+  EngineSecretWorkerRefused nested ->
+    "EngineSecretWorkerRefused/" ++ engineSecretWorkerErrorName nested
   EngineSecretWorkerBoundaryUnavailable -> "EngineSecretWorkerBoundaryUnavailable"
   EngineSecretWorkerCallMismatch -> "EngineSecretWorkerCallMismatch"
   EnginePgpBoundaryRefused _ -> "EnginePgpBoundaryRefused"
@@ -131,6 +138,52 @@ brokerEngineErrorName failure = case failure of
   EngineInitializationAmbiguous _ -> "EngineInitializationAmbiguous"
   EngineMutationReceiptMismatch -> "EngineMutationReceiptMismatch"
   EngineResponseEvidenceMismatch _ -> "EngineResponseEvidenceMismatch"
+
+-- | Sprint 2.49: the same closed-constructor rule, one level deeper.
+--
+-- `EngineSecretWorkerRefused` carries a twenty-constructor
+-- 'EngineSecretWorkerError' and named none of it, so a permit deadline that
+-- elapsed, a checkpoint read-back mismatch, an attestation refusal, and a
+-- cleanup refusal all reached the operator as the single word
+-- @EngineSecretWorkerRefused@. That is the widest collapse this surface had
+-- left, and it is the fourth of this shape found in one session — after the
+-- five acquire refusals (2.46), the six Lease refusals (2.47), the status code
+-- inside the non-success arm (2.48), and the attestation candidate list (2.49,
+-- host side).
+--
+-- Constructor names only, on the rule this module already applies: several of
+-- these payloads carry durable bindings and nested refusals, and a name
+-- distinguishes the twenty causes without publishing any of them.
+engineSecretWorkerErrorName :: EngineSecretWorkerError boundaryError -> String
+engineSecretWorkerErrorName failure = case failure of
+  EngineSecretWorkerBoundaryRefused _ -> "BoundaryRefused"
+  EngineSecretWorkerStoreRefused _ -> "StoreRefused"
+  -- Sprint 2.50: five sites, one word. The site says which comparison failed
+  -- and the fields say what disagreed; both are secret-free labels.
+  EngineSecretWorkerStoredRequestBindingMismatch site fields ->
+    "StoredRequestBindingMismatch/"
+      ++ secretWorkerBindingSiteName site
+      ++ "["
+      ++ intercalate "," (map secretWorkerBindingFieldName fields)
+      ++ "]"
+  EngineSecretWorkerCheckpointPermitMutationMismatch _ _ ->
+    "CheckpointPermitMutationMismatch"
+  EngineSecretWorkerCheckpointPermitFenceMismatch -> "CheckpointPermitFenceMismatch"
+  EngineSecretWorkerCheckpointPermitDeadlineElapsed -> "CheckpointPermitDeadlineElapsed"
+  EngineSecretWorkerCheckpointWriteConflict -> "CheckpointWriteConflict"
+  EngineSecretWorkerCheckpointWriteMismatch -> "CheckpointWriteMismatch"
+  EngineSecretWorkerCheckpointReadBackMismatch -> "CheckpointReadBackMismatch"
+  EngineSecretWorkerCheckpointResultMissing -> "CheckpointResultMissing"
+  EngineSecretWorkerAuthoritativeCheckpointMissing -> "AuthoritativeCheckpointMissing"
+  EngineSecretWorkerAuthoritativeResultMismatch -> "AuthoritativeResultMismatch"
+  EngineSecretWorkerRecoveryRefused _ -> "RecoveryRefused"
+  EngineSecretWorkerRecoveryDestroyedAndRefused _ -> "RecoveryDestroyedAndRefused"
+  EngineSecretWorkerRecoveryDecisionUnexpected _ -> "RecoveryDecisionUnexpected"
+  EngineSecretWorkerRepromptWasNotFresh -> "RepromptWasNotFresh"
+  EngineSecretWorkerAttestationRefused _ -> "AttestationRefused"
+  EngineSecretWorkerEffectRefused _ -> "EffectRefused"
+  EngineSecretWorkerReceiptRefused _ -> "ReceiptRefused"
+  EngineSecretWorkerCleanupRefused _ -> "CleanupRefused"
 
 -- | The reply status for a successfully interpreted call.
 --

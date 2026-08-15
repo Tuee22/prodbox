@@ -666,6 +666,33 @@ a fresh Vault: `vault init` runs exactly once (the first time the PV is empty) a
 any retained PV. Invoking `cluster delete` when no local RKE2 cluster is installed is a
 no-op success (`No RKE2 cluster to delete.`, exit 0), not an error.
 
+Consequences of that preservation are tracked in the development plan rather than described here.
+Preserving `.data/` also preserves the Bootstrap Broker's session fence. A bring-up abandoned partway
+therefore leaves that object behind, and `cluster delete --cascade` does not clear it — by design,
+since the same tree holds the per-run Pulumi state. **That no longer wedges the host**: a predecessor
+whose durable deadline has positively elapsed on a trusted clock is now retired and taken over,
+provided its Kubernetes Lease is also absent or expired and its worker Pod is proven gone. Any of
+those three facts being unreadable still refuses, so the takeover is never granted on ambiguity, and
+the retirement itself is what revokes the predecessor's authority — every Vault effect re-reads the
+fence immediately before acting.
+
+The same tree preserves the Bootstrap Broker's durable **secret-worker checkpoint**, and that had the
+same consequence one step further along the bring-up: a checkpoint written by an earlier invocation
+could never match a later one, because the fence generation, the owner nonce, and the operation
+deadline are all minted per invocation by construction. **That no longer wedges the host either.** A
+checkpoint that carries no receipt and no result, and whose fence generation is strictly older than
+the one now held, is discarded and rolled to a freshly allocated request — the predecessor's worker
+being destroyed by a UID-preconditioned delete rather than assumed gone. A checkpoint carrying a
+receipt is never discarded on any binding: that one is a record of work that already happened, and
+its cleanup binding names a session no successor can reconstruct. Separately, a cluster that is
+**installed but
+not serving** has no supported path to a per-run residue observation, so `--cascade` on such a host
+runs every phase but cannot confirm the per-run state and exits non-zero by design. See
+[DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
+for both, and
+[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md#current-plan-status) for their owning
+sprints; this guide does not maintain a competing status ledger.
+
 ### Chart Stacks
 
 See supported root charts:

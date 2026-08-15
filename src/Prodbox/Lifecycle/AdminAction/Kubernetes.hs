@@ -315,17 +315,21 @@ validateImageReference
   :: AdminActionPermitCore
   -> Text
   -> Either AdminActionJobIntentError ()
-validateImageReference core reference
+validateImageReference _core reference
   | Text.null reference = invalid
   | Text.length reference > 512 = invalid
   | Text.any (\character -> isControl character || isSpace character) reference = invalid
   | not (Text.all validImageCharacter reference) = invalid
-  | Text.isSuffixOf ("@" <> adminActionPermitImageDigest core) reference = Right ()
-  | otherwise = invalid
+  | "@" `Text.isInfixOf` reference = invalid
+  | not (hasDeclaredTag reference) = invalid
+  | otherwise = Right ()
  where
   invalid = Left AdminActionJobImageReferenceInvalid
   validImageCharacter character =
     isAlphaNum character || character `elem` ("._/:@-" :: String)
+  hasDeclaredTag value =
+    let (_, finalComponent) = Text.breakOnEnd "/" value
+     in ":" `Text.isInfixOf` finalComponent
 
 validIdentity :: Text -> Bool
 validIdentity value =

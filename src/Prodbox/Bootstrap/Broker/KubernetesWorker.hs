@@ -13,9 +13,13 @@
 -- projected ServiceAccount token.
 module Prodbox.Bootstrap.Broker.KubernetesWorker
   ( KubernetesWorkerBoundary (..)
+  , ControllerImageIdentity (..)
   , ControllerImageObservation (..)
   , ControllerSelfObservationScope (..)
-  , controllerImageDigestFromResponse
+  , WorkerImagePullReference
+  , mkWorkerImagePullReference
+  , renderWorkerImagePullReference
+  , controllerImageFromResponse
   , controllerImageObservationDetail
   , VaultStorageIdentity
   , renderVaultStorageIdentity
@@ -28,6 +32,10 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerRequestFromCreateResponse
   , workerRequestFromRunningResponse
   , workerRequestFromSelfResponse
+  , WorkerPodDecodeReason (..)
+  , decodeWorkerPod
+  , renderWorkerPodDecodeReason
+  , imageDigestFromRuntimeId
   , bootstrapLeaseAnnotationsForFence
   , bootstrapLeaseManifestForFence
   , workerPodDeleteOptions
@@ -36,6 +44,7 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerExitFromResponse
   , workerDeletionFromResponse
   , workerAbsenceFromResponse
+  , fenceOwnerWorkerFromResponse
   , bootstrapLeaseFromResponse
   , kubernetesTransportFailureLabel
   , unobservableReason
@@ -53,6 +62,7 @@ import Control.Exception
   , try
   , tryJust
   )
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -81,6 +91,7 @@ import Data.Time.Clock
   , diffUTCTime
   , getCurrentTime
   )
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.X509.CertificateStore (readCertificateStore)
 import Network.Connection (TLSSettings (..))
 import Network.HTTP.Client
@@ -105,10 +116,13 @@ import Network.TLS
   , Shared (..)
   , defaultParamsClient
   )
+import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.ChartStatics qualified as ChartStatics
 import Prodbox.Bootstrap.Broker.Fence
-  ( BootstrapLeaseObservation (..)
+  ( BootstrapFenceGeneration
+  , BootstrapFenceOwnerWorkerObservation (..)
+  , BootstrapLeaseObservation (..)
   , BootstrapSessionFence
   , bootstrapFenceActionDigest
   , bootstrapFenceGeneration
@@ -169,10 +183,12 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , secretWorkerRequestPodUid
   , secretWorkerRequestStorageGeneration
   )
+import Prodbox.Bootstrap.Broker.Settings (bootstrapFenceLeaseDurationSeconds)
 import Prodbox.Bootstrap.Broker.Types
   ( ArtifactDigest
   , PristineResetProof
   , VaultStorageGeneration
+  , mkArtifactDigest
   , pristineStorageBinding
   , renderArtifactDigest
   , renderVaultStorageGeneration
@@ -230,6 +246,14 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       :: Deadline
       -> SecretWorkerCleanupBinding
       -> IO SecretWorkerLifecycleObservation
+  , kubernetesObserveFenceOwnerWorker
+      :: Deadline
+      -> BootstrapFenceGeneration
+      -> IO BootstrapFenceOwnerWorkerObservation
+  -- ^ Sprint 2.47.  Keyed by fence generation rather than by
+  -- 'SecretWorkerCleanupBinding', because a successor holding only a stale
+  -- durable fence cannot construct one of those.  This is the sole production
+  -- producer of 'BootstrapFenceOwnerWorkerObservation'.
   , kubernetesObserveBootstrapLease
       :: Deadline
       -> IO BootstrapLeaseObservation
@@ -237,7 +261,7 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       :: Deadline
       -> BootstrapSessionFence
       -> IO BootstrapLeaseObservation
-  , kubernetesObserveControllerImageDigest
+  , kubernetesObserveControllerImage
       :: ControllerSelfObservationScope
       -> Deadline
       -> IO ControllerImageObservation
@@ -286,26 +310,66 @@ productionKubernetesWorkerBoundary = do
     manager <- managerResult
     Right
       KubernetesWorkerBoundary
-        { kubernetesCreateWorkerWorkload = \deadline intent -> do
-            created <-
-              requestKubernetes
-                manager
-                deadline
-                "POST"
-                (workerPodsUrl namespace)
-                (Just (workerPodManifestForIntent namespace intent))
-            case created of
-              Left detail -> pure (Left detail)
-              Right (201, body) ->
-                pure (workerRequestFromCreateResponse namespace intent 201 body)
-              Right (409, _) -> do
-                observed <-
-                  requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
-                pure $ case observed of
-                  Left detail -> Left detail
-                  Right (code, body) ->
-                    workerRequestFromCreateResponse namespace intent code body
-              Right _ -> pure (Left "Kubernetes refused secret-worker Pod creation")
+        { -- Sprint 2.51: the worker Pod's @image@ is the controller's own
+          -- __declared__ reference, observed here rather than carried in the
+          -- durable intent. The intent's 'WorkerImageDigest' is the runtime
+          -- identity the worker must be attested against; a pull reference is
+          -- where the kubelet looks, not part of what the intent proves, so
+          -- recording it durably would be the same layer confusion one level up
+          -- (and would change the generic-'Serialise' arity of every
+          -- already-written checkpoint — see the sprint block).
+          --
+          -- Observing it here also buys a check that did not exist: the freshly
+          -- observed controller runtime digest must still equal the one the
+          -- intent pinned, so a controller redeployed between intent allocation
+          -- and Pod creation is refused at the boundary with its own reason
+          -- instead of failing attestation four stages later.
+          --
+          -- __The deadline composition changes and is stated rather than
+          -- absorbed.__ This path shares one @workerApiBudgetMicros@ deadline
+          -- across every request it makes, and that count goes from at most two
+          -- (POST, plus a GET only on 409) to at most three. The budget is not
+          -- widened: these are in-cluster API round trips against the local
+          -- API server, and the added one is the same PodList read
+          -- 'allocateIntent' already performs under the same budget. Exhausting
+          -- it is a fail-closed refusal that the outer reconcile retries, not a
+          -- wrong result.
+          kubernetesCreateWorkerWorkload = \deadline intent -> do
+            observation <-
+              observeControllerImage ControllerObservedForWorkerLaunch manager namespace deadline
+            case observation of
+              ControllerImageUnobservable detail ->
+                pure (Left (unobservableReason "controller image unobservable" detail))
+              ControllerImageIdentityRejected detail ->
+                pure (Left (unobservableReason "controller image identity rejected" detail))
+              ControllerImageObserved identity
+                | controllerImageRuntimeDigest identity /= secretWorkerIntentImageDigest intent ->
+                    pure
+                      ( Left
+                          "the controller image changed after the worker intent was allocated"
+                      )
+                | otherwise -> do
+                    let pullReference = controllerImagePullReference identity
+                    created <-
+                      requestKubernetes
+                        manager
+                        deadline
+                        "POST"
+                        (workerPodsUrl namespace)
+                        (Just (workerPodManifestForIntent namespace pullReference intent))
+                    case created of
+                      Left detail -> pure (Left detail)
+                      Right (201, body) ->
+                        pure
+                          (workerRequestFromCreateResponse namespace pullReference intent 201 body)
+                      Right (409, _) -> do
+                        observed <-
+                          requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
+                        pure $ case observed of
+                          Left detail -> Left detail
+                          Right (code, body) ->
+                            workerRequestFromCreateResponse namespace pullReference intent code body
+                      Right _ -> pure (Left "Kubernetes refused secret-worker Pod creation")
         , kubernetesObserveWorkerAttestation = \deadline request -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
@@ -342,6 +406,17 @@ productionKubernetesWorkerBoundary = do
                 SecretWorkerLifecycleUnobservable
                   (unobservableReason "Kubernetes Pod absence observation unavailable" detail)
               Right (code, body) -> workerAbsenceFromResponse namespace binding code body
+        , kubernetesObserveFenceOwnerWorker = \deadline fenceGeneration -> do
+            response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
+            pure $ case response of
+              Left detail ->
+                BootstrapFenceOwnerWorkerUnobservable
+                  ( unobservableReason
+                      "Kubernetes worker Pod observation unavailable"
+                      detail
+                  )
+              Right (code, body) ->
+                fenceOwnerWorkerFromResponse namespace fenceGeneration code body
         , kubernetesObserveBootstrapLease = \deadline -> do
             response <- requestKubernetes manager deadline "GET" (bootstrapLeaseUrl namespace) Nothing
             case response of
@@ -421,7 +496,7 @@ productionKubernetesWorkerBoundary = do
                       (if code == 201 then 200 else code)
                       body
                   )
-        , kubernetesObserveControllerImageDigest = \scope deadline -> do
+        , kubernetesObserveControllerImage = \scope deadline -> do
             response <-
               requestKubernetes
                 manager
@@ -431,7 +506,7 @@ productionKubernetesWorkerBoundary = do
                 Nothing
             pure $ case response of
               Left detail -> ControllerImageUnobservable detail
-              Right (code, body) -> controllerImageDigestFromResponse scope namespace code body
+              Right (code, body) -> controllerImageFromResponse scope namespace code body
         , kubernetesObserveSelfWorkerRequest = \deadline operation -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
@@ -496,19 +571,23 @@ resetVaultStorage
 resetVaultStorage manager brokerNamespace deadline proof = do
   identityResult <- observeVaultStorageIdentity manager deadline
   digestObservation <-
-    observeControllerImageDigest
+    observeControllerImage
       ControllerObservedForWorkerLaunch
       manager
       brokerNamespace
       deadline
-  let digestResult = case digestObservation of
-        ControllerImageObserved digest -> Right digest
+  -- Sprint 2.51: the reset Pod is the second registry pull the Broker issues,
+  -- and it carried the identical defect. It now takes the controller's declared
+  -- reference for the same reason the worker Pod does; the runtime digest has no
+  -- role here, because nothing attests the reset Pod against the controller.
+  let pullResult = case digestObservation of
+        ControllerImageObserved observed -> Right (controllerImagePullReference observed)
         ControllerImageUnobservable detail -> Left detail
         ControllerImageIdentityRejected detail -> Left detail
-  case (identityResult, digestResult) of
+  case (identityResult, pullResult) of
     (Left detail, _) -> pure (Left detail)
     (_, Left detail) -> pure (Left detail)
-    (Right identity, Right imageDigest) -> do
+    (Right identity, Right pullReference) -> do
       scaledDown <- setVaultScale manager deadline 0
       case scaledDown of
         Left detail -> pure (Left detail)
@@ -522,7 +601,7 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                   manager
                   deadline
                   identity
-                  imageDigest
+                  pullReference
                   proof
               case resetPod of
                 Left detail -> pure (Left detail)
@@ -556,13 +635,13 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                                 (Left "Vault data PVC identity changed during pristine reset")
                             Left detail -> pure (Left detail)
 
-observeControllerImageDigest
+observeControllerImage
   :: ControllerSelfObservationScope
   -> Manager
   -> Text
   -> Deadline
   -> IO ControllerImageObservation
-observeControllerImageDigest scope manager namespace deadline = do
+observeControllerImage scope manager namespace deadline = do
   response <-
     requestKubernetes
       manager
@@ -572,7 +651,7 @@ observeControllerImageDigest scope manager namespace deadline = do
       Nothing
   pure $ case response of
     Left detail -> ControllerImageUnobservable detail
-    Right (code, body) -> controllerImageDigestFromResponse scope namespace code body
+    Right (code, body) -> controllerImageFromResponse scope namespace code body
 
 -- | The API server's status for a credential it will not authenticate. It is
 -- deliberately not grouped with 403, which a cold cluster answers while the
@@ -614,17 +693,17 @@ ensureVaultResetPod
   :: Manager
   -> Deadline
   -> VaultStorageIdentity
-  -> WorkerImageDigest
+  -> WorkerImagePullReference
   -> PristineResetProof
   -> IO (Either Text Text)
-ensureVaultResetPod manager deadline identity imageDigest proof = do
+ensureVaultResetPod manager deadline identity pullReference proof = do
   created <-
     requestKubernetes
       manager
       deadline
       "POST"
       vaultPodsUrl
-      (Just (vaultResetPodManifest identity imageDigest proof))
+      (Just (vaultResetPodManifest identity pullReference proof))
   case created of
     Left detail -> pure (Left detail)
     Right (201, body) -> awaitResetPod body
@@ -638,7 +717,7 @@ ensureVaultResetPod manager deadline identity imageDigest proof = do
     Right _ -> pure (Left "Vault reset Pod creation was refused")
  where
   awaitResetPod initialBody =
-    case validateResetPod identity imageDigest proof initialBody of
+    case validateResetPod identity pullReference proof initialBody of
       Left detail -> pure (Left detail)
       Right (uid, "Succeeded", Just 0) -> pure (Right uid)
       Right (_, "Failed", _) -> pure (Left "Vault reset Pod failed")
@@ -714,10 +793,10 @@ vaultScaleManifest resourceVersion replicas =
 
 vaultResetPodManifest
   :: VaultStorageIdentity
-  -> WorkerImageDigest
+  -> WorkerImagePullReference
   -> PristineResetProof
   -> Value
-vaultResetPodManifest identity imageDigest proof =
+vaultResetPodManifest identity pullReference proof =
   object
     [ "apiVersion" .= ("v1" :: Text)
     , "kind" .= ("Pod" :: Text)
@@ -735,7 +814,7 @@ vaultResetPodManifest identity imageDigest proof =
           , "containers"
               .= [ object
                      [ "name" .= vaultResetContainerName
-                     , "image" .= vaultResetImageReference imageDigest
+                     , "image" .= renderWorkerImagePullReference pullReference
                      , "imagePullPolicy" .= ("IfNotPresent" :: Text)
                      , "command" .= (["/bin/sh", "-ec"] :: [Text])
                      , "args"
@@ -792,12 +871,6 @@ vaultResetAnnotations identity proof =
       )
     , (vaultResetPvcUidAnnotation, renderVaultStorageIdentity identity)
     ]
-
-vaultResetImageReference :: WorkerImageDigest -> Text
-vaultResetImageReference imageDigest =
-  ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics
-    <> "@"
-    <> renderWorkerImageDigest imageDigest
 
 uidPreconditionDeleteOptions :: Text -> Value
 uidPreconditionDeleteOptions uid =
@@ -920,8 +993,9 @@ workerPodAnnotationsForIntent intent =
 -- secret, Secret volume, writable host path, or caller-selected executable.
 -- The worker reads one canonical framed payload from its attached stdin and
 -- selects behavior only from the closed operation argument.
-workerPodManifestForIntent :: Text -> SecretWorkerIntent -> Value
-workerPodManifestForIntent namespace intent =
+workerPodManifestForIntent
+  :: Text -> WorkerImagePullReference -> SecretWorkerIntent -> Value
+workerPodManifestForIntent namespace pullReference intent =
   object
     [ "apiVersion" .= ("v1" :: Text)
     , "kind" .= ("Pod" :: Text)
@@ -946,7 +1020,7 @@ workerPodManifestForIntent namespace intent =
           , "containers"
               .= [ object
                      [ "name" .= workerContainerName
-                     , "image" .= workerImageReference intent
+                     , "image" .= renderWorkerImagePullReference pullReference
                      , "imagePullPolicy" .= ("IfNotPresent" :: Text)
                      , "args" .= workerContainerArguments intent
                      , "stdin" .= True
@@ -986,22 +1060,17 @@ workerPodManifestForIntent namespace intent =
           ]
     ]
 
-workerImageReference :: SecretWorkerIntent -> Text
-workerImageReference intent =
-  ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics
-    <> "@"
-    <> renderWorkerImageDigest (secretWorkerIntentImageDigest intent)
-
 -- | Bind the API-owned UID from either a successful POST response or the GET
 -- used after a 409/lost create response. A pre-existing fixed-name Pod must
 -- match the complete durable intent and the closed container program.
 workerRequestFromCreateResponse
   :: Text
+  -> WorkerImagePullReference
   -> SecretWorkerIntent
   -> Int
   -> ByteString
   -> Either Text SecretFreeWorkerRequest
-workerRequestFromCreateResponse namespace intent code body
+workerRequestFromCreateResponse namespace pullReference intent code body
   | code /= 200 && code /= 201 = Left "worker Pod create/read-back returned a non-success status"
   | otherwise = do
       wire <-
@@ -1023,7 +1092,10 @@ workerRequestFromCreateResponse namespace intent code body
         (renderWorkerServiceAccount (secretWorkerIntentServiceAccount intent))
         (podCreateServiceAccount wire)
       container <- firstCreateString (requireSoleNamedContainer (podCreateContainers wire))
-      requireCreateEqual "worker image" (workerImageReference intent) (containerWireImage container)
+      requireCreateEqual
+        "worker image"
+        (renderWorkerImagePullReference pullReference)
+        (containerWireImage container)
       requireCreateEqual "worker args" (workerContainerArguments intent) (containerWireArgs container)
       requireCreateEqual "worker stdin" True (containerWireStdin container)
       requireCreateEqual "worker stdinOnce" True (containerWireStdinOnce container)
@@ -1103,7 +1175,7 @@ workerRequestFromRunningResponse namespace operation actionDigest requestDigest 
   | otherwise = do
       snapshot <-
         either
-          (const (Left "worker Pod response is invalid"))
+          (Left . unobservableReason "worker Pod response is invalid" . renderWorkerPodDecodeReason)
           Right
           (decodeWorkerPod namespace body)
       let observed = podSnapshotObservation snapshot
@@ -1142,7 +1214,10 @@ workerRequestFromSelfResponse namespace expectedOperation code body
   | otherwise = do
       snapshot <-
         either
-          (const (Left "worker self-observation response is invalid"))
+          ( Left
+              . unobservableReason "worker self-observation response is invalid"
+              . renderWorkerPodDecodeReason
+          )
           Right
           (decodeWorkerPod namespace body)
       let observed = podSnapshotObservation snapshot
@@ -1182,6 +1257,12 @@ bootstrapLeaseAnnotationsForFence fence =
 -- | Exact fixed-name Lease body.  The durable operation deadline remains in
 -- annotations and is checked independently; the Kubernetes TTL is only the
 -- short liveness witness and is renewed on an idempotent resume.
+--
+-- Sprint 2.48: @leaseDurationSeconds@ was the literal @300@, matching
+-- 'maximumBrokerRequestDeadlineMilliseconds' by coincidence across two modules
+-- with no stated relationship.  It is now
+-- 'bootstrapFenceLeaseDurationSeconds', which derives from that budget — see
+-- there for the invariant and for why renewing the Lease was refused.
 bootstrapLeaseManifestForFence
   :: Text
   -> UTCTime
@@ -1203,10 +1284,37 @@ bootstrapLeaseManifestForFence namespace renewTime resourceVersion fence =
     , "spec"
         .= object
           [ "holderIdentity" .= ownerNonceText (bootstrapFenceOwnerNonce fence)
-          , "leaseDurationSeconds" .= (300 :: Natural)
-          , "renewTime" .= renewTime
+          , "leaseDurationSeconds" .= bootstrapFenceLeaseDurationSeconds
+          , "renewTime" .= kubernetesMicroTime renewTime
           ]
     ]
+
+-- | Sprint 2.48: render a @metav1.MicroTime@ exactly as Kubernetes parses it.
+--
+-- @Lease.spec.renewTime@ is a @MicroTime@, and the API server unmarshals it with
+-- the Go layout @2006-01-02T15:04:05.000000Z07:00@ — __exactly six fractional
+-- digits, mandatory__. Aeson's @ToJSON UTCTime@ renders a /variable/ number of
+-- fractional digits: it trims trailing zeros and can emit up to twelve from
+-- picosecond resolution. Encoding the 'UTCTime' directly therefore produced a
+-- body the API server rejected with @400 Bad Request@, deterministically,
+-- because @getCurrentTime@ essentially never lands on exactly six significant
+-- digits.
+--
+-- Proven server-side rather than argued, with @kubectl create --dry-run=server@
+-- against this exact resource:
+--
+-- * @…37.123456789012Z@ (12 digits) — @BadRequest@, @cannot parse "789012Z" as "Z07:00"@
+-- * @…37.123456789Z@ (9 digits) — @BadRequest@, @cannot parse "789Z" as "Z07:00"@
+-- * @…37.123456Z@ (6 digits) — __accepted__
+-- * @…37Z@ (0 digits) — @BadRequest@, @cannot parse "Z" as ".000000"@
+--
+-- Truncating toward the past is also the safe direction here: the rendered
+-- instant is never later than the 'UTCTime' it came from, so the
+-- @renewTime > wallNow@ guard in 'bootstrapLeaseFromResponse' cannot be tripped
+-- by this encoding.
+kubernetesMicroTime :: UTCTime -> Text
+kubernetesMicroTime =
+  Text.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S.%6qZ"
 
 -- | Kubernetes rejects a delete if the deterministic name has been reused by
 -- a different API-assigned UID. No unconditional delete request exists here.
@@ -1294,7 +1402,12 @@ workerAttestationFromResponse namespace request code body
   | code == 404 = SecretWorkerAttestationUnobservable "worker Pod is absent"
   | code /= 200 = SecretWorkerAttestationUnobservable "worker Pod GET returned a non-success status"
   | otherwise = case decodeWorkerPod namespace body of
-      Left _ -> SecretWorkerAttestationUnobservable "worker Pod response is invalid"
+      Left reason ->
+        SecretWorkerAttestationUnobservable
+          ( unobservableReason
+              "worker Pod response is invalid"
+              (renderWorkerPodDecodeReason reason)
+          )
       Right snapshot -> attestWorkerPodObservation request (podSnapshotObservation snapshot)
 
 workerExitFromResponse
@@ -1307,9 +1420,20 @@ workerExitFromResponse namespace binding code body
   | code == 404 = SecretWorkerLifecycleUnobservable "worker Pod disappeared before exit read-back"
   | code /= 200 =
       SecretWorkerLifecycleUnobservable "worker Pod exit GET returned a non-success status"
-  | otherwise = case decodeWorkerPod namespace body >>= validateExitedPod binding of
-      Left _ -> SecretWorkerLifecycleUnobservable "worker Pod exit response is invalid"
-      Right exitCode -> SecretWorkerProcessExited binding exitCode
+  | otherwise = case decodeWorkerPod namespace body of
+      Left reason ->
+        SecretWorkerLifecycleUnobservable
+          ( unobservableReason
+              "worker Pod exit response is invalid"
+              (renderWorkerPodDecodeReason reason)
+          )
+      Right snapshot -> case validateExitedPod binding snapshot of
+        -- 'validateExitedPod' compares controller-authored expectations against
+        -- the observation; its reasons name fields, never observed values.
+        Left detail ->
+          SecretWorkerLifecycleUnobservable
+            (unobservableReason "worker Pod exit binding is invalid" (Text.pack detail))
+        Right exitCode -> SecretWorkerProcessExited binding exitCode
 
 workerDeletionFromResponse
   :: SecretWorkerCleanupBinding
@@ -1338,6 +1462,94 @@ workerAbsenceFromResponse namespace binding code body
         | otherwise ->
             SecretWorkerLifecycleUnobservable "a replacement worker Pod occupies the fixed coordinate"
 
+-- | Sprint 2.47: decide whether a secret worker exists for exactly one fence
+-- generation, from one GET of the sole worker Pod coordinate.
+--
+-- Three outcomes, and the middle one is the whole reason this producer can
+-- exist at all:
+--
+-- * @404@ — the coordinate is empty, so no worker exists for any generation.
+-- * @200@ carrying a /different/ fence generation — the sole coordinate is
+--   occupied by another generation's worker, which is itself proof that this
+--   generation's worker is gone.  The Pod name is fixed and the Broker's Role
+--   grants @get@\/@delete@ on that exact name, so at most one can exist.
+-- * @200@ carrying /this/ fence generation — present.  A Pod that is
+--   terminating still counts as present; a deletion in flight is not a
+--   completed absence.
+--
+-- Everything else — an unparseable body, a missing or non-canonical
+-- fence-generation annotation, a rejected identity, any other status, or a
+-- transport failure — is unobservable, never absence.  Absence is the only
+-- outcome that can authorize a fence takeover, so it is the only one that must
+-- be positively proven.
+--
+-- This deliberately does not reuse 'decodeWorkerPod'.  That decoder requires a
+-- sole named container status and a runtime image digest, which a @Pending@
+-- Pod does not yet have — it would report /unobservable/ for a Pod that is
+-- plainly present.  Fail-closed either way, but a presence question deserves a
+-- decoder that can answer it.
+fenceOwnerWorkerFromResponse
+  :: Text
+  -> BootstrapFenceGeneration
+  -> Int
+  -> ByteString
+  -> BootstrapFenceOwnerWorkerObservation
+fenceOwnerWorkerFromResponse namespace fenceGeneration code body
+  | code == 404 = absent "absent" "none" "none"
+  -- Keep this guard above the generic non-success guard or it is unreachable.
+  | code == kubernetesUnauthorizedStatus =
+      BootstrapFenceOwnerWorkerUnobservable identityRejectionDetail
+  | code /= 200 =
+      BootstrapFenceOwnerWorkerUnobservable
+        "worker Pod fence-owner GET returned a non-success status"
+  | otherwise = case decodePodFenceOwner namespace body of
+      Left _ ->
+        BootstrapFenceOwnerWorkerUnobservable
+          "worker Pod fence-owner response is invalid"
+      Right (observedUid, observedGeneration)
+        | observedGeneration == queriedGeneration ->
+            BootstrapFenceOwnerWorkerPresent fenceGeneration
+        | otherwise ->
+            absent "occupied" observedUid (naturalText observedGeneration)
+ where
+  queriedGeneration = bootstrapFenceGenerationValue fenceGeneration
+  absent outcome occupantUid occupantGeneration =
+    case fenceOwnerWorkerAbsenceReceipt
+      namespace
+      queriedGeneration
+      code
+      outcome
+      occupantUid
+      occupantGeneration of
+      Left detail -> BootstrapFenceOwnerWorkerUnobservable detail
+      Right receipt -> BootstrapFenceOwnerWorkerAbsent fenceGeneration receipt
+
+-- | Receipt of the exact read-back that justified an absence claim.
+--
+-- It binds only API-assigned, non-secret coordinates.  The owner nonce is a
+-- 32-byte ownership token and is deliberately absent, in line with the rule
+-- Sprints 2.46 and 2.47 applied to the refusal narration one level up.
+fenceOwnerWorkerAbsenceReceipt
+  :: Text -> Natural -> Int -> Text -> Text -> Text -> Either Text ArtifactDigest
+fenceOwnerWorkerAbsenceReceipt namespace queriedGeneration code outcome occupantUid occupantGeneration =
+  case mkArtifactDigest (lowerHexBytes (SHA256.hash (TextEncoding.encodeUtf8 evidence))) of
+    Left _ ->
+      Left "worker Pod absence receipt could not be digested"
+    Right digest -> Right digest
+ where
+  evidence =
+    Text.intercalate
+      "\n"
+      [ "prodbox.bootstrap-fence-owner-worker-absence.v1"
+      , "namespace=" <> namespace
+      , "pod=" <> bootstrapSecretWorkerPodName
+      , "queried-fence-generation=" <> naturalText queriedGeneration
+      , "status=" <> Text.pack (show code)
+      , "outcome=" <> outcome
+      , "occupant-uid=" <> occupantUid
+      , "occupant-fence-generation=" <> occupantGeneration
+      ]
+
 bootstrapLeaseFromResponse
   :: Text
   -> MonotonicInstant
@@ -1355,7 +1567,14 @@ bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterW
   -- broker's RoleBinding has not yet been applied.
   | code == kubernetesUnauthorizedStatus =
       BootstrapLeaseIdentityRejected identityRejectionDetail
-  | code /= 200 = BootstrapLeaseUnobservable "Bootstrap Lease GET returned a non-success status"
+  -- Sprint 2.48: this said "GET" on a decoder the ensure path reaches with a
+  -- POST/PUT response, and dropped the status entirely -- so a 400 from a
+  -- malformed body and a 500 from a broken API server read identically, and
+  -- neither named the call that failed. The status is not secret and is the one
+  -- fact that would have identified the MicroTime defect in a single run.
+  | code /= 200 =
+      BootstrapLeaseUnobservable
+        (Text.pack ("Bootstrap Lease request returned HTTP " ++ show code))
   | otherwise = case eitherDecodeStrict' body >>= validateLeaseWire namespace of
       Left _ -> BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
       Right (wire, localDeadline) ->
@@ -1574,11 +1793,11 @@ instance FromJSON ResetVolumeWire where
 
 validateResetPod
   :: VaultStorageIdentity
-  -> WorkerImageDigest
+  -> WorkerImagePullReference
   -> PristineResetProof
   -> ByteString
   -> Either Text (Text, Text, Maybe Int)
-validateResetPod identity imageDigest proof body = do
+validateResetPod identity pullReference proof body = do
   wire <-
     either
       (const (Left "Vault reset Pod response is invalid"))
@@ -1605,7 +1824,7 @@ validateResetPod identity imageDigest proof body = do
   requireCreateEqual "reset container name" vaultResetContainerName (resetContainerName container)
   requireCreateEqual
     "reset container image"
-    (vaultResetImageReference imageDigest)
+    (renderWorkerImagePullReference pullReference)
     (resetContainerImage container)
   requireCreateEqual
     "reset container command"
@@ -1734,7 +1953,14 @@ instance FromJSON PodWire where
       <*> spec .: "serviceAccountName"
       <*> spec .: "containers"
       <*> status .: "phase"
-      <*> status .: "containerStatuses"
+      -- Sprint 2.51: Kubernetes omits `containerStatuses` entirely on a Pod
+      -- whose container has not been started yet. Requiring it here made that
+      -- state an unparsable response, which is one of the four identical
+      -- candidate reasons that hid the worker-image defect. It is now absent-as-
+      -- empty, and 'decodeWorkerPod' reports the empty case as
+      -- 'WorkerPodNotStarted'. Nothing is weakened: every consumer still
+      -- requires exactly one named status and refuses the empty list.
+      <*> status .:? "containerStatuses" .!= []
 
 instance FromJSON ContainerWire where
   parseJSON = withObject "Kubernetes container" $ \value ->
@@ -1780,11 +2006,43 @@ data ControllerSelfObservationScope
     ControllerObservedForOwnReadiness
   deriving stock (Eq, Show)
 
+-- | The controller Pod's image, in the two identities that are __not__
+-- interchangeable and that Sprint 2.51 exists to stop confusing.
+--
+-- A container image carries two sha256 identities, and they are the same
+-- sixty-four lower-hex characters:
+--
+--   * the __config digest__, which the container runtime reports as
+--     @status.containerStatuses[].imageID@. It names the runtime's layer. It is
+--     the identity two Pods must share to have run the same bytes, and it is
+--     the one an OCI registry __cannot__ resolve — there is no reverse index
+--     from a config digest to the manifest that references it, so
+--     @GET \/v2\/\<name\>\/manifests\/\<config digest\>@ is an error, not a
+--     lookup.
+--   * the __declared reference__, @spec.containers[].image@, which names the
+--     registry's layer. It is what the kubelet can actually pull, and it is
+--     mutable (the harness renders a machine-id or substrate tag).
+--
+-- The Broker needs both and they answer different questions: the runtime digest
+-- is __what is proven__, the declared reference is __where to look__. Carrying
+-- only the first is what put every worker Pod in @ImagePullBackOff@; carrying
+-- only the second would launch a worker that is not provably the controller's
+-- own bytes.
+data ControllerImageIdentity = ControllerImageIdentity
+  { controllerImageRuntimeDigest :: !WorkerImageDigest
+  -- ^ Observed @imageID@. The attestation identity: a worker Pod is the
+  -- controller's own image exactly when its observed @imageID@ equals this.
+  , controllerImagePullReference :: !WorkerImagePullReference
+  -- ^ Declared @spec.containers[].image@. The kubelet's addressing hint, and
+  -- the only value a worker Pod's @image@ field may carry.
+  }
+  deriving stock (Eq, Show)
+
 -- | A controller-Pod observation, three-valued for the same reason the Lease
 -- observation is: an identity rejection is absorbing and must not be read as a
 -- dependency that is still coming up.
 data ControllerImageObservation
-  = ControllerImageObserved !WorkerImageDigest
+  = ControllerImageObserved !ControllerImageIdentity
   | ControllerImageUnobservable !Text
   | ControllerImageIdentityRejected !Text
   deriving stock (Eq, Show)
@@ -1797,23 +2055,71 @@ controllerImageObservationDetail observation = case observation of
   ControllerImageUnobservable detail -> Just detail
   ControllerImageIdentityRejected detail -> Just detail
 
-controllerImageDigestFromResponse
+-- | A registry-resolvable image reference: the exact text a Pod spec's @image@
+-- field is allowed to carry.
+--
+-- __Why this is a type rather than a 'Text'__ (Sprint 2.51). The two digests
+-- described on 'ControllerImageIdentity' are indistinguishable by syntax — both
+-- are @sha256:@ followed by sixty-four lower-hex characters — and
+-- distinguishable only by which endpoint resolves them. No smart constructor
+-- over the digest text can separate them, which is
+-- [chaos_hardening_doctrine.md § 24](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- exactly: an observation has a layer, and the runtime's @imageID@ names the
+-- runtime's layer while a pull names the registry's.
+--
+-- The separation is therefore made at the boundary that __consumes__ the value
+-- instead of inside the digest. This is the only type a Pod manifest accepts in
+-- an @image@ field, and 'mkWorkerImagePullReference' admits only a value with a
+-- repository component equal to the compiled worker image repository. A runtime
+-- identity has no repository component at all, so it cannot be laundered into a
+-- pull reference by any path.
+--
+-- It deliberately lives in this module rather than beside 'WorkerImageDigest' in
+-- "Prodbox.Bootstrap.Broker.SecretWorker": the runtime digest is durable
+-- attestation state, this is a Kubernetes addressing hint observed afresh each
+-- time it is used, and keeping them in separate modules keeps that difference
+-- visible.
+newtype WorkerImagePullReference = WorkerImagePullReference Text
+  deriving stock (Eq, Ord, Show)
+
+-- | Admit only a declared image reference naming the compiled worker
+-- repository. A bare runtime digest (@sha256:\<64 hex\>@) has no repository and
+-- is refused here, which is the structural half of the Sprint 2.51 remedy.
+mkWorkerImagePullReference :: Text -> Either String WorkerImagePullReference
+mkWorkerImagePullReference value = do
+  requireBoundedText "worker image reference" 512 value
+  repository <-
+    maybe
+      (Left "worker image reference has no repository component")
+      Right
+      (imageReferenceRepository value)
+  requireEqual
+    "worker image repository"
+    (ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics)
+    repository
+  Right (WorkerImagePullReference value)
+
+-- | The sole producer of the text placed in a Pod spec @image@ field.
+renderWorkerImagePullReference :: WorkerImagePullReference -> Text
+renderWorkerImagePullReference (WorkerImagePullReference value) = value
+
+controllerImageFromResponse
   :: ControllerSelfObservationScope
   -> Text
   -> Int
   -> ByteString
   -> ControllerImageObservation
-controllerImageDigestFromResponse scope namespace code body
+controllerImageFromResponse scope namespace code body
   | code == kubernetesUnauthorizedStatus =
       ControllerImageIdentityRejected identityRejectionDetail
   | code /= 200 =
       ControllerImageUnobservable
         "Bootstrap Broker Pod observation returned a non-success status"
-  | otherwise = case decodedDigest of
+  | otherwise = case decodedIdentity of
       Left detail -> ControllerImageUnobservable detail
-      Right digest -> ControllerImageObserved digest
+      Right identity -> ControllerImageObserved identity
  where
-  decodedDigest = do
+  decodedIdentity = do
     listing <-
       either
         (const (Left "Bootstrap Broker PodList response is invalid"))
@@ -1846,40 +2152,189 @@ controllerImageDigestFromResponse scope namespace code body
         requireCreateEqual "controller readiness" True (containerStatusWireReady status)
       ControllerObservedForOwnReadiness -> Right ()
     observedDigest <- firstCreateString (imageDigestFromRuntimeId (containerStatusWireImageId status))
-    expectedRepository <-
-      maybe
-        (Left "Bootstrap Broker controller image reference is invalid")
-        Right
-        (imageReferenceRepository (containerWireImage container))
-    requireCreateEqual
-      "controller image repository"
-      (ChartStatics.brokerStaticWorkerImageRepository ChartStatics.brokerChartStatics)
-      expectedRepository
-    either (Left . Text.pack . show) Right (mkWorkerImageDigest observedDigest)
+    -- Sprint 2.51: the declared reference used to be read only to validate its
+    -- repository and was then discarded, leaving the config digest — the one of
+    -- the two that no registry can resolve — as the sole carried identity. It
+    -- is now kept, because it is the only pullable one.
+    pullReference <-
+      firstCreateString (mkWorkerImagePullReference (containerWireImage container))
+    runtimeDigest <-
+      either (Left . Text.pack . show) Right (mkWorkerImageDigest observedDigest)
+    Right
+      ControllerImageIdentity
+        { controllerImageRuntimeDigest = runtimeDigest
+        , controllerImagePullReference = pullReference
+        }
 
-decodeWorkerPod :: Text -> ByteString -> Either String PodSnapshot
+-- | Why a worker Pod observation could not be projected.
+--
+-- __Sprint 2.51: the sixth instance of the collapse Sprints @2.46@–@2.50@ each
+-- closed one layer up.__ Both host-side decoders used to discard this reason
+-- with @const@ and report @"worker Pod response is invalid"@, so a Pod that had
+-- not started yet, a Pod whose image the kubelet could not resolve, a Pod with
+-- the wrong ServiceAccount, and a malformed API response were one string. That
+-- is what hid the @ImagePullBackOff@ this sprint exists to fix behind four
+-- identical candidate reasons.
+--
+-- __The redaction question is answered by construction, not by audit.__ A worker
+-- Pod's annotations carry a Vault session accessor, and an Aeson decode error
+-- can quote the bytes it choked on, so this type carries no value read out of
+-- the response body. Every payload here is a controller-authored constant — a
+-- field label or an annotation key, both literals in this module — and the sole
+-- reason that would need body text, 'WorkerPodResponseUnparsable', deliberately
+-- drops the parser's message rather than forwarding it. Dropping exactly one
+-- reason for a stated cause is not the collapse; collapsing eleven into it was.
+data WorkerPodDecodeReason
+  = -- | The body is not a Pod this decoder can read at all. The parser's own
+    -- message is deliberately not carried: it is the one reason whose text can
+    -- quote the response bytes.
+    WorkerPodResponseUnparsable
+  | -- | A fixed coordinate of the sole worker Pod disagreed. The payload is the
+    -- field label, never the observed value.
+    WorkerPodIdentityUnexpected !Text
+  | -- | The Pod does not hold exactly the one named worker container.
+    WorkerPodContainerNotSole
+  | -- | The Pod carries no container status yet, so the container has not been
+    -- started. Distinct from every malformed-response arm.
+    WorkerPodNotStarted
+  | -- | A container status exists but is not the sole named worker container.
+    WorkerPodContainerStatusNotSole
+  | -- | The container status exists with an empty @imageID@: the kubelet has
+    -- not resolved the image. This is the arm an @ImagePullBackOff@ reaches.
+    WorkerPodImageNotResolved
+  | -- | @spec.containers[].image@ is not a reference into the compiled worker
+    -- repository.
+    WorkerPodDeclaredImageUnusable
+  | -- | @status.containerStatuses[].imageID@ is present but is not a digest.
+    WorkerPodRuntimeImageUnusable
+  | -- | The Pod spec pinned a digest and the runtime ran a different one.
+    WorkerPodImageDeclaredRuntimeDisagree
+  | -- | A required bootstrap annotation is absent or out of bounds. The payload
+    -- is the annotation key, never its value.
+    WorkerPodAnnotationUnusable !Text
+  deriving stock (Eq, Show)
+
+-- | Total, value-free rendering of a decode reason.
+renderWorkerPodDecodeReason :: WorkerPodDecodeReason -> Text
+renderWorkerPodDecodeReason reason = case reason of
+  WorkerPodResponseUnparsable ->
+    "the response is not a readable Pod"
+  WorkerPodIdentityUnexpected field ->
+    "the Pod's " <> field <> " is not the sole worker coordinate"
+  WorkerPodContainerNotSole ->
+    "the Pod does not hold exactly the named worker container"
+  WorkerPodNotStarted ->
+    "the Pod has no container status yet, so the worker has not started"
+  WorkerPodContainerStatusNotSole ->
+    "the Pod does not hold exactly the named worker container status"
+  WorkerPodImageNotResolved ->
+    "the container has no runtime image identity yet, so the kubelet has not \
+    \resolved the image (an image pull that is pending or backing off reaches \
+    \this arm)"
+  WorkerPodDeclaredImageUnusable ->
+    "the Pod's declared image is not a reference into the compiled worker \
+    \repository"
+  WorkerPodRuntimeImageUnusable ->
+    "the container's runtime image identity is not a digest"
+  WorkerPodImageDeclaredRuntimeDisagree ->
+    "the Pod spec pinned an image digest and the runtime ran a different one"
+  WorkerPodAnnotationUnusable key ->
+    "the Pod's " <> key <> " annotation is missing or out of bounds"
+
+-- | Whether a declared @spec.containers[].image@ pins a digest.
+--
+-- Sprint 2.51: a declared reference is now allowed to be a tag, because a tag is
+-- the only thing a registry can resolve for a locally built image. A tag carries
+-- no digest to compare, which is the one check this sprint surrenders; see
+-- 'decodeWorkerPod' for why the runtime comparison subsumes it.
+data DeclaredImagePin
+  = DeclaredPinnedByDigest !Text
+  | DeclaredPinnedByTag
+  deriving stock (Eq, Show)
+
+declaredImagePin :: Text -> Either WorkerPodDecodeReason DeclaredImagePin
+declaredImagePin value = case Text.breakOnEnd "@" value of
+  (prefix, digest)
+    | not (Text.null prefix) ->
+        either
+          (const (Left WorkerPodDeclaredImageUnusable))
+          (Right . DeclaredPinnedByDigest)
+          (validateSha256Digest digest)
+  _ -> Right DeclaredPinnedByTag
+
+-- | Project the sole worker Pod, or say precisely why it could not be projected.
+--
+-- __The surrendered check, and why it costs nothing__ (Sprint 2.51). This
+-- decoder used to require @spec.containers[].image@ to be digest-pinned and to
+-- equal the observed runtime digest. That is no longer required, because the
+-- Pod's declared reference is now a pullable tag rather than an unpullable
+-- config digest, and a tag carries no digest to compare.
+--
+-- Nothing is lost. The declared-versus-observed equality only ever proved "the
+-- kubelet did not ignore the spec". What the pinning existed to prove — that the
+-- worker ran the __same bytes as the controller that attests it__ — is proven
+-- one layer down and independently: 'rawWorkerAttestation' carries the observed
+-- runtime digest into the attestation, and @attestSecretWorker@ requires it to
+-- equal the durable intent's digest, which is the controller's __own__ observed
+-- runtime digest. An observation compared against an independently pinned
+-- expectation subsumes a spec-conformance check against a value the same spec
+-- supplied. Two checks are added rather than removed in exchange: the declared
+-- reference must name the compiled worker repository, and a declared reference
+-- that __does__ pin a digest must still agree with the runtime.
+decodeWorkerPod :: Text -> ByteString -> Either WorkerPodDecodeReason PodSnapshot
 decodeWorkerPod namespace body = do
-  wire <- eitherDecodeStrict' body
-  requireEqual "apiVersion" "v1" (podWireApiVersion wire)
-  requireEqual "kind" "Pod" (podWireKind wire)
-  requireEqual "metadata.name" bootstrapSecretWorkerPodName (podWireName wire)
-  requireEqual "metadata.namespace" namespace (podWireNamespace wire)
-  container <- requireSoleNamedContainer (podWireContainers wire)
-  containerStatus <- requireSoleNamedContainerStatus (podWireContainerStatuses wire)
-  declaredDigest <- imageDigestFromDeclaredRef (containerWireImage container)
-  observedDigest <- imageDigestFromRuntimeId (containerStatusWireImageId containerStatus)
-  requireEqual "container image digest" declaredDigest observedDigest
+  wire <-
+    either (const (Left WorkerPodResponseUnparsable)) Right (eitherDecodeStrict' body)
+  requireWorkerPodField "apiVersion" "v1" (podWireApiVersion wire)
+  requireWorkerPodField "kind" "Pod" (podWireKind wire)
+  requireWorkerPodField "metadata.name" bootstrapSecretWorkerPodName (podWireName wire)
+  requireWorkerPodField "metadata.namespace" namespace (podWireNamespace wire)
+  container <-
+    either (const (Left WorkerPodContainerNotSole)) Right $
+      requireSoleNamedContainer (podWireContainers wire)
+  containerStatus <- case podWireContainerStatuses wire of
+    [] -> Left WorkerPodNotStarted
+    statuses ->
+      either (const (Left WorkerPodContainerStatusNotSole)) Right $
+        requireSoleNamedContainerStatus statuses
+  -- Gained in exchange for the surrendered digest equality: the worker's
+  -- declared reference must name the compiled worker repository, exactly as the
+  -- controller's must.
+  _ <-
+    either
+      (const (Left WorkerPodDeclaredImageUnusable))
+      Right
+      (mkWorkerImagePullReference (containerWireImage container))
+  observedDigest <-
+    let runtimeId = containerStatusWireImageId containerStatus
+     in if Text.null runtimeId
+          then Left WorkerPodImageNotResolved
+          else
+            either
+              (const (Left WorkerPodRuntimeImageUnusable))
+              Right
+              (imageDigestFromRuntimeId runtimeId)
+  declaredPin <- declaredImagePin (containerWireImage container)
+  case declaredPin of
+    DeclaredPinnedByTag -> Right ()
+    DeclaredPinnedByDigest declaredDigest
+      | declaredDigest == observedDigest -> Right ()
+      | otherwise -> Left WorkerPodImageDeclaredRuntimeDisagree
   let annotations = podWireAnnotations wire
-  operationText <- requireBoundedAnnotation workerOperationAnnotation 64 annotations
-  operation <- either (Left . Text.unpack) Right (parseSecretWorkerOperation operationText)
-  sessionId <- requireBoundedAnnotation workerSessionIdAnnotation 128 annotations
-  sessionAccessor <- requireBoundedAnnotation workerSessionAccessorAnnotation 256 annotations
-  fenceGeneration <- requireNaturalAnnotation workerFenceGenerationAnnotation annotations
-  ownerNonce <- requireBoundedAnnotation workerOwnerNonceAnnotation 256 annotations
-  actionDigest <- requireBoundedAnnotation workerActionDigestAnnotation 128 annotations
-  requestDigest <- requireBoundedAnnotation workerRequestDigestAnnotation 128 annotations
-  storageGeneration <- requireBoundedAnnotation workerStorageGenerationAnnotation 256 annotations
-  operationDeadline <- requireNaturalAnnotation workerOperationDeadlineAnnotation annotations
+  operationText <- workerPodAnnotation workerOperationAnnotation 64 annotations
+  operation <-
+    either
+      (const (Left (WorkerPodAnnotationUnusable workerOperationAnnotation)))
+      Right
+      (parseSecretWorkerOperation operationText)
+  sessionId <- workerPodAnnotation workerSessionIdAnnotation 128 annotations
+  sessionAccessor <- workerPodAnnotation workerSessionAccessorAnnotation 256 annotations
+  fenceGeneration <- workerPodNaturalAnnotation workerFenceGenerationAnnotation annotations
+  ownerNonce <- workerPodAnnotation workerOwnerNonceAnnotation 256 annotations
+  actionDigest <- workerPodAnnotation workerActionDigestAnnotation 128 annotations
+  requestDigest <- workerPodAnnotation workerRequestDigestAnnotation 128 annotations
+  storageGeneration <- workerPodAnnotation workerStorageGenerationAnnotation 256 annotations
+  operationDeadline <- workerPodNaturalAnnotation workerOperationDeadlineAnnotation annotations
   Right
     PodSnapshot
       { podSnapshotObservation =
@@ -1980,6 +2435,41 @@ decodePodIdentity namespace body = do
   requireBoundedText "metadata.uid" 128 (podIdentityUid wire)
   Right (podIdentityUid wire)
 
+-- | Sprint 2.47: identity plus the one annotation a fence-owner presence
+-- question turns on.  Deliberately narrower than 'decodeWorkerPod' — see
+-- 'fenceOwnerWorkerFromResponse'.
+data PodFenceOwnerWire = PodFenceOwnerWire
+  { podFenceOwnerApiVersion :: !Text
+  , podFenceOwnerKind :: !Text
+  , podFenceOwnerName :: !Text
+  , podFenceOwnerNamespace :: !Text
+  , podFenceOwnerUid :: !Text
+  , podFenceOwnerAnnotations :: !(Map Text Text)
+  }
+
+instance FromJSON PodFenceOwnerWire where
+  parseJSON = withObject "Kubernetes Pod fence owner" $ \root -> do
+    metadata <- root .: "metadata"
+    PodFenceOwnerWire
+      <$> root .: "apiVersion"
+      <*> root .: "kind"
+      <*> metadata .: "name"
+      <*> metadata .: "namespace"
+      <*> metadata .: "uid"
+      <*> metadata .:? "annotations" .!= Map.empty
+
+decodePodFenceOwner :: Text -> ByteString -> Either String (Text, Natural)
+decodePodFenceOwner namespace body = do
+  wire <- eitherDecodeStrict' body
+  requireEqual "apiVersion" "v1" (podFenceOwnerApiVersion wire)
+  requireEqual "kind" "Pod" (podFenceOwnerKind wire)
+  requireEqual "metadata.name" bootstrapSecretWorkerPodName (podFenceOwnerName wire)
+  requireEqual "metadata.namespace" namespace (podFenceOwnerNamespace wire)
+  requireBoundedText "metadata.uid" 128 (podFenceOwnerUid wire)
+  observedGeneration <-
+    requireNaturalAnnotation workerFenceGenerationAnnotation (podFenceOwnerAnnotations wire)
+  Right (podFenceOwnerUid wire, observedGeneration)
+
 data BootstrapLeaseWire = BootstrapLeaseWire
   { leaseWireApiVersion :: !Text
   , leaseWireKind :: !Text
@@ -2020,14 +2510,18 @@ requireSoleNamedContainerStatus statuses = case statuses of
     | containerStatusWireName containerStatus == workerContainerName -> Right containerStatus
   _ -> Left "Pod must contain exactly the named secret-worker status"
 
-imageDigestFromDeclaredRef :: Text -> Either String Text
-imageDigestFromDeclaredRef value
-  | Text.length value == 71 = validateSha256Digest value
-  | otherwise = case Text.breakOnEnd "@" value of
-      (prefix, digest)
-        | not (Text.null prefix) -> validateSha256Digest digest
-      _ -> Left "worker image is not pinned by digest"
-
+-- | Read a container runtime's reported image identity.
+--
+-- __Which layer this names__ (Sprint 2.51). @status.containerStatuses[].imageID@
+-- is the container runtime's identity for an image. Under containerd it is the
+-- image's __config__ digest, reported bare for an image that is present locally
+-- rather than pulled; other runtimes prefix it (@docker-pullable:\/\/repo\@…@),
+-- which the second arm accepts.
+--
+-- The result is therefore an attestation identity — two Pods sharing it ran the
+-- same bytes — and __not__ a registry coordinate. It must never be concatenated
+-- into an image reference; see 'WorkerImagePullReference', which is the only
+-- type a Pod @image@ field accepts and which this value cannot be turned into.
 imageDigestFromRuntimeId :: Text -> Either String Text
 imageDigestFromRuntimeId value
   | Text.length value == 71 = validateSha256Digest value
@@ -2089,6 +2583,34 @@ requireBoundedAnnotation key maximumLength annotations = do
   requireBoundedText "annotation" maximumLength value
   Right value
 
+-- | 'requireBoundedAnnotation' in the closed worker-Pod reason space. The
+-- reason names the annotation __key__, which is a literal in this module; the
+-- offending value never appears, because one of these annotations is a Vault
+-- session accessor.
+workerPodAnnotation
+  :: Text -> Int -> Map Text Text -> Either WorkerPodDecodeReason Text
+workerPodAnnotation key maximumLength annotations =
+  either
+    (const (Left (WorkerPodAnnotationUnusable key)))
+    Right
+    (requireBoundedAnnotation key maximumLength annotations)
+
+workerPodNaturalAnnotation
+  :: Text -> Map Text Text -> Either WorkerPodDecodeReason Natural
+workerPodNaturalAnnotation key annotations =
+  either
+    (const (Left (WorkerPodAnnotationUnusable key)))
+    Right
+    (requireNaturalAnnotation key annotations)
+
+-- | 'requireEqual' in the closed worker-Pod reason space. The reason names the
+-- field label only; neither the expected nor the observed value is carried.
+requireWorkerPodField
+  :: (Eq value) => Text -> value -> value -> Either WorkerPodDecodeReason ()
+requireWorkerPodField label expected observed
+  | expected == observed = Right ()
+  | otherwise = Left (WorkerPodIdentityUnexpected label)
+
 requireNaturalAnnotation
   :: Text -> Map Text Text -> Either String Natural
 requireNaturalAnnotation key annotations = do
@@ -2103,6 +2625,13 @@ parseNatural value = case TextRead.decimal value of
 
 naturalText :: Natural -> Text
 naturalText = Text.pack . show
+
+lowerHexBytes :: ByteString -> Text
+lowerHexBytes = Text.pack . concatMap renderHexByte . ByteString.unpack
+ where
+  renderHexByte byte = case showHex byte "" of
+    [digit] -> ['0', digit]
+    digits -> digits
 
 requireBoundedText :: String -> Int -> Text -> Either String ()
 requireBoundedText label maximumLength value

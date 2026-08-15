@@ -1240,8 +1240,9 @@ rke2DeleteFlagsParser =
           <> help
             ( "Orchestrate the full teardown — K8s drain, per-run "
                 ++ "Pulumi destroys, cluster uninstall, postflight tag "
-                ++ "sweep — as one atomic operator action. The K8s drain "
-                ++ "phase skips gracefully when no cluster is reachable. "
+                ++ "sweep — as one atomic operator action. Every phase runs "
+                ++ "even when an earlier one fails, and the run reports "
+                ++ "success only if each phase could confirm its own outcome. "
                 ++ "Without --cascade, `cluster delete` is a pure local "
                 ++ "uninstall and leaves per-run AWS stacks untouched."
             )

@@ -10,7 +10,7 @@ where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Exception (toException)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -20,7 +20,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime (..), addUTCTime, secondsToDiffTime)
+import Data.Time.Clock (UTCTime (..), addUTCTime, picosecondsToDiffTime, secondsToDiffTime)
 import GHC.Generics (Generic)
 import Network.HTTP.Client
   ( HttpException (..)
@@ -29,11 +29,18 @@ import Network.HTTP.Client
   )
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Fence
-  ( BootstrapLeaseObservation (..)
+  ( BootstrapFenceGeneration
+  , BootstrapFenceOwnerWorkerObservation (..)
+  , BootstrapLeaseObservation (..)
   , BootstrapSessionFence
   , bootstrapFenceGeneration
   , confirmBootstrapLease
   , reloadBootstrapSessionFence
+  )
+import Prodbox.Bootstrap.Broker.HostSecretWorker
+  ( HostSecretWorkerExpectation
+  , firstAttestedRequest
+  , mkHostSecretWorkerExpectation
   )
 import Prodbox.Bootstrap.Broker.KubernetesAttestation
   ( RawBootstrapLeaseObservation (..)
@@ -43,14 +50,23 @@ import Prodbox.Bootstrap.Broker.KubernetesAttestation
   , workerPodNameForRequest
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
-  ( ControllerImageObservation (..)
+  ( ControllerImageIdentity (..)
+  , ControllerImageObservation (..)
   , ControllerSelfObservationScope (..)
+  , WorkerPodDecodeReason (..)
   , bootstrapLeaseAnnotationsForFence
   , bootstrapLeaseFromResponse
+  , bootstrapLeaseManifestForFence
   , brokerPodsUrl
-  , controllerImageDigestFromResponse
+  , controllerImageFromResponse
+  , decodeWorkerPod
+  , fenceOwnerWorkerFromResponse
+  , imageDigestFromRuntimeId
   , imageReferenceRepository
   , kubernetesTransportFailureLabel
+  , mkWorkerImagePullReference
+  , renderWorkerImagePullReference
+  , renderWorkerPodDecodeReason
   , unobservableReason
   , workerAbsenceFromResponse
   , workerAttestationFromResponse
@@ -59,6 +75,7 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerExitFromResponse
   , workerPodAnnotationsForRequest
   , workerPodDeleteOptions
+  , workerPodManifestForIntent
   )
 import Prodbox.Bootstrap.Broker.ProductionStore
   ( validArtifactDigest
@@ -89,11 +106,17 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , mkWorkerServiceAccount
   , mkWorkerSessionAccessor
   , mkWorkerSessionId
+  , renderWorkerImageDigest
   , secretWorkerCheckpointInvariantViolations
+  , secretWorkerRequestIntent
   , unobservableWorkerCheckpoint
   )
 import Prodbox.Bootstrap.Broker.Server
   ( BrokerAuthenticationFailure (..)
+  )
+import Prodbox.Bootstrap.Broker.Settings
+  ( bootstrapFenceLeaseDurationSeconds
+  , maximumBrokerRequestDeadlineMilliseconds
   )
 import Prodbox.Bootstrap.Broker.TokenReview
   ( BrokerTokenReviewResult (..)
@@ -115,6 +138,10 @@ import Prodbox.Bootstrap.Broker.Types
   , mkPgpEncryptedShare
   , mkVaultStorageGeneration
   , renderArtifactDigest
+  )
+import Prodbox.CheckCode
+  ( checkWorkerImagePullReferenceOwner
+  , workerImagePullReferenceViolations
   )
 import Prodbox.ControlPlane.Deadline
   ( deadlineFromInstant
@@ -195,7 +222,7 @@ bootstrapBrokerProductionBoundarySuite = do
         [ runningWorkerPodBodyWith
             canonicalWorkerRequest
             "foreign-pod-uid"
-            ("registry.invalid/prodbox@" <> sha256 'a')
+            (workerDigestReference (sha256 'a'))
             (sha256 'a')
             (workerPodAnnotationsForRequest canonicalWorkerRequest)
         , runningWorkerPodBodyWith
@@ -207,13 +234,19 @@ bootstrapBrokerProductionBoundarySuite = do
         , runningWorkerPodBodyWith
             canonicalWorkerRequest
             "worker-pod-uid"
-            ("registry.invalid/prodbox@" <> sha256 'a')
+            (workerTagReference "prodbox-machine-id")
             (sha256 'b')
             (workerPodAnnotationsForRequest canonicalWorkerRequest)
         , runningWorkerPodBodyWith
             canonicalWorkerRequest
             "worker-pod-uid"
-            ("registry.invalid/prodbox@" <> sha256 'a')
+            (workerDigestReference (sha256 'a'))
+            (sha256 'b')
+            (workerPodAnnotationsForRequest canonicalWorkerRequest)
+        , runningWorkerPodBodyWith
+            canonicalWorkerRequest
+            "worker-pod-uid"
+            (workerDigestReference (sha256 'a'))
             (sha256 'a')
             ( Map.insert
                 "bootstrap.prodbox.dev/request-digest"
@@ -279,6 +312,188 @@ bootstrapBrokerProductionBoundarySuite = do
               (bootstrapLeaseBody canonicalFence "foreign-owner" (addUTCTime (-1) wallNow) 10)
       confirmBootstrapLease after canonicalFence exact `shouldSatisfy` isRight
       foreignLease `shouldSatisfy` isUnobservableLease
+
+  describe "Sprint 2.47 expired-fence worker-absence boundary" $ do
+    -- The producer that made `decideBootstrapFenceRetire` wirable. It answers
+    -- by fence generation because that is one of only three fields a durable
+    -- `BootstrapSessionFence` carries out of the seven a
+    -- `SecretWorkerCleanupBinding` needs -- the structural reason the retire
+    -- decision had no production caller for four sprints.
+    it "proves absence from an empty coordinate and from one occupied by another generation" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+          vacant = fenceOwnerWorkerFromResponse namespace heldGeneration 404 ByteString.empty
+          occupied =
+            fenceOwnerWorkerFromResponse
+              namespace
+              heldGeneration
+              200
+              (fenceOwnerPodBody "replacement-uid" (Map.singleton fenceGenerationAnnotation "6"))
+      -- The worker Pod is one fixed coordinate granted by exact name in the
+      -- Broker's Role, so at most one can exist: a Pod carrying a DIFFERENT
+      -- fence generation is itself proof this generation's worker is gone.
+      forM_ [vacant, occupied] $ \observation ->
+        absenceGeneration observation `shouldBe` Just heldGeneration
+      -- The receipt is derived from the read-back rather than constant, so the
+      -- two absences do not share a digest.
+      absenceReceipt vacant `shouldNotBe` absenceReceipt occupied
+
+    it "reports a worker for this exact generation as present, terminating or not" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+      forM_ ["7", "0007"] $ \annotationValue ->
+        fenceOwnerWorkerFromResponse
+          namespace
+          heldGeneration
+          200
+          (fenceOwnerPodBody "worker-pod-uid" (Map.singleton fenceGenerationAnnotation annotationValue))
+          `shouldBe` BootstrapFenceOwnerWorkerPresent heldGeneration
+
+    -- Absence is the only outcome that can authorize a fence takeover, so it is
+    -- the only one that must be positively proven. Everything ambiguous is
+    -- unobservable -- never absence.
+    it "never reads an ambiguous answer as absence" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+          annotated value = Map.singleton fenceGenerationAnnotation value
+      forM_
+        [ fenceOwnerWorkerFromResponse namespace heldGeneration 401 ByteString.empty
+        , fenceOwnerWorkerFromResponse namespace heldGeneration 403 ByteString.empty
+        , fenceOwnerWorkerFromResponse namespace heldGeneration 500 ByteString.empty
+        , fenceOwnerWorkerFromResponse namespace heldGeneration 200 ByteString.empty
+        , -- no fence-generation annotation at all
+          fenceOwnerWorkerFromResponse
+            namespace
+            heldGeneration
+            200
+            (fenceOwnerPodBody "worker-pod-uid" Map.empty)
+        , -- present but not a canonical natural
+          fenceOwnerWorkerFromResponse
+            namespace
+            heldGeneration
+            200
+            (fenceOwnerPodBody "worker-pod-uid" (annotated "7x"))
+        , -- a Pod from another namespace can answer for no generation here
+          fenceOwnerWorkerFromResponse
+            "foreign-namespace"
+            heldGeneration
+            200
+            (fenceOwnerPodBody "worker-pod-uid" (annotated "7"))
+        ]
+        $ \observation -> observation `shouldSatisfy` isUnobservableFenceOwnerWorker
+
+  describe "Sprint 2.48 Kubernetes MicroTime encoding" $ do
+    -- Root-caused live and proven server-side with `kubectl create
+    -- --dry-run=server`: `Lease.spec.renewTime` is a MicroTime, parsed with the
+    -- Go layout "2006-01-02T15:04:05.000000Z07:00" -- exactly six fractional
+    -- digits, mandatory. 12, 9, and 0 digits are each rejected `BadRequest`;
+    -- only 6 is accepted. Aeson's ToJSON UTCTime renders a VARIABLE count, so
+    -- the manifest was rejected deterministically and `prodbox vault init`
+    -- could never create its fence Lease.
+    it "renders renewTime with exactly six fractional digits, whatever the input precision" $ do
+      let renderedFor time =
+            LazyByteString.toStrict
+              (encode (bootstrapLeaseManifestForFence namespace time Nothing canonicalFence))
+          fractionDigits body =
+            -- the digits between "renewTime":"…S. and the trailing Z"
+            let after = snd (ByteString.breakSubstring "\"renewTime\":\"" body)
+                stamp = ByteString.take 40 (ByteString.drop 13 after)
+                frac = ByteString.takeWhile (/= 90) (ByteString.drop 20 stamp) -- 90 == 'Z'
+             in ByteString.length frac
+      forM_ picosecondFixtures $ \time ->
+        fractionDigits (renderedFor time) `shouldBe` 6
+
+    it "never renders an instant later than the one it was given" $
+      -- Truncation toward the past is the safe direction: the `renewTime >
+      -- wallNow` guard in the response validator must not be trippable by the
+      -- encoding itself.
+      forM_ picosecondFixtures $ \time ->
+        ByteString.isInfixOf
+          (TextEncoding.encodeUtf8 (Text.pack (take 19 (show time))))
+          ( LazyByteString.toStrict
+              (encode (bootstrapLeaseManifestForFence namespace time Nothing canonicalFence))
+          )
+          `shouldBe` False
+
+    -- The status code is the one fact that would have named the MicroTime
+    -- defect in a single run; the old text said "GET" on a path the ensure
+    -- flow reaches with a POST, and dropped the code.
+    it "names the status code rather than a hardcoded verb on a non-success response" $ do
+      let observed code =
+            bootstrapLeaseFromResponse
+              namespace
+              (monotonicInstantFromMicros 100)
+              wallNow
+              (monotonicInstantFromMicros 101)
+              code
+              ByteString.empty
+      observed 400 `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease request returned HTTP 400"
+      observed 500 `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease request returned HTTP 500"
+      observed 400 `shouldNotBe` observed 500
+
+  describe "Sprint 2.48 fence Lease TTL derives from the request budget" $ do
+    -- Sprint 2.48 recorded this as an undeclared coupling and left the choice
+    -- open; this closes it. The Lease TTL was the literal 300 in the manifest builder while
+    -- `maximumBrokerRequestDeadlineMilliseconds` was 5 * 60 * 1000 in another
+    -- module -- the same 300 seconds by coincidence, with no stated
+    -- relationship. `authorizeFenceUse` bounds every effect by
+    -- `min attemptDeadline leaseDeadline`, so raising the request budget alone
+    -- would have made every long operation fail closed at
+    -- `BootstrapLeaseExpired`, looking like a Lease defect rather than a budget
+    -- change.
+    it "holds the invariant that makes the Lease deadline never the binding one" $
+      -- The Lease is stamped renewTime = now AFTER the request was accepted, so
+      -- a TTL at least as long as the maximum request budget puts Lease expiry
+      -- at or after request expiry, and the `min` never selects it.
+      (1000 * bootstrapFenceLeaseDurationSeconds)
+        `shouldSatisfy` (>= maximumBrokerRequestDeadlineMilliseconds)
+
+    it "is the tightest duration satisfying that invariant" $
+      -- A longer TTL is safe for the `min` but delays the instant a successor
+      -- may declare an abandoned predecessor expired -- which is exactly what
+      -- Sprint 2.47's retirement path needs. One second shorter must violate
+      -- the invariant, or the constant is not tight.
+      (1000 * (bootstrapFenceLeaseDurationSeconds - 1))
+        `shouldSatisfy` (< maximumBrokerRequestDeadlineMilliseconds)
+
+    it "publishes the derived duration in the Lease body rather than a literal" $ do
+      let body =
+            LazyByteString.toStrict
+              (encode (bootstrapLeaseManifestForFence namespace wallNow Nothing canonicalFence))
+      body
+        `shouldSatisfy` ByteString.isInfixOf
+          ( "\"leaseDurationSeconds\":"
+              <> TextEncoding.encodeUtf8
+                (Text.pack (show bootstrapFenceLeaseDurationSeconds))
+          )
+
+  describe "Sprint 2.49 attestation names which candidate disagreed about what" $ do
+    -- This discarded every candidate's reason and reported only that all of
+    -- them failed -- a disjunction rendered as a dead end, and the same shape
+    -- Sprints 2.46, 2.47, and 2.48 each closed one layer up.
+    it "names each expected operation and what it disagreed about" $ do
+      let refusal =
+            firstAttestedRequest
+              [ expectationFor SecretWorkerUnseal
+              , expectationFor SecretWorkerRotateTransitKey
+              ]
+              attestableWorkerPodBody
+      case refusal of
+        Right _ -> expectationFailure "a foreign operation must not attest"
+        Left detail -> do
+          -- both candidates named, each with the field it disagreed about
+          Text.unpack detail `shouldContain` "unseal -> worker operation mismatch"
+          Text.unpack detail `shouldContain` "rotate-transit -> worker operation mismatch"
+
+    it "accepts a matching candidate standing behind a non-matching one" $
+      firstAttestedRequest
+        [expectationFor SecretWorkerUnseal, expectationFor SecretWorkerInitialize]
+        attestableWorkerPodBody
+        `shouldSatisfy` isRight
+
+    -- A different fault: nobody expected anything, which is a caller defect
+    -- rather than a Pod that matched nothing. Folding the two was the same
+    -- collapse in miniature.
+    it "distinguishes an empty expectation list from a Pod that matched nothing" $
+      firstAttestedRequest [] attestableWorkerPodBody
+        `shouldBe` Left "no expected closed worker operation was supplied"
 
   describe "Bootstrap Broker one-shot secret ingress" $ do
     it "round-trips one canonical exact-bound frame without printable plaintext" $ do
@@ -356,7 +571,7 @@ bootstrapBrokerProductionBoundarySuite = do
     -- observation must succeed without them. This is the exact payload shape a
     -- live cluster returns for the broker's own self-observation.
     it "observes a PodList whose item omits apiVersion and kind" $
-      controllerImageDigestFromResponse
+      controllerImageFromResponse
         ControllerObservedForOwnReadiness
         brokerNamespace
         200
@@ -364,7 +579,7 @@ bootstrapBrokerProductionBoundarySuite = do
         `shouldSatisfy` isObservedControllerImage
 
     it "refuses a PodList that does not contain exactly one controller" $
-      controllerImageDigestFromResponse
+      controllerImageFromResponse
         ControllerObservedForOwnReadiness
         brokerNamespace
         200
@@ -380,7 +595,7 @@ bootstrapBrokerProductionBoundarySuite = do
         , "127.0.0.1:30080/prodbox/prodbox-runtime:latest"
         ]
         $ \image ->
-          controllerImageDigestFromResponse
+          controllerImageFromResponse
             ControllerObservedForOwnReadiness
             brokerNamespace
             200
@@ -388,7 +603,7 @@ bootstrapBrokerProductionBoundarySuite = do
             `shouldSatisfy` isObservedControllerImage
 
     it "still refuses a foreign controller image repository" $
-      controllerImageDigestFromResponse
+      controllerImageFromResponse
         ControllerObservedForOwnReadiness
         brokerNamespace
         200
@@ -408,6 +623,209 @@ bootstrapBrokerProductionBoundarySuite = do
       imageReferenceRepository "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:abc"
         `shouldBe` Just "127.0.0.1:30080/prodbox/prodbox-runtime"
       imageReferenceRepository "" `shouldBe` Nothing
+
+  describe "Sprint 2.51 config digest versus manifest digest" $ do
+    -- Validation 1: the structural claim. A container runtime's image ID and a
+    -- registry-resolvable reference are the same sixty-four hex characters, so
+    -- the separation cannot live in the digest. It lives in the constructor:
+    -- a runtime identity has no repository component and is refused.
+    it "refuses to build a pull reference out of a runtime image identity" $ do
+      mkWorkerImagePullReference (sha256 'a') `shouldSatisfy` isLeft
+      mkWorkerImagePullReference ("containerd://" <> sha256 'a') `shouldSatisfy` isLeft
+      mkWorkerImagePullReference "" `shouldSatisfy` isLeft
+      -- ...while the two shapes a registry can actually resolve are admitted.
+      fmap renderWorkerImagePullReference (mkWorkerImagePullReference controllerRuntimeImage)
+        `shouldBe` Right controllerRuntimeImage
+      fmap
+        renderWorkerImagePullReference
+        (mkWorkerImagePullReference (workerDigestReference (sha256 'a')))
+        `shouldBe` Right (workerDigestReference (sha256 'a'))
+      -- A foreign repository stays refused on both shapes.
+      mkWorkerImagePullReference "registry.invalid/elsewhere/prodbox-runtime:latest"
+        `shouldSatisfy` isLeft
+
+    -- Validation 2: the observation now carries BOTH identities, and they are
+    -- different objects. This is the defect stated as an assertion: the value
+    -- the Broker used to carry forward was the one no registry can resolve.
+    it "carries the declared reference alongside the runtime digest" $ do
+      case controllerImageFromResponse
+        ControllerObservedForWorkerLaunch
+        brokerNamespace
+        200
+        (controllerPodListBody controllerRuntimeImage) of
+        ControllerImageObserved identity -> do
+          renderWorkerImagePullReference (controllerImagePullReference identity)
+            `shouldBe` controllerRuntimeImage
+          renderWorkerImageDigest (controllerImageRuntimeDigest identity)
+            `shouldBe` sha256 'a'
+          renderWorkerImagePullReference (controllerImagePullReference identity)
+            `shouldSatisfy` (not . Text.isInfixOf (sha256 'a'))
+        other -> expectationFailure ("expected an observed controller image, got " ++ show other)
+
+    -- Validation 3: the Pod the kubelet is asked to run carries the pullable
+    -- reference and nothing derived from the runtime digest.
+    it "puts the pullable reference in the worker Pod, not the config digest" $ do
+      let pullReference = mustRight (mkWorkerImagePullReference controllerRuntimeImage)
+          rendered =
+            TextEncoding.decodeUtf8
+              ( LazyByteString.toStrict
+                  ( encode
+                      ( workerPodManifestForIntent
+                          namespace
+                          pullReference
+                          (secretWorkerRequestIntent canonicalWorkerRequest)
+                      )
+                  )
+              )
+      rendered `shouldSatisfy` Text.isInfixOf ("\"image\":\"" <> controllerRuntimeImage <> "\"")
+      rendered `shouldSatisfy` (not . Text.isInfixOf (workerDigestReference (sha256 'a')))
+
+    -- Validation 4: THE surrendered check, and the argument that it costs
+    -- nothing, as an assertion rather than a paragraph. The decoder no longer
+    -- requires the declared reference to pin a digest, so a tag-declared Pod
+    -- decodes; but the runtime comparison one layer down still refuses a Pod
+    -- that ran different bytes from the ones the intent pinned.
+    it "accepts a tag-declared Pod and still refuses one that ran other bytes" $ do
+      let tagBody runtimeDigest =
+            runningWorkerPodBodyWith
+              canonicalWorkerRequest
+              "worker-pod-uid"
+              (workerTagReference "prodbox-machine-id")
+              runtimeDigest
+              (workerPodAnnotationsForRequest canonicalWorkerRequest)
+      -- Matching runtime identity: attested, even though the spec pinned no digest.
+      attestSecretWorker
+        canonicalWorkerRequest
+        (workerAttestationFromResponse namespace canonicalWorkerRequest 200 (tagBody (sha256 'a')))
+        `shouldSatisfy` isRight
+      -- Different runtime identity: still refused. The check that was given up
+      -- could not have caught anything this one misses.
+      attestSecretWorker
+        canonicalWorkerRequest
+        (workerAttestationFromResponse namespace canonicalWorkerRequest 200 (tagBody (sha256 'b')))
+        `shouldSatisfy` isLeft
+      -- And a declared reference that DOES pin a digest must still agree.
+      attestSecretWorker
+        canonicalWorkerRequest
+        ( workerAttestationFromResponse
+            namespace
+            canonicalWorkerRequest
+            200
+            ( runningWorkerPodBodyWith
+                canonicalWorkerRequest
+                "worker-pod-uid"
+                (workerDigestReference (sha256 'b'))
+                (sha256 'a')
+                (workerPodAnnotationsForRequest canonicalWorkerRequest)
+            )
+        )
+        `shouldSatisfy` isLeft
+
+    -- Validation 5: the gained check. A worker Pod declaring a foreign
+    -- repository is refused for that reason, which is what compensates for the
+    -- surrendered digest equality.
+    it "refuses a worker Pod declaring a foreign repository" $
+      decodeWorkerPodReason
+        ( runningWorkerPodBodyWith
+            canonicalWorkerRequest
+            "worker-pod-uid"
+            "registry.invalid/elsewhere/prodbox-runtime:latest"
+            (sha256 'a')
+            (workerPodAnnotationsForRequest canonicalWorkerRequest)
+        )
+        `shouldBe` Left WorkerPodDeclaredImageUnusable
+
+  describe "Sprint 2.51 the worker Pod decode reason speaks" $ do
+    -- Validation 1: the arm this sprint's defect actually reaches. An
+    -- ImagePullBackOff Pod has a container status whose imageID is empty; a Pod
+    -- that has not been scheduled has no container status at all. Both used to
+    -- read as "worker Pod response is invalid", identically to a malformed
+    -- response.
+    it "names a not-yet-started Pod and an unresolved image apart" $ do
+      decodeWorkerPodReason notStartedWorkerPodBody
+        `shouldBe` Left WorkerPodNotStarted
+      decodeWorkerPodReason unresolvedImageWorkerPodBody
+        `shouldBe` Left WorkerPodImageNotResolved
+      decodeWorkerPodReason "{not json"
+        `shouldBe` Left WorkerPodResponseUnparsable
+
+    it "gives every decode reason a distinct rendering" $ do
+      let reasons =
+            [ WorkerPodResponseUnparsable
+            , WorkerPodIdentityUnexpected "metadata.name"
+            , WorkerPodContainerNotSole
+            , WorkerPodNotStarted
+            , WorkerPodContainerStatusNotSole
+            , WorkerPodImageNotResolved
+            , WorkerPodDeclaredImageUnusable
+            , WorkerPodRuntimeImageUnusable
+            , WorkerPodImageDeclaredRuntimeDisagree
+            , WorkerPodAnnotationUnusable "bootstrap.prodbox.dev/session-accessor"
+            ]
+          rendered = map renderWorkerPodDecodeReason reasons
+      length (nub rendered) `shouldBe` length reasons
+      filter Text.null rendered `shouldBe` []
+
+    -- Validation 2: the redaction question, answered as a test rather than as a
+    -- claim. A worker Pod's annotations carry a Vault session accessor. Every
+    -- reason this decoder can produce for a body containing one must not quote
+    -- it, and neither must the reason the host-side decoders surface.
+    it "never quotes a value out of the body it refused" $ do
+      let accessor = "hvs.SUPER-SECRET-ACCESSOR-VALUE"
+          poisoned =
+            Map.insert
+              "bootstrap.prodbox.dev/session-accessor"
+              accessor
+              (workerPodAnnotationsForRequest canonicalWorkerRequest)
+          bodies =
+            [ runningWorkerPodBodyWith
+                canonicalWorkerRequest
+                "worker-pod-uid"
+                "registry.invalid/elsewhere/prodbox-runtime:latest"
+                (sha256 'a')
+                poisoned
+            , unresolvedImageWorkerPodBody
+            , runningWorkerPodBodyWith
+                canonicalWorkerRequest
+                "worker-pod-uid"
+                (workerTagReference "prodbox-machine-id")
+                (sha256 'a')
+                (Map.delete "bootstrap.prodbox.dev/owner-nonce" poisoned)
+            ]
+      forM_ bodies $ \body -> do
+        decodeRefusalText body `shouldSatisfy` (not . Text.isInfixOf accessor)
+        -- the same guarantee at the boundary an operator actually reads
+        show (workerAttestationFromResponse namespace canonicalWorkerRequest 200 body)
+          `shouldSatisfy` (not . Text.isInfixOf accessor . Text.pack)
+
+    -- Validation 3: the runtime identity keeps naming its own layer. Both
+    -- shapes a container runtime reports are read; neither becomes a reference.
+    it "reads a runtime image identity in both reported shapes" $ do
+      imageDigestFromRuntimeId (sha256 'a') `shouldBe` Right (sha256 'a')
+      imageDigestFromRuntimeId ("containerd://" <> sha256 'a') `shouldBe` Right (sha256 'a')
+      imageDigestFromRuntimeId (workerDigestReference (sha256 'a')) `shouldBe` Right (sha256 'a')
+      imageDigestFromRuntimeId "" `shouldSatisfy` isLeft
+      imageDigestFromRuntimeId (workerTagReference "prodbox-machine-id") `shouldSatisfy` isLeft
+
+  describe "Sprint 2.51 the pull-reference boundary is compiled-checked" $ do
+    -- The guard fires on the exact pre-sprint source shape...
+    it "fires on a Pod image built by concatenating a digest" $ do
+      let offending =
+            unlines
+              [ "workerImageReference intent ="
+              , "  repository"
+              , "    <> \"@\""
+              , "    <> renderWorkerImageDigest (secretWorkerIntentImageDigest intent)"
+              , "  , \"image\" .= workerImageReference intent"
+              ]
+      length (workerImagePullReferenceViolations ("src/Prodbox/Bootstrap/Broker/X.hs", offending))
+        `shouldBe` 1
+
+    -- ...and passes on every Broker module as it stands.
+    it "passes on the current Bootstrap Broker tree" $ do
+      repoRoot <- getCurrentDirectory
+      findings <- checkWorkerImagePullReferenceOwner repoRoot
+      findings `shouldBe` []
 
   describe "Sprint 2.42 Bootstrap Broker transport failure classification" $ do
     -- Validation 1: each constructor produces a distinct reason, by exact
@@ -580,6 +998,23 @@ validReceipt =
         mustRight (mkBurnTokenCiphertext (TextEncoding.encodeUtf8 "burn"))
     , childEncryptedReceiptDigest = mustRight (mkArtifactDigest (digest 'b'))
     }
+
+-- | The compiled worker image repository, spelled once here so the fixtures
+-- cannot drift from 'ChartStatics.brokerStaticWorkerImageRepository'. Sprint
+-- 2.51 made a worker Pod's declared reference repository-checked, so a fixture
+-- naming a foreign registry now fails for that reason instead of the reason the
+-- case was written to exercise.
+workerImageRepository :: Text.Text
+workerImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+
+-- | A digest-pinned declared reference into the compiled worker repository.
+workerDigestReference :: Text.Text -> Text.Text
+workerDigestReference digestText = workerImageRepository <> "@" <> digestText
+
+-- | A tag declared reference — the shape the harness actually renders, and the
+-- shape Sprint 2.51 made the worker Pod carry.
+workerTagReference :: Text.Text -> Text.Text
+workerTagReference tag = workerImageRepository <> ":" <> tag
 
 -- | Sprint 2.43: the namespace the broker chart deploys into.
 brokerNamespace :: Text.Text
@@ -892,7 +1327,7 @@ runningWorkerPodBody request =
   runningWorkerPodBodyWith
     request
     "worker-pod-uid"
-    ("registry.invalid/prodbox@" <> sha256 'a')
+    (workerDigestReference (sha256 'a'))
     (sha256 'a')
     (workerPodAnnotationsForRequest request)
 
@@ -920,7 +1355,7 @@ exitedWorkerPodBody request receiptDigest =
   workerPodBody
     request
     "worker-pod-uid"
-    ("registry.invalid/prodbox@" <> sha256 'a')
+    (workerDigestReference (sha256 'a'))
     (sha256 'a')
     (workerPodAnnotationsForRequest request)
     "Succeeded"
@@ -933,6 +1368,90 @@ exitedWorkerPodBody request receiptDigest =
               ]
         ]
     )
+
+-- | The rendered refusal for a body, or the empty text when the body decoded.
+-- Named rather than inlined so the redaction case has no @case@ inside a lambda.
+decodeRefusalText :: ByteString.ByteString -> Text.Text
+decodeRefusalText body =
+  either renderWorkerPodDecodeReason (const Text.empty) (decodeWorkerPod namespace body)
+
+-- | 'decodeWorkerPod' projected to its refusal, because a 'PodSnapshot' is not
+-- an 'Eq' value and the reason is the whole point of these cases.
+decodeWorkerPodReason :: ByteString.ByteString -> Either WorkerPodDecodeReason ()
+decodeWorkerPodReason body = void (decodeWorkerPod namespace body)
+
+-- | Sprint 2.51: the exact shape Kubernetes returns for a Pod whose container
+-- has not been started — @status@ carries a phase and __no__ @containerStatuses@
+-- key at all. Requiring that key made this state an unparsable response.
+notStartedWorkerPodBody :: ByteString.ByteString
+notStartedWorkerPodBody =
+  LazyByteString.toStrict . encode $
+    object
+      [ "apiVersion" .= ("v1" :: Text.Text)
+      , "kind" .= ("Pod" :: Text.Text)
+      , "metadata"
+          .= object
+            [ "name" .= workerPodNameForRequest canonicalWorkerRequest
+            , "namespace" .= namespace
+            , "uid" .= ("worker-pod-uid" :: Text.Text)
+            , "annotations" .= workerPodAnnotationsForRequest canonicalWorkerRequest
+            ]
+      , "spec"
+          .= object
+            [ "serviceAccountName" .= ("bootstrap-init-worker" :: Text.Text)
+            , "containers"
+                .= [ object
+                       [ "name" .= workerContainerName
+                       , "image" .= workerTagReference "prodbox-machine-id"
+                       ]
+                   ]
+            ]
+      , "status" .= object ["phase" .= ("Pending" :: Text.Text)]
+      ]
+
+-- | Sprint 2.51: the exact shape of the Pod this sprint's defect produced — a
+-- container status exists, and its @imageID@ is the empty string because the
+-- kubelet never resolved the image. This is the @ImagePullBackOff@ arm.
+unresolvedImageWorkerPodBody :: ByteString.ByteString
+unresolvedImageWorkerPodBody =
+  LazyByteString.toStrict . encode $
+    object
+      [ "apiVersion" .= ("v1" :: Text.Text)
+      , "kind" .= ("Pod" :: Text.Text)
+      , "metadata"
+          .= object
+            [ "name" .= workerPodNameForRequest canonicalWorkerRequest
+            , "namespace" .= namespace
+            , "uid" .= ("worker-pod-uid" :: Text.Text)
+            , "annotations" .= workerPodAnnotationsForRequest canonicalWorkerRequest
+            ]
+      , "spec"
+          .= object
+            [ "serviceAccountName" .= ("bootstrap-init-worker" :: Text.Text)
+            , "containers"
+                .= [ object
+                       [ "name" .= workerContainerName
+                       , "image" .= workerTagReference "prodbox-machine-id"
+                       ]
+                   ]
+            ]
+      , "status"
+          .= object
+            [ "phase" .= ("Pending" :: Text.Text)
+            , "containerStatuses"
+                .= [ object
+                       [ "name" .= workerContainerName
+                       , "imageID" .= ("" :: Text.Text)
+                       , "ready" .= False
+                       , "state"
+                           .= object
+                             [ "waiting"
+                                 .= object ["reason" .= ("ImagePullBackOff" :: Text.Text)]
+                             ]
+                       ]
+                   ]
+            ]
+      ]
 
 workerPodBody
   :: SecretFreeWorkerRequest
@@ -979,6 +1498,112 @@ workerPodBody request podUid declaredImage runtimeDigest annotations phase ready
                    ]
             ]
       ]
+
+-- | Sprint 2.47. Identity plus annotations only: the fence-owner presence
+-- decoder deliberately does not require a container status or a runtime image
+-- digest, because a @Pending@ Pod has neither and is still plainly present.
+fenceOwnerPodBody
+  :: Text.Text -> Map.Map Text.Text Text.Text -> ByteString.ByteString
+fenceOwnerPodBody podUid annotations =
+  LazyByteString.toStrict . encode $
+    object
+      [ "apiVersion" .= ("v1" :: Text.Text)
+      , "kind" .= ("Pod" :: Text.Text)
+      , "metadata"
+          .= object
+            [ "name" .= workerPodNameForRequest canonicalWorkerRequest
+            , "namespace" .= namespace
+            , "uid" .= podUid
+            , "annotations" .= annotations
+            ]
+      ]
+
+fenceGenerationAnnotation :: Text.Text
+fenceGenerationAnnotation = "bootstrap.prodbox.dev/fence-generation"
+
+-- | Sprint 2.49: a worker Pod body that actually satisfies the host-side
+-- attestation preconditions, so a refusal is attributable to the operation
+-- rather than to the namespace or ServiceAccount. `firstAttestedRequest`
+-- hardcodes the `bootstrap-broker` namespace and the matcher requires the
+-- compiled worker ServiceAccount; the shared `workerPodBody` fixture uses
+-- neither, which is what the first run of these cases measured.
+attestableWorkerPodBody :: ByteString.ByteString
+attestableWorkerPodBody =
+  LazyByteString.toStrict . encode $
+    object
+      [ "apiVersion" .= ("v1" :: Text.Text)
+      , "kind" .= ("Pod" :: Text.Text)
+      , "metadata"
+          .= object
+            [ "name" .= workerPodNameForRequest canonicalWorkerRequest
+            , "namespace" .= ("bootstrap-broker" :: Text.Text)
+            , "uid" .= ("worker-pod-uid" :: Text.Text)
+            , "annotations" .= workerPodAnnotationsForRequest canonicalWorkerRequest
+            ]
+      , "spec"
+          .= object
+            [ "serviceAccountName" .= ("prodbox-bootstrap-secret-worker" :: Text.Text)
+            , "containers"
+                .= [ object
+                       [ "name" .= workerContainerName
+                       , "image" .= (workerDigestReference (sha256 'a'))
+                       ]
+                   ]
+            ]
+      , "status"
+          .= object
+            [ "phase" .= ("Running" :: Text.Text)
+            , "containerStatuses"
+                .= [ object
+                       [ "name" .= workerContainerName
+                       , "imageID" .= ("containerd://" <> sha256 'a')
+                       , "ready" .= True
+                       , "state" .= object ["running" .= object []]
+                       ]
+                   ]
+            ]
+      ]
+
+-- | Sprint 2.49: an expectation bound to the canonical worker request, varying
+-- only the operation, so a refusal is attributable to that one field.
+expectationFor :: SecretWorkerOperation -> HostSecretWorkerExpectation
+expectationFor operation =
+  mkHostSecretWorkerExpectation
+    operation
+    (mustRight (mkArtifactDigest (digest 'a')))
+    (mustRight (mkRequestDigest (digest 'c')))
+    (mustRight (mkVaultStorageGeneration "vault-pv-generation-a"))
+
+-- | Sprint 2.48: instants whose picosecond remainders render, under Aeson's
+-- variable-width @UTCTime@ encoding, as 0, 3, 6, 9, and 12 fractional digits.
+-- Only the six-digit case was ever acceptable to the Kubernetes API server.
+picosecondFixtures :: [UTCTime]
+picosecondFixtures =
+  [ UTCTime (fromGregorian 2026 8 14) (picosecondsToDiffTime picos)
+  | picos <-
+      [ 21 * 3600 * 1000000000000
+      , 21 * 3600 * 1000000000000 + 123000000000
+      , 21 * 3600 * 1000000000000 + 123456000000
+      , 21 * 3600 * 1000000000000 + 123456789000
+      , 21 * 3600 * 1000000000000 + 123456789012
+      ]
+  ]
+
+absenceReceipt :: BootstrapFenceOwnerWorkerObservation -> Maybe ArtifactDigest
+absenceReceipt observation = case observation of
+  BootstrapFenceOwnerWorkerAbsent _ receipt -> Just receipt
+  _ -> Nothing
+
+absenceGeneration
+  :: BootstrapFenceOwnerWorkerObservation -> Maybe BootstrapFenceGeneration
+absenceGeneration observation = case observation of
+  BootstrapFenceOwnerWorkerAbsent observedGeneration _ -> Just observedGeneration
+  _ -> Nothing
+
+isUnobservableFenceOwnerWorker :: BootstrapFenceOwnerWorkerObservation -> Bool
+isUnobservableFenceOwnerWorker observation = case observation of
+  BootstrapFenceOwnerWorkerUnobservable _ -> True
+  _ -> False
 
 podIdentityBody :: Text.Text -> ByteString.ByteString
 podIdentityBody podUid =

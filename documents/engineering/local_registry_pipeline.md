@@ -342,6 +342,83 @@ and are out of scope. The `docker.io` discovery/projection is the seam that late
 prior prodbox version, remove it once with `docker logout 127.0.0.1:30080` (leaves the
 `index.docker.io` login untouched). prodbox will not touch the global file — including to clean it.
 
+### 6.2 A locally built image has two sha256 identities, and only one of them is pullable
+
+An image published by this pipeline is addressable by two different sha256 values, and **they are
+the same sixty-four lower-hex characters**:
+
+| Identity | What it is good for |
+|----------|---------------------|
+| **Config digest** | Proving two running containers came from the same image bytes |
+| **Manifest digest** | The only value a registry can resolve — i.e. the only one usable in a `repo@sha256:…` pull |
+
+The config digest names the **container runtime's** layer; the manifest digest names the
+**registry's**. The OCI distribution API offers no reverse index from the first to the second, so
+`GET /v2/<name>/manifests/<config digest>` is an error rather than a lookup — this registry answers
+it `500`. A reference built as `repo@sha256:<config digest>` is therefore syntactically valid,
+permanently unresolvable, and puts the Pod in `ImagePullBackOff`.
+
+**Which identity a given reporter returns is a property of that reporter, and one of them is a
+property of host configuration.** Measured on the operator host 2026-08-15, against one image:
+
+| Reporter | Value | Which identity |
+|----------|-------|----------------|
+| `status.containerStatuses[].imageID` (Kubernetes, containerd CRI) | `sha256:e3c7ab7c…` | **config** digest, reported bare |
+| registry `Docker-Content-Digest` for the tag | `sha256:52d86a90…` | **manifest** digest |
+| `docker image inspect --format '{{.Id}}'` | `sha256:52d86a90…` | **manifest** digest *on this host* |
+| `docker image inspect --format '{{json .RepoDigests}}'` | `…@sha256:52d86a90…` | manifest digest |
+
+The third row is the one to be careful with. This host runs the Docker daemon with the **containerd
+image store** (`docker info` reports `driver-type io.containerd.snapshotter.v1`), and under that
+store `.Id` is the manifest digest. Under Docker's **classic** image store, `.Id` is the image config
+digest — the same field name, a different layer, selected by daemon configuration that this
+repository neither sets nor asserts.
+
+So `.Id` is **not** a safe way to obtain a pullable digest, even though it currently is one here.
+`.RepoDigests` is: it is the registry coordinate by definition, under either store. Any code that
+needs a pullable digest should read `.RepoDigests`, or avoid the question entirely by using the
+declared `repository:tag` reference.
+
+Because the two are syntactically identical, **no smart constructor over the digest text can
+separate them**. This is
+[chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md) exactly: an observation has a
+layer, and a value that names the runtime's layer must not be consumed as the registry's. The
+separation belongs at the boundary that consumes the value.
+
+Rules for any prodbox code that renders a Pod `image` field:
+
+1. **A pull reference is observed, never assembled.** Take the reference from something that
+   declared it — the controller's own `spec.containers[].image`, or a registry response — rather
+   than concatenating a repository and a digest.
+2. **A runtime image identity is an attestation value only.** Compare it against another observed
+   runtime identity to prove two containers ran the same bytes. Never place it in a Pod spec.
+3. **A tag reference is acceptable and a digest is not automatically stronger.** This pipeline
+   publishes under a machine-id-derived tag (§ 3); that tag is what the kubelet can resolve. Pinning
+   is achieved by comparing observed runtime identities, which is an observation of what actually
+   ran rather than a request in a spec
+   ([bootstrap_readiness_doctrine.md § 0.4](./bootstrap_readiness_doctrine.md)).
+
+The Bootstrap Broker implements exactly this split:
+`Prodbox.Bootstrap.Broker.KubernetesWorker.ControllerImageIdentity` carries the runtime digest and
+the declared reference side by side, and `WorkerImagePullReference` — constructible only from a
+declared reference naming the compiled worker repository — is the only type its Pod manifests accept
+in an `image` field. A `dev check` rule, `checkWorkerImagePullReferenceOwner`, keeps that boundary
+closed across the Bootstrap Broker, Target Secret Worker, Credential Provisioner, and Admin Action
+Pod-image owners.
+
+**No repository code reads a manifest digest deliberately.** There is no `Docker-Content-Digest`
+consumer, no `.RepoDigests` read, and no `buildx --push` digest capture.
+`Prodbox.Lib.ChartPlatform.resolveLocalImageBuildToken` reads `docker image inspect --format
+'{{.Id}}'`, which on this host yields a manifest digest — but per the table above that is a
+consequence of the daemon's image store rather than of anything the code requires, so the value is
+sound as a **rollout token** (it changes when the image changes) and unsound as a declared
+registry coordinate. Sprint `4.83` therefore keeps that token for rollout detection, supplies the
+declared `repository:tag` to every Pod `image` field, and obtains the separately named runtime
+attestation identity from the pushed OCI manifest's `config.digest` via
+`docker buildx imagetools inspect --raw`. Kubernetes observers parse
+`status.containerStatuses[].imageID` and compare that runtime identity with the signed intent;
+their own declared spec is no longer accepted as proof of what ran.
+
 ## 7. Operator Runbook
 
 Recommended flow before gateway or public-edge workload integration tests:

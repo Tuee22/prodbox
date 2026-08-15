@@ -1240,6 +1240,17 @@ dials, and the endpoint's address and port are what a policy engine matches. Col
 they "describe the same thing" breaks the client path. The discipline is to say which layer a value
 is for, not to reduce the count of values.
 
+**A second in-tree instance, and it is the type rather than the derivation.** `apiEgress` above named
+the wrong layer; `Prodbox.Lifecycle.ResidueStatus.ResidueStatus` has **nowhere to name one** — it is
+the common target of every residue observation in the tree, and its own defining module documents two
+of the layers it joins as "deliberately independent … separate external facts" ten lines before
+joining them. The producer count, the layer count, and the consuming defect are measured in
+[the Development Plan](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md) rather than
+restated here, per § 22. It is recorded because it shows the rule has a second failure mode: a
+derivation can name the wrong layer, and a *type* can make naming any layer impossible. The remedy
+for the second is bounded by § 21's carried-over prohibition — residue stays a flat exhaustive ADT,
+so the layer is a field with a sole minter, never an index on an observed value.
+
 **The corollary — name the layer whenever you name the source.** A derivation that records only
 "observed from the cluster" has recorded half a provenance. State the object observed, the layer at
 which that object is authoritative, and the layer at which the derived value is consumed; where they

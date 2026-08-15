@@ -53,8 +53,16 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   (in-force config, gateway state, Pulumi backend checkpoints) under opaque
   Vault-keyed-HMAC names; the host CLI and the in-cluster gateway daemon read and write it
   through one shared envelope/naming/index layer, each binding its own Vault-auth cipher
-  (the host CLI via the root Vault token, the daemon via Vault Kubernetes auth over the
-  in-cluster MinIO Service DNS). The binary-sibling `prodbox.dhall` `parameters` is a
+  (the host CLI via a short-lived Kubernetes TokenRequest proof for an explicit external-caller
+  ServiceAccount exchanged for a Vault Kubernetes-auth login, the daemon via Vault Kubernetes auth
+  over the in-cluster MinIO Service DNS). **Corrected 2026-08-14**: this line previously said the
+  host CLI binds "the root Vault token". No host path receives a Vault root token — see
+  [config_doctrine.md](documents/engineering/config_doctrine.md) and
+  [vault_doctrine.md](documents/engineering/vault_doctrine.md), which both state so explicitly, and
+  `Prodbox.Vault.Host.loadReadyVaultRootToken`, which is a stub returning `Left "host root-token
+  recovery is removed"` with zero call sites. One practical consequence of the real design: **every
+  host-CLI read of the encrypted SSoT needs a live, serving cluster**, so a host whose control plane
+  is down cannot read its own in-force config or per-run state. The binary-sibling `prodbox.dhall` `parameters` is a
   seed/propose input only — it seeds the encrypted MinIO SSoT on first-ever bring-up, and
   thereafter supplying a file is a proposed update, not the live config. Each binary reads the small
   unencrypted basics locally (cluster id, this cluster's Vault address, seal mode, and for
@@ -62,7 +70,9 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
   in-force config from MinIO through Vault. In-cluster consumers authenticate to Vault
   directly via Vault Kubernetes auth; there are no Secret-mounted Dhall credential
   fragments and no master seed or HMAC derivation. Updating the root cluster's in-force
-  config requires the root Vault token (which requires an unsealed root Vault). No
+  config is a typed Lifecycle Authority `ConfigProposeCas` operation gated on a short-lived
+  `prodbox-config-admin` TokenRequest proof plus exact generation CAS — never a root token and never
+  a direct MinIO write (it still requires an unsealed root Vault). No
   `PRODBOX_*` environment variable participates in **Tier-0 config resolution** on any supported
   binary (the host CLI resolves the binary-sibling `prodbox.dhall`; the in-cluster daemon/workload
   read their mounted `--config` Dhall). Corrected 2026-08-11: the claim that the *only* `PRODBOX_*`

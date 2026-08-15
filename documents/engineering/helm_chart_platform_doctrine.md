@@ -109,6 +109,13 @@ healthy-but-slow rollout. A concurrency refusal now resolves to a typed value th
 answered by a destroy, because a destroy needs the permit it was refused, and the failure path
 routes through the shared absence reconciler, which re-observes before acting.
 
+A readiness timeout is a non-terminal convergence observation and never authorizes release
+deletion. The pre-Vault `bootstrap-broker` release is applied without Helm's readiness wait because
+the following Vault lifecycle transition produces a dependency of its readiness; all other releases
+retain the bounded `--wait --timeout 30m0s` barrier. If any Helm invocation nevertheless reports a
+readiness timeout, failure handling preserves the installed release and reports the timeout. Only a
+terminal upgrade failure may enter the typed absence reconciler.
+
 ## 1A. Chart Lint and Route Inventory Generation
 
 The supported chart-maintenance surface is split between `prodbox dev lint chart` and

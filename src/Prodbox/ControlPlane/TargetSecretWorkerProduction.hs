@@ -18,6 +18,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , parseTargetAgentRolloutObservation
   , parseTargetWorkerServiceAccountObservation
   , classifyTargetWorkerServiceAccountObservation
+  , runtimeImageIdentityMatches
   , targetWorkerRetainedExecutionBoundary
   , vaultTargetWorkerRetainedExecutionBoundary
   , targetWorkerControllerAuditOps
@@ -213,12 +214,26 @@ targetWorkerKubernetesBoundary connection =
           parseTargetAgentRolloutObservation
             (ByteString8.pack (processStdout output))
 
-  createIntent intent = case renderTargetSecretWorkerJob
-    (targetWorkerJobImageRepository connection)
-    (targetWorkerJobMaximumRuntimeSeconds connection)
-    intent of
-    Left detail -> pure (Left detail)
-    Right jobManifest -> createManifest intent jobManifest
+  createIntent intent = do
+    imageResult <- observeTargetAgentImageReference
+    case imageResult >>= \imageReference ->
+      renderTargetSecretWorkerJob
+        imageReference
+        (targetWorkerJobMaximumRuntimeSeconds connection)
+        intent of
+      Left detail -> pure (Left detail)
+      Right jobManifest -> createManifest intent jobManifest
+
+  observeTargetAgentImageReference = do
+    attempted <- captureSubprocessBounded observeLimits (targetWorkerObserveAgentSubprocess connection)
+    pure $ case attempted of
+      Left err -> Left (bounded (errorMsg err))
+      Right output
+        | processExitCode output /= ExitSuccess -> Left "selected Target Agent image is unobservable"
+        | otherwise ->
+            parseTargetAgentDeclaredImage
+              (targetWorkerJobImageRepository connection)
+              (ByteString8.pack (processStdout output))
 
   createManifest intent manifest = do
     attempted <-
@@ -231,7 +246,11 @@ targetWorkerKubernetesBoundary connection =
       Right output -> case processExitCode output of
         ExitSuccess ->
           pure
-            (parseJobBinding intent (ByteString8.pack (processStdout output)))
+            ( parseJobBinding
+                (targetWorkerJobImageRepository connection)
+                intent
+                (ByteString8.pack (processStdout output))
+            )
         ExitFailure _
           | isAlreadyExists output -> do
               observed <- observeJob intent
@@ -260,7 +279,11 @@ targetWorkerKubernetesBoundary connection =
           | isNotFound output -> Right Nothing
           | otherwise -> Left "Target worker Job is not observable"
         ExitSuccess ->
-          Just <$> parseJobBinding intent (ByteString8.pack (processStdout output))
+          Just
+            <$> parseJobBinding
+              (targetWorkerJobImageRepository connection)
+              intent
+              (ByteString8.pack (processStdout output))
 
   observeIntent intent = waitForObservation observationAttempts
    where
@@ -375,8 +398,8 @@ instance FromJSON JobDto where
       <*> templateSpec .: "containers"
 
 parseJobBinding
-  :: TargetWorkerIntent -> ByteString -> Either Text TargetWorkerJobUid
-parseJobBinding intent bytes = do
+  :: Text -> TargetWorkerIntent -> ByteString -> Either Text TargetWorkerJobUid
+parseJobBinding imageRepository intent bytes = do
   job <- case eitherDecodeStrict' bytes of
     Left _ -> Left "Kubernetes Target worker Job response is invalid"
     Right value -> Right value
@@ -396,10 +419,8 @@ parseJobBinding intent bytes = do
     Nothing -> Left "Target worker Job container is missing"
     Just (ContainerDto _ reference) -> Right reference
   unless
-    ( imageSuffix imageReference
-        == Just (targetWorkerImageDigestText (targetWorkerIntentImageDigest intent))
-    )
-    (Left "Target worker Job immutable image mismatch")
+    ((imageRepository <> ":") `Text.isPrefixOf` imageReference)
+    (Left "Target worker Job declared image repository mismatch")
   firstText "Target worker Job UID is invalid" (mkTargetWorkerJobUid (jobDtoUid job))
  where
   annotationsContain expected actual =
@@ -457,7 +478,28 @@ instance FromJSON ContainerDto where
   parseJSON = withObject "TargetWorkerContainer" $ \value ->
     ContainerDto <$> value .: "name" <*> value .: "image"
 
-data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural
+newtype TargetAgentDeclaredImageDto = TargetAgentDeclaredImageDto [ContainerDto]
+
+instance FromJSON TargetAgentDeclaredImageDto where
+  parseJSON = withObject "TargetAgentDeploymentImage" $ \value -> do
+    spec <- value .: "spec"
+    template <- spec .: "template"
+    templateSpec <- template .: "spec"
+    TargetAgentDeclaredImageDto <$> templateSpec .: "containers"
+
+parseTargetAgentDeclaredImage :: Text -> ByteString -> Either Text Text
+parseTargetAgentDeclaredImage repository bytes = do
+  TargetAgentDeclaredImageDto containers <-
+    firstText "selected Target Agent Deployment image is invalid" (eitherDecodeStrict' bytes)
+  reference <- case findContainer "target-secret-agent" containers of
+    Nothing -> Left "selected Target Agent container is missing"
+    Just (ContainerDto _ imageReference) -> Right imageReference
+  unless
+    ((repository <> ":") `Text.isPrefixOf` reference)
+    (Left "selected Target Agent declared image repository mismatch")
+  pure reference
+
+data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural !Text
 
 instance FromJSON ContainerStatusDto where
   parseJSON = withObject "TargetWorkerContainerStatus" $ \value ->
@@ -465,6 +507,7 @@ instance FromJSON ContainerStatusDto where
       <$> value .: "name"
       <*> value .:? "ready" .!= False
       <*> value .:? "restartCount" .!= 0
+      <*> value .:? "imageID" .!= ""
 
 data ObjectUidDto = ObjectUidDto !Text
 
@@ -603,17 +646,23 @@ podObservation intent serviceAccountUid pod = do
   imageReference <- case findContainer targetWorkerContainerName (podDtoContainers pod) of
     Nothing -> Left "Target worker container is missing"
     Just (ContainerDto _ reference) -> Right reference
+  unless (not (Text.null (Text.strip imageReference))) (Left "Target worker declared image is empty")
+  runtimeImageId <- case findStatus targetWorkerContainerName (podDtoContainerStatuses pod) of
+    Nothing -> Left "Target worker container status is missing"
+    Just (ContainerStatusDto _ _ _ observedImageId) -> Right observedImageId
   imageDigest <-
     maybe
-      (Left "Target worker container image is not immutable")
+      (Left "Target worker runtime image identity is invalid")
       Right
-      (imageSuffix imageReference)
+      (runtimeImageDigest runtimeImageId)
   let expectedDigest = targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
-  unless (imageDigest == expectedDigest) (Left "Target worker image digest mismatch")
+  unless
+    (runtimeImageIdentityMatches expectedDigest runtimeImageId)
+    (Left "Target worker image digest mismatch")
   traverse_ (requireAnnotation pod) (Map.toList (targetWorkerAnnotations intent))
   let (ready, restarts) = case findStatus targetWorkerContainerName (podDtoContainerStatuses pod) of
         Nothing -> (False, 0)
-        Just (ContainerStatusDto _ isReady count) -> (isReady, count)
+        Just (ContainerStatusDto _ isReady count _) -> (isReady, count)
   pure
     RawTargetWorkerPodObservation
       { observedTargetWorkerJobName = jobName
@@ -807,13 +856,23 @@ findContainer :: Text -> [ContainerDto] -> Maybe ContainerDto
 findContainer name = find (\(ContainerDto actual _) -> actual == name)
 
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
-findStatus name = find (\(ContainerStatusDto actual _ _) -> actual == name)
+findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
 
-imageSuffix :: Text -> Maybe Text
-imageSuffix reference = case Text.breakOnEnd "@" reference of
-  (prefix, digest)
-    | not (Text.null prefix) && Text.isPrefixOf "sha256:" digest -> Just digest
-  _ -> Nothing
+runtimeImageDigest :: Text -> Maybe Text
+runtimeImageDigest value =
+  let candidate = case Text.breakOnEnd "://" value of
+        (prefix, suffix) | not (Text.null prefix) -> suffix
+        _ -> value
+   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
+        then Just candidate
+        else Nothing
+
+-- | Compare a Kubernetes-observed runtime identity with a signed intent digest.
+-- The declared Pod image is intentionally not an input: it is a request, not
+-- evidence of what the runtime started.
+runtimeImageIdentityMatches :: Text -> Text -> Bool
+runtimeImageIdentityMatches expectedDigest observedImageId =
+  runtimeImageDigest observedImageId == Just expectedDigest
 
 deleteRaw
   :: TargetWorkerJobConnection

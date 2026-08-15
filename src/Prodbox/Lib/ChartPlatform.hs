@@ -5,6 +5,7 @@ module Prodbox.Lib.ChartPlatform
   , ChartDeploymentPlan (..)
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
+  , HelmUpgradeFailureDisposition (..)
   , PublicEdgePreserveOutcome (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
@@ -21,6 +22,8 @@ module Prodbox.Lib.ChartPlatform
   , deployChartPlan
   , deploymentConditionReportsTrue
   , gatewayNodeIdsForSubstrate
+  , helmUpgradeFailureDisposition
+  , helmUpgradeWaitArguments
   , gatewayRestServiceName
   , gatewayRestServicePort
   , keycloakVscodeClientId
@@ -445,6 +448,7 @@ data ResolvedCustomImage = ResolvedCustomImage
   { resolvedCustomImageRepository :: String
   , resolvedCustomImageTag :: String
   , resolvedCustomImageRolloutToken :: Maybe String
+  , resolvedCustomImageRuntimeDigest :: Maybe String
   }
   deriving (Eq, Show)
 
@@ -845,56 +849,66 @@ renderChartStatus repoRoot settings chartName = do
 -- converges on the next reconcile. An empty result means every release is
 -- already installed and deployed — an idempotent no-op. Exposed for unit
 -- testing because 'deployChartPlan' is otherwise IO-bound on @helm@.
-chartReleasesToDeploy
-  :: Map.Map String ChartInstallSnapshot -> ChartDeploymentPlan -> [ChartReleasePlan]
-chartReleasesToDeploy snapshots plan =
-  [ release
-  | release <- chartDeploymentPlanReleases plan
-  , releaseRequiresDeploy release
-  ]
- where
-  releaseRequiresDeploy release =
-    case Map.lookup (chartReleasePlanReleaseName release) snapshots of
-      Nothing -> True
-      Just snapshot -> map toLower (chartInstallSnapshotStatus snapshot) /= "deployed"
+-- | Every release in the plan requires convergence.
+--
+-- __Sprint 3.38: presence is not convergence.__ This used to return only the
+-- releases whose @helm list@ status was not @deployed@, on the reasoning that an
+-- installed, healthy release is already where it should be. It is not.
+-- @helm list@ reports a release's __presence and health__ and carries no
+-- revision, no values, and no manifest identity, so the predicate answered
+-- \"is this release installed and healthy?\" while being consumed as \"is this
+-- release at the desired revision?\". Those are different questions about
+-- different layers, which is
+-- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- exactly.
+--
+-- __The consequence was measured, not argued.__ @cluster reconcile@ built and
+-- pushed a new runtime image and left the Bootstrap Broker Deployment at
+-- @metadata.generation: 1@ carrying the previous run's
+-- @prodbox.io\/image-build-id@ and the previous run's Pod — the release had
+-- exactly one helm revision while a sibling release upgraded to its second in
+-- the same run. A source change reached the registry and never reached the
+-- cluster, which makes every in-cluster proof a proof about whichever binary
+-- happened to be deployed.
+--
+-- @helm upgrade --install@ is itself the idempotent convergence operation: on an
+-- unchanged rendered manifest its three-way merge leaves every object untouched.
+-- Skipping it was an optimisation that cost correctness, so it is gone rather
+-- than made conditional on a cheaper signal that would answer a third question.
+chartReleasesToDeploy :: ChartDeploymentPlan -> [ChartReleasePlan]
+chartReleasesToDeploy = chartDeploymentPlanReleases
+
+data PatroniBootstrapAnchor
+  = PatroniAnchorAbsent
+  | PatroniAnchorLive ChartStorageBinding
+  | PatroniAnchorRetained ChartStorageBinding
 
 deployChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deployChartPlan plan = do
-  snapshotsResult <- helmReleaseSnapshots
-  case snapshotsResult of
+  -- Sprint 3.38: the release set is the plan's, unconditionally. The preamble
+  -- (gates / storage / TLS access / TLS restore) therefore runs over every
+  -- release rather than over a presence-filtered subset; each step is an
+  -- ensure-or-apply and is idempotent on an already-converged release.
+  let releases = chartReleasesToDeploy plan
+      planToDeploy = plan {chartDeploymentPlanReleases = releases}
+  requirementResult <- validateOperatorGates planToDeploy
+  case requirementResult of
     Left err -> pure (Left err)
-    Right snapshots -> do
-      case chartReleasesToDeploy snapshots plan of
-        -- Every release in this chart root is already present in `helm list`:
-        -- idempotent no-op. (Was: "ANY release in the plan present → skip the
-        -- WHOLE plan", which could never re-deploy a single rolled-back release
-        -- while its siblings remained installed — leaving a partially-rolled-back
-        -- chart root unrecoverable without a full `charts delete`.)
-        [] -> pure (Right (renderDeployReport plan))
-        missing -> do
-          -- Deploy only the releases MISSING from `helm list`, so `reconcile`
-          -- converges a partially-deployed chart root. Already-present siblings
-          -- are left untouched. The plan preamble (requirements / storage / TLS
-          -- restore) runs over the missing-release subset.
-          let planToDeploy = plan {chartDeploymentPlanReleases = missing}
-          requirementResult <- validateOperatorGates planToDeploy
-          case requirementResult of
+    Right () -> do
+      ensureResult <- ensureChartStorage planToDeploy
+      case ensureResult of
+        Left err -> pure (Left err)
+        Right () -> do
+          accessResult <- ensurePublicEdgeTlsAgentAccess planToDeploy
+          case accessResult of
             Left err -> pure (Left err)
             Right () -> do
-              ensureResult <- ensureChartStorage planToDeploy
-              case ensureResult of
+              restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
+              case restoreResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                  accessResult <- ensurePublicEdgeTlsAgentAccess planToDeploy
-                  case accessResult of
-                    Left err -> pure (Left err)
-                    Right () -> do
-                      restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
-                      case restoreResult of
-                        Left err -> pure (Left err)
-                        Right () -> do
-                          deployResult <- foldM deployRelease (Right ()) missing
-                          pure (deployResult >> Right (renderDeployReport plan))
+                  deployResult <- foldM deployRelease (Right ()) releases
+                  pure (deployResult >> Right (renderDeployReport plan))
  where
   deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
   deployRelease (Left err) _ = pure (Left err)
@@ -923,18 +937,11 @@ deployChartPlan plan = do
 
   deployPatroniReleaseStaged :: ChartReleasePlan -> IO (Either String ())
   deployPatroniReleaseStaged release = do
-    maybeBootstrapAnchorBinding <- readOptionalPatroniBootstrapAnchorBinding release
-    case maybeBootstrapAnchorBinding of
-      Nothing -> do
-        installResult <- helmUpgradeInstall release
-        case installResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            storageResult <- ensureReleaseStorageBindings release
-            case storageResult of
-              Left err -> pure (Left err)
-              Right () -> finishStagedPatroniRelease release
-      Just anchorBinding ->
+    bootstrapAnchor <- readPatroniBootstrapAnchor release
+    case bootstrapAnchor of
+      PatroniAnchorAbsent -> deployFullPatroniRelease release
+      PatroniAnchorLive _ -> deployFullPatroniRelease release
+      PatroniAnchorRetained anchorBinding ->
         case chartReleaseWithPatroniInstanceCount 1 release of
           Left err -> pure (Left err)
           Right bootstrapRelease -> do
@@ -958,15 +965,18 @@ deployChartPlan plan = do
                         1
                     case bootstrapReadyResult of
                       Left err -> pure (Left err)
-                      Right () -> do
-                        installFullResult <- helmUpgradeInstall release
-                        case installFullResult of
-                          Left err -> pure (Left err)
-                          Right () -> do
-                            storageResult <- ensureReleaseStorageBindings release
-                            case storageResult of
-                              Left err -> pure (Left err)
-                              Right () -> finishStagedPatroniRelease release
+                      Right () -> deployFullPatroniRelease release
+
+  deployFullPatroniRelease :: ChartReleasePlan -> IO (Either String ())
+  deployFullPatroniRelease release = do
+    installResult <- helmUpgradeInstall release
+    case installResult of
+      Left err -> pure (Left err)
+      Right () -> do
+        storageResult <- ensureReleaseStorageBindings release
+        case storageResult of
+          Left err -> pure (Left err)
+          Right () -> finishStagedPatroniRelease release
 
   -- Keycloak consumes the PGO-adopted pguser Secret directly through its exact
   -- @postgres.passwordSecretName@ projection. No host or Target Agent payload
@@ -981,12 +991,12 @@ deployChartPlan plan = do
   -- the previous cluster is still present. After a supported chart delete, the
   -- only surviving anchor is the retained ordinal-0 host root, so fall back to
   -- that path before allowing a full three-replica cold bootstrap.
-  readOptionalPatroniBootstrapAnchorBinding :: ChartReleasePlan -> IO (Maybe ChartStorageBinding)
-  readOptionalPatroniBootstrapAnchorBinding release = do
+  readPatroniBootstrapAnchor :: ChartReleasePlan -> IO PatroniBootstrapAnchor
+  readPatroniBootstrapAnchor release = do
     maybeAnchorVolumeName <-
       discoverPatroniAnchorPersistentVolumeName (chartReleasePlanNamespace release)
     case maybeAnchorVolumeName >>= findBindingByVolumeName of
-      Just anchorBinding -> pure (Just anchorBinding)
+      Just anchorBinding -> pure (PatroniAnchorLive anchorBinding)
       Nothing -> retainedOrdinalZeroAnchorBinding
    where
     findBindingByVolumeName anchorVolumeName =
@@ -996,10 +1006,10 @@ deployChartPlan plan = do
 
     retainedOrdinalZeroAnchorBinding = do
       case find ((== 0) . chartStorageBindingOrdinal) (chartReleasePlanStorageBindings release) of
-        Nothing -> pure Nothing
+        Nothing -> pure PatroniAnchorAbsent
         Just binding -> do
           exists <- doesDirectoryExist (chartStorageBindingHostPath binding)
-          pure (if exists then Just binding else Nothing)
+          pure (if exists then PatroniAnchorRetained binding else PatroniAnchorAbsent)
 
   ensureReleaseStorageBindings :: ChartReleasePlan -> IO (Either String ())
   ensureReleaseStorageBindings release
@@ -1823,8 +1833,8 @@ readOptionalPatroniPrimaryPodName namespace = do
 
 patroniClaimNameFromPodName :: String -> Maybe String
 patroniClaimNameFromPodName podName = do
-  instanceName <- dropPodOrdinal podName
-  pure (instanceName ++ "-pgdata")
+  _ <- dropPodOrdinal podName
+  pure (podName ++ "-pgdata")
 
 dropPodOrdinal :: String -> Maybe String
 dropPodOrdinal podName =
@@ -3653,6 +3663,7 @@ resolveCustomImageTag repository = do
           let imageTag = take 63 ("prodbox-" ++ machineId)
               imageRef = repository ++ ":" ++ imageTag
           maybeRolloutToken <- resolveLocalImageBuildToken imageRef
+          maybeRuntimeDigest <- resolveLocalImageRuntimeDigest imageRef
           pure
             ( Right
                 ( Just
@@ -3660,6 +3671,7 @@ resolveCustomImageTag repository = do
                       { resolvedCustomImageRepository = repository
                       , resolvedCustomImageTag = imageTag
                       , resolvedCustomImageRolloutToken = maybeRolloutToken
+                      , resolvedCustomImageRuntimeDigest = maybeRuntimeDigest
                       }
                 )
             )
@@ -3667,6 +3679,7 @@ resolveCustomImageTag repository = do
 resolveCustomImageFixedTag :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageFixedTag repository imageTag = do
   maybeRolloutToken <- resolveLocalImageBuildToken (repository ++ ":" ++ imageTag)
+  maybeRuntimeDigest <- resolveLocalImageRuntimeDigest (repository ++ ":" ++ imageTag)
   pure
     ( Right
         ( Just
@@ -3674,6 +3687,7 @@ resolveCustomImageFixedTag repository imageTag = do
               { resolvedCustomImageRepository = repository
               , resolvedCustomImageTag = imageTag
               , resolvedCustomImageRolloutToken = maybeRolloutToken
+              , resolvedCustomImageRuntimeDigest = maybeRuntimeDigest
               }
         )
     )
@@ -3697,6 +3711,32 @@ resolveLocalImageBuildToken imageRef = do
             let buildToken = trimWhitespace (processStdout output)
              in if null buildToken then Nothing else Just buildToken
           ExitFailure _ -> Nothing
+
+resolveLocalImageRuntimeDigest :: String -> IO (Maybe String)
+resolveLocalImageRuntimeDigest imageRef = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "docker"
+        , subprocessArguments = ["buildx", "imagetools", "inspect", "--raw", imageRef]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
+        }
+  pure $ case result of
+    Failure _ -> Nothing
+    Success output
+      | processExitCode output /= ExitSuccess -> Nothing
+      | otherwise ->
+          case eitherDecode (BL8.pack (processStdout output)) of
+            Right (Object manifest) ->
+              case KeyMap.lookup "config" manifest of
+                Just (Object config) ->
+                  case KeyMap.lookup "digest" config of
+                    Just (String digest)
+                      | "sha256:" `Text.isPrefixOf` digest -> Just (Text.unpack digest)
+                    _ -> Nothing
+                _ -> Nothing
+            _ -> Nothing
 
 renderStatusRelease
   :: Map String ChartInstallSnapshot
@@ -4655,19 +4695,19 @@ helmUpgradeInstall release =
       runCaptured
         "helm upgrade --install"
         "helm"
-        [ "upgrade"
-        , "--install"
-        , "--wait"
-        , "--timeout"
-        , "30m0s"
-        , chartReleasePlanReleaseName release
-        , chartReleasePlanChartDir release
-        , "--namespace"
-        , chartReleasePlanNamespace release
-        , "--create-namespace"
-        , "--values"
-        , path
-        ]
+        ( [ "upgrade"
+          , "--install"
+          ]
+            ++ helmUpgradeWaitArguments (chartReleasePlanReleaseName release)
+            ++ [ chartReleasePlanReleaseName release
+               , chartReleasePlanChartDir release
+               , "--namespace"
+               , chartReleasePlanNamespace release
+               , "--create-namespace"
+               , "--values"
+               , path
+               ]
+        )
     case outputResult of
       Left err -> pure (Left err)
       Right output ->
@@ -4675,7 +4715,12 @@ helmUpgradeInstall release =
           ExitSuccess -> pure (Right ())
           ExitFailure _ -> do
             diagnostics <- helmUpgradeFailureDiagnostics release
-            cleanupDetail <- reconcileFailedReleaseAbsent release
+            cleanupDetail <-
+              case helmUpgradeFailureDisposition output of
+                PreserveTimedOutRelease ->
+                  pure
+                    "\nFailed release cleanup skipped: readiness timeout is a non-terminal convergence observation; the release remains installed."
+                ReconcileTerminalFailureAbsent -> reconcileFailedReleaseAbsent release
             pure
               ( Left
                   ( "helm upgrade --install "
@@ -4686,6 +4731,35 @@ helmUpgradeInstall release =
                       ++ cleanupDetail
                   )
               )
+
+-- | Whether a failed Helm convergence may enter destructive cleanup. A
+-- readiness timeout says only that the release is not ready yet; preserving it
+-- lets a later dependency converge and makes a subsequent reconcile useful.
+data HelmUpgradeFailureDisposition
+  = PreserveTimedOutRelease
+  | ReconcileTerminalFailureAbsent
+  deriving (Eq, Show)
+
+helmUpgradeFailureDisposition :: ProcessOutput -> HelmUpgradeFailureDisposition
+helmUpgradeFailureDisposition output
+  | any (`isInfixOf` detail) readinessTimeoutMarkers = PreserveTimedOutRelease
+  | otherwise = ReconcileTerminalFailureAbsent
+ where
+  detail = map toLower (processStderr output ++ processStdout output)
+  readinessTimeoutMarkers =
+    [ "context deadline exceeded"
+    , "timed out waiting for the condition"
+    , "timeout waiting for"
+    ]
+
+-- | The Bootstrap Broker is installed before the Vault lifecycle transition
+-- it participates in. Applying that release must therefore establish desired
+-- state without waiting for post-Vault readiness. Every other release keeps
+-- Helm's bounded readiness barrier.
+helmUpgradeWaitArguments :: String -> [String]
+helmUpgradeWaitArguments releaseName
+  | releaseName == "bootstrap-broker" = []
+  | otherwise = ["--wait", "--timeout", "30m0s"]
 
 -- | Sprint 3.31: what a failed @helm upgrade --install@ does about the release
 -- it left behind.

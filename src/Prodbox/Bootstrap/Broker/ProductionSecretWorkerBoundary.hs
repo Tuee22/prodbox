@@ -41,7 +41,8 @@ import Prodbox.Bootstrap.Broker.Fence
   , authorizeBootstrapStoreMutation
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
-  ( ControllerImageObservation (..)
+  ( ControllerImageIdentity (..)
+  , ControllerImageObservation (..)
   , ControllerSelfObservationScope (..)
   , KubernetesWorkerBoundary (..)
   , controllerImageObservationDetail
@@ -204,14 +205,18 @@ allocateIntent
 allocateIntent kubernetes operation fence = do
   deadline <- localDeadline workerApiBudgetMicros
   imageObservation <-
-    kubernetesObserveControllerImageDigest
+    kubernetesObserveControllerImage
       kubernetes
       ControllerObservedForWorkerLaunch
       deadline
   identities <- freshWorkerIdentities
   pure $ do
+    -- Sprint 2.51: the intent pins the controller's observed __runtime__ digest,
+    -- which is what the worker is attested against. The declared reference the
+    -- kubelet needs is observed again at Pod creation, because it is an
+    -- addressing hint rather than part of the durable binding.
     image <- case imageObservation of
-      ControllerImageObserved digest -> Right digest
+      ControllerImageObserved observed -> Right (controllerImageRuntimeDigest observed)
       failed ->
         Left
           ( EngineBoundaryUnavailable

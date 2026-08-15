@@ -73,6 +73,7 @@ module Prodbox.Bootstrap.Broker.Settings
   , maximumBrokerRequestBodyBytes
   , maximumBrokerRequestDeadlineMilliseconds
   , maximumBrokerDrainDeadlineMilliseconds
+  , bootstrapFenceLeaseDurationSeconds
   , validateBootstrapBrokerConfig
   , decodeBootstrapBrokerConfigDhall
   , loadBootstrapBrokerConfig
@@ -371,6 +372,47 @@ maximumBrokerRequestDeadlineMilliseconds = 5 * 60 * 1000
 
 maximumBrokerDrainDeadlineMilliseconds :: Natural
 maximumBrokerDrainDeadlineMilliseconds = 60 * 1000
+
+-- | Sprint 2.48: TTL of the Bootstrap Broker's fence Lease, __derived from__
+-- the request budget rather than matching it by coincidence.
+--
+-- __The invariant.__ @'Prodbox.Bootstrap.Broker.Fence.authorizeFenceUse'@ bounds
+-- every fence-authorized effect by
+-- @min attemptDeadline leaseWitnessDeadline@. The Lease is stamped
+-- @renewTime = now@ by @kubernetesEnsureBootstrapLease@, which runs /after/ the
+-- broker request that carries it was accepted, and that request may not outlive
+-- @'maximumBrokerRequestDeadlineMilliseconds'@. So with
+--
+-- > 1000 * bootstrapFenceLeaseDurationSeconds >= maximumBrokerRequestDeadlineMilliseconds
+--
+-- the Lease expiry is always the later of the two and the @min@ never selects
+-- it: the Lease is a liveness witness, never the binding constraint on a single
+-- request. Ceiling division is what makes that hold for /every/ budget rather
+-- than only for exact multiples of a second.
+--
+-- __Why this is declared rather than removed by renewing.__ This sprint's own
+-- deliverable left the choice open: declare the relationship, or renew the Lease
+-- so no relationship is needed. Renewal is not merely more machinery — it is adversarial to Sprint
+-- 2.47's retirement proof. @decideBootstrapFenceRetire@ takes over an abandoned
+-- fence only against a __positively expired__ Lease, and the state it exists to
+-- recover from is precisely a bring-up abandoned partway. A renewer thread that
+-- outlives the wedged operation would hold the Lease live forever, the fence
+-- could never be retired, and the host would return to the permanent wedge
+-- Sprint 2.47 closed. A Lease that expires on its own is the mechanism, not an
+-- omission.
+--
+-- __What this costs, and why the tightest value is chosen.__ A longer TTL delays
+-- the instant a successor may declare a predecessor expired. Ceiling division
+-- yields the smallest duration satisfying the invariant, so takeover stays as
+-- prompt as the request budget allows.
+--
+-- The relationship is pinned by unit cases rather than left to this comment:
+-- raising 'maximumBrokerRequestDeadlineMilliseconds' alone can no longer make
+-- long operations fail closed at @BootstrapLeaseExpired@ while looking like a
+-- Lease defect.
+bootstrapFenceLeaseDurationSeconds :: Natural
+bootstrapFenceLeaseDurationSeconds =
+  (maximumBrokerRequestDeadlineMilliseconds + 999) `div` 1000
 
 validateBootstrapBrokerConfig
   :: BootstrapBrokerConfigDhall

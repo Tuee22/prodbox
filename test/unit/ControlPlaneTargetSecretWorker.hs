@@ -63,6 +63,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerProduction
   , parseTargetAgentRolloutObservation
   , parseTargetWorkerServiceAccountObservation
   , recoverTargetWorkerCreateWith
+  , runtimeImageIdentityMatches
   , targetWorkerActiveAccessorSubject
   , targetWorkerRetainedExecutionBoundary
   , targetWorkerRoleWideAccessorSubject
@@ -140,6 +141,13 @@ controlPlaneTargetSecretWorkerSuite =
         (rawWorkerObservation intent) {observedTargetWorkerImageDigest = otherImageDigestText} of
         Left TargetWorkerAttestationImageMismatch -> pure ()
         _ -> expectationFailure "expected immutable-image attestation refusal"
+
+    it "refuses a Pod whose observed runtime identity differs from the intent" $ do
+      let expected = targetWorkerImageDigestText workerImageDigest
+      runtimeImageIdentityMatches expected ("containerd://" <> expected)
+        `shouldBe` True
+      runtimeImageIdentityMatches expected ("containerd://" <> otherImageDigestText)
+        `shouldBe` False
 
     it "requires a fully observed exact Agent rollout on both Deployment surfaces" $ do
       parseTargetAgentRolloutObservation

@@ -10,9 +10,47 @@
 
 ## Phase Status
 
-✅ **Reclosed 2026-08-10 on Sprints `4.73`–`4.75`.** The 2026-08-09 own-surface reopen closes:
-**no `Pending Removal` row on a Phase-`4` surface is unowned any more**, which is the condition the
-reopen existed to remove. Sprints `4.62`–`4.75` are all ✅ **Done** on their code-owned surfaces.
+✅ **Reclosed 2026-08-15 on Sprint `4.83`.** Every lifecycle Job and target-worker Pod now pulls a
+declared `repository:tag`; the host-minted rollout identity is no longer consumed as a registry
+coordinate. `ResolvedCustomImage` separately observes the OCI config digest, and the three runtime
+observers compare Kubernetes `imageID` against that signed attestation identity rather than treating
+their own Pod spec as evidence. The dormant Admin Action validator accepts the same declared-tag
+contract, and the ownership check covers all four source regions.
+
+✅ **Reclosed 2026-08-14 on Sprints `4.81` ✅ and `4.82` ✅ (Standards A/N).** The same-day
+own-surface reopen on the residue-observation and destructive-cleanup paths this phase owns is
+closed. The trigger was a doctrine gap rather than a new failure: [chaos_hardening_doctrine.md
+§ 24](../documents/engineering/chaos_hardening_doctrine.md) (*an observation has a layer*, Sprint
+`0.26`) requires a derived value to be enforced at the layer its source object is authoritative for,
+and `ResidueStatus` — the common target of **nineteen** producers reading the Pulumi checkpoint
+store, AWS resource presence, AWS IAM, AWS EBS, config text, a Pulsar topic, a Vault gate, an
+object-store listing, SES consumer quiescence, and public-edge TLS — has no field in which to name
+one. [Standard L](development_plan_standards.md#l-cli-doctrine-alignment)
+makes scheduling that mandatory: "closing the gap silently without a sprint block is forbidden."
+
+`4.81` made the layer sayable and its minting restricted — a field with a class-A opaque minter and a
+mutation-proven `dev check` boundary, **not** a type index, because § 21 names *residue* explicitly
+in its prohibition on indexing an observed value. `4.82` made the cascade consume the layer it
+actually needs, using the admin credential the same command already loads for its postflight sweep,
+and stopped one unobservable cause being narrated as two peer phase failures. The consequence they
+existed to remove had been recorded in this plan's own prose since 2026-08-11 with no owner: the
+per-run residue query observes the in-cluster Authority, authoritative for *what checkpoints this
+cluster holds*, and the answer was consumed as *do these AWS resources exist*.
+
+**One Standard-O live proof stays pending and does not gate closure**: `4.82`'s inverse-of-`4.76`
+reproduction on a host whose API server is stopped. Both sprints move Standard-P
+destructive-cleanup surfaces, so both substrate qualification rows remain `pending` and no
+qualification identity captured before them survives.
+
+Evidence: `prodbox dev check` exit 0, `prodbox test unit` exit 0 at main Hspec **3444** plus 27, 33,
+and 27, and `prodbox test integration cli` **57/57**.
+
+**Prior reclose — ✅ 2026-08-13 on Sprints `4.78`, `4.79`, and `4.80`.** The 2026-08-11 own-surface
+reopen on the observation-producer and destructive-cleanup surfaces closed, taking this phase's last
+three unowned `Pending Removal` rows. **Prior reclose — ✅ 2026-08-10 on Sprints `4.73`–`4.75`.** The
+2026-08-09 own-surface reopen closed: **no `Pending Removal` row on a Phase-`4` surface was unowned
+any more**, which was the condition that reopen existed to remove. Sprints `4.62`–`4.80` are all ✅
+**Done** on their code-owned surfaces.
 
 The closing three are worth reading together, because each answers a row that had been deferred with
 a stated reason and each found the row understated itself.
@@ -8470,7 +8508,7 @@ exercised on a live host that has AWS state *and* no admin credential. The compo
 unit case; the field observation is not.
 **Independent Validation**: a pure two-arm decision composed with the existing pure substrate
 inference, validated by the unit suite — no cluster, no AWS. `prodbox dev check` exit 0;
-`prodbox test unit` exit 0 at main Hspec **3419/3419**.
+`prodbox test unit` exit 0 at main Hspec ~~**3419/3419**~~ — **corrected 2026-08-14 under Standard C**: the figure recorded here and the `3420` recorded in this plan's phase table disagreed with each other, and Sprint `4.81` measured the pre-`4.81` tree at **3430** by deriving the delta from its own case count rather than by subtracting totals.
 **Docs updated**: none under `documents/` —
 [lifecycle_reconciliation_doctrine.md § 6](../documents/engineering/lifecycle_reconciliation_doctrine.md)
 already states the rule, and this sprint makes the code satisfy it rather than changing it.
@@ -8528,6 +8566,411 @@ observed absent but which nonetheless has orphaned AWS resources from some earli
 skips — correctly, because the cascade's sweep is scoped to the cluster lifecycle it is tearing
 down, and § 6 already says the sweep is defence-in-depth for a controller that diverged from its
 registered family, never the ownership registry.
+
+## Sprint 4.81: A Residue Answer Does Not Say Which Authority Answered It ✅
+
+**Status**: ✅ **Done (2026-08-14)** — Phase `4` own-surface reopen (Standard A) on the
+residue-observation surface this phase owns through Sprints `4.16`, `4.19`, `4.21`, `4.76`, and
+`4.78`.
+**Implementation**: `src/Prodbox/Lifecycle/ResidueStatus.hs` (`ResidueObservationLayer`,
+`ResidueObservation`, `observeResidueAt`, `ResidueAuthorityUnauthenticated`),
+`src/Prodbox/Lifecycle/LiveResidue.hs` (`PerRunResidueStatuses`, the four triples),
+`src/Prodbox/CLI/Rke2.hs` (`renderPerRunObservation`), `src/Prodbox/CheckCode.hs`
+(`checkResidueObservationMinter`), `src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
+`src/Prodbox/Aws.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface** —
+§ P names lifecycle orchestration and destructive cleanup among the surfaces a change invalidates).
+Both substrate rows were already `pending`; no qualification identity captured before this sprint
+survives it.
+**Live-proof**: no live-infra axis (Standard O). Every deliverable is a pure projection or a
+compile-time boundary, so there is nothing here that live infrastructure would falsify; the
+consuming behaviour change is Sprint `4.82`'s and carries the live proof. This is an absent axis,
+not a pending one.
+**Independent Validation**: the layer projection is pure and total, and the minting boundary is a
+`dev check` lint — unit suite only, no cluster and no AWS (Standard N).
+**Docs updated**: the doctrine half was discharged in the change that registered this sprint, per
+Standard L — [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+§ 5a records the residual and § 5b states which layer owns which question, and
+[chaos_hardening_doctrine.md](../documents/engineering/chaos_hardening_doctrine.md) § 24 names the
+second in-tree instance while citing the plan for the measurement (§ 22).
+[system-components.md](system-components.md) still describes the layer distinction as the target
+state; it is corrected when Sprint `4.82` makes the cascade consume it.
+
+### Objective
+
+[chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) requires
+that *a derived value is only as correct as the layer at which its source object is authoritative,
+and that layer must match the layer at which the value is enforced*, and its corollary requires a
+derivation to **name the layer whenever it names the source**. `ResidueStatus` had nowhere to name
+one.
+
+Measured rather than asserted: **nineteen** top-level producers, enumerated by signature over `src/`.
+The authoritative sources they read are the Pulumi checkpoint store, AWS resource presence, AWS IAM,
+AWS EBS, local config text, a Pulsar topic, a Vault gate decision, an object-store listing, SES
+consumer quiescence, and public-edge TLS — plus two producers that are not observations at all: an
+aggregate fold over other statuses and a bare transport-failure constructor.
+
+**The producer count is mechanical; the layer count is a judgement, so this sprint states the list
+and not a number.** An earlier draft said "eleven layers", arrived at by counting table rows rather
+than distinct external authorities — EBS and IAM are both AWS, and a fold and a failure constructor
+are neither. Publishing a numeral whose derivation is a bucketing choice is a restated inventory
+wearing a derived one's clothes; the enumeration is falsifiable and the numeral was not.
+
+**The defining module stated the rule and erased it ten lines later.** `PresenceObservation` and
+`CheckpointObservation` are documented there as "deliberately independent … live resources and a
+usable encrypted checkpoint are separate external facts"; `presenceObservationToResidue` joins the
+first into `ResidueStatus` and `residueStatusFromCheckpointObservability` the second, after which
+nothing distinguished them.
+
+### The remedy was constrained by doctrine, not chosen
+
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md) names this
+surface explicitly: *"externally-authoritative state — readiness, leases, provider state, ownership,
+**residue** — stays a flat exhaustive ADT computed by pure projection … the proof belongs in the
+compile or decode gate, **never as an index on an observed value**."* A phantom or GADT layer index
+was therefore out before the sprint began. Two further constraints bound the deliverable rather than
+being discovered during it: § 24's anti-dedup rule — *say which layer a value is for, do not reduce
+the count of values* — so `PresenceObservation` and `CheckpointObservation` are **not** merged; and
+no § 25 was added, because § 24 already prescribes the behaviour and § 12 already carries its
+strength row.
+
+### Deliverables
+
+- **`ResidueObservationLayer`** — a flat, `Bounded`/`Enum` ADT naming the authority that answered:
+  retained checkpoint store, AWS, Vault gate, harness bypass. Carried as a **field**, per § 21.
+- **`ResidueObservation`, with its constructor unexported** and `observeResidueAt` as the sole
+  minter, so a consumer cannot obtain an answer without also obtaining the layer it was answered at.
+- **`checkResidueObservationMinter`** restricts the minter to the two modules that hold an
+  observation boundary. This is § 21's class-A move — *a witness is returned by performing the
+  operation, never constructed by describing it* — in the same idiom as the Sprint `1.76`
+  `RoundTripWitness` and Sprint `4.58` `TargetSinkVersion` boundaries and Sprint `3.32`'s
+  `checkDnsOwnerAuthorityBoundary`.
+- **`ResidueAuthorityUnauthenticated` replaces the mislabel.** `perRunAuthenticationFailedTriple`
+  stamped `ResidueBackendMinioUnreachable` onto every `LifecycleAuthorityAuthentication` failure, so
+  a live cascade run printed `MinIO backend unreachable` about a MinIO that was never dialled — three
+  healthy subsystems named, and the one that failed named nowhere. Conversion class, § 23.
+- **The cascade says who answered.** `renderPerRunObservation` prints
+  `… [answered by: retained checkpoint store]` beside each status, which is § 24's corollary applied
+  to the operator-facing sentence.
+- **`residueAbsent` withdrawn.** It was an exported alias for `ResidueAbsent` with **no production
+  caller**, whose only test asserted it equalled the constructor — a tautology about a redundant
+  second minter, the enforcing-nothing shape Sprints `4.68`, `4.72`, and `4.77` each found. Deleted
+  rather than re-worded, per § 23's "count the encoders" and "remove the conversion before adding a
+  proof".
+
+### Validation
+
+1. **The reproduction as a unit case, side by side.** An absence observed at the checkpoint layer and
+   one observed at AWS were the *same value* before this sprint; both are now asserted to share a
+   status and differ in layer and in identity. That is the same shape of case Sprint `4.76` used to
+   pin `ResidueUnreachable` against `ResidueAbsent`, and it is what makes the defect falsifiable
+   rather than argued. ✅
+2. **The closed property, asserted rather than the list restated**: no authentication failure renders
+   as a claim about a backend that was never contacted, and the MinIO reason is retained for a
+   boundary that genuinely was dialled. ✅
+3. Layer rendering is total and injective over `[minBound .. maxBound]`, so a narration cannot
+   conflate two authorities; and `mapResidueObservationStatus` is pinned not to relabel the
+   authority. ✅
+4. **`checkResidueObservationMinter` mutation-proven.** A minter call was introduced in
+   `src/Prodbox/Infra/AwsTestStack.hs`; `dev check` failed naming file and line and listing the
+   permitted modules; the file was restored and verified byte-exact by `md5sum -c`. ✅
+5. **6 new cases**, measured by running only them (`prodbox-unit -p "/Sprint 4.81/"` → `All 6 tests
+   passed`) rather than by subtracting totals. ✅
+6. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3436** plus 27, 33, and
+   27 ✅.
+
+**A recorded baseline was wrong, and deriving the delta is what showed it.** 3436 − 6 = **3430**
+before this sprint, but Sprint `4.80`'s block records `3419` and this plan's phase table records
+`3420` — two figures that already disagreed with each other and both of which disagree with the
+tree. Corrected under Standard C in both places rather than the newer number being quietly written
+over the older.
+
+### Remaining Work
+
+None on this sprint's surface.
+
+**The bound is stated.** This makes the layer *sayable*, its minting *restricted*, and the narration
+*honest about who answered*. It does not make any consumer read the right layer — a producer may
+record one and a consumer still ignore it. That is Sprint `4.82`'s surface and this sprint is not
+credited with it. The gate is a compiled rule over a source region, not a property of the type
+(§ 22): it cannot prove a permitted module named the *correct* layer, only that a module with no
+observation boundary cannot name one at all.
+
+## Sprint 4.82: The Cascade Consumes The Layer It Actually Needs ✅
+
+**Status**: ✅ **Done (2026-08-14)** — Phase `4` own-surface reopen (Standard A), same
+destructive-path surface as Sprints `4.76`–`4.81`, split from `4.81` because the root cause is
+consumption rather than representation.
+**Implementation**: `src/Prodbox/Lifecycle/ResidueStatus.hs` (`AwsLayerAnswer`,
+`ResidueResolution`, `resolveResidueAcrossLayers`, `residueResolutionStatus`,
+`residueResolutionConfirmedAbsence`, `renderResidueResolution`), `src/Prodbox/CLI/Rke2.hs`
+(`queryAwsLayerForPerRun`, `perRunNeedsAwsLayer`, `independentPhase`, `derivedPhase`,
+`renderFailedCascadePhases`, `runNativeDeleteCascade`), `src/Prodbox/CLI/Spec.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none remaining — Sprint `4.81` (same phase, lower number, Standard N compliant)
+landed first and is Done.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface**, and
+it is the sprint that changes what `cluster delete --cascade` *does* rather than what it says). Both
+substrate rows were already `pending`. A qualification run must exercise the post-`4.82` cascade,
+and its Cleanup/residue cell must name which layer confirmed absence — recording a bare "clean"
+would reintroduce at the evidence layer exactly the collapse this sprint removes.
+**Live-proof**: 🧪 pending (Standard O, non-blocking). The acceptance criterion is the **inverse** of
+Sprint `4.76`'s live run and is stated under Validation. The composition is pinned by unit case; the
+field observation is not.
+**Independent Validation**: the resolution is a pure total function over `(observation × AWS
+answer)`, and the phase-attribution helpers are pure over recorded outcomes — unit suite only, no
+cluster and no live AWS (Standard N).
+**Docs updated**: [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+§ 5a and § 5b already state which layer owns which question and record the residual this sprint
+closes; [system-components.md](system-components.md)'s residue row no longer describes the layer
+distinction as a target state.
+
+### Objective
+
+With the layer recordable after Sprint `4.81`, the cascade can ask the authority that owns the
+question it actually consumes. Before this sprint `queryPerRunResidueStatuses` asked the in-cluster
+Lifecycle Authority — unreachable whenever the control plane is down, which is the normal state when
+an operator reaches for `cluster delete --cascade` — and the cascade then treated that
+non-observation as grounds to fail `confirm-MinIO` **and** to infer `SubstrateAws`, so one
+unobservable cause produced two failed phases.
+
+**The command already held the answer and did not use it.** In the same run,
+`runCascadePostflightTagSweep` loads `loadAdminAwsCredentials`, reaches the real AWS Tagging API, and
+reports `clean (the Tagging API confirmed no escaped residue)` — an authoritative, positive
+observation at exactly the layer the residue question is consumed at. That is the credential this
+plan already recorded as one "the same command already holds and never uses for it".
+
+### Deliverables
+
+- **A second-layer observation, consulted only when the first failed.** `queryAwsLayerForPerRun`
+  reuses `TagSweep.discoverClusterTaggedAwsResources` and `loadAdminAwsCredentials`, both already
+  production-proven on this path. `perRunNeedsAwsLayer` states the "we did not need to ask" case as
+  a decision with a reason rather than an absent branch, and a missing credential is
+  `AwsLayerNotConsulted` — **never** an absence.
+- **`resolveResidueAcrossLayers`, total over both inputs.** A positive answer at the authority layer
+  is never overridden by AWS, because the two answer different questions. Only
+  `ResolutionAwsLayerAbsent` and an authority-observed `ResidueAbsent` establish absence, and
+  `residueResolutionConfirmedAbsence` returns *which layer* established it.
+- **`ResolutionAwsLayerPresent` maps to `ResidueUnreachable`, deliberately.** AWS proves the
+  resources exist, but the checkpoint needed to destroy them through Pulumi is unreadable, so
+  presenting this as a destroyable presence would promise an action the cascade cannot take. It is a
+  hard failure, not a licence to proceed.
+- **`inferCascadeSubstrate` consumes the resolved value**, so a host whose per-run stacks AWS
+  positively reports absent infers `SubstrateHomeLocal` and its skipped drain is correctly success —
+  removing the second failed phase at its cause rather than special-casing the drain.
+- **One cause is no longer narrated as two peers.** `CascadePhaseOutcome` gains a
+  `cascadePhaseDerivedFrom` edge, recorded only when this phase failed *and* the named cause failed,
+  so `Unresolved phase(s): confirm-MinIO, drain` becomes
+  `confirm-MinIO, drain (downstream of confirm-MinIO)`. Class-D distinguishability, § 21.
+- **The `--cascade` help text stops advertising a property the code removed.** It promised "the K8s
+  drain phase skips gracefully when no cluster is reachable"; Sprint `4.76` ended that and this
+  sprint changes the condition again, so the text now states what is actually true — every phase
+  runs, and success requires each phase to confirm its own outcome.
+- **A superseded renderer deleted rather than left.** Sprint `4.81`'s `renderPerRunObservation` is
+  replaced by `renderResidueResolution`; keeping both would be the second-encoder shape § 23 warns
+  about.
+
+### Validation
+
+1. **The two arms that decide the reported defect, asserted side by side.** An unreachable authority
+   with AWS reporting none resolves to absence at the AWS layer; the same observation with AWS
+   unobservable or not consulted still fails closed. Before this sprint both inputs produced the same
+   refusal and the same exit 1, so the pair differing is what makes the fix falsifiable rather than
+   argued. ✅
+2. **AWS never overrides an authority that answered** — asserted over the full cross-product of both
+   answering observations against all four `AwsLayerAnswer` constructors. ✅
+3. **The refusal arm is pinned**: AWS-reports-resources with an unreadable checkpoint confirms no
+   absence and renders "not destroyable". ✅
+4. **Phase attribution is pinned three ways**: a derived failure names its cause, a drain that failed
+   on its own merits is *not* attributed, and a succeeding phase is never attributed. ✅
+5. **8 new cases**, measured by running only them (`prodbox-unit -p "/Sprint 4.82/"` → `All 8 tests
+   passed`) rather than by subtracting totals. ✅
+6. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3444** plus 27, 33, and
+   27 ✅ — reconciling exactly with `4.81`'s measured 3430 baseline plus 6 plus 8;
+   `prodbox test integration cli` **57/57** ✅. The tree measures **3446** at the time of writing
+   because Sprint `2.47` added two cases on a Phase-`2` surface in the same session; the figure above
+   is this sprint's, stated as measured rather than as the tree's current total.
+7. **The live reproduction, and it is the acceptance criterion — the inverse of Sprint `4.76`'s.**
+   🧪 **Pending (Standard O, non-blocking).** `prodbox cluster reconcile`, stop the API server, then
+   `prodbox cluster delete --cascade --yes`. Expected: per-run residue resolved **at the AWS layer**,
+   the drain skipped as home-local success, exit **0**, and the narration naming AWS rather than the
+   Authority as the confirming authority. Sprint `4.76` proved the identical host state exits 1; this
+   proves it exits 0 *for a stated reason* rather than by the pre-`4.76` silence. A second run with a
+   live per-run stack present must confirm the refusal arm still refuses — without it the first run
+   only exercises the permissive branch.
+
+### Remaining Work
+
+None on the code-owned surface. The Standard-O live proof above is outstanding and non-blocking.
+
+**The bound is stated.** AWS answering "no per-run-tagged resources" is authoritative for *what
+resources exist* and for nothing else. It does not prove the checkpoint is gone, it does not
+retroactively make the Authority observation sound, and it is not narrated as though it did — which
+is why the resolution is layer-tagged rather than folded into a bare `ResidueAbsent`. The AWS query
+is also scoped to the cluster tag, so a resource this lifecycle created without that tag is outside
+what this sprint can confirm; § 6's sweep remains the backstop for exactly that class.
+
+
+## Sprint 4.83: A Pullable Digest By Configuration Rather Than By Contract ✅
+
+**Status**: ✅ **Done (2026-08-15)** — Phase `4` is reclosed. The rollout token remains the
+host-reported Docker identity, while a distinct OCI config digest is resolved for runtime
+attestation and every Pod pull uses its declared `repository:tag`.
+**Implementation**: `resolveLocalImageBuildToken` and the runtime config-digest resolver in `src/Prodbox/Lib/ChartPlatform.hs`,
+the observers `decodeAndValidateJob` / `validatePod` in
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminKubernetes.hs`, `parseJobBinding` /
+`podObservation` in `src/Prodbox/Lifecycle/CredentialProvisioner/KubernetesJob.hs`, `podObservation`
+and `ContainerStatusDto` in `src/Prodbox/ControlPlane/TargetSecretWorkerProduction.hs`, and
+`validateImageReference` in `src/Prodbox/Lifecycle/AdminAction/Kubernetes.hs`.
+**Blocked by**: none.
+**Deployment qualification**: code-owned validation complete; current-revision live qualification
+remains Standard O/P evidence rather than a closure gate.
+**Live-proof**: 🧪 pending, and deliberately low-value — the prior live tree already passed the pull
+arm; this sprint closes the contract and runtime-attestation gap with deterministic cases.
+**Independent Validation**: every Pod/Job manifest builder is pure over its intent and a caller-supplied
+image reference, and every observer is pure over an HTTP status and body — unit cases only, no cluster
+(Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+`documents/engineering/local_registry_pipeline.md` § 6.2 already carries the measurement and the rule
+this sprint enforces.
+
+### Objective
+
+Sprint `2.51` fixed two Bootstrap Broker Pod-image references built as
+`repository@sha256:<config digest>`, which no OCI registry can resolve. Three further sites in this
+phase build a reference the same way — `workerImage` in
+`src/Prodbox/ControlPlane/TargetSecretWorkerKubernetes.hs`, the AWS-admin provisioner Job in
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminKubernetes.hs`, and the external ACME-EAB
+ingress Job in `src/Prodbox/Lifecycle/CredentialProvisioner/KubernetesJob.hs`, all with
+`imagePullPolicy: Always`.
+
+### The correction that defines this sprint, and it is the whole finding
+
+**These three sites were registered as defective, and they are not. Measuring the value settled it
+against the analysis, and the analysis was this plan's own.** The claim was that they inherit a
+config digest from `resolveLocalImageBuildToken`, which runs
+`docker image inspect --format '{{.Id}}'`. Measured on the operator host against one image:
+
+| Reporter | Value |
+|----------|-------|
+| Kubernetes `status.containerStatuses[].imageID` | `sha256:e3c7ab7c…` |
+| registry `Docker-Content-Digest` for the tag | `sha256:52d86a90…` |
+| `docker image inspect --format '{{.Id}}'` | `sha256:52d86a90…` |
+| `docker image inspect --format '{{json .RepoDigests}}'` | `…@sha256:52d86a90…` |
+
+`.Id` equals the registry's manifest digest, so the rendered references **are** pullable and none of
+the three is broken. **The inference that failed was reasoning from the Broker's measurement to a
+different reporter**: the Broker reads Kubernetes' `imageID`, which genuinely is the config digest,
+and "`docker inspect .Id` is the config digest" was carried across as though the two reporters were
+one. They are not, and the plan has now made this class of error four times — *an identity stated in
+prose is not a measurement, and the difference is a command away.*
+
+**What is real is why it works.** This host runs the Docker daemon with the **containerd image
+store** (`docker info` → `driver-type io.containerd.snapshotter.v1`), under which `.Id` is the
+manifest digest. Under Docker's classic image store `.Id` is the config digest — same field, different
+layer, selected by daemon configuration this repository never sets, asserts, or documents. So three
+`imagePullPolicy: Always` Jobs are pullable **by host configuration rather than by contract**, and the
+failure mode if that configuration differs is the one Sprint `2.51` spent a session diagnosing.
+
+### Deliverables
+
+- **The three sites stop needing a registry-resolvable digest at all.** The first draft of this
+  deliverable proposed changing `resolveLocalImageBuildToken` to read `.RepoDigests`. **That is the
+  wrong fix and is recorded as refuted rather than deleted.** Two reasons: `.RepoDigests` is empty
+  until an image has been pushed, so a locally built image would silently lose its rollout token and
+  with it the change detection Sprint `3.38` just made load-bearing; and more fundamentally, a
+  rollout token does not need to be a registry coordinate at all — it only has to **change when the
+  image changes**, which `.Id` does under either image store. The layer confusion is not in the token,
+  it is in the three sites that consume a token as a pull reference. So the remedy is Sprint `2.51`'s
+  exactly: the `image` field carries the declared `repository:tag` that `ResolvedCustomImage` already
+  holds beside the token, and the digest stays an attestation identity compared against an observed
+  `imageID`.
+- **The observers given a runtime identity to attest against**, which is a defect independent of the
+  digest question and does not go away with it.
+
+  **A constraint that makes this harder than the Broker's version, measured so the next session does
+  not design around a false premise.** The Broker could attest one Pod against another because both
+  identities came from the *same reporter* — Kubernetes `imageID`. These three cannot: their intent
+  digest is minted on the **host** by `docker image inspect`, and on the operator host that value is
+  `sha256:5baff542…` while the Pod running that exact image reports
+  `imageID sha256:fad071f2…`. Measured side by side. **So comparing the observed `imageID` against the
+  intent digest can never pass**, and the naive form of this deliverable is unimplementable.
+
+  Two shapes remain and the choice is not settled here: attest a Job Pod against a **counterpart Pod**
+  observed through the same reporter (the Target Agent for the target worker, the Lifecycle Authority
+  for the credential-provisioner Jobs), which is the Broker's pattern and needs no host-minted digest;
+  or have the host mint a *config* digest rather than `.Id`, which requires establishing that one is
+  obtainable at all under the containerd image store before it can be relied on. `decodeAndValidateJob` / `validatePod`, `parseJobBinding` /
+  `podObservation`, and `TargetSecretWorkerProduction.podObservation` each validate a Pod by
+  re-deriving the same `repository@digest` string and comparing it to `spec.containers[].image` — a
+  value the same code path wrote, so the comparison is self-consistent by construction and can only
+  ever pass. `ContainerStatusDto` does not parse `imageID` at all, so the runtime identity is not
+  merely unused there; it is unavailable. The contract to adopt is
+  [bootstrap_readiness_doctrine.md § 0.4.1](../documents/engineering/bootstrap_readiness_doctrine.md):
+  the attestation identity is the **observed** runtime digest, and a spec field is a request rather
+  than a proof.
+- **The latent fourth site addressed**: `validateImageReference` in
+  `src/Prodbox/Lifecycle/AdminAction/Kubernetes.hs` *requires* a digest-suffixed reference and has no
+  production caller today.
+- **`checkWorkerImagePullReferenceOwner` widened** beyond `src/Prodbox/Bootstrap/Broker/` once these
+  paths no longer assemble references, which is the point at which the Sprint `2.51` guard stops
+  being Broker-local.
+
+### Validation
+
+1. Warning-clean `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror` exit 0. ✅
+2. `prodbox test unit`: **3482/3482** in the main suite, including the new negative runtime-identity
+   case; the additional registered suites are run by the final repository gate. ✅
+3. `prodbox dev check` exit 0; `prodbox test integration cli` **57/57**; `prodbox test integration
+   env` **57/57**. ✅
+4. The target-worker observer decision is pinned directly: a `containerd://sha256:…` identity equal
+   to the intent is accepted and a different observed digest is refused. The production observer
+   uses that decision after parsing `status.containerStatuses[].imageID`; its declared image is not
+   an attestation input. ✅
+
+### Remaining Work
+
+None on the code-owned surface. The deliberately non-blocking Standard-O live proof remains evidence
+work.
+
+**Two facts established while scoping, so the implementation does not start by rediscovering them.**
+First, **no durable type needs to widen**: `imageRepository` is already a caller-supplied parameter on
+`renderAwsAdminJob` and `renderCredentialProvisionerExternalJob`, and `ResolvedCustomImage` already
+carries the tag beside the repository, so the `image` field can become a declared reference without
+touching `AwsAdminPermitIntent` or the external-ingress intent — both of which **are** `Serialise` and
+would have hit exactly the arity trap Sprint `2.51` measured. Second, the observer half is blocked on
+the reporter mismatch recorded under Deliverables and must resolve that before it can be written.
+
+**What is deliberately not folded in.** The config digest is not removed from
+`resolvedCustomImageRolloutToken`'s *purpose*: a rollout token only has to change when the image
+changes, and either digest satisfies that. The defect is a value whose layer depends on host
+configuration being consumed where a registry coordinate is required.
+
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — § 3.1 and § 5b state which layer
+  owns which question; § 5a records the residual that an installed-but-not-serving cluster has no
+  supported path to a per-run residue observation.
+- `documents/engineering/chaos_hardening_doctrine.md` — one sentence in § 24 naming the second
+  in-tree instance and citing the plan for the measurement, per § 22's "state it there, cite it
+  here". No § 25 and no new § 12 row.
+- `documents/engineering/cli_command_surface.md` — only if Sprint `4.82` moves the `--cascade` help
+  text contract.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- `DEVELOPMENT_PLAN/system-components.md` — the residue-observation boundary rows.
+- Root `README.md` — the `.data/` preservation paragraph gains a pointer to the bootstrap-fence
+  consequence owned by Sprint `2.47`.
 
 ## Related Documents
 

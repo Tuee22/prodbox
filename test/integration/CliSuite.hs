@@ -811,15 +811,10 @@ integrationCliSuite = do
                 | path <- initialChartStateFiles
                 , take 13 path == "kubectl-apply"
                 ]
-            -- The second reconcile models the fully-deployed steady state, so
-            -- ALL THREE releases of the `vscode` chart root must appear in the
-            -- helm list — including `keycloak-postgres`. Under the deploy-missing
-            -- reconcile (`chartReleasesToDeploy`), omitting any release marks it
-            -- as needing (re)deployment; leaving `keycloak-postgres` out would
-            -- drive a redundant Patroni redeploy instead of the intended
-            -- idempotent no-op. (The partial-rollback heal — deploy only the
-            -- missing release — is covered by the `chartReleasesToDeploy` unit
-            -- test.)
+            -- The second reconcile models the fully-deployed steady state.
+            -- Sprint 3.38 deliberately converges all three releases again;
+            -- Helm's three-way merge, rather than a presence filter, owns the
+            -- idempotent no-change decision.
             alreadyDeployedEnvVars =
               ( "PRODBOX_FAKE_HELM_LIST_JSON"
               , "[{\"name\":\"keycloak-postgres\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
@@ -846,7 +841,10 @@ integrationCliSuite = do
         secondDeployStdout `shouldContain` "ROOT_CHART=vscode"
 
         upgradeRecordAfterSecondDeploy <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
-        upgradeRecordAfterSecondDeploy `shouldBe` upgradeRecord
+        upgradeRecordAfterSecondDeploy
+          `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|keycloak-postgres"
+        upgradeRecordAfterSecondDeploy
+          `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|vscode"
 
         chartStateFilesAfterSecondDeploy <- listDirectory (tmpDir </> "fake-chart-state")
         length
@@ -854,7 +852,7 @@ integrationCliSuite = do
           | path <- chartStateFilesAfterSecondDeploy
           , take 13 path == "kubectl-apply"
           ]
-          `shouldBe` initialApplyTargetCount
+          `shouldBe` (initialApplyTargetCount + 5)
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           runInstalledWithAuthorityEnvironment
@@ -1201,7 +1199,8 @@ integrationCliSuite = do
         -- NO `docker login` runs at all — the registry:2 NodePort is anonymous, so
         -- pushes carry no credential; public pulls use the host docker.io login.
         dockerRecord `shouldNotContain` "login|127.0.0.1:30080"
-        dockerRecord `shouldNotContain` "buildx|"
+        dockerRecord
+          `shouldContain` "buildx|imagetools|inspect|--raw|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
         dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
         dockerRecord `shouldContain` "pull|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
@@ -3094,6 +3093,7 @@ fakeKubectlScript =
     , "          printf '3\\n'"
     , "        fi"
     , "      else"
+    , "        : > \"$record_dir/patroni-ready.count\""
     , "        printf '3\\n'"
     , "      fi"
     , "    else"
@@ -3826,7 +3826,9 @@ fakeRke2KubectlScript =
     , "        fi"
     , "        ;;"
     , "      deployment)"
-    , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+    , "        if [[ \"$*\" == *'jsonpath={.metadata.generation}'* ]]; then"
+    , "          printf '1:1:1:1'"
+    , "        elif [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
     , "          printf 'True'"
     , "        fi"
     , "        ;;"
@@ -4050,6 +4052,13 @@ fakeRke2DockerScript =
     , "  image)"
     , "    if [[ \"${2:-}\" == 'inspect' ]]; then"
     , "      printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+    , "      exit 0"
+    , "    fi"
+    , "    exit 1"
+    , "    ;;"
+    , "  buildx)"
+    , "    if [[ \"${2:-}\" == 'imagetools' && \"${3:-}\" == 'inspect' && \"${4:-}\" == '--raw' ]]; then"
+    , "      printf '{\"config\":{\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}\\n'"
     , "      exit 0"
     , "    fi"
     , "    exit 1"

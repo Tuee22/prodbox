@@ -247,10 +247,7 @@ renderTargetSecretWorkerJob imageRepository maximumRuntimeSeconds intent = do
       [ "app.kubernetes.io/name" .= ("prodbox-target-secret-worker" :: Text)
       , "prodbox.io/target-worker-job" .= targetWorkerIntentJobName intent
       ]
-  workerImage =
-    Text.strip imageRepository
-      <> "@"
-      <> targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
+  workerImage = Text.strip imageRepository
   workerArguments =
     [ "credential-provisioner" :: Text
     , "target-worker"

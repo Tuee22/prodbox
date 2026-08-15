@@ -10,6 +10,37 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-15 on Sprint `3.40` (Standards A/N).** The pre-Vault Broker graph gate now
+admits only after the Deployment controller has observed the requested generation and produced every
+updated replica; it does not require post-Vault availability. The changed arm is live-proven: the
+Broker chart crossed graph admission and the reconcile entered `StepFederatedVaultLifecycle`, where
+it stopped at the separately documented retained root-initialization journal.
+
+✅ **Reclosed 2026-08-15 on Sprint `3.39` (Standards A/N).** The pre-Vault Bootstrap Broker release
+is applied without waiting for the post-Vault readiness its following lifecycle step produces, while
+every other release retains Helm's bounded readiness wait. A pure, total failure disposition keeps
+readiness timeouts out of destructive cleanup, so a timeout preserves the installed release. Unit
+cases pin both the release-specific wait projection and the timeout-to-preserve arm; the warning-clean
+build and `prodbox test unit` pass.
+
+✅ **Reclosed 2026-08-13 on Sprints `3.36` and `3.37` (Standards A/N).** Both were found by the first
+live Standard-P qualification run — the first time this plan gained work from running the system
+rather than reading it. `3.36` fixed the mirror publication path that published a whole
+multi-architecture manifest index; `3.37` moved the `cert-manager` pin off an upstream artifact that
+is itself unpublishable. Sprint `3.35` reclosed the phase before them, giving the control-plane listen
+port and the in-cluster role-URL shape one compiled owner each. Every sprint in this document reads
+`✅`; the phase has no open work.
+
+**Status correction (2026-08-14, Standard C).** This header led with the `🔄 Reopened 2026-08-10 on
+Sprint 3.34` paragraph until today, while all 37 sprint blocks in this file read `✅ Done` and
+[README.md](README.md) had recorded the reclose on `3.36`/`3.37` since 2026-08-13. This is the **third**
+instance of the same defect: Phase `2`'s header carried it until 2026-08-08, carried it again until
+2026-08-14, and this one was found by the same sweep. A status that disagrees with its own contents
+is exactly what Standard C exists to catch, and three recurrences in one family say the failure is
+structural rather than careless — the phase-document header is the one place in the plan where a
+reclose has to be written by hand in a second location, and it is therefore the one place that
+drifts. Recorded rather than quietly moved, because the recurrence is the finding.
+
 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart
 platform and chart lint this phase owns. A live `prodbox test all --substrate aws` run failed at the
 `bootstrap-broker` Helm release on eight consecutive attempts: the chart's NetworkPolicy permits
@@ -3844,6 +3875,295 @@ upstream away from blocking every bring-up, and this sprint is the proof.
 
 None on the pin. The minor-version move is the operator's decision, taken deliberately over the
 smaller `v1.16.5` patch move that was also verified working.
+
+## Sprint 3.38: A Rebuilt Runtime Image That Never Reaches The Cluster ✅
+
+**Status**: ✅ **Done (2026-08-15) on the defect it owns** — reproduction measured twice, cause taken,
+remedy landed, roll live-proven. **Read the Consequence section before treating the bring-up as
+improved end to end**: closing this made an existing destructive path reachable on every reconcile,
+registered as Sprint `3.39`, and the run that proved the roll ended with the broker release
+uninstalled. — Phase `3` own-surface work on internal control-plane chart deployment. Phase `3` stays ✅
+closed on its code-owned surface; an Active sprint working a `Pending Removal` row is the shape
+Standard I describes, not a reopen (Standard N).
+**Implementation**: expected on `ensureInternalControlPlaneChartReady` in `src/Prodbox/CLI/Rke2.hs`
+and `deployChartPlan` / `customImagePodAnnotationsValue` in `src/Prodbox/Lib/ChartPlatform.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending, and this sprint is unusually load-bearing for that ledger — a
+qualification run binds a component-image identity, and this defect is precisely a deployed component
+image not matching the built one.
+**Live-proof**: ✅ **proven on the operator host (2026-08-15)**, in the exact terms the reproduction
+was stated in. Baseline captured before the run: `metadata.generation: 1`, rollout annotation
+`sha256:224cd3cc…`. After a `cluster reconcile` that built `sha256:5baff542…`: generation **2**,
+annotation **`sha256:5baff542…`**, a new ReplicaSet `bootstrap-broker-94c58ddbb` at 1/1 with the
+previous one scaled to 0/0, a new Pod whose observed `imageID` is `sha256:fad071f2…` rather than the
+previous `sha256:82ae5092…`, and — the independent check — `sh.helm.release.v1.bootstrap-broker.v2`
+now exists beside `v1`, so helm actually ran rather than the object merely differing.
+**Independent Validation**: the chart-values projection is pure over a `ResolvedCustomImage`, so the
+rollout-annotation contract is pinned by unit case with no cluster (Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+`documents/engineering/helm_chart_platform_doctrine.md` if the rollout contract changes.
+
+### Objective
+
+`prodbox cluster reconcile` built and pushed a new runtime image and then ran the Vault bootstrap
+against a Bootstrap Broker still executing the **previous** image. A code change that reaches the
+registry but not the workload makes every in-cluster live proof a proof about whichever binary
+happens to be deployed.
+
+### The reproduction, measured
+
+Observed on the operator host immediately after a `cluster reconcile` that rebuilt the runtime image:
+
+| Observation | Value |
+|-------------|-------|
+| image built and pushed this run | manifest `sha256:7e10a123…` (config `sha256:198b2072…`) |
+| `docker image inspect --format '{{.Id}}'` on the machine-id tag | `sha256:7e10a123…` |
+| Broker Deployment `metadata.generation` | `1`, `creationTimestamp` the **previous day** |
+| Broker ReplicaSet age / Pod age | 18h / 10h |
+| Broker Pod `status…imageID` | `sha256:e3c7ab7c…` — the **previous** image |
+| Deployment pod-template annotation | `prodbox.io/image-build-id: sha256:843b3e80…` |
+| helm releases upgraded in the run | `minio`, `vault` — **not** `bootstrap-broker` |
+
+**Two of those rows are the finding.** The Deployment is at generation `1`, so nothing modified it
+this run at all — this is not a rollout that failed, it is a rollout that was never requested. And
+the annotation holds `sha256:843b3e80…`, **a digest the Docker daemon no longer has** — so it is not
+merely stale relative to this build, it does not correspond to any image currently on the host.
+
+### What is ruled out, so the next session does not re-derive it
+
+- **The mechanism exists and is wired.** `customImagePodAnnotationsValue` renders
+  `prodbox.io/image-build-id` from `resolvedCustomImageRolloutToken`, the internal control-plane
+  values builder passes it, and `charts/bootstrap-broker/templates/deployment.yaml` emits
+  `podAnnotations` into the pod template. A missing template is not the cause.
+- **The token did change.** It is `resolveLocalImageBuildToken`'s value, measured at `sha256:7e10a123…`
+  after the build, against `sha256:843b3e80…` on the live object.
+- **The step ran.** The run emitted exactly one `CHART_DEPLOYMENT` report, and it names
+  `ROOT_CHART=bootstrap-broker`. It emitted no helm output for that release, while `minio` and
+  `vault` both logged `has been upgraded`.
+
+**A second reproduction the same day removes the last benign explanation.** The first was open to
+"the Deployment predates some change and is merely stale". It is not: after a full
+`cluster delete --yes` and rebuild, run 2 **created** the Deployment with annotation
+`sha256:224cd3cc…` — the image that run had just built. Run 3 then built and pushed a genuinely
+different image, `sha256:3056a24b…`, and left the Deployment at `metadata.generation: 1` with the
+annotation still reading `sha256:224cd3cc…` and the Pod still carrying run 2's
+`imageID sha256:82ae5092…`. **So the object is created correctly and then never updated again**, which
+is a sharper statement than the first reproduction supported and narrows the defect to the
+already-exists path rather than to rendering.
+
+### The cause, taken
+
+**`deployChartPlan` never ran `helm upgrade` because it asked whether the release was *installed*, not
+whether it was at the *desired revision*.** `chartReleasesToDeploy` filtered the plan down to releases
+whose `helm list` status was anything other than `deployed`; an all-`deployed` chart root produced the
+empty list and the function returned `Right (renderDeployReport plan)` — a success report, printed to
+the operator, with no helm invocation behind it. That is exactly the observed shape: a
+`CHART_DEPLOYMENT` report naming `ROOT_CHART=bootstrap-broker` and no helm output.
+
+**Corroborated by helm's own revision counter rather than by reading the code twice.** In the run that
+built `sha256:3056a24b…`, `sh.helm.release.v1.minio.v2` exists while the broker has only
+`sh.helm.release.v1.bootstrap-broker.v1` — a sibling release reached its second revision in the same
+run in which the broker did not reach one.
+
+**The defect is a predicate answering a different question from the one it is consumed for**, which
+is [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) and the
+same shape as Sprint `2.51`'s own defect one layer up: `helm list` carries a release's presence and
+health and **no revision, no values, and no manifest identity**, so it cannot answer a convergence
+question at all. The skip was introduced as an optimisation — its own comment documents it being
+narrowed from an all-or-nothing guard to a per-release one — and narrowing it preserved the false
+premise that presence implies convergence.
+
+**The remedy is to stop asking.** `helm upgrade --install` *is* the idempotent convergence operation:
+on an unchanged rendered manifest its three-way merge leaves every object untouched. So the plan's
+whole release set is deployed every time and the presence filter is deleted, rather than replaced by a
+cheaper signal that would answer a third question. The preamble (operator gates, chart storage, TLS
+agent access, TLS restore) consequently runs over every release instead of a filtered subset; each is
+an ensure-or-apply step and was checked to be idempotent before the filter was removed.
+
+**A latent `-Werror` violation surfaced on the way and is worth recording as a property of the gate,
+not an aside.** Removing the filter forced recompilation of `src/Prodbox/CLI/Rke2.hs`, which failed
+`-Wincomplete-uni-patterns` on a three-element list destructuring that has been in the tree
+un-rebuilt. **`prodbox dev check` had passed over it**, because its build step is incremental and the
+module was served from cache — so a warning-clean build is only as clean as the modules the run
+actually compiled.
+
+**One consequence is worth stating because it changes how the next session should read this plan.**
+Once the broker is left unready by a failed bootstrap, a subsequent `cluster reconcile` fails at the
+chart-readiness barrier and never reaches the Vault steps at all — run 3 exited `1` after the
+`CHART_DEPLOYMENT` report with **no message**. So the loop is closed: new code cannot reach the
+cluster, and the cluster cannot recover without new code.
+
+### Deliverables
+
+- **The cause, measured rather than inferred**, on the same standard the reproduction met.
+- **A deployed-image identity that cannot silently diverge from the built one** — the rollout
+  annotation is either applied or its absence is a refusal, not a no-op.
+- **A unit case** over the values projection pinning that a changed rollout token produces a changed
+  pod-template annotation.
+
+### Validation
+
+1. `prodbox dev check` exit 0; `prodbox test unit`; `prodbox test integration cli` / `env`.
+2. The live proof above: a source change, a `cluster reconcile`, and a Broker Pod whose observed
+   `imageID` is the image that run built.
+
+### The consequence of closing this, which the proving run itself demonstrated
+
+**The fix is correct and it made things worse before it makes them better, and saying only the first
+half would be the reporting failure this plan keeps cataloguing.** With the presence filter gone,
+`cluster reconcile` now runs `helm upgrade --install --wait=true` on the broker every time. On the
+proving run helm did exactly that — revision `2`, a new ReplicaSet, the new image — and then **timed
+out** (`UPGRADE FAILED: context deadline exceeded`) because the broker's `/readyz` answers `503` and
+never stopped. The failed-release cleanup then did what it has always done on a failed upgrade:
+`helm uninstall`, absence verified. **The run ended with the Deployment, the Service, and the helm
+release gone**, where before the fix the stale-but-installed broker would have been skipped and left
+in place.
+
+Nothing here is a new *code* defect introduced by this sprint. `--wait=true` and the failed-release
+cleanup are both pre-existing, and the broker being unable to reach readiness is the downstream
+condition Sprint `2.51`'s own live proof stopped at. What this sprint changed is **how often that path
+is reached**: from "only on first install" to "every reconcile". That is a real change in operational
+behaviour and it is owned — registered as Sprint `3.39`.
+
+### Remaining Work
+
+None on the defect this sprint owns. The composition consequence above is Sprint `3.39`'s.
+
+**Why this is registered against Phase `3` rather than the phase whose proof it blocked.** It was
+found while taking Sprint `2.51`'s live proof, and it is tempting to attach it there. But the owned
+surface is internal control-plane chart deployment, which is this phase's, and attaching a Phase-3
+dependency to a Phase-2 sprint is the backward-blocking shape Standard N forbids.
+
+
+## Sprint 3.39: A Convergence Timeout That Deletes The Thing It Was Converging ✅
+
+**Status**: ✅ **Done (2026-08-15)** — Phase `3` own-surface work on chart-deployment failure handling.
+**Implementation**: `helmUpgradeWaitArguments`, `HelmUpgradeFailureDisposition`, and
+`helmUpgradeFailureDisposition` in `src/Prodbox/Lib/ChartPlatform.hs`; ordering remains explicit in
+`src/Prodbox/CLI/Rke2.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. This is a destructive-cleanup surface, so Standard P applies.
+**Live-proof**: 🧪 pending for the corrected current revision; the destructive pre-fix arm was
+observed live 2026-08-15 as recorded below.
+**Independent Validation**: the decision "an upgrade that timed out on readiness should/should not
+uninstall" is a pure classification over a helm outcome, unit-testable with no cluster (Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+`documents/engineering/helm_chart_platform_doctrine.md` for the failure-handling contract.
+
+### Objective
+
+Sprint `3.38` removed a presence filter that had been skipping `helm upgrade` for already-installed
+releases. That was correct. It also made an existing destructive path reachable on **every** reconcile
+instead of only on first install, and the run that proved `3.38` demonstrated it.
+
+### What was observed, in order
+
+1. `helm upgrade --install --wait=true bootstrap-broker` ran and rolled the Deployment — generation
+   `1`→`2`, new ReplicaSet at 1/1, new Pod on the newly built image, `bootstrap-broker.v2` created.
+2. The broker's readiness probe answered `503` continuously
+   (`Readiness probe failed: curl: (22) The requested URL returned error: 503`, ×174 over 29 minutes).
+3. Helm gave up: `UPGRADE FAILED: context deadline exceeded`, release `STATUS: failed` at `REVISION: 2`.
+4. The failed-release cleanup ran: `helm uninstall completed and absence was verified`.
+5. **End state: the Deployment, the Service, and the helm release are gone.** The `bootstrap-broker`
+   namespace retained only a stale `bootstrap-secret-worker` Pod.
+
+### The shape of the defect
+
+**A timeout waiting for readiness is not evidence that the release is bad.** It is evidence that the
+workload has not become ready *yet*, or that something the workload depends on is not up. Treating it
+as a failed release and uninstalling **destroys the workload that was closest to working**, and on a
+control-plane component that other steps depend on it converts a wait into an outage.
+
+**The specific circularity is worth naming because it is not incidental.** The broker cannot report
+ready until its dependencies are up, and `StepBootstrapBrokerChartReady` (step 33) precedes
+`StepFederatedVaultLifecycle` (step 34). So on any cluster where the Vault bootstrap has not completed,
+the broker chart step is *structurally* waiting for a condition that only a later step can produce —
+and now uninstalls the broker when that wait expires. This is the shape
+[bootstrap_readiness_doctrine.md § 0.9](../documents/engineering/bootstrap_readiness_doctrine.md)
+describes as the three-valued gate: *not-yet-ready* is a distinct non-terminal state, and collapsing
+it onto *failed* is exactly what this path does.
+
+### Deliverables
+
+- **A classification that distinguishes "did not become ready in time" from "the release is broken"**,
+  with only the latter reaching a destructive cleanup.
+- **The circular wait resolved or declared.** Either the broker chart step stops requiring readiness
+  that a later step produces, or the ordering changes so the requirement is satisfiable.
+- **A unit case** pinning that a readiness timeout does not select the uninstall arm.
+
+### Validation
+
+1. Warning-clean all-target build and `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main
+   Hspec **3482** plus 27, 33, and 27; `prodbox test integration cli` / `env` **57/57** each. ✅
+2. Live: a `cluster reconcile` against a cluster whose Vault is not yet initialized leaves the broker
+   Deployment **installed**.
+
+The first full CLI run found a distinct Sprint-`3.38` steady-state consequence before Phase `4`
+started: the second chart reconcile correctly invoked Helm again, but treated an already-live
+three-replica Patroni cluster as retained-only recovery and waited for its three retained PVCs to
+shrink to one. The primary-Pod→PVC projection also dropped the Pod ordinal. `PatroniBootstrapAnchor`
+now distinguishes live, retained-only, and absent observations; live and absent paths reconcile at
+full size, only retained-only recovery stages 1→3, and the claim projection preserves the validated
+Pod name before appending `-pgdata`. The fake boundary now emits the live-primary marker its own
+endpoint branch already required. The exact previously failing built-CLI case passes (1/1, 12.47s).
+
+### Remaining Work
+
+None on the code-owned surface. The current-revision aggregate destructive-cleanup qualification
+remains pending under Standard P.
+
+**Why this is a separate sprint rather than a correction to `3.38`.** The presence filter and the
+destructive-timeout path are independent defects with independent remedies; `3.38`'s is landed and
+proven on its own terms. Folding them together would make a proven change look unproven and leave the
+destructive path attributed to a sprint that did not introduce it — it only made it reachable.
+
+## Sprint 3.40: The Helm Wait Was Removed And Reintroduced By The Graph ✅
+
+**Status**: ✅ **Done (2026-08-15)** — Phase `3` reclosed on the Bootstrap Broker chart admission.
+**Implementation**: `src/Prodbox/Config/ComponentGraph.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`test/unit/Main.hs`, and `test/integration/CliSuite.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending for the aggregate; the changed arm is live-proven.
+**Independent Validation**: the graph probe kind and Kubernetes observation classifier are pure or
+fake-boundary test surfaces; the changed arm is then rerun live.
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+[README.md](README.md) and [00-overview.md](00-overview.md) for the Phase `3` reclose.
+
+### Objective
+
+Sprint `3.39` correctly removed Helm's pre-Vault readiness wait, but the component executor
+immediately called `ProbeRolloutComplete` for the same Deployment. Kubernetes `Available=False` is
+caused by the Broker readiness probe returning `503` while Vault is sealed, so the graph recreated
+the identical circular wait one layer later and refused before `StepFederatedVaultLifecycle`.
+
+The live run proved the distinction: Helm applied the release and returned, then the graph failed
+with `Component chart_bootstrap_broker did not satisfy ProbeRolloutComplete ... DeploymentAvailable
+... False`. The Broker needs a positive created/running observation before the Vault transition; it
+cannot be required to satisfy its post-Vault readiness contract before that transition.
+
+### Deliverables
+
+- Give the pre-Vault Broker component an explicit observed-revision admission distinct from rollout
+  readiness: the Deployment controller must have observed the requested generation and created all
+  updated replicas. The following Broker-mediated Vault operation remains the authority for service
+  reachability, so this admission does not falsely call the Broker ready.
+- Keep every post-Vault chart on `ProbeRolloutComplete`.
+- Pin the graph probe and its positive/negative observation cases, then rerun the live aggregate.
+
+### Validation
+
+- Warning-clean all-target build passes.
+- Focused unit cases pass for the pre-Vault graph cut and for positive, stale-generation, and
+  uncreated Deployment observations.
+- Live `prodbox cluster reconcile` crossed `chart_bootstrap_broker` admission and invoked the
+  following Vault initialization operation. The later refusal is the already documented retained
+  `Root initialization journal is not pristine` state and is outside this sprint's owned arm.
+
+### Remaining Work
+
+None on the code-owned surface. Current-revision aggregate qualification remains pending under
+Standard P.
+
 
 ## Documentation Requirements
 

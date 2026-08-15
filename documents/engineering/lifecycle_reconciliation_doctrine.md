@@ -1152,6 +1152,25 @@ unreachable while a cluster still exists". Because the short-circuit takes no
 destructive action, `.data/` (and any per-run Pulumi state it still holds) is left
 untouched.
 
+**The residual this leaves, stated (registered 2026-08-14).** The short-circuit resolves the
+*degenerate* case — no install at all — and deliberately does not resolve the case beside it: an
+RKE2 install that is present but **not serving**. That host still flows through the full cascade,
+and on it there is today **no supported path to a per-run residue observation at all**, because the
+only route runs through the in-cluster Lifecycle Authority, which requires the very control plane
+that is down. Every phase still runs and the aggregate correctly withholds success (§ 3.1 invariant
+3), so nothing here is unsound — but the operator cannot reach a clean exit by any means, and that
+is a gap rather than a policy. Sprints `4.81`/`4.82` own it; the shape of the fix is § 5b's
+layer rule below, not a fallback transport. **`.data/` preservation has a second consequence on this
+path**: it also preserves the Bootstrap Broker's `bootstrap-session-fence`, so an abandoned bring-up
+followed by a teardown left a host that refused the next `prodbox vault init`. **Closed by Sprint
+`2.47` (2026-08-14)**: a predecessor whose durable deadline has positively elapsed on a trusted clock
+is now retired through an exact CAS and the successor re-acquires, provided its Lease is also absent
+or expired and its worker Pod is proven gone for that fence generation. Any of the three facts being
+unreadable still refuses, so preservation no longer implies a wedged host and the teardown's
+`.data/` policy needs no narrowing. The contract is
+[bootstrap_readiness_doctrine.md § 3.3.1](./bootstrap_readiness_doctrine.md); the history is in
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+
 ### 5a.1. Inotify Host-Prep (first host-prep step)
 
 Immediately after the §5a no-install short-circuit confirms an RKE2 install is
@@ -1264,6 +1283,27 @@ volume is not a subnet dependency, so it never blocks teardown.
 | 3 | Per-run Pulumi destroys | After phase 2 has been attempted, submit or resume the durable fenced destroy operation for each present stack through retained Lifecycle Authority. The provider worker hydrates the immutable checkpoint into bounded scratch even when the drain failed, so last-resort provider cleanup can still make progress. | Missing credentials, unreadable authority state, `DependencyViolation`, response loss, or provider ambiguity remains a typed nonterminal/failure. The DAG continues independent nodes and recovery uses the same operation ID. |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
 | 5 | Postflight cluster-tag sweep | On the sweep-owning `cluster delete --cascade` and `nuke` surfaces, run `discoverClusterTaggedAwsResources`; the cascade carves out intentionally retained long-lived classes, while `nuke` does not. | A non-empty escapee list or unobservable required inventory is an aggregated failure for that command. It never becomes warning-only success and never replaces exact family/record absence. |
+
+**An observation names the layer it answered for (registered 2026-08-14).** The phases above consult
+two *different* external authorities, and the distinction is load-bearing rather than pedantic:
+
+| Question | Authoritative source | Consumed by |
+|---|---|---|
+| *What retained checkpoints does this cluster hold?* | The Lifecycle Authority's encrypted checkpoint store | Phase 1, and phase 3's decision to submit a Pulumi destroy |
+| *What AWS resources exist?* | AWS itself (Tagging API, EC2, IAM) | Phase 5's sweep, and the operator's actual question |
+
+Per [chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md), an answer must be enforced at
+the layer its source is authoritative for, and a derivation must **name the layer whenever it names
+the source**. A checkpoint-layer absence does not establish resource-layer absence, and neither
+substitutes for the other: a destroyed stack can leave escaped resources, and an unreadable
+checkpoint says nothing about what AWS holds. **Today phase 1's checkpoint-layer answer is consumed
+as a resource-layer fact**, which is the defect Sprints `4.81`/`4.82` own; the measurement lives in
+[the plan](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md) rather than here, per § 22's
+"state it there, cite it here". Two consequences bind any fix: the two facts stay **separate values**
+(§ 24 — say which layer a value is for, do not reduce the count of values), and the layer is carried
+as a **field on a flat ADT**, never as a type index on an observed value (§ 21, which names *residue*
+explicitly). A narration that reports absence without naming the confirming authority is the same
+defect one layer up from the one § 3.1 already forbids.
 
 **Substrate-aware drain.** The drain phase (#2) MUST use the substrate's own
 kubeconfig — `KUBECONFIG=/etc/rancher/rke2/rke2.yaml` for `SubstrateHomeLocal`,

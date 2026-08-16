@@ -10,17 +10,24 @@
 
 ## Phase Status
 
+⏸️ **Reopened and Blocked 2026-08-15 on Sprint `6.5` (Standards A/L/P), blocked by Sprints `4.86`
+and `5.36`.** Phase 6 owns the generic/home single-writer cutover, installed-binary clean-room handoff, rollback
+rule, and legacy-absence proof for the replacement teardown. The prior clean-room proof exercised
+the superseded cascade and cannot qualify this production-composition change. Deployment
+qualification remains pending.
+
 ✅ **Reclosed 2026-08-02 on Sprint `6.4`.** The clean-room handoff covers authority-epoch
 migration, restart-resume behavior, rollback refusal after cutover, complete home restoration, and
 zero surviving legacy gateway authority routes. The June 26 run remains historical proof of its
 then-current topology; current-revision live qualification remains pending under Standards O/P.
 
-✅ **Live-proven 2026-06-26 (home substrate) — the destructive rerun contract holds under the green
-`test all`.** The green home `prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md)
-Alignment Status) exercises the destructive `lifecycle` validation (`cluster delete` →
-`cluster reconcile` → `cluster health`) and the suite's per-run AWS-stack provision+teardown to clean
-exit with no leaked AWS spend, home-substrate-proving Phase 6's destructive-rerun + zero-Python handoff
-contract. The `--substrate aws` rerun coverage remains the orthogonal, non-blocking axis
+🧾 **Historical live evidence from 2026-06-26 (home substrate).** The then-current home
+`prodbox test all` reported 18/18 (see [00-overview.md](00-overview.md) Alignment Status), exercised
+`cluster delete` → `cluster reconcile` → `cluster health`, and reported successful provider destroy
+and residue-check results for the per-run AWS stacks. That is command/provider/residue-check evidence
+for the superseded topology, not independent exact absence evidence for every registered stack and
+resource family; it therefore does not prove “no leaked AWS spend” or qualify the replacement
+teardown. The `--substrate aws` rerun coverage remains the orthogonal, non-blocking axis
 ([substrates.md](substrates.md)).
 
 ✅ **Historical narrower surfaces remain done** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
@@ -44,20 +51,16 @@ a non-blocking `Live-proof: pending` note per Standard O rather than a gate on p
 
 ## Phase Summary
 
-This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
-repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
-the forward build-order composition of those surfaces over the earlier lifecycle, gateway, chart,
-and AWS phase deliverables. Build order is not a validation gate (Standard N): Phase 6's owned
-surfaces are validatable on the home/local substrate independently of any other phase's completion
-state. Sprint `6.4` is nevertheless new Phase-6-owned work and legitimately reopens this phase.
-The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
-Sprint `6.1`, Sprint `6.2`, and Sprint `6.3` remain closed on their repository-owned rerun
-orchestration, zero-Python baseline, and single-host handoff surfaces. The cleanup ledger remains
-clear on Python-removal and single-host handoff residue, and the non-Python doctrine-adoption rows
-owned by reopened Phases `1`–`4` are now closed. The historical Python-removal surface retains no
-open work; authority migration and current clean-room proof remain open under Sprint `6.4`. The Phase `6` doc-harmony
-follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only repository.
+Its current work is Sprint `6.5`: activate the Sprint-`4.86` replacement as the sole public
+generic/home teardown writer, prove the indexed rollback/cutover boundary, and remove the legacy
+generic/home route. It is blocked only by earlier-phase Sprints `4.86` and `5.36`.
+
+Sprints `6.1`–`6.4` remain closed on their historical repository-owned rerun, zero-Python,
+single-host, and authority-migration surfaces. Their older clean-room evidence exercised the
+superseded cascade and is not current deployment qualification. Phase 7 Sprint `7.36` separately
+owns the exact AWS adapter and removal of checkpoint-derived EKS access; Phase 6 neither depends on
+that later work nor claims AWS adapter parity.
 
 ## Current Baseline In Worktree
 
@@ -379,12 +382,138 @@ transport before handoff.
   emits the governed dry-run plan.
 - The real home clean-room run remains deployment qualification; Sprint `7.33` owns AWS parity.
 
+## Sprint 6.5: Typed Teardown Single-Writer Cutover and Clean-Room Handoff [⏸️ Blocked]
+
+**Status**: Blocked by Sprints `4.86` and `5.36` (opened 2026-08-15).
+**Blocked by**: Sprint `4.86` for the complete replacement program and Sprint `5.36` for the
+lifecycle-kernel `TestRunner` client. Both are earlier-phase blockers permitted by Standard N.
+**Deployment qualification**: pending — clean-room/destructive evidence from the superseded
+cascade is invalid for the replacement composition.
+**Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
+Rollback”](../documents/engineering/lifecycle_control_plane_architecture.md#12-cutover-and-rollback),
+[Lifecycle Reconciliation Doctrine § 5b, “Canonical recover-to-clean
+cascade”](../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade),
+[Pure FP Standards § 7, “GADT-Indexed State
+Machines”](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines), and
+[Integration Fixture Doctrine § 7, “Clean-Room Migration
+Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-room-migration-fixtures).
+**Implementation**: `src/Prodbox/Test/CleanRoomHandoff.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Test/Qualification/SourceIdentity.hs`,
+`src/Prodbox/Test/Qualification/Evidence.hs`, and the registered retired-symbol scanner.
+**Live-proof**: pending and non-blocking for code-local closure. Two consecutive destructive home
+cycles run the qualification-only replacement candidate under its exact identity before any public
+activation. Standard P forbids activation and legacy deletion until the current-revision home row is
+`proven`; the post-activation identity must then be qualified before the ledger row can complete.
+**Independent Validation**: pure prefix/resume and rollback folds, installed-binary fake traces,
+repository/rendered-resource scans, unit/integration suites, and `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, root `README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/substrates.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Build and locally validate the qualification-gated cutover from the handwritten generic/home
+cascade to the typed recover-to-clean graph, with one writer, one durable cleanup namespace, and
+type-indexed rollback legality. Before qualification, the legacy route remains the sole public
+writer and the replacement is callable only by the qualification-only runner. After Standard-P
+evidence authorizes activation, consume that evidence to make the replacement the sole public writer
+and remove the legacy generic/home path. The AWS adapter slot refuses as unavailable until Sprint
+`7.36`; this sprint makes no AWS parity claim.
+
+### Deliverables
+
+- Bind the clean-room handoff artifact to stable counterexample `TEARDOWN-2026-08-15` and record for
+  both superseded and replacement identities: complete `SourceIdentity` (Git HEAD, clean/dirty,
+  source-manifest policy ID/version/digest and manifest digest), secret-safe generated-config,
+  component-image, topology/wiring, resource-envelope, authored-load, interpreter, persistence, and
+  cleanup-schema digests. Also record substrate, exact commands, timestamps, evidence digest,
+  complete fault and cleanup results, the constant causal profile and exact old→new envelope
+  mapping, and the separate production profile required by Standard P.
+- Permit a pre-activation shadow reader to compare old discovery against exact replacement
+  observations. Never permit two cleanup writers or two operation-ID allocators.
+- Define a private `CutoverState (phase :: CutoverPhase)` GADT. Only
+  `CutoverState 'PreActivation` contains `LegacyWriterPermit` and is accepted by
+  `rollbackLegacy`; `activateReplacement` additionally requires opaque current-revision
+  `QualificationPassed` evidence for the exact replacement identity, consumes that state/permit,
+  and returns `CutoverState 'PostActivation` containing the sole `ReplacementWriterPermit`. There
+  is no post-activation legacy-rollback constructor or function, so activation without qualification,
+  dual writers, and runtime-only rollback refusal are unrepresentable.
+- Render one staged cutover plan: qualification-only candidate execution; qualification receipt
+  observation; single-writer activation; legacy route/identity deletion; and post-activation
+  requalification. The activation and deletion stages cannot enter Apply without the matching
+  `QualificationPassed` witness. Deletion changes the identity and therefore returns qualification
+  to pending until the post-activation campaign passes.
+- Extend the exact-prefix interruption model through recovery-profile start, observation,
+  drain/backstop, provider cleanup, absence read-back, escape audit, report receipt, and final local
+  uninstall/read-back completion receipt. Incomplete results carry `RecoveryPlaneDisposition` as
+  `Established`, `NotEstablished`, or `Lost` and claim a preserved live plane only for
+  `Established`.
+- Extend installed-binary and repository/chart scans for every legacy symbol, callback, Gateway-owned
+  caller identity, no-RKE2 cascade shortcut, and uninstall-on-incomplete generic/home route
+  registered in the deletion ledger. Before activation the scanner requires the exact bounded
+  legacy set and rejects any new site; after qualified deletion it requires zero. Do not scan for or
+  remove the checkpoint-derived EKS kubeconfig/adapters here; that explicit AWS residual remains
+  registered to Sprint `7.36`.
+- Through the qualification-only runner, run two consecutive home destructive cycles without
+  changing the public writer: stopped/absent API recovery, exact convergence,
+  pre-uninstall report backup/read-back, one-shot permit, uninstall-last, exact host absence,
+  local-completion receipt, rebuild, and repeated cascade. Record the exact intended-retained set
+  and zero unexpected residue under one run/revision/account/region/substrate/report-digest scope.
+  After qualified activation and legacy deletion, rerun the required Standard-P campaign for the
+  resulting source/deployment identity before claiming the ledger row complete.
+
+### Validation
+
+1. Every interruption prefix resumes the exact next replacement action with the same stable IDs;
+   reordered, skipped, or duplicated transitions refuse.
+2. Shadow observation may coexist before activation; mutation ownership is singular at every state.
+3. Compile/type tests can construct pre-activation rollback and qualified activation, but cannot
+   construct activation without `QualificationPassed`, post-activation legacy rollback, a
+   dual-writer state, or a replacement writer without consuming the legacy permit.
+4. Before qualification, the installed public command exposes only the legacy generic/home writer
+   while the qualification-only command reaches the exact replacement plan without a public writer
+   permit. After activation, the installed public command exposes only the replacement plan. The
+   AWS adapter slot deterministically fails closed without pretending later Sprint `7.36` work is complete.
+5. The frozen counterexample fails its superseded expectations and the replacement satisfies the
+   exact-keyed reference oracle while preserving its expected `CascadeIncomplete`
+   caller-observation failure; test pass is not narrated as cascade success.
+6. No uninstall plan is constructible without private `ReadyToUninstallEvidence` from exact clean
+   observations, the exact intended-retained audit set, backed-up pre-uninstall report, and one-shot
+   permit. `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` and the
+   matching read-back `LocalCompletionReceipt`, all under the same scope/digest.
+7. Local fake qualification receipts and mutation tests prove the staged plan cannot reorder
+   qualification, activation, deletion, and post-activation requalification. The pre-activation
+   scanner accepts only the exact registered legacy set; its post-activation mode accepts none.
+8. Two consecutive home clean-room candidate cycles produce the complete artifacts, uninstall last,
+   and leave only intended retained resources. These live results remain non-blocking Standard-P
+   evidence and do not themselves make code-local closure contingent on infrastructure.
+
+### Remaining Work
+
+Blocked until the replacement cascade and lifecycle cleanup client exist. Once they land, code-local
+closure requires the qualification-only runner, type-indexed activation machinery, scoped
+proof-carrying local completion, staged artifact/schema support, mutation-sensitive ordering tests,
+and the bounded pre/post-activation scanner; it does not require live infrastructure. Public
+activation and legacy generic/home deletion remain prohibited while the home qualification row is
+pending. After that row is proven, Sprint `6.5` consumes its exact witness, activates one replacement
+writer, deletes the legacy route, and requalifies the changed identity before moving ledger rows to
+Completed. AWS adapter implementation/removal remains Sprint `7.36`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/lifecycle_control_plane_architecture.md` - clean-room migration and
   rollback contract.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - generic/home activation and the
+  pre-uninstall versus post-uninstall completion evidence boundary.
+- `documents/engineering/pure_fp_standards.md` - indexed cutover-state example and illegal-state
+  compile checks.
 - `documents/engineering/integration_fixture_doctrine.md` - retained-state migration fixtures.
 - `documents/engineering/unit_testing_policy.md` - installed-binary interruption matrix.
 

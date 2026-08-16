@@ -922,9 +922,10 @@ endpoint contract.
 This is the target workload contract, not evidence that the physical chart has cut over.
 Sprint `2.32` supplies the typed claim-side persistence inputs in
 `Prodbox.Gateway.Emitter.Persistence`: stable StatefulSet identity, the node-pinned retained home
-claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Sprint `3.26` owns
-their consumption into workload templates, PVs, EBS `volumeHandle`s, and `Retain` rendering.
-Production-default and deployment-qualification status remain owned only by the Development Plan.
+claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Completed Sprint
+`3.26` supplied their chart/render consumption, while the production default remains the
+pre-cutover emitter. Activation and deployment-qualification status remain owned only by the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 Gateway Runtime has no pre-Vault mode in the target topology. Bootstrap Broker is a distinct
 Deployment, Service, ServiceAccount, Vault/MinIO policy, queue, resource envelope, and readiness
@@ -935,9 +936,10 @@ not restoration of the removed authority route.
 
 The separate binary role is `prodbox bootstrap-broker start` with
 `--config /etc/bootstrap-broker/config/config.dhall`. Its code-local production boundary remains fail closed
-apart from liveness until Sprint `3.26` supplies TokenReview, Lease, Kubernetes workload, MinIO,
-Vault, and OpenPGP adapters and renders that Deployment. This section therefore specifies the
-failure-domain split without asserting that the replacement workload is deployed or qualified.
+apart from liveness. Completed Sprint `3.26` supplied the separate chart/render foundation, but the
+physical TokenReview, Lease, MinIO, Vault, and OpenPGP interpreter path is not the active production
+selection. This section therefore specifies the failure-domain split without asserting that the
+replacement workload is activated or qualified.
 
 `prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
@@ -1167,11 +1169,11 @@ Daemons share the same architectural spine as one-shot commands:
 - Typed `Command` ADT — the daemon is launched by a `Command` constructor
   like any other (e.g. `ServiceCommand`, `DaemonStartCommand`).
 - `CommandSpec` registry — daemon-launching commands appear in
-  `tool --help` and generated docs like any other.
+  `prodbox --help` and generated docs like any other.
 - Generated-artifacts discipline — daemon config schemas, route inventories,
   and generated CLI sections still go through the marker/registry pattern.
 - Lint/format stack — applies to daemon code identically.
-- `tool test all` runs daemon lifecycle tests alongside everything else.
+- `prodbox test all` runs daemon lifecycle tests alongside everything else.
 
 ### Same-binary policy
 

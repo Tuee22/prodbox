@@ -139,7 +139,7 @@ provenance-bound measurement supplies the empirical coefficient; exact `Natural`
 then derives CPU from admitted demand, service cost, workers, and headroom. Measurement is an input
 certification boundary, not a second envelope-authoring surface. Memory and storage remain structural
 projections. Implementation status belongs to
-[Sprint 1.71](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md#sprint-171-derived-workload-resource-contracts-active).
+[Sprint 1.71](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md#sprint-171-derived-workload-resource-contracts--done).
 
 ```haskell
 -- Raw decode surface in src/Prodbox/Capacity/Config.hs (stays FromDhall/ToDhall).
@@ -253,7 +253,7 @@ deliberate about which ring actually makes over-commitment unrepresentable:
 
 | Ring | Mechanism | Truly unrepresentable? |
 |------|-----------|------------------------|
-| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously). The config generator (`renderProjectConfigDhall`, Sprint `1.72`) **implements** the `assertPlanValid` shim by *lean-emit*: it emits the precomputed concurrent draws as data and inlines the `lessOrEq`/`vectorFitsWithin`/`vectorPlus` operators so the file recomputes `allocatable` from its **own** host/reservation numbers and carries `let _ = assert : planFits === True in cfg`. An over-committed emitted file — reservation exceeding host, or Σ draws exceeding allocatable — then fails Dhall type-check and no longer loads through `decodeProjectConfigDhall`; the lemmas and assert normalize away for `Dhall.auto` extraction, so a valid file round-trips unchanged (`test/unit/Tier0PlanAssert.hs`). | **No.** Dhall has no refinement/dependent types and cannot re-derive the draws (no `Natural` division, no `Text` equality) or observe the host, so it *trusts* the emitted draws and only fails a *specific evaluated file*. **Correction (2026-08-07)**: this cell previously added "`prodbox.dhall` is binary-generated (no human Dhall authoring surface)", which is false and contradicted its own next sentence — the value claimed for the shim is catching a *hand-edit*. `prodbox.dhall` is normally binary-generated but **is** a hand-editable surface: `config generate` tells the operator to edit it directly (`src/Prodbox/Native.hs`), `CLAUDE.md` lists editing it against the generated schema as the *automation* path, and the `ses.*` / `pulumi_state_backend.*` / `aws_substrate.*` sections have no generator path at all. Nothing detects drift from what the generator would emit, and a hand edit survives a `config setup` re-run. Value (now realized, and correctly scoped): a baked-in cross-check that catches a host-shrinking hand-edit and a regressed generator's over-committed file, one ring ahead of the Ring-2 gate — over the resource-plan arithmetic **only**, and trusting its own emitted draws. Every other hand-edited field is unguarded until Ring 2 — and unguarded again *after* Ring 2, at every boundary where a typed value is written back out as text ([chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md)). |
+| **1 — Static Dhall (defense-in-depth)** | generated `dhall/capacity/Schema.dhall` exports the constructors, sums, and `assert`-carried `lessThanEqual` lemmas (phrased as `lessOrEq (Σ draws) allocatable`, **never** a saturating `Natural/subtract` that would pass vacuously). The config generator (`renderProjectConfigDhall`, Sprint `1.72`) **implements** the `assertPlanValid` shim by *lean-emit*: it emits the precomputed concurrent draws as data and inlines the `lessOrEq`/`vectorFitsWithin`/`vectorPlus` operators so the file recomputes `allocatable` from its **own** host/reservation numbers and carries `let _ = assert : planFits === True in cfg`. An over-committed emitted file — reservation exceeding host, or Σ draws exceeding allocatable — then fails Dhall type-check and no longer loads through `decodeProjectConfigDhall`; the lemmas and assert normalize away for `Dhall.auto` extraction, so a valid file round-trips unchanged (`test/unit/Tier0PlanAssert.hs`). | **No.** Dhall has no refinement/dependent types and cannot re-derive the draws (no `Natural` division, no `Text` equality) or observe the host, so it *trusts* the emitted draws and only fails a *specific evaluated file*. **Correction (2026-08-07)**: this cell previously added "`prodbox.dhall` is binary-generated (no human Dhall authoring surface)", which is false and contradicted its own next sentence — the value claimed for the shim is catching a *hand-edit*. `prodbox.dhall` is normally binary-generated but **is** a hand-editable surface: `config generate` tells the operator to edit it directly (`src/Prodbox/Native.hs`), and the [authoritative command-selection table](../../AGENTS.md#command-selection-automation-vs-operator-interactive) names direct schema-checked editing as the automation path; the `ses.*` / `pulumi_state_backend.*` / `aws_substrate.*` sections have no generator path at all. Nothing detects drift from what the generator would emit, and a hand edit survives a `config setup` re-run. Value (now realized, and correctly scoped): a baked-in cross-check that catches a host-shrinking hand-edit and a regressed generator's over-committed file, one ring ahead of the Ring-2 gate — over the resource-plan arithmetic **only**, and trusting its own emitted draws. Every other hand-edited field is unguarded until Ring 2 — and unguarded again *after* Ring 2, at every boundary where a typed value is written back out as text ([chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md#23-conversions--where-the-moves-stop)). |
 | **2 — Pure Haskell decode gate (the guarantee)** | `compileResourcePlan` builds the opaque `AllocatedResourcePlan` (hidden constructor) only when host reservations, workload draws, and durable claims all fit under a non-saturating budget — a sibling of `ServiceCapacityPlan` (§2E) and `RuntimeMemoryPlan` (§2D). The proof is a **required field of `ValidatedSettings`** (typed `SomeAllocatedPlan`), built in `validateConfig` over the **decoded in-force** plan. Read at its actual strength: `validateConfig` calls `compileResourcePlanUncertified`, so the existential tag on this path is always `UncertifiedUntilFirstProfile` — the *arithmetic fit* is proven, not measured-profile certification — and `ValidatedSettings` exports its constructor, so the gate is a function rather than a type. Precisions and the bypassing construction site are recorded once, in [config_doctrine.md](./config_doctrine.md). | **Yes — within its compiled region** (see "The region of Ring 2" below). No proof ⇒ no `ValidatedSettings` ⇒ no renderer input, so an over-committed *decoded* config has no representation any command in that region can consume. This — not Dhall — is where "unrepresentable" is delivered. A `dev check` gate additionally fails the build if `defaultResourcePlan` over-commits. |
 | **3 — Runtime cgroup/Kubernetes (observed host)** | `prodbox cluster reconcile` re-compiles the plan against an `ObservedHostRoot` (`compileResourcePlanAgainstObserved`), closing invariant (b) `cluster <= host` against the **observed** machine across all four axes — durable vs ephemeral observed on distinct devices, with a single shared-device joint budget when they coincide — then writes RKE2/kubelet guardrails, reconciles the derived namespace `ResourceQuota`/`LimitRange`, renders container limits, and verifies no prodbox pod is `BestEffort`. | **No — inherently runtime.** The host is discovered by IO; the strongest achievable is folding the observation into the same opaque proof so no guardrail writes without the observed proof (superseding the late `hostCapacityCoversPlan` boolean). |
 
@@ -294,7 +294,7 @@ Two rules follow, and they are cheap:
    region is a claim about a different set of files than the reader will assume.
 2. **A gate's region must cover the surface that carries its evidence.** A build that omits `test/`
    cannot support a claim whose proof lives in `test/`. See
-   [chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md) for the same point stated as
+   [chaos_hardening_doctrine.md § 22](./chaos_hardening_doctrine.md#22-what-a-ring-2-gate-does-and-does-not-prove) for the same point stated as
    the fourth honest consequence of a ring-2 gate, and
    [code_quality.md](./code_quality.md) for the per-command scope of the lint stack.
 
@@ -601,13 +601,12 @@ A `SpotPriceThreshold` is a per-workload USD/hour ceiling that is **meaningful o
 `SubstrateAws`** — the home-local substrate has no node market, so `spotGateForScalingPolicy` makes
 that substrate a structural no-op. On the cloud substrate a spot-elastic workload deploys or moves
 onto spot capacity **only when the observed price is below its threshold**. Price observation is
-three-valued and fail-closed, exactly mirroring
-[`src/Prodbox/Lifecycle/ResidueStatus.hs`](../../src/Prodbox/Lifecycle/ResidueStatus.hs)'s
-`ResidueAbsent | ResiduePresent | ResidueUnreachable` discipline: "I could not read the price" is
-**never** silently "the price is fine, deploy anyway."
+an exhaustive two-arm external observation and is fail-closed under the
+[Lifecycle Reconciliation Soundness invariant](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary):
+"I could not read the price" is never silently "the price is fine, deploy anyway."
 
 ```haskell
--- Example: spot observation is three-valued like ResidueStatus; Unobservable REFUSES.
+-- Example: spot observation keeps unobservability explicit
 data SpotObservation
   = SpotObserved     !UsdPerHour        -- authoritative current spot price
   | SpotUnobservable !UnobservableReason  -- pricing API unreachable / undecodable
@@ -623,7 +622,7 @@ admitSpotDeploy (SpotPriceThreshold priceCeiling) obs = case obs of
 ```
 
 `SpotRefuse` is the `Unreachable → refuse` soundness rule of
-[lifecycle_reconciliation_doctrine § 3.1 invariant 2](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
+[lifecycle_reconciliation_doctrine § 3.1 Soundness invariant](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
 applied to placement economics. `src/Prodbox/Scaling/Spot.hs` owns the pure gate and
 `src/Prodbox/Aws.hs` owns the live credential-region `ec2 describe-spot-price-history` observer.
 
@@ -675,11 +674,11 @@ strictly on the workload and worker-node sets beneath it.
 ## 7. Scaling Is a Reconciled Managed Resource
 
 Scaling is **not** a bespoke controller loop; it adopts the
-[lifecycle_reconciliation_doctrine § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
+[lifecycle_reconciliation_doctrine § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
 managed-resource-registry discipline wholesale. A desired scaled shape is a typed resource with a
-three-valued `discover` and a `reconcileAbsent`-style converge step:
+flat exhaustive observation and a closed observe/decide/enact/read-back program:
 
-- **`discover → diff → enact → re-observe`, idempotent.** The autoscaler computes the desired
+- **`observe → diff → enact → re-observe`, idempotent.** The autoscaler computes the desired
   node/workload set (pure, from `Budget` + `ScalingPolicy` + observed load), diffs the live set,
   enacts the delta, re-observes; crash recovery is "run the reconciler again."
 - **`Unreachable → refuse` is total.** Every observation — spot price (§4), region quota (§5), a
@@ -734,9 +733,10 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
   gateway-leader-preserving action planner),
   `src/Prodbox/Aws.hs` (`QuotaSpec` / `ensureServiceQuota` / `applyAwsCheckQuotas` region-quota
   preflight), `src/Prodbox/AwsEnvironment.hs` (credential-region projection),
-  `src/Prodbox/Lifecycle/ResidueStatus.hs` (the three-valued observation pattern the spot/quota gates
-  mirror), `src/Prodbox/Lifecycle/ResourceRegistry.hs` (the `reconcileAbsent` substrate scaling
-  reuses), the capacity and admission modules owned by
+  `src/Prodbox/Lifecycle/ResidueStatus.hs` (the pre-cutover three-valued observation adapter the
+  spot/quota gates mirror), `src/Prodbox/Lifecycle/ResourceRegistry.hs` (the callback-era registry
+  adapter whose retirement is tracked in the
+  [legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)), the capacity and admission modules owned by
   [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md),
   `src/Prodbox/Gateway/Bounds.hs` (the gateway-specific bounded memory projection), and `src/Prodbox/Gateway/Types.hs`
   (`Disposition` — leadership the scaler must not perturb).
@@ -744,7 +744,7 @@ This SSoT co-owns prodbox resource-scaling, resource-governance, and capacity-pl
 ## Cross-References
 
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md) — managed-resource
-  registry, `reconcileAbsent`, `Unreachable → refuse`
+  registry, exact keyed observations, closed desired-absence programs, and unobservable refusal
 - [Cluster Federation Doctrine](./cluster_federation_doctrine.md) — trust tree (rule t), fail-closed
   unseal cascade
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — `node_count` = mesh

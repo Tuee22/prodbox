@@ -11,6 +11,15 @@
 
 ## Phase Status
 
+⏸️ **Reopened and Blocked 2026-08-15 on Sprint `7.36` (Standards A/L/P), blocked by Sprint
+`4.85`.** The AWS substrate needs independent exact observers for each per-run stack,
+receipt-backed ownership manifests, exact controller-family cleanup, and a provider-issued expiring
+EKS drain session. Known pre-manifest stacks with unusable checkpoints additionally need a bounded,
+admin-confirmed adoption plan before native cleanup. A global tag audit and Pulumi checkpoint cannot provide those facts. The phase
+owns these AWS adapters and their non-blocking live all-three-stack proof; deployment qualification remains
+pending. This proof is adapter-prerequisite evidence only; Sprint `8.12` remains the sole final
+composed deployment-qualification owner.
+
 ✅ **Reclosed 2026-08-03 on Sprint `7.35`** — own-surface reopen (Standard A/N) on this phase's own
 live-run narrative and the bootstrap credential its Sprints `7.19`/`7.25` introduced. Two real
 per-run cloud resource ids quoted in Sprint `7.5.c.v`'s record are redacted, and this phase's real
@@ -70,16 +79,18 @@ static-EBS, and VPC ownership surfaces remain `Done`/as-tracked on their owned v
 Live AWS/EKS parity remains a non-blocking Standard O proof axis tracked in
 [substrates.md](substrates.md).
 
-✅ **Live-proven 2026-06-26 (the AWS per-run resource cycles the home suite exercises) — partial; the
-`--substrate aws` aggregate stays open.** The green home `prodbox test all` (2026-06-26, 18/18; see
-[00-overview.md](00-overview.md) Alignment Status) provisions **and cleanly destroys** real AWS per-run
-resources through Phase 7's owned surface, live-proving these previously `🧪 Live-proof: pending` axes
-on real infrastructure: the `aws-eks` stack (a real EKS cluster + NAT/EBS, provisioned then destroyed,
+🧾 **Historical live evidence from 2026-06-26 (the AWS per-run resource cycles the home suite
+exercised); the `--substrate aws` aggregate stays open.** The then-current home `prodbox test all`
+(2026-06-26, 18/18; see [00-overview.md](00-overview.md) Alignment Status) provisioned real AWS
+per-run resources and reported successful provider destroy plus its contemporaneous residue checks:
+the `aws-eks` stack (a real EKS cluster + NAT/EBS, with the command reporting
 `destroyed and residue check passed`) and `aws-test` stack; the decrypt-to-scratch Pulumi interposition
 and first-touch checkpoint hooks (Sprint `7.14`); the read-only per-run-destroy observation gates
 (Sprints `7.21`/`7.22`); the `aws-ses` encrypted Model-B reconcile (Sprint `7.23`, exercised by the
 `keycloak-invite` SMTP path); the IAM mint→Vault / delete-from-AWS-and-Vault harness (`7.20`, via
-`aws-iam`); and Route 53 writes (`dns-aws`). This run also fixed the `plaintext`→`passphrase`
+`aws-iam`); and Route 53 writes (`dns-aws`). Those results are command/provider/residue-check evidence
+for the then-current topology; they did not independently observe every exact registered stack and
+resource family and therefore do not prove current exact absence. This run also fixed the `plaintext`→`passphrase`
 secrets-provider on the three per-run stacks (see [README.md](README.md) Closure Status). Note the run
 was a **home-substrate aggregate** that provisions these AWS *stacks* as suite content; the full
 **`--substrate aws` aggregate parity** (Sprint `7.5`) remains a distinct, non-blocking live-infra axis
@@ -324,16 +335,26 @@ This phase owns AWS substrate foundations:
    the substrate's provisioning side so those validations have something to run against. The
    sub-sprint split is described in the sprint blocks below.
 
+3. **Exact teardown adapters (Sprint `7.36`, ⏸️ Blocked by `4.85`)** — independently observe
+   and reconcile desired absence for `aws-eks`, `aws-eks-subzone`, `aws-test`, and their bounded
+   controller families; recover from receipt-backed ownership manifests; and issue an expiring
+   provider-bound EKS drain session. This is the current Phase-7-owned work. Its live campaign is
+   prerequisite adapter evidence, not the final cross-substrate qualification owned by Sprint
+   `8.12`.
+
 This phase also provides AWS-substrate foundations consumed cross-substrate (see
 [substrates.md → Cross-Substrate Shared Resources](substrates.md#cross-substrate-shared-resources)):
 the configured Route 53 hosted zone, and (in coordination with
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)) the SES sending identity, receive
 subdomain, capture bucket, and the IAM policy granting the runner SES send and S3 access.
 
-## Current Pre-Cutover Baseline In Worktree
+## Current AWS Foundation Baseline and Teardown Residual
 
-These bullets describe the active shared-credential/combined-daemon implementation retained only
-until Sprints `4.50` and `7.33` complete their respective cutovers.
+The foundation bullets below remain implemented. The current teardown residual is narrower: the
+cascade still couples EKS access to checkpoint-derived material, admits a global tag answer into
+per-stack decisions, and lacks complete write-ahead ownership manifests and exact family read-back.
+Sprint `7.36` owns those AWS-specific replacements; completed Sprints `4.50` and `7.33` are prior
+cutovers, not current blockers.
 
 - The public onboarding and standalone AWS administration surfaces are Haskell-owned in
   `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
@@ -1218,10 +1239,11 @@ post-teardown residue, and flip the substrate parity rows in
 
 ### Sprint Workflow
 
-Per
+**Historical Sprint-`7.5.c.v` workflow record.** Per
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback),
 an AWS-substrate canonical-suite run is locked to AWS-substrate config; nothing falls back
-to the home substrate. The harness owns every AWS resource the workflow touches (see
+to the home substrate. At that revision the plan described the harness as owning every AWS resource
+the workflow touched (the target now makes the harness a peer client of lifecycle-core cleanup; see
 [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes));
 the operator's role is to satisfy the two prerequisite contracts below, set the two config
 fields that select the AWS-substrate FQDN, and invoke the entrypoints listed afterward.
@@ -1231,7 +1253,7 @@ reconcile`, `prodbox aws stack <stack> reconcile`, and `prodbox aws stack <stack
 all fail fast when `prodbox.aws.*` operational credentials are empty, and `prodbox aws stack
 <stack> reconcile` additionally requires the home substrate's in-cluster MinIO running
 because that is the Pulumi state backend. The standalone Sprint `7.5.c.v` workflow is
-not driven by `prodbox test all`, so the Sprint `7.6` auto-managed setup + teardown
+not driven by `prodbox test all`, so Sprint `7.6`'s historical automatic setup + teardown
 contract does not apply; the operator owns Steps `0`, `0.5`, and the symmetric closing
 teardown step explicitly.
 
@@ -1276,16 +1298,17 @@ teardown step explicitly.
      `prodbox cluster reconcile` once before the first `prodbox aws stack` call in this
      workflow. The command is idempotent — a second invocation is a no-op when the
      home substrate is already up. See
-     [`../CLAUDE.md`](../CLAUDE.md) § Local Cluster Lifecycle Ownership,
+     [AGENTS.md, “Live Infrastructure Deployment Is Authorized”](../AGENTS.md#live-infrastructure-deployment-is-authorized),
      [`phase-4-lifecycle-canonical-paths.md`](phase-4-lifecycle-canonical-paths.md), and
      [`documents/engineering/aws_integration_environment_doctrine.md` § 4.5 Pulumi State Backend Prerequisite](../documents/engineering/aws_integration_environment_doctrine.md).
 1. Operator sets `prodbox.dhall::aws_substrate.subzone_name` to the chosen
    AWS-substrate public FQDN (e.g. `aws.test.resolvefintech.com`). This is a manual
    config edit, not a harness invocation.
 2. `prodbox aws stack eks reconcile` provisions the EKS cluster, IRSA, and subnet tags
-   (auto-managed per-run stack).
+   (historically harness-cleaned per-run stack; target cleanup is lifecycle-core-owned).
 3. `prodbox aws stack aws-subzone reconcile` provisions the per-substrate Route 53
-   subzone and NS delegation in the parent zone (auto-managed per-run stack). In
+   subzone and NS delegation in the parent zone (historically harness-cleaned per-run stack; target
+   cleanup is lifecycle-core-owned). In
    harness-driven runs, `TestRunner` reads the live `aws-eks-subzone` Pulumi output
    immediately after provisioning and passes the hosted-zone ID to downstream child
    commands via `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID`; operators may still pin
@@ -1380,8 +1403,9 @@ currently lays down the lower-layer ingress + TLS pieces on EKS:
 
 The substrate-platform install on EKS stands up the in-cluster registry (`registry:2`) + MinIO +
 Percona operator layer that
-the home substrate uses. Per the substrate-equivalence doctrine in [`../CLAUDE.md`](../CLAUDE.md),
-[`../AGENTS.md`](../AGENTS.md), and [`substrates.md`](substrates.md), the AWS substrate runs the
+the home substrate uses. Per the operational substrate-equivalence rule in
+[AGENTS.md](../AGENTS.md#substrate-equivalence) and the canonical
+[substrate inventory](substrates.md), the AWS substrate runs the
 same canonical chart set as the home substrate, so chart pods on EKS resolve
 `127.0.0.1:30080/prodbox/...` through the EKS-side registry and node-local registry routing. The
 May 19 implementation survey split this into the sub-sprints below; each closed its own validation
@@ -1404,14 +1428,14 @@ gate, and child Sprint `7.5.c.v` closed the parent live proof:
 |------------|--------|-------|
 | [`7.5.c.i`](#sprint-75ci-substrate-aware-minio-chart-values-) | ✅ Done | Substrate-aware MinIO chart values (`gp2` EBS on AWS, hostPath PVC on home) |
 | [`7.5.c.ii`](#sprint-75cii-eks-containerd-registry-mirror-config-injection-) | ✅ Done | EKS containerd registry-mirror config injection via privileged DaemonSet (no RKE2 `registries.yaml` equivalent on EKS) |
-| [`7.5.c.iii`](#sprint-75ciii-eks-side-harbor--minio--percona-installs-) | ✅ Done | EKS-side MinIO + Harbor install wired into `ensureAwsSubstratePlatformRuntime` + Sprint 7.5.c.ii DaemonSet applied. Percona operator deferred to 7.5.c.iv (needs the image-mirror loop). |
+| [`7.5.c.iii`](#sprint-75ciii-eks-side-harbor--minio-install-) | ✅ Done | EKS-side MinIO + Harbor install wired into `ensureAwsSubstratePlatformRuntime` + Sprint 7.5.c.ii DaemonSet applied. Percona operator deferred to 7.5.c.iv (needs the image-mirror loop). |
 | [`7.5.c.iv`](#sprint-75civ-in-cluster-image-mirror-job--percona-operator-) | ✅ Done | In-cluster image-mirror Job (crane-based) + Percona PostgreSQL operator install + steady-state MinIO reconcile wired into `ensureAwsSubstratePlatformRuntime` |
 | [`7.5.c.v.b`](#sprint-75cvb-in-cluster-custom-image-build-on-eks-) | ✅ Done | In-cluster custom-image push for the single `prodbox-runtime` union image (consolidated by Sprint `1.45`; formerly `prodbox-gateway` + `prodbox-public-edge-workload`) via crane pod (docker save + kubectl cp + crane push --insecure). Live validation deferred to Sprint 7.5.c.v re-run. |
 | [`7.5.c.v.c`](#sprint-75cvc-harness-preflight-residue-policy-bypassallresidueforharnessrefresh-) | ✅ Done | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` unblocks `runAwsIamHarnessSetup` preflight when the long-lived `aws-ses` stack is alive (the Sprint 7.7 `BypassPerRunResidueOnly` policy refused on `aws-ses`, blocking every harness-driven test run). |
 | [`7.5.c.v.d`](#sprint-75cvd-operational-iam-policy-compaction--s3-grants-) | ✅ Done | Operational `prodbox` IAM inline policy compacted to fit under AWS's 2048-byte inline-user-policy cap: explicit `ec2:*` / `eks:*` action lists collapsed to service wildcards; new `SesCaptureBucketRead` / `SesCaptureObjectRead` (S3 grants on the SES capture bucket); policy submission switched to compact `Data.Aeson.encode`. |
 | [`7.5.c.v.e`](#sprint-75cve-read-only-ses-grants-for-sprint-84-prerequisites-) | ✅ Done | New `SesReadOnly` statement (`ses:Describe*` / `Get*` / `List*`) so the harness IAM user can run the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereq checks. |
 | [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | ✅ Done on code-owned surface | Substrate-awareness threaded end-to-end through `prodbox host public-edge --substrate {home-local,aws}`, `runHostPublicEdge`, `queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the five sibling validation bodies. `runNativeValidation` now emits stderr breadcrumbs around every body so silent exit is structurally impossible at the runner level. Live `--substrate aws` re-run rolls up into Sprint `7.5.c.v`. |
-| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | ✅ Done | June 5 live runs proved AWS NLB-target DNS reconciliation, home-only gateway `dns_write_gate`, delegated-subzone pre-destroy record cleanup, per-run postflight teardown, Harbor-login retry, Keycloak public-token-endpoint readiness, the fixed VS Code OIDC redirect, API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public DNS, and destructive lifecycle on AWS. The aggregate suite's remaining failure is Phase `8` invite-auth closure: `ValidationKeycloakInvite` must run before destructive `ValidationChartsStorage` / `ValidationLifecycle`, target the selected substrate public FQDN, and reach the Keycloak `/auth/admin` route used by operator invites. |
+| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | ✅ Done | June 5 live runs supplied command/provider evidence for AWS NLB-target DNS reconciliation, home-only gateway `dns_write_gate`, delegated-subzone pre-destroy record cleanup, the then-current per-run postflight report, Harbor-login retry, Keycloak public-token-endpoint readiness, the fixed VS Code OIDC redirect, API/WebSocket in-cluster JWKS backchannels, substrate-aware Harbor/MinIO admin routes, public DNS, and destructive lifecycle on AWS. The historical postflight report was not independent exact absence proof under the replacement doctrine. The aggregate suite's remaining failure was Phase `8` invite-auth closure: `ValidationKeycloakInvite` had to run before destructive `ValidationChartsStorage` / `ValidationLifecycle`, target the selected substrate public FQDN, and reach the Keycloak `/auth/admin` route used by operator invites. |
 
 Sprint `7.5.c.v` flipped the substrate parity row in [`substrates.md`](substrates.md) to ✅ for the
 Phase 7-owned substrate surface and closed Sprint `7.5.c`.
@@ -2997,8 +3021,9 @@ re-pin lint), `test/unit/Main.hs`
 ### Why Phase 7 reopened
 
 The substrate-equivalence contract ("the home local substrate and the AWS substrate stand up the
-same set of services") currently lives only as prose in `CLAUDE.md` and
-[substrates.md](substrates.md). Nothing structural enforces it, so the worktree drifted: the home
+same set of services") is stated operationally in
+[AGENTS.md](../AGENTS.md#substrate-equivalence) and structurally in
+[substrates.md](substrates.md). At this historical reopen point nothing structural enforced it, so the worktree drifted: the home
 substrate and the AWS substrate independently pin Envoy Gateway / Envoy versions (the
 EG-`1.4.4` chart shipped by Sprint `7.5.b.ii.β` against a data-plane Envoy `1.37` image — a skew
 that can only be caught by reading two files in two modules), and the doctrine still carries a
@@ -4698,11 +4723,17 @@ Bring the AWS substrate to full parity with the completed home-path readiness/or
 **Status**: Done
 **Deployment qualification**: pending
 **Implementation**: `src/Prodbox/Lib/AwsControlPlaneIsolation.hs` defines the closed AWS role,
-transport, capability, deterministic-IAM, controller-ownership, and fault-disposition model;
-`AwsSubstratePlatform` validates it before mutation and installs the target-local DNS01 worker.
+transport, capability, deterministic-IAM, and fault-disposition model plus a pure
+controller-ownership transition algebra. `AwsSubstratePlatform` validates the canonical role/
+transport topology before mutation and installs the target-local DNS01 worker; it does not call the
+controller owner-UID/enable/child-ARN transitions.
 Provider intents now own exact public Route 53 A-record observation/reconcile, the Pulumi EKS
 program uses deterministic run/cluster IAM names, and retained SES preparation uses the canonical
 AWS target instead of a placeholder.
+**Standard-C scope correction**: the controller transition functions have unit-test callers only.
+Sprint `7.33` did not production-wire inert-owner registration, Kubernetes UID CAS, child-ARN CAS,
+or the bounded provider-family cleanup backstop. Those production obligations are retained by
+Sprint `7.36` and Pending-removal row D; the deterministic IAM-name cutover remains landed here.
 **Live-proof**: pending; the full current-revision AWS aggregate
 and fault matrix are deployment-qualification evidence
 **Independent Validation**: ✅ AWS isolation 11/11, Provider execution 18/18, full unit 3040/3040,
@@ -4735,7 +4766,7 @@ fault behavior without using the EKS gateway as an authority proxy.
   reconcile only the AWS-substrate cert-manager-DNS01 identity/generation plus target-local trust.
   The home Gateway-DNS identity is never mounted on EKS, and EKS Gateway DNS mutation stays
   disabled. The AWS public A record is an exact registered provider resource; neither an EKS
-  gateway nor the shared legacy credential can mutate it.
+  gateway nor the generic legacy Tier-0 `aws.*` projection can mutate it.
 - Project the AWS Target Agent's exact TLS-Secret RBAC/attestation to the retained-home TLS DEK
   exchange and TLS Retention Adapter. Destroy/recreate the AWS Vault/EBS/Agent, then restore the
   retained ciphertext through the new attestation and read back the exact TLS Secret before
@@ -4746,9 +4777,11 @@ fault behavior without using the EKS gateway as an authority proxy.
   Vault/EBS/Agent, then rewrap, materialize, and read back the same registered generations before
   Keycloak or cert-manager admission, without an admin prompt, SMTP key rotation, or EAB reset.
 - Replace provider-assigned EKS `clusterRole-*`/`nodeRole-*` IAM names with deterministic
-  run/cluster-scoped names and register them before provider mutation. Exact discover/destroy/
-  read-back must recover checkpoint-loss cases without a broad IAM scan or operator-only leak class.
-- Before enabling each LBC-owned Service/Ingress, register account/region/cluster plus deterministic
+  run/cluster-scoped names (**landed**). Receipt-backed registration before provider mutation and
+  exact checkpoint-loss discover/destroy/read-back were not landed here and are transferred to
+  Sprint `7.36`; neither path may use a broad IAM scan or operator-only leak class.
+- **Historical target not landed in Sprint `7.33`; transferred to Sprint `7.36`:** before enabling
+  each LBC-owned Service/Ingress, register account/region/cluster plus deterministic
   resource name/manifest digest and prodbox tags; create the owner inert so no controller mutation
   can occur, observe/CAS-register its Kubernetes-assigned UID, then enable reconciliation.
   CAS-enrich exact AWS ARNs after observation. Cleanup deletes the Kubernetes owner while live and
@@ -4769,8 +4802,10 @@ fault behavior without using the EKS gateway as an authority proxy.
 2. Rendered manifests/policies prove role isolation and substrate-equivalent service inventory.
 3. Fake-command traces reject gateway authority calls, stale kubeconfigs, ambient/shared AWS
    credentials, direct unregistered Route 53 writes, and cross-substrate endpoint fallback.
-4. Installed-binary fault fixtures prove client refresh, operation resume, registered LBC-child
-   fallback deletion, deterministic-IAM checkpoint-loss recovery, and always-run cleanup. A fresh
+4. Installed-binary fault fixtures prove client refresh, operation resume, and always-run cleanup;
+   pure unit fixtures prove only the controller transition algebra. Production registered-LBC-child
+   fallback deletion and manifest-backed deterministic-IAM checkpoint-loss recovery are not
+   Sprint-`7.33` evidence and remain Sprint `7.36` work. A fresh
    AWS Vault/Agent restores the same SES-SMTP and ACME-EAB generations from the closed retained-home
    custody family and rejects generic export, wrong schema/generation/target, or Authority plaintext.
 5. Unit/CLI/env integration suites and `prodbox dev check` pass.
@@ -4783,7 +4818,10 @@ fault behavior without using the EKS gateway as an authority proxy.
 
 ### Remaining Work
 
-- None on the Sprint-7.33 code-owned surface.
+- None on the corrected Sprint-`7.33` code-owned surface.
+- Production inert-owner/UID/child-ARN registration, ownership-manifest recovery, and the provider-
+  family cleanup/read-back backstop are explicit Sprint `7.36` work, not hidden completion evidence
+  for this Done sprint.
 - Live AWS evidence remains separate from Phase-7 completion and must bind the complete
   replacement identity; final qualification remains Sprint `8.12`.
 
@@ -4955,13 +4993,120 @@ for one sprint to close both.
 
 None.
 
+## Sprint 7.36: Exact AWS Desired-Absence Adapters, Write-Ahead Manifests, and Legacy Adoption [⏸️ Blocked]
+
+**Status**: Blocked by Sprint `4.85` (opened 2026-08-15).
+**Blocked by**: Sprint `4.85`, which supplies the exact keyed lifecycle kernel and closed program
+interpreter. No later-phase blocker.
+**Deployment qualification**: pending — AWS inventory, EKS authentication/drain, provider cleanup,
+and destructive evidence change.
+**Doctrine**: [AWS Integration Environment Doctrine § 5.5, “Exact EKS drain session and provider
+backstop”](../documents/engineering/aws_integration_environment_doctrine.md#55-exact-eks-drain-session-and-provider-backstop),
+[Lifecycle Reconciliation Doctrine § 3.2, “Checkpoint recovery and the desired-absence
+decision”](../documents/engineering/lifecycle_reconciliation_doctrine.md#32-checkpoint-recovery-and-the-desired-absence-decision),
+and [Pure FP Standards § 6, “External-System
+Boundaries”](../documents/engineering/pure_fp_standards.md#6-external-system-boundaries).
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsEksSubzoneStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/Infra/StackDescriptor.hs`, `src/Prodbox/Lifecycle/K8sDrain.hs`,
+`src/Prodbox/Lifecycle/TagSweep.hs`, and hypothetical AWS observer/ownership-manifest adapter
+modules until created.
+**Live-proof**: pending and non-blocking for code-local closure; the qualification-only adapters must
+take real all-three-stack destroy/read-back and repeated-cascade evidence before operational cutover.
+**Independent Validation**: pure adapter classifiers and fake AWS/Kubernetes boundaries, pagination/
+duplication fixtures, unit/integration suites, and `prodbox dev check` before live AWS.
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Give each per-run stack and controller family its own exact provider observer and desired-absence
+adapter, with enough receipt-backed coordinates to recover when checkpoint copies are unusable, and
+authenticate EKS drain without checkpoint-derived kubeconfig materialization.
+
+### Deliverables
+
+- Implement independent observers for `aws-eks`, `aws-eks-subzone`, and `aws-test`. Each binds exact
+  account, region, run, operation, stack key, deterministic names/ARNs, and registered bounded
+  dynamic families. No observation is copied between keys.
+- Normalize tag/pagination responses to one `AwsResource` per ARN before joining evidence. The
+  retained long-lived state bucket is projected only into the terminal retained audit set.
+- Before provider mutation, receipt-commit complete deterministic coordinates, bounded family
+  descriptors, and later-discovered IDs. IAM and other weakly/tag-unsupported resources use exact
+  deterministic coordinates, not broad tag discovery.
+- For already-created pre-manifest `aws-eks`, `aws-eks-subzone`, and `aws-test` VPC/EKS/Route 53/
+  test-stack families whose checkpoints are unusable, implement the separately typed bounded legacy-
+  adoption protocol. A provider-native read-only observer enumerates the closed registry-derived
+  family from exact account/region/cluster/run coordinates; the planner renders every candidate,
+  ownership proof, ambiguity, and proposed closed desired-absence program. Only an explicit admin
+  permit over that exact plan digest may receipt-commit a `ConfirmedLegacyAdoptionManifest`, and an
+  independent read-back must verify it before mutation. Broad tag/name-prefix discovery, missing or
+  extra candidates, ambiguity, and partial/unobservable facts cannot mint the manifest.
+- Implement primary/backup checkpoint observation and exact restore/read-back. When both are
+  unusable, admit native registered desired absence only from a complete ownership manifest;
+  incomplete manifests refuse and preserve required credentials. The enclosing cleanup result
+  reports whether its recovery plane is established, not established, or lost; this adapter does
+  not promise that a failed/lost plane is live.
+- Issue an opaque expiring `EksDrainSession` only from positive exact EKS evidence. Bind account,
+  region, cluster ARN/UID, endpoint and CA digests, token/session identity, and absolute deadline.
+  Remove the cascade path through checkpoint outputs, `error`, discarded `Left`, and reusable host
+  kubeconfig materialization.
+- Implement exact provider backstops for registered controller families and mandatory post-destroy
+  absence read-back.
+
+### Validation
+
+1. A complete table proves each stack is observed independently and wrong-key/account/region/run/
+   operation results refuse.
+2. One returned `ResourceTagMapping` for the retained bucket with its full two-tag set may decode
+   to two internal rows, but normalizes to one retained audit resource and cannot inhabit any
+   per-run inventory; duplicate filters, pages, and retries preserve cardinality. The frozen three
+   exact stack observations remain `Unobservable`, not empty.
+3. Decision cases cover valid primary; corrupt primary + valid backup; both unusable + complete
+   write-ahead manifest; exact AWS absent; and AWS partial/unobservable.
+4. Pre-manifest adoption tables cover each bounded stack family, exact plan rendering, explicit
+   admin confirmation, receipt commit/read-back, cancellation, digest mismatch, missing/extra/
+   ambiguous candidates, and partial/unobservable provider facts. Only the exact confirmed and
+   read-back plan can become a complete ownership manifest; discovery alone never permits mutation.
+5. EKS drain can be constructed only from positive EKS evidence and an unexpired correctly bound
+   session; checkpoint state and global audit cannot mint it.
+6. Controller API loss records a drain failure, runs exact `RequiresAttempt` backstops, and closes
+   only on exact EKS/family absence.
+7. Fake adapters, adoption-plan confirmation/read-back interpreters, pagination/duplication
+   fixtures, unit/integration suites, and `prodbox dev check` pass locally.
+8. The non-blocking live adapter campaign provisions with
+   `prodbox aws stack eks reconcile`, `prodbox aws stack aws-subzone reconcile`, and
+   `prodbox aws stack test reconcile`; destroys through
+   `prodbox aws stack eks destroy --yes`,
+   `prodbox aws stack aws-subzone destroy --yes`, and
+   `prodbox aws stack test destroy --yes`; reads back all three exact absences; and
+   runs `prodbox cluster delete --cascade --yes` twice to prove idempotent adapter composition. It
+   reports the intended-retained set exactly once and zero unexpected resources. This is
+   Sprint-`8.12` prerequisite evidence, not final deployment qualification by Phase 7.
+
+### Remaining Work
+
+Blocked until Sprint `4.85` defines the consuming kernel. Code-local closure then requires every
+exact adapter, the bounded confirmed-legacy adoption planner/interpreter, fake refusal/read-back
+tables, and a qualification-gated plan for retiring the checkpoint-only and generic kubeconfig
+paths. The live all-three-stack campaign is non-blocking Standard-P evidence and runs without ad-hoc
+AWS mutations through the qualification-only adapters. Operational cutover and legacy-path deletion
+remain forbidden until current-revision AWS qualification is proven; because deletion changes the
+identity, the resulting post-cutover revision must be qualified again before the ledger rows move to
+Completed.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/vault_doctrine.md` - § 6.1 gains the integrity blast radius and the
-  generated-per-install obligation for the bootstrap credential this phase introduced; § 17's
-  ownership statement is reconciled against it.
+- `documents/engineering/aws_integration_environment_doctrine.md` — exact per-stack/family AWS
+  observers, ownership-manifest recovery, EKS drain sessions, and provider backstops.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — Phase `7` adapters implement the
+  lifecycle-owned observation/program interfaces; they do not redefine completion.
 
 **Product docs to create/update:**
 
@@ -4970,7 +5115,9 @@ None.
 **Cross-references to add:**
 
 - Record the Phase `7` own-surface reopen in [README.md](README.md) and
-  [00-overview.md](00-overview.md), and add the redacted-id row to
+  [00-overview.md](00-overview.md); update exact adapter and qualification ownership in
+  [system-components.md](system-components.md) and [substrates.md](substrates.md); and assign the
+  checkpoint-only, controller-family, provider-name, and kubeconfig residuals in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents

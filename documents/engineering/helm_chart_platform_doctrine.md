@@ -86,9 +86,9 @@ The supported chart doctrine is:
 Item 17 is the target rendering contract, not cutover evidence. Sprint `2.32` supplies only the
 typed claim-side inputs in `Prodbox.Gateway.Emitter.Persistence`: stable identity, the home retained
 node-pinned claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Sprint
-`3.26` owns consuming them into StatefulSet templates, PVs, EBS `volumeHandle`s, `Retain` policy,
-and rendered RBAC. Production-default and deployment-qualification status remain owned only by the
-Development Plan.
+`3.26` supplied their chart/render consumption. The production default remains pre-cutover;
+activation and deployment-qualification status remain owned only by the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ## 1Z. Release State Is Decoded, and a Mutation Needs a Permit (Sprint `3.31`)
 
@@ -248,14 +248,26 @@ and gateway-held lifecycle permissions are historical implementation surfaces re
 the plan-owned epoch cutover. Implementation and deployment-qualification status remain exclusively in
 the Development Plan.
 
+The ordinary teardown recovery profile is owned in
+[Lifecycle Control-Plane Architecture §11.0](./lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile)
+and is not restated here. The chart-specific consequences are that Gateway Runtime and application
+charts are excluded, and the teardown caller identity cannot be owned by `charts/gateway`, an
+application namespace, or any release teardown may delete. Repair of a stopped or absent local API
+consumes that canonical profile; the chart platform neither invents a second MinIO/Vault writer nor
+provides a host-direct provider fallback.
+
 ## 2. Singleton Chart Identity Rule
 
 One Helm release per chart name exists cluster-wide at any time.
 
-- Before deployment, the Haskell runtime inspects `helm list --all-namespaces`.
-- If any release in the plan already exists, `prodbox charts reconcile <chart>` reports the current
-  deployment surface as success and performs no Helm or storage mutation.
-- Resetting the chart stack still requires an explicit `prodbox charts delete <chart>` first.
+- Before deployment, the Haskell runtime inspects `helm list --all-namespaces` to establish release
+  identity and decode the concurrency-sensitive status described in §1Z; presence is not revision or
+  desired-manifest evidence.
+- Since Sprint `3.38`, every release in the selected deployment plan that admits a `HelmWritePermit`
+  runs `helm upgrade --install`, including an already-deployed release. That command is the
+  idempotent convergence operation; an existing healthy release is not a skip signal.
+- An explicit `prodbox charts delete <chart>` is required only to request absence/reset. Reconcile
+  updates an existing release in place and must not require a delete-first cycle.
 
 ## 3. Root-Chart Workload Namespace and Shared Public-Edge Attachment Rule
 
@@ -315,8 +327,8 @@ enforced as a structural invariant, not maintained by parallel hand-edited insta
    component the other installs. The AWS substrate is **not** a "no-registry" cluster.
 
 This is the chart-platform-side statement of the substrate-equivalence doctrine in
-[../../CLAUDE.md](../../CLAUDE.md) "Substrate Equivalence" and
-[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md). When AWS appears to
+[AGENTS.md, “Substrate Equivalence”](../../AGENTS.md#substrate-equivalence) and the canonical
+[substrate inventory](../../DEVELOPMENT_PLAN/substrates.md). When AWS appears to
 be "missing" a platform piece the home cluster has, the fix is to extend the shared inventory and
 the AWS installer, never to render different image refs or re-pin versions per substrate.
 
@@ -813,7 +825,7 @@ The current implementation boundary is:
   `prodbox/public-edge-tls-retained` in-cluster Secret copy covered. The
   `preservePublicEdgeTlsSecretBeforeDelete` silent-success gap is closed: the preserve path emits
   typed/logged outcomes and never reports silent success when the owned certificate is absent (the
-  soundness rule restored in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
+  soundness rule in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)).
   The high-churn canonical validation loop does not re-order the certificate against a separate test
   issuer; the single `zerossl-dns01` `ClusterIssuer` issues each exact production SAN set once and
   the S3 retain-and-restore path restores it on every rebuild. See
@@ -932,7 +944,7 @@ model; the statements below are the chart-platform-side summary.
   Vault KV is as durable across rebuilds as any retained PV (see
   [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)). This in-cluster Vault
   platform component has a Sprint 3.17 code-owned foundation. See
-  [vault_doctrine.md §5](./vault_doctrine.md#5-vault-deployment-model).
+  [vault_doctrine.md §5](./vault_doctrine.md#5-vault-deployment-model-and-durability).
 - **Chart workloads consume Vault-held secrets via Vault Kubernetes auth only.** Chart workloads —
   including Keycloak — that need a secret authenticate through Vault Kubernetes auth: a workload
   service account, a namespace + SA-bound Vault role, and a least-privilege policy, surfaced via

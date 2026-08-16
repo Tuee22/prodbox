@@ -360,11 +360,12 @@ cert-manager issuer admission and controller-owned public edge. A Gateway-ready 
 satisfy any Authority, Provider, or Target-Agent prerequisite.
 
 The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
-`--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway config or
-a generic endpoint. Until the physical adapters and workload rendering owned by Sprint `3.26`
-exist, the production boundary may report process liveness but keeps readiness and every
-non-health capability closed; a deterministic fake proves composition without becoming a
-production selection path.
+`--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway
+config or a generic endpoint. Completed Sprint `3.26` supplied chart/render foundations, but the
+production boundary still reports only process liveness and keeps readiness and every non-health
+capability closed; a deterministic fake proves composition without becoming a production selection
+path. Physical adapter activation and cutover status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps

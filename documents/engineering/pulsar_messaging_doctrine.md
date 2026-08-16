@@ -11,18 +11,17 @@ sanctioned prodbox payload and envelope format.
 > family — the proven single-node specialization that the amoebius umbrella
 > `pulsar_client_doctrine.md` cites and generalizes.
 
-> **Implementation status.** The gateway peer envelopes and serialized `Orders` document moved to
-> canonical CBOR in Phase 2 Sprint `2.27`. The durable
-> at-least-once event store moved to CBOR in Sprint `2.28`. Phase 3 Sprint `3.21` has landed the
-> shared Pulsar CBOR codec, derived topic algebra, `Work*` envelopes, chart, native-client
+> **Current source correspondence.** Gateway peer envelopes, the serialized `Orders` document, and
+> the durable at-least-once event store use canonical CBOR. The source tree contains the shared
+> Pulsar CBOR codec, derived topic algebra, `Work*` envelopes, chart, native-client
 > boundary, and repo-maintained native broker transport/framing layer. The live home-local
 > `pulsar-broker` validation proves CBOR produce/consume/ack against a real broker; there is no
 > generated external schema dependency and no second-runtime transport. Per
 > [development_plan_standards §D](../../DEVELOPMENT_PLAN/development_plan_standards.md) this doc
-> states the implemented shape in present-tense doctrine; delivery sequencing and status are owned only
-> by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+> states source correspondence in present tense; delivery sequencing and status are owned only by
+> [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
-> Sprint `2.31` retained CBOR-always encoding while replacing gateway replication with bounded
+> The current gateway replication path retains CBOR-always encoding with bounded
 > semantic cursor/delta and per-emitter snapshot-repair frames. The durable Pulsar/`Daemon.Events`
 > retention contract is unchanged.
 
@@ -122,12 +121,15 @@ topicFor :: Tenant -> Namespace -> Workflow -> Phase -> Lane -> TopicName
 
 `Tenant` / `Namespace` / `Lane` are constructed only through validating smart constructors
 (`mkTenant :: Text -> Either TopicError Tenant`, etc.), so an ill-formed segment fails at the
-decode boundary rather than surfacing as a broker error. The reconciled topic set is *derived* from
-a list of typed descriptor entries; adding a workflow or a lane edits the descriptor, never a
-literal-string table. The descriptor's static invariants (no duplicate derived topic, no
-report-lane without an input-lane) are enforced by a scheduled canonical Dhall schema —
-`dhall/pulsar/Schema.dhall`, mirroring `jitML/dhall/project/Schema.dhall` — that carries an
-`assert`-form lemma so an unroutable topology is a Dhall typecheck failure:
+decode boundary rather than surfacing as a broker error. Every current topic name is derived from
+those typed inputs; adding a workflow constructor or lane value never adds a literal-string table.
+
+The stable collection rule is likewise independent of an authoring format: any surface that admits
+a set of topic descriptors must reject duplicate derived topics and a report lane with no input
+lane. The current tree has no list-valued Pulsar descriptor authoring surface and no Pulsar-specific
+Dhall schema. If a Dhall authoring surface is introduced, it must carry an `assert`-form lemma so an
+unroutable topology is a Dhall typecheck failure. The fragment below illustrates that constraint; it
+does not name or schedule a repository artifact:
 
 ```dhall
 -- Example: teaching fragment — a descriptor typechecks only when routing is two-sided
@@ -137,8 +139,10 @@ let laneCovered =
 in  assert : laneCovered descriptor === True
 ```
 
-The Dhall schema is the SCHEDULED code SSoT for the descriptor shape; this doc describes its facets
-and shows teaching fragments only — it is not the schema.
+This doctrine neither reserves a schema path nor assigns implementation ownership for one.
+`Prodbox.Pulsar.Topic` is the current code boundary for constructible topic names. If an executable
+descriptor schema is introduced, it must implement the constraints above and become the code SSoT
+for its authored shape; this document continues to own the format-independent invariant.
 
 ## 4. The `Work*` envelope family
 
@@ -218,15 +222,15 @@ is no complete-history compatibility frame.
 ## 6. Dhall-authoring vs CBOR-at-rest boundary
 
 CBOR-always governs the **wire and at-rest** serialization only. It does **not** displace Dhall:
-Dhall remains prodbox's human-authoring configuration language
+Dhall remains prodbox's human-authoring configuration language where a configuration surface exists
 ([config_doctrine.md](./config_doctrine.md)). The boundary is clean and one-directional — a human
 authors Dhall, the binary decodes it to typed Haskell values, and only serialized/persisted
 artifacts (the gateway `Orders` envelope, signed assertions and bounded delta/snapshot frames,
-at-least-once records, and
-`Work*` payloads) are CBOR. Gateway delta/snapshot compaction changes retention, not this
-serialization boundary. There is no CBOR configuration surface and no Dhall on the wire; the
-topic descriptor is authored in Dhall (§3) and its *derived* topics travel as CBOR-encoded control
-envelopes.
+at-least-once records, and `Work*` payloads) are CBOR. Gateway delta/snapshot compaction changes
+retention, not this serialization boundary. There is no CBOR configuration surface and no Dhall on
+the wire. Topic identities are currently constructed through the Haskell topic algebra (§3); if a
+Dhall descriptor surface is introduced, it must decode into that same typed boundary before any
+derived topic appears in a CBOR-encoded control envelope.
 
 ## 7. The self-maintained native client
 

@@ -4,379 +4,71 @@
 **Supersedes**: N/A
 **Generated sections**: none
 
-> **Purpose**: Guide for Claude Code development on the current `prodbox` worktree baseline.
+> **Purpose**: Give Claude Code a concise repository-navigation and evidence-discipline guide while
+> deferring all agent operational rules to [AGENTS.md](./AGENTS.md).
 
-## Rewrite Posture
+## Authority and Scope
 
-- `DEVELOPMENT_PLAN/README.md` is the authoritative live tracker for target architecture, status,
-  blockers, and cleanup ownership.
-- The authoritative CLI doctrine is distributed across per-surface engineering docs under
-  [documents/engineering/](./documents/engineering/README.md): command topology, progressive
-  introspection, and reconcilers in `cli_command_surface.md`; Plan / Apply and GADT-indexed
-  state machines in `pure_fp_standards.md`; subprocesses, smart constructors, error
-  handling, capability classes, retry policy, and application environment in
-  `haskell_code_guide.md`; generated artifacts and lint stack in `code_quality.md`; output
-  rules and at-least-once event processing in `streaming_doctrine.md`; prerequisites as
-  typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
-  `distributed_gateway_architecture.md`; the concurrency-hardening methodology
-  (decision/protocol/runtime correctness layers, the Extract → Model → Inject moves, and the
-  proven/tested/assumed ledger) in `chaos_hardening_doctrine.md`; the Vault transit-seal trust tree and
-  downstream-cluster custody in `cluster_federation_doctrine.md`; testing doctrine in
-  `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase documents
-  in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling adoption work.
-- The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
-  orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
-  and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
-  `cabal.project`, and `docker/`.
-- Do not describe removed Python directories or Poetry workflows as the current supported
-  architecture.
+[AGENTS.md](./AGENTS.md) is the authoritative source for every agent operational rule, including
+live-infrastructure authorization, AWS mutation ownership, command selection, substrate behavior,
+teardown handling, testing, security, development tooling, and Git restrictions. Claude Code follows
+those rules directly; this reference does not restate or modify them.
 
-## Current Worktree Baseline
+Sprint status, blockers, validation closure, and cleanup/removal ownership live only in
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Stable target architecture and doctrine
+are indexed by [documents/engineering/README.md](./documents/engineering/README.md).
 
-Prodbox manages a home Kubernetes cluster with a Haskell command surface.
+## Claude-Specific Working Posture
 
-- `app/prodbox/Main.hs` is the executable entrypoint.
-- `src/Prodbox/` owns the command parser, runtime modules, infra orchestration, gateway runtime,
-  chart platform, AWS administration flows, and test harness.
-- `test/` contains the Haskell unit and integration suites.
-- The Tier-0 config is the **binary-sibling** `prodbox.dhall` — the file beside the
-  executable (`.build/prodbox.dhall`), the same filename in every context (host, container,
-  test harness), resolved via the executable path (not the repo root, not a `--config`
-  flag). It is binary-owned and GENERATED (`prodbox config generate` / `config setup`, or
-  the test harness); a command that needs it **fails fast** when the sibling file is absent.
-  It is decoded into Haskell types by the native `dhall` library;
-  `prodbox-config.json` is not part of the supported interface. The in-force cluster
-  configuration is the source of truth, stored as a prodbox application-level
-  Vault-Transit envelope (Model B) in the shared object-store — an opaque
-  `objects/<id>.enc` entry in one generically-named MinIO bucket, not a literal
-  `in-force-config` key. That bucket holds every prodbox-owned secret-bearing object
-  (in-force config, gateway state, Pulumi backend checkpoints) under opaque
-  Vault-keyed-HMAC names; the host CLI and the in-cluster gateway daemon read and write it
-  through one shared envelope/naming/index layer, each binding its own Vault-auth cipher
-  (the host CLI via a short-lived Kubernetes TokenRequest proof for an explicit external-caller
-  ServiceAccount exchanged for a Vault Kubernetes-auth login, the daemon via Vault Kubernetes auth
-  over the in-cluster MinIO Service DNS). **Corrected 2026-08-14**: this line previously said the
-  host CLI binds "the root Vault token". No host path receives a Vault root token — see
-  [config_doctrine.md](documents/engineering/config_doctrine.md) and
-  [vault_doctrine.md](documents/engineering/vault_doctrine.md), which both state so explicitly, and
-  `Prodbox.Vault.Host.loadReadyVaultRootToken`, which is a stub returning `Left "host root-token
-  recovery is removed"` with zero call sites. One practical consequence of the real design: **every
-  host-CLI read of the encrypted SSoT needs a live, serving cluster**, so a host whose control plane
-  is down cannot read its own in-force config or per-run state. The binary-sibling `prodbox.dhall` `parameters` is a
-  seed/propose input only — it seeds the encrypted MinIO SSoT on first-ever bring-up, and
-  thereafter supplying a file is a proposed update, not the live config. Each binary reads the small
-  unencrypted basics locally (cluster id, this cluster's Vault address, seal mode, and for
-  a child the parent reference it contacts to auto-unseal), then fetches and decrypts the
-  in-force config from MinIO through Vault. In-cluster consumers authenticate to Vault
-  directly via Vault Kubernetes auth; there are no Secret-mounted Dhall credential
-  fragments and no master seed or HMAC derivation. Updating the root cluster's in-force
-  config is a typed Lifecycle Authority `ConfigProposeCas` operation gated on a short-lived
-  `prodbox-config-admin` TokenRequest proof plus exact generation CAS — never a root token and never
-  a direct MinIO write (it still requires an unsealed root Vault). No
-  `PRODBOX_*` environment variable participates in **Tier-0 config resolution** on any supported
-  binary (the host CLI resolves the binary-sibling `prodbox.dhall`; the in-cluster daemon/workload
-  read their mounted `--config` Dhall). Corrected 2026-08-11: the claim that the *only* `PRODBOX_*`
-  reads are `PRODBOX_TEST_*` and `PRODBOX_ALLOW_NON_TTY_INTERACTIVE` was false. Four others exist in
-  `src/Prodbox/CLI/Rke2.hs` — `PRODBOX_PULUMI_METALLB_POOL` and
-  `PRODBOX_PULUMI_EDGE_LB_IP`/`PRODBOX_PULUMI_INGRESS_LB_IP` (which substitute for live LAN
-  detection), `PRODBOX_RKE2_ENDPOINT_STATUS_ROOT`, and `PRODBOX_RKE2_CONTAINERD_SOCKET`. They do not
-  reach Tier-0 config, but they are production reads and two of them are load-bearing for host
-  networking. `checkEnvVarConfigReads` does not cover that file; the scope gap is tracked in
-  [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
-  See
-  [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
-- `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
-  plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
+- Resolve an operational question from the authoritative section in `AGENTS.md`, not from a copied
+  command list or remembered lifecycle summary.
+- Separate three evidence classes in every diagnosis: what the current source implements, what the
+  target doctrine requires, and what the Development Plan says is cut over. Do not promote one into
+  another.
+- Preserve exact command output and typed failure details before assigning a cause. A Kubernetes,
+  AWS, Pulumi, Vault, or MinIO attribution needs evidence that the named boundary was reached.
+- When live validation is in scope, consult
+  [Live Infrastructure Deployment Is Authorized](./AGENTS.md#live-infrastructure-deployment-is-authorized)
+  before treating infrastructure access as a blocker.
+- Keep repository changes uncommitted and follow the authoritative
+  [Commit Guidelines](./AGENTS.md#commit-guidelines).
 
-## Local Cluster Lifecycle Ownership
+## Operational Navigation
 
-**This machine is the home Kubernetes cluster that prodbox manages.** Prodbox owns the full
-local-cluster lifecycle on this host.
+| Need | Authoritative source |
+|---|---|
+| Repository layout and supported toolchain | [AGENTS.md → Current Worktree Structure](./AGENTS.md#current-worktree-structure) |
+| Canonical build, quality, and test commands | [AGENTS.md → Current Worktree Commands](./AGENTS.md#current-worktree-commands) |
+| AWS mutation ownership and diagnostic guardrails | [AGENTS.md → AWS Mutation Is Prodbox-Surface-Owned](./AGENTS.md#aws-mutation-is-prodbox-surface-owned) |
+| Automation versus operator-interactive commands | [AGENTS.md → Command Selection](./AGENTS.md#command-selection-automation-vs-operator-interactive) |
+| Substrate-equivalence operational rule | [AGENTS.md → Substrate Equivalence](./AGENTS.md#substrate-equivalence) |
+| Local and cascade teardown behavior | [AGENTS.md → Live Infrastructure Deployment Is Authorized](./AGENTS.md#live-infrastructure-deployment-is-authorized) and [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md) |
+| Current lifecycle rollout status | [Development Plan → Current Plan Status](./DEVELOPMENT_PLAN/README.md#current-plan-status) |
+| Pure-functional implementation rules | [Pure FP Standards](./documents/engineering/pure_fp_standards.md) and [AGENTS.md → Coding Style](./AGENTS.md#coding-style) |
+| Test design and prerequisite behavior | [Unit Testing Policy](./documents/engineering/unit_testing_policy.md) and [AGENTS.md → Testing Guidelines](./AGENTS.md#testing-guidelines) |
+| Documentation ownership and generated sections | [Documentation Standards](./documents/documentation_standards.md) |
 
-> **Claude Code is authorized to deploy, reconcile, and tear down live infrastructure from this
-> project.** This covers both the local RKE2 Kubernetes cluster on this host and the AWS substrate
-> (EKS, IAM, Route 53, SES, S3, EC2/EBS) via the documented `prodbox` entrypoints in this section
-> and under [AWS Substrate Provisioning Ownership](#aws-substrate-provisioning-ownership). Doing so
-> is expected and supported: it makes real, persistent state changes to this host and incurs real
-> live AWS spend, and it does **not** need separate approval beyond the user's original request.
-> When a task needs a running cluster, an unsealed Vault, provisioned AWS, or a live serving/TLS
-> proof to validate or qualify — including `prodbox test all`, `prodbox test all --substrate aws`,
-> and multi-hour deployment-qualification campaigns — **stand up the live infrastructure through
-> these entrypoints and run it; do not report live infrastructure as an out-of-reach blocker.** A
-> long-running lifecycle command (e.g. a multi-hour `test all` or clean-room qualification run) is
-> in-scope work, not a reason to stop — launch it (background it if needed) and drive it to
-> completion. This authorization is scoped to the `prodbox`/harness command surface only; it does
-> **not** relax the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` /
-> `kubectl` mutations that bypass the harness remain forbidden (AWS) or confirmation-gated, `prodbox
-> nuke` remains operator-only and TTY-only, and the Git Workflow Policy (never commit or push)
-> still applies.
+## Architecture Navigation
 
-- `prodbox cluster reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
-  machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
-  the supported, expected operation, not an unauthorized state change.
-- `prodbox cluster delete --yes` is the canonical teardown. **Default mode is a pure local
-  cluster uninstall**: it uninstalls RKE2 and preserves `.data/` (the MinIO-backed per-run
-  Pulumi state — Vault-enveloped, opaque-named objects in the shared bucket)
-  **without querying, gating on, or destroying the per-run AWS Pulumi backend** —
-  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via
-  `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. Deleting the
-  cluster never affects your ability to reason about the backend, since `.data/` is preserved. When
-  no RKE2 cluster is installed at all, it is a no-op success (`No RKE2 cluster to delete.`,
-  exit 0). `--cascade` is the recommended "clean teardown" path for wipe-and-rebuild cycles:
-  K8s drain + per-run destroys + cluster uninstall + postflight tag sweep, all in one atomic
-  operator action — it is the only `cluster delete` path that destroys per-run AWS stacks.
-  `aws-ses` is never touched by `cluster delete` regardless of flag — its Pulumi state lives in
-  the long-lived `pulumi_state_backend` S3 bucket (independent of cluster lifetime). See
-  [documents/engineering/lifecycle_reconciliation_doctrine.md](documents/engineering/lifecycle_reconciliation_doctrine.md).
-  Every AWS/cluster resource prodbox can create is a registered entry (typed `discover` +
-  `destroy`) in the managed-resource registry, and teardown is one idempotent `reconcileAbsent`
-  reconciler with "cannot observe" never silently treated as "absent"
-  ([lifecycle_reconciliation_doctrine.md § 3.1](documents/engineering/lifecycle_reconciliation_doctrine.md);
-  landed in Sprints 4.20–4.22 / 7.8).
-- `prodbox nuke` is the operator-only total-teardown command — the only sanctioned path to
-  destroy long-lived shared infrastructure transitively (`aws-ses`, the
-  `pulumi_state_backend` bucket). TTY-only; refuses non-interactive contexts; requires the
-  typed confirmation literal `NUKE EVERYTHING`; no `--yes` shorthand. Automation contexts must
-  compose the canonical commands individually instead.
-- `prodbox test all` exercises the full lifecycle (install, validate, reconcile, sometimes
-  delete) on this host. It is **expected to start RKE2, etcd, kubelet, containerd, and Pulumi
-  flows on this machine**. Do not treat the resulting processes or the running cluster as a
-  surprise or as something to roll back.
-- `prodbox charts ...` and `prodbox gateway ...` mutate cluster state on this same host by
-  design.
+- CLI topology and public command behavior:
+  [CLI Command Surface](./documents/engineering/cli_command_surface.md)
+- Exact-keyed desired absence, recovery, and proof-carrying completion:
+  [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
+- Lifecycle roles and physical recovery topology:
+  [Lifecycle Control-Plane Architecture](./documents/engineering/lifecycle_control_plane_architecture.md)
+- Tiered configuration and authority:
+  [Config Doctrine](./documents/engineering/config_doctrine.md)
+- Vault authentication, durability, and sealed-state behavior:
+  [Vault Doctrine](./documents/engineering/vault_doctrine.md)
+- AWS-specific lifecycle adapters:
+  [AWS Integration Environment Doctrine](./documents/engineering/aws_integration_environment_doctrine.md)
+- Concurrency and fault-analysis method:
+  [Chaos Hardening Doctrine](./documents/engineering/chaos_hardening_doctrine.md)
 
-When a `prodbox` subcommand is the documented entrypoint for an operation, running it does not
-need separate user approval beyond the user's original request. The "confirm before mutating
-shared infrastructure" rule applies to ad-hoc shell commands and to operations that bypass the
-prodbox surface — not to invoking prodbox itself.
+## Documentation Handoff
 
-If a `prodbox test all` or other lifecycle run is interrupted mid-flight, prefer letting the
-idempotent reconcile finish (or re-running the same command) over manual cleanup.
-
-## AWS Substrate Provisioning Ownership
-
-**The prodbox test harness is the exclusive owner of every AWS resource the project
-touches.** Every AWS API call (creates, reads, updates, deletes, IAM, ECR, S3, Route 53,
-SES, EKS, EC2, …) flows through the test harness via the `prodbox` command surface.
-There is no second supported owner of AWS resources — no "operator runs `aws` CLI on
-the side", no "Claude provisions a test bucket", no ad-hoc `eksctl` or `terraform` or
-`pulumi up` invocations. Resources the harness needs are created by the harness;
-resources the harness no longer needs are destroyed by the harness.
-
-The supported entrypoints are:
-
-- `prodbox aws stack <stack> reconcile` / `prodbox aws stack <stack> destroy --yes` for
-  every Pulumi-managed substrate stack. The names `aws-eks`, `aws-eks-subzone`,
-  `aws-test`, `aws-ses` (and any future AWS substrate stacks) are the *registry*
-  identities; the CLI verb in the `<stack>` slot differs for three of them — it is
-  `eks`, `aws-subzone`, `test`, and `aws-ses` respectively (e.g.
-  `prodbox aws stack eks reconcile`, not `prodbox aws stack aws-eks reconcile`). The
-  authoritative registry-name↔CLI-verb mapping is the generated table in
-  [DEVELOPMENT_PLAN/substrates.md](DEVELOPMENT_PLAN/substrates.md) (§ stack command
-  surface).
-- `prodbox aws setup` / `prodbox aws teardown` for the IAM user provisioning loop.
-- `prodbox test integration ... --substrate aws` and `prodbox test all` for the
-  end-to-end substrate-aware validation runs.
-
-Rules:
-
-- Do not invoke `pulumi up`, `pulumi destroy`, `pulumi stack`, `aws` CLI mutations,
-  `eksctl`, `terraform`, or any other ad-hoc tool to create, modify, or delete AWS
-  resources outside the harness. If a needed resource isn't being created, that's a
-  bug in the harness's substrate-platform install, not an invitation to fix it
-  manually.
-- Do not manually provision AWS resources "to set up for" a test or "to fill in a
-  gap"; the harness handles provisioning before validations run and teardown after.
-- Do not manually clean up AWS resources after a failed run; re-run the harness (its
-  destroy paths are idempotent) or use the canonical
-  `prodbox aws stack <stack> destroy --yes` entrypoint.
-- Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53
-  list-hosted-zones`, console inspection) are the only ad-hoc commands acceptable —
-  and only when investigating why the harness reports a failure.
-
-The same rule applies to any operator-account-shared AWS resources (e.g., the Phase 8
-SES sending identity and receive-rule-set): they are owned by their dedicated Pulumi
-program under `pulumi/` and reconciled only through `prodbox aws stack ...`, never by
-hand.
-
-When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox aws stack
-<stack> reconcile`, `prodbox aws stack <stack> destroy --yes`, `prodbox aws setup`,
-`prodbox aws teardown`, `prodbox test integration ... --substrate aws`, or
-`prodbox test all` — invoking it does not need separate user approval beyond the
-user's original request. Live AWS spend, EBS / NAT / ALB provisioning, EKS cluster
-lifetime, and SES sending-identity creation are *expected* outcomes of asking the
-harness to provision the AWS substrate, not separate gates. The "confirm before
-mutating shared infrastructure" rule applies only to ad-hoc tooling that bypasses
-the harness — not to invoking the harness itself.
-
-Two AWS resource lifecycle classes — see
-[DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-for the authoritative inventory and the rule that no new AWS resource type may be
-added by any `prodbox` code path without first appearing there:
-
-- **Per-run stacks** (`aws-eks`, `aws-eks-subzone`, `aws-test`) are auto-managed by
-  the harness — provisioned at run start, destroyed at run end on success, failure,
-  and Ctrl-C (Sprint `7.6`).
-- **Long-lived cross-substrate shared infrastructure** (`aws-ses` + the operator-owned
-  Route 53 parent zone) is provisioned once and retained by design. The harness
-  explicitly carves these resources out of postflight auto-destroy because SES domain
-  identity + DKIM verification takes 5–30 min per provision, only one receive rule
-  set may be active per AWS account, and S3 bucket names have a ~24-hour reuse
-  cooldown. Destruction is still through the harness (`prodbox aws stack
-  aws-ses destroy --yes`), just never automatically. A retained SES capture bucket
-  or sending identity is **not orphaned** — it is correctly retained per this class.
-
-## Command Selection: Automation vs Operator-Interactive
-
-`prodbox` has two parallel paths for AWS-substrate work. Automation contexts
-(CI, agents, scripted workflows) **must** use the automation column. The
-operator-interactive commands refuse to run when stdin is not a TTY and exit
-1 with a pointer to the automation equivalent — so if you see one of those
-prompts, you have picked the wrong command, not hit a blocker.
-
-| Task | Automation path (harness, non-interactive) | Operator-interactive path |
-|------|--------------------------------------------|----------------------------|
-| Drive a full AWS-substrate validation run | `prodbox test all --substrate aws` | (no single command — `aws setup` then per-validation, manual) |
-| Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
-| Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
-| Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
-| Wipe-and-rebuild the local cluster (leak-safe) | `prodbox cluster delete --cascade` (already non-interactive) | same |
-| Total teardown including long-lived shared infrastructure | (no automation alias — compose `prodbox aws stack aws-ses destroy --yes` + `prodbox aws teardown` + `prodbox cluster delete --cascade` + long-lived state-bucket cleanup individually) | `prodbox nuke` |
-| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <stack> reconcile` |
-| Destroy a Pulumi stack | `prodbox aws stack <stack> destroy --yes` (already non-interactive) | same |
-| Author repo config | edit the binary-sibling `prodbox.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
-| Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
-
-The automation path materializes operational `aws.*` from
-`aws_admin_for_test_simulation.*` in `test-secrets.dhall` via the
-suite-level IAM harness, runs validations, then clears `aws.*` and
-auto-destroys per-run stacks on suite exit (success, failure, or Ctrl-C).
-The retained `aws-ses` long-lived stack is intentionally **not**
-auto-destroyed (cross-substrate shared infrastructure). Live AWS spend is
-expected; no separate approval needed beyond the user's original request.
-
-**Common mistake**: running `prodbox aws setup` from a non-TTY context and
-reporting the interactive prompt as a blocker. The correct response is to
-run `prodbox test all --substrate aws` (or the targeted integration
-command) — the harness handles credentials non-interactively. The
-interactive command will refuse with `exit 1` and the message names the
-automation equivalent.
-
-**Common mistake**: attempting to invoke `prodbox nuke` from automation
-(CI, agents, scripted workflows). The command refuses non-TTY by design;
-it exists only as an operator-driven total-teardown entrypoint that
-requires the typed confirmation literal `NUKE EVERYTHING`. Automation
-contexts must instead compose the canonical commands individually:
-`prodbox aws stack aws-ses destroy --yes`, `prodbox aws teardown`,
-`prodbox cluster delete --cascade`, and (if the long-lived
-`pulumi_state_backend` bucket should also be destroyed) the explicit
-S3 bucket-destroy step.
-
-## Substrate Equivalence
-
-**The home local substrate and the AWS substrate stand up the same set of services.**
-Both run the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`,
-`vscode`, `api`, `redis`, `websocket`) plus the same supporting platform pieces:
-MinIO, the in-cluster registry (single-binary `registry:2`), the Percona PostgreSQL
-operator, Envoy Gateway, cert-manager, real
-ZeroSSL via cert-manager DNS01. The two substrates differ in their lower-layer
-load-balancer (MetalLB on home, AWS Load Balancer Controller on EKS) and their
-Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
-`prodbox aws stack aws-subzone reconcile` on AWS) — nothing else.
-
-This means:
-
-- The in-cluster registry (`registry:2`) + MinIO + Percona are installed on **both**
-  substrates. The AWS substrate is not a "no-registry" cluster; if
-  `prodbox charts reconcile ... --substrate aws` fails because chart pods can't reach
-  `127.0.0.1:30080/prodbox/...`, the fix is to bring the registry (and its MinIO
-  storage backend, and the Percona operator) up on EKS via the substrate-platform
-  install — not to render different image references. The registry has no web UI, so
-  there is no admin route to reconcile — only the MinIO console `/minio` admin route.
-  For continuity the registry's Kubernetes namespace and front-door Service are still
-  named `harbor`.
-- The chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs
-  across both substrates: `127.0.0.1:30080/prodbox/...` (the in-cluster registry on
-  whichever substrate is active). The substrate-aware code in
-  `Prodbox.Lib.AwsSubstratePlatform` is responsible for making `127.0.0.1:30080`
-  resolve on EKS too (via an EKS-side registry + node-local registry proxy, mirroring
-  the home cluster's NodePort-on-127.0.0.1 pattern).
-- `prodbox edge status`, `prodbox charts reconcile`, and the canonical
-  `prodbox test integration ... --substrate aws` validations all assume substrate
-  equivalence and route through the same chart-platform code paths.
-
-When something on the AWS substrate looks "missing", the answer is almost always
-"the harness needs to install it" — not "the substrates are different, work around
-it". The harness owns AWS; if AWS lacks a piece the home cluster has, that's a
-Sprint 7.5.b/7.5.c follow-up to extend the harness, never an operator workaround.
-
-## Git Workflow Policy
-
-**CRITICAL: Claude Code is NOT authorized to commit or push changes.**
-
-- Never run `git commit`, `git push`, `git add`, or any git command that modifies repository state.
-- Leave all changes as uncommitted working directory changes.
-
-## Pure FP Doctrine
-
-> **SSoT**: [Pure FP Standards](documents/engineering/pure_fp_standards.md)
-
-### Purity Boundary
-
-| Code Location | Purity | Allowed |
-|---------------|--------|---------|
-| DAG builders, renderers, validation helpers | Pure | No I/O |
-| Interpreter and command runners | Effectful | Subprocesses, files, network |
-| Main command entrypoints | Effectful | Exit orchestration and user-facing rendering |
-
-### Key Rules
-
-1. Keep side effects at command or interpreter boundaries.
-2. Prefer explicit ADTs over ad-hoc strings.
-3. Use exhaustive pattern matching.
-4. Return structured errors for ordinary control flow.
-5. Keep configuration decoding and validation explicit.
-
-## Current Worktree CLI Tool
-
-Canonical developer entrypoints:
-
-```bash
-cabal build --builddir=.build exe:prodbox
-mkdir -p .build
-cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
-chmod +x .build/prodbox
-# Generate the binary-sibling Tier-0 config (./.build/prodbox.dhall) — the binary owns
-# its config and resolves it beside the executable; it fails fast if absent.
-./.build/prodbox config generate
-./.build/prodbox --help
-./.build/prodbox dev check
-./.build/prodbox test unit
-./.build/prodbox test integration cli
-./.build/prodbox test integration env
-```
-
-Named infrastructure-backed validation commands such as
-`./.build/prodbox test integration aws-iam` and
-`./.build/prodbox test integration public-dns`
-run real native Haskell validation flows and require the environment named by their prerequisite
-contracts.
-
-## Testing Philosophy
-
-> **SSoT**: [Unit Testing Policy](documents/engineering/unit_testing_policy.md)
-
-- Pure code should be testable without mocks.
-- Built-frontend CLI and env proof lives in `test/integration/Main.hs` through
-  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs`.
-- Named `prodbox test integration ...` commands execute native validation flows through
-  `src/Prodbox/TestValidation.hs`.
-- Missing prerequisites must fail fast with actionable errors.
-
-## Documentation
-
-- [Development Plan](./DEVELOPMENT_PLAN/README.md)
-- [Engineering Docs Index](./documents/engineering/README.md)
-- [Documentation Standards](./documents/documentation_standards.md)
-- [CLI Command Surface](./documents/engineering/cli_command_surface.md)
-- [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)
+When changing architecture or lifecycle behavior, update the owning doctrine and the Development
+Plan surfaces required by
+[Development Plan Standards](./DEVELOPMENT_PLAN/development_plan_standards.md). Use
+[legacy-tracking-for-deletion.md](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md) for surviving
+compatibility or removal work. Do not create a status ledger or operational-rule copy in this file.

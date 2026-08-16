@@ -227,8 +227,9 @@ local substrate and the AWS substrate mirror and consume the **same** image refs
 This is the image-pipeline statement of the substrate-equivalence mechanism; the chart-platform
 side is in
 [helm_chart_platform_doctrine.md § 3A](./helm_chart_platform_doctrine.md#3a-substrate-equivalence-mechanism),
-and the project-level rule is in [../../CLAUDE.md](../../CLAUDE.md) "Substrate Equivalence" and
-[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md).
+and the project-level rule is in
+[AGENTS.md, “Substrate Equivalence”](../../AGENTS.md#substrate-equivalence) and the canonical
+[substrate inventory](../../DEVELOPMENT_PLAN/substrates.md).
 
 ## 4. RKE2 Mirror Behavior
 

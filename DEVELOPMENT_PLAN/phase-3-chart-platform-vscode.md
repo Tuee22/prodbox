@@ -10,6 +10,15 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-15 on Sprint `3.41` (Standards A/L/P).** The measured teardown
+counterexample reported the external caller ServiceAccount unobservable but, because stderr was
+discarded, did not establish the cause or whether the Kubernetes API was reached. It is not evidence
+that the ServiceAccount disappeared. Source inspection independently found only a latent lifetime
+coupling: the identity is rendered under Gateway/application chart lifetime, which ordinary recovery
+is allowed to remove and therefore cannot rely on. This phase owns the rendered workload/identity topology, so `3.41` is
+Active for a bootstrap-core minimal teardown profile. The change moves process topology and
+capability wiring; deployment qualification is invalidated and remains pending.
+
 ✅ **Reclosed 2026-08-15 on Sprint `3.40` (Standards A/N).** The pre-Vault Broker graph gate now
 admits only after the Deployment controller has observed the requested generation and produced every
 updated replica; it does not require post-Vault availability. The changed arm is live-proven: the
@@ -28,8 +37,8 @@ live Standard-P qualification run — the first time this plan gained work from 
 rather than reading it. `3.36` fixed the mirror publication path that published a whole
 multi-architecture manifest index; `3.37` moved the `cert-manager` pin off an upstream artifact that
 is itself unpublishable. Sprint `3.35` reclosed the phase before them, giving the control-plane listen
-port and the in-cluster role-URL shape one compiled owner each. Every sprint in this document reads
-`✅`; the phase has no open work.
+port and the in-cluster role-URL shape one compiled owner each. At that dated reclose, every sprint
+then present in this document read `✅` and the phase had no open work.
 
 **Status correction (2026-08-14, Standard C).** This header led with the `🔄 Reopened 2026-08-10 on
 Sprint 3.34` paragraph until today, while all 37 sprint blocks in this file read `✅ Done` and
@@ -220,6 +229,11 @@ probe binding while those earlier closures remain valid.
 
 ## Phase Summary
 
+Current Sprint `3.41` expands this phase's physical-rendering ownership with the
+bootstrap-owned ordinary teardown recovery projection and caller ServiceAccount/RBAC. It is Active;
+the existing Gateway-owned external-caller lifetime is the pre-cutover baseline, not the target.
+Phase 4 consumes the opaque rendered recovery plan and owns cleanup execution.
+
 This phase owns the Haskell chart platform and retained-storage orchestration while preserving
 deterministic PV/PVC rebinding and the supported public workload delivery model. It owns retained
 storage, in-cluster-registry-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
@@ -252,6 +266,9 @@ cluster or later phase.
 
 ## Current Baseline In Worktree
 
+- The ordinary teardown recovery projection and bootstrap-owned external caller are not yet
+  implemented. The current external lifecycle caller remains coupled to Gateway rendering until
+  Sprint `3.41` lands and Sprint `6.5` activates the replacement composition.
 - The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
   `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, and
   `src/Prodbox/PostgresPlatform.hs`.
@@ -1135,7 +1152,7 @@ pre-install Jobs for the two releases with derived inventory entries
   unsuffixed `gateway` ClusterIP Service in the gateway namespace,
   selecting any gateway pod (selector intentionally omits the
   `gateway-node` label). This is the third Service shape per
-  [doctrine §5](../documents/engineering/secret_derivation_doctrine.md#5-host-cluster-boundary)
+  [doctrine §6](../documents/engineering/secret_derivation_doctrine.md#6-hostcluster-boundary)
   — the in-cluster RPC entrypoint at
   `gateway.gateway.svc.cluster.local:8443`. The per-node `gateway-<nodeId>`
   ClusterIPs (peer-gossip event channel) and the `gateway-nodeport`
@@ -4164,30 +4181,107 @@ cannot be required to satisfy its post-Vault readiness contract before that tran
 None on the code-owned surface. Current-revision aggregate qualification remains pending under
 Standard P.
 
+## Sprint 3.41: Bootstrap-Owned Teardown Control Plane [🔄 Active]
+
+**Status**: Active (opened 2026-08-15). The doctrine and ownership boundary are defined; chart,
+renderer, and interpreter work remains.
+**Blocked by**: none.
+**Deployment qualification**: pending — process topology, identity ownership, capability wiring,
+and teardown lifetime change.
+**Doctrine**: [Lifecycle Control-Plane Architecture § 11.0, “Ordinary teardown recovery
+profile”](../documents/engineering/lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile)
+and [Helm Chart Platform Doctrine § 1C, “Lifecycle Control-Plane Workload
+Rendering”](../documents/engineering/helm_chart_platform_doctrine.md#1c-lifecycle-control-plane-workload-rendering).
+**Implementation**: `src/Prodbox/Config/ComponentGraph.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `charts/bootstrap-broker/`,
+`charts/lifecycle-authority/`, `charts/provider-worker/`, and the bootstrap-core caller
+ServiceAccount/RBAC renderers; target a pure component-graph projection for the minimal profile.
+**Live-proof**: pending and non-blocking for code-local closure; Standard P requires stopped/absent
+RKE2 recovery on the operator host before public activation.
+**Independent Validation**: pure component-closure and chart-render tests, Helm/chart lint,
+`prodbox test unit`, and `prodbox dev check`; no live cluster or later phase is required.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`, root `README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Render the smallest ordinary teardown control plane from the same component graph and authorities as
+normal operation, with a caller identity whose lifetime is independent of Gateway and application
+charts.
+
+### Measured defect
+
+Repository rendering places `prodbox-control-plane-operator` under Gateway-owned external-caller
+values, so teardown has a latent dependency on a workload whose chart and namespace it may remove;
+source structure alone does not show that it was removed in this run. The trace's
+preliminary observation reported “ServiceAccount is not observable,” but its discarded stderr means
+the trace does not prove that the ServiceAccount was absent, that authentication failed, or even
+that the API was reached. What it does prove is that no drain request reached the Kubernetes API;
+source inspection independently proves Prodbox lacks a bootstrap-owned caller identity with which
+to repair the lifecycle roles. This sprint corrects that topology defect without attributing the
+observation failure to Kubernetes.
+
+### Deliverables
+
+- Add an `OrdinaryTeardownRecovery` component-graph projection whose dependency closure contains
+  only RKE2/API, retained MinIO and Vault bindings, the bounded Broker unseal/baseline path, the
+  bootstrap-core external CLI identity, Lifecycle Authority, Backup Adapter, Provider Worker, and a
+  Target Agent only when an exact cleanup obligation requires it.
+- Move the external CLI ServiceAccount and exact RBAC from Gateway/application chart lifetime into
+  bootstrap core. Deleting Gateway, public workloads, or their namespaces must be unable to delete
+  that identity.
+- Render distinct policies, NetworkPolicies, resource envelopes, queues, readiness identities, and
+  storage bindings. The profile may not render Gateway Runtime or application charts.
+- Provide repair/reinstall plans against the existing `.data` roots. No second MinIO/Vault writer,
+  host-root-token route, generic object-store endpoint, or ambient AWS credential is admitted.
+- Expose the profile as pure requested capabilities plus derived dependency closure; Phase 4 owns
+  its lifecycle execution, not this phase.
+
+### Validation
+
+1. A complete component table proves the exact recovery set on stopped, absent, and healthy local
+   substrate inputs; duplicate/missing dependency and application/Gateway inclusion are refused.
+2. Rendered-resource tests prove the caller identity, RBAC, policy, QoS, NetworkPolicy, and retained
+   PV bindings are distinct and bootstrap-owned.
+3. A deletion projection for Gateway and every application namespace leaves the teardown caller
+   identity and recovery roles present.
+4. The recovery profile and normal profile derive shared coordinates from one registry; no copied
+   port, ServiceAccount, storage path, or role URL is accepted.
+5. `prodbox dev lint chart`, unit tests, and `prodbox dev check` pass.
+
+### Remaining Work
+
+Implement the projection, move the caller identity, delete the Gateway-owned compatibility
+rendering, and hand the opaque recovery-profile plan to Sprint `4.86`. The legacy row remains
+Pending Removal until Gateway deletion is proven unable to remove or strand teardown authority.
+
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/vault_doctrine.md` - § 20.1's declared-real arm and § 6.1's bootstrap-floor
-  registration are the rules these two sites now satisfy; the doctrine is authored by Sprint `0.20`.
-- `documents/engineering/helm_chart_platform_doctrine.md` - the probe/route single-source rule states
-  a property of every chart while the lint covers seven charts on hand-listed filenames. Sprint
-  `0.26` records that region correction in place; Sprint `3.34` makes the widened claim true.
-- `documents/engineering/code_quality.md` - the chart forbidden-literal lint's region, and the fact
-  that no gate reads a chart `networkpolicy.yaml` for content.
-- `documents/engineering/chaos_hardening_doctrine.md` - the observation-layer rule Sprint `3.34`
-  implements is authored by Sprint `0.26`.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — the ordinary teardown recovery
+  profile, its bounded authority closure, and the prohibition on a second host-direct writer.
+- `documents/engineering/helm_chart_platform_doctrine.md` — bootstrap-core ownership of the
+  teardown caller identity and the exact chart/component projection.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the lifecycle consumer contract;
+  this phase owns rendering and identity lifetime, not cleanup execution.
 
 **Product docs to create/update:**
 
-- None.
+- Root `README.md` — distinguish local-only delete from recover-to-clean cascade.
 
 **Cross-references to add:**
 
 - Record the Phase `3` own-surface reopen in [README.md](README.md) and
-  [00-overview.md](00-overview.md). Engineering docs name owning sprints sparingly and link the
-  Development Plan; sprint status lives only in the plan suite.
+  [00-overview.md](00-overview.md), the topology in [system-components.md](system-components.md),
+  and the exact Gateway-owned identity residual in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Sprint status lives only in
+  the plan suite.
 
 
 ## Related Documents

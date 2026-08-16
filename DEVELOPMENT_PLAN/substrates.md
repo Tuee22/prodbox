@@ -42,10 +42,11 @@ consumes only that substrate's operator-supplied config (`Required Config` row i
 substrate's table) and provisioned infrastructure, and fails fast if any required field is
 missing. There is no silent substitution of home-substrate values for missing AWS-substrate
 config, and no silent substitution of AWS values for missing home config. The substrate-aware
-helpers `substratePublicFqdn` and `substrateHostedZoneId` in
-`src/Prodbox/PublicEdge.hs` (alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig`
-for substrate-aware kubeconfig materialization), together with the prerequisite DAG and
-the lifecycle gates, enforce this contract.
+helpers `substratePublicFqdn` and `substrateHostedZoneId` in `src/Prodbox/PublicEdge.hs` enforce the
+configured public-edge half today. The durable run descriptor, exact AWS observers, and typed
+provider-issued EKS drain session are the Sprint-`7.36` teardown target. The current pre-cutover
+cascade still derives EKS access from checkpoint material; that residual is not substrate authority
+and remains Pending Removal.
 
 See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
@@ -116,12 +117,11 @@ Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mec
    is **not** a unified step DAG — each substrate keeps its own ordering and its own lower-layer
    implementation — but neither installer may silently drop a shared component.
 
-Sprints `3.26` and `7.33` expand that typed shared inventory and its coverage test with the
-Bootstrap Broker and substrate-local Target Secret Agent. Until those implementation sprints land,
-the existing generated/current registry remains historical implementation truth; Standard-P
-status is recorded only in [README.md](README.md#deployment-qualification). The retained Lifecycle Authority is intentionally not duplicated
-in that per-substrate list: it is one cross-substrate control-plane dependency hosted by the
-retained home control plane.
+Sprints `3.26` and `7.33` supplied the typed shared-inventory and coverage-test foundations for the
+Bootstrap Broker and substrate-local Target Secret Agent. The current-to-target correspondence and
+Standard-P state are recorded only in [README.md](README.md#deployment-qualification). The retained
+Lifecycle Authority is intentionally not duplicated in that per-substrate list: it is one
+cross-substrate control-plane dependency hosted by the retained home control plane.
 
 The target `gateway` entry above means Gateway mesh on both substrates and the registered DNS
 mutation capability on home only; EKS Gateway DNS is disabled. Each emitter has one encrypted,
@@ -173,8 +173,11 @@ Block storage is likewise identical in **discipline** across both substrates and
 **source**: every PV is a static, no-provisioner, `Retain`, `claimRef`-bound volume with
 deterministic rebinding — a `hostPath` under `.data/` on home, a pre-created EBS volume lifted in via
 the EBS CSI `volumeHandle` (AZ-pinned) on EKS. There is no dynamic provisioning on either substrate.
-Production retains the EBS volumes exactly as it retains `.data/`; the test harness deletes only
-test-scoped EBS at suite postflight (Sprints `7.28`, `4.39`, `4.40`). The volume source is one of the
+Production retains the EBS volumes exactly as it retains `.data/`; suite cleanup selects only
+test-scoped EBS. **Current:** one `aws-ebs-volumes :: LongLived` registry identity is partitioned by
+provider tags and successful deletion is provider-exit evidence, not exact absence read-back.
+**Target:** the statically `PerRun` test family can close only after exact absence read-back; partial
+or unobservable cleanup remains incomplete. The volume source is one of the
 genuinely substrate-specific LOWER-layer differences (alongside the ingress load-balancer and
 Route 53 hosting), owned by
 [../documents/engineering/storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md).
@@ -186,7 +189,7 @@ attestations, and downstream-cluster inventory as secret data — is governed by
 it is a cross-cluster trust relationship, not a substrate distinction, so it does not change the
 substrate-equivalence invariant above (both substrates still stand up the identical service set).
 See [../documents/engineering/vault_doctrine.md → §2 The fail-closed invariant](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
-and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
+and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model-and-durability).
 
 ## Substrate Vocabulary and Orthogonal Axes
 
@@ -210,14 +213,14 @@ independently and none overloads the others.
 | Field | Value |
 |-------|-------|
 | Provision | `prodbox cluster reconcile` followed by `prodbox charts reconcile <chart>` for the canonical chart set |
-| Teardown | `prodbox cluster delete --yes` (local uninstall that preserves retained host roots and leaves per-run AWS stacks untouched); `prodbox cluster delete --cascade` also destroys per-run AWS stacks before uninstall |
+| Teardown | Current `prodbox cluster delete --yes` is local-only. Target `prodbox cluster delete --cascade --yes` (pending Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`) starts/resumes recover-to-clean. Private `ReadyToUninstallEvidence` admits uninstall only from exact clean evidence, a backed-up/read-back pre-uninstall report, and its one-shot permit; it is not completion. `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` plus the matching read-back `LocalCompletionReceipt`. Incomplete runs return `CleanupRunId` plus `RecoveryPlaneDisposition` and claim a live plane only when the disposition is `Established`, never when `NotEstablished` or `Lost`. |
 | Target inventory | Local RKE2 cluster on the operator host; MetalLB L2/BGP; Envoy Gateway; cert-manager with real ZeroSSL; registry + MinIO + Vault + Percona; the supported application charts; a physically separate pre-Vault Bootstrap Broker; the retained Lifecycle Authority; a home Target Secret Agent with closed SES-SMTP/ACME-EAB custody; private Backup/TLS Adapters and Provider Worker; permit-created Credential Provisioner, External Material Ingress, and Admin Action Runner Jobs; and mesh/DNS-only Gateway Runtime replicas, each with its own encrypted identity-bound retained journal. The authority stores one bounded CAS aggregate/outbox plus immutable encrypted checkpoint blobs in retained home `prodbox-state`; the target agent alone mutates allowlisted home Vault KV. |
 | Required Config | `route53.zone_id`, `domain.demo_fqdn`, non-secret `acme.*` coordinates (ZeroSSL `server`, account email, and the typed requirement for an EAB generation), `deployment.*`, and non-secret `ses.*` coordinates (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation). `config setup` remains Tier-0-only. ACME EAB material enters through its distinct schema-indexed external-material permit/ingress; it never reuses the AWS-admin session. Elevated/admin AWS power enters prodbox only through the interactive `SecretRef.Prompt`; under the harness the test-only `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` (TestPlaintext, never imported by production config, never in Vault) simulates that prompt for the bounded identity plan and explicit admin actions. Missing any required coordinate or required material receipt fails fast; the home substrate does not fall back to AWS-substrate values. |
 | Target capability prerequisites | Existing host/config/Kubernetes/AWS prerequisites plus exact operation-indexed `CapabilityRef` admission for Bootstrap Broker Vault recovery, retained Lifecycle Authority observe/CAS/submit, the home Target Secret Agent observe/CAS/read-back, and Gateway mesh/DNS. Each reference binds the service identity, authority/substrate scope, endpoint, epoch or generation, and one absolute latency budget; none may substitute for another. |
-| Phase ownership (provision/teardown) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| Suite parity | Required coverage: Sprints `1.61`–`6.4` provide prerequisite home evidence; Sprint `8.12` reruns `LCPC-2026-07-11`, consecutive home aggregates, exact identities/envelopes/load, fault isolation, canonical restoration, invite flow, and residue re-observation as the sole final owner. Earlier runs remain revision-scoped historical evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
+| Phase ownership (provision/teardown) | Phase 3 Sprint `3.41` renders recovery topology; Phase 4 Sprints `4.84`–`4.86` own the generic kernel/candidate; Phase 6 Sprint `6.5` owns the qualification-gated public generic/home activation and legacy deletion. |
+| Suite parity | Required teardown prerequisites: Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`. Sprint `8.12` then reruns `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`, consecutive home aggregates, exact identities/envelopes/load, fault isolation, canonical restoration, invite flow, and residue re-observation as the sole final owner. Earlier runs remain revision-scoped historical evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
 | Resource isolation | Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and Gateway Runtime have distinct workloads, Services, ServiceAccounts, Vault policies, NetworkPolicies, resource envelopes, queues, and readiness identities. Gateway CPU pressure cannot consume retained-authority admission or target delivery. |
-| Cleanup | The suite registers cleanup before mutation and executes the always-run DAG: stop new work/transports; resolve nonterminal authority operations; restore home control plane and charts; destroy per-run AWS/reap test EBS; remove operational IAM only after credential-dependent cleanup; re-observe every lifecycle class and aggregate all failures. |
+| Target cleanup | Every mutating client receipt-registers exact obligations before mutation. The lifecycle kernel resumes nonterminal runs, restores only required cleanup capabilities, reconciles exact desired absence, retains long-lived resources, audits escapes separately, and returns distinct scoped `ReadyToUninstallEvidence` and `CascadeCompleteEvidence` or a stable incomplete `CleanupRunId` with `RecoveryPlaneDisposition`. This target is not the current public cascade until current-revision qualification permits Sprint `6.5` to activate it. |
 | Notes | The home cluster hosts the retained Lifecycle Authority and is also a canonical-suite substrate. Gateway charts no longer carry bootstrap, generic object-store, Pulumi, lifecycle, SES, or target-secret proxy authority. |
 
 **Host provider dimension.** The home local substrate is host-native on Linux, but the same
@@ -233,15 +236,15 @@ reached, never *which* services are stood up, so substrate equivalence is preser
 | Field | Value |
 |-------|-------|
 | Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
-| Teardown | `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes` |
+| Teardown | Current explicit surfaces are `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes`. Sprint `7.36` targets exact independent desired-absence adapters for `aws-eks`, `aws-eks-subzone`, and `aws-test`, so each public destroy and cascade projection consumes the same durable node and exact read-back. Existing pre-manifest stacks with unusable checkpoints enter only the bounded, plan-confirmed legacy-adoption protocol described below; discovery alone never authorizes mutation. |
 | Historical inventory | Three per-run Pulumi stacks: registry `aws-eks` / Pulumi stack id `aws-eks-test` (dedicated VPC, EKS cluster/node group/IAM/security group), `aws-eks-subzone`, and `aws-test`. Sprint `7.30` historically accessed opaque Model-B state through the gateway daemon object-store API; that transport is the pre-cutover baseline scheduled for deletion in Sprint `4.50`, not the target architecture. Sprint `7.29`'s fresh-EKS-VPC guarantee remains valid. |
 | Target inventory | The same substrate-local service set as home: cert-manager + real ZeroSSL, Envoy Gateway, registry + MinIO + Vault + Percona, canonical application charts, a physically separate Bootstrap Broker, an AWS Target Secret Agent, and Gateway Runtime replicas whose mesh remains active but whose DNS mutation capability is disabled, with encrypted identity-bound journals on pre-created static `Retain` EBS PVs. Cross-substrate Pulumi/lifecycle operations use the explicit retained home Lifecycle Authority and its aggregate/immutable blobs; the AWS target agent owns only allowlisted AWS-substrate Vault KV CAS/read-back. Gateway and target-agent endpoints cannot be used as retained authority. The lower-layer differences remain MetalLB versus AWS Load Balancer Controller/NLB, parent zone versus delegated subzone, and hostPath versus pre-created EBS. |
 | Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Target capability prerequisites | Existing AWS/config/stack prerequisites plus exact operation-indexed `CapabilityRef` admission for the EKS Bootstrap Broker, retained Lifecycle Authority observe/CAS/submit, the AWS Target Secret Agent observe/CAS/read-back, and EKS Gateway mesh. The AWS A-record mutation reference belongs to retained Lifecycle Authority's registered provider intent; no EKS Gateway DNS reference exists. The retained authority reference is control-plane-scoped; the target-agent reference is AWS-substrate-scoped. No missing AWS coordinate falls back to home, and no target coordinate is promoted to authority. |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| Suite parity | Required coverage: Sprint `7.33` provides prerequisite AWS isolation evidence; Sprint `8.12` is the sole final owner of AWS `LCPC-2026-07-11`, consecutive AWS aggregates, exact retained-authority/target routing, EKS replacement, fault isolation, invite specialization, and full cleanup. Historical runs remain revision-scoped evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
+| Suite parity | Required coverage: Sprint `7.33` provides prerequisite AWS isolation evidence and Sprint `7.36` provides exact teardown-adapter evidence; Sprint `8.12` is the sole final owner of AWS `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`, consecutive AWS aggregates, exact retained-authority/target routing, EKS replacement, fault isolation, invite specialization, and full cleanup. Historical runs remain revision-scoped evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
 | Resource isolation | EKS renders separate broker, target-agent, and gateway workloads/identities/envelopes; retained Lifecycle Authority transport is independent. The fault campaign must show gateway throttling/restart cannot consume authority or target-agent admission and EKS replacement refreshes every role-specific client. |
-| Cleanup | The shared always-run DAG drains transient transports, resolves retained operations, restores the home authority/control plane, destroys all per-run AWS stacks and test EBS, removes each role-specific IAM/key resource only after its dependent cleanup, commits the corresponding Vault tombstone, and authoritatively re-observes absence/retention for every class on success, failure, and cancellation. |
+| Target cleanup | The shared lifecycle graph observes each stack independently, drains EKS only through a positive-evidence expiring session, restores checkpoint backup or uses a complete ownership manifest, reconciles exact controller/stack/EBS absence, then disposes Operational credentials and audits normalized escapees. For known pre-manifest VPC/EKS/Route 53/test-stack families, a provider-native read-only observer must enumerate the complete registry-bounded family; an explicit admin permit over the exact rendered-plan digest may then receipt-commit and read back a `ConfirmedLegacyAdoptionManifest` before mutation. Missing, extra, ambiguous, partial, or unobservable candidates refuse. A retained bucket is never per-run inventory. This is pending Sprint `7.36`, not a claim about the current cascade. |
 | Notes | The AWS substrate is exclusively a test substrate. There is no production EKS cluster that `prodbox` manages. The literal stack names (`aws-eks-test`, `aws-test`) reflect that; the retained Lifecycle Authority remains a cross-substrate control-plane dependency, not an EKS gateway service. |
 
 ## Deployment Qualification Requirements
@@ -253,8 +256,8 @@ sole status/evidence ledger is
 
 | Substrate | Required current-revision evidence | Evidence/status owner |
 |-----------|------------------------------------|-----------------------|
-| Home local | Consecutive full aggregates under authored resource envelopes; `LCPC-2026-07-11` old/new results; gateway saturation/restart while retained work continues; authority restart at every CAS/journal boundary; Target Secret Agent outage/resume; client cancellation and applied-but-response-lost recovery; always-run cleanup with canonical restoration and residue re-observation | [README.md → Deployment Qualification](README.md#deployment-qualification) |
-| AWS | The home matrix plus AWS `LCPC-2026-07-11`, exact retained-authority/AWS-target `CapabilityRef` binding, EKS replacement/client refresh, target-agent isolation, per-run stack/EBS/DNS/IAM cleanup, and the full durable invite workflow against AWS-owned DNS/TLS/ingress | [README.md → Deployment Qualification](README.md#deployment-qualification) |
+| Home local | Two `prodbox test all --substrate home-local` runs and two `prodbox cluster delete --cascade --yes` cycles under complete secret-safe identities; `LCPC-2026-07-11`; stable `TEARDOWN-2026-08-15`; constant background load/fault schedule/topology-normalized total CPU, memory, ephemeral storage, and persistence; exact old→new envelope mapping and separate production profile; recovery-profile reinstall/start; every interruption transition; exact intended-retained set with zero unexpected resources; private `ReadyToUninstallEvidence` from the backed-up/read-back pre-uninstall report and permit; separately, `CascadeCompleteEvidence` from exact `LocalUninstallEvidence` and the matching read-back completion receipt; and each incomplete arm's exact `RecoveryPlaneDisposition` | [README.md → Deployment Qualification](README.md#deployment-qualification) |
+| AWS | The home matrix plus two `prodbox test all --substrate aws` runs, all three exact stack destroy commands, and repeated cascade; independent observation of all three stacks; primary/backup/write-ahead-manifest/incomplete-manifest decision arms; the bounded plan-confirmed legacy-adoption success and every refusal arm for pre-manifest VPC/EKS/Route 53/test-stack families; provider-issued EKS drain-session binding; controller-family backstop; AWS unobservability refusal; retained bucket reported exactly once and never attributed to a per-run stack | [README.md → Deployment Qualification](README.md#deployment-qualification) |
 
 A point readiness response, a green historical aggregate, or one substrate's evidence cannot
 qualify the other substrate. Qualification is invalidated by changes to topology, capability
@@ -280,16 +283,18 @@ same-generation commitment drift refuses, and the authority completes an outbox 
 mandatory target read-back. Each Gateway Runtime owns only its encrypted local emitter journal;
 no authority aggregate, Pulumi checkpoint, SES lease, or target secret is gateway state.
 
-Before any destructive mutation, the suite durably commits the pure cleanup DAG and its per-node
-operation IDs. A fenced cleanup-run owner may restart and resume it; completion is not dependent on
-the original runner process surviving. The exact canonical order is owned by Integration Fixture
-Doctrine. This substrate inventory adds the AWS dependency edges: typed EKS drain runs while the
-controllers are live; Certificate/Challenge, registered A/TXT records, and the hosted-zone canary
-are removed/read back before provider destroy; per-run stacks, controller-created load-balancer
-resources, and test EBS are then destroyed/reaped; operational IAM waits for every cleanup that
-uses its generation. AWS drain skip/failure remains a recorded failure, while a `RequiresAttempt`
-edge still runs provider cleanup. The original suite failure and every cleanup failure remain in
-the final Standard-P evidence.
+Before any destructive mutation, every client durably commits the exact cleanup obligations,
+write-ahead ownership manifests (or the bounded independently read-back
+`ConfirmedLegacyAdoptionManifest` for a known pre-manifest stack), and stable node operation IDs. The lifecycle core owns the graph;
+the suite attaches its originating validation result as a client. A fenced owner may restart and
+resume the same run. AWS adds independent keyed observers, the positive-evidence EKS drain session,
+exact controller-family backstops, and per-stack provider desired absence. Operational credentials
+outlive every dependent node. Exact resource/family absence, intended-retention evidence, normalized
+escape audit, and a backup-read-back report may construct `ReadyToUninstallEvidence`; they are not
+completion. Only subsequent exact `LocalUninstallEvidence` plus the matching read-back
+`LocalCompletionReceipt` can construct `CascadeCompleteEvidence`. An incomplete result returns its
+`CleanupRunId` and `RecoveryPlaneDisposition`; the recovery profile is claimed live only when that
+disposition is `Established`, never when `NotEstablished` or `Lost`.
 
 ## Resource Lifecycle Classes
 
@@ -299,13 +304,20 @@ This section is the authoritative classification — when adding a new AWS resou
 table below). Pulumi state lifetime must also match resource lifetime per class; see
 [../documents/engineering/lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
+The generated registry and command tables below describe the current source exactly. The
+hand-maintained lifecycle tables describe the canonical target contract unless a row is explicitly
+labelled **Current** or **Historical**; they do not assert that the corresponding interpreter or
+production wiring has landed. Implementation status and correction ownership live in the
+[Development Plan status](README.md#current-plan-status) and
+[deletion ledger](legacy-tracking-for-deletion.md).
+
 > **Scope note — the Vault durable PV is not an AWS resource.** The in-cluster Vault's durable
 > volume is **local retained state** under `.data/vault/vault/0`, governed by the storage lifecycle
 > doctrine, not by the AWS resource lifecycle classes — so it does **not** appear in the per-run,
 > long-lived, or operational AWS tables below. It is preserved across cluster teardown exactly
 > like the MinIO PV, so a wipe-and-rebuild keeps Vault's sealed
 > ciphertext stores intact. See
-> [../documents/engineering/vault_doctrine.md → §5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model).
+> [../documents/engineering/vault_doctrine.md → §5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model-and-durability).
 
 The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
 and `Prodbox.Aws.longLivedResourceNames` (Sprint `7.7`), which the
@@ -338,6 +350,17 @@ resource cannot be added to the registry without this inventory updating in lock
 | `operational-aws-config` | Operational |
 <!-- prodbox:resource-lifecycle-classes:end -->
 
+**Current versus target EBS status.** The generated block above truthfully reflects the current
+source registry: it has one `aws-ebs-volumes :: LongLived` identity, while the current reaper
+partitions returned provider rows with runtime tags. That is not the accepted target because one
+identity straddles production-retained and test-scoped cleanup policy. Sprint `4.84` must replace
+it in code with two different registered keys: a test-scoped EBS family statically indexed
+`PerRun`, and a production-retained EBS family statically indexed `LongLived`. A creator, observer,
+or cleanup program selects one descriptor before provider observation; tags then prove
+ownership/coordinate/spec agreement and can report mismatch, but never infer or change
+`LifecycleClass`. This table changes only after that source registry lands and
+`prodbox dev docs generate` regenerates the marked section.
+
 The target encrypted gateway emitter journals are retained managed resources. Their implementing
 sprint must add the new resource identity/class to the typed registry and regenerate this section;
 this design change deliberately does not hand-edit the generated table before that code exists.
@@ -362,25 +385,32 @@ registry-generated golden coverage:
 | `aws-ses` | `aws-ses` | `pulumi/aws-ses/` | `prodbox aws stack aws-ses reconcile` | `prodbox aws stack aws-ses destroy --yes` | LongLived |
 <!-- prodbox:stack-command-surface:end -->
 
-### Per-run stacks (auto-managed by the harness)
+### Per-run stacks (target cleanup-managed contract)
+
+The table and composition below define the target shared lifecycle node for each stack. Current
+explicit destroy commands, the validation cleanup wrapper, and cascade remain separate callback-era
+compositions; some validation mutation precedes durable registration, and provider exit/tag audit
+does not prove exact per-stack absence.
 
 | Stack | Provisioned by | Destroyed by | Pulumi state backend |
 |-------|----------------|--------------|----------------------|
-| `aws-eks` | `prodbox aws stack eks reconcile` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox aws stack eks destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`) | Target: immutable encrypted checkpoint blob referenced by the retained Authority aggregate, read back from primary MinIO and independent S3 backup before promotion. Sprint `7.30` gateway transport is pre-cutover. |
-| `aws-eks-subzone` | `prodbox aws stack aws-subzone reconcile` | `prodbox aws stack aws-subzone destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`). Target cleanup first deletes and reads back every exact registered A/TXT/canary owner. A bounded non-NS/SOA sweep is last-resort residue discovery/attempt only; it cannot turn a failed or unobservable exact-owner node into success. | Target: immutable encrypted checkpoint blob referenced by the retained Lifecycle Authority aggregate; no gateway or target-agent backend access. |
-| `aws-test` (HA-RKE2 EC2) | `prodbox aws stack test reconcile` | `prodbox aws stack test destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox cluster delete --cascade` (Sprint `4.11`) | Target: immutable encrypted checkpoint blob referenced by the retained Lifecycle Authority aggregate; no gateway or target-agent backend access. |
+| `aws-eks` | `prodbox aws stack eks reconcile` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | One durable exact desired-absence node consumed by stack destroy, harness postflight, and cascade; completion requires EKS and bounded controller-family absence | Immutable encrypted primary/backup checkpoint pair plus receipt-backed exact write-ahead ownership manifest; neither is resource-presence evidence |
+| `aws-eks-subzone` | `prodbox aws stack aws-subzone reconcile` | One durable exact desired-absence node; every registered A/TXT/canary and hosted-zone coordinate is read back absent independently | Immutable encrypted primary/backup checkpoint pair plus receipt-backed exact ownership manifest; a zone sweep is audit/backstop only |
+| `aws-test` (HA-RKE2 EC2) | `prodbox aws stack test reconcile` | One durable exact desired-absence node consumed by every teardown surface; independent EC2/network absence read-back | Immutable encrypted primary/backup checkpoint pair plus receipt-backed exact ownership manifest; no Gateway or Target-Agent backend access |
 
-Per-run stacks exist only for the lifetime of a suite run that needs them. The harness owns
-the full create/destroy lifecycle; operators do not normally invoke the destroy commands by
-hand because the harness already does so on every exit path. Pulumi checkpoint blobs and the
+In the target composition, per-run stacks exist only for the lifetime of a suite run that needs
+them. The lifecycle core owns
+one cleanup obligation and exact terminal evidence per stack; the harness, explicit destroy
+commands, and cascade are peer clients of that node. The harness schedules cleanup on every suite
+exit path, while operators may invoke the same public destroy surface explicitly. Pulumi checkpoint blobs and the
 authority aggregate live in MinIO on the retained home/control-plane `.data` volume so an
 interrupted run can still be observed and destroyed after cluster rebuild. The retained Lifecycle
 Authority, not a Gateway Runtime or loss of the active cluster, owns operation resumption and
-checkpoint references. The harness ends the AWS resource lifetime and prunes the aggregate
+checkpoint references. The lifecycle cleanup node ends the AWS resource lifetime and prunes the aggregate
 reference only after authoritative destruction and re-observation; immutable-blob garbage
 collection is a separately fenced cleanup.
 
-### Long-lived cross-substrate shared infrastructure (retained by design)
+### Long-lived cross-substrate shared infrastructure (target contracts; retained by design)
 
 | Resource | Provisioned by | Destroyed by | Pulumi state backend |
 |----------|----------------|--------------|----------------------|
@@ -400,7 +430,7 @@ bucket names have a ~24-hour reuse cooldown; and re-ordering the public-edge Zer
 on every rebuild would needlessly consume ZeroSSL issuance quota — the TLS analogue of the SES
 cooldown — so the public-edge certificate is issued once and restored from the long-lived S3
 store on every rebuild rather than re-ordered. Per-run re-provision is impractical at suite
-cadence. The harness explicitly carves these resources out of postflight auto-destroy so
+cadence. Their `LongLived` index excludes them from ordinary postflight desired absence, so
 operators can run the suite at a sane cadence without rebuilding shared infrastructure each
 time. Retention controls teardown only: an invite-capable suite still ensures the desired-present
 provider stack and registered SMTP identity, then retains both. The target `aws-ses` checkpoint is
@@ -428,19 +458,19 @@ account), the supported path is the explicit destroy command in the table above,
 operator-only `prodbox nuke` for total teardown. Target `nuke` exports and fsyncs its signed
 decommission manifest before irreversible work; rerun resumes from the same receipt plus a fresh
 admin prompt, and deletes the Authority backup objects/identity/store last. There is no "managed-by-someone-else"
-category — the harness still owns the create/destroy lifecycle; it simply does not invoke
-destroy on its own for this class.
+category — the `prodbox` surface remains the sole mutation boundary and the lifecycle registry owns
+their create/destroy authority; ordinary cleanup simply cannot select this class.
 
 ### Controller-created and registered DNS AWS resources
 
 | Resource | Created by | Tag signature | Destroyed by |
 |----------|------------|---------------|--------------|
 | EBS volumes for PVCs (superseded → pre-created `Retain`) | **Historically** the EBS CSI driver dynamically responded to `PersistentVolumeClaim` resources. Sprint `7.28` replaced this with **pre-created EBS volumes lifted in as static `Retain` PVs** — a registered managed resource (typed `discover`/`destroy`, Sprint `4.39`), no longer controller-created. | `prodbox.io/managed-by: prodbox` + a retain-vs-test-scoped marker (test volumes also `kubernetes.io/cluster/<cluster-name>: owned`) | Retained on teardown (`Retain`, not Pulumi-owned); test-scoped volumes deleted by the suite postflight reaper (Sprint `4.40`) — **not** the drain. The dynamic path is in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) Completed. |
-| ALBs / NLBs / target groups / listeners / security groups | AWS Load Balancer Controller responding to a registered `Service`/`Ingress` owner | Register account/region/cluster, deterministic manifest/name and tags; create the owner inert, CAS-enrich its Kubernetes-assigned UID, then enable controller mutation and CAS-enrich exact ARNs | Delete the Kubernetes owner while the controller is live, then use the registered bounded AWS-family discover/destroy/read-back program for any survivor. The tag query is a selector for that program and postflight evidence, not a diagnostic-only substitute. |
-| Route 53 TXT records (`_acme-challenge.*`) | cert-manager DNS01 solver using its substrate-local DNS01 identity | Exact account/zone/name/type coordinates registered before issuance and confirmed from Challenge observations | Sprint `5.18`'s always-run cleanup deletes Certificate/Challenge resources while cert-manager is live, then observes every registered TXT coordinate and fails on residue or unobservability |
+| ALBs / NLBs / target groups / listeners / security groups | AWS Load Balancer Controller responding to a registered `Service`/`Ingress` owner | **Target; production wiring owned by Sprint `7.36`:** register account/region/cluster, deterministic manifest/name and tags; create the owner inert, CAS-enrich its Kubernetes-assigned UID, then enable controller mutation and CAS-enrich exact ARNs | **Target:** delete the Kubernetes owner while the controller is live, then use the registered bounded AWS-family discover/destroy/read-back program for any survivor. The tag query is a selector for that program and postflight evidence, not a diagnostic-only substitute. |
+| Route 53 TXT records (`_acme-challenge.*`) | cert-manager DNS01 solver using its substrate-local DNS01 identity | Exact account/zone/name/type coordinates registered before issuance and confirmed from Challenge observations | Sprint `5.29`'s always-run cleanup deletes Certificate/Challenge resources while cert-manager is live, then observes every registered TXT coordinate and fails on residue or unobservability |
 | Home Route 53 public A record | Elected Gateway DNS capability using the dedicated Gateway-DNS identity | Registered account/zone/name/type plus Gateway ownership epoch | Gateway desired-absent operation plus authoritative read-back through the same capability; no alternate writer fallback |
 | AWS-substrate Route 53 public A record | Lifecycle Authority AWS-edge provider intent using its narrow provider session | Registered account/zone/name/type plus authority operation/epoch | Durable desired-absent provider operation plus authoritative read-back; no direct host or EKS-Gateway substitution |
-| Hosted-zone capability canary | Visible suite preparation through a committed Lifecycle Authority intent | Register account/region/caller-reference/name plus operation/epoch before create; recover response loss by caller reference, then CAS-enrich the AWS-assigned zone ID | Sprint `5.18` always-run exact delete/read-back on success, failure, cancellation, or response loss; never hidden as a read-only prerequisite |
+| Hosted-zone capability canary | Visible suite preparation through a committed Lifecycle Authority intent | Register account/region/caller-reference/name plus operation/epoch before create; recover response loss by caller reference, then CAS-enrich the AWS-assigned zone ID | Sprint `5.28` always-run exact delete/read-back on success, failure, cancellation, or response loss; never hidden as a read-only prerequisite |
 
 These resources are not Pulumi-tracked. Controller-created resources require drain plus exact
 postcondition observation; registered DNS records require their single typed owner plus read-back.
@@ -455,7 +485,7 @@ see
 | Resource | Origin | Why it orphans | Cleanup owner |
 |----------|--------|----------------|---------------|
 | `aws-eks-test-aws-lb-controller` policy/role and `aws-eks-test-ebs-csi-driver` role (fixed-name) | The `aws-eks` Pulumi program (per-run) | A `pulumi up` partially succeeds (IAM created early), then its state is lost — the create-then-crash window, or a `.data/` wipe / cluster crash before the per-run `pulumi destroy` | Harness preflight, scoped to these exact names and only when the authoritative `aws-eks-test` Pulumi checkpoint is absent |
-| auto-named `clusterRole-*` / `nodeRole-*` (pre-cutover residue) | The current `aws-eks` Pulumi program (per-run) | Provider-assigned names make exact recovery impossible after checkpoint loss | Sprint `7.33` replaces them with deterministic run/cluster-scoped names registered before create and exact discover/destroy/read-back. A target deployment cannot retain an operator-only leak class. |
+| auto-named `clusterRole-*` / `nodeRole-*` (pre-Sprint-`7.33` residue) | The historical pre-`7.33` `aws-eks` Pulumi program (per-run); the current program is deterministic | Provider-assigned historical names make exact recovery impossible after checkpoint loss | Sprint `7.33` already replaced new names with deterministic run/cluster-scoped names. Sprint `7.36` owns bounded, confirmed-manifest adoption/deletion and exact read-back for stranded historical instances; it may not use a broad IAM scan. |
 | Registered Operational Lifecycle-provider or AWS cert-manager-DNS01 IAM identity/key/role | `prodbox aws setup` / the test-harness IAM bootstrap | An interrupted run leaves one role; cluster delete does not own operational identity | `prodbox aws teardown` or the harness postflight through the typed cleanup DAG; never ad-hoc IAM mutation. LongLived backup/TLS/home-DNS/SES-SMTP identities and custody receipts are not orphan residue and are excluded. |
 
 The AWS Resource Groups Tagging API does not return IAM resources, so the postflight tag sweep
@@ -464,7 +494,7 @@ cannot see this class (see
 The current pre-cutover automation is intentionally narrow: `runAwsIamHarnessSetup` checks the
 authoritative per-run `aws-eks-test` Pulumi checkpoint first, then deletes only the two
 fixed-name IRSA roles and the fixed-name AWS Load Balancer Controller policy. If the policy is
-attached to anything outside that exact harness-owned role set, the preflight fails loud instead
+attached to anything outside that exact preflight-scoped role set, the preflight fails loud instead
 of detaching it. Broad IAM name scanning remains forbidden. The target removes provider-assigned
 IAM names, registers every deterministic name before mutation, and therefore never depends on a
 broad scan or operator investigation for resources it can create.
@@ -481,10 +511,12 @@ Access-key creation is journaled before AWS mutation. If the one-time secret res
 before Target-Agent sealing, the uncommitted key ID is discovered, deleted, and observed stably
 absent before remint; a blind second create is never a recovery action.
 
-The transitional harness still has one operational `prodbox` IAM user, but its material is
-delivered only to the Lifecycle-provider target; the removed shared Vault coordinate has no
-supported consumer. Sprint `4.50` keeps the identity-split row open until every consumer is
-re-observed on its distinct generation; this is not merely a coordinate rename.
+The transitional harness still has one operational `prodbox` IAM user, and the Tier-0 `aws.*`
+aggregate still references its Lifecycle-provider target at `secret/aws/lifecycle-provider`.
+Host plaintext materialization refuses, but the generic aggregate and legacy host reader family
+remain Pending removal; the removed `secret/gateway/gateway/aws` coordinate is historical and is
+not the live seam. Sprint `4.50` keeps the identity split open until only the fenced Provider Worker
+can select this credential and every other consumer is re-observed on its distinct generation.
 
 These rows describe the **target** `Operational`-class registry. LongLived Authority-backup,
 TLS-retention, home Gateway-DNS, home-DNS01, and SES-SMTP rows above are deliberately excluded. The
@@ -499,24 +531,25 @@ it like any other resource.
 
 ### Lifecycle ownership rule
 
-No new AWS or cluster resource type may be added by any `prodbox` code path without a
-corresponding **managed-resource registry** descriptor (typed observe and destroy/read-back
-programs, with a
-`LifecycleClass` of `PerRun` / `LongLived` / `Operational`). The registry
-(`Prodbox.Lifecycle.ResourceRegistry`, Phase `4` Sprint `4.20`) is the
-machine-enforced single source of truth: `Prodbox.Aws.perRunStackNames` /
-`longLivedResourceNames` are **derived from** it, and `prodbox dev check` (Sprint `4.22`)
-fails the build if this Resource Lifecycle Classes section drifts from the registry or if
-any `aws`/`pulumi` create call site has no registered counterpart. The doctrine SSoT is
+No new AWS or cluster resource type may be added by any `prodbox` code path without a corresponding
+registered lifecycle-class fact and create-site counterpart. **Current:**
+`Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses` generates the lifecycle-class table,
+`StackDescriptor` generates the stack command surface, and `prodbox dev check` applies the bounded
+syntactic create-site/parity checks. `Prodbox.Lifecycle.ResourceRegistry.ManagedResource` still
+contains raw command strings, optional `IO` callbacks, and effectful destroy fields; it is not the
+target typed observe/destroy-read-back SSoT. **Target:** the pure lifecycle-indexed descriptor owns
+the key, `LifecycleClass`, coordinate, dependencies, and closed observe/ensure/destroy/read-back
+program tags. Sprints `4.84`/`4.85` and the deletion ledger own that replacement. The doctrine SSoT is
 [../documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md).
-This Resource Lifecycle Classes table is a registry-sourced generated section.
+The Resource Lifecycle Classes table remains a `ResourceClass`-sourced generated section until the
+target registry lands and regenerates it.
 
 ## Cross-Substrate Shared Resources
 
 This table is the **authoritative inventory** of every AWS resource any `prodbox` flow may
 create or destroy under the long-lived shared-infrastructure class above. No `prodbox` code
 path may add a new AWS resource type without first appearing in this table (or in the
-per-run-stacks table above for the auto-managed class). Both substrates depend on the
+per-run-stacks table above for the cleanup-managed class). Both substrates depend on the
 resources listed here; provisioning and teardown stay per-substrate for the per-run stacks
 and one-time/on-demand for the resources below.
 
@@ -546,7 +579,7 @@ above and [development_plan_standards.md → N / O](development_plan_standards.m
 | Gateway journal and temporal resource isolation | **Code-local foundation Done; physical/live proof pending.** The bounded actor, encrypted journal, journal-first admission, current Lease/incarnation fence, exact recovery, and typed substrate persistence coordinates are locally validated. | **Sprint `7.33` code-local Done; live proof pending.** Independently resourced EKS broker/agent/gateway roles and the EKS-replacement disposition are modeled without granting Gateway authority admission. |
 | Durable Lifecycle Authority crash/response-loss recovery | **Code-local foundation Done; live proof pending.** Restart, response loss, cancellation, stale fences, and operation replay converge under one authority epoch. | **Sprint `7.33` code-local Done; live proof pending.** The retained-home Authority has a distinct transport and no AWS target component can become a second writer. |
 | Target Secret Agent outage and resume | **Code-local foundation Done; live proof pending.** Home outbox delivery is generation/opaque-commitment checked and resumes without Gateway participation. | **Sprint `7.33` code-local Done; live proof pending.** AWS target delivery uses the AWS Agent's distinct transport and fault dispositions cover Pod/EKS replacement. |
-| Always-run cleanup and residue re-observation | **Code-local Done; destructive live proof pending.** Failure/cancellation runs dependency-ready cleanup, retains the primary failure, aggregates cleanup failures, and re-observes resource classes. | **Sprint `7.33` code-local Done; live proof pending.** AWS cleanup dispositions cover per-run residue while retaining the Authority and long-lived resources. |
+| Recover-to-clean teardown and exact residue re-observation | **Reopened under Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`.** Requires bootstrap-owned recovery, exact keyed observations, durable same-run resume, honest `RecoveryPlaneDisposition`, private pre-uninstall readiness, distinct exact post-uninstall completion, and uninstall-last. | **Reopened under Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, `6.5`, and `7.36`.** Requires the common recovery/cutover chain plus independent stack observers, write-ahead and confirmed-legacy adoption manifests, typed EKS drain sessions, exact family absence, retained-bucket isolation, and non-blocking live all-three-stack prerequisite proof for `8.12`. |
 | Durable `keycloak-invite` workflow | **Sprints `8.11`/`8.12` code-local Done; live proof pending.** Revision-bound SES semantics, narrow provider mutation fence, committed credential generation, home target outbox/read-back, and the eight-assertion/23-fault invite artifact are locally validated. | **Sprints `7.33`/`8.11`/`8.12` code-local Done; live proof pending.** The workflow has exact cross-substrate Authority/Target binding, registered AWS DNS intent, SES specialization, and the same non-partial qualification schema; the live aggregate/fault record remains pending. |
 | Historical gateway runtime stability (bounded-memory/restart/OOM/high-water proof) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.16` — Done for the prior topology: `gateway-pods` folds run-wide absorbing unhealthy evidence plus a separately restartable three-sample healthy window. It did not cover CPU throttling, queue wait, deadline misses, or separated authority services. | The historical typed validation targeted EKS. Its live soak remains evidence for that revision only and cannot satisfy Standard P for the target topology. |
 | Historical `keycloak-invite` retained-SES preparation and semantic readiness | Sprint `5.17` remains Done over Sprint `4.47` for the gateway-backed bracket, and Sprint `8.10` remains Done for exact semantic classification. These are preserved inputs to, not qualification of, the durable workflow. | Historical cross-substrate authority/target types and semantic checks remain evidence for their revision. Sprints `7.33`/`8.11`/`8.12` replace the transport, workflow, and qualification boundary. |

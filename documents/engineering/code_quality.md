@@ -20,15 +20,16 @@ operator entrypoint:
 prodbox dev check
 ```
 
-`src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
-sequence:
+`src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs the four
+fail-fast lint stages and then the warning-clean build:
 
-1. repository-owned workflow and hook policy scan
-2. thin-`Main.hs` and tracked-generated-artifact policy scan
-3. sandboxed `fourmolu --mode check app src test`
-4. sandboxed `hlint app src test --hint=.hlint.yaml --with-group=default --with-group=extra`
-5. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`
-6. sync the built operator binary to `.build/prodbox`
+1. file/doctrine checks, including workflow/hook policy, thin `Main.hs`, tracked generated paths,
+   and the conformance tier;
+2. governed-document/generated-section checks;
+3. sandboxed Fourmolu, HLint, and Cabal-format checks;
+4. Helm chart structural checks;
+5. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`;
+6. operator-binary sync to `.build/prodbox`.
 
 Note the scope of step 5, which is not cosmetic. The formatter and the linter are explicitly scoped
 `app src test`; the type-checking build is scoped **`all --enable-tests`**, because with this
@@ -119,10 +120,11 @@ Current enforced quality surfaces:
   the file does not carry. The bound is stated rather than implied: the gate detects divergence
   from the generator's *output* — a hand edit that changes the emitted text, a file left by an
   older schema, or a stale emitted `concurrentDraws` witness whose Ring-1 `assert` is consequently
-  proving the wrong draws — and it does **not** detect a hand-edited primitive that round-trips
-  unchanged through decode and re-render, which is textually indistinguishable from generated
-  output. Closing that residual class needs a generator-stamped witness, registered in
-  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
+  proving the wrong draws. Sprint `0.29` added the generator-stamped witness over `parameters` and
+  `context`, so an ordinary primitive edit that otherwise round-trips now changes the expected
+  witness and is detected. An operator who deliberately edits the value and recomputes the witness
+  can still defeat an in-file stamp; the gate prevents silent drift, not authorized authorship
+  ([legacy ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
 - direct `System.Process` / `System.Process.Typed` imports and smart-constructor symbols
   (`callProcess`, `readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`,
   `proc`, `shell`) are forbidden under `src/Prodbox/` outside `src/Prodbox/Subprocess.hs`
@@ -142,11 +144,9 @@ Current enforced quality surfaces:
   mutable metrics counters, and unrestricted Async primitives outside the closed daemon set.
   Filesystem-watch reload primitives (`fsnotify` / `hinotify`) are **not** forbidden: they are
   the *required* config-reload mechanism per
-  [config_doctrine.md § 7](./config_doctrine.md#7-file-watch-reload-trigger). The legacy
-  `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` rules are scheduled for removal
-  under Sprint `3.15`; until that lands, the daemon path opts in via the existing marker-comment
-  allowlist, and any residual blanket prohibition on filesystem-watch reload triggers in this
-  doctrine or in `src/Prodbox/CheckCode.hs` is superseded by config_doctrine § 7
+  [config_doctrine.md § 7](./config_doctrine.md#7-file-watch-reload-trigger). The former blanket
+  `forbidFsnotify` / `forbidInotify` / `forbid-mtime-polling` rules are absent from the current
+  checker; no marker-comment exception is needed
 - daemon structured-logging guardrails: gateway and workload daemon entrypoints use
   `src/Prodbox/Gateway/Logging.hs` backed by `co-log`, log-level filtering reads the current
   live config at log sites, lifecycle tests assert the JSON stderr envelope, and daemon-path
@@ -154,51 +154,40 @@ Current enforced quality surfaces:
 - daemon hook and lifecycle-test guardrails: production gateway startup constructs the daemon
   `Env` with literal `noopDaemonHooks`, hook reads flow through the injected `envHooks env`,
   and the daemon-lifecycle stanza cannot use raw `threadDelay` or raw `terminateProcess`
-- managed-resource-registry totality (Sprint `4.22`, both halves landed): a registry ↔
+- finite managed-resource create-site correspondence: a registry ↔
   [`DEVELOPMENT_PLAN/substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
   parity scan (the same code↔doc-parity mechanism as the generated-section registry and the
   `perRunStackNames`↔doc rule), plus a create-call-site coverage scan
-  (`checkCreateCallSiteCoverage`, wired into `runDoctrineAlignmentCheck` as of Sprint `4.27`)
-  that covers every surface where `prodbox` actually originates a new AWS/cluster resource:
+  (`checkCreateCallSiteCoverage`) over the finite constructor/verb inventory known to the checker:
   (1) every `Pulumi<Word>Resources` constructor in `src/Prodbox/CLI/Command.hs` must map (via
   `pulumiCreateSiteOwners`) to a registered `PerRun`/`LongLived` stack name; (2) the generalized
-  AWS-resource create-site lint `awsCreateSiteViolations` (Sprint `4.27`, formerly the IAM-only
-  `iamCreateSiteViolations`) flags any quoted `aws … create-*` verb appearing outside its
-  sanctioned owner module(s): `create-user` / `create-access-key` / `put-user-policy` only in the
-  `operational-iam-user` owner `src/Prodbox/Aws.hs`, and `create-bucket` only in the long-lived
-  `pulumi_state_backend` owner `src/Prodbox/Infra/LongLivedPulumiBackend.hs` and the in-cluster
-  MinIO-backend owner `src/Prodbox/Infra/MinioBackend.hs`. The verb is matched in its quoted
-  subprocess-argument form so Haddock prose describing a verb is not a false positive.
-  **Pre-cutover exception scheduled for removal:** current `awsCreateProbeVerbs` carves out the
-  mutating Route 53 `create-hosted-zone` capability probe and relies on `bracketOnError`. The live
-  counterexample showed why that is insufficient: cancellation/ordinary failure can bypass a local
-  bracket, and mutation without prior durable registration is not readiness. Sprint `5.18` makes
-  the canary a visible preparation node, registers its exact hosted-zone resource and always-run
-  cleanup before create, re-observes deletion, and then removes the carve-out. At target cutover,
-  every create call is registered or rejected, making “creatable but undiscoverable” genuinely
-  unrepresentable per
-  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
-- destructive Plan / Apply totality (Sprint `4.26`): `checkPlanOptionsHonored` scans the
-  destructive command-dispatch modules (`src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Nuke.hs`,
-  `src/Prodbox/Native.hs`) and fails when a destructive dispatch arm binds its
+  AWS-resource lint `awsCreateSiteViolations` flags any of its thirteen quoted AWS mutation verbs
+  outside the registered owner module(s). `create-hosted-zone` is an ordinary registered entry; the
+  former `awsCreateProbeVerbs` carve-out no longer exists. This is a bounded substring guard, not a
+  totality proof: an unanticipated verb is invisible until added. The target typed-registration
+  guarantee is owned by
+  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+- destructive Plan / Apply binder coverage: `checkPlanOptionsHonored` scans seven command-dispatch
+  modules and fails when any of the nine registered destructive dispatch arms binds its
   `PlanOptions` / `NukeOptions` field to a `_` wildcard. The covered arms are
-  `destructivePlanOptionsArms` (`Rke2Delete`, `NativeNuke`); a wildcarded options field
+  `Rke2Delete`, `NativeNuke`, the four Pulumi destroy constructors, `ChartsDelete`, `UsersRevoke`,
+  and `AwsTeardown`; a wildcarded options field
   silently drops `--dry-run` / `--plan-file`, which is exactly the bug where
   `prodbox cluster delete --yes --dry-run` *mutated* (`Rke2Delete flags _planOptions` discarded
   the options). This keeps every destructive command routed through `runPlanWithOptions` so
   `--dry-run` renders the full plan and exits `0` without mutation per
   [pure_fp_standards.md § Plan / Apply](./pure_fp_standards.md#8-plan--apply) and
-  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
-- warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
+  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+- warning-clean Haskell compilation through
+  `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`
   (this build runs in `runCheckCode` *after* the lint surface passes; it is not part of
-  `runLintAll`). **`all` is `lib` plus `exe:prodbox` — it does not compile the eight test suites**;
-  see the scope note above
+  `runLintAll`). `--enable-tests` expands the build region to the library, executable, and enabled
+  test suites; see the scope note above
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory
 
-Scheduled under Sprint `0.9` (not yet enforced), `runGeneratedArtifactLint` gains two
-additional governed-document checks, both consuming the existing `GeneratedSectionRule`
-registry:
+`runGeneratedArtifactLint` currently enforces governed-document harmony through the
+`GeneratedSectionRule` registry and the repository document set:
 
 - a **`**Generated sections**` header ↔ markers ↔ registry reconciler** asserting that any
   governed doc carrying generated markers declares the corresponding `<key>` set in its
@@ -206,8 +195,10 @@ registry:
   [§ Project-level documentation standards](#project-level-documentation-standards) item 4),
   with the registry as the third leg so a declared-or-marked key that is absent from
   `[GeneratedSectionRule]` also fails;
-- a **relative-link check** asserting that in-repo relative links (with anchors) in governed
-  docs resolve to an existing target file (and, where checkable, anchor).
+- a **relative-link check** asserting that in-repo relative links in governed docs resolve to an
+  existing target file;
+- legal `**Status**:` metadata values, existing plan-cited source paths, valid numbered doctrine
+  section citations, and the required fields of plan sprint blocks.
 
 Four further check families join the canonical quality gate under the Foundation Epoch
 (implementation owned by Sprints `1.63`, `1.65`, `1.68`, and `2.34`; see the
@@ -241,13 +232,15 @@ Four further check families join the canonical quality gate under the Foundation
   literal would have become a binding, and if the compiled owner still said `443` the cluster would
   break identically — only a live run proves `6443`. The gate is not credited with catching the
   outage that registered the sprint.
-- the **legacy escape registry bijection check** (Sprint `1.63`): every surviving legacy escape
-  call site (the shared operational AWS credential and `aws` CLI subprocess object-store sites) is
-  enumerated in the machine-readable registry `src/Prodbox/Legacy/EscapeRegistry.hs`, and a
-  source scan must match that registry bijectively: an unregistered new call site fails the
-  build, and a registry entry with no surviving call site fails the build. This implements the
-  Standard P interim escape-path guard. The former pre-Authority host-direct object-store seam was
-  removed with its registry entry; reintroducing it is not a supported compatibility option
+- the **legacy escape registry bijection check**: the current machine-readable registry
+  `src/Prodbox/Legacy/EscapeRegistry.hs` contains exactly one surviving entry, the `aws` CLI
+  subprocess object-store site in `src/Prodbox/Minio/ObjectStore.hs`. A source-marker scan must
+  match that registry bijectively: an unregistered marker fails the build, and a registry entry
+  with no surviving marker fails the build. This proves agreement only over the declared one-entry
+  set. Known Pending shared-credential, host-direct MinIO, and bespoke-cascade compatibility seams
+  are not registered, so the current check is not comprehensive Standard-P legacy-absence evidence;
+  Sprint `4.84` and the deletion ledger own that correction. Removed Gateway/operator-secret seams
+  remain forbidden and cannot be reintroduced as compatibility options
   ([development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
 - the **Gateway control-plane absence check** (Sprint `4.50`, folded into the Broker/Gateway
   isolation conformance family): every Gateway source module is scanned for the deleted bootstrap,
@@ -362,14 +355,13 @@ Markers are sentinel comments in the host syntax of the target file:
 
 ### Paired check and write commands
 
-Every generated section has **both** commands:
+Every generated section has paired public commands:
 
-- `tool docs check` (or `tool lint docs`) — read each rule, extract the slice
+- `prodbox dev docs check` (or `prodbox dev lint docs`) — read each rule, extract the slice
   between markers in the on-disk file, exact-string-compare to `expected`.
   Fail with the path, the offending marker key, and a remedy hint on
   mismatch.
-- `tool docs generate` (or `tool docs check --write`, modeled on `gofmt -w`
-  and `prettier --write`) — read each rule, splice `expected` between the
+- `prodbox dev docs generate` (or `prodbox dev lint docs --write`) — read each rule, splice `expected` between the
   markers in place, write the file back. Idempotent.
 
 Both commands consume the same `GeneratedSectionRule` list. Implementing
@@ -388,10 +380,10 @@ the loop.
    Examples: cross-language type bridges (PureScript / TypeScript
    contracts), CBOR-schema-derived Haskell modules.
 
-A third, complementary registry — the `forbiddenPathRegistry` — names paths
-that must *not* exist. It uses the same data shape and the same
-error-message contract as this section. See [Forbidden Surfaces
-(Negative-Space Lint)](#forbidden-surfaces-negative-space-lint) below.
+A complementary negative-space decision, `doctrineViolationsInPaths`, names path classes that must
+*not* exist. It is a closed function over repository-owned paths, not another generated-artifact
+registry. See [Forbidden Surfaces (Negative-Space Lint)](#forbidden-surfaces-negative-space-lint)
+below.
 
 ### Required error-message contract
 
@@ -399,7 +391,7 @@ When the validator fails, the message must include:
 
 1. The file path that drifted.
 2. The marker key (so the contributor knows which renderer is responsible).
-3. A literal remedy hint, e.g. ``Run `tool docs generate` to update.``
+3. A literal remedy hint, e.g. ``Run `prodbox dev docs generate` to update.``
 
 Drift errors without a remedy hint are forbidden. The cost of writing the
 hint is trivial; the cost of contributors not knowing what to do is
@@ -426,8 +418,8 @@ Adding a new generated section is a five-step change in a single PR:
 1. Define or extend the renderer in the relevant library module.
 2. Add markers to the target file.
 3. Register a new `GeneratedSectionRule`.
-4. Run `tool docs generate` to populate the section.
-5. Confirm `tool docs check` and `cabal test` pass.
+4. Run `prodbox dev docs generate` to populate the section.
+5. Confirm `prodbox dev docs check` and `cabal test` pass.
 
 ### Project-level documentation standards
 
@@ -442,7 +434,7 @@ project that adopts this discipline must include the following in its
    `GeneratedSectionRule` table and require a lint check that the doc's
    list and the table agree.
 3. **A "How to regenerate" instruction.** Name the writer command literally
-   (`tool docs generate`).
+   (`prodbox dev docs generate`).
 4. **A `**Generated sections**:` per-file metadata field.** The metadata
    block that already declares `**Status**` and `**Supersedes**` extends
    with a `**Generated sections**: <key1>, <key2>` line (or `none`). Lint
@@ -512,16 +504,21 @@ below.
 
 ### CLI surface
 
-The lint stack is exposed as per-artifact subcommands plus an aggregate:
+The lint stack is exposed through these public `prodbox` commands:
 
-```text
-tool lint files       — whitespace / newline / tracked-generated / forbidden paths
-tool lint docs        — governed docs, generated sections
-tool lint cbor        — CBOR wire-format schemas   (when applicable)
-tool lint chart       — Helm chart invariants     (when chart present)
-tool lint haskell     — fourmolu --mode check + hlint + cabal format roundtrip
-tool lint all         — runs every lint above (lint-only; the warning-clean build runs under `tool check-code` / `tool test lint`, not here)
+```bash
+prodbox dev lint files
+prodbox dev lint docs
+prodbox dev lint chart
+prodbox dev lint haskell
+prodbox dev lint all
+prodbox dev docs check
+prodbox dev docs generate
+prodbox dev check
 ```
+
+There is no `lint cbor` command. CBOR invariants are enforced through the Haskell/check and test
+surfaces that own the codec.
 
 ### Operator Vocabulary Enforcement
 
@@ -561,8 +558,8 @@ What the lint stack *does* enforce is the mechanical outer ring
 no tracked file may contain a string literal matching a scanned
 credential pattern that the scanner's own exclusions do not cover.
 
-The scan is content-shaped, not path-shaped, so it does not belong in
-`forbiddenPathRegistry` below — "delete this path" is the wrong remedy
+The scan is content-shaped, not path-shaped, so it does not belong in the
+negative-space path decision below — "delete this path" is the wrong remedy
 for a test fixture. It belongs beside the operator-vocabulary regex scan
 in `src/Prodbox/CheckCode.hs`.
 
@@ -588,7 +585,7 @@ can only reject tracked content, so the narrowing loses no coverage.
 
 `prodbox dev check` is the only sanctioned gate. A repository CI
 secret-scan job or a pre-commit scanner is a forbidden surface under
-[§ 2A](#2a-development-tooling-policy) and the registry below; the
+[§ 2A](#2a-development-tooling-policy) and the path decision below; the
 remote's push protection is the outer ring and is not repo-owned.
 
 The doctrine is in force now. Implementation status lives in the
@@ -600,46 +597,44 @@ The lint stack enforces both that required artifacts are correct *and* that
 parallel-workflow surfaces are absent. Drift *away* from the canonical
 entrypoints is itself a lint failure.
 
-A `forbiddenPathRegistry :: [PathPattern]` is the single source of truth for
-disallowed paths. Same shape and discipline as the tracked-generated-paths
-registry above: a Haskell list, committed to source, consumed by
-`tool lint files`.
+`doctrineViolationsInPaths` is the current single decision boundary for disallowed paths. It uses
+local closed lists for forbidden hook directories/configs/scripts and root build shims, plus an
+explicit `.github` rule; there is no exported or committed `forbiddenPathRegistry` value.
 
-`tool lint files` extends its existing duties (trailing whitespace, final
-newline, tracked-generated paths) with one more: refuse to allow any file
+`prodbox dev lint files` extends its existing duties (tracked-generated paths and doctrine
+conformance) with one more: refuse to allow any file
 matching a forbidden pattern.
 
 Forbidden patterns for this repository:
 
-- `.github/workflows/` — automated checks live in local CLI entrypoints and `cabal test`, not
-  in a parallel repository workflow. Prodbox has no GitHub Actions exception while the active-
-  development policy in §2A is in force.
-- `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `pre-commit-*.yaml`
+- `.github/` — automated checks live in local CLI entrypoints and `cabal test`, not
+  in a parallel repository workflow. Prodbox has no GitHub Actions exception while the
+  development-tooling policy in §2A is in force.
+- `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `.pre-commit-hooks.yaml`, `lefthook.yml`,
+  and repository-owned hook scripts such as `pre-commit` or `pre-push`
   — Git hooks are not the canonical lint surface. Style enforcement lives
-  in `tool lint haskell` and the `<project>-haskell-style` test-suite.
+  in `prodbox dev lint haskell` and the `<project>-haskell-style` test-suite.
 - Project-level `Makefile`, `justfile`, `Taskfile.yml` that duplicate
   commands the tool already exposes. A wrapper that adds nothing is a drift
   vector.
 
-**Error-message contract.** On a forbidden-path hit, the failure must
-include:
+**Current error-message contract.** On a forbidden-path hit,
+`renderDoctrineViolation` emits the matched path and the category-specific reason (workflow
+automation, hook tooling, or duplicate root build shim). There is no public pattern-key registry and
+the current diagnostic carries no separate remedy field. The three-line path/key/regenerate contract
+elsewhere in this document applies to generated-artifact drift, not this negative-space predicate.
 
-1. The file path that matched.
-2. The registry key (the pattern that matched).
-3. A remedy hint of the form ``"delete this path; the canonical equivalent
-   is `tool <command>`"``.
+### Implemented check and write semantics
 
-### Paired check and write semantics
+The implemented writers are explicit and narrow:
 
-Every check command must have a `--write` counterpart (or sibling command)
-that fixes what can be auto-fixed:
-
-- `tool lint files --write` strips trailing whitespace, adds final newlines.
-- `tool lint docs --write` regenerates marker-delimited sections (equivalent
-  to `tool docs generate`).
-- `tool lint haskell --write` runs `fourmolu --mode inplace` and `cabal
+- `prodbox dev lint docs --write` regenerates marker-delimited sections (equivalent
+  to `prodbox dev docs generate`).
+- `prodbox dev lint haskell --write` runs `fourmolu --mode inplace` and `cabal
   format` in place. hlint hints stay advisory; the contributor is
   responsible for restructuring.
+
+The file lint is check-only; this doctrine does not claim it rewrites whitespace or newlines.
 
 ### Style as a Cabal test-suite
 
@@ -652,18 +647,13 @@ test-suite call the same Haskell function.
 
 ### Aggregate dispatch
 
-- `tool lint all` runs the full lint surface only (files, docs, haskell,
+- `prodbox dev lint all` runs the full lint surface only (files, docs, haskell,
   chart). It does **not** invoke `cabal build all`; in this repo `runLintAll`
   in `src/Prodbox/CheckCode.hs` is lint-only.
-- `tool check-code` runs `tool lint all` first and then, only on lint success,
-  the warning-clean `cabal build --builddir=.build all --ghc-options=-Werror`
-  followed by the operator-binary sync. The build belongs to `check-code`, not
-  to `lint all` — and its `all` covers `lib` and `exe:prodbox` only, so the
-  style suite's own module is linted by this gate but compiled by `cabal test`.
-- `tool test lint` is the broader gate that pairs the full lint surface with
-  the warning-clean build.
-- `tool test all` includes `tool test lint` as its first step before running
-  `cabal test`.
+- `prodbox dev check` runs that lint aggregate and then, only on lint success, the warning-clean
+  `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror` followed by the
+  operator-binary sync. The build belongs to `dev check`, not to `dev lint all`; enabled test
+  components are type-checked but not executed.
 
 ### Readability and nesting
 

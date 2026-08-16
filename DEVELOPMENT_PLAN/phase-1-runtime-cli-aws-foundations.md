@@ -115,10 +115,11 @@ schema surfaces) — Phase `1` reopened to expand its own config/schema surface 
 `1.51`–`1.54`. Sprint `1.51` is ✅ Done on its code-owned surface: the shared
 `dhall/capacity/Schema.dhall` budget algebra, the Haskell `Prodbox.Capacity.Config` mirror, the
 binary-sibling `capacity` block, and the substrate-indexed scaling config that replaces the old
-replica knobs are implemented and locally validated. Sprint `1.52` is ✅ Done on its code-owned
-surface: the `HostSubstrate` detector, closed `HostTool` enum, pure lift-frame fold, host-gated
-reconciler plans, Docker host-frame gate, and `host_substrate_supported` prerequisite root are
-implemented and locally validated. Sprint `1.53` is ✅ Done on its code-owned surface: the
+replica knobs are implemented and locally validated. At this closure Sprint `1.52` also included a
+closed `HostTool` enum; Sprint `1.78` later removed that unused type because it had no production
+importers. The current surface retains the `HostSubstrate` detector, pure lift-frame fold,
+host-gated reconciler plans, Docker host-frame gate, and `host_substrate_supported` prerequisite
+root. Sprint `1.53` is ✅ Done on its code-owned surface: the
 `dhall/cluster/Schema.dhall` topology contract, `Prodbox.Cluster.*` Haskell mirror, declared
 `cluster_topology` config field, Tier-0 parameter projection, and placement outcome ADT are
 implemented and locally validated. Sprint `1.54` is ✅ Done on its code-owned surface: the
@@ -276,7 +277,8 @@ Sprints `1.6` through `1.23` adopt the CLI doctrine from
 `CommandSpec`-driven source of truth, introduce the `Plan` / `apply` discipline with
 `--dry-run`, formalize the `Subprocess` ADT and its interpreter boundary, add a remedy-hint
 contract to the prerequisite registry, align the lint stack on a pinned `fourmolu.yaml` plus
-`GeneratedSectionRule`, `forbiddenPathRegistry`, and `.hlint.yaml` negative-space symbol rules,
+`GeneratedSectionRule`, the local `doctrineViolationsInPaths` negative-space path decision, and
+`.hlint.yaml` negative-space symbol rules,
 migrate the test stanzas from `hspec` to `tasty`, introduce capability classes and first-class
 retry policies, encode the `Recoverable | Fatal` error axis, centralize naming helpers and
 smart-constructor patterns, re-encode multi-state workflows as GADT-indexed state machines,
@@ -800,8 +802,8 @@ Adopt [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineer
 - Interpreter API: `runStreaming :: Subprocess -> IO (Either AppError ExitCode)` and
   `capture :: Subprocess -> IO (Either AppError ProcessOutput)`. Forbid direct
   `System.Process` / `typed-process` smart-constructor usage outside the interpreter via a
-  custom lint rule over `src/Prodbox/` and a `forbiddenPathRegistry` entry on the doctrine's
-  prescribed names.
+  custom source-scan rule over `src/Prodbox/` plus the matching `.hlint.yaml` negative-space
+  markers. This is distinct from the forbidden-path predicate.
 - Migrate every call site under `src/Prodbox/` that currently constructs subprocesses inline.
 - Sprint 0.4 round-3 extension: name `callProcess`, `readCreateProcess`, and direct
   `System.Process` smart constructors (`createProcess`, `proc`, `shell`) explicitly
@@ -878,11 +880,11 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
 - Introduce the `GeneratedSectionRule` registry plus paired `prodbox dev docs check` and
   `prodbox dev docs generate` commands using the doctrine's `<prodbox>:<key>:start|end` marker
   conventions.
-- Introduce the `forbiddenPathRegistry` listing `.github/workflows/`, `.husky/`, `.githooks/`,
-  `.pre-commit-config.yaml`, and any root-level `Makefile` / `justfile` / `Taskfile.yml` that
-  duplicates `prodbox` surfaces. Refactor `src/Prodbox/CheckCode.hs` to consume both registries.
-- Add `--write` counterparts on every check command (`prodbox dev lint files --write`,
-  `prodbox dev lint docs --write`, `prodbox dev lint haskell --write`).
+- Introduce `doctrineViolationsInPaths`, the single pure decision over `.github`, hook surfaces,
+  and root-level `Makefile` / `justfile` / `Taskfile.yml` shims that duplicate `prodbox` surfaces.
+  It is a closed local predicate, not an exported `forbiddenPathRegistry`.
+- Add explicit writers only where a canonical renderer exists: `prodbox dev lint docs --write`
+  and `prodbox dev lint haskell --write`. `prodbox dev lint files` remains check-only.
 - Implement `prodbox dev lint docs [--write]` as a thin alias over the same Haskell function
   backing `prodbox dev docs check` / `prodbox dev docs generate`; both surfaces consume the single
   `GeneratedSectionRule` registry per
@@ -908,7 +910,7 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
 ### Validation
 
 1. `prodbox dev lint all` and `prodbox dev lint files` succeed on a clean tree.
-2. The forbidden-path lint fails with the doctrine's three-element error message when a
+2. The forbidden-path lint fails with the matched path and category-specific reason when a
    prohibited file is introduced.
 3. `prodbox dev docs check` and `prodbox dev docs generate` round-trip every marker-delimited section.
 4. `prodbox dev lint docs` and `prodbox dev docs check` produce byte-identical output on the same
@@ -1394,8 +1396,8 @@ deterministic function.
 ### Deliverables
 
 - Add the `trackingGeneratedPaths :: [TrackedGeneratedPath]` registry to
-  `src/Prodbox/CheckCode.hs` as a third registry alongside `GeneratedSectionRule`
-  (Sprint 1.10) and `forbiddenPathRegistry` (Sprint 1.10). The registry names every file
+  `src/Prodbox/CheckCode.hs` alongside `GeneratedSectionRule` and the separate
+  `doctrineViolationsInPaths` negative-space decision. The registry names every file
   owned wholesale by code: hand edits anywhere in such a file fail `prodbox dev lint files` with
   the doctrine's three-element error message.
 - Add a `prodbox-haskell-style` (Sprint 1.11) property test asserting renderer determinism:
@@ -2290,8 +2292,9 @@ Two things are registered rather than folded in, and both are recorded in
   DSL (`storageFitsWithin`, no `Infinite` arm, mandatory per-claim sizes); Sprint 1.51 landed the
   shared `Budget` schema it co-owns with `resource_scaling_doctrine.md`.
 - `documents/engineering/host_platform_doctrine.md` - the multi-OS host-provider model
-  (`HostSubstrate`, the closed `HostTool` enum, the `LiftLayer` fold, rules a/b/j); Sprint 1.52
-  landed the DSL and relaxed the Ubuntu-only host gate.
+  (`HostSubstrate`, the `LiftLayer` fold, rules a/b/j) and the explicitly target-only closed
+  `HostTool`/absolute-path subprocess boundary; Sprint 1.78 records why the unused earlier enum was
+  removed.
 - `documents/engineering/cluster_topology_doctrine.md` - the explicit `kind | rke2 | eks` cluster
   types and the substrate-indexed one-worker-per-machine rule; Sprint 1.53 landed the cluster-topology
   Dhall schema encoding rules c/d/e/f/i as unconstructible states.
@@ -2502,12 +2505,14 @@ None — closed 2026-06-09. All deliverables landed (the D2 doctrine doc was rew
 0.9; this sprint converged the code to it). The capability classes were intentionally left
 argv-shaped per D2 (the reality); only the error classification changed.
 
-## Sprint 1.31: Prerequisite-DAG Acyclicity at Construction and Interpreter Memo ✅
+## Sprint 1.31: Prerequisite-DAG Canonical-Construction Acyclicity and Interpreter Memo ✅
 
 **Status**: Done (2026-06-09). `transitiveClosureIds` now carries a DFS recursion-stack and rejects
 a back-edge with `Left` (naming the cycle path) in the same pure `Either String` expansion that
-already rejects missing ids — acyclicity is a construction-time invariant, not a traversal-time
-tolerance (`fromRootIds` inherits it). The structured error stays `Either String` because
+already rejects missing ids — acyclicity is a property of the canonical `fromRootIds` construction
+path, not a traversal-time tolerance. The exported `EffectDAG (..)` record still permits a caller to
+bypass that smart constructor, so this sprint is not described as a type-level invariant. The
+structured error stays `Either String` because
 [prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md) §3 specifies that
 expansion path and every caller already handles `Left`. The duplicate `settings_loaded` node was
 collapsed into `settings_object` (the `aws_credentials_valid` edge re-pointed; ledger row added). A
@@ -2521,7 +2526,7 @@ prerequisite at most once per run. Validation green: `check-code` 0, `test unit`
 
 ### Objective
 
-Enforce prerequisite-DAG acyclicity at construction time and collapse the redundant
+Enforce prerequisite-DAG acyclicity on the canonical construction path and collapse the redundant
 settings-node pair, per
 [prerequisite_doctrine.md#8-prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#8-prerequisites-as-typed-effects)
 and the DAG-construction discipline in
@@ -2529,9 +2534,10 @@ and the DAG-construction discipline in
 
 ### Deliverables
 
-- Reject back-edges at DAG construction: the DAG constructor returns `Left` (the doctrine's
+- Reject back-edges at canonical DAG construction: `fromRootIds` returns `Left` (the doctrine's
   `Either String` expansion path) rather than tolerating the cycle at traversal time when a node
-  introduces a back-edge, so an acyclic DAG is a construction-time invariant, per
+  introduces a back-edge. This guarantees the supported constructor's output is acyclic; it does
+  not make the exported record constructor opaque, per
   [prerequisite_dag_system.md](../documents/engineering/prerequisite_dag_system.md).
 - Collapse the `settings_loaded` / `settings_object` prerequisite nodes into one node; the two
   currently model the same satisfied condition and the split adds no information. Enqueue the
@@ -2552,8 +2558,9 @@ and the DAG-construction discipline in
 
 ### Remaining Work
 
-None — closed 2026-06-09. Construction-time acyclicity, the settings-node collapse, and the
-interpreter memo all landed and are unit- and integration-covered.
+None — closed 2026-06-09. Canonical-construction cycle rejection, the settings-node collapse, and
+the interpreter memo all landed and are unit- and integration-covered. Exported-constructor
+hardening was not a delivered MISU property and is not claimed here.
 
 ## Sprint 1.32: Retire StateMachine.hs and Realign the GADT Doctrine ✅
 
@@ -3025,7 +3032,7 @@ file, while a small **derived** `prodbox-basics.json` remains the dependency-fre
 bootstrap floor read before Vault is reachable. Tiers 1–2 are untouched: secrecy stays prodbox's
 additive layer over the shared non-secret base
 ([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
-[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-is-an-authority-referenced-encrypted-blob),
 [config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
 
 ### Deliverables
@@ -3178,7 +3185,7 @@ derived bootstrap floor) and the legacy `.data/prodbox/unencrypted-basics.json` 
 eliminated. Concurrently, every `.dhall` becomes either generated or locally-authored and **none** is
 version-controlled, so the repository carries zero tracked Dhall
 ([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
-[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-is-an-authority-referenced-encrypted-blob),
 [config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
 
 ### Deliverables
@@ -3288,7 +3295,7 @@ and thereafter the cluster reads its config from the SSoT rather than the seed-f
 **retire** the legacy `prodbox-config.dhall` seed/propose input: its non-secret operator config
 (route53 zone, SES domains, ACME email, Pulumi bucket) now lives in the SSoT
 ([config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model),
-[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio),
+[config_doctrine.md §1a (in-force config in MinIO)](../documents/engineering/config_doctrine.md#1a-the-in-force-config-is-an-authority-referenced-encrypted-blob),
 [config_doctrine.md §3 (Canonical paths)](../documents/engineering/config_doctrine.md#3-canonical-paths)).
 
 ### Deliverables
@@ -3296,10 +3303,10 @@ and thereafter the cluster reads its config from the SSoT rather than the seed-f
 - `storeInForceConfigWith` is wired into the first-bring-up path so the operator config is enveloped
   into the encrypted MinIO SSoT (Vault-Transit, opaque `objects/<id>.enc` name) on first-ever
   bring-up; the Sprint `1.39` `inForceConfigObjectAbsent` seed-fallback remains the interim only until
-  the SSoT is seeded ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio)).
+  the SSoT is seeded ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-is-an-authority-referenced-encrypted-blob)).
 - After seeding, `validateAndLoadSettings` reads the in-force config from the seeded SSoT (decrypted
   through Vault) rather than the filesystem seed-fallback
-  ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-lives-encrypted-in-minio)).
+  ([config_doctrine.md §1a](../documents/engineering/config_doctrine.md#1a-the-in-force-config-is-an-authority-referenced-encrypted-blob)).
 - The legacy `prodbox-config.dhall` seed/propose input is retired: it carries **no plaintext secrets**
   (verified — only `SecretRef.Vault` pointers: `aws.*` → `secret/gateway/gateway/aws`,
   `acme.eab_*` → `secret/acme/eab`; the test secrets already live in `test-secrets.dhall`), and its
@@ -3813,14 +3820,13 @@ over-committed nodes and over-quota stores fail at the typed config/schema bound
 
 **Status**: ✅ Done (validated 2026-07-02)
 **Implementation**: `src/Prodbox/Host/Substrate.hs` (the `HostSubstrate` detector),
-`src/Prodbox/Host/Tool.hs` (the closed `HostTool` enum, Windows tools CPP-gated),
 `src/Prodbox/Host/Lift.hs` (the `LiftLayer` provider fold: Lima / WSL2 / Incus / native),
 `src/Prodbox/Host/Lima.hs`, `src/Prodbox/Host/Wsl2.hs`, `src/Prodbox/Host/Ensure.hs`,
 `src/Prodbox/DockerConfig.hs`, `src/Prodbox/PrerequisiteId.hs`, `src/Prodbox/Effect.hs`,
 `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/TestPlan.hs`,
 `test/unit/Main.hs`
-**Independent Validation**: unit tests over the pure `HostSubstrate` detector, the closed `HostTool`
-enum, and the `LiftLayer` fold, plus `prodbox test integration cli`/`env` on the home/local
+**Independent Validation**: unit tests over the pure `HostSubstrate` detector and `LiftLayer` fold,
+plus `prodbox test integration cli`/`env` on the home/local
 (native-Linux) substrate; no cluster or later-phase dependency.
 **Docs to update**: `documents/engineering/host_platform_doctrine.md`,
 `documents/engineering/prerequisite_doctrine.md`
@@ -3829,20 +3835,25 @@ enum, and the `LiftLayer` fold, plus `prodbox test integration cli`/`env` on the
 
 Adopt [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md): classify the
 host `prodbox` runs on and reach a Linux frame on every OS, mirroring `hostbootstrap`'s
-`Substrate` / `HostTool` / `Lift` / `Ensure` in kind. This relaxes the Ubuntu-only host gate and
-encodes rules a/b/j so "run a Linux cluster tool on a non-Linux host without a VM" is
-unrepresentable.
+`Substrate` / `HostTool` / `Lift` / `Ensure` in kind. This relaxes the Ubuntu-only host gate, lands
+the canonical rule-a/rule-b frame projection, and fails rule-j host-frame Docker use closed at
+runtime. The exported list-shaped lift does not make a bypass unrepresentable; the doctrine records
+that as a target boundary rather than attributing it to this completed sprint.
 
 ### Deliverables
 
-- The `HostSubstrate` detector and the closed `HostTool` enum with Windows-only tools CPP-gated.
+- The `HostSubstrate` detector. The closed `HostTool` enum delivered at this point was later
+  removed by Sprint `1.78` because it had no production importer; the replacement remains a
+  target-only absolute-path subprocess boundary.
 - The `LiftLayer` provider fold over Lima / WSL2 / Incus / native, wired through
   `src/Prodbox/Host/Ensure.hs` pure host-gated reconciler plans and
-  `src/Prodbox/DockerConfig.hs`.
+  `src/Prodbox/DockerConfig.hs`. `clusterFrame` is the canonical projection, while exported
+  constructors and `[LiftLayer]` remain an explicitly documented representational escape.
 - The relaxed host gate: `host_substrate_supported` replaces `supported_ubuntu_2404` as the cluster
   prerequisite root; `supported_ubuntu_2404` remains a direct compatibility node.
-- Host-frame Docker is accepted only for detected Linux hosts; non-Linux hosts must descend into the
-  Linux lift frame before Docker-backed work.
+- Host-frame Docker is accepted only for detected Linux hosts; the current non-Linux arm is a
+  fail-fast runtime refusal, and callers must descend into the Linux lift frame before Docker-backed
+  work.
 - Prerequisite-registry remedy hints cover the host-substrate gate and per-provider lift tools
   ([prerequisite_doctrine.md](../documents/engineering/prerequisite_doctrine.md)).
 
@@ -3954,8 +3965,9 @@ fail-if-absent resolution.
 
 ### Remaining Work
 
-- The `test init` / `test run` topology, `.test-data/` isolation, finally-guaranteed teardown, and
-  the never-touch-`.data/` guard land in Phase 5 Sprint `5.11` (out of Phase 1 scope).
+- The `test init` / `test run` topology, `.test-data/` isolation, process-local cleanup foundation,
+  target durable pre-mutation registration/exact-absence completion contract, and
+  never-touch-`.data/` guard belong to Phase 5 (out of Phase 1 scope).
 
 ## Sprint 1.55: Resource-Requirement Dhall Schema and Validated Config Surface [✅ Done]
 
@@ -4599,14 +4611,12 @@ and admission evidence.
 - ✅ Driver cutover (2026-07-18, marks Sprint 1.61 Done): `CapabilityReadinessBarrier.hs` + the two
   reconcile-driver barriers routed through `runCapability`, behaviour-preserving, live-validated by
   `cluster reconcile`.
-- Forward-owned adoption work (does not block Sprint `1.61`): Sprint `3.26` folds the chart
-  operator gate onto the capability handle and moves `CapabilityRequirementSpec` into the
-  role-specific Dhall wire; Sprint `4.48` supplies the real Vault-session-backed
-  `newCapabilityClient` used by the retained authority; Sprint `5.18` moves the two-observation
-  `TestRestore` liveness precondition and `EffectInterpreter.runValidation` onto the handle and,
-  after those consumers and Sprint `3.26` are migrated, deletes the legacy
-  `ReadinessObservation.hs` seam. These are explicit later-sprint deliverables, not incomplete
-  Phase-1 work.
+- Forward-owned adoption work does not block Sprint `1.61`'s historical foundation. Its original
+  allocation to Sprint `3.26` did **not** remove the raw `ReadinessObservation` consumption from
+  `ChartPlatform`; the remaining caller cutover and deletion proof therefore stay explicit in the
+  [Pending Removal ledger](legacy-tracking-for-deletion.md#pending-removal) rather than being
+  credited to a completed sprint. The retained-Authority capability client and the `TestRunner`
+  client migration likewise remain separately owned surfaces. None is incomplete Phase-1 work.
 - Sprint `1.62` (now unblocked) consumes the handle algebra for temporal admission; Sprints `1.64` and
   `1.66` consume it for the cached Vault session and the native object-store client.
 
@@ -4751,9 +4761,10 @@ never invoke the `aws` CLI.
 **Implementation**: `src/Prodbox/Legacy/EscapeRegistry.hs` (the compiled registry + pure
 `escapeRegistryViolations` bijection), conformance-tier wiring `runConformanceTier` /
 `checkLegacyEscapeRegistry` in `src/Prodbox/CheckCode.hs`, unit suite `test/unit/EscapeRegistry.hs`,
-and the eight `LEGACY-ESCAPE[…]` markers seeded at the current call sites in
-`src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Pulumi/HostDirectObjectStore.hs`,
-`src/Prodbox/Vault/Host.hs`, and `src/Prodbox/Minio/ObjectStore.hs`
+and the single surviving registered `LEGACY-ESCAPE[…]` marker in
+`src/Prodbox/Minio/ObjectStore.hs`. The bijection is exact for the declared set but does not prove
+that every surviving legacy seam is declared; comprehensive coverage is a separately reopened
+lifecycle-plan obligation.
 **Independent Validation**: pure registry↔source bijection tables and unit tests; no cluster, no
 later-phase dependency.
 **Docs to update**: `documents/engineering/code_quality.md`,
@@ -4761,46 +4772,47 @@ later-phase dependency.
 
 ### Objective
 
-Make cross-artifact drift fail `prodbox dev check` in seconds rather than surfacing in the
-multi-hour aggregate suite, and enumerate every legacy escape call site in a machine-readable
-registry so escape-path drift fails the build.
+Make declared marker↔registry drift fail `prodbox dev check` in seconds rather than surfacing in
+the multi-hour aggregate suite. This sprint established the internal bijection mechanism; it did
+not establish completeness relative to every surviving legacy seam.
 
 ### Deliverables
 
 - Add the conformance-tier check family surface in `CheckCode.hs` under the canonical quality
   gate: pre-cluster, seconds-fast suites proving cross-artifact agreement run as part of
   `prodbox dev check`.
-- Add `src/Prodbox/Legacy/EscapeRegistry.hs` — a machine-readable registry of every legacy escape
-  call site (gateway-hosted authority routes, the shared operational AWS credential, host-direct
-  Vault/MinIO seams, `aws` CLI subprocess object-store sites, per-request Vault logins) with a
-  source scan that must match the registry bijectively: an unregistered new call site fails the
-  build, and a registry entry with no surviving call site fails the build.
-- Implement the [Standard P](development_plan_standards.md) interim escape-path guard: while
-  operational legacy rows remain in `Pending Removal`, the registry is consumed by
-  `prodbox dev check`; qualification remains non-blocking, escape-path drift is not.
+- Add `src/Prodbox/Legacy/EscapeRegistry.hs` — a machine-readable registry whose declared entries
+  must match their source markers bijectively: an undeclared marker fails the build, and a registry
+  entry with no surviving marker fails the build. The scanner cannot discover an unmarked legacy
+  seam; comprehensive semantic inventory coverage is outside this sprint's closure boundary.
+- Implement the declared-marker half of the
+  [Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+  interim escape-path guard under `prodbox dev check`. Comprehensive legacy-absence evidence also
+  requires the separately tracked semantic inventory: a surviving but unmarked seam is outside
+  this sprint's scanner.
 
 ### Validation
 
-1. Pure unit tables prove the registry↔source bijection in both directions (an unregistered new
-   call site fails; a registry entry with no surviving call site fails; a marker in the wrong file
-   fails; a duplicated marker fails). ✅ `test/unit/EscapeRegistry.hs`.
-2. Seeding the registry from the current call sites leaves `prodbox dev check` green — the eight
-   registered markers match the source one-to-one. ✅
+1. Pure unit tables prove the declared registry↔marker bijection in both directions (an
+   unregistered marker fails; a registry entry with no surviving marker fails; a marker in the
+   wrong file fails; a duplicated marker fails). ✅ `test/unit/EscapeRegistry.hs`.
+2. The one currently declared registry entry matches its source marker one-to-one. ✅
 3. `prodbox test unit` (1541/1541) and `prodbox dev check` (exit 0) pass. ✅
 
 ### Current Validation State
 
 `runConformanceTier` runs inside the fast, pre-build file-lint phase of `prodbox dev check`, so a
-registry↔marker mismatch fails in seconds. The registry currently hosts the legacy-escape bijection
-only; the later Foundation Epoch conformance suites (`2.34`, `4.51`, `5.20`, `7.34`) add their
-cross-artifact checks under the same `runConformanceTier` surface as they land. Warning-clean build
-under `-Werror`, unit 1541/1541, `prodbox dev check` exit 0.
+declared registry↔marker mismatch fails in seconds. The registry currently contains one entry and
+does not represent known surviving shared-credential, host-direct MinIO, and bespoke-cascade seams.
+The later Foundation Epoch conformance suites add their cross-artifact checks under the same
+`runConformanceTier` surface. Warning-clean build under `-Werror`, unit 1541/1541, `prodbox dev
+check` exit 0.
 
 ### Remaining Work
 
-- None. Later Foundation Epoch sprints (`2.34`, `4.51`, `5.20`, `7.34`) extend the conformance tier
-  under `runConformanceTier`; the escape-registry entries are removed by their cutover sprints
-  (`1.64`, `1.66`, `2.33`, `4.49`, `4.50`, `8.11`) as each seam is eliminated.
+- None within Sprint `1.63`'s narrowed declared-set bijection scope. Comprehensive inventory
+  coverage and its removal proof are open under the current lifecycle plan and
+  [legacy ledger](legacy-tracking-for-deletion.md#pending-removal).
 
 ## Documentation Requirements
 

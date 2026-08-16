@@ -182,10 +182,12 @@ Code examples must not use:
 ### Committed Dhall Imports
 
 `sha256:` freezes apply to any future **remote** or otherwise-untrusted committed import, where
-the hash is an integrity pin against a source the editor does not co-own. There is **no committed
-Dhall import today**: every `.dhall` surface prodbox uses is GENERATED or locally authored and
-git-ignored (the binary-sibling `prodbox.dhall`, the `*-types.dhall` schemas, and
-`test-secrets.dhall`), so nothing is version-controlled to freeze. The former repo-root
+the hash is an integrity pin against a source the editor does not co-own. There is no committed
+remote Dhall import today. The tracked `dhall/TestTopologySchema.dhall` imports the co-edited local
+`./cluster/Schema.dhall`; both live in the same repository and deliberately carry no hash. Four
+algebra schemas and one golden fixture are version-controlled by design, while instance config and
+secret fixtures (the binary-sibling `prodbox.dhall`, generated `*-types.dhall` schemas, and
+`test-secrets.dhall`) are git-ignored. The former repo-root
 `prodbox-config.dhall` → `./prodbox-config-types.dhall` local import is retired (Sprint 1.42; see
 [config_doctrine.md §0](./engineering/config_doctrine.md#0-three-tier-config-model)). Were a
 co-edited sibling import to return, cryptographically freezing it would add re-freeze friction on

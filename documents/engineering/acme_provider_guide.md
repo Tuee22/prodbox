@@ -236,9 +236,9 @@ detection backstop — not a shipped or guaranteed mechanism — are CAA restric
 ZeroSSL/Sectigo; plain CAA does not block same-CA dashboard issuance) together with CT-log
 observation. These are recorded as investigation, not a shipped control.
 
-Implementation of the scope algebra and its derived edge projections is complete in Sprint
-[`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md). The unblocked serving-level validation is
-Planned Sprint [`5.22`](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
+The current implementation includes the scope algebra and its derived edge projections.
+Implementation and serving-level validation status are tracked only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ## ACME credentials and TLS key material under Vault
 

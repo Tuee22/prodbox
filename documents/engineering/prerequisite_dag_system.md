@@ -13,7 +13,7 @@ The prerequisite DAG system is defined by:
 - `EffectNode` values (`effectNodeId`, `effectNodeDescription`, `effectNodeRemedyHint`,
   `effectNodePrerequisites`, `effectNodeEffect`) keyed by stable IDs
 - explicit dependency edges carried in `effectNodePrerequisites`
-- a canonical registry `prerequisiteRegistry :: Map String EffectNode` in
+- a canonical registry `prerequisiteRegistry :: Map PrerequisiteId EffectNode` in
   `src/Prodbox/Prerequisite.hs`
 - graph construction in `src/Prodbox/EffectDAG.hs` (`fromRootIds`, `transitiveClosureIds`)
 - graph execution in `src/Prodbox/EffectInterpreter.hs` (`runEffectDAG`)
@@ -21,11 +21,11 @@ The prerequisite DAG system is defined by:
 Per the [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md), this same pure
 construction (acyclicity + missing-node rejection) also carries component **bring-up/readiness**
 edges lowered from the Tier-0 config, so that reconcile ordering is a projection over the graph and a
-consumer-before-dependency readiness race is not a well-formed value.
+consumer-before-dependency readiness race is rejected by the canonical lowering before execution.
 
-Node IDs are presently raw `String`s. The intended target is a typed `PrerequisiteId` ADT so
-that root selection and dependency edges are checked by the compiler rather than by string
-equality (Sprint 5.6).
+Node IDs use the closed `PrerequisiteId` ADT, so root selection and dependency edges are checked by
+the compiler rather than by raw-string equality. `prerequisiteIdText` is an output projection, not
+an alternate construction path.
 
 The supported command surface does not construct ad-hoc prerequisite orderings outside this model.
 
@@ -68,23 +68,27 @@ For a fixed root set and registry, prerequisite expansion must be deterministic.
 - no duplicate execution of the same satisfied node within one run
 - stable transitive closure for the selected roots (`transitiveClosureIds` sorts its result)
 
-Acyclicity is enforced at construction, not merely test-guarded: `transitiveClosureIds` /
-`fromRootIds` return `Left` on a back-edge — a node that (transitively) depends on itself — so a
-cyclic registry can never produce an `EffectDAG`. Cycle detection sits in the same `Either String`
-expansion path that already rejects missing IDs, and the interpreter memoizes satisfied nodes so no
-node executes twice within one run (Sprint 1.31).
+Acyclicity is enforced by the canonical smart-construction path, not merely test-guarded:
+`transitiveClosureIds` / `fromRootIds` return `Left` on a back-edge — a node that (transitively)
+depends on itself. Cycle detection sits in the same `Either String` expansion path that already
+rejects missing IDs, and the interpreter memoizes satisfied nodes so no node executes twice within
+one run. This is not presently a type invariant: `EffectDAG (..)` and `EffectNode (..)` are exported,
+so an arbitrary record can bypass `fromRootIds` and reach the interpreter. Supported prerequisite
+commands use the rejecting constructor; closing the exported-constructor escape would be a separate
+API-hardening change.
 
-`test/unit/Main.hs` retains coverage of these invariants as defense-in-depth, but the construction
-path — not the test suite — is the authoritative gate: a back-edge is rejected by
-`transitiveClosureIds`/`fromRootIds` before any `EffectDAG` reaches the interpreter.
+`test/unit/Main.hs` retains coverage of the canonical-construction contract as defense-in-depth: a
+back-edge supplied to `transitiveClosureIds`/`fromRootIds` is rejected before the supported command
+path invokes the interpreter. The tests do not turn the exported record constructor into an opaque
+proof.
 
-Sprint `1.56` extracts the same back-edge cycle rejection + missing-node rejection into the generic
-`EffectDAG.acyclicTopologicalOrder`, which the Tier-0 component dependency/readiness graph
+The generic `EffectDAG.acyclicTopologicalOrder` carries the same back-edge and missing-node
+rejection. The Tier-0 component dependency/readiness graph
 (`Prodbox.Config.ComponentGraph`, owned by
 [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md)) reuses to lower its declared
 `depends_on` edges into a deterministic dependencies-before-dependents bring-up order. Unlike
 `transitiveClosureIds` (a text-sorted closure set for the interpreter's ready-set rendering), the
-generic expansion returns a topological order. Sprint `1.58` (✅ Done 2026-07-10) separates the key
+generic expansion returns a topological order. The current generic expansion separates the key
 renderer used for diagnostics from a caller-supplied deterministic tie-break: roots and adjacency
 are visited by `(tieBreak key, render key)`, so independent nodes do not accidentally inherit
 human-readable text order. `Prodbox.Config.ComponentGraph` supplies `fromEnum ComponentId`, making
@@ -92,18 +96,18 @@ constructor declaration order the explicit tie-break for both component reconcil
 projections over the split nodes; the generic API remains usable by callers with a different
 ordering doctrine. Unit coverage proves the caller rank wins even when rendered text orders the
 same independent nodes oppositely. The result is still a pure function of the graph plus the
-caller's explicit ordering projection. Phase `4` Sprint `4.45` remains the owner of reconcile-driver
-consumption; Sprint `1.58` changes only the pure DAG/config foundation.
+caller's explicit ordering projection. Reconcile-driver adoption and remaining work are tracked only
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
-Sprint `1.59`'s caller-injected `ComponentReadinessTarget` is a historical observation seam, not
+The caller-injected `ComponentReadinessTarget` is a historical observation seam, not
 the target graph contract. The replacement graph stores pure operation-indexed
 `CapabilityRequirement` values. Runtime reconnaissance resolves a unique opaque
 `CapabilityRef kind`, and observation, admission, and execution consume that same reference and
 absolute deadline. Pending and unobservable remain flat gate-closed observations; a separately
 injected action or endpoint cannot satisfy an edge. The concrete algebra and migration boundary
-are owned by
-[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md) and Sprint
-`1.61`.
+are owned by the
+[Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md); implementation
+status remains in the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 ## 4. Test Command Integration
 

@@ -11,17 +11,17 @@
 
 ## Phase Status
 
-✅ **Closed on its code-owned surface (2026-08-14).** Sprint `2.47` ✅ wires the Bootstrap Broker's
-expired-fence retirement, which had a fully-wired store half and zero production callers, so a fence
-abandoned by a failed bring-up no longer refuses every later acquisition forever. Sprint `2.48` 🔄 found and fixed the
-root cause behind the second blocker — a `MicroTime` encoding the Kubernetes API server rejected
-`400`, so the fence Lease had never been creatable on any run — and the Lease now exists on the live
-cluster. Sprint `2.49` 📋 registers the blocker that fix uncovered, at secret-worker attestation.
-Neither is a reopen: a sprint working a `Pending Removal` row is the shape Standard I describes
-(Standard N). Evidence:
-`prodbox dev check` exit 0, `prodbox test unit` exit 0 at main Hspec **3453** plus 27, 33, and 27,
-`prodbox test integration cli` **57/57**. Both sprints carry 🧪 Standard-O live proofs that do not
-gate closure.
+✅ **Closed on its code-owned surface (2026-08-15).** Sprints `2.47` through `2.51` are all ✅ Done
+on their owned Bootstrap Broker fence, attestation, checkpoint-binding, and image-identity surfaces.
+The exact code-local and live-proof bounds remain in those sprint records; none is an active or
+planned sprint. Landing work against a `Pending Removal` row on this closed phase is the shape
+Standard I describes, not a reopen (Standard N).
+
+**Status correction (2026-08-15, Standard C).** After Sprints `2.48` through `2.51` had closed, this
+header still called `2.48` Active and `2.49` Planned and froze evidence from before `2.51`. The
+phase status now derives from the sprint records below rather than restating an intermediate
+checkpoint. This is the same drift class recorded by the earlier correction below, so it is
+corrected in place rather than hidden by rewriting that history.
 
 **Status correction (2026-08-14, Standard C) — the same defect this header was corrected for on
 2026-08-08, recurred.** This header led with the `🔄 Reopened 2026-08-10 on Sprint 2.42` paragraph
@@ -142,9 +142,10 @@ lint proving the Gateway registry carries no bootstrap route or credential. Post
 observed state transition, not the broker becoming the post-Vault Lifecycle Authority. Standard P
 keeps the public production gateway wrapper on the mutually exclusive `LegacyModelBEmitter` rollback
 topology (Sprint `2.32`) until current-revision qualification and later cutover; no dual writer or
-production cutover is claimed. Sprint `3.26` (Phase 3) renders the broker and later control-plane
-roles as physically separate workloads. Historical Sprint `2.31` remains Done for its bounded-state
-result.
+production cutover is claimed. Sprint `3.26` later supplied the chart/render foundations for
+physically separate roles, but did not activate that topology; current activation and removal are
+governed by the [plan status](README.md#current-plan-status). Historical Sprint `2.31` remains Done
+for its bounded-state result.
 
 ✅ **Sprint `2.32` code-owned target complete 2026-07-20.** The additive, mutually exclusive
 `JournalLeaseEmitter` topology replaces the global child-process permit and interleavable continuity
@@ -298,8 +299,8 @@ finite limits independent of daemon uptime. The code-owned target topology adds 
 single-writer emitter actor, an encrypted identity-bound retained journal, journal-first admission,
 an OS-lock plus Lease/incarnation fence, exact recovery, bounded acknowledgement/checkpoint repair,
 operation-specific lanes, and native Route 53 calls. Its typed persistence projection describes the
-stable identity, retained home and AWS claims, and exact Lease RBAC; Sprint `3.26` owns the physical
-StatefulSet, PV, EBS, and reclaim-policy rendering. Standard P keeps the public production wrapper
+stable identity, retained home and AWS claims, and exact Lease RBAC. Phase 3 supplied the physical
+rendering foundation; production adoption remains plan-tracked. Standard P keeps the public production wrapper
 on the process-construction-exclusive `LegacyModelBEmitter` rollback topology, including its
 capacity-one child schedule and AWS CLI Route 53 path, until current-revision qualification and
 later cutover; there is no runtime selector or dual writer. The gateway container doctrine is
@@ -3073,9 +3074,8 @@ absolute deadline, and target DNS mutation uses the bounded native Route 53
 remain only in the mutually exclusive rollback topology required by Standard P.
 `Gateway/Emitter/Persistence.hs` supplies the typed claim-side projection for stable StatefulSet
 identity, the home node-pinned retained `hostPath`, the AWS manual retained claim with
-`ReadWriteOncePod`, and exact Lease RBAC. Sprint `3.26` owns physical workload, PV, EBS
-`volumeHandle`, and `Retain` rendering; those later consumers are not Sprint-2.32 implementation
-work.
+`ReadWriteOncePod`, and exact Lease RBAC. The Phase-3 chart/render foundation is a distinct
+consumer; production activation remains plan-tracked and is not Sprint-2.32 implementation work.
 
 `documents/engineering/tla/gateway_orders_rule.tla` models the complete five-step journal protocol,
 crash/Lease-loss rewind, overlapping incarnations, the OS-lock + fsynced-incarnation + Lease fence,
@@ -3124,9 +3124,9 @@ continuity loops and the overloaded global child-process permit on the target pa
   Kubernetes Lease/incarnation witness, and fsynced monotonically increasing emitter incarnation
   before readiness/publish; the Lease is not the sole fence and peers reject stale incarnations.
   Supply the typed substrate-exact persistence projection: stable StatefulSet identity, EKS CSI EBS
-  `ReadWriteOncePod`, and a home node-pinned retained `hostPath`/local-PV coordinate. Sprint `3.26`
-  owns the physical chart/PV/EBS render. Missing-journal recovery requires the explicit indexed
-  emitter-retirement program.
+  `ReadWriteOncePod`, and a home node-pinned retained `hostPath`/local-PV coordinate. Physical
+  chart/PV/EBS rendering and public activation remain distinct plan-tracked consumers.
+  Missing-journal recovery requires the explicit indexed emitter-retirement program.
 - Retain the latest signed assertion/previous anchor and peer-ack projection. Restart republishes
   unacknowledged state; ownership transitions compact only after every current peer acknowledges or
   a signed checkpoint makes the transition part of the bounded repair floor.
@@ -3152,9 +3152,9 @@ continuity loops and the overloaded global child-process permit on the target pa
   lock, Lease/incarnation fence, durable projection, exact recovery, acknowledgement/checkpoint
   repair, authenticated Orders migration, target operation lanes, native Route 53, typed
   persistence projection, formal model, and local validation fixtures are landed.
-- Sprint `3.26` consumes the typed persistence projection to render physical StatefulSets, PVs,
-  EBS identities, reclaim policy, and RBAC. That later phase-owned chart surface is not deferred
-  Sprint-2.32 implementation.
+- The later Phase-3 chart foundation consumes the typed persistence projection for physical
+  StatefulSets, PVs, EBS identities, reclaim policy, and RBAC. Its remaining production adoption is
+  plan-tracked and is not deferred Sprint-2.32 implementation.
 - Standard-O live proof and Standard-P deployment qualification remain pending. Until Standard P
   is proven, `LegacyModelBEmitter` remains the default production topology and its registered
   rollback routes/scheduler stay Pending Removal; the target is not an operational cutover.
@@ -3186,7 +3186,8 @@ scope cut, role-indexed config split, and loopback crash matrix are landed and v
 code-owned surface. Closing this sprint recloses Phase `2`.
 **Deployment qualification**: pending
 **Live-proof**: pending — the composed MinIO→broker→Vault→observed-handoff bring-up on a real
-cluster is the non-blocking Standard-O axis; Sprint `3.26` renders the physical broker workload.
+cluster is the non-blocking Standard-O axis. Phase 3 supplied the chart/render foundation; the
+current production composition remains pre-cutover.
 **Implementation**: ✅ landed — the closed `RuntimeRole`/`RuntimeConfigIdentity` split in
 `src/Prodbox/Runtime/Role.hs` (each role decodes only its own mounted Dhall; no shared daemon
 config); the full `src/Prodbox/Bootstrap/Broker/` subsystem (closed `BrokerRoute` registry with
@@ -3271,9 +3272,9 @@ initialization or unseal.
 
 - None (code-owned). The broker/runtime role split, prepared-init custody protocol, route removal,
   config split, and loopback crash matrix are landed and validated.
-- Sprint `3.26` (now unblocked) renders the broker and the later control-plane roles as separate
-  workloads. The composed real-cluster bring-up remains the non-blocking Standard-O live-proof axis,
-  and deployment qualification stays pending under Standard P.
+- The later Phase-3 chart/render foundation supplies separate role shapes. The composed real-cluster
+  bring-up remains the non-blocking Standard-O live-proof axis, and current activation and
+  deployment qualification remain governed by the plan status and Standard P.
 
 ## Documentation Requirements
 
@@ -3291,7 +3292,7 @@ initialization or unseal.
 
 **Cross-references to add:**
 
-- Link Sprint `3.26` as chart rendering adoption without making this phase depend on Phase 3.
+- Link the Phase-3 chart-rendering adoption boundary without making this phase depend on Phase 3.
 
 ## Sprint 2.34: Compiled Service Boundary and Latched Readiness [✅ Done]
 
@@ -3825,7 +3826,8 @@ than recorded, which is the defect; continuing is not.
 - **The decision is a pure total function.** `gatewayRuntimeSampleOutcome` maps the report's four
   constructors onto a four-constructor `GatewayRuntimeSampleOutcome`, and
   `gatewayRuntimeSampleOutcomeExit` lowers that to an `ExitCode`. This follows the repository's
-  purity boundary (`CLAUDE.md` — decisions pure, effects at the interpreter) and makes the
+  [pure-by-default interpreter boundary](../documents/engineering/pure_fp_standards.md#11-pure-by-default)
+  and makes the
   distinction testable without capturing a stream.
 - **Each arm says what it saw.** The not-yet-stable arm names the observed and required sample
   counts, states that the run continues *because this is a sampler and the gate owns the verdict*,

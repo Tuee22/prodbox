@@ -16,6 +16,7 @@
 module Prodbox.ControlPlane.Server
   ( controlPlaneMaximumHeaderBytes
   , controlPlaneMaximumBodyBytes
+  , controlPlaneMaximumLifecycleInputBodyBytes
   , controlPlaneMaximumLargeBodyBytes
   , ControlPlaneFramingError (..)
   , ControlPlaneFramingProgress (..)
@@ -77,6 +78,12 @@ controlPlaneMaximumHeaderBytes = 16 * 1024
 -- before storage.
 controlPlaneMaximumBodyBytes :: Int
 controlPlaneMaximumBodyBytes = 1024 * 1024
+
+-- | The two immutable lifecycle-input protocols carry at most one 32-KiB
+-- canonical value plus its exact identity and authenticated envelope.  Keep
+-- their socket preflight materially below the ordinary one-MiB ceiling.
+controlPlaneMaximumLifecycleInputBodyBytes :: Int
+controlPlaneMaximumLifecycleInputBodyBytes = 256 * 1024
 
 -- | The two checkpoint-bearing routes admit a 96-MiB ciphertext inside the
 -- canonical request, signature, and authentication envelopes.  The route is
@@ -237,6 +244,15 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   LifecycleRetainedMaterialDelivery -> controlPlaneMaximumBodyBytes
   TargetRetainedMaterialRewrap -> controlPlaneMaximumBodyBytes
   LifecycleCleanupRun -> controlPlaneMaximumLargeBodyBytes
+  LifecycleEksDrainIntent -> controlPlaneMaximumLargeBodyBytes
+  LifecycleEksDrainReadBackReceipt -> controlPlaneMaximumLargeBodyBytes
+  LifecycleAwsStackReader -> controlPlaneMaximumLargeBodyBytes
+  LifecycleAwsStackCreationBinding ->
+    controlPlaneMaximumLifecycleInputBodyBytes
+  LifecycleOwnershipManifest -> controlPlaneMaximumLifecycleInputBodyBytes
+  LifecycleRecoveryPlane -> controlPlaneMaximumLifecycleInputBodyBytes
+  LifecycleLocalRke2HostObservation ->
+    controlPlaneMaximumLifecycleInputBodyBytes
 
 parseFramingHeaders
   :: ByteString

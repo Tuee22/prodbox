@@ -32,10 +32,13 @@ import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerOperatorCli, CallerTestHarness)
   )
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
-  ( PulumiCheckpointMutationTicket (..)
+  ( PulumiCheckpointCopyObservation (..)
+  , PulumiCheckpointMutationTicket (..)
   , PulumiCheckpointObservation (..)
   , PulumiCheckpointPublicationResult (..)
   , PulumiCheckpointRepository (..)
+  , PulumiCheckpointRestoreReadBack (..)
+  , PulumiCheckpointRetirementReadBack (..)
   , PulumiCheckpointRetirementResult (..)
   )
 import Prodbox.ControlPlane.PulumiCheckpointProductionStore
@@ -58,6 +61,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , authorityCheckpointOperationStatus
   , initialCleanInstallAuthorityWithRegisteredClients
   , stepAuthorityAdmission
+  , stepAuthorityCheckpointPermit
   , stepRegisteredAuthoritySubmission
   )
 import Prodbox.Lifecycle.Authority.ClientRegistry
@@ -78,9 +82,12 @@ import Prodbox.Lifecycle.Authority.Genesis
   , TargetAgentGenerationReceipt (..)
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
-  ( VerifiedPulumiCheckpointRef
+  ( CheckpointOperationKind (RestoreCheckpoint, RetireCheckpoint)
+  , VerifiedPulumiCheckpointRef
   , mkVerifiedPulumiCheckpointRef
   , observeAuthorityPulumiCheckpoint
+  , verifiedPulumiCheckpointBackupVersion
+  , verifiedPulumiCheckpointPrimaryVersion
   )
 import Prodbox.Lifecycle.Authority.Submission
   ( OperationId (..)
@@ -309,6 +316,90 @@ controlPlanePulumiCheckpointRepositorySuite =
         retiredAggregate
         `shouldBe` Right (StatusSettled OperationCompletedOutcome)
 
+    it "checks caller, generation, and operation ownership before returning pending cleanup read-backs" $ do
+      restoreFixture <- newPublicationFixture CasSucceeds BlobSucceeds
+      let restoreRepository = fixtureRepository restoreFixture
+      _ <-
+        publishRegisteredPulumiCheckpoint
+          restoreRepository
+          checkpointCallerSlot
+          (fixtureTicket restoreFixture)
+          (fixtureRegistration restoreFixture)
+          (fixtureCheckpoint restoreFixture)
+      published <- readIORef (fixtureAuthorityState restoreFixture)
+      (restoreOperation, restoreAdmitted) <- admitOperation published 2
+      (_, restorePending) <-
+        mustRightIO
+          ( stepAuthorityCheckpointPermit
+              checkpointCaller
+              checkpointGeneration
+              restoreOperation
+              (fixtureRegistration restoreFixture)
+              RestoreCheckpoint
+              (Just (canonicalPulumiCheckpointDigest (fixtureCheckpoint restoreFixture)))
+              restoreAdmitted
+          )
+      (unrelatedOperation, restoreWithUnrelated) <-
+        admitOperation restorePending 3
+      writeIORef (fixtureAuthorityState restoreFixture) restoreWithUnrelated
+      restoreResults <-
+        mapM
+          ( \(callerSlot, operation) ->
+              readBackRegisteredPulumiCheckpointRestore
+                restoreRepository
+                callerSlot
+                operation
+                (fixtureRegistration restoreFixture)
+          )
+          [ (verifiedCallerSlotFixture CallerTestHarness 1, restoreOperation)
+          , (verifiedCallerSlotFixture CallerOperatorCli 2, restoreOperation)
+          , (checkpointCallerSlot, unrelatedOperation)
+          ]
+      restoreResults `shouldSatisfy` all isRestoreReadBackRefusal
+
+      retirementFixture <- newPublicationFixture CasSucceeds BlobSucceeds
+      let retirementRepository = fixtureRepository retirementFixture
+      _ <-
+        publishRegisteredPulumiCheckpoint
+          retirementRepository
+          checkpointCallerSlot
+          (fixtureTicket retirementFixture)
+          (fixtureRegistration retirementFixture)
+          (fixtureCheckpoint retirementFixture)
+      retirementPublished <- readIORef (fixtureAuthorityState retirementFixture)
+      (retirementOperation, retirementAdmitted) <-
+        admitOperation retirementPublished 2
+      (_, retirementPending) <-
+        mustRightIO
+          ( stepAuthorityCheckpointPermit
+              checkpointCaller
+              checkpointGeneration
+              retirementOperation
+              (fixtureRegistration retirementFixture)
+              RetireCheckpoint
+              (Just (canonicalPulumiCheckpointDigest (fixtureCheckpoint retirementFixture)))
+              retirementAdmitted
+          )
+      (unrelatedRetirementOperation, retirementWithUnrelated) <-
+        admitOperation retirementPending 3
+      writeIORef
+        (fixtureAuthorityState retirementFixture)
+        retirementWithUnrelated
+      retirementResults <-
+        mapM
+          ( \(callerSlot, operation) ->
+              readBackRegisteredPulumiCheckpointRetirement
+                retirementRepository
+                callerSlot
+                operation
+                (fixtureRegistration retirementFixture)
+          )
+          [ (verifiedCallerSlotFixture CallerTestHarness 1, retirementOperation)
+          , (verifiedCallerSlotFixture CallerOperatorCli 2, retirementOperation)
+          , (checkpointCallerSlot, unrelatedRetirementOperation)
+          ]
+      retirementResults `shouldSatisfy` all isRetirementReadBackRefusal
+
 data CasMode
   = CasSucceeds
   | CasAppliesThenLosesResponse
@@ -414,6 +505,31 @@ memoryBlobStore mode replicationCount stored =
             | reference == expected -> PulumiCheckpointCurrent checkpoint
           Nothing -> PulumiCheckpointMissing
           Just _ -> PulumiCheckpointCorrupt "fixture reference mismatch"
+    , observePrimaryPulumiCheckpointCopy = \_ expected -> do
+        current <- readIORef stored
+        pure $ case current of
+          Just (reference, _)
+            | reference == expected ->
+                PulumiCheckpointCopyCurrent
+                  (verifiedPulumiCheckpointPrimaryVersion reference)
+          Nothing -> PulumiCheckpointCopyMissing
+          Just _ -> PulumiCheckpointCopyCorrupt "fixture reference mismatch"
+    , observeBackupPulumiCheckpointCopy = \_ expected -> do
+        current <- readIORef stored
+        pure $ case current of
+          Just (reference, _)
+            | reference == expected ->
+                PulumiCheckpointCopyCurrent
+                  (verifiedPulumiCheckpointBackupVersion reference)
+          Nothing -> PulumiCheckpointCopyMissing
+          Just _ -> PulumiCheckpointCopyCorrupt "fixture reference mismatch"
+    , restorePulumiCheckpointPrimary = \_ expected -> do
+        current <- readIORef stored
+        pure $ case current of
+          Just (reference, _)
+            | reference == expected -> Right reference
+          Nothing -> Left "fixture checkpoint is missing"
+          Just _ -> Left "fixture reference mismatch"
     }
 
 admitOperation
@@ -466,6 +582,16 @@ checkpointFixture =
 isPublicationRefusal :: PulumiCheckpointPublicationResult -> Bool
 isPublicationRefusal result = case result of
   PulumiCheckpointPublicationRefused _ -> True
+  _ -> False
+
+isRestoreReadBackRefusal :: PulumiCheckpointRestoreReadBack -> Bool
+isRestoreReadBackRefusal result = case result of
+  PulumiCheckpointRestoreReadBackRefused _ -> True
+  _ -> False
+
+isRetirementReadBackRefusal :: PulumiCheckpointRetirementReadBack -> Bool
+isRetirementReadBackRefusal result = case result of
+  PulumiCheckpointRetirementReadBackRefused _ -> True
   _ -> False
 
 openedAuthority :: AuthorityAdmissionAggregate

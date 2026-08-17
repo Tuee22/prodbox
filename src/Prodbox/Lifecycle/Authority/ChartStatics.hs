@@ -23,7 +23,9 @@ module Prodbox.Lifecycle.Authority.ChartStatics
   ( LifecycleAuthorityChartStatics (..)
   , lifecycleAuthorityChartStatics
   , lifecycleAuthorityChartStaticsServiceAccountValue
+  , lifecycleAuthorityRecoveryObserverValue
   , renderLifecycleAuthorityChartStaticsYaml
+  , renderLifecycleAuthorityRecoveryObserverYaml
   )
 where
 
@@ -34,7 +36,8 @@ import Prodbox.Vault.RoleId (VaultRoleId (VaultRoleLifecycleAuthority), vaultRol
 
 -- | The Lifecycle Authority chart's compiled static identities.
 data LifecycleAuthorityChartStatics = LifecycleAuthorityChartStatics
-  { lifecycleAuthorityStaticServiceAccount :: Text
+  { lifecycleAuthorityStaticNamespace :: Text
+  , lifecycleAuthorityStaticServiceAccount :: Text
   , lifecycleAuthorityStaticVaultRole :: Text
   , lifecycleAuthorityStaticLivenessPath :: Text
   , lifecycleAuthorityStaticReadinessPath :: Text
@@ -47,7 +50,8 @@ data LifecycleAuthorityChartStatics = LifecycleAuthorityChartStatics
 lifecycleAuthorityChartStatics :: LifecycleAuthorityChartStatics
 lifecycleAuthorityChartStatics =
   LifecycleAuthorityChartStatics
-    { lifecycleAuthorityStaticServiceAccount = vaultRoleIdText VaultRoleLifecycleAuthority
+    { lifecycleAuthorityStaticNamespace = "lifecycle-authority"
+    , lifecycleAuthorityStaticServiceAccount = vaultRoleIdText VaultRoleLifecycleAuthority
     , lifecycleAuthorityStaticVaultRole = vaultRoleIdText VaultRoleLifecycleAuthority
     , lifecycleAuthorityStaticLivenessPath = "/healthz"
     , lifecycleAuthorityStaticReadinessPath = "/readyz"
@@ -60,6 +64,17 @@ lifecycleAuthorityChartStaticsServiceAccountValue =
     [ "name" .= lifecycleAuthorityStaticServiceAccount lifecycleAuthorityChartStatics
     ]
 
+-- | Subject projected into the exact-name, GET-only recovery observer
+-- RoleBindings owned by each recovery-profile chart namespace.
+lifecycleAuthorityRecoveryObserverValue :: Value
+lifecycleAuthorityRecoveryObserverValue =
+  object
+    [ "serviceAccountName"
+        .= lifecycleAuthorityStaticServiceAccount lifecycleAuthorityChartStatics
+    , "serviceAccountNamespace"
+        .= lifecycleAuthorityStaticNamespace lifecycleAuthorityChartStatics
+    ]
+
 -- | The @lifecycle-authority-chart-statics.values@ generated section body. The
 -- same typed statics feed the supported Haskell chart plan, so the committed
 -- @values.yaml@ defaults cannot drift from the deployed values or the compiled
@@ -67,12 +82,32 @@ lifecycleAuthorityChartStaticsServiceAccountValue =
 renderLifecycleAuthorityChartStaticsYaml :: String
 renderLifecycleAuthorityChartStaticsYaml =
   unlines
-    [ "serviceAccount:"
-    , "  name: " ++ Text.unpack (lifecycleAuthorityStaticServiceAccount lifecycleAuthorityChartStatics)
-    , "vault:"
-    , "  role: " ++ Text.unpack (lifecycleAuthorityStaticVaultRole lifecycleAuthorityChartStatics)
-    , "probes:"
-    , "  liveness: " ++ Text.unpack (lifecycleAuthorityStaticLivenessPath lifecycleAuthorityChartStatics)
-    , "  readiness: "
-        ++ Text.unpack (lifecycleAuthorityStaticReadinessPath lifecycleAuthorityChartStatics)
-    ]
+    ( [ "serviceAccount:"
+      , "  name: " ++ Text.unpack (lifecycleAuthorityStaticServiceAccount lifecycleAuthorityChartStatics)
+      , "vault:"
+      , "  role: " ++ Text.unpack (lifecycleAuthorityStaticVaultRole lifecycleAuthorityChartStatics)
+      , "probes:"
+      , "  liveness: " ++ Text.unpack (lifecycleAuthorityStaticLivenessPath lifecycleAuthorityChartStatics)
+      , "  readiness: "
+          ++ Text.unpack (lifecycleAuthorityStaticReadinessPath lifecycleAuthorityChartStatics)
+      ]
+        ++ recoveryObserverYamlLines
+    )
+
+-- | Generated values block shared by every chart that owns an exact recovery
+-- observer Role/Binding.  The observing subject therefore cannot drift from
+-- the Authority workload identity.
+renderLifecycleAuthorityRecoveryObserverYaml :: String
+renderLifecycleAuthorityRecoveryObserverYaml =
+  unlines recoveryObserverYamlLines
+
+recoveryObserverYamlLines :: [String]
+recoveryObserverYamlLines =
+  [ "recoveryObserver:"
+  , "  serviceAccountName: "
+      ++ Text.unpack
+        (lifecycleAuthorityStaticServiceAccount lifecycleAuthorityChartStatics)
+  , "  serviceAccountNamespace: "
+      ++ Text.unpack
+        (lifecycleAuthorityStaticNamespace lifecycleAuthorityChartStatics)
+  ]

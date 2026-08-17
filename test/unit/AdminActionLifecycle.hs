@@ -674,7 +674,7 @@ imageDigest :: Text
 imageDigest = "sha256:" <> Text.replicate 64 "a"
 
 imageReference :: Text
-imageReference = "registry.local/prodbox@" <> imageDigest
+imageReference = "registry.local/prodbox:admin-action-test"
 
 now :: AuthorityTime
 now = authorityTimeFromMicros 1000000

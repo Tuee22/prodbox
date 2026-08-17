@@ -118,7 +118,7 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   ( TlsRetentionState (TlsRetentionEmpty)
   )
 import Prodbox.Settings (loadConfigFileAtPath, renderConfigDhall)
-import Prodbox.Test.CleanupRun
+import Prodbox.Lifecycle.CleanupRun
   ( CleanupRun
   , beginCleanupNode
   , claimCleanupRun

@@ -88,14 +88,18 @@ provenance, not a parallel status ledger.
   [secret_derivation_doctrine.md](./secret_derivation_doctrine.md); the master-seed
   HMAC-derivation model and the `lookup`-guarded chart-generated secret idiom are retired.
 - `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` both preserve
-  `.data/`. No `prodbox` command removes `.data/` on its own; deletion is operator-only.
+  `.data/`. No ordinary cluster-delete surface removes it. Only the explicitly confirmed external
+  decommission protocol used by `prodbox nuke` may delete the optional `.data/` target after its
+  registered dependants are absent.
 - The same retain-on-teardown policy governs the AWS/EKS pre-created EBS volumes: they are the
   EBS analog of `.data/`. `prodbox cluster delete`, `prodbox aws stack eks destroy`, and per-run
   Pulumi destroy never delete the retained EBS volumes (they are `Retain` and are not owned by
-  the per-run `aws-eks` Pulumi stack). Only the test-scoped EBS reaper paths delete EBS volumes:
-  suite postflight, `cluster delete --cascade`, and `prodbox aws ebs reap-test --yes`; all three
-  delete only volumes tagged as test-scoped — so production workflows never lose block storage and
-  test runs never leak it (Sprints `4.39`, `4.40`).
+  the per-run `aws-eks` Pulumi stack). **Current:** suite postflight, `cluster delete --cascade`, and
+  `prodbox aws ebs reap-test --yes` call the legacy tag/cluster-filtered reaper under the single
+  `aws-ebs-volumes :: LongLived` registry family; a successful provider delete exit is not exact
+  absence read-back. **Target:** test-scoped EBS has a distinct statically `PerRun` registry key, and
+  each cleanup surface requires exact identity plus absence read-back before success; partial or
+  unobservable cleanup remains incomplete rather than claiming that no volume leaked.
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
   reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
@@ -217,69 +221,48 @@ Deterministic rebinding is guaranteed only when all of these hold:
 
 ## 5. Delete Contract
 
-`prodbox cluster delete --cascade --yes` is the canonical operator-driven teardown. The
-cascade order is authoritatively defined in
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5b
-("Canonical Cascade Order") — that table is the single source of truth and this section
-must not restate the phase sequence independently. For storage context the order is:
+This document owns only storage consequences. The recover-to-clean graph and its order are defined
+once in
+[Lifecycle Reconciliation Doctrine §5b](./lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade).
 
-1. Confirm MinIO is reachable (or treat per-run Pulumi state as already gone if not).
-2. K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs) so the
-   in-cluster controllers are still alive to unwind their AWS-side state.
-3. Per-run Pulumi destroys against MinIO with the
-   `withMaterializedOperationalCreds` bracket materializing the operational creds for the
-   run (in tests, via the harness-simulated admin prompt sourced from `test-secrets.dhall`)
-   — only after the drain so subnet / VPC / cluster deletes have no live ENI / ALB / EBS
-   dependency to trip on.
-4. RKE2 uninstall, removing the substrate and managed kubeconfig.
-5. Postflight cluster-tag sweep that fails the command with the leak list if anything
-   cluster-tagged survives.
+**Current/target correspondence.** The proof-carrying cascade below is the target contract, not the
+current executor. Today `runNativeDeleteCascade` may short-circuit when RKE2 is absent and may
+uninstall the local substrate after an unresolved observation/destroy; test EBS cleanup remains the
+legacy tag-partitioned reaper. A nonzero result is therefore unresolved, not evidence that this
+target storage contract ran. Implementation/cutover status and removal ownership live in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and
+[legacy ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 
-The drain-before-destroy ordering is load-bearing: see
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) §5b for
-the substrate-aware drain and the `DependencyViolation` failure mode that an inverted
-order produces on the AWS substrate.
+Both delete surfaces preserve the operator-host `.data/` root. Local-only
+`prodbox cluster delete --yes` may uninstall RKE2 immediately and intentionally leaves every AWS
+obligation untouched. It makes no resource-absence claim.
 
-`prodbox cluster delete --yes` (without `--cascade`) is local-only and unconditionally preserves
-Pulumi checkpoint blobs and any corresponding live AWS resources. Reconcile plus the exact
-per-stack destroy, or the durable always-run cleanup plan, is the supported recovery path because
-MinIO's PV under `.data/` keeps the encrypted state alive across the cluster cycle. There is no
-`cluster delete --allow-pulumi-residue` flag.
+The target cascade uses the preserved MinIO and Vault roots to repair or reinstall the ordinary teardown
+recovery profile. A missing MinIO process is not missing state: the profile reattaches the canonical
+PV and re-observes it. Unreadable primary state remains distinct from exact AWS resource truth and
+from independent backup state; it is never treated as “already gone.”
 
-Both `prodbox cluster delete --yes` and `prodbox cluster delete --cascade --yes` preserve
-the Vault PV (`.data/vault/vault/0`) just as they preserve `.data/` and the MinIO PV; cluster
-teardown never destroys Vault state. Because Vault state survives teardown, the rebuild path
-after a delete never re-inits Vault — the next `prodbox cluster reconcile` redeploys the chart
-against the preserved data and only unseals it.
+The backed-up pre-uninstall convergence report participates, with the one-shot permit, positive
+recovery-plane witness, exact convergence, and terminal-audit evidence, in constructing only
+`ReadyToUninstallEvidence`; it is not terminal cascade completion. That witness admits local RKE2
+uninstall, after which exact host absence plus the scoped local-completion receipt constructs
+`CascadeCompleteEvidence`. If cleanup is
+incomplete, `.data/` remains preserved and
+the result carries the stable `CleanupRunId` plus a recovery-plane disposition. The minimal profile
+and credentials needed by nonterminal nodes are described as live only when establishment was
+positively confirmed; an establishment failure stays explicit. A retry resumes that run rather than
+minting a replacement cleanup identity.
 
-On the AWS/EKS substrate the retained EBS volumes are preserved by teardown exactly as
-`.data/`, the MinIO PV, and the Vault PV are on home. Neither `prodbox cluster delete`,
-`prodbox aws stack eks destroy`, nor the per-run Pulumi destroy deletes them: they are
-`Retain`, and they are not owned by the per-run `aws-eks` Pulumi stack, so `pulumi destroy`
-cannot remove them. The K8s drain deletes only `Delete`-reclaim PVCs, so the `Retain` EBS PVs
-survive the drain untouched. Only the test-scoped EBS reaper paths delete EBS volumes: suite
-postflight, `cluster delete --cascade`, and `prodbox aws ebs reap-test --yes`. Each deletes only
-volumes tagged as test-scoped — production workflows never lose block storage, and test runs never
-leak it. The EBS managed-resource class (`aws-ebs-volumes`) owns typed `discover`/`destroy`,
-retained-vs-test-scoped tags, the test reaper, cascade hook, and retain-safe drain guard. See
-[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) § 1.
+The Vault PV at `.data/vault/vault/0` is preserved exactly like the MinIO PV. Reinstall rebinds
+the existing Vault and unseals it; ordinary teardown never reinitializes Vault and never deletes the
+trust root. Total trust-root deletion belongs only to the external decommission protocol used by
+`nuke`.
 
-Both delete shapes preserve `.data/` and remove nothing else on the operator host. The
-host iptables rule installed by reconcile (per
-[secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §5) is removed as part
-of clean teardown.
-
-`prodbox cluster delete` captures the upstream `/usr/local/bin/rke2-uninstall.sh` stdout
-and stderr through the lifecycle-local quiet path so that successful uninstall runs
-surface only the doctrine-owned summary lines, while non-zero uninstall exits still
-surface actionable upstream context through `summarizeRke2DeleteFailure`. Benign
-upstream chatter the uninstaller writes to its own stdout/stderr — `Cannot find device`,
-`semodule: not found`, and `Cleanup completed successfully` — is classified as ignorable
-noise and does not reach the operator on success. The inotify warning
-`Failed to allocate directory watch: Too many open files` is the exception: the systemd
-manager (PID 1) / journald emits it out-of-band to the console, not through the
-uninstaller's captured fds, so the quiet path cannot suppress it and it may still appear
-on the operator terminal on a successful run (benign — teardown still succeeds).
+On EKS, pre-created durable EBS volumes remain static `Retain` PVs and survive ordinary teardown.
+In the target registry, only the distinct test-scoped `PerRun` family may be reconciled absent by
+suite postflight, cascade, or `prodbox aws ebs reap-test --yes`; each target operation requires exact
+identity and absence read-back. A global tag audit is not an EBS inventory. The current one-key,
+tag-partitioned bound is stated in §1 and is not promoted by this target contract.
 
 ## 6. Test Expectations
 
@@ -318,11 +301,15 @@ Lifecycle-oriented validation should prove:
     attested home/selected Agent workers, and proves no admin re-prompt, EAB re-entry, SMTP-key
     rotation, plaintext Authority/outbox field, or generic export path occurred.
 
-Cleanup ownership is defined in
-[Integration Fixture Doctrine](./integration_fixture_doctrine.md). Test-scoped retained-volume
-deletion is a registered node in its always-run cleanup DAG; failure of one destroy does not prevent
-independent cleanup, and credential teardown remains dependency-blocked until credential-dependent
-storage cleanup has completed or authoritatively observed absence.
+Target cleanup ownership and graph execution are defined in
+[Lifecycle Reconciliation Doctrine §3.3](./lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph).
+In that target composition, test-scoped retained-volume deletion is a registered node in the
+lifecycle-owned graph; failure of one destroy does not prevent independent cleanup, and credential
+teardown remains dependency-blocked until credential-dependent storage cleanup has completed or
+authoritatively observed absence. Validation registers and consumes those obligations only as the
+target client defined by
+[Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-validation-as-a-cleanup-client).
+The current tag-selected reaper/provider-exit bound remains the one stated in §1 and §5.
 
 ## 7. The Single Retained Operator-Host Root
 
@@ -379,7 +366,7 @@ Rules:
     `/sys/init`, the Broker writes/read-backs the password-AEAD `PreparedInitEnvelope`; after init it
     persists/read-backs Vault's PGP-encrypted response, atomically promotes/read-backs the final
     password-AEAD unlock bundle, and only then deletes/read-backs the prepared envelope. See
-    [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle). The only related host-disk
+    [vault_doctrine.md §6](./vault_doctrine.md#6-the-unlock-bundle-root-cluster). The only related host-disk
     artifact is the non-secret `.cluster-established` marker.
 13. Test runs use a **separate `.test-data/` retained root**, never `.data/`. A `prodbox test`
     run overrides `storage.manual_pv_host_root` to `.test-data/` (isolating each case under

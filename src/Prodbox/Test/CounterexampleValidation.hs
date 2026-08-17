@@ -2,10 +2,12 @@
 
 module Prodbox.Test.CounterexampleValidation
   ( runControlPlaneCounterexampleValidation
+  , runTeardownRecoveryValidation
   )
 where
 
 import Data.List (intercalate)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
 import Prodbox.Test.Qualification.Evidence
@@ -18,6 +20,34 @@ import Prodbox.Test.Qualification.Invite
   )
 import Prodbox.Test.Qualification.SourceIdentity (SourceIdentity, sourceManifestDigest)
 import Prodbox.Test.Qualification.SourceManifest (captureSourceIdentity)
+import Prodbox.Test.Qualification.TeardownCounterexample
+  ( CallerFailure (..)
+  , CascadeOracleResult (..)
+  , CleanupFailure (..)
+  , ExactStackKey
+  , FrozenTeardownCounterexample
+  , OracleFailure (..)
+  , ReplacementTeardownResult (..)
+  , ReportObservation (..)
+  , TeardownResourceProfile (..)
+  , TeardownTraceFixture (..)
+  , awsAuditArnText
+  , canonicalTeardownRecoveryInterpreter
+  , exactStackKeyText
+  , frozenTeardownArtifactDigest
+  , frozenTeardownCausalProfile
+  , frozenTeardownDurableTransitions
+  , frozenTeardownExternalStateRows
+  , frozenTeardownFixtureId
+  , frozenTeardownInterruptionSchedule
+  , frozenTeardownProductionProfile
+  , frozenTeardownRequests
+  , loadTeardownCounterexampleFixture
+  , profileTotals
+  , runTeardownRecoveryOracle
+  , teardownArtifactDigestText
+  , teardownFixtureIdText
+  )
 import Prodbox.Test.TemporalQualification
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -87,6 +117,164 @@ runControlPlaneCounterexampleValidation repoRoot = do
     (Left err, _, _) -> failWith err
     (_, Left err, _) -> failWith ("frozen receipt binding refused: " ++ show err)
     (_, _, Left err) -> failWith ("frozen generation binding refused: " ++ show err)
+
+-- | Select only the committed canonical or mutation artifact.  This is a test
+-- fixture selector, never a caller-supplied residue observation.
+resolveTeardownTraceFixture :: IO (Either String TeardownTraceFixture)
+resolveTeardownTraceFixture = do
+  selector <- lookupEnv "PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE"
+  pure $ case selector of
+    Nothing -> Right CanonicalTeardownTrace
+    Just "canonical" -> Right CanonicalTeardownTrace
+    Just "mutated" -> Right MutatedTeardownTrace
+    Just other ->
+      Left
+        ( "PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE="
+            ++ other
+            ++ " is not a known frozen fixture (expected `canonical` or `mutated`)."
+        )
+
+-- | Credential-free installed replay of the bounded @TEARDOWN-2026-08-15@
+-- artifacts.  The command's seven fake boundaries contain no generic residue
+-- or absence input.  Success means only that the standalone reference oracle
+-- preserved the expected incomplete result and both recorded failures.
+runTeardownRecoveryValidation :: FilePath -> IO ExitCode
+runTeardownRecoveryValidation repoRoot = do
+  fixtureSelection <- resolveTeardownTraceFixture
+  case fixtureSelection of
+    Left err -> failWith err
+    Right traceFixture -> do
+      fixtureResult <- loadTeardownCounterexampleFixture repoRoot traceFixture
+      case fixtureResult of
+        Left err -> failWith ("frozen teardown counterexample refused: " ++ show err)
+        Right fixture -> do
+          oracleResult <-
+            runTeardownRecoveryOracle
+              fixture
+              (canonicalTeardownRecoveryInterpreter fixture)
+          case oracleResult of
+            Left err -> failWith ("typed teardown-recovery oracle refused: " ++ show err)
+            Right result -> emitTeardownRecoveryResult fixture result
+
+emitTeardownRecoveryResult
+  :: FrozenTeardownCounterexample
+  -> ReplacementTeardownResult
+  -> IO ExitCode
+emitTeardownRecoveryResult fixture result = do
+  writeOutputLine
+    ( "TEARDOWN_COUNTEREXAMPLE="
+        ++ Text.unpack (teardownFixtureIdText (frozenTeardownFixtureId fixture))
+    )
+  writeOutputLine
+    ( "TEARDOWN_ARTIFACT_DIGEST="
+        ++ Text.unpack
+          (teardownArtifactDigestText (frozenTeardownArtifactDigest fixture))
+    )
+  writeOutputLine
+    ("TYPED_FAKE_BOUNDARIES=7")
+  writeOutputLine
+    ( "TYPED_FAKE_REQUESTS="
+        ++ show (2 * length (frozenTeardownRequests fixture) + 5)
+    )
+  writeOutputLine
+    ("EXTERNAL_STATE_ROWS=" ++ show (length (frozenTeardownExternalStateRows fixture)))
+  writeOutputLine
+    ("DURABLE_TRANSITIONS=" ++ show (length (frozenTeardownDurableTransitions fixture)))
+  writeOutputLine
+    ("INTERRUPTION_SCHEDULE_ROWS=" ++ show (length (frozenTeardownInterruptionSchedule fixture)))
+  emitProfile "CAUSAL" (frozenTeardownCausalProfile fixture)
+  emitProfile "PRODUCTION" (frozenTeardownProductionProfile fixture)
+  writeOutputLine
+    ( "RETAINED_AUDIT_ARNS="
+        ++ show (length (replacementRetainedAuditArns result))
+    )
+  mapM_
+    (writeOutputLine . ("RETAINED_AUDIT_ARN=" ++) . Text.unpack . awsAuditArnText)
+    (replacementRetainedAuditArns result)
+  writeOutputLine
+    ( "EXACT_STACK_UNOBSERVABLES="
+        ++ show (Map.size (replacementExactUnobservables result))
+    )
+  writeOutputLine
+    ( "CHECKPOINT_UNOBSERVABLES="
+        ++ show (Map.size (replacementCheckpointUnobservables result))
+    )
+  mapM_ emitExactUnobservable (Map.toAscList (replacementExactUnobservables result))
+  writeOutputLine
+    ("DRAIN_SELECTION=" ++ show (replacementDrainSelection result))
+  writeOutputLine
+    ("DESTROY_SELECTION=" ++ show (replacementDestroySelection result))
+  case replacementCascadeResult result of
+    CascadeComplete ->
+      failWith "the frozen teardown counterexample unexpectedly completed cleanup"
+    CascadeIncomplete callerFailure cleanupFailures -> do
+      let report = replacementReportObservation result
+      emitCallerFailure callerFailure
+      if reportObservationOriginalFailures report /= 1
+        || reportObservationCleanupFailures report
+          /= fromIntegral (length cleanupFailures)
+        then failWith "the frozen teardown report did not preserve the exact failure cardinalities"
+        else do
+          writeOutputLine
+            ( "ORIGINAL_FAILURES="
+                ++ show (reportObservationOriginalFailures report)
+            )
+          writeOutputLine
+            ( "CLEANUP_FAILURES="
+                ++ show (reportObservationCleanupFailures report)
+            )
+          mapM_ emitCleanupFailure cleanupFailures
+          writeOutputLine "CASCADE_RESULT=CascadeIncomplete"
+          pure ExitSuccess
+ where
+  emitProfile :: String -> TeardownResourceProfile -> IO ()
+  emitProfile label profile = do
+    writeOutputLine (label ++ "_PROFILE=" ++ Text.unpack (profile_id profile))
+    writeOutputLine (label ++ "_PROFILE_KIND=" ++ Text.unpack (profile_kind profile))
+    writeOutputLine
+      ( label
+          ++ "_INDEPENDENTLY_JUSTIFIED="
+          ++ if independently_justified profile then "true" else "false"
+      )
+    writeOutputLine
+      ( label
+          ++ "_SUPERSEDED_TOTALS="
+          ++ show (profileTotals (superseded_envelopes profile))
+      )
+    writeOutputLine
+      ( label
+          ++ "_REPLACEMENT_TOTALS="
+          ++ show (profileTotals (replacement_envelopes profile))
+      )
+
+  emitExactUnobservable :: (ExactStackKey, OracleFailure) -> IO ()
+  emitExactUnobservable (key, OracleFailure reason) =
+    writeOutputLine
+      ( "EXACT_STACK="
+          ++ Text.unpack (exactStackKeyText key)
+          ++ " DISPOSITION=Unobservable FAILURE="
+          ++ Text.unpack reason
+      )
+
+  emitCallerFailure :: CallerFailure -> IO ()
+  emitCallerFailure callerFailure =
+    writeOutputLine
+      ( "AUTHORITY_CALLER="
+          ++ Text.unpack (failedCallerIdentity callerFailure)
+          ++ " DISPOSITION=Unobservable FAILURE="
+          ++ Text.unpack
+            (oracleFailureText (failedCallerReason callerFailure))
+      )
+
+  emitCleanupFailure :: CleanupFailure -> IO ()
+  emitCleanupFailure cleanupFailure =
+    writeOutputLine
+      ( "CLEANUP_BOUNDARY="
+          ++ Text.unpack (failedCleanupBoundary cleanupFailure)
+          ++ " DISPOSITION=Unobservable FAILURE="
+          ++ Text.unpack
+            (oracleFailureText (failedCleanupReason cleanupFailure))
+      )
 
 -- | Sprint 5.32: @Just@ a refusal naming what did not close, @Nothing@ when the
 -- two result sets close exactly. Standard P requires the frozen superseded

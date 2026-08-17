@@ -1,0 +1,113 @@
+# TEARDOWN-2026-08-15 canonical replacement dispositions and complete deterministic matrix.
+
+format-version 1
+fixture-id TEARDOWN-2026-08-15
+superseded-result false-three-stack-classification expected-failure
+replacement-result cascade-incomplete expected-pass
+
+external local-api-stopped fail-closed-refusal
+external local-api-absent fail-closed-refusal
+external caller-service-account-missing fail-closed-refusal
+external caller-rbac-refused fail-closed-refusal
+external stale-kubernetes-context fail-closed-refusal
+external vault-sealed fail-closed-refusal
+external minio-unavailable fail-closed-refusal
+external authority-loss fail-closed-refusal
+external backup-loss fail-closed-refusal
+external provider-loss fail-closed-refusal
+external primary-absent-backup-valid resume-committed-intent
+external primary-absent-backup-invalid successor-blocked-ambiguous
+external primary-corrupt-backup-valid resume-committed-intent
+external primary-corrupt-backup-invalid successor-blocked-ambiguous
+external primary-present-backup-valid already-applied-readback
+external primary-present-backup-invalid already-applied-readback
+external ownership-manifest-complete already-applied-readback
+external ownership-manifest-incomplete successor-blocked-ambiguous
+external aws-absent already-applied-readback
+external aws-present resume-committed-intent
+external aws-partial successor-blocked-ambiguous
+external aws-unobservable successor-blocked-ambiguous
+external eks-drain-unavailable successor-blocked-ambiguous
+external response-lost already-applied-readback
+external exact-readback-delayed successor-blocked-ambiguous
+
+interrupt ctrl-c before register-run same-run same-operation resume-committed-intent
+interrupt ctrl-c after register-run same-run same-operation already-applied-readback
+interrupt sigkill before register-run same-run same-operation resume-committed-intent
+interrupt sigkill after register-run same-run same-operation already-applied-readback
+interrupt client-disconnect before register-run same-run same-operation resume-committed-intent
+interrupt client-disconnect after register-run same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before register-run same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after register-run same-run same-operation already-applied-readback
+interrupt restart before register-run same-run same-operation resume-committed-intent
+interrupt restart after register-run same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-observation-intent same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-observation-intent same-run same-operation already-applied-readback
+interrupt sigkill before commit-observation-intent same-run same-operation resume-committed-intent
+interrupt sigkill after commit-observation-intent same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-observation-intent same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-observation-intent same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-observation-intent same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-observation-intent same-run same-operation already-applied-readback
+interrupt restart before commit-observation-intent same-run same-operation resume-committed-intent
+interrupt restart after commit-observation-intent same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-mutation-intent same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-mutation-intent same-run same-operation already-applied-readback
+interrupt sigkill before commit-mutation-intent same-run same-operation resume-committed-intent
+interrupt sigkill after commit-mutation-intent same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-mutation-intent same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-mutation-intent same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-mutation-intent same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-mutation-intent same-run same-operation already-applied-readback
+interrupt restart before commit-mutation-intent same-run same-operation resume-committed-intent
+interrupt restart after commit-mutation-intent same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-mutation-outcome same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-mutation-outcome same-run same-operation already-applied-readback
+interrupt sigkill before commit-mutation-outcome same-run same-operation resume-committed-intent
+interrupt sigkill after commit-mutation-outcome same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-mutation-outcome same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-mutation-outcome same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-mutation-outcome same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-mutation-outcome same-run same-operation already-applied-readback
+interrupt restart before commit-mutation-outcome same-run same-operation resume-committed-intent
+interrupt restart after commit-mutation-outcome same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-independent-readback same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-independent-readback same-run same-operation already-applied-readback
+interrupt sigkill before commit-independent-readback same-run same-operation resume-committed-intent
+interrupt sigkill after commit-independent-readback same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-independent-readback same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-independent-readback same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-independent-readback same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-independent-readback same-run same-operation already-applied-readback
+interrupt restart before commit-independent-readback same-run same-operation resume-committed-intent
+interrupt restart after commit-independent-readback same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-pre-uninstall-report same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-pre-uninstall-report same-run same-operation already-applied-readback
+interrupt sigkill before commit-pre-uninstall-report same-run same-operation resume-committed-intent
+interrupt sigkill after commit-pre-uninstall-report same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-pre-uninstall-report same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-pre-uninstall-report same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-pre-uninstall-report same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-pre-uninstall-report same-run same-operation already-applied-readback
+interrupt restart before commit-pre-uninstall-report same-run same-operation resume-committed-intent
+interrupt restart after commit-pre-uninstall-report same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-report-backup same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-report-backup same-run same-operation already-applied-readback
+interrupt sigkill before commit-report-backup same-run same-operation resume-committed-intent
+interrupt sigkill after commit-report-backup same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-report-backup same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-report-backup same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-report-backup same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-report-backup same-run same-operation already-applied-readback
+interrupt restart before commit-report-backup same-run same-operation resume-committed-intent
+interrupt restart after commit-report-backup same-run same-operation already-applied-readback
+interrupt ctrl-c before commit-terminal-report same-run same-operation resume-committed-intent
+interrupt ctrl-c after commit-terminal-report same-run same-operation already-applied-readback
+interrupt sigkill before commit-terminal-report same-run same-operation resume-committed-intent
+interrupt sigkill after commit-terminal-report same-run same-operation already-applied-readback
+interrupt client-disconnect before commit-terminal-report same-run same-operation resume-committed-intent
+interrupt client-disconnect after commit-terminal-report same-run same-operation already-applied-readback
+interrupt owner-lease-expiry before commit-terminal-report same-run same-operation resume-committed-intent
+interrupt owner-lease-expiry after commit-terminal-report same-run same-operation already-applied-readback
+interrupt restart before commit-terminal-report same-run same-operation resume-committed-intent
+interrupt restart after commit-terminal-report same-run same-operation already-applied-readback

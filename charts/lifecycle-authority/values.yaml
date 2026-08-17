@@ -36,6 +36,9 @@ vault:
 probes:
   liveness: /healthz
   readiness: /readyz
+recoveryObserver:
+  serviceAccountName: prodbox-lifecycle-authority
+  serviceAccountNamespace: lifecycle-authority
 # prodbox:lifecycle-authority-chart-statics.values:end
 
 # Lifecycle probe timing. The authority's liveness/readiness endpoints are

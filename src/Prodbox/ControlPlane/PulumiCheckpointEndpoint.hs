@@ -20,7 +20,13 @@ module Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , PulumiCheckpointWireRetirement (..)
   , PulumiCheckpointResponse (..)
   , PulumiCheckpointObservation (..)
+  , PulumiCheckpointCopyObservation (..)
+  , PulumiCheckpointPairObservation (..)
   , PulumiCheckpointPublicationResult (..)
+  , PulumiCheckpointRestoreResult (..)
+  , PulumiCheckpointRestoreReadBack (..)
+  , PulumiCheckpointRetirementAttemptResult (..)
+  , PulumiCheckpointRetirementReadBack (..)
   , PulumiCheckpointRetirementResult (..)
   , PulumiCheckpointRepository (..)
   , PulumiCheckpointHandler
@@ -48,6 +54,9 @@ import Prodbox.ControlPlane.Codec
   )
 import Prodbox.ControlPlane.RequestAuthentication (VerifiedCallerSlot)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
+  ( VerifiedPulumiCheckpointRef
+  )
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( CanonicalPulumiCheckpoint
@@ -65,6 +74,7 @@ import Prodbox.Lifecycle.PulumiCheckpoint
 
 data PulumiCheckpointRequest
   = ObservePulumiCheckpoint !Text
+  | ObservePulumiCheckpointPair !Text
   | PublishPulumiCheckpoint
       !Text
       !PulumiCheckpointMutationTicket
@@ -72,6 +82,20 @@ data PulumiCheckpointRequest
   | RetirePulumiCheckpoint
       !Text
       !PulumiCheckpointMutationTicket
+  | RestorePulumiCheckpointPrimary
+      !Text
+      !PulumiCheckpointMutationTicket
+      !VerifiedPulumiCheckpointRef
+  | ReadBackPulumiCheckpointRestore
+      !Text
+      !OperationId
+  | AttemptPulumiCheckpointRetirement
+      !Text
+      !PulumiCheckpointMutationTicket
+      !(Maybe VerifiedPulumiCheckpointRef)
+  | ReadBackPulumiCheckpointRetirement
+      !Text
+      !OperationId
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -115,8 +139,19 @@ data PulumiCheckpointWireRetirement
 
 data PulumiCheckpointResponse
   = PulumiCheckpointObserved !Text !PulumiCheckpointWireObservation
+  | PulumiCheckpointPairObserved !Text !PulumiCheckpointPairObservation
   | PulumiCheckpointPublication !Text !PulumiCheckpointWirePublication
   | PulumiCheckpointRetirement !Text !PulumiCheckpointWireRetirement
+  | PulumiCheckpointRestoreAttempted !Text !PulumiCheckpointRestoreResult
+  | PulumiCheckpointRestoreReadBackObserved
+      !Text
+      !PulumiCheckpointRestoreReadBack
+  | PulumiCheckpointRetirementAttempted
+      !Text
+      !PulumiCheckpointRetirementAttemptResult
+  | PulumiCheckpointRetirementReadBackObserved
+      !Text
+      !PulumiCheckpointRetirementReadBack
   | PulumiCheckpointBadRequest !Text
   | PulumiCheckpointRegistrationRefused !Text
   | PulumiCheckpointOperationRefRefused !Text !Text
@@ -133,6 +168,26 @@ data PulumiCheckpointObservation
   | PulumiCheckpointUnobservable !Text
   deriving stock (Eq, Show)
 
+-- | Each physical copy is observed independently.  A missing or unknown
+-- primary never suppresses the backup request, and vice versa.
+data PulumiCheckpointCopyObservation
+  = PulumiCheckpointCopyMissing
+  | PulumiCheckpointCopyCurrent !Text
+  | PulumiCheckpointCopyCorrupt !Text
+  | PulumiCheckpointCopyUnobservable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data PulumiCheckpointPairObservation
+  = PulumiCheckpointPairNoCurrentReference
+  | PulumiCheckpointPairCurrent
+      !VerifiedPulumiCheckpointRef
+      !PulumiCheckpointCopyObservation
+      !PulumiCheckpointCopyObservation
+  | PulumiCheckpointPairUnobservable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 data PulumiCheckpointPublicationResult
   = PulumiCheckpointPublished !PulumiCheckpointDigest
   | PulumiCheckpointAlreadyCurrent !PulumiCheckpointDigest
@@ -148,6 +203,41 @@ data PulumiCheckpointRetirementResult
   | PulumiCheckpointRetirementUnavailable !Text
   deriving stock (Eq, Show)
 
+data PulumiCheckpointRestoreResult
+  = PulumiCheckpointRestoreApplied !VerifiedPulumiCheckpointRef
+  | PulumiCheckpointRestoreAlreadyApplied !VerifiedPulumiCheckpointRef
+  | PulumiCheckpointRestoreRefused !Text
+  | PulumiCheckpointRestoreUnavailable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data PulumiCheckpointRestoreReadBack
+  = PulumiCheckpointRestorePending
+  | PulumiCheckpointRestoreConfirmed
+      !VerifiedPulumiCheckpointRef
+      !VerifiedPulumiCheckpointRef
+  | PulumiCheckpointRestoreReadBackRefused !Text
+  | PulumiCheckpointRestoreReadBackUnavailable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data PulumiCheckpointRetirementAttemptResult
+  = PulumiCheckpointRetirementApplied
+  | PulumiCheckpointRetirementAlreadyApplied
+  | PulumiCheckpointRetirementAttemptRefused !Text
+  | PulumiCheckpointRetirementAttemptUnavailable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data PulumiCheckpointRetirementReadBack
+  = PulumiCheckpointRetirementPending
+  | PulumiCheckpointReferenceRetired !(Maybe VerifiedPulumiCheckpointRef)
+  | PulumiCheckpointReferenceStillCurrent !(Maybe VerifiedPulumiCheckpointRef)
+  | PulumiCheckpointRetirementReadBackRefused !Text
+  | PulumiCheckpointRetirementReadBackUnavailable !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 -- | The load-bearing Authority transaction seam.  Implementations validate
 -- operation ownership and exact checkpoint registration, publish immutable
 -- content-addressed bytes to both primary and backup stores, and promote or
@@ -157,6 +247,10 @@ data PulumiCheckpointRepository m = PulumiCheckpointRepository
       :: VerifiedCallerSlot
       -> RegisteredPulumiCheckpoint
       -> m PulumiCheckpointObservation
+  , observeRegisteredPulumiCheckpointPair
+      :: VerifiedCallerSlot
+      -> RegisteredPulumiCheckpoint
+      -> m PulumiCheckpointPairObservation
   , publishRegisteredPulumiCheckpoint
       :: VerifiedCallerSlot
       -> PulumiCheckpointMutationTicket
@@ -168,6 +262,28 @@ data PulumiCheckpointRepository m = PulumiCheckpointRepository
       -> PulumiCheckpointMutationTicket
       -> RegisteredPulumiCheckpoint
       -> m PulumiCheckpointRetirementResult
+  , restoreRegisteredPulumiCheckpointPrimary
+      :: VerifiedCallerSlot
+      -> PulumiCheckpointMutationTicket
+      -> RegisteredPulumiCheckpoint
+      -> VerifiedPulumiCheckpointRef
+      -> m PulumiCheckpointRestoreResult
+  , readBackRegisteredPulumiCheckpointRestore
+      :: VerifiedCallerSlot
+      -> OperationId
+      -> RegisteredPulumiCheckpoint
+      -> m PulumiCheckpointRestoreReadBack
+  , attemptRegisteredPulumiCheckpointRetirement
+      :: VerifiedCallerSlot
+      -> PulumiCheckpointMutationTicket
+      -> RegisteredPulumiCheckpoint
+      -> Maybe VerifiedPulumiCheckpointRef
+      -> m PulumiCheckpointRetirementAttemptResult
+  , readBackRegisteredPulumiCheckpointRetirement
+      :: VerifiedCallerSlot
+      -> OperationId
+      -> RegisteredPulumiCheckpoint
+      -> m PulumiCheckpointRetirementReadBack
   }
 
 newtype PulumiCheckpointHandler m = PulumiCheckpointHandler
@@ -213,6 +329,10 @@ servePulumiCheckpoint repository callerSlot request =
       withRegistration rawName $ \registered ->
         PulumiCheckpointObserved rawName . encodeObservation
           <$> observeRegisteredPulumiCheckpoint repository callerSlot registered
+    ObservePulumiCheckpointPair rawName ->
+      withRegistration rawName $ \registered ->
+        PulumiCheckpointPairObserved rawName
+          <$> observeRegisteredPulumiCheckpointPair repository callerSlot registered
     PublishPulumiCheckpoint rawName ticket bytes ->
       withRegistration
         rawName
@@ -224,6 +344,40 @@ servePulumiCheckpoint repository callerSlot request =
             repository
             callerSlot
             ticket
+            registered
+    RestorePulumiCheckpointPrimary rawName ticket predecessor ->
+      withRegistration rawName $ \registered ->
+        PulumiCheckpointRestoreAttempted rawName
+          <$> restoreRegisteredPulumiCheckpointPrimary
+            repository
+            callerSlot
+            ticket
+            registered
+            predecessor
+    ReadBackPulumiCheckpointRestore rawName operation ->
+      withRegistration rawName $ \registered ->
+        PulumiCheckpointRestoreReadBackObserved rawName
+          <$> readBackRegisteredPulumiCheckpointRestore
+            repository
+            callerSlot
+            operation
+            registered
+    AttemptPulumiCheckpointRetirement rawName ticket expectedReference ->
+      withRegistration rawName $ \registered ->
+        PulumiCheckpointRetirementAttempted rawName
+          <$> attemptRegisteredPulumiCheckpointRetirement
+            repository
+            callerSlot
+            ticket
+            registered
+            expectedReference
+    ReadBackPulumiCheckpointRetirement rawName operation ->
+      withRegistration rawName $ \registered ->
+        PulumiCheckpointRetirementReadBackObserved rawName
+          <$> readBackRegisteredPulumiCheckpointRetirement
+            repository
+            callerSlot
+            operation
             registered
  where
   withRegistration rawName action =
@@ -309,8 +463,14 @@ renderPayloadError = Text.pack . show
 pulumiCheckpointResponseHttpStatus :: PulumiCheckpointResponse -> ReplyStatus
 pulumiCheckpointResponseHttpStatus response = case response of
   PulumiCheckpointObserved _ observation -> observationStatus observation
+  PulumiCheckpointPairObserved _ observation -> pairStatus observation
   PulumiCheckpointPublication _ result -> publicationStatus result
   PulumiCheckpointRetirement _ result -> retirementStatus result
+  PulumiCheckpointRestoreAttempted _ result -> restoreStatus result
+  PulumiCheckpointRestoreReadBackObserved _ result -> restoreReadBackStatus result
+  PulumiCheckpointRetirementAttempted _ result -> retirementAttemptStatus result
+  PulumiCheckpointRetirementReadBackObserved _ result ->
+    retirementReadBackStatus result
   PulumiCheckpointBadRequest _ -> ReplyBadRequest
   PulumiCheckpointRegistrationRefused _ -> ReplyBadRequest
   PulumiCheckpointOperationRefRefused _ _ -> ReplyBadRequest
@@ -323,6 +483,10 @@ pulumiCheckpointResponseHttpStatus response = case response of
     PulumiCheckpointWireCorruptAt {} -> ReplyInternalError
     PulumiCheckpointWireEndpointUnready _ -> ReplyServiceUnavailable
     PulumiCheckpointWireUnobservable _ -> ReplyServiceUnavailable
+  pairStatus observation = case observation of
+    PulumiCheckpointPairNoCurrentReference -> ReplyOk
+    PulumiCheckpointPairCurrent {} -> ReplyOk
+    PulumiCheckpointPairUnobservable _ -> ReplyServiceUnavailable
   publicationStatus result = case result of
     PulumiCheckpointWirePublished _ -> ReplyOk
     PulumiCheckpointWireAlreadyCurrent _ -> ReplyOk
@@ -334,6 +498,27 @@ pulumiCheckpointResponseHttpStatus response = case response of
     PulumiCheckpointWireRetiredAndReadBack -> ReplyOk
     PulumiCheckpointWireRetirementRefused _ -> ReplyConflict
     PulumiCheckpointWireRetirementUnavailable _ -> ReplyServiceUnavailable
+  restoreStatus result = case result of
+    PulumiCheckpointRestoreApplied _ -> ReplyOk
+    PulumiCheckpointRestoreAlreadyApplied _ -> ReplyOk
+    PulumiCheckpointRestoreRefused _ -> ReplyConflict
+    PulumiCheckpointRestoreUnavailable _ -> ReplyServiceUnavailable
+  restoreReadBackStatus result = case result of
+    PulumiCheckpointRestorePending -> ReplyOk
+    PulumiCheckpointRestoreConfirmed {} -> ReplyOk
+    PulumiCheckpointRestoreReadBackRefused _ -> ReplyConflict
+    PulumiCheckpointRestoreReadBackUnavailable _ -> ReplyServiceUnavailable
+  retirementAttemptStatus result = case result of
+    PulumiCheckpointRetirementApplied -> ReplyOk
+    PulumiCheckpointRetirementAlreadyApplied -> ReplyOk
+    PulumiCheckpointRetirementAttemptRefused _ -> ReplyConflict
+    PulumiCheckpointRetirementAttemptUnavailable _ -> ReplyServiceUnavailable
+  retirementReadBackStatus result = case result of
+    PulumiCheckpointRetirementPending -> ReplyOk
+    PulumiCheckpointReferenceRetired _ -> ReplyOk
+    PulumiCheckpointReferenceStillCurrent _ -> ReplyConflict
+    PulumiCheckpointRetirementReadBackRefused _ -> ReplyConflict
+    PulumiCheckpointRetirementReadBackUnavailable _ -> ReplyServiceUnavailable
 
 pulumiCheckpointResponseBody :: PulumiCheckpointResponse -> ByteString
 pulumiCheckpointResponseBody =

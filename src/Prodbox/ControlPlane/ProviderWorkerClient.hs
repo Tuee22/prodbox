@@ -43,11 +43,14 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneResponse
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+  ( providerExecutionResultForAuthority
+  )
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult
   , ProviderWorkerExecutionBoundary
   , admitProviderCommittedIntent
-  , executeVerifiedProviderIntent
+  , executeVerifiedProviderIntentBound
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( verifiedCallerSlotPrincipal
@@ -108,14 +111,21 @@ providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
               (ProviderWorkerAdmissionRefused (Text.pack (show err)))
           )
       Right verified -> do
-        executed <- executeVerifiedProviderIntent boundary verified
+        executed <- executeVerifiedProviderIntentBound boundary verified
         pure $ case executed of
           Left err ->
             ( ReplyServiceUnavailable
             , responseBody
                 (ProviderWorkerExecutionFailed (Text.pack (show err)))
             )
-          Right result -> (ReplyOk, responseBody (ProviderWorkerExecuted result))
+          Right bound -> case providerExecutionResultForAuthority bound of
+            Left err ->
+              ( ReplyServiceUnavailable
+              , responseBody
+                  (ProviderWorkerExecutionFailed (Text.pack (show err)))
+              )
+            Right result ->
+              (ReplyOk, responseBody (ProviderWorkerExecuted result))
 
   responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
 

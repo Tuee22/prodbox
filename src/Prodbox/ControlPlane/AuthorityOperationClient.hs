@@ -9,6 +9,7 @@
 module Prodbox.ControlPlane.AuthorityOperationClient
   ( AuthorityOperationClient (..)
   , AuthorityOperationAdmission (..)
+  , AuthorityOperationObservation (..)
   , AuthorityOperationClientError (..)
   , lifecycleAuthorityOperationClient
   , lifecycleAuthorityOperationClientAuthenticated
@@ -74,13 +75,19 @@ data AuthorityOperationClient m = AuthorityOperationClient
       -> m
            ( Either
                AuthorityOperationClientError
-               (Maybe SubmissionStatus)
+               (Maybe AuthorityOperationObservation)
            )
   }
 
 data AuthorityOperationAdmission
   = AuthorityOperationAdmissionAccepted !OperationId
   | AuthorityOperationAdmissionDuplicate !OperationId
+  deriving stock (Eq, Show)
+
+data AuthorityOperationObservation = AuthorityOperationObservation
+  { authorityOperationObservedId :: !OperationId
+  , authorityOperationObservedStatus :: !SubmissionStatus
+  }
   deriving stock (Eq, Show)
 
 data AuthorityOperationClientError
@@ -159,8 +166,15 @@ authorityOperationClientWith callAuthenticated =
       ControlPlaneResponse status body <- response
       decoded <- decodeResponse body
       case decoded of
-        AuthorityOperationObserved operationStatus
-          | status == 200 -> Right (Just operationStatus)
+        AuthorityOperationObserved operation operationStatus
+          | status == 200 ->
+              Right
+                ( Just
+                    AuthorityOperationObservation
+                      { authorityOperationObservedId = operation
+                      , authorityOperationObservedStatus = operationStatus
+                      }
+                )
           | otherwise -> Left (AuthorityOperationResponseStatusMismatch status)
         AuthorityOperationUnknown
           | status == 404 -> Right Nothing

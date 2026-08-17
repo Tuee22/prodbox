@@ -47,14 +47,41 @@ import ControlPlaneAdminActionAuthorityExecutionEndpoint
 import ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneAuthorityObservation (controlPlaneAuthorityObservationSuite)
+import ControlPlaneAwsStackCreationBindingRepository
+  ( controlPlaneAwsStackCreationBindingRepositorySuite
+  )
+import ControlPlaneAwsStackReaderRepository
+  ( controlPlaneAwsStackReaderRepositorySuite
+  )
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
+import ControlPlaneCleanupProgramDescriptorRepository
+  ( controlPlaneCleanupProgramDescriptorRepositorySuite
+  )
 import ControlPlaneClient (controlPlaneClientSuite)
 import ControlPlaneConfigEndpoint (controlPlaneConfigEndpointSuite)
 import ControlPlaneDeadline (controlPlaneDeadlineSuite)
+import ControlPlaneDescriptorBoundLifecycleRuntime
+  ( controlPlaneDescriptorBoundLifecycleRuntimeSuite
+  )
+import ControlPlaneEksDrainIntentRepository
+  ( controlPlaneEksDrainIntentRepositorySuite
+  )
+import ControlPlaneEksDrainReadBackReceiptRepository
+  ( controlPlaneEksDrainReadBackReceiptRepositorySuite
+  )
 import ControlPlaneFederationBootstrap (controlPlaneFederationBootstrapSuite)
+import ControlPlaneLocalRke2HostObservationEndpoint
+  ( controlPlaneLocalRke2HostObservationEndpointSuite
+  )
+import ControlPlaneLocalRke2HostObservationRepository
+  ( controlPlaneLocalRke2HostObservationRepositorySuite
+  )
 import ControlPlaneMigrationEndpoint (controlPlaneMigrationEndpointSuite)
 import ControlPlaneOperationEndpoint (controlPlaneOperationEndpointSuite)
+import ControlPlaneOwnershipManifestRepository
+  ( controlPlaneOwnershipManifestRepositorySuite
+  )
 import ControlPlaneProjectionImportRegistration
   ( controlPlaneProjectionImportRegistrationSuite
   )
@@ -63,6 +90,12 @@ import ControlPlaneProviderWorkerAdapter (controlPlaneProviderWorkerAdapterSuite
 import ControlPlanePulumiCheckpoint (controlPlanePulumiCheckpointSuite)
 import ControlPlanePulumiCheckpointRepository
   ( controlPlanePulumiCheckpointRepositorySuite
+  )
+import ControlPlaneRecoveryPlaneEndpoint
+  ( controlPlaneRecoveryPlaneEndpointSuite
+  )
+import ControlPlaneRecoveryPlaneRepository
+  ( controlPlaneRecoveryPlaneRepositorySuite
   )
 import ControlPlaneRetainedMaterialWorker
   ( controlPlaneRetainedMaterialWorkerSuite
@@ -160,6 +193,9 @@ import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import HelmRelease (helmReleaseSuite)
+import HostCleanupIntent (hostCleanupIntentSuite)
+import HostCleanupRke2 (hostCleanupRke2Suite)
+import HostCleanupRunner (hostCleanupRunnerSuite)
 import InviteQualification (inviteQualificationSuite)
 import LifecycleAuthorityAdminAction (lifecycleAuthorityAdminActionSuite)
 import LifecycleAuthorityBackupRepair (lifecycleAuthorityBackupRepairSuite)
@@ -172,6 +208,9 @@ import LifecycleAuthorityMigration (lifecycleAuthorityMigrationSuite)
 import LifecycleAuthorityOperation (lifecycleAuthorityOperationSuite)
 import LifecycleAuthorityOutboxSim (lifecycleAuthorityOutboxSimSuite)
 import LifecycleAuthorityProjectionImport (lifecycleAuthorityProjectionImportSuite)
+import LifecycleAuthorityProviderAdmissionEpoch
+  ( lifecycleAuthorityProviderAdmissionEpochSuite
+  )
 import LifecycleAuthorityPulumiCheckpointRegistry
   ( lifecycleAuthorityPulumiCheckpointRegistrySuite
   )
@@ -181,8 +220,91 @@ import LifecycleAuthorityRetainedMaterial
 import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
 import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
 import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
+import LifecycleCleanupClient (lifecycleCleanupClientSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import LifecycleProviderWork (lifecycleProviderWorkSuite)
+import LifecycleTeardownAwsCheckpointInterpreter
+  ( lifecycleTeardownAwsCheckpointInterpreterSuite
+  )
+import LifecycleTeardownAwsEbsAdapter
+  ( lifecycleTeardownAwsEbsAdapterSuite
+  )
+import LifecycleTeardownAwsEksAdapter
+  ( lifecycleTeardownAwsEksAdapterSuite
+  )
+import LifecycleTeardownAwsEksDestroyAdapter
+  ( lifecycleTeardownAwsEksDestroyAdapterSuite
+  )
+import LifecycleTeardownAwsEksRegisteredTargetDestroyInterpreter
+  ( lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite
+  )
+import LifecycleTeardownAwsRegisteredTargetInterpreter
+  ( lifecycleTeardownAwsRegisteredTargetInterpreterSuite
+  )
+import LifecycleTeardownAwsStackAdapter
+  ( lifecycleTeardownAwsStackAdapterSuite
+  )
+import LifecycleTeardownAwsStackReaderInterpreter
+  ( lifecycleTeardownAwsStackReaderInterpreterSuite
+  )
+import LifecycleTeardownCascadeEvidence (lifecycleTeardownCascadeEvidenceSuite)
+import LifecycleTeardownCheckpoint (lifecycleTeardownCheckpointSuite)
+import LifecycleTeardownCheckpointAuthority
+  ( lifecycleTeardownCheckpointAuthoritySuite
+  )
+import LifecycleTeardownCloudRuntime (lifecycleTeardownCloudRuntimeSuite)
+import LifecycleTeardownDecision (lifecycleTeardownDecisionSuite)
+import LifecycleTeardownEksDrainAttemptRecovery
+  ( lifecycleTeardownEksDrainAttemptRecoverySuite
+  )
+import LifecycleTeardownEksDrainIntent
+  ( lifecycleTeardownEksDrainIntentSuite
+  )
+import LifecycleTeardownEksDrainInterpreter
+  ( lifecycleTeardownEksDrainInterpreterSuite
+  )
+import LifecycleTeardownEksDrainRuntime
+  ( lifecycleTeardownEksDrainRuntimeSuite
+  )
+import LifecycleTeardownEksDrainSession
+  ( lifecycleTeardownEksDrainSessionSuite
+  )
+import LifecycleTeardownEksTeardownExecutor
+  ( lifecycleTeardownEksTeardownExecutorSuite
+  )
+import LifecycleTeardownOperationalCredentialInventory
+  ( lifecycleTeardownOperationalCredentialInventorySuite
+  )
+import LifecycleTeardownOwnershipManifest
+  ( lifecycleTeardownOwnershipManifestSuite
+  )
+import LifecycleTeardownProgram (lifecycleTeardownProgramSuite)
+import LifecycleTeardownProviderAwsScopeAdapter (providerAwsScopeAdapterSuite)
+import LifecycleTeardownProviderDispatch
+  ( lifecycleTeardownProviderDispatchSuite
+  )
+import LifecycleTeardownRecoveryCapability
+  ( lifecycleTeardownRecoveryCapabilitySuite
+  )
+import LifecycleTeardownRecoveryPlane
+  ( lifecycleTeardownRecoveryPlaneSuite
+  )
+import LifecycleTeardownRecoveryPlaneComponentObserver
+  ( lifecycleTeardownRecoveryPlaneComponentObserverSuite
+  )
+import LifecycleTeardownRecoveryPlaneInterpreter
+  ( lifecycleTeardownRecoveryPlaneInterpreterSuite
+  )
+import LifecycleTeardownRegisteredTargetResult
+  ( lifecycleTeardownRegisteredTargetResultSuite
+  )
+import LifecycleTeardownRegistry (lifecycleTeardownRegistrySuite)
+import LifecycleTestArtifactCleanup (lifecycleTestArtifactCleanupSuite)
+import LifecycleTestArtifactIntentJournal
+  ( lifecycleTestArtifactIntentJournalSuite
+  )
+import LocalRetainedRoot (localRetainedRootSuite)
+import LocalRke2RecoveryState (localRke2RecoveryStateSuite)
 import LongLivedDecommission (longLivedDecommissionSuite)
 import MeasuredProfile (measuredProfileSuite)
 import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
@@ -194,6 +316,7 @@ import Options.Applicative
   , execParserPure
   , renderFailure
   )
+import OrdinaryTeardownRecovery (ordinaryTeardownRecoverySuite)
 import Parser (parserSuite)
 import Prodbox.App
   ( Env (..)
@@ -338,8 +461,10 @@ import Prodbox.CLI.Pulumi
   )
 import Prodbox.CLI.Rke2
   ( CascadePhaseOutcome (..)
+  , CascadeSubstrateDecision (..)
   , DeleteMode (..)
   , GatewayFullModeProbe (..)
+  , KubernetesReadinessCheck (..)
   , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
   , ReconcileStepId (..)
@@ -358,10 +483,13 @@ import Prodbox.CLI.Rke2
   , cascadeSweepCredentialAbsentExit
   , classifyBrokerVaultUnsealedStatus
   , classifyGatewayFullModeProbe
+  , classifyKubernetesReadiness
   , classifyRegistryStorageEdgeProbe
+  , derivedPhase
   , gatewayDaemonWorkloadRefs
   , harborRegistryStorageBackend
   , homeSubstratePlatformComponents
+  , independentPhase
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , isRetryableHarborPublicationFailure
@@ -372,6 +500,7 @@ import Prodbox.CLI.Rke2
   , operationalAwsCredentialGateFromResult
   , parseRegistryStorageEdgeResponse
   , registryConfigYaml
+  , renderFailedCascadePhases
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
   , renderNativeDeletePlan
@@ -740,8 +869,8 @@ import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDefinition (..)
   , ChartDeploymentPlan (..)
-  , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
+  , HelmUpgradeFailureDisposition (..)
   , KubernetesApiEgressCoordinate (..)
   , PublicEdgePreserveOutcome (..)
   , ResolvedCustomImage (..)
@@ -749,10 +878,13 @@ import Prodbox.Lib.ChartPlatform
   , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
+  , buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
   , deploymentConditionReportsTrue
+  , helmUpgradeFailureDisposition
+  , helmUpgradeWaitArguments
   , kubernetesApiEgressChartNames
   , observePatroniOperatorAvailableWith
   , operatorAvailableTarget
@@ -787,6 +919,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( mkModelBObjectVersion
   , modelBObjectVersionText
   )
+import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( consumeExternalAcmeEabIngressFrame
   , withExternalAcmeEabIngressFrame
@@ -804,11 +937,13 @@ import Prodbox.Lifecycle.K8sDrain
   ( CascadeDecision (..)
   , ClusterProbe (..)
   , DrainResult (..)
+  , DrainTimeout (..)
   , cascadeDecisionFromDrainResult
   , classifyClusterProbe
-  , clusterAbsenceEvidencePhrases
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
+  , drainAwsAffectingK8sResources
+  , prepareK8sDrainEnvWithKubectl
   )
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
@@ -1032,7 +1167,6 @@ import Prodbox.Substrate
   , Substrate (..)
   , fixedScalingPolicyBySubstrate
   )
-import Prodbox.Test.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayRuntimeStabilityReport (NotStableYet, StableObserved)
   )
@@ -1237,6 +1371,9 @@ import Prodbox.Workload.Settings qualified as WorkloadSettings
 import QualificationEvidence (qualificationEvidenceSuite)
 import QualificationFrozenCounterexample (qualificationFrozenCounterexampleSuite)
 import QualificationSourceIdentity (qualificationSourceIdentitySuite)
+import QualificationTeardownCounterexample
+  ( qualificationTeardownCounterexampleSuite
+  )
 import ResponseObligationSuite (responseObligationSuite)
 import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
@@ -1622,6 +1759,7 @@ unitSuite = do
   qualificationFrozenCounterexampleSuite
   qualificationEvidenceSuite
   qualificationSourceIdentitySuite
+  qualificationTeardownCounterexampleSuite
   temporalQualificationSuite
   awsSesLifecycleSuite
   awsSesLeaseRoleSuite
@@ -1641,6 +1779,9 @@ unitSuite = do
   bootstrapBrokerServerSafetySuite
   bootstrapBrokerShutdownModelSuite
   brokerChartStaticsSuite
+  localRetainedRootSuite
+  localRke2RecoveryStateSuite
+  ordinaryTeardownRecoverySuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
   awsControlPlaneIsolationSuite
@@ -1657,6 +1798,11 @@ unitSuite = do
   controlPlaneCapabilitySuite
   controlPlaneClientSuite
   controlPlaneConfigEndpointSuite
+  controlPlaneDescriptorBoundLifecycleRuntimeSuite
+  controlPlaneLocalRke2HostObservationEndpointSuite
+  controlPlaneLocalRke2HostObservationRepositorySuite
+  controlPlaneRecoveryPlaneRepositorySuite
+  controlPlaneRecoveryPlaneEndpointSuite
   controlPlaneFederationBootstrapSuite
   controlPlaneCapacitySuite
   controlPlaneDeadlineSuite
@@ -1687,12 +1833,19 @@ unitSuite = do
   lifecycleAuthorityGenesisSuite
   lifecycleAuthorityMigrationSuite
   lifecycleAuthorityProjectionImportSuite
+  lifecycleAuthorityProviderAdmissionEpochSuite
   lifecycleAuthorityPulumiCheckpointRegistrySuite
   lifecycleAuthorityRetainedMaterialSuite
   controlPlaneRetainedMaterialWorkerSuite
   controlPlaneProjectionImportRegistrationSuite
   controlPlanePulumiCheckpointSuite
   controlPlanePulumiCheckpointRepositorySuite
+  controlPlaneAwsStackCreationBindingRepositorySuite
+  controlPlaneAwsStackReaderRepositorySuite
+  controlPlaneCleanupProgramDescriptorRepositorySuite
+  controlPlaneOwnershipManifestRepositorySuite
+  controlPlaneEksDrainIntentRepositorySuite
+  controlPlaneEksDrainReadBackReceiptRepositorySuite
   controlPlaneRetainedSesLeaseSuite
   controlPlaneRouteSuite
   controlPlaneAuthorityBackupEndpointSuite
@@ -1745,6 +1898,42 @@ unitSuite = do
   sigV4Suite
   restoreGraphSuite
   cleanupRunSuite
+  hostCleanupIntentSuite
+  hostCleanupRunnerSuite
+  hostCleanupRke2Suite
+  lifecycleCleanupClientSuite
+  lifecycleTestArtifactCleanupSuite
+  lifecycleTestArtifactIntentJournalSuite
+  lifecycleTeardownAwsCheckpointInterpreterSuite
+  lifecycleTeardownAwsEbsAdapterSuite
+  lifecycleTeardownAwsEksAdapterSuite
+  lifecycleTeardownAwsEksDestroyAdapterSuite
+  lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite
+  lifecycleTeardownAwsRegisteredTargetInterpreterSuite
+  lifecycleTeardownAwsStackAdapterSuite
+  lifecycleTeardownAwsStackReaderInterpreterSuite
+  lifecycleTeardownCloudRuntimeSuite
+  lifecycleTeardownRegistrySuite
+  lifecycleTeardownProgramSuite
+  lifecycleTeardownRecoveryCapabilitySuite
+  lifecycleTeardownRecoveryPlaneSuite
+  lifecycleTeardownRecoveryPlaneComponentObserverSuite
+  lifecycleTeardownRecoveryPlaneInterpreterSuite
+  lifecycleTeardownRegisteredTargetResultSuite
+  lifecycleTeardownDecisionSuite
+  lifecycleTeardownCascadeEvidenceSuite
+  lifecycleTeardownCheckpointSuite
+  lifecycleTeardownCheckpointAuthoritySuite
+  providerAwsScopeAdapterSuite
+  lifecycleTeardownProviderDispatchSuite
+  lifecycleTeardownOperationalCredentialInventorySuite
+  lifecycleTeardownEksDrainAttemptRecoverySuite
+  lifecycleTeardownEksDrainInterpreterSuite
+  lifecycleTeardownEksDrainIntentSuite
+  lifecycleTeardownEksTeardownExecutorSuite
+  lifecycleTeardownEksDrainSessionSuite
+  lifecycleTeardownEksDrainRuntimeSuite
+  lifecycleTeardownOwnershipManifestSuite
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
   smtpKeyRepairInterpreterSuite
@@ -3111,7 +3300,7 @@ unitSuite = do
               , ComponentRegistry
               ]
           fmap readiness (lookupComponentNode ComponentChartBootstrapBroker dag)
-            `shouldBe` Just ProbeRolloutComplete
+            `shouldBe` Just ProbeResourceExists
           fmap componentDependencyIds (lookupComponentNode ComponentGatewayDaemonFull dag)
             `shouldBe` Just
               [ ComponentVaultUnsealed
@@ -3121,6 +3310,15 @@ unitSuite = do
               ]
           fmap readiness (lookupComponentNode ComponentGatewayDaemonFull dag)
             `shouldBe` Just (ProbeBackendRoundTrip ComponentMinio)
+    it "admits the pre-Vault Broker only after its requested Deployment revision exists" $ do
+      let check = DeploymentRevisionObserved "bootstrap-broker" "bootstrap-broker"
+          isPending result = case result of
+            Right (ReadinessProbePending _) -> True
+            _ -> False
+      classifyKubernetesReadiness check "2:2:1:1" `shouldBe` Right ReadinessProbeReady
+      classifyKubernetesReadiness check "2:1:1:1" `shouldSatisfy` isPending
+      classifyKubernetesReadiness check "2:2:1:0" `shouldSatisfy` isPending
+      classifyKubernetesReadiness check "" `shouldSatisfy` isPending
     it "declares every registry-backed native platform dependency explicitly" $ do
       case validateComponentGraph defaultComponentGraph of
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
@@ -6331,6 +6529,7 @@ unitSuite = do
                            , "ha-rke2-aws"
                            , "gateway-daemon"
                            , "control-plane-counterexample"
+                           , "teardown-recovery"
                            , "certificate-scope"
                            , "clean-room-handoff"
                            , "charts-platform"
@@ -8216,6 +8415,19 @@ unitSuite = do
         `shouldBe` replicate 7 True
       isRetryableHelmFailure (failed "401 unauthorized") `shouldBe` False
 
+    it "preserves a release when Helm times out waiting for readiness" $ do
+      helmUpgradeFailureDisposition
+        (ProcessOutput (ExitFailure 1) "" "UPGRADE FAILED: context deadline exceeded")
+        `shouldBe` PreserveTimedOutRelease
+      helmUpgradeFailureDisposition
+        (ProcessOutput (ExitFailure 1) "" "rendered manifests contain an invalid resource")
+        `shouldBe` ReconcileTerminalFailureAbsent
+
+    it "applies the pre-Vault Bootstrap Broker without waiting on post-Vault readiness" $ do
+      helmUpgradeWaitArguments "bootstrap-broker" `shouldBe` []
+      helmUpgradeWaitArguments "lifecycle-authority"
+        `shouldBe` ["--wait", "--timeout", "30m0s"]
+
     it "needs no retry-classifier lint allowance" $ do
       let inlineClassifier classifierName =
             unlines
@@ -8863,6 +9075,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
               , resolvedCustomImageTag = "broker-test-tag"
               , resolvedCustomImageRolloutToken = Nothing
+              , resolvedCustomImageRuntimeDigest = Nothing
               }
       case valuesForBootstrapBroker
         "prodbox-home"
@@ -8876,6 +9089,11 @@ unitSuite = do
               KeyMap.lookup (Key.fromString "name") sa
                 `shouldBe` Just (String "prodbox-bootstrap-broker")
             _ -> expectationFailure "expected serviceAccount object"
+          case KeyMap.lookup (Key.fromString "cleanupCaller") payload of
+            Just (Object cleanupCaller) ->
+              KeyMap.lookup (Key.fromString "serviceAccountName") cleanupCaller
+                `shouldBe` Just (String "prodbox-control-plane-operator")
+            _ -> expectationFailure "expected cleanupCaller object"
           case KeyMap.lookup (Key.fromString "vault") payload of
             Just (Object vaultPayload) ->
               KeyMap.lookup (Key.fromString "role") vaultPayload
@@ -8930,6 +9148,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
               , resolvedCustomImageTag = "control-plane-test"
               , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
+              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'b')
               }
           extractRoleDhall value = case value of
             Object payload -> case KeyMap.lookup (Key.fromString "config") payload of
@@ -9083,7 +9302,21 @@ unitSuite = do
             _ -> expectationFailure "expected one gateway release"
 
     it "renders distinct attested daemon Tier-0 identities for home and AWS gateways" $ do
-      let homeClusterId = "prodbox-home-target"
+      let fixtureRuntimeImageResolver substrate =
+            pure
+              ( Right
+                  ( Just
+                      ResolvedCustomImage
+                        { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
+                        , resolvedCustomImageTag = case substrate of
+                            SubstrateHomeLocal -> "prodbox-machine-fixture"
+                            SubstrateAws -> "prodbox-aws-substrate"
+                        , resolvedCustomImageRolloutToken = Nothing
+                        , resolvedCustomImageRuntimeDigest = Nothing
+                        }
+                  )
+              )
+          homeClusterId = "prodbox-home-target"
           homeTier0 =
             defaultProjectConfig
               { context =
@@ -9093,7 +9326,8 @@ unitSuite = do
               }
       withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
         homeResult <-
-          buildChartDeploymentPlanForSubstrate
+          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+            fixtureRuntimeImageResolver
             SubstrateHomeLocal
             "/tmp/prodbox"
             (testValidatedSettings "/tmp/prodbox/.data")
@@ -9101,7 +9335,8 @@ unitSuite = do
             testChartSecrets
             Map.empty
         awsResult <-
-          buildChartDeploymentPlanForSubstrate
+          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+            fixtureRuntimeImageResolver
             SubstrateAws
             "/tmp/prodbox"
             (testValidatedSettings "/tmp/prodbox/.data")
@@ -9283,8 +9518,15 @@ unitSuite = do
           manifestJson `shouldNotContain` "\"hostPath\""
           manifestJson `shouldNotContain` "\"storageClassName\":\"gp2\""
 
+    -- Sprint 3.38: this case previously asserted the opposite — that a chart
+    -- root whose releases are all present and `deployed` is an idempotent
+    -- no-op. That skip is the defect: `helm list` reports presence and health
+    -- and carries no revision, so "installed and healthy" was consumed as
+    -- "at the desired revision". Measured consequence: `cluster reconcile`
+    -- built and pushed a new runtime image and left the Bootstrap Broker
+    -- Deployment at generation 1 with the previous run\'s rollout annotation.
     it
-      "chartReleasesToDeploy deploys missing and non-deployed helm releases"
+      "chartReleasesToDeploy converges every release, whatever helm reports"
       $ do
         result <-
           buildChartDeploymentPlan
@@ -9296,27 +9538,14 @@ unitSuite = do
         case result of
           Left err -> expectationFailure err
           Right plan -> do
-            let names snaps = map chartReleasePlanReleaseName (chartReleasesToDeploy snaps plan)
-                snapshot name status = ChartInstallSnapshot name "vscode" status
-                present ks = Map.fromList [(k, snapshot k "deployed") | k <- ks]
-            -- Nothing installed yet: deploy the whole chart root in order.
-            names Map.empty `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
-            -- Fully installed: idempotent no-op.
-            names (present ["keycloak-postgres", "keycloak", "vscode"]) `shouldBe` []
-            -- Partial rollback (keycloak uninstalled, siblings remain): deploy ONLY
-            -- keycloak — the case the old all-or-nothing duplicates guard could
-            -- never heal.
-            names (present ["keycloak-postgres", "vscode"]) `shouldBe` ["keycloak"]
-            -- Failed or interrupted Helm releases are not steady state and must be
-            -- repaired by the next reconcile instead of being skipped as present.
-            names
-              ( Map.fromList
-                  [ ("keycloak-postgres", snapshot "keycloak-postgres" "deployed")
-                  , ("keycloak", snapshot "keycloak" "failed")
-                  , ("vscode", snapshot "vscode" "pending-upgrade")
-                  ]
-              )
-              `shouldBe` ["keycloak", "vscode"]
+            let names = map chartReleasePlanReleaseName (chartReleasesToDeploy plan)
+            -- The whole chart root, in dependency order, every time.
+            names `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
+            -- The regression this pins: an all-`deployed` chart root is NOT a
+            -- no-op. `helm upgrade --install` is the idempotent convergence
+            -- operation and leaves an unchanged manifest untouched, so running
+            -- it always is correct where skipping it was not.
+            names `shouldSatisfy` (not . null)
 
     it "builds vscode deployment plans with dependency order and deterministic values" $ do
       result <-
@@ -10800,8 +11029,14 @@ unitSuite = do
         )
         `shouldBe` False
 
-    it "residueAbsent constructor matches the ResidueAbsent value" $
-      Residue.residueAbsent `shouldBe` Residue.ResidueAbsent
+    -- Sprint 4.81 (Standard C): this case asserted `residueAbsent == ResidueAbsent`
+    -- for an alias with no production caller -- a tautology about a redundant
+    -- second minter, which is the enforcing-nothing shape Sprints 4.68, 4.72,
+    -- and 4.77 each found. The alias is withdrawn (chaos_hardening_doctrine
+    -- section 23, "count the encoders"), and the case is replaced by one that
+    -- pins the property the withdrawal was for: absence has one minter.
+    it "has exactly one way to mint an absent residue status" $
+      Residue.ResidueAbsent `shouldBe` (Residue.ResidueAbsent :: Residue.ResidueStatus)
 
   describe "Sprint 4.21 registry per-run reconcile (resourcesToDestroy / pairPerRunResidue)" $ do
     let presentNames eks sub test =
@@ -11946,39 +12181,35 @@ unitSuite = do
   describe "Sprint 4.17.b cascade substrate inference" $ do
     it "all-absent residue → SubstrateHomeLocal (drain targets local cluster)" $
       inferCascadeSubstrate Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent
-        `shouldBe` SubstrateHomeLocal
+        `shouldBe` CascadeSubstrateKnown SubstrateHomeLocal
 
     it "aws-eks present → SubstrateAws (drain targets EKS)" $
       inferCascadeSubstrate residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent
-        `shouldBe` SubstrateAws
+        `shouldBe` CascadeSubstrateKnown SubstrateAws
 
     it "aws-eks-subzone present → SubstrateAws" $
       inferCascadeSubstrate Residue.ResidueAbsent residueFixturePresent Residue.ResidueAbsent
-        `shouldBe` SubstrateAws
+        `shouldBe` CascadeSubstrateKnown SubstrateAws
 
     it "aws-test present → SubstrateAws" $
       inferCascadeSubstrate Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent
-        `shouldBe` SubstrateAws
+        `shouldBe` CascadeSubstrateKnown SubstrateAws
 
     it "all-present → SubstrateAws" $
       inferCascadeSubstrate residueFixturePresent residueFixturePresent residueFixturePresent
-        `shouldBe` SubstrateAws
+        `shouldBe` CascadeSubstrateKnown SubstrateAws
 
     it
-      "Sprint 4.76: ResidueUnreachable on every stack → SubstrateAws (AWS may be in scope)"
+      "unknown on every exact stack refuses rather than selecting EKS"
       $ do
-        -- This is the composing step of the Sprint 4.76 defect. The
-        -- pre-4.76 predicate tested `isResiduePresent`, so an unreadable
-        -- backend inferred SubstrateHomeLocal — the one branch on which a
-        -- skipped drain is treated as success. The weakest evidence
-        -- selected the most permissive branch.
         let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
-        inferCascadeSubstrate minioDown minioDown minioDown `shouldBe` SubstrateAws
+        inferCascadeSubstrate minioDown minioDown minioDown
+          `shouldBe` CascadeSubstrateUnobservable ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "Sprint 4.76: one unobserved stack among observed-absent siblings still means AWS" $ do
+    it "one unknown exact stack refuses rather than treating unknown as present or absent" $ do
       let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
       inferCascadeSubstrate Residue.ResidueAbsent minioDown Residue.ResidueAbsent
-        `shouldBe` SubstrateAws
+        `shouldBe` CascadeSubstrateUnobservable ["aws-eks-subzone"]
 
     it "Sprint 4.80: a missing sweep credential is cannot-confirm only when AWS was in scope" $ do
       -- Sprint 4.76 left the sweep's credential-absent arm an unconditional
@@ -11990,32 +12221,15 @@ unitSuite = do
       cascadeSweepCredentialAbsentExit SubstrateHomeLocal `shouldBe` ExitSuccess
       cascadeSweepCredentialAbsentExit SubstrateAws `shouldBe` ExitFailure 1
 
-    it "Sprint 4.80: the sweep verdict composes with the substrate the cascade infers" $ do
-      -- The composition is what carries the claim, not either half: an
-      -- all-absent observation skips the sweep and still exits 0, while the
-      -- exact input Sprint 4.76 found in the field -- every per-run stack
-      -- unobservable -- now fails rather than skipping silently.
-      let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
-      cascadeSweepCredentialAbsentExit
-        ( inferCascadeSubstrate
-            Residue.ResidueAbsent
-            Residue.ResidueAbsent
-            Residue.ResidueAbsent
-        )
-        `shouldBe` ExitSuccess
-      cascadeSweepCredentialAbsentExit
-        (inferCascadeSubstrate minioDown minioDown minioDown)
-        `shouldBe` ExitFailure 1
-      cascadeSweepCredentialAbsentExit
-        ( inferCascadeSubstrate
-            residueFixturePresent
-            Residue.ResidueAbsent
-            Residue.ResidueAbsent
-        )
-        `shouldBe` ExitFailure 1
-
   describe "Sprint 4.76 cascade phase fold" $ do
-    let phase name exit = CascadePhaseOutcome {cascadePhaseName = name, cascadePhaseExit = exit}
+    -- Sprint 2.47 correction: this constructed `CascadePhaseOutcome` as a
+    -- record literal, and Sprint 4.82's new `cascadePhaseDerivedFrom` field
+    -- left it incomplete -- `-Wmissing-fields` under `dev check`'s `-Werror`
+    -- build, so the recorded `dev check` exit 0 did not reproduce. It goes
+    -- through the smart constructor 4.82 added for exactly this shape, which
+    -- also states what these fixtures mean: a phase that failed on its own
+    -- merits, which is what the 4.76 fold is about.
+    let phase = independentPhase
 
     it "an all-success phase list aggregates to success" $
       aggregateCascadeExit
@@ -12050,6 +12264,153 @@ unitSuite = do
     it "the cascade line does not claim the per-run destroys succeeded" $
       retainedStateNoticePerRunLine DeleteModeCascade
         `shouldContain` "attempted"
+
+  describe "Sprint 4.81 a residue answer names the authority that answered it" $ do
+    let checkpointAbsent = observedAtCheckpoint Residue.ResidueAbsent
+        awsAbsent = Residue.observeResidueAt Residue.ResidueLayerAwsResource Residue.ResidueAbsent
+    -- The reproduction as a unit case, side by side. Before this sprint these
+    -- two values were `ResidueAbsent` and `ResidueAbsent` — indistinguishable —
+    -- and the cascade consumed a checkpoint-layer answer as a resource-layer
+    -- fact. The pair differing is the whole point of the sprint.
+    it "distinguishes an absence observed at the checkpoint layer from one observed at AWS" $ do
+      Residue.residueObservationStatus checkpointAbsent
+        `shouldBe` Residue.residueObservationStatus awsAbsent
+      Residue.residueObservationLayer checkpointAbsent
+        `shouldNotBe` Residue.residueObservationLayer awsAbsent
+      checkpointAbsent `shouldNotBe` awsAbsent
+    it "carries the status through unchanged, so the layer is additive not lossy" $
+      mapM_
+        ( \status ->
+            Residue.residueObservationStatus
+              (Residue.observeResidueAt Residue.ResidueLayerAwsResource status)
+              `shouldBe` status
+        )
+        [ Residue.ResidueAbsent
+        , residuePresentFor "aws-eks-test"
+        , Residue.ResidueUnreachable (Residue.ResidueAuthorityUnauthenticated "detail")
+        ]
+    it "refines a status without relabelling which authority spoke" $ do
+      let refined =
+            Residue.mapResidueObservationStatus
+              (const (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "downgraded")))
+              awsAbsent
+      Residue.residueObservationLayer refined
+        `shouldBe` Residue.ResidueLayerAwsResource
+    it "renders every layer distinctly, so a narration cannot conflate two authorities" $ do
+      let rendered = map Residue.renderResidueObservationLayer [minBound .. maxBound]
+      length (nub rendered)
+        `shouldBe` length ([minBound .. maxBound] :: [Residue.ResidueObservationLayer])
+      all (not . null) rendered `shouldBe` True
+
+  describe "global AWS audit cannot resolve exact per-stack residue" $ do
+    let unreachable =
+          observedAtCheckpoint
+            ( Residue.ResidueUnreachable
+                (Residue.ResidueAuthorityUnauthenticated "cluster API is not serving")
+            )
+        absentAtAuthority = observedAtCheckpoint Residue.ResidueAbsent
+        presentAtAuthority = observedAtCheckpoint (residuePresentFor "aws-eks-test")
+    it "a clean global sweep does not mint exact stack absence" $ do
+      let resolution =
+            Residue.resolveResidueAcrossLayers unreachable Residue.AwsLayerNoResources
+      resolution
+        `shouldBe` Residue.ResolutionAuthorityUnobservableWithAwsAudit
+          (Residue.ResidueAuthorityUnauthenticated "cluster API is not serving")
+          Residue.AwsLayerNoResources
+      Residue.isResidueUnreachable (Residue.residueResolutionStatus resolution)
+        `shouldBe` True
+      Residue.residueResolutionConfirmedAbsence resolution `shouldBe` Nothing
+    it "every global answer leaves an unreachable exact observation unreachable" $ do
+      mapM_
+        ( \awsAnswer -> do
+            let resolution = Residue.resolveResidueAcrossLayers unreachable awsAnswer
+            Residue.residueResolutionConfirmedAbsence resolution `shouldBe` Nothing
+            Residue.isResidueUnreachable (Residue.residueResolutionStatus resolution)
+              `shouldBe` True
+        )
+        [ Residue.AwsLayerNoResources
+        , Residue.AwsLayerResourcesPresent ["arn:aws:ec2:::subnet/subnet-1"]
+        , Residue.AwsLayerUnobservable "throttled"
+        , Residue.AwsLayerNotConsulted "no admin credential"
+        ]
+    it "never lets AWS override an authority that did answer" $ do
+      mapM_
+        ( \observation ->
+            mapM_
+              ( \awsAnswer ->
+                  Residue.residueResolutionStatus
+                    (Residue.resolveResidueAcrossLayers observation awsAnswer)
+                    `shouldBe` Residue.residueObservationStatus observation
+              )
+              [ Residue.AwsLayerNoResources
+              , Residue.AwsLayerResourcesPresent ["arn:aws:ec2:::subnet/subnet-1"]
+              , Residue.AwsLayerUnobservable "throttled"
+              , Residue.AwsLayerNotConsulted "not needed"
+              ]
+        )
+        [absentAtAuthority, presentAtAuthority]
+    it "labels the global result audit-only rather than asserting exact absence" $ do
+      Residue.renderResidueResolution
+        (Residue.resolveResidueAcrossLayers unreachable Residue.AwsLayerNoResources)
+        `shouldContain` "cluster-wide AWS audit only"
+      Residue.renderResidueResolution
+        (Residue.resolveResidueAcrossLayers unreachable (Residue.AwsLayerUnobservable "x"))
+        `shouldContain` "NOT OBSERVED for this exact stack"
+
+    it "a retained bucket returned under multiple tags cannot mint exact presence" $ do
+      let bucketArn = "arn:aws:s3:::prodbox-pulumi-state-long-lived"
+          managedRow =
+            TagSweep.TaggedResource
+              bucketArn
+              "prodbox.io/managed-by"
+              "prodbox"
+          roleRow =
+            TagSweep.TaggedResource
+              bucketArn
+              "prodbox.io/role"
+              "long-lived-pulumi-state"
+          globalRows = TagSweep.unionTaggedResources [[managedRow, roleRow], [managedRow]]
+          (retained, escaped) = TagSweep.partitionRetainedLongLived globalRows
+          globalAudit =
+            Residue.AwsLayerResourcesPresent (map TagSweep.taggedResourceArn globalRows)
+          resolution = Residue.resolveResidueAcrossLayers unreachable globalAudit
+      globalRows `shouldBe` [managedRow, roleRow]
+      retained `shouldBe` globalRows
+      escaped `shouldBe` []
+      Residue.isResidueUnreachable (Residue.residueResolutionStatus resolution)
+        `shouldBe` True
+      Residue.residueResolutionConfirmedAbsence resolution `shouldBe` Nothing
+
+  describe "Sprint 4.82 one cause is not narrated as two peer failures" $ do
+    let confirm = independentPhase "confirm-MinIO" (ExitFailure 1)
+        confirmOk = independentPhase "confirm-MinIO" ExitSuccess
+    it "attributes a failed drain to the confirm phase that caused it" $
+      renderFailedCascadePhases
+        [confirm, derivedPhase "drain" (ExitFailure 1) "confirm-MinIO" [confirm]]
+        `shouldBe` "confirm-MinIO, drain (downstream of confirm-MinIO)"
+    it "does not attribute a drain that failed on its own merits" $
+      renderFailedCascadePhases
+        [confirmOk, derivedPhase "drain" (ExitFailure 1) "confirm-MinIO" [confirmOk]]
+        `shouldBe` "drain"
+    it "never attributes a phase that succeeded" $
+      cascadePhaseDerivedFrom (derivedPhase "drain" ExitSuccess "confirm-MinIO" [confirm])
+        `shouldBe` Nothing
+
+  describe "Sprint 4.81 an authentication failure is not a MinIO transport failure" $ do
+    -- The closed property, asserted rather than the marker list restated: no
+    -- authentication failure may render as a claim about a backend that was
+    -- never contacted. Sprint 4.76 used the same shape for its evidence set.
+    it "never renders an authentication failure as a MinIO transport failure" $ do
+      let rendered =
+            Residue.renderResidueUnreachableReason
+              (Residue.ResidueAuthorityUnauthenticated "external caller ServiceAccount is not observable")
+      rendered `shouldContain` "Lifecycle Authority could not be authenticated"
+      rendered `shouldContain` "no state backend was contacted"
+      rendered `shouldNotContain` "MinIO"
+    it "keeps the MinIO reason for a boundary that was actually dialled" $
+      Residue.renderResidueUnreachableReason
+        (Residue.ResidueBackendMinioUnreachable "connection refused")
+        `shouldContain` "MinIO backend unreachable"
 
   describe "Sprint 4.76 fail-closed tag sweep decision" $ do
     let escapee =
@@ -13077,6 +13438,57 @@ unitSuite = do
         `shouldBe` [missingOwnerArn]
 
   describe "Sprint 4.40 test-scoped EBS reaper" $ do
+    it "encodes one canonical exact family observation after client-side lifecycle narrowing" $ do
+      let baseVolume volumeId lifecycleTags =
+            EbsVolume.EbsVolume
+              { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId volumeId
+              , EbsVolume.ebsVolumeState = "available"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just "ca-central-1a"
+              , EbsVolume.ebsVolumeTags =
+                  ("kubernetes.io/cluster/aws-eks-test-cluster", "owned")
+                    : lifecycleTags
+              }
+          observed =
+            EbsVolume.testScopedEbsObservation
+              "aws-eks-test-cluster"
+              [ baseVolume
+                  "vol-0bbbbbbbbbbbbbbbb"
+                  [("prodbox.io/lifecycle", "per-run-test")]
+              , baseVolume
+                  "vol-0aaaaaaaaaaaaaaaa"
+                  [("prodbox.io/lifecycle", "per-run-test")]
+              , baseVolume
+                  "vol-0cccccccccccccccc"
+                  [("prodbox.io/lifecycle", "retained-ebs")]
+              ]
+          rendered = EbsVolume.renderTestScopedEbsObservation observed
+      rendered
+        `shouldBe` "prodbox-test-ebs-observation/v1:present:vol-0aaaaaaaaaaaaaaaa,vol-0bbbbbbbbbbbbbbbb"
+      EbsVolume.parseTestScopedEbsObservation rendered `shouldBe` Right observed
+      EbsVolume.testEbsObservationVolumeIds observed
+        `shouldBe` [ EbsVolume.EbsVolumeId "vol-0aaaaaaaaaaaaaaaa"
+                   , EbsVolume.EbsVolumeId "vol-0bbbbbbbbbbbbbbbb"
+                   ]
+
+    it "encodes an exact empty family as absence and never infers it from malformed evidence" $ do
+      let absent = EbsVolume.testScopedEbsObservation "aws-eks-test-cluster" []
+      EbsVolume.renderTestScopedEbsObservation absent
+        `shouldBe` "prodbox-test-ebs-observation/v1:absent"
+      EbsVolume.parseTestScopedEbsObservation
+        (EbsVolume.renderTestScopedEbsObservation absent)
+        `shouldBe` Right absent
+      mapM_
+        ( \malformed ->
+            EbsVolume.parseTestScopedEbsObservation malformed
+              `shouldSatisfy` isLeft
+        )
+        [ "prodbox-test-ebs-observation/v1:present:"
+        , "prodbox-test-ebs-observation/v1:present:vol-0bbbbbbbbbbbbbbbb,vol-0aaaaaaaaaaaaaaaa"
+        , "prodbox-test-ebs-observation/v1:present:vol-0aaaaaaaaaaaaaaaa,vol-0aaaaaaaaaaaaaaaa"
+        , "prodbox-test-ebs-observation/v1:present:retained-volume"
+        , "access denied"
+        ]
+
     it "selects only test-scoped EBS volumes and never retained-production volumes" $ do
       let retainedArn = "arn:aws:ec2:us-east-1:123:volume/vol-retained"
           testArn = "arn:aws:ec2:us-east-1:123:volume/vol-test"
@@ -14100,7 +14512,7 @@ unitSuite = do
     it
       "Scenario A — direct teardown footgun: aws-eks present → residue refuses with eks-destroy hint"
       $ do
-        let perRun = absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"}
+        let perRun = absentPerRunStatuses {perRunAwsEksTest = observedPresentFor "aws-eks-test"}
             residue = categorizePulumiResidue perRun Residue.ResidueAbsent
         residue `shouldBe` [("aws-eks", "prodbox aws stack eks destroy --yes")]
         let refusal = renderPulumiResidueRefusal residue
@@ -14112,8 +14524,8 @@ unitSuite = do
     it "Scenario C — partial residue: aws-eks-subzone + aws-test present → refusal lists both" $ do
       let perRun =
             absentPerRunStatuses
-              { perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
-              , perRunAwsTest = residuePresentFor "aws-test"
+              { perRunAwsEksSubzone = observedPresentFor "aws-eks-subzone"
+              , perRunAwsTest = observedPresentFor "aws-test"
               }
           residue = categorizePulumiResidue perRun Residue.ResidueAbsent
       residue
@@ -14128,9 +14540,9 @@ unitSuite = do
     it "Scenario all-four — every stack present → all four canonical destroy commands in order" $ do
       let perRun =
             PerRunResidueStatuses
-              { perRunAwsEksTest = residuePresentFor "aws-eks-test"
-              , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
-              , perRunAwsTest = residuePresentFor "aws-test"
+              { perRunAwsEksTest = observedPresentFor "aws-eks-test"
+              , perRunAwsEksSubzone = observedPresentFor "aws-eks-subzone"
+              , perRunAwsTest = observedPresentFor "aws-test"
               }
           residue = categorizePulumiResidue perRun (residuePresentFor "aws-ses")
       residue
@@ -14145,9 +14557,9 @@ unitSuite = do
               (Residue.ResidueBackendMinioUnreachable "MinIO unreachable")
           perRun =
             PerRunResidueStatuses
-              { perRunAwsEksTest = unreachable
-              , perRunAwsEksSubzone = unreachable
-              , perRunAwsTest = unreachable
+              { perRunAwsEksTest = observedAtCheckpoint unreachable
+              , perRunAwsEksSubzone = observedAtCheckpoint unreachable
+              , perRunAwsTest = observedAtCheckpoint unreachable
               }
           residue = categorizePulumiResidue perRun Residue.ResidueAbsent
       residue
@@ -15564,13 +15976,16 @@ unitSuite = do
       classifyClusterProbe (probeOutput ExitSuccess "")
         `shouldBe` ClusterReachable
 
-    it "connection-refused is a positive observation of absence" $
-      classifyClusterProbe
-        ( probeOutput
-            (ExitFailure 1)
-            "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?\ndial tcp 127.0.0.1:6443: connect: connection refused\n"
-        )
-        `shouldBe` ClusterAbsent "connection refused"
+    it "a stopped installed RKE2 API is unobservable, never cluster-absent" $ do
+      let probe =
+            classifyClusterProbe
+              ( probeOutput
+                  (ExitFailure 1)
+                  "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?\ndial tcp 127.0.0.1:6443: connect: connection refused\n"
+              )
+      case probe of
+        ClusterUnobservable detail -> detail `shouldContain` "control plane is not serving"
+        other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
 
     it "permission-denied is UNOBSERVABLE, not absence" $ do
       -- The Sprint 4.76 defect in one case: `clusterReachable :: IO Bool`
@@ -15586,26 +16001,97 @@ unitSuite = do
         ClusterUnobservable detail -> detail `shouldContain` "Unauthorized"
         _ -> expectationFailure ("expected ClusterUnobservable, got: " ++ show probe)
 
-    it "an unrecognised non-zero exit fails closed to unobservable" $
-      case classifyClusterProbe (probeOutput (ExitFailure 7) "something nobody has seen before\n") of
-        ClusterUnobservable _ -> pure ()
-        other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
+    it "transport, DNS, routing, auth, and malformed-context failures all stay unknown"
+      $ forM_
+        [ "connect: no route to host"
+        , "connect: network is unreachable"
+        , "dial tcp: lookup stopped.example: no such host"
+        , "error: You must be logged in to the server (Unauthorized)"
+        , "Error from server (Forbidden): access denied"
+        , "current-context is not set"
+        , "server could not find the requested resource"
+        , "something nobody has seen before"
+        ]
+      $ \failureText ->
+        case classifyClusterProbe (probeOutput (ExitFailure 7) failureText) of
+          ClusterUnobservable _ -> pure ()
+          other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
 
     it "a probe that could not be started is unobservable" $
       case classifyClusterProbe (Result.Failure "kubectl: no such file") of
         ClusterUnobservable detail -> detail `shouldContain` "kubectl"
         other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
 
-    it "no absence-evidence phrase names an authentication or authorization refusal" $
-      -- The evidence set decides which exits may be read as "gone". A
-      -- phrase matching an auth refusal would reintroduce the defect.
-      mapM_
-        ( \phrase ->
-            mapM_
-              (\forbidden -> phrase `shouldNotContain` forbidden)
-              ["unauthorized", "forbidden", "denied", "credential", "certificate"]
-        )
-        clusterAbsenceEvidencePhrases
+  describe "K8s drain exact-target and readback safety" $ do
+    it "missing exact kubeconfig refuses before ambient context can participate" $
+      withSystemTempDirectory "prodbox-drain-missing-kubeconfig" $ \tmpDir -> do
+        let exactPath = tmpDir </> "missing-rke2.yaml"
+        prepared <-
+          prepareK8sDrainEnvWithKubectl
+            (tmpDir </> "must-not-run-kubectl")
+            exactPath
+            [("KUBECONFIG", "/tmp/hostile-ambient.yaml")]
+            (Just tmpDir)
+        case prepared of
+          Left detail -> do
+            detail `shouldContain` exactPath
+            detail `shouldContain` "ambient KUBECONFIG"
+          Right _ -> expectationFailure "expected missing exact kubeconfig to fail closed"
+
+    it "uses one explicit kubeconfig and observes all accepted deletes before success" $
+      withSystemTempDirectory "prodbox-drain-exact-target" $ \tmpDir -> do
+        let kubeconfigPath = tmpDir </> "exact-rke2.yaml"
+            kubectlPath = tmpDir </> "kubectl"
+            invocationLog = tmpDir </> "kubectl.log"
+        writeFile kubeconfigPath "apiVersion: v1\nkind: Config\n"
+        writeFile
+          kubectlPath
+          ( unlines
+              [ "#!/bin/sh"
+              , "printf 'env=%s' \"${KUBECONFIG-unset}\" >> \"$DRAIN_LOG\""
+              , "for arg in \"$@\"; do printf ' %s' \"$arg\" >> \"$DRAIN_LOG\"; done"
+              , "printf '\\n' >> \"$DRAIN_LOG\""
+              , "case \"$3:$4\" in"
+              , "  get:pv) printf 'ns|claim\\n' ;;"
+              , "  get:services) printf 'ns/lb\\n' ;;"
+              , "  get:ingresses) printf 'ns/ing\\n' ;;"
+              , "  get:pvc) printf 'persistentvolumeclaim/claim\\n' ;;"
+              , "esac"
+              ]
+          )
+        makeExecutable kubectlPath
+        prepared <-
+          prepareK8sDrainEnvWithKubectl
+            kubectlPath
+            kubeconfigPath
+            [ ("KUBECONFIG", "/tmp/hostile-one.yaml")
+            , ("DRAIN_LOG", invocationLog)
+            , ("KUBECONFIG", "/tmp/hostile-two.yaml")
+            ]
+            (Just tmpDir)
+        case prepared of
+          Left detail -> expectationFailure detail
+          Right drainEnv -> do
+            result <- drainAwsAffectingK8sResources drainEnv (DrainTimeout 0)
+            result
+              `shouldBe` DrainTimedOut
+                [ "Service/ns/lb"
+                , "Ingress/ns/ing"
+                , "PersistentVolumeClaim/ns/claim"
+                ]
+            logText <- readFile' invocationLog
+            let invocations = lines logText
+            invocations `shouldSatisfy` (not . null)
+            forM_ invocations $ \invocation -> do
+              take 3 (words invocation)
+                `shouldBe` ["env=unset", "--kubeconfig", kubeconfigPath]
+              length (filter (== "--kubeconfig") (words invocation)) `shouldBe` 1
+            logText `shouldContain` " delete services "
+            logText `shouldContain` " delete ingresses "
+            logText `shouldContain` " delete pvc -n ns claim "
+            logText `shouldContain` " get services "
+            logText `shouldContain` " get ingresses "
+            logText `shouldContain` " get pvc -n ns claim "
 
   describe "Sprint 5.28 dns-aws validation hosted-zone ownership" $ do
     it "projects only validation-owned zones out of a listing" $ do
@@ -16994,7 +17480,7 @@ unitSuite = do
             }
         perRunOnlyResidue =
           categorizePulumiResidue
-            (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+            (absentPerRunStatuses {perRunAwsEksTest = observedPresentFor "aws-eks-test"})
             Residue.ResidueAbsent
         sesOnlyResidue =
           categorizePulumiResidue
@@ -17002,14 +17488,14 @@ unitSuite = do
             (residuePresentFor "aws-ses")
         perRunAndSesResidue =
           categorizePulumiResidue
-            (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+            (absentPerRunStatuses {perRunAwsEksTest = observedPresentFor "aws-eks-test"})
             (residuePresentFor "aws-ses")
         allFourResidue =
           categorizePulumiResidue
             ( PerRunResidueStatuses
-                { perRunAwsEksTest = residuePresentFor "aws-eks-test"
-                , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
-                , perRunAwsTest = residuePresentFor "aws-test"
+                { perRunAwsEksTest = observedPresentFor "aws-eks-test"
+                , perRunAwsEksSubzone = observedPresentFor "aws-eks-subzone"
+                , perRunAwsTest = observedPresentFor "aws-test"
                 }
             )
             (residuePresentFor "aws-ses")
@@ -17115,7 +17601,7 @@ unitSuite = do
     it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $ do
       let residue =
             categorizePulumiResidue
-              (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+              (absentPerRunStatuses {perRunAwsEksTest = observedPresentFor "aws-eks-test"})
               Residue.ResidueAbsent
       pulumiDestroyPlanForResidue residue
         `shouldBe` [("aws-eks", "prodbox aws stack eks destroy --yes")]
@@ -17132,9 +17618,9 @@ unitSuite = do
       let residue =
             categorizePulumiResidue
               ( PerRunResidueStatuses
-                  { perRunAwsEksTest = residuePresentFor "aws-eks-test"
-                  , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
-                  , perRunAwsTest = residuePresentFor "aws-test"
+                  { perRunAwsEksTest = observedPresentFor "aws-eks-test"
+                  , perRunAwsEksSubzone = observedPresentFor "aws-eks-subzone"
+                  , perRunAwsTest = observedPresentFor "aws-test"
                   }
               )
               (residuePresentFor "aws-ses")
@@ -18489,15 +18975,26 @@ residuePresentFor stackName =
       , Residue.residueStackName = stackName
       }
 
+-- | Sprint 4.81 helper: a fixture answer attributed to the retained-checkpoint
+-- authority, which is the layer the per-run query actually reads. Fixtures name
+-- a layer for the same reason production does — an answer with no authority
+-- attached is the defect Sprint 4.81 exists to remove, and a fixture that could
+-- still produce one would keep it constructible in the suite.
+observedAtCheckpoint :: Residue.ResidueStatus -> Residue.ResidueObservation
+observedAtCheckpoint = Residue.observeResidueAt Residue.ResidueLayerRetainedCheckpoint
+
+observedPresentFor :: String -> Residue.ResidueObservation
+observedPresentFor = observedAtCheckpoint . residuePresentFor
+
 -- | Sprint 4.16 helper: zero-residue per-run statuses (all three
 -- per-run stacks absent). Tests override individual fields when the
 -- scenario requires presence.
 absentPerRunStatuses :: PerRunResidueStatuses
 absentPerRunStatuses =
   PerRunResidueStatuses
-    { perRunAwsEksTest = Residue.ResidueAbsent
-    , perRunAwsEksSubzone = Residue.ResidueAbsent
-    , perRunAwsTest = Residue.ResidueAbsent
+    { perRunAwsEksTest = observedAtCheckpoint Residue.ResidueAbsent
+    , perRunAwsEksSubzone = observedAtCheckpoint Residue.ResidueAbsent
+    , perRunAwsTest = observedAtCheckpoint Residue.ResidueAbsent
     }
 
 -- | Sprint 4.26: the parallel hand-maintained @Prodbox.Aws.categorizePulumiResidue@
@@ -18513,9 +19010,9 @@ categorizePulumiResidue
 categorizePulumiResidue perRun sesStatus =
   ResourceRegistry.residueGateRefusalList
     ( ResourceRegistry.pairPerRunResidue
-        (perRunAwsEksTest perRun)
-        (perRunAwsEksSubzone perRun)
-        (perRunAwsTest perRun)
+        (Residue.residueObservationStatus (perRunAwsEksTest perRun))
+        (Residue.residueObservationStatus (perRunAwsEksSubzone perRun))
+        (Residue.residueObservationStatus (perRunAwsTest perRun))
         ++ ResourceRegistry.pairAwsSesResidue sesStatus
     )
 

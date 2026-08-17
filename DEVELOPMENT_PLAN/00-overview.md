@@ -18,7 +18,7 @@ Build a clean-room Haskell `prodbox` repository with:
    [host_platform_doctrine.md](../documents/engineering/host_platform_doctrine.md) — Sprint `1.52`
    landed the host-provider config/detection surface, and Sprint `4.37` landed host-provider ensure
    decisions plus Docker Linux-frame dispatch; everything Docker-inward stays OS-agnostic Linux.
-3. One host-owned `prodbox cluster reconcile|delete [--yes|--cascade [--yes]|--allow-pulumi-residue [--yes]]|status|health|wait|start|stop|restart|logs|workload-logs` surface for
+3. One host-owned `prodbox cluster reconcile|delete [--yes|--cascade [--yes]]|status|health|wait|start|stop|restart|logs|workload-logs` surface for
    the local RKE2 cluster, plus the operator-only `prodbox nuke` total-teardown command that
    refuses non-TTY contexts and requires the typed-confirmation literal `NUKE EVERYTHING`.
 4. One canonical test suite (the named-validation set in `src/Prodbox/TestValidation.hs`) that
@@ -286,11 +286,16 @@ Build a clean-room Haskell `prodbox` repository with:
 > mirroring the home `manual`/no-provisioner model — no dynamic provisioning on either substrate
 > ([storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md),
 > [cluster_topology_doctrine.md § 4](../documents/engineering/cluster_topology_doctrine.md)).
-> Production retains EBS (the analog of `.data/`); the test harness deletes only test-scoped EBS at
-> suite postflight, closing the EBS-leak class an abnormal AWS bill surfaced. Sprint `4.39` has
-> landed the managed-resource registry entry, typed EC2 discover/destroy boundary, retain/test
-> scoped tag markers, and retained-inventory parity; Sprint `4.40` has landed the suite postflight
-> test-EBS reaper, retain-safe drain guard, cascade hook, and `aws ebs reap-test --yes` recovery
+> Production retains EBS (the analog of `.data/`); suite cleanup selects only test-scoped EBS at
+> suite postflight. The target closes that obligation only on exact absence read-back; a failed or
+> unobservable reaper remains incomplete. **Current versus target:** Sprint `4.39` landed one
+> `aws-ebs-volumes :: LongLived` registry identity, and the legacy reaper distinguishes provider
+> rows through runtime tags. Sprint `4.84` replaces it with distinct statically classified
+> test-scoped `PerRun` and production-retained `LongLived` identities; tags remain evidence about
+> the descriptor already selected and never choose its class. Sprint `4.39` also landed the typed
+> EC2 discover/destroy boundary, retain/test scoped tag markers, and retained-inventory parity;
+> Sprint `4.40` has landed the suite postflight test-EBS reaper, retain-safe drain guard, cascade
+> hook, and `aws ebs reap-test --yes` recovery
 > entrypoint. Sprint `7.28` has landed static EBS PV materialization on the AWS code-owned path
 > (CSI renderer, retained EBS ensure loop, AWS chart/bootstrap dispatch, and AZ-pinned node group);
 > Sprint `5.12` has landed the code-owned `eks-volume-rebind` validation surface
@@ -431,16 +436,19 @@ is missing. There is no silent fallback to the other substrate's values. A canon
 proof is complete only when both substrate runs have landed. See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
-The test harness is the **exclusive owner** of every AWS resource any `prodbox` flow creates
-or destroys. The authoritative AWS resource inventory and per-resource lifecycle class
-(auto-managed per-run stacks vs long-lived cross-substrate shared infrastructure that is
-retained by design) live in
+The authenticated `prodbox` command/capability surface is the **exclusive AWS mutation boundary**.
+In the target composition, the test harness, explicit stack commands, cascade, and lifecycle
+recovery worker are peer clients of the same registered lifecycle-core reconcilers; none is a
+second owner or may wrap another's destroy command. Current pre-cutover compositions are named by
+the table below. The authoritative target AWS resource inventory and per-resource lifecycle class
+(cleanup-managed per-run stacks whose exact obligations are durably registered/scheduled vs
+long-lived cross-substrate shared infrastructure retained by design) live in
 [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
 
 | Substrate | Provision | Teardown | Status authority |
 |-----------|-----------|----------|------------------|
-| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Restore the selected home platform/charts after the run; explicit `prodbox cluster delete --yes` preserves LongLived roots (`--cascade` also destroys per-run AWS stacks) | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
-| AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | `prodbox aws stack aws-subzone destroy --yes` + `prodbox aws stack eks destroy --yes` + `prodbox aws stack test destroy --yes`; LongLived shared/home resources remain | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
+| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Current local-only `prodbox cluster delete --yes` preserves LongLived roots and makes no AWS claim. Target `prodbox cluster delete --cascade --yes` is pending Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`. | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
+| AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | Current explicit teardown uses the corresponding `prodbox aws stack <cli-verb> destroy --yes` commands. Exact independent desired-absence adapters, bounded admin-confirmed/read-back adoption manifests for known pre-manifest stacks, and EKS drain sessions are the pending Sprint-`7.36` target; LongLived resources remain. | Current parity and deployment qualification live only in [README.md → Substrate Parity](README.md#substrate-parity) and [Deployment Qualification](README.md#deployment-qualification). |
 
 Phase ownership separates suite content (which lives in
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) from substrate
@@ -449,6 +457,25 @@ validations are suite content and run against every substrate that satisfies the
 prerequisites.
 
 ## Clean-Room Sequence
+
+**Current correction (2026-08-16, implementation paused):** final closure still follows `3.41` +
+`4.84` → remaining `4.85` → `4.86`; `5.35` supplies the frozen reference oracle and `5.36` must
+finish the `TestRunner` cutover; `6.5` consumes completed `4.86` + `5.36`; and `7.36` closes only
+after its remaining `4.85` proof inputs. Dependency-safe kernel, repository, and interpreter slices
+have landed ahead of those final closures, so `4.85`, `4.86`, `5.36`, and `7.36` are now Active
+rather than untouched Blocked work. Phases `0`, `1`, `2`, and `8` remain closed. Code-local cutover
+machinery may close on fakes; Standard P keeps public activation and legacy deletion prohibited
+until current-revision qualification is proven.
+
+| Phase | Current teardown-correction status | Independent validation |
+|-------|------------------------------------|------------------------|
+| 3 | 🔄 `3.41` Active — topology/observation foundation landed; absent-cluster render/artifact authority remains | Pure component closure, chart render/lint, unit, `dev check` |
+| 4 | 🔄 `4.84`/`4.85`/`4.86` Active — exact algebra, durable kernel, and recovery candidate are partially implemented | Pure keyed tables, graph properties, fake interpreters, authenticated route tests, installed CLI |
+| 5 | 🔄 `5.35` oracle code-locally green; `5.36` client landed but `TestRunner` cutover remains | Frozen artifact/mutation oracle; descriptor-bound fake endpoint; interruption coverage after cutover |
+| 6 | ⏸️ `6.5` blocked by `4.86` + `5.36` | Indexed qualification/activation folds, installed binary, and bounded pre/post-activation scanner; live candidate cycles are non-blocking |
+| 7 | 🔄 `7.36` Active — exact adapter foundations landed; Provider session/create generation/audit remain | Fake exact/adoption adapters first; the live all-three-stack campaign is non-blocking prerequisite evidence for `8.12` |
+
+### Prior clean-room phase record
 
 The phase order below is the forward **build** order — later phases compose earlier deliverables —
 **not** a validation gate. Per the phase-independence doctrine
@@ -463,26 +490,163 @@ would touch a dependency owned by another phase it is exercised against the home
 fake, or a stub; AWS-substrate coverage of suite content is orthogonal and tracked only in
 [substrates.md](substrates.md)'s parity table.
 
-| Phase | Focus | Current result | Independent validation |
-|-------|-------|----------------|------------------------|
+| Phase | Focus | Prior result | Historical independent validation |
+|-------|-------|--------------|-----------------------------------|
+<!-- Prior Phase 3 status: reclosed on Sprint 3.40 (2026-08-15). The pre-Vault Broker graph gate
+uses an observed-revision admission and the live reconcile crossed it into Vault lifecycle. -->
+<!-- Prior Phase 4 status: reclosed on Sprint 4.83 (2026-08-15). Pod pulls use declared tags;
+Kubernetes imageID observations, not the authored specs, attest the separately resolved OCI config
+digest. The detailed row retains the registration history inline. -->
 | 0 | Planning and Documentation Topology | ✅ Reclosed on `0.17`: the Foundation Epoch is adopted on top of the `0.16` control-plane correction, Standard P carries the interim escape-path guard, and Sprints `1.61`/`1.62` are shrink-rescoped. Sprint `0.18` adds the configurable certificate-scope governance surface on that same documentation surface (an additional governance sprint, no further reclose). | Documentation lint/check and canonical quality gate; no runtime dependency. |
 | 1 | Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed on Sprint `1.89` (2026-08-13)** — `1.89` gave the Tier-0 coordinates a retained parse: `ValidatedCoordinates` on `ValidatedSettings`, built by `validateConfig` from nine smart-constructed types, with the Dhall wire format byte-identical so no generated-config identity change occurs. It closes the ledger's last unowned row. Nine coordinates were *decided and discarded*; five were **never decided at all**, including `route53.zone_id` — less defended than the structurally identical `aws_substrate.hosted_zone_id` — and `pulumi_state_backend.region`, which had no rule anywhere while both its siblings did. Seven use-site re-decisions are deleted rather than moved, because the narrowed types have no empty inhabitant. Two drafts were refused by the repository itself: a both-or-neither ACME rule that rejects `prodbox config generate`'s own output, and a `dev check` rule whose first run flagged a correct read (fixed by renaming a binding, not weakening the rule). Prior: ✅ **Reclosed on Sprints `1.87` and `1.88` (2026-08-13)** — `1.88` gave `ValidatedSettings` one production constructor: the single site that forged one without running `validateConfig` (and got its resource plan by `error`-ing) is deleted by narrowing `resourceStatusLines` to the two fields it read, and a `dev check` rule keying on field *assignment* keeps the seam closed for record updates as well as constructions. The bound is stated — a compiled rule over a source region, not a property of the type. `1.87` — an own-surface reopen closing the re-scoped successor `1.84` registered against itself. `substratePublicRouteUrl` rendered `https:///path` for a substrate declaring no served host; the renderers now take the `ValidatedServedHost` that `validateConfig` already builds, whose `Fqdn` is minted only by `mkFqdn`, so the empty rendering is **unconstructible** rather than refused, and `substratePublicFqdn` is **deleted**. The row prescribed a resolved `String`, which would have left `""` well-typed and the refusal in caller discipline. Its premise was also wrong: all 16 sites resolve at eight points that already had an error channel, and nine functions stopped taking `ValidatedSettings`/`Substrate` entirely. Prior: ✅ **Reclosed on Sprint `1.84` (2026-08-12)** — an own-surface reopen closing the residual Sprint `1.83` registered against itself: `substratePublicFqdn` answered `""` where its own projection says "no served host". All six direct call sites refuse through `requireSubstratePublicFqdn`; the two pure renderers take a resolved host from an IO caller that resolves; the accessor is unexported so the empty string cannot gain a new caller. Deletion is deferred as its own re-scoped row (`substratePublicRouteUrl`, ~10 sites) rather than folded into one coupled change. Prior: ✅ Reclosed on `1.67`: Sprints `1.61`–`1.66` are Done, and generic Kubernetes reachability now follows the selected substrate kubeconfig through `ToolKubectl` + authoritative `kubectl cluster-info` without importing home-local RKE2 file/service prerequisites. | Pure capability-kind, graph, deadline, capacity, object-store protocol, Vault-session, and prerequisite transitive-closure properties. |
-| 2 | Gateway Runtime and DNS Ownership | ✅ **Reclosed on Sprint `2.45` (2026-08-13)** — an own-surface reopen deleting `validValue _ = True`, the validity predicate on every durable Bootstrap-Broker read and CAS, which made `BootstrapStoreCorrupt` unreachable for seven payload types across 20 sites. Each now re-runs the smart constructors the CBOR decode bypasses. The row was wrong about scope: six of the eleven surfaces it listed already had real predicates, and it missed the seventh undefended one. Prior: ✅ **Reclosed on Sprint `2.44` (2026-08-12)** — an own-surface reopen closing the fold defect Sprint `5.33` found: `gatewayRuntimeSampleExit` mapped both `StableObserved` and `NotStableYet` to a silent `ExitSuccess`, while the gate ten lines above retried and failed on the same constructor. The row's remedy — make it fail — was measured and declined; the function is a sampler invoked ten times per run. The decision is now pure and total, each arm names what it saw, and the deliberate sampler/gate disagreement is asserted. Prior: ✅ **Reclosed 2026-08-11 on Sprint `2.42` (Standard A/N)** — the own-surface reopen on the Bootstrap Broker readiness contract this phase owns through Sprints `2.39`/`2.40` is closed. `kubernetesObserveBootstrapLease` discarded its typed transport failure, so a dropped packet, a `403`, and a `404` all reached the operator as one sentence while `/healthz` answered 200. All six discarding sites now carry their detail and `requestKubernetes` classifies the caught exception onto a closed, payload-free label set rather than `show`-ing it, because the request carries a bearer token and the readiness body is operator-visible. Prior reclose on Sprint `2.41` (2026-08-07). ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
-| 3 | Chart Platform and Public Workload Delivery | ✅ **Reclosed on Sprints `3.36` and `3.37` (2026-08-13)** — **Sprints `3.36` ✅ and `3.37` ✅**, both found by the **first live Standard-P qualification run** — the first time this plan has gained work from running the system rather than reading it. `prodbox test all --substrate home-local` failed deterministically, twice, at the cert-manager mirror. **`3.36`**: `mirrorHostArchitectureTarget` passed no platform to `docker pull`/`docker push`, so under the containerd image store it published the whole manifest **index**; for a multi-architecture upstream that index names platforms whose blobs were never fetched. Invisible until now because **every one of the 17 mirror targets that had published before it presents a single platform locally** (the registry carries 24 entries in total). The asymmetry is the finding: the custom-image *build* path beside it has always resolved `supportedHostArchitecture`, and the mirror path — named for it — never consulted it. The sprint **records that it has no successful-publish proof**, because the working mirrors were already in the registry and were skipped. **`3.37`** is a sprint whose entire content is a measurement that exonerates this repository: five hypotheses tested and discarded before a pin moved — stale local content (purged, re-pulled, still fails), multi-arch in general (`alpine:3.20`, identical index shape, fine), quay.io (`v1.16.1` same repo, fine), cert-manager (`v1.16.3/4/5`, `v1.17.1`, all fine), controller-only (all five `v1.16.2` images fail). A specific upstream release is unpublishable and no harness work would have fixed it; the pin moves to `v1.17.1`, which **invalidates any prior component-image identity** since `certManagerChartVersion` is derived from the controller tag. One unowned residual recorded: cert-manager is the only mirrored platform component with **no fallback source**, and `3.37` is the proof that this matters. Prior reclose on Sprint `3.35` (2026-08-13) — an own-surface reopen giving the control-plane listen port and the in-cluster role-URL shape one compiled owner (`Prodbox.ControlPlane.ListenPort`), enforced by `checkControlPlaneListenPortOwner` and mutation-proven against the binder. The row's open question is answered by measurement: `runControlPlaneServer` binds without consulting the role it is handed, so the five per-role constants could never have diverged. `ChartStatics.hs`, which called the port operator-chosen deployment configuration while the binder hardcoded it, is corrected under Standard C. Rendered output byte-identical. Prior: ✅ **Reclosed 2026-08-11 on Sprint `3.34` (Standard A/N)** — the Kubernetes API egress coordinate has one compiled owner observed from `endpoints/kubernetes` (post-DNAT address and port together), both charts bind it through `.Values`, and the chart-lint region widens to every repo-owned template under a closed port-key set; its first run named 77 findings, reconciling with the 79 measured less the two already migrated. `dev check` 0, `test unit` 0. Validation 5 stays 🧪 Standard-O pending on Sprint `2.43`. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint. The Kubernetes API egress coordinate has no compiled owner, so three sites each author their own `443` while the API endpoint listens on `6443` post-DNAT; `3.34` derives it from `endpoints/kubernetes` and widens the chart lint to every repo-owned template, closing a region in which no gate reads a `networkpolicy.yaml` for content. Edits a live production rendering path. Prior reclose on Sprint `3.33` (2026-08-09). ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed on Sprints `4.78`, `4.79`, and `4.80` (2026-08-13)** — the own-surface reopen on the observation-producer and destructive-cleanup surfaces closes, taking this phase's last three unowned rows. Nine prose classifiers become one anchored, probe-keyed owner; two destroy paths get opposite remedies for the same shape (report vs refuse), decided rather than defaulted; and the sweep's last skip arm is resolved from the substrate the cascade already infers, adding no requirement. Prior: -08-11 on Sprints `4.76`/`4.77` (Standard A/N)** — the own-surface reopen on the destructive lifecycle paths this phase owns closes. `4.76`: the cascade's four "cannot observe → absent" folds are each three-valued with the **uncertain arm as the default** — `ClusterProbe` reads a positive absence only from a recognised connection-establishment phrase, `inferCascadeSubstrate` releases the home branch only when every stack was observed absent, `reconcileAbsent` returns observed-absent and unobserved separately so an unresolved observation fails the aggregate, and the cascade folds six phase outcomes while still running every phase. The postflight sweep is fail-closed through one total `decideTagSweep`, and `prodbox nuke` gains the terminal sweep § 5/§ 6b assign it — whose **absence a unit case had asserted as an invariant**. `4.77`: one `--filters`/`--tag-filters` occurrence per call with the cluster and ownership sweeps issued as two calls unioned by ARN (the Tagging API ANDs `TagFilters`, so the intended OR was never one call), a client-side re-filter in the EBS reaper through a classifier that had no production caller, a fail-closed payload parse, and `--yes` gated at one site across all four destroy verbs with the quietness selector it had doubled as split out. Prior state — ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. `4.73` routes the SES DNS writer through the typed `DnsRecordProgram` under its own `LongLived` owner, with a total owner/type matrix, canonical CNAME/MX value forms, and a propagation barrier that keeps the batch's single wait; `4.74` gives the Vault CAS seam the `ModelBCas*`-style vocabulary and a build rule enforcing it, after finding four callers classifying wrongly where the row said none classified at all; `4.75` owns the authored control-plane service time and corrects the haddock that called it measured. Prior reclosures stand. | Pure capacity/admission and deadline folds, the owner/type matrix and CAS classifier as total pure functions, socket-pair proofs of the `429`/`408` replies with no listener, mutation exercises on the `dev check` gates, and the installed `cli` integration suite — no live infrastructure. The live Route 53 read-back and the control-plane measured profile remain Standard-O axes. |
+| 2 | Gateway Runtime and DNS Ownership | ✅ **Sprint `2.51` closed 2026-08-15 with its changed arm live-proven** — the secret worker is now declared as the controller's own pullable reference and attested on observed runtime identity, so its Pod pulls and runs instead of sitting in `ImagePullBackOff`, and its `imageID` matches the controller's exactly. The remedy is deliberately **not** the one the registration proposed: widening the durable `SecretWorkerIntent` would have changed its generic-`Serialise` arity and made every existing checkpoint `BootstrapStoreCorrupt` before Sprint `2.50`'s roll could reach it, so the pull reference is observed at Pod creation instead — which also added a check nothing performed before. The proof itself caught the sprint under-implementing its decode-collapse deliverable at the two functions the registration named, which no local gate could have observed. Prior: Sprints `2.48` and `2.50` closed 2026-08-14; Sprint `2.51` 🔄 opened when `2.50`'s live proof let the bring-up reach a defect nothing had yet seen — the worker Pod's image pinned to a config digest where a registry can only resolve a manifest digest, both being the same sixty-four hex characters. An Active sprint working a `Pending Removal` row is not a reopen (Standard N), so this phase stays ✅.** `2.50` closed the durable secret-worker checkpoint that was the last blocker on the bring-up path, and both halves of this plan's description of that object were refuted by decoding it — not Vault-enveloped, and three compared fields that cannot repeat rather than two. `2.48` closed the declared Lease-TTL derivation and the compensating release for a fence its own acquisition could not make usable, closing that ledger row with its owning sprint. Prior — **Reclosed on Sprint `2.45` (2026-08-13)** — an own-surface reopen deleting `validValue _ = True`, the validity predicate on every durable Bootstrap-Broker read and CAS, which made `BootstrapStoreCorrupt` unreachable for seven payload types across 20 sites. Each now re-runs the smart constructors the CBOR decode bypasses. The row was wrong about scope: six of the eleven surfaces it listed already had real predicates, and it missed the seventh undefended one. Prior: ✅ **Reclosed on Sprint `2.44` (2026-08-12)** — an own-surface reopen closing the fold defect Sprint `5.33` found: `gatewayRuntimeSampleExit` mapped both `StableObserved` and `NotStableYet` to a silent `ExitSuccess`, while the gate ten lines above retried and failed on the same constructor. The row's remedy — make it fail — was measured and declined; the function is a sampler invoked ten times per run. The decision is now pure and total, each arm names what it saw, and the deliberate sampler/gate disagreement is asserted. Prior: ✅ **Reclosed 2026-08-11 on Sprint `2.42` (Standard A/N)** — the own-surface reopen on the Bootstrap Broker readiness contract this phase owns through Sprints `2.39`/`2.40` is closed. `kubernetesObserveBootstrapLease` discarded its typed transport failure, so a dropped packet, a `403`, and a `404` all reached the operator as one sentence while `/healthz` answered 200. All six discarding sites now carry their detail and `requestKubernetes` classifies the caught exception onto a closed, payload-free label set rather than `show`-ing it, because the request carries a bearer token and the readiness body is operator-visible. Prior reclose on Sprint `2.41` (2026-08-07). ✅ Reclosed on Sprint `2.36` (2026-07-27). Forced drain resolves replay waiters before cancellation, joins persistent cancellation children, and publishes `BrokerStopped` only through an opaque empty-residue witness; deadline observation is `ShutdownIncomplete` while ownership remains represented. | Deterministic finalizer-stall proof, focused loopback suite 6/6, full unit suite except the independently corrected SSH-fixture executable race, and `prodbox dev check`. |
+| 3 | Chart Platform and Public Workload Delivery | ✅ **Reclosed on Sprint `3.38` (2026-08-15)** — `cluster reconcile` was building and pushing a new runtime image and leaving the in-cluster workload on the previous one, because `deployChartPlan` filtered releases on `helm list` status: an all-`deployed` chart root produced an empty deploy set and a **success report with no helm invocation behind it**. `helm list` carries presence and health and no revision, so the predicate answered a different question from the one it was consumed for — the same § 24 shape as Sprint `2.51`'s own defect. The filter is deleted rather than made conditional, because `helm upgrade --install` is itself the idempotent convergence operation. Live-proven: generation `1`→`2`, annotation to the image the run built, a new ReplicaSet, and `bootstrap-broker.v2` beside `v1`. Prior — taking Sprint `2.51`'s live proof exposed that `cluster reconcile` builds and pushes a new runtime image and leaves the in-cluster Bootstrap Broker running the previous one: the Deployment was at `metadata.generation: 1` from the previous day with a 10h-old Pod whose `imageID` was the old image, and its rollout annotation held a digest the Docker daemon no longer has. Generation `1` means the object was never modified, so this is a rollout never requested rather than one that failed. An Active sprint working a `Pending Removal` row is not a reopen (Standard N). Prior: ✅ **Reclosed on Sprints `3.36` and `3.37` (2026-08-13)** — **Sprints `3.36` ✅ and `3.37` ✅**, both found by the **first live Standard-P qualification run** — the first time this plan has gained work from running the system rather than reading it. `prodbox test all --substrate home-local` failed deterministically, twice, at the cert-manager mirror. **`3.36`**: `mirrorHostArchitectureTarget` passed no platform to `docker pull`/`docker push`, so under the containerd image store it published the whole manifest **index**; for a multi-architecture upstream that index names platforms whose blobs were never fetched. Invisible until now because **every one of the 17 mirror targets that had published before it presents a single platform locally** (the registry carries 24 entries in total). The asymmetry is the finding: the custom-image *build* path beside it has always resolved `supportedHostArchitecture`, and the mirror path — named for it — never consulted it. The sprint **records that it has no successful-publish proof**, because the working mirrors were already in the registry and were skipped. **`3.37`** is a sprint whose entire content is a measurement that exonerates this repository: five hypotheses tested and discarded before a pin moved — stale local content (purged, re-pulled, still fails), multi-arch in general (`alpine:3.20`, identical index shape, fine), quay.io (`v1.16.1` same repo, fine), cert-manager (`v1.16.3/4/5`, `v1.17.1`, all fine), controller-only (all five `v1.16.2` images fail). A specific upstream release is unpublishable and no harness work would have fixed it; the pin moves to `v1.17.1`, which **invalidates any prior component-image identity** since `certManagerChartVersion` is derived from the controller tag. One unowned residual recorded: cert-manager is the only mirrored platform component with **no fallback source**, and `3.37` is the proof that this matters. Prior reclose on Sprint `3.35` (2026-08-13) — an own-surface reopen giving the control-plane listen port and the in-cluster role-URL shape one compiled owner (`Prodbox.ControlPlane.ListenPort`), enforced by `checkControlPlaneListenPortOwner` and mutation-proven against the binder. The row's open question is answered by measurement: `runControlPlaneServer` binds without consulting the role it is handed, so the five per-role constants could never have diverged. `ChartStatics.hs`, which called the port operator-chosen deployment configuration while the binder hardcoded it, is corrected under Standard C. Rendered output byte-identical. Prior: ✅ **Reclosed 2026-08-11 on Sprint `3.34` (Standard A/N)** — the Kubernetes API egress coordinate has one compiled owner observed from `endpoints/kubernetes` (post-DNAT address and port together), both charts bind it through `.Values`, and the chart-lint region widens to every repo-owned template under a closed port-key set; its first run named 77 findings, reconciling with the 79 measured less the two already migrated. `dev check` 0, `test unit` 0. Validation 5 stays 🧪 Standard-O pending on Sprint `2.43`. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint. The Kubernetes API egress coordinate has no compiled owner, so three sites each author their own `443` while the API endpoint listens on `6443` post-DNAT; `3.34` derives it from `endpoints/kubernetes` and widens the chart lint to every repo-owned template, closing a region in which no gate reads a `networkpolicy.yaml` for content. Edits a live production rendering path. Prior reclose on Sprint `3.33` (2026-08-09). ✅ Reclosed 2026-07-25. Sprint `3.26` renders the physically separated control-plane workloads; `3.28`/`3.29` single-source resource rendering and durable PVC sizes; `3.27` derives namespace admission from validated demand and placement. | Deterministic chart rendering, identity/policy/resource/probe lint, negative topology fixtures, retained-volume plans, unit/integration suites, and `prodbox dev check`. |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Phase stays closed; Sprint `4.83` 🔄 opened 2026-08-15** — a sweep for Sprint `2.51`'s defect found three further `repository@<digest>` Pod images with `imagePullPolicy: Always`, and **measured all three away**: `docker inspect .Id`, `.RepoDigests`, and the registry's `Docker-Content-Digest` agree, so the references are pullable. What survives is that they are pullable by host configuration rather than by contract (this host runs Docker's containerd image store, under which `.Id` is the manifest digest), plus a genuinely independent defect the sweep exposed — those three observers compare a declared reference against itself and hold no runtime-identity attestation, and `ContainerStatusDto` does not parse `imageID` at all. Prior: ✅ **Reclosed on Sprints `4.78`, `4.79`, and `4.80` (2026-08-13)** — the own-surface reopen on the observation-producer and destructive-cleanup surfaces closes, taking this phase's last three unowned rows. Nine prose classifiers become one anchored, probe-keyed owner; two destroy paths get opposite remedies for the same shape (report vs refuse), decided rather than defaulted; and the sweep's last skip arm is resolved from the substrate the cascade already infers, adding no requirement. Prior: -08-11 on Sprints `4.76`/`4.77` (Standard A/N)** — the own-surface reopen on the destructive lifecycle paths this phase owns closes. `4.76`: the cascade's four "cannot observe → absent" folds are each three-valued with the **uncertain arm as the default** — `ClusterProbe` reads a positive absence only from a recognised connection-establishment phrase, `inferCascadeSubstrate` releases the home branch only when every stack was observed absent, `reconcileAbsent` returns observed-absent and unobserved separately so an unresolved observation fails the aggregate, and the cascade folds six phase outcomes while still running every phase. The postflight sweep is fail-closed through one total `decideTagSweep`, and `prodbox nuke` gains the terminal sweep § 5/§ 6b assign it — whose **absence a unit case had asserted as an invariant**. `4.77`: one `--filters`/`--tag-filters` occurrence per call with the cluster and ownership sweeps issued as two calls unioned by ARN (the Tagging API ANDs `TagFilters`, so the intended OR was never one call), a client-side re-filter in the EBS reaper through a classifier that had no production caller, a fail-closed payload parse, and `--yes` gated at one site across all four destroy verbs with the quietness selector it had doubled as split out. Prior state — ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. `4.73` routes the SES DNS writer through the typed `DnsRecordProgram` under its own `LongLived` owner, with a total owner/type matrix, canonical CNAME/MX value forms, and a propagation barrier that keeps the batch's single wait; `4.74` gives the Vault CAS seam the `ModelBCas*`-style vocabulary and a build rule enforcing it, after finding four callers classifying wrongly where the row said none classified at all; `4.75` owns the authored control-plane service time and corrects the haddock that called it measured. Prior reclosures stand. | Pure capacity/admission and deadline folds, the owner/type matrix and CAS classifier as total pure functions, socket-pair proofs of the `429`/`408` replies with no listener, mutation exercises on the `dev check` gates, and the installed `cli` integration suite — no live infrastructure. The live Route 53 read-back and the control-plane measured profile remain Standard-O axes. |
 | 5 | Canonical Test Suite | ✅ **Reclosed on Sprint `5.34` (2026-08-13)** — an own-surface reopen closing this phase's two remaining unowned rows. The Tier-0 write gate widens from one line to one hop within one top-level definition (two drafts produced false positives first; all are recorded), and the test-secrets credential guard is one-sided because the symmetric rule is forbidden by the repository's own credential scanner. Prior: ✅ **Reclosed 2026-08-11 on Sprints `5.32`/`5.33` (Standard A/N)** — the own-surface reopen on the suite content this phase owns (Standard M) closes. `5.32`: the `LCPC-2026-07-11` reproducer consumes a repository-owned frozen trace whose per-mechanism dispositions are parsed totally over the mechanism enumeration and bound into the trace digest, and a committed mutation fixture makes the command exit non-zero. The mutation fixture is deliberately not digest-pinned, because pinning it would make the digest gate fire first and the disposition consumption — the thing under test — would never run. `5.33`: `daemon-bootstrap`'s unset arm probes the Bootstrap Broker's route surface with read-only `GET`s and refuses, naming the absent daemon, when nothing answers; the audit block declares `AUDIT_PROVENANCE=`. `gateway-partition` renders its values from the composition and left the integration surface for the unit suite, reducing the canonical node set and no coverage. Both Deployment Qualification rows were already `pending`, so no `proven` claim is retracted; the Counterexample column may now be filled by a qualification run. Prior state — ✅ Reclosed on Sprint `5.31` (2026-08-09). The final fixture drifts are corrected and the installed integration surface is green; clean-room deployment qualification remains pending under Standards O/P. | Installed `cli` integration **57/57** and `env` exit 0, canonical `prodbox test unit` exit 0 with main Hspec **3374/3374**, plus the mutation exercise against the committed frozen fixture and the unset-fixture refusal — all fake/local, with no later-phase or live-infrastructure dependency. |
 | 6 | Final Clean-Room Rerun and Handoff | ✅ Reclosed on Sprint `6.4` (2026-08-02): exact-prefix cutover/restore/cleanup, rollback refusal, installed-binary plan, and retired-transport absence are validated; destructive aggregates remain qualification. | Focused 8/8, installed command exit 0, unit 3028/3028, generated docs, and `dev check` exit 0. |
-| 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic ownership, target DNS01, public-A Provider intents, and fault dispositions are code-locally complete. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
+| 7 | AWS Substrate Foundations | ✅ Reclosed on Sprint `7.33` (2026-08-02); AWS role/transport isolation, deterministic IAM names, the pure controller-transition algebra, target DNS01, public-A Provider intents, and fault dispositions were code-locally complete. Production owner-UID/child-ARN registration and provider-family cleanup were not wired; Sprint `7.36` owns that later correction. | AWS topology rendering/fakes followed by the current-revision AWS isolation and cleanup campaign. |
 | 8 | Invited Email Authentication | ✅ Reclosed on Sprint `8.12` (2026-08-02): the durable SES workflow and non-partial invite fault/qualification artifact are code-locally complete; live qualification remains Standards O/P. | Invite 8/8, daemon lifecycle 27/27, unit 3067/3067, installed CLI/environment 55/55 twice, and `prodbox dev check` exit 0. |
 
 ## Alignment Status
 
-The per-phase closure state and Independent Validation are the table above. The dated reopen/closure
+The current status is the compact teardown-correction table above. Phases `3`–`5` are Active;
+Phases `6`–`7` are Blocked by named earlier-phase prerequisites; all others are closed. The
+2026-08-15 trace is stable MISU counterexample `TEARDOWN-2026-08-15`: AWS audit succeeded with one
+`ResourceTagMapping` for the retained bucket and its full two-tag set; Prodbox's decoder emitted
+two internal rows and copied the global answer to three per-run identities whose exact observations
+remained `Unobservable`. No drain request reached Kubernetes and no destroy reached a provider
+effect. The preliminary caller observation's cause/API reach is unknown because stderr was
+discarded. All production-changing rows remain deployment-qualification pending.
+
+### Prior alignment record
+
+The prior per-phase closure state and Independent Validation are the long table above. The dated reopen/closure
 history is consolidated in [README.md → Closure Status](README.md#closure-status)'s milestone ledger,
 and per-sprint detail lives in the phase documents ([phase-0](phase-0-planning-documentation.md) …
 [phase-8](phase-8-email-invite-auth.md)) — this section is not a per-sprint changelog (Standard D).
 
-**Current head state (2026-08-13, third entry — Phase `3` reopens and recloses on Sprints `3.36`
+**Prior head state (2026-08-14 — every phase was closed; one sprint was open, and a live
+proof rather than an unfinished deliverable is what opened it):**
+
+- **Sprints `2.48` ✅ and `2.50` ✅ closed, and Sprint `2.51` 🔄 opened because closing them let the
+  bring-up reach a defect nothing had yet seen.** All three sit on Phase `2` surfaces without
+  reopening Phase `2` — a sprint working a `Pending Removal` row is not a reopen (Standard N).
+  Evidence: `dev check` 0, `test unit` 0 (**3468** + 27 + 33 + 27), `test integration cli` **57/57**,
+  `test integration env` **57/57**. Ledger: **pending 66 → 65, unowned 2 → 2, completed 299 → 301**.
+- **Sprint `2.50`'s live proof passed on the arm it changed, and the proof is a durable object rather
+  than an absent error.** The stuck checkpoint was rewritten from store version 2 at fence generation
+  7 to version 4 at generation 13 — `driveSecretWorker` rolling a superseded pre-receipt checkpoint,
+  which nothing else in the tree does. The run then failed further along, at Sprint `2.51`'s defect:
+  the Broker pins its worker Pod's image to the controller's `imageID`, a **config** digest on a
+  locally-built host, while a registry can only resolve a **manifest** digest. **A config digest and a
+  manifest digest are the same sixty-four hex characters**, so no smart constructor over the text
+  could have separated them — [§ 24](../documents/engineering/chaos_hardening_doctrine.md) exactly, an
+  observation naming the container runtime's layer while consumed as the registry's.
+- **Sprint `2.50` refuted this plan's own description of the object it was registered against, by
+  decoding it.** The row said the stuck secret-worker checkpoint was "Vault-enveloped and its
+  completion state has not been decoded" — and gave that as the reason its failing arm could not yet
+  be named. Both halves were wrong: the bootstrap store's `StoredEnvelope` is canonical CBOR over
+  `SecretFreeWorkerRequest`, inlined in the MinIO object and readable with **no Vault session**, on a
+  host whose Vault is uninitialized. The caution had made the decode look impossible on exactly the
+  host where it was trivial.
+- **The decode corrected a count, which is this plan's recurring defect at a third surface.** Two
+  compared binding fields cannot repeat across invocations, said the plan; it is **three** — the
+  operation deadline is `acceptedAt + budget`. **The reason nobody caught it is the sprint's other
+  deliverable**, which makes this the first instance of the payload-free-refusal collapse whose cost
+  is demonstrable rather than argued: one constructor produced at **five** distinct sites, so no run
+  could ever have reported which fields disagreed. Fifth instance of the shape Sprints `2.46`–`2.49`
+  each closed one layer up.
+- **The remedy is narrower than any of the three options registered, and the bound that scoped the
+  sprint chose it rather than being argued across.** A checkpoint is a *result* record — but that is
+  a statement about checkpoints which **carry** a result, and the stuck one is
+  `InternalNoWorkerReceipt`. The roll arm widened, bounded three ways: pre-receipt only, a **strictly
+  older** fence generation only, and the predecessor's worker **destroyed** by a UID-preconditioned
+  delete rather than observed absent — stronger than Sprint `2.47`'s absence observation, because it
+  causes absence instead of inferring it.
+- **Sprint `2.48` closed the ledger row it owned rather than letting it outlive its owner**, which is
+  the orphan shape this plan has now caught three times. It also declared the 300-second Lease
+  coupling rather than removing it by renewing, on an argument that inverts the obvious one: renewal
+  is *adversarial* to Sprint `2.47`, because a renewer outliving a wedged bring-up would hold the
+  Lease live forever and restore the permanent wedge `2.47` closed. **The Lease expiring on its own is
+  the mechanism, not the omission.**
+
+**Prior head state (2026-08-14, earlier — every phase closed):**
+
+- **Sprint `2.47` ✅ closed on a Phase `2` surface without reopening Phase `2`**, and **Sprint `2.48`
+  📋 was registered but not started** on the same surface — a sprint working a `Pending Removal` row is
+  not a reopen (Standard N). `2.47` closed the plan's oldest open defect: the durable
+  `bootstrap-session-fence` that a preserved `.data/` carries across a teardown, which was the
+  recorded blocker of the first Standard-P qualification campaign. A positively-expired predecessor
+  is now retired through a CAS that already existed and the successor re-acquires, so an abandoned
+  bring-up no longer wedges the host permanently.
+- **The remedy had zero production callers and could not be called, and naming why is what made the
+  sprint small.** `decideBootstrapFenceRetire` requires three independent facts, each refusing closed
+  on ambiguity — stricter than all three options the ledger row proposed — with its store half fully
+  wired. It consumed a cleanup observation bound to a seven-field worker binding, and a durable fence
+  carries **three** of those seven, so a successor holding only a stale fence could never build one.
+  Closed by observing worker absence **by fence generation**, checked in both directions
+  ([§ 24](../documents/engineering/chaos_hardening_doctrine.md)).
+- **Seven prescribed remedies were refuted by measurement across that row's life** — two the row's,
+  two the sprint's own, three found while closing it. The plan's recurring lesson arrived at a new
+  surface: an estimate stated in prose is not a measurement.
+- **The live proof passed on the operator host**, which was already in the precondition state and
+  needed no reconstruction. Five consecutive bring-ups retired fence generations 1, 2, and 3 with
+  three distinct receipt digests, and runs 2 and 3 refused on their own merits — the Standard-P
+  aggregate shape, not a point probe. Running it also refuted the ledger's paraphrase of the second
+  blocker, killed the most attractive hypothesis about it, and surfaced a third defect nobody had
+  recorded: an acquisition that CASes the fence and abandons it when the Lease step fails, which
+  Sprint `2.48` went on to own and close.
+- **Sprint `2.48` then found and fixed that blocker's root cause**, and the Bootstrap Broker's fence
+  Lease is created for the first time: `Lease.spec.renewTime` is a `MicroTime` requiring exactly six
+  fractional digits, Aeson renders `UTCTime` with a variable count, and the API server rejected the
+  body `400` deterministically — so the Lease had never been creatable on any run. Proven
+  server-side with four falsifiable probes and verified by a positive observation rather than an
+  absent error. **The cause was named within one build of publishing the refusal's reason**, after
+  two hypotheses had been refuted; that method, not the timestamp, is the transferable finding.
+  Sprint `2.49` ✅ applied the same move one layer deeper against the attestation blocker the fix
+  uncovered, and Sprint `2.50` ✅ closed the durable-checkpoint blocker that named itself as a
+  result.
+- **Two Standard-C corrections landed with it, and [Standard C](development_plan_standards.md#c-honest-completion-tracking)
+  requires calling them out here as well as in [README.md](README.md).** Sprint `4.82`'s recorded
+  `dev check` exit 0 did not reproduce — a Sprint-`4.76` record literal left incomplete by `4.82`'s
+  new field, caught only by `dev check`'s `-Werror` build and therefore invisible to `test unit`. And
+  Phase `2`'s own header still led with the 2026-08-10 reopen while every sprint in that file read
+  ✅, the precise failure that header was corrected for on 2026-08-08. Evidence for this entry:
+  `dev check` 0, `test unit` 0 (**3453** + 27 + 33 + 27), `test integration cli` **57/57**.
+
+**Prior head state (2026-08-14 — Phase `4` reopens and recloses on its own surface the same day;
+every other phase stays closed):**
+
+- **Phase `4` is ✅ reclosed on Sprints `4.81` ✅ and `4.82` ✅ (Standard A own-surface reopen closed
+  the same day), and the reopen is called out here because [Standard C](development_plan_standards.md#c-honest-completion-tracking)
+  requires it in this document as well as in [README.md](README.md).** The trigger is a doctrine gap
+  rather than a failure. [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md)
+  requires a derived value to be enforced at the layer its source object is authoritative for, and to
+  name that layer; `ResidueStatus` is the common target of **nineteen** producers — reading the
+  Pulumi checkpoint store, AWS resource presence, AWS IAM, AWS EBS, config text, a Pulsar topic, a
+  Vault gate, an object-store listing, SES consumer quiescence, and public-edge TLS — and has no
+  field in which to name one. The producer count is a signature grep; the layer list is enumerated
+  rather than counted, because bucketing them into a numeral is a judgement and would be a restated
+  inventory.
+  [Standard L](development_plan_standards.md#l-cli-doctrine-alignment) makes scheduling it mandatory:
+  a doctrine gap may not be closed silently without a sprint block.
+- **No later phase is blocked by this and no earlier phase is reopened by it** (Standard N). Phases
+  `5`–`8` compose Phase `4` deliverables and stay closed and independently validatable; the reopen
+  expands only the residue-observation and destructive-cleanup surfaces Phase `4` already owns
+  through Sprints `4.16`, `4.19`, `4.21`, `4.76`, and `4.78`.
+- **`4.81` ✅** made the layer sayable and its minting restricted — as a **field with a class-A
+  opaque minter and a mutation-proven `dev check` boundary, not a type index**, because § 21 names
+  *residue* explicitly in its prohibition on indexing an observed value. **`4.82` ✅** made the
+  cascade consume the layer it actually needs, using the admin credential the same command already
+  loads for its postflight sweep, and stopped one unobservable cause being narrated as two peer phase
+  failures. Both move Standard-P destructive-cleanup surfaces; both substrate qualification rows stay
+  `pending`, and `4.82`'s live proof stays 🧪 Standard-O pending without gating closure. Evidence:
+  `dev check` 0, `test unit` 0 (**3444** + 27 + 33 + 27), `test integration cli` **57/57**.
+- **Sprint `2.47` 🔄 registered and part-landed on a Phase `2` surface without reopening Phase `2`**
+  — registering an owner for a `Pending Removal` row is not a reopen (Standard N). It closed later
+  the same day; see the current head state above.
+
+**Prior head state (2026-08-13, third entry — Phase `3` reopens and recloses on Sprints `3.36`
 and `3.37`; every phase stays closed):**
 
 - **Both sprints were found by the first live Standard-P qualification run**, which is the first time
@@ -843,10 +1007,11 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | `prodbox` supported-host gate |
 | Configuration | Binary-sibling Tier-0 `prodbox.dhall` decoded directly into Haskell types through its `parameters` payload, with generated `prodbox-config-types.dhall` / `test-secrets-types.dhall` schemas and no supported `prodbox-config.json` artifact | Executable sibling plus Haskell schema renderer |
 | Host diagnostics | `prodbox host ensure-tools|check-ports|info|firewall ...` | Haskell CLI |
-| Local RKE2 lifecycle | `prodbox cluster reconcile|delete --yes|status|health|wait|start|stop|restart|logs|workload-logs` | Haskell CLI; reconcile compiles exact capability requirements into component-owned steps. Observation, admission, and execution resolve through the same operation-indexed `CapabilityRef`; delete and suite cleanup use typed always-run obligations rather than a first-failure list. |
+| Local RKE2 lifecycle | `prodbox cluster reconcile|delete --yes|delete --cascade|status|health|wait|start|stop|restart|logs|workload-logs` | Local-only delete preserves `.data` and makes no AWS claim. Target cascade starts/resumes the lifecycle-owned recover-to-clean graph and uninstalls only from `ReadyToUninstallEvidence`; incomplete results report `RecoveryPlaneDisposition`, and completion additionally requires exact host absence plus a read-back local receipt. |
 | Registry and image reconcile | Single-binary in-cluster `registry:2` with MinIO storage, a bounded storage-bootstrap exception, idempotent public/custom-image population, alternate-source retry, and native-host-architecture publication for the Envoy Gateway edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox cluster health|wait|logs|workload-logs` | Haskell CLI |
-| AWS substrate provision/teardown (EKS) | `prodbox aws stack eks reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the `aws-eks` registry stack (Pulumi stack id `aws-eks-test`) for the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
+| AWS substrate provision/teardown (EKS) | `prodbox aws stack eks reconcile|destroy --yes` | Current Haskell orchestration plus Pulumi surface; Sprint `7.36` replaces its cascade adapter with exact independent observation/read-back. |
+| AWS substrate desired absence target (EKS) | Exact independent `aws-eks` observer, write-ahead ownership manifest, bounded controller families, provider-issued expiring drain session, checkpoint/backup recovery, and mandatory exact absence read-back | Pending Phase 7 adapter interpreted through the Phase 4 lifecycle kernel; global tag audit cannot select this target. |
 | AWS substrate provision/teardown (Route 53 subzone) | `prodbox aws stack aws-subzone reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the delegated AWS-substrate hosted zone used by public-edge proofs. |
 | AWS substrate provision/teardown (HA RKE2) | `prodbox aws stack test reconcile|destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
 | Pulumi backend state | Immutable encrypted checkpoint blobs: primary bytes in MinIO `prodbox-state` plus mandatory receipt-committed exact copies at the independent long-lived S3 coordinate, referenced atomically from a versioned Lifecycle Authority record and hydrated only into bounded RAM-backed scratch | Lifecycle Authority plus separate Backup Adapter and fenced provider worker; gateway and host-direct transports have no post-cutover authority |
@@ -854,6 +1019,7 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 | Gateway-owned secret-derivation MinIO bucket — **retired** | Historical `s3://prodbox?endpoint=127.0.0.1:39000` / `prodbox/master-seed`; the master-seed derivation model is retired (Sprint `3.19`). The pre-cutover gateway generic-object route is also scheduled for deletion; the target Gateway has no MinIO principal. | No target authority; history is retained only in the cleanup ledger |
 | Bootstrap Broker | Same-binary dedicated pre-Vault daemon command and internal Service | Sole bounded Vault initialize/unseal/status/rotation boundary; no mesh, lifecycle, provider, or target-secret API |
 | Lifecycle Authority | Same-binary retained control-plane daemon and internal Service | Authority epoch/time, operation journal, fences, checkpoint references, provider revisions, credential generations, and delivery outbox |
+| Ordinary teardown recovery profile | Minimal RKE2/API, retained MinIO/Vault bindings, Broker unseal path, bootstrap-core external caller identity, Lifecycle Authority, Backup Adapter, Provider Worker, and conditionally required Target Agent | Derived capability closure; excludes Gateway/apps and resumes old cleanup before new admission. An incomplete result distinguishes established, never-established, and subsequently lost recovery planes. |
 | Target Secret Agent | Same-binary per-substrate internal daemon and Service | Allowlisted generation-checked Vault KV seal/CAS/read-back for that substrate plus an exact Kubernetes TLS-Secret lane. The retained home Agent also binds the two schema-closed SES-SMTP/ACME-EAB custody rewrap endpoints; selected one-shot workers receive only destination-sealed openings. |
 | Authority Backup Adapter | Separate retained-home private Deployment and ServiceAccount | Closed mandatory independent-S3 backup/read-back/restore/GC programs; sole reader of the backup-store generation |
 | TLS Retention Adapter | Separate retained-home private Deployment and ServiceAccount | Closed ciphertext-only public-edge TLS retain/read-back/restore-receipt programs; never sees certificate/key plaintext |
@@ -875,21 +1041,23 @@ adoption entry and live status live in [README.md → Closure Status](README.md#
 | Interactive onboarding | `prodbox config setup` | Haskell CLI authors and validates Tier-0 boot/proposal coordinates only; credentialed effects use their explicit command and permit path |
 | AWS IAM, quota, and EBS maintenance | `prodbox aws policy|setup|teardown|quotas check|quotas request|ebs reap-test --yes` | The public names remain Haskell CLI surfaces. Identity setup/rotation/repair uses a mode-indexed Credential Provisioner; it is the sole SES-SMTP create/rotate/remint and repair-key-delete owner and derives the SMTP payload before handing only `SesSmtpSource` to home custody. `DestroyAwsSes`/migrate/compatibility/quota actions use the separate Admin Action Runner; normal EBS/provider work uses the fenced Provider Worker, whose SES program cannot represent IAM credentials. Teardown follows lifecycle-class-correct dependency cleanup; `nuke` runs only from an externally exported manifest and retires TLS prefixes before the final shared backup-store/bucket node. |
 | AWS IAM validation harness | `prodbox test integration aws-iam`, targeted `prodbox test integration <name> --substrate aws` validations, `prodbox test integration all`, `prodbox test all` | The harness submits the same role-specific durable setup operation as the public flow and registers cleanup before mutation. It deletes/re-observes and tombstones only Operational Lifecycle-provider/AWS-run DNS01 resources after dependants; it exact-consumer-read-backs retained backup/TLS/home-DNS/SES-SMTP generations and custody receipts. The current one-user/shared-`aws.*` and Pulumi-owned SMTP implementations are pre-cutover history owned by Sprints `4.50`/`7.33`/`8.11`, not this target row. |
-| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceClass`, `Prodbox.Lifecycle.ResourceRegistry`, and typed resource modules such as `Prodbox.Lifecycle.EbsVolume` | Pure data-only registry plus committed desired-absence programs cover every creatable stack, retained/test EBS, controller resource, exact A/TXT record, operational IAM/key, retained bucket/object, and mutating canary. Teardown uses an always-run DAG; `Unobservable` never means absent, and no create-call lint carve-out bypasses registration. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
+| Leak-proof resource lifecycle | Target `Prodbox.Lifecycle.Teardown.*` plus lifecycle-owned `CleanupRun` | Pure lifecycle-indexed registry; separate exact resource/checkpoint/audit observations; ARN-normalized inventory; total desired-absence decisions; closed result-indexed programs; durable derived graph; private proof-carrying completion. Validation and CLI are clients. |
 | Formal verification | `prodbox dev tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Code quality gate | `prodbox dev check` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
 
 ## Current Repository State
 
-The Haskell-only baseline remains implemented, but its gateway-backed lifecycle authority,
-nominal deep-readiness target, subprocess object-store path, synchronous retained SES bracket, and
-first-failure restore sequence are superseded. Phase `0` is reclosed on the corrected doctrine;
-Phases `1`–`8` are reclosed on their expanded code-owned surfaces after the numerical completion
-pass through Sprint `8.12`, with Phase `5` most recently reclosed on Sprint `5.31` (2026-08-09).
-Installed `cli`/`env` integration passes **55/55**, and canonical `prodbox test unit` exits 0 with
-main Hspec **3255/3255**. The live home/AWS aggregate and fault records remain pending only on the
-distinct deployment-qualification axis.
+The Haskell-only baseline remains implemented, but teardown recovery is reopened on Phases `3`–`7`.
+The current cascade still carries the unkeyed global AWS fallback, tag-row cardinality,
+checkpoint-coupled EKS access, Gateway-owned caller identity, handwritten phase/executor shapes,
+and uninstall-on-incomplete behavior registered for deletion. Those paths are the measured
+superseded baseline, not the target architecture.
+
+The current target and execution status live in the tables above and
+[README.md](README.md#current-plan-status). Both substrate qualification rows are pending. The
+supported operator surface remains `prodbox`; configuration remains direct `Dhall -> Haskell
+types`; and Python runtime/tooling remains absent.
 
 Sprints `1.60`, `2.31`, `3.25`, `4.47`, `5.16`, `5.17`, and `8.10` remain complete historical work
 for their stated surfaces. They do not qualify the expanded process topology. The supported
@@ -1116,6 +1284,17 @@ model. Replacement and removal ownership live in the reopened phases and
 | Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1, 4, and 5 |
 
 ## Current Execution State
+
+**Current (2026-08-16, paused).** Preserve the green recovery/descriptor foundations and do not
+activate them yet. On resume: finish and compile Provider credential-session envelope v3; replace
+the rejected one-phase Cascade host record with the locked `Prepared -> Absent` protocol; run the
+source-stable total descriptor dispatcher through one serialized aggregate; then finish causal
+registered-stack generation, terminal-audit reservation/read-back, and Cascade pre-uninstall
+authority. After those Phase-4/7 proof inputs close, migrate `TestRunner` off its callback graph,
+complete the recover-to-clean candidate, and only then let `6.5` own public single-writer cutover and
+legacy deletion. No work is assigned to Phases `0`, `1`, `2`, or `8` by this correction.
+
+### Prior execution history
 
 **Own-surface reopens, 2026-08-10 (Standard A/N, recorded here per Standard C).** A live
 `prodbox test all --substrate aws` run failed at the `bootstrap-broker` Helm release on eight
@@ -1418,7 +1597,8 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 - Phase 3 owns the separately resourced Bootstrap Broker, Lifecycle Authority, Target Secret Agent,
   Authority Backup and TLS Retention Adapters, fenced Provider Worker, permit-created Credential
   Provisioner/External Material Ingress/Admin Action Runner, and identity-bound emitter-journal workloads plus the chart
-  platform, retained state model,
+  platform, retained state model, and the bootstrap-owned ordinary teardown recovery projection and
+  external CLI ServiceAccount/RBAC whose lifetime is independent of Gateway/applications,
   supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. The Phase
   `3` surfaces include the root-chart-only public `prodbox charts ...` surface, the JWT-protected
@@ -1436,8 +1616,10 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   artifacts via the `generatedSectionRule` registry. Sprint 0.4 extends Sprint 3.10 with
   the named forbidden reconciler flags `--force` and `--reinstall` plus the forbidden
   sister commands `install`, `upgrade`, `repair`, and `force-install` on the chart surface.
-- Phase 4 owns the durable Lifecycle Authority aggregate, operation journal/outbox, immutable
-  checkpoint references, target delivery, authority-epoch cutover, in-cluster `registry:2`
+- Phase 4 owns the pure lifecycle-indexed registry, exact keyed resource/checkpoint/audit observation
+  boundary, desired-absence decisions, result-indexed programs, generic durable CleanupRun kernel,
+  proof-carrying cascade completion, durable Lifecycle Authority aggregate, operation journal/outbox,
+  immutable checkpoint references, target delivery, authority-epoch cutover, in-cluster `registry:2`
   lifecycle hardening, the bounded MinIO/storage bootstrap
   exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
   and ACME projection, Python removal, and the native-host-architecture container-build doctrine.
@@ -1447,21 +1629,26 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   Sprint 4.5 with the same forbidden-flag and sister-command discipline on the lifecycle
   reconciler; the one-cycle `install` alias has been retired, and `install`, `upgrade`,
   `repair`, and `force-install` are rejected at parse time.
-- Phase 5 owns capability-bound preparation, the always-run cleanup DAG, the temporal
+- Phase 5 owns the independent frozen teardown reference oracle and fault/restart matrix plus, in
+  Sprint `5.36`, the `TestRunner` client of the Phase-4 cleanup kernel; it also owns the temporal
   CPU/queue/deadline/fault oracle, public-edge diagnostics, and external proof on Route 53, Envoy
   Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
   MinIO route classification plus named external proofs for those workloads. Sprint
   `5.5` closes this phase's redirect-only port `80` handling and proof while preserving HTTPS as
   the only application-traffic route.
-- Phase 6 owns home-substrate cutover/rollback and prerequisite qualification evidence, the destructive
+- Phase 6 owns home-substrate cutover/rollback and prerequisite qualification evidence, including
+  the one-writer old→recover-to-clean teardown activation, interruption-prefix resume, legacy
+  absence scan, and two-cycle installed-binary handoff; it also owns the destructive
   clean-room rerun and zero-Python repository handoff criteria, proved through consecutive
   aggregates, always-run postflight restore, `config show`, `config validate`,
   `edge status`, and supported-path repository review gates for placeholder-domain and Python
   residue. Sprint `8.12` is the sole final deployment-qualification owner for both substrates after
   the later shared SES workflow revision.
 - Phase 7 owns AWS Broker/Target-Agent/Gateway parity, exact transport to the single retained home
-  Lifecycle Authority, and deployment qualification, interactive
+  Lifecycle Authority, independent per-stack/provider observers, write-ahead ownership manifests,
+  controller-family desired absence, provider-issued EKS drain sessions, and AWS adapter
+  prerequisite evidence for Sprint `8.12`; it also owns interactive
   onboarding, IAM automation, quota management, and the temporary-admin credential proof harness
   on one canonical public hostname with no placeholder-domain residue.
 - Phase 8 owns the durable SES specialization over the generic Lifecycle Authority: provider
@@ -1519,6 +1706,15 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 - Full cluster delete preserves the configured manual PV root, including the durable Vault PV under
   `.data/vault/vault/0` and the MinIO PV under `.data/prodbox/minio/0`; chart secrets are
   Vault-backed and the master-seed derivation baseline has been removed.
+- Local-only delete may uninstall without AWS cleanup and makes no AWS absence claim. Cascade must
+  repair or reinstall its bootstrap-owned minimal recovery profile, resume the durable run, close
+  every exact per-run/family obligation, audit normalized escapees, and independently receipt the
+  report before local uninstall. Incomplete cleanup keeps the profile/credentials live and returns
+  `CleanupRunId`.
+- Checkpoint usability, exact provider resource truth, and terminal escape audit are nominally
+  distinct. A global audit cannot select a stack, a tag row is not a resource, and one answer cannot
+  be copied across resource keys. Static lifecycle/surface legality may be type-indexed; external
+  observations remain flat exhaustive ADTs.
 - Secrets must never appear in `prodbox.dhall`, generated configs, logs, or committed Dhall;
   they are carried only as typed `SecretRef` references resolved through Vault. A sealed Vault must
   leave no secret, no active Dhall, no Pulumi state, and no downstream-cluster metadata extractable
@@ -1573,9 +1769,11 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
 - Every supported Helm-managed PostgreSQL deployment must be external, Percona-operator-backed
   Patroni HA with exactly three PostgreSQL replicas, synchronous replication, and no embedded
   chart-local PostgreSQL subchart.
-- Pulumi remains the exclusive provisioner and destroyer for AWS test resources behind the public
-  `prodbox aws stack ...` surface, while bootstrap DNS reconcile and ACME `ClusterIssuer`
-  projection remain lifecycle-owned in `src/Prodbox/CLI/Rke2.hs`.
+- The `prodbox` surface remains the exclusive AWS mutation boundary. Pulumi is the normal fenced
+  provider interpreter; when both checkpoint copies are unusable, only the lifecycle core's bounded,
+  admin-confirmed ownership-manifest program may perform native desired absence. Bootstrap DNS
+  reconcile and ACME `ClusterIssuer` projection remain separately lifecycle-owned in
+  `src/Prodbox/CLI/Rke2.hs`.
 - No supported Pulumi program or orchestration path may depend on Python.
 - The only supported gateway steady state is inside the cluster as a Kubernetes workload.
 - The gateway daemon, `prodbox gateway status`, and daemon config parsing expose a `/v1/state`

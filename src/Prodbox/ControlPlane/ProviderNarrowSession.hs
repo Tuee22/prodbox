@@ -18,9 +18,13 @@ module Prodbox.ControlPlane.ProviderNarrowSession
 where
 
 import Data.Text (Text)
+import Prodbox.ControlPlane.ProviderCredentialSession
+  ( ProviderCredentialSessionBinding
+  )
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
+  , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -110,16 +114,24 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , reapTestEbsVolumesCapability
       :: Text
       -> ProviderMutation m session
+  , observeTestEbsVolumesCapability
+      :: Text
+      -> ProviderReadOnly m session
   , observeSpotPriceCapability
       :: ProviderSpotPriceQuery
       -> ProviderReadOnly m session
   , observeOperationalIdentityCapability
+      :: ProviderReadOnly m session
+  , observeProviderAwsScopeCapability
       :: ProviderReadOnly m session
   , observeProviderReadinessCapability
       :: ProviderReadinessProbe
       -> ProviderReadOnly m session
   , issueEksClientAuthCapability
       :: EksClientAuthRequest
+      -> ProviderReadOnly m session
+  , observeEksClusterIdentityCapability
+      :: EksClusterIdentityRequest
       -> ProviderReadOnly m session
   }
 
@@ -130,7 +142,7 @@ newtype ProviderNarrowSessionRunner m session = ProviderNarrowSessionRunner
       :: forall result
        . ProviderIntent
       -> AuthorityTime
-      -> (session -> m (Either Text result))
+      -> (Maybe ProviderCredentialSessionBinding -> session -> m (Either Text result))
       -> m (Either Text result)
   }
 
@@ -177,7 +189,13 @@ operationForProviderIntent capabilities intent = case intent of
     ProviderIntentReadOnly (observeSpotPriceCapability capabilities query)
   ObserveOperationalIdentity ->
     ProviderIntentReadOnly (observeOperationalIdentityCapability capabilities)
+  ObserveProviderAwsScope ->
+    ProviderIntentReadOnly (observeProviderAwsScopeCapability capabilities)
   ObserveProviderReadiness probe ->
     ProviderIntentReadOnly (observeProviderReadinessCapability capabilities probe)
   IssueEksClientAuth request ->
     ProviderIntentReadOnly (issueEksClientAuthCapability capabilities request)
+  ObserveTestEbsVolumes clusterName ->
+    ProviderIntentReadOnly (observeTestEbsVolumesCapability capabilities clusterName)
+  ObserveEksClusterIdentity request ->
+    ProviderIntentReadOnly (observeEksClusterIdentityCapability capabilities request)

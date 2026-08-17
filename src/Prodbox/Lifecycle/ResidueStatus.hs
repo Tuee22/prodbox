@@ -28,13 +28,26 @@
 -- does not route through this gate combinator.
 module Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus (..)
+  , ResidueObservationLayer (..)
+  , renderResidueObservationLayer
+  , ResidueObservation
+  , observeResidueAt
+  , residueObservationLayer
+  , residueObservationStatus
+  , mapResidueObservationStatus
+  , AwsLayerAnswer (..)
+  , ResidueResolution (..)
+  , resolveResidueAcrossLayers
+  , residueResolutionStatus
+  , residueResolutionConfirmedAbsence
+  , renderResidueResolution
+  , renderAwsLayerAnswer
   , ResidueDetails (..)
   , ResidueUnreachableReason (..)
   , ObservationFailure (..)
   , CheckpointFailure (..)
   , PresenceObservation (..)
   , CheckpointObservation (..)
-  , residueAbsent
   , residuePresentByFileExistence
   , renderResidueStatus
   , renderResidueDetails
@@ -90,6 +103,164 @@ data ResidueStatus
   | ResidueUnreachable !ResidueUnreachableReason
   deriving (Eq, Show)
 
+-- | Sprint 4.81: which authority answered a residue question.
+--
+-- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- requires that a derived value be enforced at the layer its source object is
+-- authoritative for, and that a derivation name the layer whenever it names the
+-- source. A 'ResidueStatus' alone names neither: 'ResidueAbsent' minted from a
+-- retained checkpoint and 'ResidueAbsent' minted from AWS are the same value,
+-- and the per-run cascade consumed the first as though it were the second.
+--
+-- This is a flat exhaustive ADT carried as a __field__, never a type index on
+-- the observed value — § 21's carried-over prohibition names @residue@
+-- explicitly.
+data ResidueObservationLayer
+  = -- | The retained Lifecycle Authority checkpoint store. Authoritative for
+    -- /what checkpoints this cluster holds/, and for nothing else.
+    ResidueLayerRetainedCheckpoint
+  | -- | AWS itself, through a tagged-resource or service query. Authoritative
+    -- for /what resources exist/.
+    ResidueLayerAwsResource
+  | -- | The Vault seal/permission gate, which decides whether the checkpoint
+    -- layer is consultable at all. Never an answer about resources.
+    ResidueLayerVaultGate
+  | -- | A test-only harness bypass. Present so a bypassed answer can never be
+    -- mistaken for an observed one.
+    ResidueLayerHarnessBypass
+  deriving (Eq, Show, Bounded, Enum)
+
+renderResidueObservationLayer :: ResidueObservationLayer -> String
+renderResidueObservationLayer layer = case layer of
+  ResidueLayerRetainedCheckpoint -> "retained checkpoint store"
+  ResidueLayerAwsResource -> "AWS"
+  ResidueLayerVaultGate -> "Vault gate"
+  ResidueLayerHarnessBypass -> "harness bypass"
+
+-- | Sprint 4.81: a residue answer bound to the authority that produced it.
+--
+-- The constructor is __not exported__. 'observeResidueAt' is the sole minter,
+-- and @checkResidueObservationMinter@ in @Prodbox.CheckCode@ restricts its
+-- callers to the observing modules — § 21's class-A move, in the same idiom as
+-- the Sprint @1.76@ @RoundTripWitness@ and Sprint @4.58@ @TargetSinkVersion@
+-- boundaries. A consumer therefore cannot obtain an answer without also
+-- obtaining the layer it was answered at.
+data ResidueObservation = ResidueObservation
+  { internalObservationLayer :: !ResidueObservationLayer
+  , internalObservationStatus :: !ResidueStatus
+  }
+  deriving (Eq, Show)
+
+-- | The sole minter. Takes the layer first so a call site reads as a claim
+-- about an authority rather than as a wrapper around a status.
+observeResidueAt :: ResidueObservationLayer -> ResidueStatus -> ResidueObservation
+observeResidueAt layer status =
+  ResidueObservation
+    { internalObservationLayer = layer
+    , internalObservationStatus = status
+    }
+
+residueObservationLayer :: ResidueObservation -> ResidueObservationLayer
+residueObservationLayer = internalObservationLayer
+
+residueObservationStatus :: ResidueObservation -> ResidueStatus
+residueObservationStatus = internalObservationStatus
+
+-- | Refine an answer without changing the authority that gave it. Used where a
+-- gate downgrades an observation it did not itself make; the layer is carried
+-- through rather than re-asserted, so a refinement cannot silently relabel
+-- which authority spoke.
+mapResidueObservationStatus
+  :: (ResidueStatus -> ResidueStatus) -> ResidueObservation -> ResidueObservation
+mapResidueObservationStatus f observation =
+  observation {internalObservationStatus = f (internalObservationStatus observation)}
+
+-- | Sprint 4.82: what AWS said when it was consulted as the second layer.
+--
+-- Kept separate from 'ResidueStatus' because it answers a different question.
+-- 'ResidueStatus' is /what does the authority that was asked report/;
+-- this is /what cluster-wide tagged resources did the audit discover/. It is
+-- deliberately too coarse to answer a question about any one Pulumi stack.
+data AwsLayerAnswer
+  = -- | AWS was queried and reported no matching cluster-wide tag rows. This
+    -- is not evidence that any named stack checkpoint is absent.
+    AwsLayerNoResources
+  | -- | AWS was queried and reported cluster-wide resources. The payload is
+    -- operator-visible audit evidence (ARNs), not per-stack attribution.
+    AwsLayerResourcesPresent ![String]
+  | -- | AWS was queried and could not answer.
+    AwsLayerUnobservable !String
+  | -- | AWS was not consulted — no admin credential, or the authority layer
+    -- already answered so no second query was needed. Never an absence.
+    AwsLayerNotConsulted !String
+  deriving (Eq, Show)
+
+-- | The exact per-stack answer plus any cluster-wide AWS audit that was
+-- available when the exact authority could not answer.
+--
+-- A tag sweep is not keyed by Pulumi stack and therefore cannot refine an
+-- exact stack observation. In particular, an empty sweep cannot mint
+-- per-stack absence, and a non-empty sweep cannot mint per-stack presence.
+-- The AWS answer is retained only so the terminal refusal can narrate useful
+-- audit evidence.
+data ResidueResolution
+  = -- | The asked authority answered, and its answer stands on its own.
+    ResolutionAuthorityObserved !ResidueObservationLayer !ResidueStatus
+  | -- | The exact authority was unreachable. The cluster-wide answer is
+    -- audit-only and does not change that exact status.
+    ResolutionAuthorityUnobservableWithAwsAudit !ResidueUnreachableReason !AwsLayerAnswer
+  deriving (Eq, Show)
+
+-- | Sprint 4.82: total over @(observation × AWS answer)@.
+--
+-- The AWS layer is consulted only where the asked authority failed to answer.
+-- It is deliberately carried without being promoted into an exact answer:
+-- the two sources answer differently-scoped questions.
+resolveResidueAcrossLayers
+  :: ResidueObservation -> AwsLayerAnswer -> ResidueResolution
+resolveResidueAcrossLayers observation awsAnswer =
+  case residueObservationStatus observation of
+    ResidueAbsent -> observed ResidueAbsent
+    ResiduePresent details -> observed (ResiduePresent details)
+    ResidueUnreachable reason ->
+      ResolutionAuthorityUnobservableWithAwsAudit reason awsAnswer
+ where
+  observed = ResolutionAuthorityObserved (residueObservationLayer observation)
+
+-- | The exact status a status-shaped consumer should see. The audit arm is
+-- always unobservable; a global answer cannot authorize an exact destroy.
+residueResolutionStatus :: ResidueResolution -> ResidueStatus
+residueResolutionStatus resolution = case resolution of
+  ResolutionAuthorityObserved _ status -> status
+  ResolutionAuthorityUnobservableWithAwsAudit reason _ -> ResidueUnreachable reason
+
+-- | Whether this resolution positively establishes absence, and at which layer.
+--
+-- Only exact authority evidence qualifies. A global audit never does.
+residueResolutionConfirmedAbsence :: ResidueResolution -> Maybe ResidueObservationLayer
+residueResolutionConfirmedAbsence resolution = case resolution of
+  ResolutionAuthorityObserved layer ResidueAbsent -> Just layer
+  ResolutionAuthorityObserved _ _ -> Nothing
+  ResolutionAuthorityUnobservableWithAwsAudit _ _ -> Nothing
+
+renderResidueResolution :: ResidueResolution -> String
+renderResidueResolution resolution = case resolution of
+  ResolutionAuthorityObserved layer status ->
+    renderResidueStatus status ++ " [answered by: " ++ renderResidueObservationLayer layer ++ "]"
+  ResolutionAuthorityUnobservableWithAwsAudit reason awsAnswer ->
+    "NOT OBSERVED for this exact stack (retained checkpoint: "
+      ++ renderResidueUnreachableReason reason
+      ++ "; cluster-wide AWS audit only: "
+      ++ renderAwsLayerAnswer awsAnswer
+      ++ "; the global sweep cannot establish this stack's presence or absence)"
+
+renderAwsLayerAnswer :: AwsLayerAnswer -> String
+renderAwsLayerAnswer answer = case answer of
+  AwsLayerNoResources -> "no matching resources"
+  AwsLayerResourcesPresent arns -> show (length arns) ++ " resource(s) present"
+  AwsLayerUnobservable detail -> "could not be queried: " ++ detail
+  AwsLayerNotConsulted reason -> "not consulted (" ++ reason ++ ")"
+
 -- | Structured evidence that residue is present. The fields are
 -- intentionally minimal so the adapter layer (file-existence today,
 -- @pulumi stack ls --json@ tomorrow) can populate them without
@@ -109,7 +280,23 @@ data ResidueDetails = ResidueDetails
 data ResidueUnreachableReason
   = -- | The in-cluster MinIO backend could not be reached. The string
     -- carries the underlying transport message.
+    --
+    -- Sprint 4.81: this names a boundary that was actually dialled. It is no
+    -- longer the label for an authentication failure that never reached MinIO
+    -- — see 'ResidueAuthorityUnauthenticated'.
     ResidueBackendMinioUnreachable !String
+  | -- | Sprint 4.81: the caller could not authenticate to the Lifecycle
+    -- Authority, so no backend was contacted at all.
+    --
+    -- Before this sprint every 'Prodbox.ControlPlane.LifecycleAuthorityAuthentication'
+    -- failure — absent kubeconfig, unobservable external-caller ServiceAccount,
+    -- refused self-TokenRequest RBAC, refused TokenRequest, failed Vault
+    -- Kubernetes login, unavailable Transit signing capability — was folded
+    -- into 'ResidueBackendMinioUnreachable', and a live cascade run printed
+    -- @MinIO backend unreachable@ about a MinIO that was never dialled while
+    -- naming three healthy subsystems and not the one that failed. Conversion
+    -- class, [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md).
+    ResidueAuthorityUnauthenticated !String
   | -- | The long-lived S3 backend could not be reached.
     ResidueBackendS3Unreachable !String
   | -- | The query reached the backend but the response could not be
@@ -120,10 +307,6 @@ data ResidueUnreachableReason
     -- consulted instead (e.g. @"file-existence: .prodbox-state/..."@).
     ResidueQueryNotImplemented !String
   deriving (Eq, Show)
-
--- | Convenience constructor.
-residueAbsent :: ResidueStatus
-residueAbsent = ResidueAbsent
 
 -- | Promote a boolean file-existence check into a 'ResidueStatus'.
 -- Retained for the unit-test scaffolding that exercises the
@@ -161,6 +344,8 @@ renderResidueDetails details =
 renderResidueUnreachableReason :: ResidueUnreachableReason -> String
 renderResidueUnreachableReason reason = case reason of
   ResidueBackendMinioUnreachable msg -> "MinIO backend unreachable: " ++ msg
+  ResidueAuthorityUnauthenticated msg ->
+    "Lifecycle Authority could not be authenticated, so no state backend was contacted: " ++ msg
   ResidueBackendS3Unreachable msg -> "S3 backend unreachable: " ++ msg
   ResidueQueryFailed msg -> "backend query failed: " ++ msg
   ResidueQueryNotImplemented msg -> "source-of-truth query not yet implemented (" ++ msg ++ ")"

@@ -5,8 +5,10 @@ module ControlPlaneConfigEndpoint
   )
 where
 
+import Codec.Serialise (DeserialiseFailure, deserialiseOrFail, serialise)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteString8
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -16,6 +18,7 @@ import Data.IORef
   )
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Word (Word8)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
   , AuthorityAdmissionSnapshot (..)
@@ -55,6 +58,13 @@ import Prodbox.Lifecycle.Authority.Genesis
 import Prodbox.Runtime.Role (RuntimeRole (GatewayRuntime))
 import TestSupport
 
+decodeConfigProjectionScope
+  :: [Word8]
+  -> Either DeserialiseFailure ConfigProjectionScope
+decodeConfigProjectionScope =
+  deserialiseOrFail
+    . LazyByteString.pack
+
 data CasBehavior
   = CasApply
   | CasApplyThenLoseResponse
@@ -75,6 +85,31 @@ data ConfigFixture = ConfigFixture
 controlPlaneConfigEndpointSuite :: SuiteBuilder ()
 controlPlaneConfigEndpointSuite =
   describe "Sprint 4.50 authority-owned in-force config endpoint" $ do
+    it "pins every durable config projection scope to its original wire tag" $ do
+      let stableScopes =
+            [ (ConfigProjectionBootstrapBroker, [129, 0])
+            , (ConfigProjectionGatewayRuntime, [129, 1])
+            , (ConfigProjectionLifecycleAuthority, [129, 2])
+            , (ConfigProjectionProviderWorker, [129, 3])
+            , (ConfigProjectionAuthorityBackup, [129, 4])
+            , (ConfigProjectionTlsRetention, [129, 5])
+            , (ConfigProjectionTargetSecretAgent, [129, 6])
+            , (ConfigProjectionOperator, [129, 7])
+            , (ConfigProjectionTestHarness, [129, 8])
+            , (ConfigProjectionAdminActionRunner, [129, 9])
+            , (ConfigProjectionCredentialProvisioner, [129, 10])
+            ]
+      map (LazyByteString.unpack . serialise . fst) stableScopes
+        `shouldBe` map snd stableScopes
+      map (decodeConfigProjectionScope . snd) stableScopes
+        `shouldBe` map (Right . fst) stableScopes
+
+    it "rejects unknown and structurally invalid config projection wire tags" $ do
+      either (const True) (const False) (decodeConfigProjectionScope [129, 11])
+        `shouldBe` True
+      either (const True) (const False) (decodeConfigProjectionScope [130, 0, 0])
+        `shouldBe` True
+
     it "keeps proposals frozen until both genesis read-backs establish backup" $ do
       fixture <- newConfigFixture frozenAuthority
       response <- proposeAuthorityConfig (fixtureRepository fixture) (seedRequest configV1)

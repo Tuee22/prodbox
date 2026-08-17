@@ -58,7 +58,9 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
       ( BoundedScratchCheckpoint
       , DestroyRegisteredStack
       , IssueEksClientAuth
+      , ObserveEksClusterIdentity
       , ObserveOperationalIdentity
+      , ObserveProviderAwsScope
       , ObserveProviderReadiness
       , ObservePublicARecord
       , ObserveRegisteredStack
@@ -109,6 +111,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
     )
   , RegisteredProviderResources
   , mkEksClientAuthRequest
+  , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
@@ -179,6 +182,8 @@ data ProviderIntentKind
   | EksClientAuthIntent
   | ObservePublicARecordIntent
   | ReconcilePublicARecordIntent
+  | ObserveEksClusterIdentityIntent
+  | ObserveProviderAwsScopeIntent
   deriving stock (Eq, Show, Enum, Bounded, Generic)
   deriving anyclass (Serialise)
 
@@ -303,6 +308,7 @@ rebuildIntent payload = case applyIntentKind payload of
         (fieldReason "spot-price")
         (mkProviderSpotPriceQuery rawRef (applySecondaryRef payload))
   ObserveOperationalIdentityIntent -> Right ObserveOperationalIdentity
+  ObserveProviderAwsScopeIntent -> Right ObserveProviderAwsScope
   ObserveReadinessStsIntent -> Right (ObserveProviderReadiness ProviderReadinessStsIdentity)
   ObserveReadinessRoute53Intent ->
     ObserveProviderReadiness . ProviderReadinessRoute53Zone . providerStackRefText
@@ -340,6 +346,17 @@ rebuildIntent payload = case applyIntentKind payload of
             (applySecondaryRef payload)
             (applyRequestedRevision payload)
             (Text.splitOn "," (applyTertiaryRef payload))
+        )
+  ObserveEksClusterIdentityIntent -> do
+    stackRef <- first (fieldReason "stack") (mkProviderStackRef rawRef)
+    ObserveEksClusterIdentity
+      <$> first
+        (fieldReason "eks-identity")
+        ( mkEksClusterIdentityRequest
+            stackRef
+            (applySecondaryRef payload)
+            (applyTertiaryRef payload)
+            (applyCoordinate payload)
         )
  where
   rawRef = applyResourceRef payload

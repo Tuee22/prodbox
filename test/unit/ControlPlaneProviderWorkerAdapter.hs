@@ -231,6 +231,8 @@ fixtureCapabilities calls applied loseResponse unobservable =
     , reconcilePublicARecordCapability = const (mutation "public-a-reconcile")
     , reapTestEbsVolumesCapability = \clusterName ->
         mutation ("ebs-reap:" <> clusterName)
+    , observeTestEbsVolumesCapability = \clusterName ->
+        readOnly ("ebs-observe:" <> clusterName)
     , observeSpotPriceCapability = \query ->
         readOnly
           ( "spot-price:"
@@ -239,8 +241,10 @@ fixtureCapabilities calls applied loseResponse unobservable =
               <> providerSpotPriceProductDescription query
           )
     , observeOperationalIdentityCapability = readOnly "operational-identity"
+    , observeProviderAwsScopeCapability = readOnly "provider-aws-scope"
     , observeProviderReadinessCapability = readOnly . readinessLabel
     , issueEksClientAuthCapability = const (readOnly "eks-client-auth")
+    , observeEksClusterIdentityCapability = const (readOnly "eks-cluster-identity")
     }
  where
   mutation label =
@@ -381,9 +385,20 @@ allIntents =
   , ReconcileSesCaptureBucket (sesBucketRef "capture")
   , ReconcileSesDns sesDnsRef
   , ReapTestEbsVolumes "prodbox-test"
+  , ObserveTestEbsVolumes "prodbox-test"
   , ObserveSpotPrice spotPriceQuery
   , ObserveOperationalIdentity
+  , ObserveProviderAwsScope
   , ObserveProviderReadiness ProviderReadinessStsIdentity
+  , ObserveEksClusterIdentity
+      ( mustRight
+          ( mkEksClusterIdentityRequest
+              (stackRef "aws-eks")
+              "123456789012"
+              "ca-central-1"
+              "aws-eks-test-cluster"
+          )
+      )
   ]
 
 expectedCalls :: ProviderIntent -> [(Text, ProviderIntentCoordinate)]
@@ -400,7 +415,13 @@ expectedCalls intent =
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveOperationalIdentity ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveProviderAwsScope ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveProviderReadiness _ ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveTestEbsVolumes _ ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         _ ->
           [ call "session-open"
@@ -433,8 +454,11 @@ labelFor intent = case intent of
       <> ":"
       <> providerSpotPriceProductDescription query
   ObserveOperationalIdentity -> "operational-identity"
+  ObserveProviderAwsScope -> "provider-aws-scope"
   ObserveProviderReadiness probe -> readinessLabel probe
   IssueEksClientAuth _ -> "eks-client-auth"
+  ObserveTestEbsVolumes clusterName -> "ebs-observe:" <> clusterName
+  ObserveEksClusterIdentity _ -> "eks-cluster-identity"
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

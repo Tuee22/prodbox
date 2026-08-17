@@ -14,7 +14,7 @@ import Prodbox.Lifecycle.Dns01Challenge
 import Prodbox.Lifecycle.DnsRecord
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
-import Prodbox.Test.CleanupRun
+import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependency (..)
   , CleanupDependencyKind (..)
   , CleanupNodeOutcome (..)
@@ -187,6 +187,7 @@ issuanceNodeName = "public-edge-issuance"
 isFailure :: CleanupNodeOutcome -> Bool
 isFailure outcome = case outcome of
   CleanupNodeFailed _ -> True
+  CleanupNodeEffectUnconfirmed _ -> True
   CleanupNodeSucceeded -> False
 
 account :: AwsAccountId

@@ -62,7 +62,11 @@ awsTestStackName = "aws-test"
 
 awsTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsTestStackResidueStatus repoRoot =
-  LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
+  -- Sprint 4.81: this registry adapter answers a status-shaped question, so it
+  -- projects the observation's status. The layer is not discarded silently --
+  -- the cascade path consumes the observation itself.
+  ResidueStatus.residueObservationStatus . LiveResidue.perRunAwsTest
+    <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 data AwsTestNode = AwsTestNode
   { testNodeName :: String

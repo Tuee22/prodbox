@@ -1,6 +1,12 @@
 global:
   namespace: target-secret-agent
   rootChart: target-secret-agent
+
+# prodbox:lifecycle-authority-recovery-observer.values:start
+recoveryObserver:
+  serviceAccountName: prodbox-lifecycle-authority
+  serviceAccountNamespace: lifecycle-authority
+# prodbox:lifecycle-authority-recovery-observer.values:end
   clusterIdentity: ""
   targetAgentIdentity: ""
   targetAgentRolloutDigest: ""

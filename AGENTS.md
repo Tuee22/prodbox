@@ -6,13 +6,13 @@
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
-`DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
-and cleanup ownership. The authoritative CLI doctrine is distributed across per-surface
-engineering docs under [documents/engineering/](./documents/engineering/README.md): command
-topology and reconcilers in `cli_command_surface.md`; the leak-proof, idempotent topology —
-the typed managed-resource registry every creatable AWS/cluster resource is registered in,
-and the `reconcileAbsent` teardown reconciler — in
-`lifecycle_reconciliation_doctrine.md` (§3.1); Plan / Apply and GADT-indexed state
+`DEVELOPMENT_PLAN/README.md` is the authoritative source for sprint status, blockers, validation
+closure, and cleanup/removal ownership. Stable target architecture and doctrine are distributed
+across the per-surface engineering docs under
+[documents/engineering/](./documents/engineering/README.md): command
+topology and reconcilers in `cli_command_surface.md`; the target exact-keyed registry, separate
+resource/checkpoint/audit observations, closed teardown programs, and durable recover-to-clean
+graph in `lifecycle_reconciliation_doctrine.md` (§3); Plan / Apply and GADT-indexed state
 machines in `pure_fp_standards.md`; subprocesses, error handling, capability classes, and
 application environment in `haskell_code_guide.md`; generated artifacts and lint stack in
 `code_quality.md`; output rules and at-least-once event processing in `streaming_doctrine.md`;
@@ -31,11 +31,14 @@ spend, and it does **not** need separate approval beyond the user's original req
 
 - Local cluster: `prodbox cluster reconcile` (installs RKE2 if absent and reconciles),
   `prodbox charts reconcile ...`, `prodbox gateway ...`, `prodbox cluster delete --yes`
-  (`--cascade` also destroys per-run AWS stacks). Running these on this host is the supported,
-  expected operation, not an unauthorized state change.
+  and `prodbox cluster delete --cascade --yes`. Running these on this host is the supported,
+  expected operation, not an unauthorized state change. The current cascade is a pre-cutover
+  implementation: a non-zero result is unresolved and is not evidence that per-run AWS resources
+  are absent. Target behavior and rollout status live in
+  [DEVELOPMENT_PLAN/README.md → Current Plan Status](DEVELOPMENT_PLAN/README.md#current-plan-status).
 - AWS substrate + end-to-end: `prodbox test all`, `prodbox test all --substrate aws`,
   `prodbox test integration <name> --substrate aws`, and `prodbox aws stack <cli-verb>
-  reconcile` / `destroy --yes` (see [AWS Substrate Provisioning Is Harness-Owned](#aws-substrate-provisioning-is-harness-owned)).
+  reconcile` / `destroy --yes` (see [AWS Mutation Is Prodbox-Surface-Owned](#aws-mutation-is-prodbox-surface-owned)).
 - When a task needs a running cluster, an unsealed Vault, provisioned AWS, or a live serving/TLS
   proof to validate or qualify, **stand up the live infrastructure through these entrypoints and
   run it — do not report live infrastructure as an out-of-reach blocker.** A long-running
@@ -43,9 +46,9 @@ spend, and it does **not** need separate approval beyond the user's original req
   in-scope work; launch it (background it if needed) and drive it to completion rather than
   stopping short.
 
-This authorization is scoped to the `prodbox`/harness command surface only. It does **not** relax
+This authorization is scoped to the `prodbox` command surface only. It does **not** relax
 the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` / `kubectl` mutations
-that bypass the harness stay forbidden (AWS) or confirmation-gated (see below), `prodbox nuke`
+that bypass `prodbox` stay forbidden (AWS) or confirmation-gated (see below), `prodbox nuke`
 stays operator-only and TTY-only, and the [Commit Guidelines](#commit-guidelines) (agents never
 commit or push) still apply.
 
@@ -123,14 +126,14 @@ development.
 - Missing prerequisites must fail fast with actionable errors.
 - Use `./.build/prodbox test unit` when integration prerequisites are unavailable.
 
-### AWS Substrate Provisioning Is Harness-Owned
+### AWS Mutation Is Prodbox-Surface-Owned
 
-- The prodbox test harness is the **exclusive owner** of every AWS resource the project
-  touches — IAM, ECR, S3, Route 53, SES, EKS, EC2, the lot. Every AWS API call flows
-  through the harness via the `prodbox` command surface. There is no second supported
-  owner of AWS resources; no "operator runs `aws` CLI on the side", no ad-hoc `eksctl`
-  or `terraform` or `pulumi up`. Resources the harness needs are created by the harness;
-  resources the harness no longer needs are destroyed by the harness.
+- The `prodbox` command surface is the **exclusive mutation boundary** for every AWS resource the
+  project touches — IAM, ECR, S3, Route 53, SES, EKS, EC2/EBS, the lot. In the target lifecycle
+  design, the CLI, validation harness, recovery flow, cascade, and explicit stack commands are peer
+  clients of the registered lifecycle core and its role-specific interpreters. There is no second
+  supported mutation owner:
+  no "operator runs `aws` CLI on the side", ad-hoc `eksctl`, `terraform`, or `pulumi up`.
 - Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
   `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
   `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
@@ -138,13 +141,14 @@ development.
   `prodbox aws teardown` for the IAM user provisioning loop; `prodbox test integration
   ... --substrate aws` and `prodbox test all` for end-to-end substrate-aware runs.
 - Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other
-  ad-hoc tool to create, modify, or delete AWS resources outside the harness. If a
-  needed resource isn't being created, that's a bug in the harness's substrate-platform
+  ad-hoc tool to create, modify, or delete AWS resources outside the `prodbox` command
+  surface. If a needed resource isn't being created, that's a bug in the substrate-platform
   install (extend `Prodbox.Lib.AwsSubstratePlatform`), not an invitation to fix it
   manually.
-- Do not manually provision before, or clean up after, a harness run. Re-run the harness
-  on failure (its destroy paths are idempotent) or use the canonical
-  `prodbox aws stack <stack> destroy --yes` entrypoint.
+- Do not manually provision before, or clean up after, a harness run. Use the returned
+  `CleanupRunId`/recovery disposition where available, re-run the canonical harness operation, or
+  use `prodbox aws stack <stack> destroy --yes`. Invocation or provider exit alone is not a clean
+  result; only the command's exact terminal absence evidence proves cleanup.
 - Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53 list-hosted-zones`,
   console inspection) are acceptable when investigating a harness-reported failure.
 
@@ -153,24 +157,17 @@ When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox aws st
 `prodbox aws teardown`, `prodbox test integration ... --substrate aws`, or `prodbox
 test all` — invoking it does not need separate user approval beyond the original
 request. Live AWS spend, EBS / NAT / ALB provisioning, EKS cluster lifetime, and
-SES sending-identity creation are *expected* outcomes of asking the harness to
+SES sending-identity creation are *expected* outcomes of asking `prodbox` to
 provision the AWS substrate, not separate gates. The "confirm before mutating
 shared infrastructure" rule applies only to ad-hoc tooling that bypasses the
-harness — not to invoking the harness itself.
+`prodbox` surface — not to invoking a documented `prodbox` command.
 
-Two AWS resource lifecycle classes — see
+Lifecycle classes and their exact cleanup owners are not restated here. See
 [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-for the authoritative inventory:
-
-- **Per-run stacks** (`aws-eks`, `aws-eks-subzone`, `aws-test`) are auto-managed by
-  the harness — provisioned at run start, destroyed at run end on success, failure,
-  and Ctrl-C (Sprint `7.6`).
-- **Long-lived cross-substrate shared infrastructure** (`aws-ses` + the operator-owned
-  Route 53 parent zone) is provisioned once and retained by design (5–30 min DKIM
-  propagation per re-provision; single active receive rule set per account; ~24-hour
-  S3 bucket name reuse cooldown). Destruction is still through the harness
-  (`prodbox aws stack aws-ses destroy --yes`), just never automatically. A retained SES
-  capture bucket is **not orphaned** — it is correctly retained per this class.
+for the inventory and
+[Lifecycle Reconciliation Doctrine §3](documents/engineering/lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation)
+for the target completion contract. Entering a cleanup wrapper that schedules work on success,
+failure, or Ctrl-C does not turn a partial or unobservable result into proven absence.
 
 ### Substrate Equivalence
 
@@ -239,7 +236,7 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Drive a full AWS-substrate validation run | `prodbox test all --substrate aws` | (no single command — `aws setup` then per-validation, manual) |
 | Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
 | Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
-| Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
+| Attempt operational `aws.*` + per-run cleanup and preserve/report unresolved results | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
 | Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <cli-verb> reconcile` |
 | Destroy a Pulumi stack | `prodbox aws stack <cli-verb> destroy --yes` (already non-interactive) | same |
 | Author repo config | edit the binary-sibling `prodbox.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
@@ -248,9 +245,14 @@ prompts, you have picked the wrong command, not hit a blocker.
 The automation path simulates the operator admin-credential prompt from
 `aws_admin_for_test_simulation.*` in `test-secrets.dhall` via the
 suite-level IAM harness, mints the operational `aws.*` credential into Vault KV, runs validations, then clears `aws.*` and
-auto-destroys per-run stacks on suite exit (success, failure, or Ctrl-C).
-The retained `aws-ses` long-lived stack is intentionally **not**
-auto-destroyed (cross-substrate shared infrastructure). Live AWS spend is
+uses its cleanup wrapper. Once `runWithAwsHarnessCleanup` is entered, the current
+Lifecycle-Authority-backed durable wrapper schedules per-run cleanup on success, failure, or
+Ctrl-C. Some preparation mutations still precede that wrapper, so the current harness does not
+promise every-exit durable registration.
+Scheduling alone never proves resource absence; the target completion contract requires exact
+terminal evidence.
+The retained `aws-ses` long-lived stack remains intentionally present as cross-substrate shared
+infrastructure. Live AWS spend is
 expected; no separate approval needed beyond the user's original request.
 
 **Common mistake**: running `prodbox aws setup` from a non-TTY context and
@@ -262,7 +264,7 @@ automation equivalent.
 
 ## Cross-References
 
-- **CLAUDE.md**: Detailed AI assistant guidelines
+- **[CLAUDE.md](./CLAUDE.md)**: Claude-specific navigation and evidence posture; operational rules remain authoritative here
 - **[documents/engineering/README.md](./documents/engineering/README.md)**: Engineering docs index (canonical CLI doctrine is distributed across these per-surface docs)
 - **documents/documentation_standards.md**: Documentation rules
 - **documents/engineering/**: Architecture and doctrine documentation

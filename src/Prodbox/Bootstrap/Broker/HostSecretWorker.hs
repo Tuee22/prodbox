@@ -13,6 +13,7 @@ module Prodbox.Bootstrap.Broker.HostSecretWorker
   , deliverHostSecretWorkerPayloadAfter
   , hostSecretWorkerGetSubprocess
   , hostSecretWorkerAttachSubprocess
+  , firstAttestedRequest
   )
 where
 
@@ -25,6 +26,7 @@ import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.KubernetesAttestation
   ( bootstrapSecretWorkerPodName
+  , renderSecretWorkerOperation
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
   ( workerContainerName
@@ -225,14 +227,37 @@ waitForAttestedWorker connection priorUid expected remaining = do
         threadDelay 250000
         waitForAttestedWorker connection priorUid expected (remaining - 1)
 
+-- | Sprint 2.49: try each expected closed operation, and on failure say what
+-- each one disagreed about.
+--
+-- This discarded every candidate's reason with @Left _ -> go rest@ and reported
+-- only @worker Pod does not match any expected closed operation@ — a
+-- disjunction rendered as a dead end. It is the same shape Sprints 2.46, 2.47,
+-- and 2.48 each closed one layer up, and each time the narration is what
+-- produced the next diagnosis rather than merely describing it.
+--
+-- __The payload question this appeared to raise does not exist, and measuring
+-- that first is what made the change three lines.__ Sprint 2.49 registered a
+-- deliverable to decide what these reasons may publish, on the assumption that
+-- a comparison failure quotes the values it compared. It does not:
+-- @requireCreateEqual@ is @Left (label <> " mismatch")@ and never renders
+-- either side. So the reasons are payload-free by construction, no ownership
+-- token can reach this string, and propagating them needs no new rule — only
+-- the existing one, unchanged.
+--
+-- The empty-expectation case is split out because it is a __different fault__:
+-- no candidate failing to match is a caller that expected nothing, not a Pod
+-- that matched nothing, and folding the two was the same collapse in miniature.
 firstAttestedRequest
   :: [HostSecretWorkerExpectation]
   -> ByteString
   -> Either Text SecretFreeWorkerRequest
-firstAttestedRequest expected body = go expected
+firstAttestedRequest expected body = case expected of
+  [] -> Left "no expected closed worker operation was supplied"
+  _ -> go expected []
  where
-  go [] = Left "worker Pod does not match any expected closed operation"
-  go (candidate : rest) =
+  go [] refusals = Left (renderCandidateRefusals (reverse refusals))
+  go (candidate : rest) refusals =
     case workerRequestFromRunningResponse
       "bootstrap-broker"
       (expectedWorkerOperation candidate)
@@ -242,7 +267,17 @@ firstAttestedRequest expected body = go expected
       200
       body of
       Right request -> Right request
-      Left _ -> go rest
+      Left refusal ->
+        go rest ((expectedWorkerOperation candidate, refusal) : refusals)
+
+renderCandidateRefusals :: [(SecretWorkerOperation, Text)] -> Text
+renderCandidateRefusals refusals =
+  "worker Pod does not match any expected closed operation: "
+    <> Text.intercalate
+      "; "
+      [ renderSecretWorkerOperation operation <> " -> " <> refusal
+      | (operation, refusal) <- refusals
+      ]
 
 observationLimits :: BoundedSubprocessLimits
 observationLimits =

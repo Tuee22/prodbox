@@ -451,9 +451,28 @@ The assertions are:
 - all cleanup failures are retained in the final report.
 
 For destructive lifecycle commands, dry-run goldens derive their resource steps from the managed
-resource registry. Integration success requires empty per-run residue and a successful fail-closed
-postflight observation. `prodbox nuke` remains an explicit opt-in validation because it destroys
-long-lived resources.
+resource registry and use the same closed program as apply. Their oracle keeps exact provider
+inventory, checkpoint-copy observations, and terminal escape-audit evidence as different nominal
+types. A fake may return those values only at the interpreter boundary; an environment variable,
+empty fixture directory, clean global tag sweep, or absent checkpoint may not mint exact resource
+absence.
+
+The required recover-to-clean matrix includes stopped and absent local APIs; missing caller
+identity and RBAC refusal; sealed/unavailable Vault, MinIO, Lifecycle Authority, Backup Adapter, and
+Provider Worker; every primary/backup checkpoint pair; complete and incomplete ownership manifests;
+provider partial/unobservable results; one retained ARN represented by multiple tags plus duplicate
+or paginated audit rows; unavailable EKS drain; response loss; cancellation; owner expiry; restart
+before and after every durable transition; and consecutive invocations proving same-run resumption.
+The same `CleanupRunId` and stable node operation IDs resume. `ReadyToUninstallEvidence` requires a
+positive recovery-plane witness, complete exact absence and credential disposition, normalized
+terminal audit, and a backed-up pre-uninstall report plus one-shot permit. Exact local host absence
+and a scoped read-back local-completion receipt are additionally required for cascade success. The
+pre-uninstall commit alone proves only readiness to uninstall. Incomplete cleanup remains a failure
+and carries a `RecoveryPlaneDisposition`: tests may assert that the profile remains live only when
+establishment was positively confirmed, and must preserve an establishment failure as a distinct
+outcome.
+
+`prodbox nuke` remains an explicit opt-in validation because it destroys long-lived resources.
 
 ## 3. Forbidden Patterns
 

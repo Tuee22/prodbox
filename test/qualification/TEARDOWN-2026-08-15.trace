@@ -1,0 +1,65 @@
+# TEARDOWN-2026-08-15 canonical frozen operator trace.
+#
+# All identifiers and digests are synthetic qualification fixture values. This
+# is a reference oracle input, not a production observation or live proof.
+
+format-version 1
+fixture-id TEARDOWN-2026-08-15
+run-scope teardown-2026-08-15-run-0001
+registry-revision lifecycle-registry/v1
+surface cascade
+operation reconcile-desired-absent
+foundation home-linux-rke2
+aws-account 111122223333
+aws-region ca-central-1
+
+source-head superseded 5a40e9a5f4076e3348032377fb18464ab67afca6aa731299995965b9428fb212
+source-dirty superseded true
+source-policy-id superseded teardown-source-allowlist
+source-policy-version superseded 1
+source-policy-digest superseded 8ae04a75a02d61534994ce5c8ca3cb38f58624df7c1a3e2c54bbd4e03610d2a8
+source-manifest-digest superseded 68da178dd2cf58d58c75b99fe818fe7958632cf114bb426888ac832549d7fc59
+generated-config-digest superseded cee6278a8d91762214caeccd204a43625a6e69f8ea930e10e1c0a4b7bdb8618b
+topology-digest superseded 3eebb0073ad365573adf8381de939adef713f4b033ff3f7ca9b751e7897f015a
+wiring-digest superseded c0de2982e8830143dc6e184065dac47021bf784b35d51137ae49005a245e4caf
+component-image superseded legacy-cleanup-runner 68c789bb9add7beca16d3205052fdb3faf03fa9e32f3664c0c95a27849df7b16
+
+source-head replacement bb244d82680138d967f2af892dcd0fcd4743b550376ef5b1d58268c9e9de2a81
+source-dirty replacement true
+source-policy-id replacement teardown-source-allowlist
+source-policy-version replacement 1
+source-policy-digest replacement f948ff9500d299be71dcbb97be1f56d9412bb93c1eaf3af232101758bba2659b
+source-manifest-digest replacement 63f8e9bcc4bd652a725141b4ff9a73a49ca9c891d81daebf28269fe9dde545f3
+generated-config-digest replacement ca5db4f29378e82a1bbe7ae8b9e55fbda68649194362286e1b5086f426e007ed
+topology-digest replacement da7233bb89dd3ce1d94e2753b89639c32c56eebc8c79c2081a0450e37546626d
+wiring-digest replacement b1c5de2b7bed796000a4602249fd1df45b992b3438d7c7747345fd7e5c65930b
+component-image replacement lifecycle-authority f777a77b386107301d407e8235e05935d735f8e96927577b9c1a5d0fbd30af51
+component-image replacement provider-worker f1419b3a068c2844f0713ef674f1f194dc09a8a2df0f623c5c63b935460be528
+component-image replacement backup-adapter b2386d4d0c3fad80822460ede78c8c9674658a46bcd7ece2a8fa4c61631cc874
+component-image replacement recovery-runner 28ff7bd17bea154684cc2e6724b03d8cb57d0eec08661d42d0fd2337f2394adf
+
+tag-row arn:aws:s3:::prodbox-retained-state-fixture prodbox.io/managed-by prodbox
+tag-row arn:aws:s3:::prodbox-retained-state-fixture prodbox.io/role long-lived-pulumi-state
+
+request aws-eks
+request aws-eks-subzone
+request aws-test
+provider aws-eks unobservable exact-stack-authority-not-serving
+provider aws-eks-subzone unobservable exact-stack-authority-not-serving
+provider aws-test unobservable exact-stack-authority-not-serving
+checkpoint aws-eks unobservable primary-checkpoint-unobservable
+checkpoint aws-eks-subzone unobservable primary-checkpoint-unobservable
+checkpoint aws-test unobservable primary-checkpoint-unobservable
+kubernetes local-cascade-caller unobservable lifecycle-authority-caller-unobservable
+authority lifecycle-authority unobservable lifecycle-authority-unobservable
+backup retained-report-backup present retained-report-backup-readable
+report teardown-final-report committed 1 1
+
+transition register-run teardown-op-register-run
+transition commit-observation-intent teardown-op-observation-intent
+transition commit-mutation-intent teardown-op-mutation-intent
+transition commit-mutation-outcome teardown-op-mutation-outcome
+transition commit-independent-readback teardown-op-independent-readback
+transition commit-pre-uninstall-report teardown-op-pre-uninstall-report
+transition commit-report-backup teardown-op-report-backup
+transition commit-terminal-report teardown-op-terminal-report

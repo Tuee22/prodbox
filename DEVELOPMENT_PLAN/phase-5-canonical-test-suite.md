@@ -11,6 +11,18 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-15 on Sprints `5.35` and `5.36` (Standards A/L/P).** The operator
+trace is a taken counterexample that the suite did not compose: the preliminary caller observation
+reported the ServiceAccount unobservable (with cause/API reach unknown because stderr was
+discarded), and AWS audit returned one `ResourceTagMapping` for a retained bucket with its full
+two-tag set. Prodbox's decoder emitted two internal rows and copied the global answer to three stack
+identities whose exact observations remained `Unobservable`. No drain request reached Kubernetes and no destroy reached a provider
+effect. This phase owns the substrate-agnostic reproducer and fault matrix,
+not the lifecycle kernel or AWS adapters. At the paused 2026-08-16 checkpoint, `5.35`'s standalone
+oracle/artifacts/matrices are code-locally green, and `5.36`'s descriptor-bound client is landed;
+both remain Active because the current aggregate/docs gate and the `TestRunner`/legacy-executor
+cutover are unfinished. Live substrate evidence remains deployment qualification.
+
 ✅ **Reclosed 2026-08-09 on Sprint `5.31`.** Integration went **20 of 55 failing → 8 → 4 →
 0**, and the installed `cli`/`env` suite now passes **55/55**. The canonical `prodbox test unit`
 command exits 0 with the main Hspec inventory at **3255/3255**. Clean-room home and AWS
@@ -45,7 +57,8 @@ constructor that keeps the gate closed. Two of the sprint's own premises were co
 source in the same pass: prodbox never writes the record (cert-manager's Route 53 solver does), and
 the Challenge UID cannot exist at registration time, so the coordinate is registered pre-issuance
 and the UIDs attach afterwards as evidence. Wiring the registry entry's two injected boundaries to
-the live issuance flow is a 🧪 Standard-O step, not a code-owned gap. Phase `5` has no open sprints.
+the live issuance flow is a 🧪 Standard-O step, not a code-owned gap. At that dated reclose,
+Phase `5` had no open sprints.
 
 ✅ **Reclosed 2026-08-04 on Sprint `5.27`** — own-surface reopen (Standard A/N) implementing the two
 Sprint `5.23` fixture deliverables that were never built: cleanup now acquires the broker's terminal
@@ -66,7 +79,7 @@ The suite passes unchanged, which is the proof the values were behaviourally ine
 Standard A): the gateway runtime-stability observation type is split so a healthy not-yet-scraped Pod is
 a distinct non-terminal observation, never latched fatal — **superseding Sprint `5.24`** (its
 observability-wait band-aid is deleted). Code-owned and `dev check`-green (18/18). See
-[Sprint 5.25](#sprint-525-typed-three-valued-gateway-readiness-observation-).
+[Sprint 5.25](#sprint-525-typed-three-valued-gateway-readiness-observation--done).
 
 ✅ **Sprint `5.23` expansion completed after Sprint `2.36`.** The
 canonical validation must reproduce forced shutdown under deterministic finalizer stalls and
@@ -261,6 +274,11 @@ environment. Live multi-variant cluster proof remains a non-blocking live-infra 
 
 ## Phase Summary
 
+Current Sprint `5.35` owns the independent, mutation-sensitive `TEARDOWN-2026-08-15` reference
+oracle and fault matrix; it does not execute unfinished Phase-4 production code. Sprint `5.36` is
+blocked by Sprints `4.85` and `5.35` and will replace the validation-owned cleanup executor
+projection with a typed `TestRunner` client of the lifecycle kernel.
+
 This phase owns the canonical test suite as substrate-agnostic content. Each validation in
 `src/Prodbox/TestValidation.hs` is a member of one suite, planned by `src/Prodbox/TestPlan.hs`
 (as `NativeValidation` variants), gated by prerequisites declared in
@@ -361,9 +379,10 @@ occurrence had been inside Sprint `5.8`'s block.
 - `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT, canonical membership, typed
   prerequisite projection, and aggregate/named plans; `src/Prodbox/TestValidation.hs` owns native
   validation execution.
-- `src/Prodbox/TestRunner.hs` interprets phase-bannered prerequisite, preparation, bootstrap,
-  validation, restore, and finally-guaranteed cleanup plans. `Prodbox.TestRestore` owns the shared
-  substrate-aware restore-cycle plan.
+- `src/Prodbox/TestRunner.hs` currently interprets phase-bannered prerequisite, preparation,
+  bootstrap, validation, restore, and always-run cleanup-attempt plans. This is the pre-cutover
+  execution projection Sprint `5.36` removes after the lifecycle-owned Sprint-`4.85` kernel exists;
+  `Prodbox.TestRestore` currently owns the shared substrate-aware restore-cycle plan.
 - `prodbox edge status` is the public readiness diagnostic consumed by external-proof setup. The
   validation set remains substrate-agnostic; provisioning and current live parity are owned only by
   [substrates.md](substrates.md).
@@ -965,11 +984,13 @@ config decode.
 - [documents/engineering/test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md) -
   for Sprint `5.11`, the `test init` / `test run` command surface, `.test-data/` isolation with the
   never-touch-`.data/` `guardTestDelete` guard, the two fail-fast preconditions, and the
-  finally-guaranteed teardown that reuses `LifecycleClass` / `partitionResidueByLifecycle` to delete
-  the per-run half while retaining the authored test Dhall and long-lived SES/S3 resources.
+  process-local `finally` teardown attempt that reuses `LifecycleClass` /
+  `partitionResidueByLifecycle` for the per-run half while retaining the authored test Dhall and
+  long-lived SES/S3 resources. The target durable pre-mutation registration and exact-absence
+  completion contract are separately plan-owned.
 - `documents/engineering/unit_testing_policy.md` - for Sprint `5.11`, the `test run` per-variant
-  deploy-path reuse and the finally-guaranteed teardown that runs on every exit (success, failure,
-  Ctrl-C).
+  deploy-path reuse and process-local teardown attempt that runs on every exit after wrapper entry
+  (success, failure, Ctrl-C), while preserving an incomplete outcome when absence is not observed.
 - `documents/engineering/integration_fixture_doctrine.md` - for Sprint `5.11`, the per-run vs
   long-lived teardown ownership across the `.test-data/` isolation boundary.
 
@@ -1064,7 +1085,9 @@ Land the `test init` / `test run` command surface per
 [test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md): `prodbox test init`
 generates the differently-shaped executable-sibling `prodbox.test.dhall` (the HA/failover variant
 matrix), and `prodbox test run <suite>|all` drives each declared variant through the **real deploy
-path**, isolating run state under `.test-data/` and always tearing down its per-run half.
+path**, isolating run state under `.test-data/` and installing a process-local `finally` cleanup
+attempt for the per-run half. This historical sprint does not claim durable registration before
+every mutation or exact-absence completion; those are target lifecycle-client obligations.
 
 ### Deliverables
 
@@ -1078,10 +1101,12 @@ path**, isolating run state under `.test-data/` and always tearing down its per-
 - A mechanical never-touch-`.data/` delete guard: the `guardTestDelete` closed `TestDeleteTarget`
   ADT can name only this-run generated config, `.test-data/`, and `LifecycleClass PerRun` residue —
   naming `.data/`, the authored `prodbox.test.dhall`, or a `LongLived` resource is unconstructible.
-- Finally-guaranteed teardown reusing the managed-resource registry: `partitionResidueByLifecycle`
-  (`src/Prodbox/Aws.hs`) reconciles the `PerRun` slice plus this run's `.test-data/` to absent and
-  gates the `LongLived` slice (authored test Dhall, `aws-ses`, and the `pulumi_state_backend` bucket
-  retained by design).
+- Process-local `finally` teardown selection reusing the managed-resource registry:
+  `partitionResidueByLifecycle` (`src/Prodbox/Aws.hs`) selects the `PerRun` slice plus this run's
+  `.test-data/` for desired-absence attempts and gates the `LongLived` slice (authored test Dhall,
+  `aws-ses`, and the `pulumi_state_backend` bucket retained by design). The wrapper covers only
+  mutations reached after it is installed. Attempted/scheduled work is not completion evidence;
+  Sprint `5.36` owns migration to the durable lifecycle client whose result requires exact absence.
 - The two hard fail-fast preconditions run before any work: refuse when a production `prodbox.dhall`
   exists beside the binary (the inverse of production's fail-if-absent rule) and refuse when a
   production cluster is running.
@@ -1101,7 +1126,8 @@ path**, isolating run state under `.test-data/` and always tearing down its per-
 
 - 🧪 Live-proof (non-blocking, Standard O): a real topology-run over deployed cluster variants
   proves the end-to-end stand-up/assert/teardown loop against live infrastructure. The code-owned
-  command surface, `.test-data` isolation, and finally-guaranteed cleanup are complete.
+  command surface, `.test-data` isolation, and always-run cleanup registration are complete within
+  this sprint's historical scope; exact lifecycle-client completion remains owned by Sprint `5.36`.
 
 ## Sprint 5.12: `eks-volume-rebind` — Identical Block-Storage Rebinding Validation [✅ Done]
 
@@ -1587,8 +1613,9 @@ SMTP sync; unrelated suites do not touch SES, and ordinary postflight never dest
 `TestRunner.hs`, `Prerequisite.hs`, a retained `CleanupRun` journal/client, the EffectDAG cleanup
 projection, installed-binary fixtures, and focused pure plan tests
 **Independent Validation**: pure plan/property tests and fake capability clients prove exact-handle
-binding and always-run cleanup after every injected failure without a live cluster, AWS, or a later
-phase.
+binding and always-run cleanup after every injected failure *inside the registered composition*
+without a live cluster, AWS, or a later phase. The pre-wrapper mutation prefix later identified by
+the 2026-08-15 correction below was not exercised by this evidence.
 **Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
 `documents/engineering/prerequisite_doctrine.md`,
 `documents/engineering/bootstrap_readiness_doctrine.md`,
@@ -1611,7 +1638,7 @@ cleanup node fails.
 - Compile preparation from validation requirements into a typed DAG. Retained SES preparation
   depends on Lifecycle Authority admission and the selected Target Secret Agent; it never depends
   on the target gateway.
-- Before the first mutation, commit the complete cleanup DAG, canonical digest, and stable per-node
+- **Target contract; not fully landed by this sprint:** before the first mutation, commit the complete cleanup DAG, canonical digest, and stable per-node
   operation IDs to the Lifecycle Authority's primary-plus-backup-receipted `CleanupRun` namespace.
   It durably records the primary suite outcome; owner-lease expiry records `RunnerLost` if no result
   arrived. A fenced recovery worker scans/resumes every nonterminal run in the authority scope
@@ -1675,9 +1702,11 @@ cleanup node fails.
   decodes the immutable report instead of treating the tombstone as an error. The managed cleanup
   compiler now binds each interpreter to the same typed capability reference whose digest is
   committed in its node. Command-style non-zero primary exits are now recorded as failures rather
-  than successful values. `TestRunner` now places AWS harness setup inside the create-before-primary
+  than successful values. `TestRunner` places IAM harness setup inside the create-before-primary
   boundary and lowers drain, Vault unseal, the three registry-owned per-run stacks, the EBS reaper,
-  and operational teardown into one capability-bound DAG. Every provider cleanup has
+  and operational teardown into one capability-bound DAG. Config regeneration, optional
+  pre-reconcile, and in-force config sync still precede that boundary, so this landing did not meet
+  the stronger before-first-mutation target. Every provider cleanup has
   `RequiresAttempt` progress; teardown has `RequiresSuccess` edges from every credential consumer,
   preserving recovery credentials after cleanup failure. Authority-scope recovery uses the
   universal action interpreter before compiling the selected run, so a narrower successor suite
@@ -1703,6 +1732,14 @@ cleanup node fails.
   2992/2992 (35.58s), and `prodbox dev check` exit 0 with no HLint hints and a warning-clean build.
 
 ### Remaining Work
+
+**Correction (2026-08-15, Standard C).** The closure text above said the complete cleanup graph was
+committed before the first mutation and described `TestRunner` as wholly inside that boundary.
+Source inspection shows `runNativeSuite` regenerating config, optionally reconciling the cluster,
+and synchronizing in-force config before it enters `runWithAwsHarnessCleanup`. A process loss in any
+of those prefixes therefore has no stable cleanup-run identity to resume. Sprint `5.18` remains
+historical foundation evidence for the durable journal/driver it did land; Sprint `5.36` owns the
+surviving client-ordering correction and its interruption proof, as recorded in the deletion ledger.
 
 **Correction (2026-08-04).** Two of this sprint's deliverables were recorded as closed but were never
 built, and the Closure Evidence above does not mention either. Both are now tracked honestly rather
@@ -1979,8 +2016,9 @@ position.
 - 🧪 The end-to-end exercise — a real `prodbox test all` in which the total executor keeps an
   independent app-chart restoration alive across a retained-SES failure and surfaces the aggregate
   `RestoreReport` — is the non-blocking Standard-O live axis.
-- Active Sprint `5.18` composes its capability-bound cleanup DAG over this same restore surface;
-  Sprint `4.50` has closed and the Foundation Epoch introduces no additional blocker between them.
+- Historical Sprint `5.18` later composed its capability-bound cleanup DAG over this same restore
+  surface. The target generic-kernel and TestRunner-client migrations are owned by Sprints `4.85`
+  and `5.36`; this completed sprint has no active dependency on them.
 
 ## Documentation Requirements
 
@@ -2172,9 +2210,10 @@ waiter`, the proof-carrying model cannot under exhaustive bounded scheduling, ev
 terminal state is a clean stop, and a frozen terminal leaks typed residue rather than passing
 silently (shutdown suite 6/6, broker regression 132/132, `prodbox dev check` exit 0, warning- and
 lint-clean).
-**Live-proof**: pending — wiring the residue oracle into the real broker daemon-lifecycle fixture
-teardown and exercising full-suite contention (not just isolated green repetition) over the live
-STM/`Async` runtime is the non-blocking Standard-O axis.
+**Live-proof**: pending only for exercising full-suite contention (not just isolated green
+repetition) over the already-wired real STM/`Async` runtime. Sprint `5.27` completed terminal-witness
+fixture teardown and connected the residue oracle to that runtime; neither remains an implementation
+gap.
 **Deployment qualification**: pending
 **Independent Validation**: ✅ after Sprint `2.36` exposes the proof-carrying shutdown boundary, the
 pure model's fake cancellation/finalizer/waiter scheduling validates every interleaving locally with
@@ -2239,7 +2278,7 @@ counterexample and prevent a test fixture from returning while its structured ch
 
 **Cross-references to add:**
 
-- Link the Sprint `2.36` runtime owner and the timeout-discarding test-fixture ledger row.
+- Link the Sprint `2.36` runtime owner and the Sprint-`5.27` completed test-fixture ledger row.
 
 ## Sprint 5.24: Restore-Time Gateway Observability Wait [✅ Done]
 
@@ -2520,7 +2559,8 @@ carries its own Standard-P note.)
 **Independent Validation**: unit-suite fixture over a loopback ephemeral port, no live substrate or
 later phase — `prodbox test unit -p "Sprint 2.33 Bootstrap Broker server"` 7/7, full
 `prodbox test unit` 3093/3093, `prodbox dev check` exit 0.
-**Docs to update**: none
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md#completed) —
+move the timeout-discarding fixture residual to Completed and bind it to this closure.
 
 ### Objective
 
@@ -3310,6 +3350,224 @@ which is Sprint `5.30`'s own reasoning, now with three worked examples behind it
 `TestSecrets` decoder refuses a present-and-malformed secret, never an absent one, so the all-empty
 fixture the row objects to still decodes; that half of the row is closed by **argument** — it is the
 schema's own default and cannot be refused — rather than by code.
+
+## Sprint 5.35: Teardown Recovery Counterexample and Fault Matrix [🔄 Active]
+
+**Status**: Active (opened 2026-08-15; updated 2026-08-16). The stable artifacts, standalone oracle,
+and complete code-local matrices are implemented and focused-green; current-tree canonical quality
+validation remains after the paused drafts settle.
+**Blocked by**: none.
+**Deployment qualification**: pending; live home/AWS campaigns are separate Standards O/P evidence.
+**Doctrine**: [Integration Fixture Doctrine, “Required fixture fault
+matrix”](../documents/engineering/integration_fixture_doctrine.md#fixture-use-of-the-canonical-fault-matrix),
+[Unit Testing Policy § 3.1, “Exhaustive tables”](../documents/engineering/unit_testing_policy.md#31-exhaustive-tables),
+[Unit Testing Policy § 3.3, “Deterministic concurrency
+simulation”](../documents/engineering/unit_testing_policy.md#33-deterministic-concurrency-simulation),
+and [Development Plan Standards § P, “Deployment Qualification and Counterexample
+Closure”](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
+**Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`, and target
+repository artifacts under `test/qualification/TEARDOWN-2026-08-15.*`; do not implement the
+lifecycle cleanup client or substrate adapters here.
+**Live-proof**: the triggering failure is taken; replacement live proof remains pending and
+non-blocking for code-local closure.
+**Independent Validation**: typed fake observers/interpreters, deterministic schedules, installed
+`prodbox test integration teardown-recovery`, `prodbox test unit`, and `prodbox dev check`.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Turn the 2026-08-15 teardown failure into a stable counterexample and a complete fault/restart
+matrix that can fail the old composition and prove the replacement without forging external facts.
+
+### Frozen counterexample
+
+The stable identifier is `TEARDOWN-2026-08-15`. Its repository-owned inputs are target artifacts
+`test/qualification/TEARDOWN-2026-08-15.trace`,
+`test/qualification/TEARDOWN-2026-08-15.dispositions`, and a mutation fixture beside them.
+
+Inputs: the local Lifecycle Authority caller is unobservable; AWS audit is observable and returns one
+`ResourceTagMapping` for the intentionally retained state bucket with its full two-tag set;
+Prodbox's decoder emits two internal rows for that ARN; and the exact observations for `aws-eks`,
+`aws-eks-subzone`, and `aws-test` are each `Unobservable`. Historical expected result: decoder rows
+become a two-resource global answer, the answer is copied to all three stacks, and AWS drain is
+selected. Replacement expected result: the ARN is reported once as retained, all three exact stack
+failures remain `Unobservable`, no per-run presence, absence, drain, or destroy is derived from the
+audit, and the Authority failure remains an independent incomplete cleanup outcome.
+
+The fixture must consume this trace through typed fake boundaries. An environment variable claiming
+residue absence is not evidence and is removed.
+
+The causal profile holds background load, the ordered fault schedule, and the
+topology-normalized **total** CPU, memory, ephemeral-storage, and persistence budgets constant.
+The superseded and replacement topologies may repartition, but may not increase, that total. The
+artifact records every exact superseded-envelope → replacement-envelope mapping, the expected old
+failure, and the expected replacement pass. A distinct
+`test/qualification/TEARDOWN-2026-08-15.production-profile.dhall` records independently justified
+rendered production envelopes and authored load; it is not substituted for the causal profile.
+
+### Current Implementation Checkpoint (2026-08-16, paused)
+
+- The repository carries canonical `.trace`, `.dispositions`, mutation, causal-profile, and distinct
+  production-profile artifacts, all bounded and digest-locked.
+- Seven typed fake boundaries execute 11 exact-keyed requests. The oracle preserves one retained
+  ARN, three Provider/checkpoint `Unobservable` facts, distinct caller and Authority failures, no
+  drain/destroy, and `CascadeIncomplete`.
+- The exhaustive tables contain 25 external-state rows and 80 interruption rows (8 durable
+  transitions x 5 interruption kinds x before/after). Missing, duplicate, or wrong bindings refuse.
+- The installed command ignores the deliberately supplied legacy residue-absence environment value;
+  the committed mutation exits non-zero at the exact changed disposition.
+- At its terminal slice gate: 581 library and 183 unit modules plus the integration component linked
+  under `-Werror`; focused unit was 17/17 and installed CLI integration 3/3; Fourmolu, HLint, and
+  `git diff --check` were green. Later lifecycle work changed the aggregate, so this is a scoped
+  historical gate rather than current-tree closure evidence.
+
+### Deliverables
+
+- Register a named substrate-agnostic lifecycle teardown validation with exact fake provider,
+  checkpoint, audit, Kubernetes, Authority, backup, and report boundaries at the canonical command
+  `prodbox test integration teardown-recovery`.
+- Freeze complete superseded/replacement `SourceIdentity`, secret-safe generated-config,
+  component-image, topology/wiring, resource-envelope, authored-load, fault-schedule, and trace
+  identities plus the normalized trace digest. The mutation fixture must fail when the oracle
+  ignores key, scope, cardinality, or any required identity/profile field.
+- Encode replacement expectations in a standalone exact-keyed reference oracle. Sprint `5.35`
+  neither imports nor executes the not-yet-landed Sprint `4.84`/`4.85` production modules; later
+  integration must satisfy the same frozen oracle rather than redefine it.
+- Cover stopped/absent API; missing ServiceAccount; RBAC refusal; stale context; Vault sealed; MinIO
+  unavailable; Authority/Backup/Provider loss; primary checkpoint absent/corrupt; backup valid/
+  invalid; complete/incomplete ownership manifest; AWS absent/present/partial/unobservable; drain
+  unavailable; response loss; and exact read-back delay.
+- Inject Ctrl-C, SIGKILL, client disconnect, owner-lease expiry, and restart before and after every
+  durable transition. Re-run with the same run ID.
+- Assert original and cleanup failures accumulate; a cleanup success never erases validation
+  failure and incomplete cleanup is never warning-only.
+
+### Validation
+
+1. The frozen old interpreter reproduces the false three-stack classification exactly.
+2. The replacement reference oracle expects one retained ARN in the audit, three exact-keyed
+   `Unobservable` stack observations, no audit-selected EKS drain or per-run absence/presence claim,
+   and the distinct caller-observation failure. The expected cascade result
+   is `CascadeIncomplete`; the validation passes because it preserves that failure exactly, not
+   because it turns cleanup into success.
+3. Every external-state arm is covered by a table; missing fake requests refuse instead of falling
+   through to empty success.
+4. Every deterministic interruption schedule preserves the expected same-node/same-operation-ID
+   oracle, and a missing schedule row refuses rather than shrinking the matrix.
+5. The causal-profile totals and exact old→new envelope mapping are checked mechanically; the old
+   reference semantics fail, the replacement reference semantics pass the frozen expectations, and
+   the production profile is separately decoded and reported. Executing replacement production
+   code against this oracle belongs to later client/cutover work.
+6. The installed integration command, unit suite, docs checks, and `prodbox dev check` pass.
+
+### Remaining Work
+
+Rerun the canonical current-tree quality/docs gate after the paused Provider/Cascade drafts are
+settled, then mark the code-owned oracle surface Done if no sprint-owned drift remains. Do not fold
+production integration, `TestRunner` cutover, or live destructive campaigns into this sprint; those
+remain owned by `5.36`, the lifecycle phases, and Standard P respectively. The legacy environment
+value may remain only as an explicitly ignored negative fixture, never as observation evidence.
+
+## Sprint 5.36: TestRunner Lifecycle Cleanup Client [🔄 Active]
+
+**Status**: Active (opened 2026-08-15; updated 2026-08-16). The descriptor-bound client seam is
+landed and focused-green; `TestRunner` still uses the old graph/executor.
+**Closure dependencies**: the remaining Sprint-`4.85` operation/proof coverage and the final
+current-tree Sprint-`5.35` oracle gate. Both are earlier/same-phase dependencies permitted by
+Standard N.
+**Deployment qualification**: pending; this changes suite cleanup composition, while live
+home/AWS campaigns remain separate Standards O/P evidence.
+**Doctrine**: [Integration Fixture Doctrine § 4, “Validation as a Cleanup
+Client”](../documents/engineering/integration_fixture_doctrine.md#4-validation-as-a-cleanup-client),
+[Lifecycle Reconciliation Doctrine § 3.3, “Result-indexed programs and the durable cleanup
+graph”](../documents/engineering/lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph),
+and [Unit Testing Policy § 10, “Always-Run Cleanup
+Validation”](../documents/engineering/unit_testing_policy.md#10-always-run-cleanup-validation).
+**Implementation**: `src/Prodbox/Test/LifecycleCleanupClient.hs` now owns the validated descriptor-
+bound client seam over `Prodbox.ControlPlane.CleanupRunClient`; `src/Prodbox/TestRunner.hs` and
+`src/Prodbox/Test/DurableCleanupComposition.hs` remain to be migrated and deleted/narrowed.
+**Live-proof**: pending; no live substrate is required for code-local closure.
+**Independent Validation**: fake Lifecycle Authority/kernel endpoint, response-loss and restart
+tables, the installed `prodbox test integration teardown-recovery` command,
+`prodbox test unit`, and `prodbox dev check`; no Phase 6 or 7 implementation is required.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make `TestRunner` a typed client of the one lifecycle-owned cleanup run, with no second graph,
+executor, operation-ID allocator, or success interpretation in the validation layer.
+
+### Current Implementation Checkpoint (2026-08-16, paused)
+
+- `LifecycleCleanupDescriptor` captures the canonical `CleanupProgramDescriptor`; registration,
+  claim, primary outcome, terminal observation, and compaction use only
+  `DescriptorBoundCleanupRunClient` plus independent exact re-observation.
+- `RegisteredLifecycleCleanup` exposes only the opaque descriptor-bound run. Lost responses retain
+  both the original client error and the exact re-observation diagnostic.
+- The focused fake traverses the authenticated public descriptor wire; raw state exists only on its
+  server side. The slice passed a 592-library/188-unit `-Werror` link and 9/9 focused cases before
+  later aggregate changes.
+- `TestRunner` still calls `runDurableCleanupComposition`, builds `ManagedCleanupPlan` callbacks,
+  allocates its run only after earlier mutating preparation, collapses typed drain results to exit
+  codes, and interprets cleanup success locally. The supported composition therefore has not cut
+  over.
+
+### Deliverables
+
+- Submit or resume the lifecycle cleanup descriptor before config regeneration, optional
+  pre-reconcile, in-force config synchronization, IAM setup, or any later validation mutation, and
+  attach the original validation outcome without converting it to free text.
+- Observe the lifecycle-owned backed-up report and preserve exact failure aggregation and stable
+  `CleanupRunId` on incomplete cleanup.
+- Delete the validation-owned generic executor/projection after all callers use the client; keep
+  validation-specific oracle and narration code in Phase 5.
+- Route `TEARDOWN-2026-08-15` through the client while every external fact remains supplied by a
+  typed fake at this phase boundary.
+
+### Validation
+
+1. A fake endpoint proves submit, replay, response-loss, cancellation, owner restart, and report
+   observation use one `CleanupRunId` and do not duplicate a provider effect.
+2. Forced interruption after each of config regeneration, optional pre-reconcile, in-force config
+   synchronization, IAM setup, and body entry resumes the same run and stable node operation IDs;
+   no prefix can mutate before the durable descriptor is re-observable.
+3. Original validation failure and every cleanup failure survive in the terminal result; cleanup
+   success never erases validation failure, and incomplete cleanup is never warning-only.
+4. Source/gate proof finds no validation-owned generic graph runner, mutation callback, or second
+   operation-ID allocator on the supported composition.
+5. The installed named validation, unit suite, docs checks, and `prodbox dev check` pass.
+
+### Remaining Work
+
+Register the lifecycle descriptor before config regeneration or any other mutating prefix; drive the
+descriptor-bound runner through the closed total dispatcher; preserve the structured primary and
+every cleanup result; and delete `ManagedCleanupPlan`/`DurableCleanupComposition` from the supported
+composition. Then run the prefix interruption/restart matrix and the installed frozen oracle. Do
+not treat the landed client library as the `TestRunner` cutover.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/integration_fixture_doctrine.md` — validation-client ownership and the
+  required teardown fault matrix for Sprints `5.35` and `5.36`.
+- `documents/engineering/unit_testing_policy.md` — exact fake-observer and deterministic restart
+  criteria.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Link `TEARDOWN-2026-08-15` and the `TestRunner` cleanup client to Sprints `4.84`–`4.86`, `6.5`,
+  and `7.36`, and keep live status only in the Deployment Qualification ledger.
 
 ## Related Documents
 

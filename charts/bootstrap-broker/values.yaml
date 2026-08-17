@@ -2,6 +2,12 @@ global:
   namespace: bootstrap-broker
   rootChart: bootstrap-broker
 
+# prodbox:lifecycle-authority-recovery-observer.values:start
+recoveryObserver:
+  serviceAccountName: prodbox-lifecycle-authority
+  serviceAccountNamespace: lifecycle-authority
+# prodbox:lifecycle-authority-recovery-observer.values:end
+
 podAnnotations: {}
 
 image:
@@ -21,8 +27,9 @@ runtime:
   rtsArguments: []
 
 # Static Bootstrap Broker chart identities — the Pod ServiceAccount, the
-# bootstrap-only Vault Kubernetes-auth role, and the constant-time lifecycle
-# probe paths — generated from the one compiled
+# bootstrap-owned ordinary-cleanup caller, the bootstrap-only Vault
+# Kubernetes-auth role, and the constant-time lifecycle probe paths — generated
+# from the one compiled
 # `Prodbox.Bootstrap.Broker.ChartStatics` source of truth. The ServiceAccount
 # name equals the Vault role (`VaultRoleBootstrapBroker`) so the Pod
 # authenticates to Vault Kubernetes auth as its own bootstrap-only identity,
@@ -33,6 +40,8 @@ runtime:
 serviceAccount:
   name: prodbox-bootstrap-broker
   workerName: prodbox-bootstrap-secret-worker
+cleanupCaller:
+  serviceAccountName: prodbox-control-plane-operator
 client:
   serviceAccountName: prodbox-bootstrap-broker-client
   tokenAudience: prodbox-bootstrap-broker

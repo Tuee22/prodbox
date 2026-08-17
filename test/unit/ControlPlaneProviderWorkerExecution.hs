@@ -21,6 +21,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.ProviderNarrowSession
+import Prodbox.ControlPlane.ProviderCredentialSession
 import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -125,6 +126,24 @@ controlPlaneProviderWorkerExecutionSuite =
         (providerCommittedIntentMaximumEncodedBytes * 2)
         (ByteString.replicate (providerCommittedIntentMaximumEncodedBytes + 1) 0)
         `shouldSatisfy` isIntentTooLarge
+
+    it "strictly joins the Target receipt version while preserving exact legacy rollout readiness" $ do
+      let regression = fixedProviderCredentialSessionRegression
+      providerCredentialSessionRegressionExactJoinAccepted regression `shouldBe` True
+      providerCredentialSessionRegressionMetadataRaceRefused regression `shouldBe` True
+      providerCredentialSessionRegressionLegacyMetadataRefused regression `shouldBe` True
+      providerCredentialSessionRegressionLegacyMetadataReadinessAccepted regression `shouldBe` True
+      providerCredentialSessionRegressionWrongExactVersionRefused regression `shouldBe` True
+      providerCredentialSessionRegressionDestroyedVersionRefused regression `shouldBe` True
+      providerCredentialSessionRegressionMissingDataRefused regression `shouldBe` True
+      providerCredentialSessionRegressionExtraSecretFieldRefused regression `shouldBe` True
+
+    it "fails closed on missing or rotated opaque Provider credential bindings" $ do
+      let regression = fixedProviderIntentCredentialBindingRegression
+      providerIntentCredentialBindingRegressionUnboundAccepted regression `shouldBe` True
+      providerIntentCredentialBindingRegressionExactAccepted regression `shouldBe` True
+      providerIntentCredentialBindingRegressionMissingRefused regression `shouldBe` True
+      providerIntentCredentialBindingRegressionMismatchRefused regression `shouldBe` True
 
     it "rejects invalid intent identities, resource values, revision binding, and action bounds" $ do
       mkProviderIssuerKeyGeneration 0
@@ -344,6 +363,86 @@ controlPlaneProviderWorkerExecutionSuite =
           (ProviderIntentExecutionDeadlineReached intentDeadline intentDeadline)
       assertBoundaryCounts deadlineFixture (2, 2, 0)
 
+    it "round-trips v3 authority binding and refuses a rotated accepted record before session acquisition" $ do
+      sourceFixture <- freshFixture
+      sourceVerified <- mustAdmitDefault sourceFixture defaultIntent
+      sourceResult <-
+        executeVerifiedProviderIntentBound (fixtureBoundary sourceFixture) sourceVerified
+      sourceExecuted <- case sourceResult of
+        Left err -> expectationFailure (show err)
+        Right executed -> pure executed
+      let acceptedDigest = executedProviderIntentAcceptedAuthorityDigest sourceExecuted
+          boundSigned =
+            signedIntentFor
+              signingKey
+              (defaultSpec defaultIntent)
+                { providerIntentExpectedAcceptedAuthority = Just acceptedDigest
+                }
+          boundBytes = encodeSignedProviderCommittedIntent boundSigned
+      decodeSignedProviderCommittedIntent providerCommittedIntentMaximumEncodedBytes boundBytes
+        `shouldBe` Right boundSigned
+      exactFixture <- freshFixture
+      exactAdmission <-
+        admitProviderCommittedIntent
+          providerCommittedIntentMaximumEncodedBytes
+          (fixtureBoundary exactFixture)
+          boundBytes
+      exactVerified <- case exactAdmission of
+        Left err -> expectationFailure (show err)
+        Right verified -> pure verified
+      executeVerifiedProviderIntentBound (fixtureBoundary exactFixture) exactVerified
+        `shouldSatisfyM` isRightValue
+
+      alternateFixture <- freshFixture
+      let alternateAuthority =
+            mustRight
+              ( mkAcceptedProviderAuthority
+                  issuerGenerationOne
+                  issuerIdentity
+                  (providerIntentSigningPublicKey alternateSigningKey)
+                  (AuthorityEpoch 4)
+                  fenceFive
+                  providerRevision
+                  registeredResources
+              )
+      writeIORef (fixtureTrust alternateFixture) (Right alternateAuthority)
+      alternateAdmission <-
+        admitProviderCommittedIntent
+          providerCommittedIntentMaximumEncodedBytes
+          (fixtureBoundary alternateFixture)
+          ( encodeSignedProviderCommittedIntent
+              (signedIntentFor alternateSigningKey (defaultSpec defaultIntent))
+          )
+      alternateVerified <- case alternateAdmission of
+        Left err -> expectationFailure (show err)
+        Right verified -> pure verified
+      alternateResult <-
+        executeVerifiedProviderIntentBound
+          (fixtureBoundary alternateFixture)
+          alternateVerified
+      alternateExecuted <- case alternateResult of
+        Left err -> expectationFailure (show err)
+        Right executed -> pure executed
+      mismatchFixture <- freshFixture
+      let mismatched =
+            signedIntentFor
+              signingKey
+              (defaultSpec defaultIntent)
+                { providerIntentExpectedAcceptedAuthority =
+                    Just (executedProviderIntentAcceptedAuthorityDigest alternateExecuted)
+                }
+      mismatchAdmission <-
+        admitProviderCommittedIntent
+          providerCommittedIntentMaximumEncodedBytes
+          (fixtureBoundary mismatchFixture)
+          (encodeSignedProviderCommittedIntent mismatched)
+      mismatchVerified <- case mismatchAdmission of
+        Left err -> expectationFailure (show err)
+        Right verified -> pure verified
+      executeVerifiedProviderIntentBound (fixtureBoundary mismatchFixture) mismatchVerified
+        `shouldReturn` Left ProviderIntentExecutionAcceptedAuthorityBindingMismatch
+      assertBoundaryCounts mismatchFixture (2, 1, 0)
+
     it "dispatches every closed action through only its exact rank-2 capability" $ do
       fixture <- freshFixture
       mapM_ (executeFresh fixture) allIntents
@@ -522,7 +621,7 @@ fixtureSessionRunner fixture =
       Nothing -> do
         let coordinate = providerIntentCoordinate intent
         modifyIORef' (fixtureCalls fixture) (("session-open", coordinate) :)
-        result <- action "narrow-provider-session"
+        result <- action Nothing "narrow-provider-session"
         modifyIORef' (fixtureCalls fixture) (("session-close", coordinate) :)
         pure result
 
@@ -557,6 +656,8 @@ fixtureCapabilities fixture =
     , reconcilePublicARecordCapability = \_ -> mutation fixture "public-a-reconcile"
     , reapTestEbsVolumesCapability = \clusterName ->
         mutation fixture ("ebs-reap:" <> clusterName)
+    , observeTestEbsVolumesCapability = \clusterName ->
+        readOnly fixture ("ebs-observe:" <> clusterName)
     , observeSpotPriceCapability = \query ->
         readOnly
           fixture
@@ -567,9 +668,12 @@ fixtureCapabilities fixture =
           )
     , observeOperationalIdentityCapability =
         readOnly fixture "operational-identity"
+    , observeProviderAwsScopeCapability =
+        readOnly fixture "provider-aws-scope"
     , observeProviderReadinessCapability = \probe ->
         readOnly fixture (readinessLabel probe)
     , issueEksClientAuthCapability = \_ -> readOnly fixture "eks-client-auth"
+    , observeEksClusterIdentityCapability = \_ -> readOnly fixture "eks-cluster-identity"
     }
 
 mutation :: Fixture -> Text -> ProviderMutation IO Text
@@ -622,9 +726,12 @@ expectedExecutionResult intent = case intent of
   ReadBackRegisteredStack _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveSpotPrice _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveOperationalIdentity -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveProviderAwsScope -> ProviderIntentExecutionObserved coordinate evidence
   ObserveProviderReadiness _ -> ProviderIntentExecutionObserved coordinate evidence
   ObservePublicARecord _ -> ProviderIntentExecutionObserved coordinate evidence
   IssueEksClientAuth _ -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveTestEbsVolumes _ -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveEksClusterIdentity _ -> ProviderIntentExecutionObserved coordinate evidence
   _ -> ProviderIntentExecutionApplied coordinate evidence
  where
   coordinate = providerIntentCoordinate intent
@@ -643,11 +750,17 @@ expectedCalls intent =
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveOperationalIdentity ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveProviderAwsScope ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveProviderReadiness _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObservePublicARecord _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         IssueEksClientAuth _ ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveTestEbsVolumes _ ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         _ ->
           [ call "session-open"
@@ -745,6 +858,8 @@ defaultSpec intent =
     , providerIntentAction = intent
     , providerIntentDeadline = intentDeadline
     , providerIntentIdempotencyKey = "provider-idempotency-1"
+    , providerIntentExpectedCredentialSession = Nothing
+    , providerIntentExpectedAcceptedAuthority = Nothing
     }
 
 acceptedAuthority :: AcceptedProviderAuthority
@@ -779,8 +894,10 @@ allIntents =
   , ObservePublicARecord publicARef
   , ReconcilePublicARecord publicARef
   , ReapTestEbsVolumes "prodbox-test"
+  , ObserveTestEbsVolumes "prodbox-test"
   , ObserveSpotPrice spotPriceQuery
   , ObserveOperationalIdentity
+  , ObserveProviderAwsScope
   , ObserveProviderReadiness ProviderReadinessStsIdentity
   , IssueEksClientAuth
       ( mustRight
@@ -789,6 +906,15 @@ allIntents =
               "ca-central-1"
               "aws-eks-test-cluster"
               (ByteString.replicate 32 7)
+          )
+      )
+  , ObserveEksClusterIdentity
+      ( mustRight
+          ( mkEksClusterIdentityRequest
+              (stackRef "aws-eks")
+              "123456789012"
+              "ca-central-1"
+              "aws-eks-test-cluster"
           )
       )
   ]
@@ -822,8 +948,11 @@ labelFor intent = case intent of
       <> ":"
       <> providerSpotPriceProductDescription query
   ObserveOperationalIdentity -> "operational-identity"
+  ObserveProviderAwsScope -> "provider-aws-scope"
   ObserveProviderReadiness probe -> readinessLabel probe
   IssueEksClientAuth _ -> "eks-client-auth"
+  ObserveTestEbsVolumes clusterName -> "ebs-observe:" <> clusterName
+  ObserveEksClusterIdentity _ -> "eks-cluster-identity"
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

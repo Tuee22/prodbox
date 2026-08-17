@@ -33,6 +33,9 @@ Current implementation:
 
 This document defines the supported command contract only. Sequencing, completion status, and
 cleanup ownership are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+Where this document labels lifecycle behavior as the **target**, it defines the post-cutover command
+contract rather than claiming that the current implementation already satisfies it. Migration and
+deployment-qualification status remain exclusively in the Development Plan.
 
 ## 2. Global Surface
 
@@ -406,28 +409,13 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox workload start` | none | `--config` |
 <!-- prodbox:command-surface-matrix:end -->
 
-### Historical `prodbox vault` transport record (Sprint 1.36)
+### Historical `prodbox vault` transport record
 
-The command rows below record the Sprint `1.36` public surface, which remains valid. The Sprint
-`4.42` implementation routed lifecycle work through the combined gateway daemon and retained
-direct-host test seams; those transports are historical pre-cutover behavior, not the target
-authority boundary. The authoritative target routing is defined in the later
-[`prodbox vault`](#prodbox-vault) section and removes both fallbacks.
-The leaves are now part of the typed command registry and have native handlers. The PKI
-`issue-test-cert` handler calls the later-configured `prodbox-test` role, so it is expected to
-return a Vault HTTP error until the concrete PKI issuer/role sprint lands.
-
-| Command | Arguments | Options | Owning Sprint |
-|---------|-----------|---------|---------------|
-| `prodbox vault status` | none | none | Sprint 1.36 |
-| `prodbox vault init` | none | none | Sprint 1.36 |
-| `prodbox vault unseal` | none | none | Sprint 1.36 |
-| `prodbox vault seal` | none | none | Sprint 1.36 |
-| `prodbox vault reconcile` | none | none | Sprint 1.36 |
-| `prodbox vault rotate-unlock-bundle` | none | none | Sprint 1.36 |
-| `prodbox vault rotate-transit-key` | `KEY` | none | Sprint 1.36 |
-| `prodbox vault pki status` | none | none | Sprint 1.36 |
-| `prodbox vault pki issue-test-cert` | none | none | Sprint 1.36 |
+The generated matrix above is the sole command inventory. The current leaves are part of the typed
+command registry and have native handlers. Combined-gateway and direct-host transports are
+pre-cutover history, not the target authority boundary; the authoritative target routing is defined
+in the later [`prodbox vault`](#prodbox-vault) section. Implementation and migration status live
+only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 Per-command intent (authoritative model in
 [vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands)):
@@ -454,7 +442,7 @@ Per-command intent (authoritative model in
 The sealed-state invariant, the typed `SecretRef` config contract, and startup-config sourcing
 that these commands operate against are owned by
 [vault_doctrine.md](./vault_doctrine.md); see
-[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle) for the unlock bundle and
+[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle-root-cluster) for the unlock bundle and
 [vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands) for the lifecycle
 command contract.
 
@@ -479,13 +467,13 @@ written to config. The
 `aws_admin_for_test_simulation.*` block is not a
 production config section: it is a test-harness-only fixture in `test-secrets.dhall` that
 simulates the operator at this prompt so the suite can drive admin-credentialed flows
-non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-split) and
+non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-split-production-references-vs-test-plaintext) and
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ### `prodbox aws` notes
 
-`src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
-uses the interactive `SecretRef.Prompt` arm only for setup/teardown, a permit-bound SMTP IAM
+`src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. **Target contract:** the public
+flow uses the interactive `SecretRef.Prompt` arm only for setup/teardown, a permit-bound SMTP IAM
 install/rotation/repair when needed, and explicit admin-authorized destructive/compatibility
 operations. Canonical `aws-ses reconcile`
 submits a durable provider intent and resolves the Lifecycle-provider generation solely to assume
@@ -560,9 +548,10 @@ and `force-install` are forbidden sister commands rejected at parse time.
 
 `prodbox cluster delete --yes` is hermetic on success: when
 `/usr/local/bin/rke2-uninstall.sh` exits `0`, only the doctrine-owned summary lines reach the
-operator terminal — `Deleting local RKE2 environment...`, the AWS EKS and AWS test stack destroy
-dispositions, `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the
-`Preserved host state:` boundary. Benign upstream uninstall chatter the uninstaller writes to its
+operator terminal — `Deleting local RKE2 environment...`, `Local RKE2 substrate: cleanup
+complete`, the kubeconfig disposition, and the `Preserved host state:` boundary. Local-only delete
+has no AWS disposition to render because it never observes or mutates AWS. Benign upstream
+uninstall chatter the uninstaller writes to its
 own stdout/stderr — `Cannot find device "cni0"`, `semodule: not found`, and
 `Cleanup completed successfully` — is captured through the lifecycle-local quiet path in
 `src/Prodbox/CLI/Rke2.hs` (`captureToolOutput` plus `isIgnorableRke2DeleteNoiseLine`) and never
@@ -574,44 +563,44 @@ succeeds; the filter entry only catches the line on the rare path where systemd 
 captured stderr). When the uninstaller exits non-zero, the actionable upstream lines are still
 surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real failure.
 
-`prodbox cluster delete` has two modes; the default is a **pure local cluster uninstall** and
-`--cascade` is the full teardown.
+`prodbox cluster delete` has a shipped **pure local cluster uninstall** mode and a target
+recover-to-clean `--cascade` contract. The latter is not a claim of current-revision cutover; its
+implementation and qualification remain plan-owned.
 
-Before either mode, `prodbox cluster delete` probes for an installed RKE2 (the on-disk markers
-`/usr/local/bin/rke2`, `/usr/local/bin/rke2-uninstall.sh`, `/var/lib/rancher/rke2`,
-`/etc/rancher/rke2`). When none is present — there is no cluster to delete — it prints
-`No RKE2 cluster to delete.` and exits `0`. See
-[lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) §5a.
+Local-only delete probes for an installed RKE2 from the on-disk markers. When none is present, it
+prints `No RKE2 cluster to delete.` and exits `0`. Cascade does not use that shortcut: local absence
+does not answer for AWS or a durable cleanup run, so it enters recovery as defined by
+[Lifecycle Reconciliation Doctrine §5a](lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit).
 
 - (default, no flag) → **pure local uninstall**. It uninstalls RKE2 and preserves `.data/` (the
   MinIO-backed per-run Pulumi state) WITHOUT querying, gating on, or destroying the per-run AWS
   Pulumi backend. Per-run AWS stacks (if any) are left untouched and remain destroyable
-  afterward via `--cascade` or `prodbox aws stack <name> destroy --yes`. Because `.data/` is
-  preserved, deleting the cluster never affects the ability to reason about that state.
-- `--cascade` → **orchestrate the full clean teardown**. Sprints `4.17.a` / `4.17.b`
-  establish the doctrine-canonical drain-before-destroys order with substrate-aware
-  drain kubeconfig handling. Canonical order: (1) confirm MinIO reachable and query
-  `<stack>ResidueStatus` (Sprint `4.16`) for each per-run stack; (2) K8s drain phase
-  (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and Delete-reclaim PVCs
-  cluster-wide, against the substrate's own kubeconfig (the local RKE2 kubeconfig for
-  `SubstrateHomeLocal`, the EKS kubeconfig wrapped in
-  `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` for `SubstrateAws`), so the
-  in-cluster controllers unwind their AWS-side ENIs / ALBs / EBS volumes while still
-  alive; (3) `prodbox aws stack <stack> destroy --yes` for stacks reporting
-  `ResiduePresent`, by submitting the registered provider destroy intent through Lifecycle
-  Authority with the exact Lifecycle-provider generation — under the harness, setup is driven by
-  the simulated admin prompt from `test-secrets.dhall`; no credential is synthesized as a fallback;
-  (4) cluster
-  uninstall; (5) postflight tag sweep that fails the command if
-  any cluster-tagged AWS resource survives. The
-  [Lifecycle Reconciliation Doctrine](lifecycle_reconciliation_doctrine.md) §5b is the
-  authoritative cascade-order reference. This is the recommended path for
-  wipe-and-rebuild cycles.
-Both modes route through `runPlanWithOptions` (Sprint `4.26`), so `--dry-run` renders the
-full plan and exits `0` **without mutating** (the no-RKE2 short-circuit and the cascade
-orchestration live inside the apply closure), and `--plan-file` writes the rendered plan. The
-cascade's per-run sweep and the rendered cascade plan's `per_run_destroy` steps are derived from
-the managed-resource registry's `PerRun` class, so they cannot omit `aws-eks-subzone`. The
+  afterward via `--cascade` or `prodbox aws stack <name> destroy --yes` once the required recovery
+  capabilities are observable. Preserving `.data/` retains the state inputs needed for recovery; it
+  does not prove those inputs readable, establish Lifecycle Authority or provider observability, or
+  prove that cleanup can currently proceed.
+- `--cascade` (target) → **start or resume recover-to-clean teardown**. The command obtains a durable
+  `CleanupRunId`, repairs the minimal teardown control plane when required, observes every per-run
+  resource by exact registered key, reconciles desired absence, satisfies the terminal-audit
+  requirement through either a clean scoped AWS audit or an exact no-AWS projection, and commits
+  and backs up the pre-uninstall convergence report. That report, the one-shot permit, positive
+  recovery-plane witness, exact convergence, and terminal-audit evidence can yield only
+  `ReadyToUninstallEvidence`; after local RKE2 uninstall, exact host absence plus the scoped local
+  completion receipt yields `CascadeComplete`. A missing or stopped local installation is a
+  recovery case, not a cascade no-op. Incomplete cleanup exits
+  non-zero with the stable run ID and renders the typed recovery-plane disposition. It may say the
+  minimal profile and required credentials remain live only when establishment was positively
+  confirmed; an establishment failure remains a distinct retryable failure. A global tag audit never
+  selects a stack or proves one absent. The
+  [Lifecycle Reconciliation Doctrine §5b](lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+  is the sole internal graph/order reference.
+
+The current parser routes both modes through `runPlanWithOptions` (Sprint `4.26`), so `--dry-run`
+renders the plan and exits `0` **without mutating**, and `--plan-file` writes it. At target cutover,
+dry-run and apply are projections of the same closed result-indexed cleanup program; narration is
+derived from its typed node tags rather than a separately maintained `per_run_destroy` phase list.
+The pre-cutover phase renderer is migration inventory tracked in the
+[legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The
 `checkPlanOptionsHonored` lint ([code_quality.md](code_quality.md)) forbids any destructive
 dispatch arm from wildcarding its `PlanOptions` away, the regression guard for the historical
 `cluster delete --yes --dry-run`-silently-mutates bug.
@@ -621,25 +610,39 @@ flag because its `LongLived` cleanup class is retained across cluster teardown. 
 checkpoint now uses the encrypted Model-B object in MinIO; ordinary cluster deletion preserves the
 underlying `.data/`, while the retained S3 bucket is only the public-edge TLS store and optional
 first-touch source for legacy `aws-ses` checkpoints. Sanctioned destroy paths for `aws-ses` are
-`prodbox aws stack aws-ses destroy --yes` (explicit) and `prodbox nuke` (total teardown). See
-[lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) for the
-predicate library and the full leak-class inventory.
+`prodbox aws stack aws-ses destroy --yes` (explicit) and `prodbox nuke` (total teardown). See the
+[managed-resource registry](lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+for the typed lifecycle-class boundary and the
+[substrate inventory](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for the
+registry-generated concrete assignments.
 
 ### `prodbox nuke` notes
 
-`src/Prodbox/CLI/Nuke.hs` (Sprint `4.13`, planned) owns the operator-only total-teardown
-surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
-infrastructure transitively (`aws-ses` stack, the long-lived `pulumi_state_backend` bucket).
-For per-stack teardown of `aws-ses` alone, use `prodbox aws stack aws-ses destroy --yes`.
-The current parser is pre-cutover because it has no durable decommission receipt. Sprint `4.50`
-adds a required target `--receipt <path>`: a new path is fsynced and acknowledged before the point
-of no return. The external receipt sink must durably contain and reopen the signed manifest plus the
+`src/Prodbox/CLI/Nuke.hs` owns the operator-only total-decommission surface. `prodbox nuke` is the
+**only** sanctioned command that destroys long-lived shared infrastructure transitively (`aws-ses`
+stack, the long-lived `pulumi_state_backend` bucket). For per-stack teardown of `aws-ses` alone,
+use `prodbox aws stack aws-ses destroy --yes`.
+
+The current parser exposes `--receipt <path>`; dry-run may omit it, while apply refuses before
+mutation when it is absent. The production composition binds the authenticated decommission
+manifest to that external receipt and runs the standalone Decommission Runner. A new path is
+fsynced and acknowledged before the point of no return. The external receipt sink must durably
+contain and reopen the signed manifest plus the
 exact digest-pinned Decommission Runner artifact, closed program/schema, and verifier outside every
 manifest deletion target. Authority may permanently stop only after that full receipt is committed
 and read back. An existing matching path resumes the same manifest with the same build/schema;
 different runner bytes, verifier, or schema reject before prompt or mutation. The receipt is
-non-secret, remains operator/harness-owned after managed storage is destroyed, and is the terminal
-evidence chain once Authority/backup queryability deliberately ends.
+non-secret and remains operator/harness-owned after managed storage is destroyed.
+
+**Current-versus-target bound.** The shipped manifest/receipt graph ends at its registered shared-
+bucket node. It has no home-substrate uninstall/read-back, explicit `.data` disposition, final
+no-retention audit, or terminal-receipt node; `runNukeTerminalTagSweep` currently runs after the
+receipt runner returns success and outside that resumable graph. The current receipt is therefore a
+durable record of the limited graph, not yet the terminal evidence chain for total decommission.
+The target adds those four closed programs and their read-backs before
+`TotalDecommissionCompleteEvidence` is constructible. Implementation and removal status live only
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and its
+[Pending Removal ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Like every admin-credentialed flow, it acquires elevated AWS power through the one unified
 runtime path — the interactive `SecretRef.Prompt` arm: after the typed confirmation gate the
 operator supplies the ephemeral elevated credential at the prompt (held in memory for the one
@@ -668,17 +671,25 @@ SES/S3 families. Only after external credential absence does it physically destr
 and retained-home custody KV-v2 versions/metadata and read back absence through the still-live
 Agents. TLS prefix/identity,
 per-run stacks, Operational IAM, home control plane, and optional `.data` follow only after their
-registered dependants are absent. The postflight tag sweep is **fail-closed** (Sprint `4.26`,
-[lifecycle_reconciliation_doctrine.md §6](lifecycle_reconciliation_doctrine.md)): a non-empty
-leak list *or* an unconfirmable sweep aborts nuke with a non-zero exit and the surfaced residue
-before the final Authority-backup objects/identity/shared-bucket tail, never "report clean and
-proceed." See
-[lifecycle_reconciliation_doctrine.md → §7](lifecycle_reconciliation_doctrine.md) for the
-full doctrine.
+registered dependants are absent. The final Authority-backup objects, identity, and shared bucket
+are then deleted and read back through the external receipt protocol. Only after those exact
+obligations does the runner perform the **terminal escape audit** and append its result to the
+external receipt. An escaped resource or unobservable audit makes the terminal result incomplete and
+non-zero, but the audit never selects an earlier deletion or substitutes for its exact evidence. See
+[Lifecycle Reconciliation Doctrine §6b](lifecycle_reconciliation_doctrine.md#6b-nuke-transfers-authority-to-an-external-decommission-receipt)
+for the canonical order and receipt boundary.
 
 ### `prodbox aws stack` notes
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox aws stack ...` surface.
+
+The target permits one bounded Plan/Apply adoption path for a pre-cutover per-run stack; this is an
+internal recovery boundary, not an invented current command. Read-only provider discovery cannot
+authorize mutation. The operator must receive the complete exact candidate plan and digest and
+explicitly authorize that digest; receipt/read-back then mints the legacy ownership manifest before
+normal desired-absence reconciliation. Ambiguous, partial, or unobservable observation refuses. See
+[Lifecycle Reconciliation Doctrine §3.2](lifecycle_reconciliation_doctrine.md#32-checkpoint-recovery-and-the-desired-absence-decision)
+for the canonical protocol.
 
 `prodbox aws stack aws-ses migrate-backend` is a legacy operator-interactive (TTY-only)
 compatibility command. Sprint `7.14` moved the main `aws-ses` reconcile/destroy/read paths to the
@@ -693,7 +704,8 @@ non-interactive contexts. See
 [aws_integration_environment_doctrine.md §4.5](./aws_integration_environment_doctrine.md)
 for the current backend contract and why this command is not part of the automation path.
 
-`prodbox aws stack aws-ses reconcile` is the one desired-present operation for retained SES. It is
+**Target contract:** `prodbox aws stack aws-ses reconcile` is the one desired-present operation for
+retained SES. It is
 idempotent across first creation, converged state, ordinary drift, and the bounded missing-checkpoint
 recovery that imports the stack's fixed-name capture bucket, SES identities/rules, and DNS records.
 Provider/Pulumi owns only those non-credential SES/S3/DNS resources. The deterministic SMTP IAM
@@ -738,11 +750,15 @@ canary list/get observation and reports the current Ready, Pending, Failed, or U
 It neither reconciles nor destroys SES resources and is not an automation alias for preparation.
 
 This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
-Invoking any entry does not require additional user approval beyond the original request —
-the test harness is the exclusive owner of every AWS resource any `prodbox` flow creates or
-destroys (see [`CLAUDE.md`](../../CLAUDE.md) § AWS Substrate Provisioning Ownership and
-[`AGENTS.md`](../../AGENTS.md) § AWS Substrate Provisioning Is Harness-Owned). Per-resource
-lifecycle classification (auto-managed per-run stacks vs long-lived cross-substrate shared
+The `prodbox` surface is the exclusive AWS mutation boundary. In the target composition the CLI,
+validation, recovery, and explicit stack commands are peer clients of the lifecycle core. The
+current stack commands, validation wrapper, and bespoke cascade remain separate pre-cutover
+compositions; status and migration ownership live in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status). Agent/operator
+authorization is not defined here; it is owned by
+[AGENTS.md, “AWS Mutation Is Prodbox-Surface-Owned”](../../AGENTS.md#aws-mutation-is-prodbox-surface-owned).
+Per-resource
+lifecycle classification (cleanup-managed per-run stacks vs long-lived cross-substrate shared
 infrastructure retained by design) lives in
 [`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
@@ -906,26 +922,34 @@ Named suite commands:
 - enforces an initial fail-fast prerequisite gate, visible runbook/bootstrap steps when required,
   and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution;
   prerequisite checks remain read-only and never hide desired-state mutation
-- provisions the shared IAM harness for `prodbox test integration aws-iam`, targeted
+- runs the current shared-IAM harness for `prodbox test integration aws-iam`, targeted
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
-  begin, then revokes only Operational Lifecycle-provider/AWS-DNS01 identities after their
-  dependent cleanup succeeds; it observes and retains LongLived backup/TLS/home-DNS/SMTP identities
+  begin. That pre-cutover path still materializes and clears the shared operational identity; the
+  target role-specific Operational/LongLived split and dependency-ordered revocation remain
+  plan-tracked
 - applies the canonical aggregate ordering
 - uses the `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` only to simulate
   the operator's elevated-credential prompt for operational setup/teardown, suite-driven
   destructive validation, and long-lived destroy/migration flows; the fixture never reaches production config, Vault, or generated
   cluster config
 - performs supported-runtime bootstrap and postflight when required
-- derives one visible retained-SES preparation action when the selected validation set contains
-  `ValidationKeycloakInvite`, projects it exactly once to the home or explicit EKS restore, submits
-  one durable operation ID, and observes provider readiness plus target-outbox completion without
-  holding one synchronous lease bracket
+- derives one visible retained-SES preparation plan when the selected validation set contains
+  `ValidationKeycloakInvite` and runs the current
+  `acquire -> reconcile -> await-ready -> sync-target -> release` interpreter against distinct
+  checkpoint-authority and target-sink inputs. The current callback-era interpreter calls the
+  registered ensure directly; it does not yet submit the target durable operation ID or observe a
+  target outbox. That migration remains plan-tracked
 - excludes retained `aws-ses` from ordinary suite cleanup on success, failure, and Ctrl-C; only the
   explicit long-lived destroy surfaces remove it
-- interprets an always-run cleanup DAG: obligations are registered before mutation, independent
-  nodes continue after failure, IAM teardown waits for credential-dependent destroys, and the
-  original failure is reported with every cleanup failure
+- once `runWithAwsHarnessCleanup` is entered, interprets the current
+  Lifecycle-Authority-backed durable cleanup composition so independent nodes continue after
+  failure, IAM teardown waits for
+  credential-dependent destroys, and cleanup failure makes the run fail. Some preparatory mutation
+  still precedes that wrapper, and the current composition does not durably register every
+  obligation before mutation or prove exact terminal absence. Those stronger properties belong to
+  the target lifecycle-client composition in
+  [Test Topology Doctrine §5](./test_topology_doctrine.md#5-artifact-teardown-and-lifecycle-class-projection)
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
   on the supported-runtime path
@@ -994,9 +1018,9 @@ from a per-command `InteractiveGuard` value
 the message under unit test.
 
 Automation contexts (CI, agents, scripted workflows) **must** use the
-non-interactive surface. The cross-reference table in
-[`CLAUDE.md`](../../CLAUDE.md) and [`AGENTS.md`](../../AGENTS.md) maps
-each operator task to its automation equivalent.
+non-interactive surface. The
+[command-selection table in `AGENTS.md`](../../AGENTS.md#command-selection-automation-vs-operator-interactive)
+maps each operator task to its automation equivalent.
 
 ### Test-only opt-in: `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`
 
@@ -1017,20 +1041,12 @@ violation and should be flagged.
 
 ## 4. Doctrine-Adoption Command Surface
 
-The CLI doctrine in [the engineering doctrine docs](../../documents/engineering/README.md) introduces several
-commands scheduled across Phases `1`–`3`. They are listed here as the canonical
-surface; per-sprint deliverables live in
-[../../DEVELOPMENT_PLAN/](../../DEVELOPMENT_PLAN/).
+The generated [§3 Command Matrix](#3-command-matrix) is the sole command inventory. This section
+explains the architecture and ownership behind selected current leaves; implementation and
+migration status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ### `prodbox dev lint`
-
-| Command | Arguments | Options | Owning Sprint |
-|---------|-----------|---------|---------------|
-| `prodbox dev lint files` | none | `--write` | Sprint 1.10 |
-| `prodbox dev lint docs` | none | `--write` | Sprint 1.10 |
-| `prodbox dev lint haskell` | none | `--write` | Sprint 1.19 |
-| `prodbox dev lint chart` | none | none | Sprint 3.12 |
-| `prodbox dev lint all` | none | none | Sprint 1.10 / Sprint 1.20 |
 
 `src/Prodbox/CheckCode.hs` currently owns the lint surfaces and the canonical
 policy scan, marker-delimited generated-section registry, and fully generated path registry.
@@ -1040,11 +1056,6 @@ policy scan, marker-delimited generated-section registry, and fully generated pa
 generated public-edge catalog.
 
 ### `prodbox dev docs`
-
-| Command | Arguments | Options | Owning Sprint |
-|---------|-----------|---------|---------------|
-| `prodbox dev docs check` | none | none | Sprint 1.10 |
-| `prodbox dev docs generate` | none | none | Sprint 1.10 |
 
 `prodbox dev lint docs [--write]` is implemented as a thin alias over the same Haskell function
 that backs `prodbox dev docs check` / `prodbox dev docs generate`; both surfaces consume the same
@@ -1075,10 +1086,12 @@ ordinary plan-output contract.
 The controller accepts only loopback listeners and a closed fifteen-route protocol. Client,
 server, deterministic fake, and execution engine share that exact schema, and the engine carries
 the same indexed `CapabilityRef` through admission and execution. The production APPLY boundary
-currently exposes liveness and refuses readiness and all non-health operations. Sprint `3.26` owns
-the physical TokenReview, Lease, Kubernetes worker, MinIO, Vault, and OpenPGP adapters plus workload
-rendering. The command row therefore records a code-local runtime surface, not deployment
-qualification or operational cutover. The combined gateway bootstrap routes remain only in the
+currently exposes liveness and refuses readiness and all non-health operations. Chart/render
+foundations exist, but the physical adapters are not the active production path. The command row
+therefore records a code-local runtime surface, not deployment qualification or operational
+cutover; status lives only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status). The combined gateway
+bootstrap routes remain only in the
 registered `LegacyModelBEmitter` rollback adapter under
 [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
 
@@ -1086,12 +1099,15 @@ registered `LegacyModelBEmitter` rollback adapter under
 
 The `prodbox vault` group is the operator-facing Vault lifecycle surface — `status`,
 `init`, `unseal`, `seal`, `reconcile`, `rotate-unlock-bundle`, `rotate-transit-key`, and the
-`pki` inspection leaves (full row set in [§3 Command Matrix](#3-command-matrix)). These commands
+`pki` inspection leaves (full row set in [§3 Command Matrix](#3-command-matrix)). **Target
+routing:** these commands
 bind an operation-indexed Bootstrap Broker `CapabilityRef` for the bounded init/unseal/seal and
 rotation requests it owns; observation, admission, and execution use that same reference and one
 absolute deadline. They never fall back to Gateway Runtime or a host-direct Vault/MinIO route.
 Post-unseal policy reconciliation remains a typed Vault interpreter rather than a generic broker or
-gateway proxy.
+gateway proxy. Current pre-cutover transport and migration status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and
+[deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Startup-config sourcing, the typed
 `SecretRef` contract, and the sealed-state fail-closed invariant are not owned here; they are
 owned by [vault_doctrine.md](./vault_doctrine.md) and

@@ -16,6 +16,11 @@ module Prodbox.Lifecycle.EbsVolume
   , TestEbsReaperInput (..)
   , TestEbsReaperPlan (..)
   , TestEbsReaperReport (..)
+  , TestEbsObservation
+  , testEbsObservationVolumeIds
+  , testScopedEbsObservation
+  , renderTestScopedEbsObservation
+  , parseTestScopedEbsObservation
   , ebsManagedResourceName
   , ebsPersistentVolumeTagKey
   , ebsDescribeVolumesArgs
@@ -50,8 +55,8 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (isDigit)
-import Data.List (intercalate, nub)
+import Data.Char (isDigit, isHexDigit)
+import Data.List (intercalate, nub, sort)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.Lib.Storage
@@ -73,7 +78,7 @@ import Prodbox.Subprocess
 import System.Exit (ExitCode (..))
 
 newtype EbsVolumeId = EbsVolumeId {unEbsVolumeId :: String}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data EbsVolume = EbsVolume
   { ebsVolumeId :: EbsVolumeId
@@ -132,6 +137,76 @@ data TestEbsReaperReport = TestEbsReaperReport
   , testEbsReaperDeletedVolumeIds :: [EbsVolumeId]
   }
   deriving (Eq, Show)
+
+-- | Canonical, bounded evidence returned by the Provider Worker for the
+-- exact test-scoped EBS family.  The constructor is private so a malformed,
+-- duplicated, or non-canonical volume set cannot be treated as provider
+-- truth by a lifecycle observer.
+newtype TestEbsObservation = TestEbsObservation [EbsVolumeId]
+  deriving (Eq, Show)
+
+testEbsObservationVolumeIds :: TestEbsObservation -> [EbsVolumeId]
+testEbsObservationVolumeIds (TestEbsObservation volumeIds) = volumeIds
+
+-- | Project only the registry-owned per-run family.  This deliberately
+-- repeats the client-side tag narrowing used by the reaper; the AWS query
+-- filter alone is not authority to classify a returned volume.
+testScopedEbsObservation :: String -> [EbsVolume] -> TestEbsObservation
+testScopedEbsObservation clusterName volumes =
+  TestEbsObservation
+    ( sort
+        ( nub
+            ( testEbsReaperVolumeIds
+                (testScopedEbsReaperPlan clusterName volumes)
+            )
+        )
+    )
+
+renderTestScopedEbsObservation :: TestEbsObservation -> Text.Text
+renderTestScopedEbsObservation (TestEbsObservation volumeIds) =
+  case volumeIds of
+    [] -> testEbsObservationPrefix <> "absent"
+    _ ->
+      testEbsObservationPrefix
+        <> "present:"
+        <> Text.pack (intercalate "," (map unEbsVolumeId volumeIds))
+
+-- | Decode only the exact canonical wire.  Empty, duplicate, unsorted,
+-- over-bounded, or malformed volume identities refuse instead of becoming
+-- absence or partial evidence.
+parseTestScopedEbsObservation :: Text.Text -> Either String TestEbsObservation
+parseTestScopedEbsObservation raw
+  | raw == testEbsObservationPrefix <> "absent" =
+      Right (TestEbsObservation [])
+  | Just encoded <- Text.stripPrefix (testEbsObservationPrefix <> "present:") raw = do
+      let renderedIds = Text.splitOn "," encoded
+      if null renderedIds || any Text.null renderedIds
+        then Left "test-scoped EBS observation has no volume identities"
+        else Right ()
+      if length renderedIds > maximumTestEbsObservationVolumes
+        then Left "test-scoped EBS observation exceeds the volume bound"
+        else Right ()
+      volumeIds <- traverse parseVolumeId renderedIds
+      let canonical = sort (nub volumeIds)
+      if volumeIds /= canonical
+        then Left "test-scoped EBS observation volume identities are not canonical"
+        else Right (TestEbsObservation canonical)
+  | otherwise = Left "test-scoped EBS observation has an unsupported encoding"
+ where
+  parseVolumeId rendered =
+    let value = Text.unpack rendered
+        suffix = drop 4 value
+     in if take 4 value == "vol-"
+          && length suffix `elem` [8, 17]
+          && all (\character -> isHexDigit character && character `notElem` ['A' .. 'F']) suffix
+          then Right (EbsVolumeId value)
+          else Left "test-scoped EBS observation contains an invalid volume identity"
+
+testEbsObservationPrefix :: Text.Text
+testEbsObservationPrefix = "prodbox-test-ebs-observation/v1:"
+
+maximumTestEbsObservationVolumes :: Int
+maximumTestEbsObservationVolumes = 128
 
 ebsManagedResourceName :: String
 ebsManagedResourceName = "aws-ebs-volumes"

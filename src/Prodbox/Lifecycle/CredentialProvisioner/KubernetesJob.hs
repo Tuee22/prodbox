@@ -244,7 +244,7 @@ renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
                           , "containers"
                               .= [ object
                                      [ "name" .= externalWorkerContainerName
-                                     , "image" .= (imageRepository <> "@" <> imageDigest)
+                                     , "image" .= imageRepository
                                      , "imagePullPolicy" .= ("Always" :: Text)
                                      , "stdin" .= True
                                      , "tty" .= False
@@ -350,9 +350,6 @@ renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
   requestDigest =
     targetValueDigestText
       (operatorMaterialRequestDigest (externalMaterialIngressIntentRequest intent))
-  imageDigest =
-    credentialProvisionerImageDigestText
-      (externalMaterialIngressIntentImageDigest intent)
   serviceAccount =
     credentialProvisionerServiceAccountText
       (credentialProvisionerIntentServiceAccount jobIntent)
@@ -866,7 +863,7 @@ instance FromJSON ContainerDto where
   parseJSON = withObject "CredentialProvisionerContainer" $ \value ->
     ContainerDto <$> value .: "name" <*> value .: "image"
 
-data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural
+data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural !Text
 
 instance FromJSON ContainerStatusDto where
   parseJSON = withObject "CredentialProvisionerContainerStatus" $ \value ->
@@ -874,6 +871,7 @@ instance FromJSON ContainerStatusDto where
       <$> value .: "name"
       <*> value .:? "ready" .!= False
       <*> value .:? "restartCount" .!= 0
+      <*> value .:? "imageID" .!= ""
 
 observeExactJob
   :: CredentialProvisionerJobConnection
@@ -942,13 +940,8 @@ parseJobBinding intent bytes = do
     Nothing -> Left (CredentialProvisionerJobObservationFailed "Job worker container is missing")
     Just (ContainerDto _ reference) -> Right reference
   unless
-    ( imageSuffix imageReference
-        == Just
-          ( credentialProvisionerImageDigestText
-              (externalMaterialIngressIntentImageDigest intent)
-          )
-    )
-    (Left (CredentialProvisionerJobObservationFailed "Job immutable image mismatch"))
+    (not (Text.null (Text.strip imageReference)))
+    (Left (CredentialProvisionerJobObservationFailed "Job image reference is empty"))
   firstShow
     CredentialProvisionerJobObservationFailed
     (mkCredentialProvisionerJobUid (jobDtoUid job))
@@ -1070,7 +1063,12 @@ podObservation externalIntent expectedJobUid serviceAccountUid pod = do
   imageReference <- case findContainer externalWorkerContainerName (podDtoContainers pod) of
     Nothing -> Left "external-material container is missing"
     Just (ContainerDto _ reference) -> Right reference
-  digest <- maybe (Left "container image is not immutable") Right (imageSuffix imageReference)
+  unless (not (Text.null (Text.strip imageReference))) (Left "container image reference is empty")
+  runtimeImageId <- case findStatus externalWorkerContainerName (podDtoContainerStatuses pod) of
+    Nothing -> Left "external-material container status is missing"
+    Just (ContainerStatusDto _ _ _ observedImageId) -> Right observedImageId
+  digest <-
+    maybe (Left "container runtime image identity is invalid") Right (runtimeImageDigest runtimeImageId)
   unless
     ( digest
         == credentialProvisionerImageDigestText
@@ -1090,7 +1088,7 @@ podObservation externalIntent expectedJobUid serviceAccountUid pod = do
   traverse_ requireAnnotation (Map.toList (externalJobAnnotations heartbeat externalIntent))
   let (ready, restarts) = case findStatus externalWorkerContainerName (podDtoContainerStatuses pod) of
         Nothing -> (False, 0)
-        Just (ContainerStatusDto _ isReady count) -> (isReady, count)
+        Just (ContainerStatusDto _ isReady count _) -> (isReady, count)
   pure
     RawCredentialProvisionerPodObservation
       { rawCredentialProvisionerJobName = credentialProvisionerJobName jobIntent
@@ -1211,12 +1209,6 @@ annotationNatural name annotations = do
     Right
     (readMaybe (Text.unpack value))
 
-imageSuffix :: Text -> Maybe Text
-imageSuffix reference = case Text.breakOnEnd "@" reference of
-  (prefix, digest)
-    | not (Text.null prefix) && Text.isPrefixOf "sha256:" digest -> Just digest
-  _ -> Nothing
-
 jobRawPath :: CredentialProvisionerJobIntent 'ExternalAcmeEabIngress -> String
 jobRawPath intent =
   "/apis/batch/v1/namespaces/"
@@ -1247,7 +1239,16 @@ findContainer :: Text -> [ContainerDto] -> Maybe ContainerDto
 findContainer name = find (\(ContainerDto actual _) -> actual == name)
 
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
-findStatus name = find (\(ContainerStatusDto actual _ _) -> actual == name)
+findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
+
+runtimeImageDigest :: Text -> Maybe Text
+runtimeImageDigest value =
+  let candidate = case Text.breakOnEnd "://" value of
+        (prefix, suffix) | not (Text.null prefix) -> suffix
+        _ -> value
+   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
+        then Just candidate
+        else Nothing
 
 kubectl :: CredentialProvisionerJobConnection -> [String] -> Subprocess
 kubectl connection arguments =

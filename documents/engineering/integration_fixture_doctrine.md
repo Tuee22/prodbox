@@ -5,7 +5,13 @@
 **Generated sections**: none
 
 > **Purpose**: Define capability-derived integration preparation, cleanup-obligation registration,
-> always-run cleanup-DAG interpretation, and failure aggregation for real-system validation.
+> validation-specific use of the lifecycle cleanup core, and failure aggregation for real-system
+> validation.
+
+The cleanup-client and fault-injection contracts below are target doctrine. Current implementation,
+migration, and deployment-qualification status remain exclusively in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md); dated implementation records are provenance,
+not a claim that target cleanup has cut over.
 
 ## 0. Canonical Doctrine Statements
 
@@ -15,6 +21,9 @@
 - A cleanup obligation is receipt-committed in the durable `CleanupRun` journal before its
   corresponding mutation can obtain a committed-intent proof. Cleanup is a resumable dependency
   graph, not a success-only tail action or one process-local `finally` block.
+- The lifecycle doctrine owns that graph, its exact observations, and its completion proof. This
+  doctrine owns only validation registration, the originating test result, and assertions over the
+  generic report.
 - Named `prodbox test integration ...` commands may depend on real infrastructure, but their setup
   and cleanup ownership must remain explicit and auditable.
 - Long-lived lifecycle class governs cleanup, not desired-presence preparation. A selected
@@ -78,9 +87,10 @@ Ownership rules:
    consumers and are never temporary IAM-harness teardown nodes.
 5. Cleanup failures must be surfaced explicitly without replacing the original validation failure;
    failure of one cleanup node must not prevent an independent ready node from running.
-6. A retained managed resource required by the selected validations is reconciled through its
-   canonical command after its backend is ready; the suite does not hide this mutation in a
-   prerequisite and does not add it to per-run cleanup.
+6. A retained managed resource required by the selected validations is reconciled through the same
+   registered desired-present program consumed by the operator CLI after its backend is ready. The
+   suite is a peer lifecycle client: it does not shell or wrap the public command, hide the mutation
+   in a prerequisite, or add the retained resource to per-run cleanup.
 
 The harness never interprets an admin prompt mutation in-process. Identity/store setup submits the
 stable backup-receipted `OperatorMaterialPermit` (or the first-run `GenesisBackupPermit`) and sends
@@ -137,10 +147,16 @@ Preparation and cleanup are independent projections over the same managed-resour
   consumer decommission or `nuke` owns their absence. AWS A/Certificate/Challenge/DNS01 resources
   remain run-scoped.
 
-`Prodbox.Lifecycle.ResourceRegistry.ManagedResource` carries desired-presence fields independently
-from discovery and destruction. The pure desired-presence interpreter consumes flat
-presence/checkpoint observations and submits the registered operation; fixture code does not create
-a second SES registry, inline provider mutations, or reproduce lifecycle transitions.
+The target `ManagedResource resource life kind` in
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+is a hypothetical doctrinal type, not a claim about the current callback-bearing
+`Prodbox.Lifecycle.ResourceRegistry.ManagedResource`. Its private target constructor binds exact
+observation and desired-presence/desired-absence program tags independently. The pure
+desired-presence interpreter consumes flat presence/checkpoint observations and submits the
+registered operation; fixture code does not create a second SES registry, inline provider
+mutations, or reproduce lifecycle transitions. Retirement of the current callback-bearing type is
+tracked in the
+[legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 For retained SES, the visible preparation action carries an explicit retained-home authority
 coordinate and a separate selected-substrate target coordinate. The former is interpreted by the
@@ -204,155 +220,85 @@ Supported isolation patterns include:
 - ephemeral AWS hosted zones or stacks created and destroyed by the named validation flow
 - aggregate runtime repair through the public `prodbox` surface after destructive integration work
 
-## 4. Cleanup Failure Handling
+## 4. Validation as a Cleanup Client
 
-Cleanup is a pure, validated DAG interpreted on success, failure, timeout, interruption, runner
-death, and authority restart. Its durable model is flat and bounded:
+The generic `CleanupRun` model, exact observation types, desired-absence decisions, graph edges,
+resume rules, and proof-carrying completion are owned by
+[Lifecycle Reconciliation Doctrine §3](./lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation).
+A validation does not define another cleanup engine and does not inject `IO` callbacks into that
+engine. It is a client with three additional responsibilities:
+
+1. build and receipt-commit every cleanup obligation before the corresponding fixture mutation;
+2. attach the originating validation identity and final validation outcome to the generic run; and
+3. assert the durable report, including every cleanup failure, as part of the validation result.
+
+The fixture-side request is pure data:
 
 ```haskell
-data CleanupDependency
-  = RequiresSuccess CleanupNodeId
-  | RequiresAttempt CleanupNodeId
+-- Example: hypothetical validation cleanup-client values
+data ValidationCleanupOrigin = ValidationCleanupOrigin
+  { validationRunId :: ValidationRunId
+  , validationName :: ValidationName
+  , topologyDigest :: TestTopologyDigest
+  , sourceIdentity :: SourceIdentity
+  }
 
-data CleanupNodeState
-  = CleanupRegistered CleanupObligationRef
-  | CleanupRunning CleanupFence OperationId
-  | CleanupSucceeded CleanupEvidence
-  | CleanupSatisfiedWithReason CleanupReason
-  | CleanupFailed CleanupFailure
-  | CleanupBlocked CleanupNodeId CleanupFailure
-
-data CleanupRunState
-  = CleanupPreparing CleanupPlan
-  | CleanupArmed CleanupPlanDigest
-  | CleanupRequested CleanupTrigger
-  | CleanupExecuting CleanupOwnerFence (BoundedMap CleanupNodeId CleanupNodeState)
-  | CleanupClosed CleanupReportRef
+data ValidationCleanupOutcome
+  = ValidationAndCleanupSucceeded CleanupReportReceipt
+  | ValidationFailed ValidationFailure CleanupReportReceipt
+  | CleanupIncomplete ValidationOutcome CleanupRunId (NonEmpty CleanupFailure)
 ```
 
-The builder rejects duplicate ownership, an unregistered creatable resource, missing dependencies,
-cycles, an unbounded node family, and a dependency whose credential lifetime is shorter than its
-consumers. It CAS-commits the complete static plan to the Lifecycle Authority's independent backup
-before the first suite-owned external mutation. A coordinate learned later—such as an LBC child
-resource or cert-manager Challenge record—is appended and receipt-read-back before its owning
-controller may create it. No create/ensure/provider program can be interpreted without the matching
-opaque `CleanupObligationRef` in its `CommittedIntentRef`.
+A fixture planner selects registered resources through the lifecycle registry, supplies exact
+synthetic coordinates to fake observers or exact live coordinates to production observers, and
+submits the resulting plan to the Lifecycle Authority. It cannot forge absence with an environment
+variable, substitute an escape sweep for an exact observation, widen a coordinate after
+registration, or mint a `CleanupObligationRef` locally.
 
-`CleanupRunId` and every cleanup-node `OperationId` bind the authority epoch, suite-run identity,
-plan digest, node key, and attempt generation. The authority owns a monotonically increasing cleanup
-fence and a bounded client heartbeat lease. Normal postflight, cancellation, the validation
-deadline, client-lease expiry, or explicit operator recovery moves an armed run to
-`CleanupRequested`. On restart the recovery worker scans every nonterminal run before admitting a
-new run in the same scope, reacquires the fence, observes any running node by its existing operation
-ID, and resumes it. A stale TestRunner or former recovery worker cannot complete a node under an old
-fence. If the whole retained control plane is unavailable, the backup-receipted run resumes after
-authority restoration; physical unavailability delays cleanup but does not erase its ownership or
-credentials. Capacity is fixed; nonterminal runs are never evicted, and saturation refuses a new
-suite before mutation.
+Long-lived desired-presence preparation remains explicit. If a selected validation needs a
+registered `LongLived` resource, its setup plan reconciles that resource present and ordinary
+postflight observes and retains it. Lifecycle class does not imply ambient presence and cleanup does
+not reclassify a retained resource as per-run.
 
-The concrete retained namespace is a bounded, canonical Model-B index served only by the
-authenticated Lifecycle Authority cleanup-run route. Registration stores the complete immutable
-run plan, not merely its identifier, and the Authority Backup Adapter receipts those exact bytes
-before the per-run primary is published. Consequently, an interrupted registration that leaves an
-indexed but missing per-run primary is repaired from the receipt-backed plan during the next scan;
-it cannot become either an invisible orphan or an unrecoverable identifier-only entry. The index
-holds at most 256 non-reusable identifiers and refuses saturation before foreground mutation.
+On success, failure, timeout, cancellation, client disconnect, or TestRunner death, the client
+requests cleanup for the same durable run. The lifecycle recovery worker owns execution and
+resumption. The client may wait for the report within its deadline, but loss of that wait does not
+cancel ownership or create a second run. A later invocation scans and resumes the same
+`CleanupRunId` before new mutation in the scope.
 
-The interpreter repeatedly runs every ready node. `RequiresSuccess` opens only after authoritative
-postcondition evidence. `RequiresAttempt` opens after its predecessor reaches any terminal attempt
-outcome and is used only where a last-resort backstop must run despite predecessor failure. Failure
-of one node blocks only its `RequiresSuccess` descendants; independent and attempt-dependent nodes
-continue. Absence is `CleanupSucceeded` with evidence, never an unrecorded skip.
+The final validation rendering preserves causality:
 
-The canonical dependency order is:
+- the original validation outcome renders first;
+- every cleanup failure and dependency-blocked node renders with its exact resource key and
+  confirming authority;
+- a complete cleanup report never erases a failed validation;
+- an incomplete cleanup never becomes a warning, and renders the stable `CleanupRunId`; and
+- expected retained resources are distinguished from escapees by typed lifecycle class, not prose.
 
-1. stop new suite submissions and close or observe suite-owned transient transports;
-2. observe each recorded Lifecycle Authority operation and resolve an active mutation to clean
-   quiescence or a durable explicit ambiguous/recovery disposition;
-3. restore and read back the canonical retained home control plane and application charts needed by
-   later cleanup interpreters;
-4. drain the selected cluster while its controllers are live and reconcile every registered
-   controller-created/DNS child family toward absence;
-5. after a `RequiresAttempt` edge from drain, submit or resume every per-run provider destroy, then
-   reap registered test-scoped EBS volumes;
-6. delete each role-specific IAM/key resource only after `RequiresSuccess` evidence from every node
-   that consumes that exact identity, then commit/read back its Vault tombstone; and
-7. re-observe every owned lifecycle class, exact record, dynamic child family, cleanup operation,
-   intended retained resource, and credential tombstone before closing the report.
+### Fixture use of the canonical fault matrix
 
-`DrainSkipped` is interpreted by substrate, not as universal success. A positively observed absent
-disposable home control plane may become `CleanupSatisfiedWithReason`. On AWS, an unreachable API,
-missing kubeconfig, timeout, or any skipped drain is `CleanupFailed`; the provider-destroy node is
-still eligible through `RequiresAttempt`, and neither its success nor the final tag observation can
-erase the drain failure. `DrainFailed` is a failure on every substrate.
+The generic recover-to-clean fault matrix is owned once by
+[Unit Testing Policy §10](./unit_testing_policy.md#10-always-run-cleanup-validation). Every
+lifecycle-changing validation supplies deterministic interpreter-boundary coverage for the rows it
+can reach and proves that its client registration cannot mint observations, absence evidence, or a
+second cleanup identity.
 
-The `LongLived` Authority-backup-store, TLS-retention-store, home Gateway-DNS, and home
-cert-manager-DNS01 credentials are not nodes in ordinary suite cleanup or `aws teardown`; those
-flows observe and retain their generations with the restored home consumers. Rotation preserves a
-readable predecessor until replacement read-back and receipt. AWS cert-manager-DNS01 is run-scoped
-and becomes eligible only after its AWS Certificate/Challenge/TXT dependants are absent. A
-provider-destroy failure preserves Lifecycle-provider credentials. Explicit consumer decommission
-may remove the matching home credential; only `nuke` removes Authority backup and all retained
-consumers under the exported external-receipt protocol.
+The frozen 2026-08-15 counterexample requires the preliminary caller-ServiceAccount observation to
+remain `Unobservable`; discarded stderr leaves both its cause and whether it reached the Kubernetes
+API unknown. Separately, the AWS Tagging API returned one `ResourceTagMapping` for the intentionally
+retained long-lived state-bucket ARN with its full two-tag set; the pre-cutover decoder emitted two
+rows from that one mapping. The global audit returned no per-run mapping, but every exact stack
+observation remained unobservable, not an empty inventory. The old composition must reproduce its
+false three-stack presence classification by copying those two unkeyed decoded rows to `aws-eks`,
+`aws-eks-subzone`, and `aws-test`.
 
-For `nuke`, “cleanup run” ends at decommission export rather than pretending stopped Authority can
-receipt deletion of its own backup. Authority backup-receipts the deterministic signed manifest;
-the CLI `fsync`/read-backs it to a required operator/harness receipt sink outside every target;
-Authority commits `DecommissionExported` and permanently stops. The standalone
-`DecommissionRunner` first verifies the build/Tier-0/Broker-pinned Authority signer digest and
-accepts only closed compiled program tags plus exact registered coordinates; tampered manifest,
-key, receipt, tag, or widened coordinate refuses before prompt. It then journals every exact
-destroy/read-back to that same receipt under a fresh admin prompt. Home Agent/Vault/Gateway/
-cert-manager/control-plane Pods stay live through home record/Certificate/Challenge removal and all
-retained-generation tombstone read-backs. The runner then stops/uninstalls home control plane and
-optional `.data`, and deletes every TLS-retention prefix version plus TLS key/IAM without deleting
-the shared bucket. The final Authority-backup node proves
-every registered prefix absent, deletes its objects/key/IAM, and deletes the shared bucket last.
-Runner crash resumes from the same receipt; ordinary suite cleanup never enters this mode. The
-canonical exception is
-[Lifecycle Control-Plane Architecture §11.1](./lifecycle_control_plane_architecture.md#111-total-decommission-and-the-final-backup-deletion).
+The replacement must report the bucket once as retained, preserve every exact stack observation and
+the caller observation as independently unobservable, select no EKS drain or per-run destroy from
+the global audit, and return the same cleanup run on retry.
 
-Long-lived resources are not destroyed by this DAG. Resolving a long-lived operation means making
-its durable state safe, quiescent, and queryable, not converting it into a per-run target.
-
-The receipt-committed final report contains the original validation outcome plus every cleanup
-failure, satisfied-with-reason result, and dependency-blocked node. The original failure renders
-first, but cleanup success never erases it and cleanup failure never prevents independent cleanup.
-The bounded report remains queryable by `CleanupRunId` after the TestRunner exits; terminal detail
-may compact only to an immutable report blob plus digest, while the non-reusable run tombstone
-remains for its configured idempotency window.
-
-Compaction is an authenticated command and is retention-gated. It canonical-encodes the terminal
-report, copies and re-observes the exact immutable report through the Authority Backup Adapter, and
-only then CAS-replaces the per-run primary and active namespace entry with digest-only tombstones.
-Scan repairs response loss between those two CAS operations, an ambiguous CAS is resolved by exact
-read-back, and a tombstoned identifier can never be registered again.
-
-Integration failure injection covers Credential/Admin Job attestation and stdin disconnect,
-same-permit response loss, permanent-backup key/bucket/policy loss versus temporary
-unobservability, verified one-shot Broker init/unseal worker attestation and prompt disconnect,
-controller-plaintext exclusion, repair crash/replay and greater-epoch open, opaque secret-commitment equality, TLS
-out-of-order/response-lost immutable puts, corrupt/digest-mismatched/unobservable restore refusal,
-positive absence/validated-expiry issuance, AWS Vault/EBS destroy-recreate restore, retained-home
-credential survival, and tampered decommission signer/manifest/key/receipt/tag/coordinate
-rejection, torn receipt-tail recovery, complete-frame checksum/hash-chain conflict,
-corrupt/unobservable receipt refusal, stable-attempt effect re-observation, missing external runner
-artifact, and cross-build/schema resume refusal. Each case asserts the final durable operation/cleanup state and authoritative read-back,
-not only process exit.
-
-The retained-material matrix additionally covers AWS-admin/EAB schema confusion, SMTP derivation
-without raw-IAM-secret custody, home custody seal response loss, flat absent/corrupt/digest-
-mismatch/unobservable observations, rewrap crash before/after target envelope read-back, target
-worker/nonce/attestation/deadline loss forcing fresh rewrap, target materialization response loss,
-supersession deadline without target/consumer retirement evidence, GC reference races, a target first introduced after
-source creation, and fresh AWS Vault/EBS restore of both SMTP and ACME EAB from their current home
-receipts without admin re-prompt, key remint, or EAB re-entry. Destroy/nuke injection proves external
-credential/resource absence precedes every target tombstone, target absence precedes custody
-absence, KV-v2 soft delete cannot satisfy physical version/metadata absence, and home Agent/Vault
-remain live until both closed custody tags are read back. SES cutover injection also proves the
-new non-credential checkpoint plus custody/targets commit before old secret-bearing checkpoint
-outputs leave current state, and fenced primary/backup blob GC waits for rollback grace and complete
-no-reference scans.
+Live home and AWS campaigns use the same assertions but remain deployment-qualification evidence
+under Standards O/P in the Development Plan. A fake fixture proves decision structure and
+composition; it never claims that AWS or Kubernetes returned a live fact.
 
 ## 5. Relationship To Other Doctrine
 
@@ -446,6 +392,7 @@ not substitutes for these deterministic fixtures.
 - [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
+
 ## Current-Revision Invite Fixture
 
 `control-plane-counterexample` emits the frozen and replacement identities plus the complete

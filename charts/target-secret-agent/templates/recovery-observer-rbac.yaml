@@ -1,0 +1,29 @@
+{{- /* Exact-name, GET-only observation for the optional recovery component. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: target-secret-agent-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["target-secret-agent"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: target-secret-agent-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "target-secret-agent.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: target-secret-agent-recovery-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ required "recoveryObserver.serviceAccountName is required" .Values.recoveryObserver.serviceAccountName | quote }}
+    namespace: {{ required "recoveryObserver.serviceAccountNamespace is required" .Values.recoveryObserver.serviceAccountNamespace | quote }}

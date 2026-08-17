@@ -96,6 +96,9 @@ library
         Prodbox.Config.Basics
         Prodbox.Config.ComponentGraph
         Prodbox.Config.FloorDhall
+        Prodbox.Config.LocalRetainedRoot
+        Prodbox.Config.LocalRke2RecoveryState
+        Prodbox.Config.OrdinaryTeardownRecovery
         Prodbox.Config.SchemaDhall
         Prodbox.Config.Tier0
         Prodbox.Config.InForce
@@ -130,6 +133,22 @@ library
         Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
         Prodbox.ControlPlane.AwsAdminProvisionerClient
         Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
+        Prodbox.ControlPlane.AwsStackCreationBindingEndpoint
+        Prodbox.ControlPlane.AwsStackCreationBindingRepository
+        Prodbox.ControlPlane.AwsStackCreationBindingTransportClient
+        Prodbox.ControlPlane.AwsStackReaderEndpoint
+        Prodbox.ControlPlane.AwsStackReaderRepository
+        Prodbox.ControlPlane.CleanupProgramDescriptorRepository
+        Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime
+        Prodbox.ControlPlane.LocalRke2HostObservationEndpoint
+        Prodbox.ControlPlane.LocalRke2HostObservationRepository
+        Prodbox.ControlPlane.RecoveryPlaneHostRuntime
+        Prodbox.ControlPlane.RecoveryPlaneRepository
+        Prodbox.ControlPlane.RecoveryPlaneEndpoint
+        Prodbox.ControlPlane.RecoveryPlaneTransportClient
+        Prodbox.ControlPlane.OwnershipManifestEndpoint
+        Prodbox.ControlPlane.OwnershipManifestRepository
+        Prodbox.ControlPlane.OwnershipManifestTransportClient
         Prodbox.ControlPlane.AdminActionAuthorityExecutionClient
         Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
         Prodbox.ControlPlane.AdminActionTargetClient
@@ -188,6 +207,14 @@ library
         Prodbox.ControlPlane.DedicatedAdapterStore
         Prodbox.ControlPlane.EksClientAuthProjection
         Prodbox.ControlPlane.EksClientAuthClient
+        Prodbox.ControlPlane.EksDrainIntentClient
+        Prodbox.ControlPlane.EksDrainIntentEndpoint
+        Prodbox.ControlPlane.EksDrainIntentRepository
+        Prodbox.ControlPlane.EksDrainIntentTransportClient
+        Prodbox.ControlPlane.EksDrainReadBackReceiptClient
+        Prodbox.ControlPlane.EksDrainReadBackReceiptEndpoint
+        Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
+        Prodbox.ControlPlane.EksDrainReadBackReceiptTransportClient
         Prodbox.ControlPlane.Interpreter
         Prodbox.ControlPlane.InClusterAuthorityStore
         Prodbox.ControlPlane.ListenPort
@@ -195,6 +222,7 @@ library
         Prodbox.ControlPlane.LifecycleAuthorityAuthentication
         Prodbox.ControlPlane.MigrationEndpoint
         Prodbox.ControlPlane.OperationEndpoint
+        Prodbox.ControlPlane.ProviderAwsScopeReceipt
         Prodbox.ControlPlane.ProviderWorkEndpoint
         Prodbox.ControlPlane.ProviderNarrowSession
         Prodbox.ControlPlane.ProviderProduction
@@ -335,6 +363,7 @@ library
         Prodbox.Lifecycle.Authority.Migration
         Prodbox.Lifecycle.Authority.MigrationInterpreter
         Prodbox.Lifecycle.Authority.ProjectionImport
+        Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
         Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
         Prodbox.Lifecycle.Authority.RetainedMaterial
         Prodbox.Lifecycle.Decommission.AuthorityExport
@@ -386,8 +415,16 @@ library
         Prodbox.Lifecycle.TlsRetention.ChartStatics
         Prodbox.Lifecycle.AnchoredReconcile
         Prodbox.Lifecycle.CapabilityReadinessBarrier
+        Prodbox.Lifecycle.CleanupRun
+        Prodbox.Lifecycle.CleanupRunRunner
+        Prodbox.Lifecycle.HostCleanupIntent
+        Prodbox.Lifecycle.HostCleanupRunner
+        Prodbox.Lifecycle.HostCleanupRke2
         Prodbox.Lifecycle.StoreLifetime
+        Prodbox.Lifecycle.TestArtifactCleanup
+        Prodbox.Lifecycle.TestArtifactIntentJournal
         Prodbox.Lifecycle.AuthorityObjectCore
+        Prodbox.Lifecycle.AwsInventory
         Prodbox.Lifecycle.CheckpointAuthority
         Prodbox.Lifecycle.ModelBCasTransport
         Prodbox.Lifecycle.HelmRelease
@@ -421,6 +458,46 @@ library
         Prodbox.Lifecycle.TargetCommitIntent
         Prodbox.Lifecycle.TargetSinkVersion
         Prodbox.Lifecycle.TargetSinkVersion.Internal
+        Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
+        Prodbox.Lifecycle.Teardown.AwsEbsAdapter
+        Prodbox.Lifecycle.Teardown.AwsEksAdapter
+        Prodbox.Lifecycle.Teardown.AwsEksDestroyAdapter
+        Prodbox.Lifecycle.Teardown.AwsEksRegisteredTargetDestroyInterpreter
+        Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
+        Prodbox.Lifecycle.Teardown.AwsStackAdapter
+        Prodbox.Lifecycle.Teardown.AwsStackReaderEvidence
+        Prodbox.Lifecycle.Teardown.AwsStackReaderInterpreter
+        Prodbox.Lifecycle.Teardown.CascadeEvidence
+        Prodbox.Lifecycle.Teardown.Checkpoint
+        Prodbox.Lifecycle.Teardown.CheckpointAuthority
+        Prodbox.Lifecycle.Teardown.CloudRuntime
+        Prodbox.Lifecycle.Teardown.Decision
+        Prodbox.Lifecycle.Teardown.EksDrainAttemptRecovery
+        Prodbox.Lifecycle.Teardown.EksDrainInterpreter
+        Prodbox.Lifecycle.Teardown.EksTeardownExecutor
+        Prodbox.Lifecycle.Teardown.EksDrainIntent
+        Prodbox.Lifecycle.Teardown.EksDrainSession
+        Prodbox.Lifecycle.Teardown.EksDrainRuntime
+        Prodbox.Lifecycle.Teardown.Execution
+        Prodbox.Lifecycle.Teardown.ExecutionIdentity
+        Prodbox.Lifecycle.Teardown.Graph
+        Prodbox.Lifecycle.Teardown.LocalRke2HostObservation
+        Prodbox.Lifecycle.Teardown.Model
+        Prodbox.Lifecycle.Teardown.Observation
+        Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
+        Prodbox.Lifecycle.Teardown.OwnershipManifest
+        Prodbox.Lifecycle.Teardown.ProviderDispatch
+        Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter
+        Prodbox.Lifecycle.Teardown.RecoveryCapability
+        Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
+        Prodbox.Lifecycle.Teardown.RecoveryPlane
+        Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver
+        Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter
+        Prodbox.Lifecycle.Teardown.RecoveryRequirement
+        Prodbox.Lifecycle.Teardown.Program
+        Prodbox.Lifecycle.Teardown.RegisteredTargetResult
+        Prodbox.Lifecycle.Teardown.Report
+        Prodbox.Lifecycle.Teardown.Registry
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm
         Prodbox.Keycloak.Email
@@ -480,12 +557,11 @@ library
         Prodbox.Subprocess
         Prodbox.TestPlan
         Prodbox.Test.GatewayRuntimeStability
-        Prodbox.Test.CleanupRun
-        Prodbox.Test.CleanupRunRunner
         Prodbox.Test.CounterexampleValidation
         Prodbox.Test.CertificateScopeServing
         Prodbox.Test.CleanRoomHandoff
         Prodbox.Test.DurableCleanupComposition
+        Prodbox.Test.LifecycleCleanupClient
         Prodbox.Test.ManagedCleanupPlan
         Prodbox.Test.TemporalQualification
         Prodbox.Test.Qualification.FrozenCounterexample
@@ -493,6 +569,7 @@ library
         Prodbox.Test.Qualification.Evidence
         Prodbox.Test.Qualification.SourceIdentity
         Prodbox.Test.Qualification.SourceManifest
+        Prodbox.Test.Qualification.TeardownCounterexample
         Prodbox.TestRestore
         Prodbox.TestRunner
         Prodbox.TestTopology
@@ -518,6 +595,35 @@ library
     other-modules:
         Paths_prodbox
         Prodbox.Bootstrap.Broker.Request.Internal
+        Prodbox.Config.LocalRetainedRoot.Internal
+        Prodbox.Config.LocalRke2RecoveryState.Internal
+        Prodbox.ControlPlane.LocalRke2HostObservationRepository.Internal
+        Prodbox.ControlPlane.LocalRke2HostObservationEndpoint.Internal
+        Prodbox.ControlPlane.LocalRke2HostObservationTransport.Internal
+        Prodbox.ControlPlane.AwsStackReaderRepository.Internal
+        Prodbox.ControlPlane.AwsStackReaderTransportClient
+        Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
+        Prodbox.ControlPlane.CleanupRunClient.Internal
+        Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
+        Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal
+        Prodbox.ControlPlane.RecoveryPlaneRepository.Internal
+        Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
+        Prodbox.ControlPlane.EksClientAuthProjection.Internal
+        Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+        Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
+        Prodbox.Lifecycle.HostCleanupIntent.Internal
+        Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
+        Prodbox.Lifecycle.Teardown.ExecutionIdentity.Internal
+        Prodbox.Lifecycle.Teardown.LocalRke2HostObservation.Internal
+        Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
+        Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter.Internal
+        Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
+        Prodbox.Lifecycle.Teardown.RecoveryCapability.Internal
+        Prodbox.Lifecycle.Teardown.RecoveryPlane.Internal
+        Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver.Internal
+        Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
+        Prodbox.Lifecycle.Teardown.RecoveryRequirement.Internal
+        Prodbox.Lifecycle.Teardown.Report.Internal
 
     default-language: GHC2021
     ghc-options:      -Wall
@@ -617,6 +723,7 @@ test-suite prodbox-unit
         ControlPlaneClient
         ControlPlaneCapacity
         ControlPlaneConfigEndpoint
+        ControlPlaneDescriptorBoundLifecycleRuntime
         ControlPlaneFederationBootstrap
         ControlPlaneDeadline
         CertScopeSuite
@@ -636,6 +743,12 @@ test-suite prodbox-unit
         GatewayEmitterKernel
         GatewayEmitterLease
         GatewayEmitterPersistence
+        HostCleanupIntent
+        HostCleanupRunner
+        HostCleanupRke2
+        LifecycleCleanupClient
+        LifecycleTestArtifactCleanup
+        LifecycleTestArtifactIntentJournal
         LifecycleAuthorityAdminAction
         LifecycleAuthorityBackupRepair
         LifecycleAuthorityBootstrapReconcile
@@ -645,6 +758,7 @@ test-suite prodbox-unit
         LifecycleAuthorityGenesis
         LifecycleAuthorityMigration
         LifecycleAuthorityProjectionImport
+        LifecycleAuthorityProviderAdmissionEpoch
         LifecycleAuthorityPulumiCheckpointRegistry
         LifecycleAuthorityRetainedMaterial
         ControlPlaneRoute
@@ -658,6 +772,16 @@ test-suite prodbox-unit
         ControlPlaneProjectionImportRegistration
         ControlPlanePulumiCheckpoint
         ControlPlanePulumiCheckpointRepository
+        ControlPlaneAwsStackCreationBindingRepository
+        ControlPlaneAwsStackReaderRepository
+        ControlPlaneCleanupProgramDescriptorRepository
+        ControlPlaneLocalRke2HostObservationEndpoint
+        ControlPlaneLocalRke2HostObservationRepository
+        ControlPlaneRecoveryPlaneRepository
+        ControlPlaneRecoveryPlaneEndpoint
+        ControlPlaneOwnershipManifestRepository
+        ControlPlaneEksDrainIntentRepository
+        ControlPlaneEksDrainReadBackReceiptRepository
         ControlPlaneRetainedMaterialWorker
         ControlPlaneRetainedSesLease
         ControlPlaneServer
@@ -669,6 +793,7 @@ test-suite prodbox-unit
         CredentialProvisionerAwsAdminAuthority
         ExternalMaterialIngressLifecycle
         EksClientAuthProjection
+        EksClientAuthProjectionFixture
         DecommissionCommit
         DecommissionAuthorityExport
         DecommissionControlPlaneClient
@@ -686,6 +811,38 @@ test-suite prodbox-unit
         LifecycleAuthorityOperation
         LifecycleAuthorityOutboxSim
         LifecycleProviderWork
+        LifecycleTeardownAwsCheckpointInterpreter
+        LifecycleTeardownAwsEbsAdapter
+        LifecycleTeardownAwsEksAdapter
+        LifecycleTeardownAwsEksDestroyAdapter
+        LifecycleTeardownAwsEksRegisteredTargetDestroyInterpreter
+        LifecycleTeardownAwsRegisteredTargetInterpreter
+        LifecycleTeardownAwsStackAdapter
+        LifecycleTeardownAwsStackReaderInterpreter
+        LifecycleTeardownCloudRuntime
+        LifecycleTeardownCascadeEvidence
+        LifecycleTeardownCheckpoint
+        LifecycleTeardownCheckpointAuthority
+        LifecycleTeardownDecision
+        LifecycleTeardownEksDrainAttemptRecovery
+        LifecycleTeardownEksDrainInterpreter
+        LifecycleTeardownEksDrainIntent
+        LifecycleTeardownEksTeardownExecutor
+        LifecycleTeardownEksDrainSession
+        LifecycleTeardownEksDrainRuntime
+        LifecycleTeardownOperationalCredentialInventory
+        LifecycleTeardownOwnershipManifest
+        LifecycleTeardownProviderAwsScopeAdapter
+        LifecycleTeardownProviderDispatch
+        LifecycleTeardownProgram
+        LifecycleTeardownRecoveryCapability
+        LifecycleTeardownRecoveryPlane
+        LifecycleTeardownRecoveryPlaneComponentObserver
+        LifecycleTeardownRecoveryPlaneInterpreter
+        LifecycleTeardownRegisteredTargetResult
+        LifecycleTeardownRegistry
+        LocalRetainedRoot
+        LocalRke2RecoveryState
         LifecycleAuthorityState
         LifecycleAuthoritySubmission
         LifecycleAuthorityTlsRetention
@@ -702,10 +859,12 @@ test-suite prodbox-unit
         CleanRoomHandoff
         MeasuredProfile
         ObjectStoreNative
+        OrdinaryTeardownRecovery
         Parser
         QualificationFrozenCounterexample
         QualificationEvidence
         QualificationSourceIdentity
+        QualificationTeardownCounterexample
         TemporalQualification
         RetainedSesPreparation
         RestoreGraphSuite

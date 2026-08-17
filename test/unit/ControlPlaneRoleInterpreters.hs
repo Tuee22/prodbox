@@ -60,9 +60,14 @@ import Prodbox.ControlPlane.ProviderWorkEndpoint
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointHandler
   , PulumiCheckpointObservation (PulumiCheckpointMissing)
+  , PulumiCheckpointPairObservation (PulumiCheckpointPairUnobservable)
   , PulumiCheckpointPublicationResult (PulumiCheckpointPublicationUnavailable)
   , PulumiCheckpointRepository (..)
   , PulumiCheckpointRequest (ObservePulumiCheckpoint)
+  , PulumiCheckpointRestoreReadBack (PulumiCheckpointRestoreReadBackUnavailable)
+  , PulumiCheckpointRestoreResult (PulumiCheckpointRestoreUnavailable)
+  , PulumiCheckpointRetirementAttemptResult (PulumiCheckpointRetirementAttemptUnavailable)
+  , PulumiCheckpointRetirementReadBack (PulumiCheckpointRetirementReadBackUnavailable)
   , PulumiCheckpointRetirementResult (PulumiCheckpointRetirementUnavailable)
   , mkPulumiCheckpointHandler
   )
@@ -482,10 +487,20 @@ fixturePulumiCheckpointHandler =
   mkPulumiCheckpointHandler
     PulumiCheckpointRepository
       { observeRegisteredPulumiCheckpoint = \_callerSlot _ -> pure PulumiCheckpointMissing
+      , observeRegisteredPulumiCheckpointPair = \_callerSlot _ ->
+          pure (PulumiCheckpointPairUnobservable "fixture unavailable")
       , publishRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointPublicationUnavailable "fixture unavailable")
       , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
           pure (PulumiCheckpointRetirementUnavailable "fixture unavailable")
+      , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
+      , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
       }
 
 openedAuthorityAggregate :: AuthorityAdmissionAggregate

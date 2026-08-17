@@ -34,7 +34,9 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.ControlPlane.Client
   ( ControlPlaneResponse (..)
   , ControlPlaneRouteFor
-    ( LifecycleOperationSubmitRoute
+    ( LifecycleEksDrainIntentRoute
+    , LifecycleEksDrainReadBackReceiptRoute
+    , LifecycleOperationSubmitRoute
     , ProviderWorkApplyRoute
     )
   , controlPlaneClientWithTransport
@@ -61,8 +63,13 @@ import Prodbox.ControlPlane.ProjectionImportEndpoint
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointHandler
   , PulumiCheckpointObservation (PulumiCheckpointMissing)
+  , PulumiCheckpointPairObservation (PulumiCheckpointPairUnobservable)
   , PulumiCheckpointPublicationResult (PulumiCheckpointPublicationUnavailable)
   , PulumiCheckpointRepository (..)
+  , PulumiCheckpointRestoreReadBack (PulumiCheckpointRestoreReadBackUnavailable)
+  , PulumiCheckpointRestoreResult (PulumiCheckpointRestoreUnavailable)
+  , PulumiCheckpointRetirementAttemptResult (PulumiCheckpointRetirementAttemptUnavailable)
+  , PulumiCheckpointRetirementReadBack (PulumiCheckpointRetirementReadBackUnavailable)
   , PulumiCheckpointRetirementResult (PulumiCheckpointRetirementUnavailable)
   , mkPulumiCheckpointHandler
   )
@@ -477,6 +484,114 @@ authenticatedTransportTests =
         first @?= AuthenticatedServeReplayed (ReplayProtectedExecuted response)
         second @?= AuthenticatedServeReplayed (ReplayProtectedRecovered response)
         readIORef effects >>= (@?= 1)
+    , testCase "binds the EKS drain-intent route to the Authority and rejects a wrong route or caller" $ do
+        captured <-
+          captureLifecycleFrame
+            clientProviders
+            LifecycleEksDrainIntentRoute
+            body
+        let authorityProviders =
+              serverProvidersForRole LifecycleAuthorityRuntime trusted
+        admitted <-
+          authenticateControlPlaneFrame
+            transportBounds
+            maximumLifetime
+            authorityProviders
+            LifecycleAuthorityRuntime
+            LifecycleEksDrainIntent
+            captured
+        case admitted of
+          Left err -> assertFailure ("EKS drain-intent frame was refused: " <> show err)
+          Right request -> do
+            authenticatedServerInnerBody request @?= body
+            verifiedCallerSlotPrincipal
+              (authenticatedServerCallerSlot request)
+              @?= CallerService LifecycleAuthorityRuntime
+
+        wrongRoute <-
+          authenticateControlPlaneFrame
+            transportBounds
+            maximumLifetime
+            authorityProviders
+            LifecycleAuthorityRuntime
+            LifecycleCleanupRun
+            captured
+        case wrongRoute of
+          Left (AuthenticatedServerRequestAuthenticationFailed _) -> pure ()
+          other -> assertFailure ("wrong route was not refused: " <> show other)
+
+        let wrongSigner = signerForPrincipal (CallerService ProviderWorkerRuntime)
+        wrongCallerFrame <-
+          captureLifecycleFrame
+            (clientProvidersFor wrongSigner)
+            LifecycleEksDrainIntentRoute
+            body
+        wrongCaller <-
+          authenticateControlPlaneFrame
+            transportBounds
+            maximumLifetime
+            authorityProviders
+            LifecycleAuthorityRuntime
+            LifecycleEksDrainIntent
+            wrongCallerFrame
+        case wrongCaller of
+          Left (AuthenticatedServerRequestAuthenticationFailed _) -> pure ()
+          other -> assertFailure ("wrong caller was not refused: " <> show other)
+    , testCase
+        "binds the EKS drain receipt route to the Authority and rejects cross-route or worker credentials"
+        $ do
+          captured <-
+            captureLifecycleFrame
+              clientProviders
+              LifecycleEksDrainReadBackReceiptRoute
+              body
+          let authorityProviders =
+                serverProvidersForRole LifecycleAuthorityRuntime trusted
+          admitted <-
+            authenticateControlPlaneFrame
+              transportBounds
+              maximumLifetime
+              authorityProviders
+              LifecycleAuthorityRuntime
+              LifecycleEksDrainReadBackReceipt
+              captured
+          case admitted of
+            Left err -> assertFailure ("EKS drain receipt frame was refused: " <> show err)
+            Right request -> do
+              authenticatedServerInnerBody request @?= body
+              verifiedCallerSlotPrincipal
+                (authenticatedServerCallerSlot request)
+                @?= CallerService LifecycleAuthorityRuntime
+
+          wrongRoute <-
+            authenticateControlPlaneFrame
+              transportBounds
+              maximumLifetime
+              authorityProviders
+              LifecycleAuthorityRuntime
+              LifecycleEksDrainIntent
+              captured
+          case wrongRoute of
+            Left (AuthenticatedServerRequestAuthenticationFailed _) -> pure ()
+            other -> assertFailure ("cross-route receipt frame was not refused: " <> show other)
+
+          let workerSigner = signerForPrincipal (CallerService ProviderWorkerRuntime)
+          workerFrame <-
+            captureLifecycleFrame
+              (clientProvidersFor workerSigner)
+              LifecycleEksDrainReadBackReceiptRoute
+              body
+          wrongCaller <-
+            authenticateControlPlaneFrame
+              transportBounds
+              maximumLifetime
+              authorityProviders
+              LifecycleAuthorityRuntime
+              LifecycleEksDrainReadBackReceipt
+              workerFrame
+          case wrongCaller of
+            Left (AuthenticatedServerRequestAuthenticationFailed _) -> pure ()
+            other -> assertFailure ("worker receipt caller was not refused: " <> show other)
     ]
 
 authenticatedRoleInterpreterTests :: TestTree
@@ -977,10 +1092,20 @@ fixturePulumiCheckpointHandler =
   mkPulumiCheckpointHandler
     PulumiCheckpointRepository
       { observeRegisteredPulumiCheckpoint = \_callerSlot _ -> pure PulumiCheckpointMissing
+      , observeRegisteredPulumiCheckpointPair = \_callerSlot _ ->
+          pure (PulumiCheckpointPairUnobservable "fixture unavailable")
       , publishRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointPublicationUnavailable "fixture unavailable")
       , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
           pure (PulumiCheckpointRetirementUnavailable "fixture unavailable")
+      , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
+      , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
       }
 
 countingInterpreter :: IORef Int -> RoleInterpreter IO

@@ -38,7 +38,7 @@ Current hard gates:
 - Fourmolu formatting through the checked-in [`fourmolu.yaml`](../../fourmolu.yaml)
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
-  `cabal build --builddir=.build all --ghc-options=-Werror`
+  `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox` after a successful quality gate
 
 The workflow or hook policy scan is scoped to repo-owned surfaces and excludes generated or
@@ -115,11 +115,9 @@ prodbox dev check
 
 `src/Prodbox/CheckCode.hs` owns that command. The supported gate currently requires:
 
-1. repository-owned workflow and hook policy scan
-2. `fourmolu --mode check app src test`
-3. `hlint app src test --hint=.hlint.yaml`
-4. `cabal build --builddir=.build all --ghc-options=-Werror`
-5. sync of the built operator binary to `.build/prodbox`
+1. file/doctrine, governed-document, Haskell-format/lint, and chart lint stages
+2. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`
+3. sync of the built operator binary to `.build/prodbox`
 
 The policy-scan phase ignores generated or retained runtime roots such as `.build/`,
 `dist-newstyle/`, and `.data/`.
@@ -702,7 +700,7 @@ A sibling in the same opaque-proof family widens the pattern past a single role'
 service demand consumes a provenance-bound calibrated coefficient and exact ratio arithmetic.
 Neither Dhall nor a measurement artifact can directly author request/limit values.
 
-`Prodbox.Capacity.Allocation` (Sprint `1.68`, ✅ landed) carries the host/cluster/workload nesting as an
+`Prodbox.Capacity.Allocation` carries the current host/cluster/workload nesting as an
 opaque, proof-carrying `AllocatedResourcePlan (c :: Certification)`, built by the total smart constructor
 `compileResourcePlan` alongside the sibling opaque proofs `ServiceCapacityPlan` and `RuntimeMemoryPlan`:
 an over-committed plan is not a constructible value (a `Left`, never a value), the plan and its

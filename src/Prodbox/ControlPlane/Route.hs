@@ -82,6 +82,13 @@ data ControlPlaneRoute
   | LifecycleRetainedMaterialDelivery
   | TargetRetainedMaterialRewrap
   | LifecycleCleanupRun
+  | LifecycleEksDrainIntent
+  | LifecycleEksDrainReadBackReceipt
+  | LifecycleAwsStackReader
+  | LifecycleAwsStackCreationBinding
+  | LifecycleOwnershipManifest
+  | LifecycleRecoveryPlane
+  | LifecycleLocalRke2HostObservation
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -138,6 +145,13 @@ controlPlaneRouteMethod route = case route of
   LifecycleRetainedMaterialDelivery -> ControlPlanePost
   TargetRetainedMaterialRewrap -> ControlPlanePost
   LifecycleCleanupRun -> ControlPlanePost
+  LifecycleEksDrainIntent -> ControlPlanePost
+  LifecycleEksDrainReadBackReceipt -> ControlPlanePost
+  LifecycleAwsStackReader -> ControlPlanePost
+  LifecycleAwsStackCreationBinding -> ControlPlanePost
+  LifecycleOwnershipManifest -> ControlPlanePost
+  LifecycleRecoveryPlane -> ControlPlanePost
+  LifecycleLocalRke2HostObservation -> ControlPlanePost
 
 controlPlaneRoutePath :: ControlPlaneRoute -> String
 controlPlaneRoutePath route = case route of
@@ -193,6 +207,16 @@ controlPlaneRoutePath route = case route of
   LifecycleRetainedMaterialDelivery -> "/v1/authority/retained-material/delivery"
   TargetRetainedMaterialRewrap -> "/v1/target-secret/retained-material/rewrap"
   LifecycleCleanupRun -> "/v1/authority/cleanup-run"
+  LifecycleEksDrainIntent -> "/v1/authority/eks-drain-intent"
+  LifecycleEksDrainReadBackReceipt ->
+    "/v1/authority/eks-drain-readback-receipt"
+  LifecycleAwsStackReader -> "/v1/authority/aws-stack-reader"
+  LifecycleAwsStackCreationBinding ->
+    "/v1/authority/aws-stack-creation-binding"
+  LifecycleOwnershipManifest -> "/v1/authority/ownership-manifest"
+  LifecycleRecoveryPlane -> "/v1/authority/recovery-plane"
+  LifecycleLocalRke2HostObservation ->
+    "/v1/authority/local-rke2-host-observation"
 
 controlPlaneRouteRole :: ControlPlaneRoute -> RuntimeRole
 controlPlaneRouteRole route = case route of
@@ -245,6 +269,13 @@ controlPlaneRouteRole route = case route of
   LifecycleRetainedMaterialDelivery -> LifecycleAuthorityRuntime
   TargetRetainedMaterialRewrap -> TargetSecretAgentRuntime
   LifecycleCleanupRun -> LifecycleAuthorityRuntime
+  LifecycleEksDrainIntent -> LifecycleAuthorityRuntime
+  LifecycleEksDrainReadBackReceipt -> LifecycleAuthorityRuntime
+  LifecycleAwsStackReader -> LifecycleAuthorityRuntime
+  LifecycleAwsStackCreationBinding -> LifecycleAuthorityRuntime
+  LifecycleOwnershipManifest -> LifecycleAuthorityRuntime
+  LifecycleRecoveryPlane -> LifecycleAuthorityRuntime
+  LifecycleLocalRke2HostObservation -> LifecycleAuthorityRuntime
 
 routesForRole :: RuntimeRole -> [ControlPlaneRoute]
 routesForRole role =

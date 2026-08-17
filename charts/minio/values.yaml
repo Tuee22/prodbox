@@ -2,6 +2,12 @@ global:
   # The root chart name, stamped onto every object via prodbox.io/chart-root.
   rootChart: minio
 
+# prodbox:lifecycle-authority-recovery-observer.values:start
+recoveryObserver:
+  serviceAccountName: prodbox-lifecycle-authority
+  serviceAccountNamespace: lifecycle-authority
+# prodbox:lifecycle-authority-recovery-observer.values:end
+
 image:
   # Sprint 4.31: MinIO is a shared platform component. The reconcile install
   # overrides image.repository / image.tag via --set — the public quay.io

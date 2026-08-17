@@ -383,6 +383,8 @@ buildSignedIntent boundary now revision operation submissionKey payload =
           , providerIntentAction = providerDispatchIntent payload
           , providerIntentDeadline = addAuthorityDuration now (authorityProviderIntentLifetime boundary)
           , providerIntentIdempotencyKey = clientSubmissionKeyText submissionKey
+          , providerIntentExpectedCredentialSession = Nothing
+          , providerIntentExpectedAcceptedAuthority = Nothing
           }
 
 providerDispatchRequestDigest :: ProviderDispatchPayload -> RequestDigest

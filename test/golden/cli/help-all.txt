@@ -912,6 +912,18 @@ Options:
 Examples:
 - prodbox test integration control-plane-counterexample  # Run the `control-plane-counterexample` integration suite.
 
+## prodbox test integration teardown-recovery
+prodbox test integration teardown-recovery - Run the frozen exact-keyed teardown recovery counterexample
+
+Run the frozen exact-keyed teardown recovery counterexample
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration teardown-recovery  # Run the `teardown-recovery` integration suite.
+
 ## prodbox test integration certificate-scope
 prodbox test integration certificate-scope - Verify live TLS serving and the exact presented SAN scope
 

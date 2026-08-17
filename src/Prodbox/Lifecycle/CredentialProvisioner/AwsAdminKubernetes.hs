@@ -166,7 +166,7 @@ renderAwsAdminJob imageRepository resources heartbeat prepared = do
                           , "containers"
                               .= [ object
                                      [ "name" .= workerContainerName
-                                     , "image" .= (repository <> "@" <> awsAdminPermitIntentImageDigest intent)
+                                     , "image" .= repository
                                      , "imagePullPolicy" .= ("Always" :: Text)
                                      , "stdin" .= True
                                      , "stdinOnce" .= True
@@ -497,7 +497,7 @@ instance FromJSON ContainerDto where
   parseJSON = withObject "AwsAdminContainer" $ \value ->
     ContainerDto <$> value .: "name" <*> value .: "image"
 
-data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural
+data ContainerStatusDto = ContainerStatusDto !Text !Bool !Natural !Text
 
 instance FromJSON ContainerStatusDto where
   parseJSON = withObject "AwsAdminContainerStatus" $ \value ->
@@ -505,6 +505,7 @@ instance FromJSON ContainerStatusDto where
       <$> value .: "name"
       <*> value .:? "ready" .!= False
       <*> value .:? "restartCount" .!= 0
+      <*> value .:? "imageID" .!= ""
 
 data ServiceAccountDto = ServiceAccountDto !Text !Text
 
@@ -556,7 +557,7 @@ decodeAndValidateJob imageRepository heartbeat prepared bytes = do
     (Left (AwsAdminKubernetesObservationFailed "Job identity or annotations drifted"))
   case findContainer workerContainerName (jobDtoContainers job) of
     Just (ContainerDto _ image)
-      | image == imageRepository <> "@" <> awsAdminPermitIntentImageDigest intent -> Right job
+      | image == imageRepository -> Right job
     _ -> Left (AwsAdminKubernetesObservationFailed "Job immutable worker image drifted")
 
 observeExactPod
@@ -628,8 +629,9 @@ validatePod imageRepository heartbeat prepared job serviceAccountName serviceAcc
   case ( findContainer workerContainerName (podDtoContainers pod)
        , findStatus workerContainerName (podDtoStatuses pod)
        ) of
-    (Just (ContainerDto _ image), Just (ContainerStatusDto _ True 0))
-      | image == imageRepository <> "@" <> awsAdminPermitIntentImageDigest intent ->
+    (Just (ContainerDto _ image), Just (ContainerStatusDto _ True 0 runtimeImageId))
+      | image == imageRepository
+          && runtimeImageDigest runtimeImageId == Just (awsAdminPermitIntentImageDigest intent) ->
           Right
             AwsAdminPodObservation
               { awsAdminObservedJobName = jobDtoName job
@@ -761,7 +763,16 @@ findContainer :: Text -> [ContainerDto] -> Maybe ContainerDto
 findContainer name = find (\(ContainerDto actual _) -> actual == name)
 
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
-findStatus name = find (\(ContainerStatusDto actual _ _) -> actual == name)
+findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
+
+runtimeImageDigest :: Text -> Maybe Text
+runtimeImageDigest value =
+  let candidate = case Text.breakOnEnd "://" value of
+        (prefix, suffix) | not (Text.null prefix) -> suffix
+        _ -> value
+   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
+        then Just candidate
+        else Nothing
 
 mapContains :: Map Text Text -> Map Text Text -> Bool
 mapContains expected actual = all (\(key, value) -> Map.lookup key actual == Just value) (Map.toList expected)

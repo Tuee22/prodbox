@@ -870,7 +870,7 @@ defaultComponentGraph =
       , orderingOn ComponentVaultWorkload
       , orderingOn ComponentRegistry
       ]
-      ProbeRolloutComplete
+      ProbeResourceExists
   , -- The home Target Agent is the first post-Vault standing role because the
     -- genesis path seals its one-time material directly to that Agent.
     node

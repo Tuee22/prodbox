@@ -30,7 +30,10 @@ module Prodbox.ControlPlane.ConfigEndpoint
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (decode, encode))
+import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -90,7 +93,46 @@ data ConfigProjectionScope
   | ConfigProjectionAdminActionRunner
   | ConfigProjectionCredentialProvisioner
   deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (Serialise)
+
+-- | Stable wire tags for the durable config projection protocol.  These tags
+-- were originally emitted by the generic 'Serialise' instance.  Spell them
+-- out so removing or reordering a retired projection cannot silently change
+-- the meaning of retained requests and projections.
+instance Serialise ConfigProjectionScope where
+  encode scope =
+    Cbor.encodeListLen 1 <> Cbor.encodeWord (configProjectionScopeWireTag scope)
+  decode = do
+    encodedFields <- Cbor.decodeListLen
+    unless (encodedFields == 1) $ fail "ConfigProjectionScope: expected one wire-tag field"
+    wireTag <- Cbor.decodeWord
+    case wireTag of
+      0 -> pure ConfigProjectionBootstrapBroker
+      1 -> pure ConfigProjectionGatewayRuntime
+      2 -> pure ConfigProjectionLifecycleAuthority
+      3 -> pure ConfigProjectionProviderWorker
+      4 -> pure ConfigProjectionAuthorityBackup
+      5 -> pure ConfigProjectionTlsRetention
+      6 -> pure ConfigProjectionTargetSecretAgent
+      7 -> pure ConfigProjectionOperator
+      8 -> pure ConfigProjectionTestHarness
+      9 -> pure ConfigProjectionAdminActionRunner
+      10 -> pure ConfigProjectionCredentialProvisioner
+      _ -> fail "ConfigProjectionScope: unknown wire tag"
+
+configProjectionScopeWireTag :: ConfigProjectionScope -> Word
+configProjectionScopeWireTag scope =
+  case scope of
+    ConfigProjectionBootstrapBroker -> 0
+    ConfigProjectionGatewayRuntime -> 1
+    ConfigProjectionLifecycleAuthority -> 2
+    ConfigProjectionProviderWorker -> 3
+    ConfigProjectionAuthorityBackup -> 4
+    ConfigProjectionTlsRetention -> 5
+    ConfigProjectionTargetSecretAgent -> 6
+    ConfigProjectionOperator -> 7
+    ConfigProjectionTestHarness -> 8
+    ConfigProjectionAdminActionRunner -> 9
+    ConfigProjectionCredentialProvisioner -> 10
 
 newtype ConfigObserveRequest = ConfigObserveRequest
   { configObserveRequestedScope :: ConfigProjectionScope

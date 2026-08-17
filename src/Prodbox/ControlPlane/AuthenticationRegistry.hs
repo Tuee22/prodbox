@@ -29,6 +29,8 @@ module Prodbox.ControlPlane.AuthenticationRegistry
   , targetSecretWorkerVaultRole
   , targetSecretWorkerAuditorVaultRole
   , targetSecretControllerAuditorVaultRole
+  , bootstrapCoreExternalControlPlaneCallerServiceAccount
+  , gatewayExternalControlPlaneCallerServiceAccounts
   , externalControlPlaneCallerServiceAccounts
   )
 where
@@ -141,16 +143,27 @@ targetSecretControllerAuditorVaultRole :: Text
 targetSecretControllerAuditorVaultRole =
   "prodbox-target-secret-controller-auditor"
 
--- | The two host-facing caller identities are concrete Kubernetes
--- ServiceAccounts as well as Vault Kubernetes-auth roles.  The gateway chart
--- projects this closed inventory into ServiceAccount and self-TokenRequest
--- RBAC objects; keeping it beside the Vault role names prevents either side of
--- the authentication tuple from drifting.
+-- | The operator cleanup caller is part of bootstrap core.  Its
+-- ServiceAccount and exact self-TokenRequest RBAC therefore survive deletion
+-- of Gateway and every application namespace.
+bootstrapCoreExternalControlPlaneCallerServiceAccount :: Text
+bootstrapCoreExternalControlPlaneCallerServiceAccount =
+  operatorControlPlaneVaultRole
+
+-- | The test harness remains a Gateway-lifetime test fixture.  It is not a
+-- cleanup authority and is deliberately absent from the ordinary teardown
+-- recovery profile.
+gatewayExternalControlPlaneCallerServiceAccounts :: [Text]
+gatewayExternalControlPlaneCallerServiceAccounts =
+  [harnessControlPlaneVaultRole]
+
+-- | Complete host-facing caller inventory.  Each identity is both a concrete
+-- Kubernetes ServiceAccount and a Vault Kubernetes-auth role; the owning
+-- charts project the lifetime-specific subsets above.
 externalControlPlaneCallerServiceAccounts :: [Text]
 externalControlPlaneCallerServiceAccounts =
-  [ operatorControlPlaneVaultRole
-  , harnessControlPlaneVaultRole
-  ]
+  bootstrapCoreExternalControlPlaneCallerServiceAccount
+    : gatewayExternalControlPlaneCallerServiceAccounts
 
 -- | Exact inbound caller topology.  Operator and automation identities can
 -- exercise every closed route; service-to-service grants are the minimal
@@ -212,6 +225,13 @@ controlPlaneRouteCallerTopology =
   , row LifecycleRetainedMaterialDelivery [CallerCredentialProvisioner]
   , (TargetRetainedMaterialRewrap, [authority])
   , row LifecycleCleanupRun [authority]
+  , row LifecycleEksDrainIntent [authority]
+  , row LifecycleEksDrainReadBackReceipt [authority]
+  , row LifecycleAwsStackReader [authority]
+  , row LifecycleAwsStackCreationBinding [authority]
+  , row LifecycleOwnershipManifest [authority]
+  , row LifecycleRecoveryPlane [authority]
+  , (LifecycleLocalRke2HostObservation, [CallerOperatorCli])
   ]
  where
   row route services = (route, [CallerOperatorCli, CallerTestHarness] <> services)

@@ -121,6 +121,7 @@ import Prodbox.ControlPlane.TargetMaterialEndpoint
   , targetMaterialMetadataOwnerNonceField
   , targetMaterialMetadataPodUidField
   , targetMaterialMetadataRequestDigestField
+  , targetMaterialMetadataVaultVersionField
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId (..)
@@ -1262,13 +1263,17 @@ executeTargetWorkerMaterialization now boundary attestation payload
       (TargetWorkerDataPresent version observedFields, TargetWorkerMetadataPresent metadataVersion custom)
         | observedFields == fields
             && metadataVersion == version
-            && custom == expectedMetadata commitment ->
+            && custom == expectedMetadata version commitment ->
             pure
               ( Right
                   ( TargetWorkerMaterializationAlreadyApplied
                       (receipt version commitment)
                   )
               )
+        | observedFields == fields
+            && metadataVersion == version
+            && custom == legacyExpectedMetadata commitment ->
+            repairMetadata dataObservation fields commitment
       _ -> pure (Left TargetWorkerExecutionDataReadBackMismatch)
 
   repairMetadata dataObservation fields commitment = case dataObservation of
@@ -1303,7 +1308,7 @@ executeTargetWorkerMaterialization now boundary attestation payload
       Right (TargetWorkerDataPresent observedVersion observedFields)
         | observedVersion == version && observedFields == fields -> do
             written <-
-              targetWorkerWriteMetadata boundary target (expectedMetadata commitment)
+              targetWorkerWriteMetadata boundary target (expectedMetadata version commitment)
             case written of
               Left detail -> pure (Left (TargetWorkerExecutionMetadataWriteFailed detail))
               Right () -> do
@@ -1311,14 +1316,15 @@ executeTargetWorkerMaterialization now boundary attestation payload
                 pure $ case metadataReadBack of
                   Right (TargetWorkerMetadataPresent metadataVersion custom)
                     | metadataVersion == version
-                        && custom == expectedMetadata commitment ->
+                        && custom == expectedMetadata version commitment ->
                         Right (receipt version commitment)
                   _ -> Left TargetWorkerExecutionMetadataReadBackMismatch
       _ -> pure (Left TargetWorkerExecutionDataReadBackMismatch)
 
-  expectedMetadata commitment =
+  expectedMetadata version commitment =
     Map.fromList
       [ (targetMaterialMetadataGenerationField, naturalText expectedGeneration)
+      , (targetMaterialMetadataVaultVersionField, naturalText version)
       , (targetMaterialMetadataCommitmentField, commitment)
       , (targetMaterialMetadataOwnerNonceField, ownerNonceText (targetIntentOwnerNonce spec))
       ,
@@ -1339,6 +1345,11 @@ executeTargetWorkerMaterialization now boundary attestation payload
         , targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
         )
       ]
+
+  legacyExpectedMetadata commitment =
+    Map.delete
+      targetMaterialMetadataVaultVersionField
+      (expectedMetadata 1 commitment)
 
   receipt version commitment =
     TargetWorkerReceipt

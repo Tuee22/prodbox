@@ -34,7 +34,7 @@ import Data.Aeson (Value, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthenticationRegistry
-  ( externalControlPlaneCallerServiceAccounts
+  ( gatewayExternalControlPlaneCallerServiceAccounts
   )
 import Prodbox.Host (defaultGatewayNodePort)
 import Prodbox.Vault.RoleId (VaultRoleId (VaultRoleGatewayDaemon), vaultRoleIdText)
@@ -63,7 +63,7 @@ gatewayChartStatics =
     , gatewayStaticServiceAccount = vaultRoleIdText VaultRoleGatewayDaemon
     , gatewayStaticVaultRole = vaultRoleIdText VaultRoleGatewayDaemon
     , gatewayStaticExternalCallerServiceAccounts =
-        externalControlPlaneCallerServiceAccounts
+        gatewayExternalControlPlaneCallerServiceAccounts
     }
 
 -- | @ports@ block for the deployed values JSON.

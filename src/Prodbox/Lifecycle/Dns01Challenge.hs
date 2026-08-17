@@ -66,7 +66,7 @@ import Prodbox.Lifecycle.DnsRecord
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass)
 import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..), managedDestroyCapability)
-import Prodbox.Test.CleanupRun (CleanupDependencyKind (CleanupRequiresAttempt))
+import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (CleanupRequiresAttempt))
 import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
 import System.Exit (ExitCode (..))
 

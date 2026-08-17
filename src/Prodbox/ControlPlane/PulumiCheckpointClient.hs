@@ -40,9 +40,14 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointMutationTicket (..)
   , PulumiCheckpointObservation (..)
+  , PulumiCheckpointPairObservation
   , PulumiCheckpointPublicationResult (..)
   , PulumiCheckpointRequest (..)
   , PulumiCheckpointResponse (..)
+  , PulumiCheckpointRestoreReadBack
+  , PulumiCheckpointRestoreResult
+  , PulumiCheckpointRetirementAttemptResult
+  , PulumiCheckpointRetirementReadBack
   , PulumiCheckpointRetirementResult (..)
   , PulumiCheckpointWireObservation (..)
   , PulumiCheckpointWirePublication (..)
@@ -51,6 +56,9 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , pulumiCheckpointResponseMaximumBytes
   )
 import Prodbox.Http.ReplyStatus (replyStatusCode)
+import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
+  ( VerifiedPulumiCheckpointRef
+  )
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( CanonicalPulumiCheckpoint
@@ -67,8 +75,11 @@ import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data PulumiCheckpointAuthority m = PulumiCheckpointAuthority
-  { observePulumiCheckpoint
+  { pulumiCheckpointAuthorityRegistration :: !RegisteredPulumiCheckpoint
+  , observePulumiCheckpoint
       :: !(m (Either PulumiCheckpointClientError PulumiCheckpointObservation))
+  , observePulumiCheckpointPair
+      :: !(m (Either PulumiCheckpointClientError PulumiCheckpointPairObservation))
   , publishPulumiCheckpoint
       :: !( OperationId
             -> Maybe PulumiCheckpointDigest
@@ -86,6 +97,34 @@ data PulumiCheckpointAuthority m = PulumiCheckpointAuthority
                  ( Either
                      PulumiCheckpointClientError
                      PulumiCheckpointRetirementResult
+                 )
+          )
+  , restorePulumiCheckpointPrimary
+      :: !( OperationId
+            -> PulumiCheckpointDigest
+            -> VerifiedPulumiCheckpointRef
+            -> m (Either PulumiCheckpointClientError PulumiCheckpointRestoreResult)
+          )
+  , readBackPulumiCheckpointRestore
+      :: !( OperationId
+            -> m (Either PulumiCheckpointClientError PulumiCheckpointRestoreReadBack)
+          )
+  , attemptPulumiCheckpointRetirement
+      :: !( OperationId
+            -> Maybe PulumiCheckpointDigest
+            -> Maybe VerifiedPulumiCheckpointRef
+            -> m
+                 ( Either
+                     PulumiCheckpointClientError
+                     PulumiCheckpointRetirementAttemptResult
+                 )
+          )
+  , readBackPulumiCheckpointRetirement
+      :: !( OperationId
+            -> m
+                 ( Either
+                     PulumiCheckpointClientError
+                     PulumiCheckpointRetirementReadBack
                  )
           )
   }
@@ -132,7 +171,8 @@ pulumiCheckpointClientWith
   -> PulumiCheckpointAuthority IO
 pulumiCheckpointClientWith callAuthenticated registered =
   PulumiCheckpointAuthority
-    { observePulumiCheckpoint = do
+    { pulumiCheckpointAuthorityRegistration = registered
+    , observePulumiCheckpoint = do
         response <- call (ObservePulumiCheckpoint registeredName)
         pure $ do
           decoded <- response
@@ -140,6 +180,15 @@ pulumiCheckpointClientWith callAuthenticated registered =
             PulumiCheckpointObserved echoed observation -> do
               validateRegistration echoed
               decodeObservation observation
+            other -> Left (unexpected other)
+    , observePulumiCheckpointPair = do
+        response <- call (ObservePulumiCheckpointPair registeredName)
+        pure $ do
+          decoded <- response
+          case decoded of
+            PulumiCheckpointPairObserved echoed observation -> do
+              validateRegistration echoed
+              Right observation
             other -> Left (unexpected other)
     , publishPulumiCheckpoint = \operation expected checkpoint -> do
         response <-
@@ -175,6 +224,71 @@ pulumiCheckpointClientWith callAuthenticated registered =
             PulumiCheckpointRetirement echoed retirement -> do
               validateRegistration echoed
               decodeRetirement retirement
+            other -> Left (unexpected other)
+    , restorePulumiCheckpointPrimary = \operation expected predecessor -> do
+        response <-
+          call
+            ( RestorePulumiCheckpointPrimary
+                registeredName
+                PulumiCheckpointMutationTicket
+                  { pulumiCheckpointTicketOperation = operation
+                  , pulumiCheckpointTicketExpectedDigest = Just expected
+                  }
+                predecessor
+            )
+        pure $ do
+          decoded <- response
+          case decoded of
+            PulumiCheckpointRestoreAttempted echoed result -> do
+              validateRegistration echoed
+              Right result
+            other -> Left (unexpected other)
+    , readBackPulumiCheckpointRestore = \operation -> do
+        response <-
+          call
+            ( ReadBackPulumiCheckpointRestore
+                registeredName
+                operation
+            )
+        pure $ do
+          decoded <- response
+          case decoded of
+            PulumiCheckpointRestoreReadBackObserved echoed result -> do
+              validateRegistration echoed
+              Right result
+            other -> Left (unexpected other)
+    , attemptPulumiCheckpointRetirement =
+        \operation expected expectedReference -> do
+          response <-
+            call
+              ( AttemptPulumiCheckpointRetirement
+                  registeredName
+                  PulumiCheckpointMutationTicket
+                    { pulumiCheckpointTicketOperation = operation
+                    , pulumiCheckpointTicketExpectedDigest = expected
+                    }
+                  expectedReference
+              )
+          pure $ do
+            decoded <- response
+            case decoded of
+              PulumiCheckpointRetirementAttempted echoed result -> do
+                validateRegistration echoed
+                Right result
+              other -> Left (unexpected other)
+    , readBackPulumiCheckpointRetirement = \operation -> do
+        response <-
+          call
+            ( ReadBackPulumiCheckpointRetirement
+                registeredName
+                operation
+            )
+        pure $ do
+          decoded <- response
+          case decoded of
+            PulumiCheckpointRetirementReadBackObserved echoed result -> do
+              validateRegistration echoed
+              Right result
             other -> Left (unexpected other)
     }
  where
@@ -280,8 +394,13 @@ decodeRetirement retirement = case retirement of
 responseToken :: PulumiCheckpointResponse -> Text
 responseToken response = case response of
   PulumiCheckpointObserved {} -> "observation"
+  PulumiCheckpointPairObserved {} -> "pair-observation"
   PulumiCheckpointPublication {} -> "publication"
   PulumiCheckpointRetirement {} -> "retirement"
+  PulumiCheckpointRestoreAttempted {} -> "restore-attempt"
+  PulumiCheckpointRestoreReadBackObserved {} -> "restore-read-back"
+  PulumiCheckpointRetirementAttempted {} -> "retirement-attempt"
+  PulumiCheckpointRetirementReadBackObserved {} -> "retirement-read-back"
   PulumiCheckpointBadRequest detail -> "bad-request:" <> detail
   PulumiCheckpointRegistrationRefused detail -> "registration-refused:" <> detail
   PulumiCheckpointOperationRefRefused _ detail -> "operation-ref-refused:" <> detail

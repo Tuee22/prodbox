@@ -4,10 +4,10 @@
 **Supersedes**: N/A
 **Generated sections**: none
 
-> **Purpose**: Define how the `prodbox` binary classifies the host it runs on and reaches a Linux
-> frame on every OS — a per-OS host-provider model, mirrored in kind from the operator's
-> `hostbootstrap` library, that makes "run a Linux cluster tool on a non-Linux host without a VM"
-> unrepresentable.
+> **Purpose**: Define how the `prodbox` binary classifies the host it runs on and selects the
+> canonical Linux frame on every OS — a per-OS host-provider model mirrored in kind from the
+> operator's `hostbootstrap` library — while stating exactly which properties are type-enforced and
+> which remain supported-path or runtime guards.
 
 ## 1. Scope and Posture
 
@@ -27,14 +27,12 @@ generalizes: "the substrate is a fact about the host, not a knob." prodbox mirro
 refactor-onto-`hostbootstrap`-later posture already established for the registry-credential seam in
 [local_registry_pipeline.md § 6.1](./local_registry_pipeline.md#61-host-docker-cli-auth-isolation-registry-push-vs-the-operators-docker-hub-login).
 
-Sprint `1.52` landed the multi-OS host-provider config/detection surface: the `HostSubstrate`
-detector, the closed `HostTool` / `AbsExe` surface, the `LiftLayer` fold, pure host-gated
-reconciler plans, the rule-j Docker host-frame gate, and the `host_substrate_supported`
-prerequisite root. Sprint `4.37` landed the provider reconciler selection, idempotent
-ready/missing/reboot decisions, wrong-provider fail-fast refusal, and Docker Linux-frame dispatch
-for native-arch build work. Live macOS-Lima and Windows-WSL2 provisioning on those hosts remains a
-non-blocking proof axis. Status lives only in
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md); this doc states the target shape.
+The current source contains the `HostSubstrate` detector, `LiftLayer` fold, pure host-gated
+reconciler plans, Docker host-frame gate, `host_substrate_supported` prerequisite root, provider
+selection, idempotent ready/missing/reboot decisions, and wrong-provider fail-fast refusal. It does
+not yet carry every subprocess invocation through a closed `HostTool` / `AbsExe` boundary; Section 3
+states that target explicitly. Rollout, validation, and remaining-work status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 ## 2. The Host Substrate Is Detected, Never Configured
 
@@ -69,20 +67,13 @@ classification, where an invalid host is a `Left`, not a warning.
 
 ## 3. Host Tools Are a Closed Enum Resolved to Absolute Paths — **TARGET, not in force**
 
-> **Status of this section (Sprint `1.78`, 2026-08-05).** This is a declared target, not a
-> description of the worktree, and it is stated as such per
-> [engineering/README.md](./README.md). It previously read as though it were in force. It was not:
-> a `HostTool` module existed with a closed enum and an `AbsExe` smart constructor, and it had
-> **zero production importers** — every one of ~160 host invocations across ~25 modules passes a
-> bare command name as `Prodbox.Subprocess.subprocessPath`, which is a plain `FilePath` and so
-> offers `AbsExe` no seam to occupy. `sudo` itself is a bare literal at every site, and so is the
-> tool it wraps, so resolving any single constructor would only move `$PATH` resolution one
-> argument to the right — under a privileged escalation. Sprint `1.78` deleted the unused module
-> rather than leave a type that read as enforcement and performed none. Reaching this target means
-> `Subprocess` carrying a resolved-absolute path by type, every call site routed through it, and a
-> `dev check` rule rejecting bare literals for enum members; the Development Plan owns that
-> scheduling. Until then, the closed enum below describes where this is going, and the sentence
-> after the code block describes a property the binary **does not yet have**.
+> **Current/target correspondence.** This is a declared target, not a description of the worktree.
+> The former unused `HostTool` module was removed because it had no production importers. Current
+> host invocations still pass bare command names through `Prodbox.Subprocess.subprocessPath`, a
+> plain `FilePath`; `sudo` and the tool it wraps are therefore both resolved outside the type
+> system. Reaching this target means `Subprocess` carrying a resolved-absolute path by type, every
+> call site routed through it, and a `dev check` rule rejecting bare literals for enum members.
+> The Development Plan owns implementation status.
 
 Every external tool the host binary shells out to is a constructor of a closed `HostTool` type, and
 every invocation reads an absolute path. Windows-only tools are `CPP`-gated so they do not exist as
@@ -108,8 +99,8 @@ mkAbsExe fp
 
 A bare command name is used only for discovery, never as an invocation target — the host binary
 never resolves a tool against the host's own `$PATH`. **This is the target property. It does not
-hold today** — see the status note at the head of this section; the gap is scheduled, not silently
-tolerated.
+hold today** — see the current/target correspondence at the head of this section and the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
 ## 4. The Lift: Everything Docker-Inward Is OS-Agnostic Linux
 
@@ -137,19 +128,21 @@ invocation surface only. The Ubuntu-24.04 VM the Apple/Windows providers synthes
 Linux host to every layer above it: the same charts, the same `cluster reconcile`, the same chart
 platform.
 
-## 5. Illegal States This Doctrine Owns
+## 5. Canonical Selection and Runtime-Guard Bounds
 
-The frame a Linux cluster tool must run in is not a free-form argument checked at a call site — it is
-computed by a single total function whose type range excludes the illegal cases. These are the rules
-this doc owns; each is discharged by construction, not by a runtime guard.
+`clusterFrame` is the canonical pure selection used by `dockerLinuxFrameDispatch`, and its exhaustive
+mapping never selects a host-direct frame for Apple or Windows. That is a strong supported-path
+property, but it is not yet a type-level impossibility: `LiftLayer (..)` is exported and
+`foldHostLift` accepts an arbitrary `[LiftLayer]`, so another caller can still construct an empty or
+wrong-provider list. The tests pin the canonical mapping; the target closed host-program algebra
+will make bypassing it unconstructible. Rule j is a separate runtime refusal, not a type invariant.
 
 ### Rule a & Rule b — RKE2 on Apple/Windows admits only a VM frame
 
 ```haskell
 -- Example: the only way to obtain the frame for a Linux cluster tool (rke2/kind).
--- It is exhaustive and total; there is NO arm that returns a host-direct
--- (empty) context for Apple or Windows, so "rke2 on Apple without a VM"
--- (rule a) and "rke2 on Windows without WSL2" (rule b) are unconstructible.
+-- It is exhaustive and total; the canonical projection has NO arm that returns
+-- a host-direct (empty) context for Apple or Windows.
 clusterFrame :: HostSubstrate -> [LiftLayer]
 clusterFrame AppleSilicon = [ViaLimaVM defaultLimaVM]   -- rule a: Lima VM mandatory
 clusterFrame WindowsCpu   = [ViaWsl2VM defaultWsl2VM]    -- rule b: WSL2 mandatory
@@ -158,11 +151,11 @@ clusterFrame LinuxCpu     = []                           -- native Linux frame, 
 clusterFrame LinuxGpu     = []                           -- native Linux frame
 ```
 
-Because `clusterFrame` is the *only* source of a cluster-tool frame and it never returns `[]` for an
-Apple or Windows host, a host-direct arm `rke2` invocation on those substrates cannot be written. The
-guarantee is structural — the same "make the illegal state unconstructible over checking it" move the
-lifecycle registry uses for creatable-but-undiscoverable resources
-([lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)).
+`clusterFrame` never returns `[]` for an Apple or Windows host, and supported dispatch through
+`dockerLinuxFrameDispatch` consumes that projection directly. The current exported list/constructor
+API means a bypass can still be written, however; this is canonical selection plus regression
+coverage, not the same structural guarantee as the target lifecycle registry
+([lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)).
 
 ### Rule j — host-frame `docker run` is OS-gated
 
@@ -190,8 +183,8 @@ withHostDocker act = do
 
 A host-dependency reconciler is an idempotent value carrying its own applicability predicate over the
 `HostSubstrate`, plus an install-and-verify plan (mirroring `HostBootstrap.Ensure.Reconciler`).
-Sprint `1.52` represents these as pure host-gated reconciler plans; Sprint `4.37` adds the decision
-fold that turns observed provider state into a no-op, an apply-plan, or a reboot-required outcome.
+Current source represents these as pure host-gated reconciler plans and a decision fold that turns
+observed provider state into a no-op, an apply-plan, or a reboot-required outcome.
 Running a reconciler on a host its predicate rejects fails fast — a one-line diagnostic and a
 non-zero exit — **before any side effect**. The applicability and decision folds are pure so they are
 tested without exiting the process; the live package-manager / VM-provider runner is the remaining
@@ -258,8 +251,8 @@ closed against observed facts, an over-committed plan a `Left`, never a construc
 algebra and its three-ring enforcement boundary are owned by
 [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
 / [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); observed-host recompile is the
-Sprint `4.52` implementation (Done on its code-owned surface — see
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) for status).
+current implementation. Implementation and qualification status remain in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 This keeps the host-provider model pure: macOS/Windows only choose the Lima/WSL2 Linux frame; the
 capacity contract is then evaluated against facts observed in that frame. The resource algebra and
@@ -272,12 +265,12 @@ that those probes happen in the detected Linux frame instead of through a config
 This SSoT owns the host-platform doctrine intention.
 
 - **Owned statement**: the host `prodbox` runs on is a detected `HostSubstrate`, never a configured
-  knob; every OS reaches a Linux frame through a closed per-OS provider lift; and "a Linux cluster
-  tool on a non-Linux host without a VM" (rules a/b) and "host-frame `docker` on Windows" (rule j)
-  are unrepresentable, not runtime-checked.
-- **Linked dependents** (Sprints `1.52` and `4.37` landed):
+  knob; `clusterFrame` is the canonical per-OS Linux-frame projection; supported dispatch consumes
+  that projection; and host-frame Docker on a non-Linux host is rejected at runtime. The current
+  exported `[LiftLayer]` fold does not make a wrong or missing lift unrepresentable. The closed
+  host-program target must remove that construction path rather than restating this runtime bound.
+- **Current source correspondence**:
   `src/Prodbox/Host/Substrate.hs` (the `HostSubstrate` detector),
-  `src/Prodbox/Host/Tool.hs` (the closed `HostTool` enum + `AbsExe`),
   `src/Prodbox/Host/Lift.hs` (`LiftLayer` / `foldHostLift` / `clusterFrame`),
   `src/Prodbox/Host/Lima.hs` and `src/Prodbox/Host/Wsl2.hs` (provider argv builders),
   `src/Prodbox/Host/Ensure.hs` (the host-gated reconciler plans and provider-state decisions),
@@ -292,5 +285,5 @@ This SSoT owns the host-platform doctrine intention.
 - [prerequisite_doctrine.md](./prerequisite_doctrine.md) — the fail-fast host gate this relaxes
 - [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) — the host-capacity budget, RKE2 reservations, and runtime guardrails evaluated inside the selected Linux frame
 - [pure_fp_standards.md](./pure_fp_standards.md) — smart constructors, exhaustive-ADT state, Plan / Apply
-- [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate) — the "make illegal states unconstructible" and unobservable-is-modelled house pattern
+- [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary) — the "make illegal states unconstructible" and unobservable-is-modelled house pattern
 - [config_doctrine.md](./config_doctrine.md) · [Engineering Doctrine Index](./README.md) · [Development Plan](../../DEVELOPMENT_PLAN/README.md) · [Documentation Standards](../documentation_standards.md)

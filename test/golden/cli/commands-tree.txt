@@ -115,6 +115,7 @@ prodbox
       gateway-daemon
       gateway-pods
       control-plane-counterexample
+      teardown-recovery
       certificate-scope
       clean-room-handoff
       ha-rke2-aws

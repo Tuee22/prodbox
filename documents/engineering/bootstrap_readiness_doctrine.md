@@ -53,6 +53,42 @@ Liveness, admission, capability result, and stability are flat exhaustive ADTs p
 authoritative observations. A GADT indexes which operation a program may request; it does not claim
 that a remote transition occurred.
 
+#### 0.4.1 The worker-image corollary: what is proven and where to look are different values
+
+The Bootstrap Broker launches its secret worker from the controller's own image, and § 0.4 decides
+*which* of the image's identities carries which obligation.
+
+A container image has two sha256 identities and they are the same sixty-four lower-hex characters:
+the **config digest** the container runtime reports as `status.containerStatuses[].imageID`, and the
+**manifest digest** an OCI registry can resolve. They are indistinguishable by syntax and
+distinguishable only by which endpoint answers them, so the separation cannot live in a smart
+constructor over the digest text — see
+[local_registry_pipeline.md § 6.2](./local_registry_pipeline.md) for the pipeline half and
+[chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md) for the general shape.
+
+The doctrine assigns them as follows:
+
+- **The attestation identity is the observed runtime digest.** A worker Pod is the controller's own
+  image exactly when the worker's observed `imageID` equals the controller's observed `imageID`.
+  This is an *observation* of what the kubelet actually ran, and it is what § 0.4 requires.
+- **The Pod spec's `image` field is a request, not a proof.** It carries the controller's *declared*
+  reference — whatever the kubelet can resolve, which for a locally built image is a mutable tag.
+  A digest in a Pod spec commands; it does not observe.
+
+Two consequences follow, and both are stronger than pinning the spec:
+
+1. A digest-pinned Pod spec never proved the worker matched the controller — only that the kubelet
+   did not ignore the spec. Requiring the two Pods' observed runtime identities to agree subsumes
+   that, because it compares against an independently pinned expectation rather than against a value
+   the same spec supplied.
+2. Pinning the spec to a **config** digest proves nothing at all, because no kubelet can resolve it;
+   the Pod never starts. A refusal that no run can reach is not a check.
+
+The declared reference is re-observed at Pod creation rather than recorded in the durable worker
+intent. It is an addressing hint whose correct value can change with a redeploy, not part of the
+binding the intent commits to; the creation boundary additionally refuses when the freshly observed
+runtime digest no longer equals the one the intent pinned.
+
 ### 0.5 Cannot observe is never success
 
 Unreachable, malformed, stale, wrong-scope, and deadline-expired observations keep the gate closed
@@ -324,11 +360,12 @@ cert-manager issuer admission and controller-owned public edge. A Gateway-ready 
 satisfy any Authority, Provider, or Target-Agent prerequisite.
 
 The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
-`--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway config or
-a generic endpoint. Until the physical adapters and workload rendering owned by Sprint `3.26`
-exist, the production boundary may report process liveness but keeps readiness and every
-non-health capability closed; a deterministic fake proves composition without becoming a
-production selection path.
+`--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway
+config or a generic endpoint. Completed Sprint `3.26` supplied chart/render foundations, but the
+production boundary still reports only process liveness and keeps readiness and every non-health
+capability closed; a deterministic fake proves composition without becoming a production selection
+path. Physical adapter activation and cutover status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps
@@ -358,6 +395,123 @@ Vault effect and custody/journal-store transition also requires its own opaque p
 fresh matching durable fence and Kubernetes Lease observation; fence acquire/retire uses an exact
 CAS plan and read-back. Expired-owner cleanup and exact CAS retirement must complete before a
 successor reference can execute a new fence generation.
+
+#### 3.3.1 Expired-owner retirement (Sprint `2.47`)
+
+The paragraph above — *expired-owner cleanup and exact CAS retirement must complete before a
+successor reference can execute a new fence generation* — described behaviour the implementation did
+not have. `decideBootstrapFenceRetire` existed with its store half wired and **zero production
+callers**, so a fence abandoned by a failed bring-up refused every later acquisition permanently.
+Sprint `2.47` closed that gap; this section records the resulting contract so the next reader is not
+left to re-derive it from the wiring.
+
+**Three independent facts, each refusing closed on ambiguity.** Retirement produces a CAS plan only
+when the predecessor's durable deadline elapsed on a *trusted* authority clock, its exact Lease is
+absent or expired, and its owner cleanup was read back absent. An unreadable clock, an unreadable
+Lease, and an unreadable cleanup each refuse. In particular, *cannot determine* is never expiry:
+`PredecessorLiveness` is three-valued for precisely this reason, because the moment a positive expiry
+authorizes a retirement, a `Bool` would let an unreadable clock authorize one too.
+
+**The cleanup observation is scoped by fence generation, and the scope is checked in both
+directions.** The predecessor's pod UID, session id, session accessor, and receipt digest are not
+recoverable from the durable record that survives it, so an absence claim is keyed by the one
+identity the fence does carry. An observation answering about generation `G'` is refused as
+unobservable when retiring generation `G`, whichever way the mismatch points — an answer about a
+different subject is never consumed as an answer about this one
+([chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md)).
+
+**Absence is whole, not sampled.** The Broker's secret worker is one fixed Pod coordinate, built by a
+closed native manifest builder and granted by that exact name in the Broker's Role. At most one can
+exist, so a Pod carrying a *different* fence generation is itself proof that this generation's worker
+is gone. Every other answer — unparseable body, missing or non-canonical annotation, rejected
+identity, any other status, transport failure — is unobservable. Absence is the only outcome that can
+authorize a takeover, so it is the only one that must be positively proven.
+
+**What retirement does and does not prove, stated rather than implied.** It proves the predecessor's
+worker Pod is gone. It does **not** prove that a Vault session the predecessor held is gone, and
+nothing short of widening the durable fence could. It does not need to: every Vault effect and every
+durable mutation re-reads the exact fence through its permit minter immediately before acting, so
+**retiring the fence is the revocation**, not merely what precedes it. A predecessor that somehow
+survives fails closed at its next effect on a lost or stale fence. The three facts establish that the
+predecessor is finished; the per-effect recheck is what makes it safe to have been wrong.
+
+**Re-acquisition is one bounded pass.** The successor re-decides against the confirmed
+post-retirement read-back rather than a fresh store read, and the bound is structural — the
+re-acquire path has no route back into retirement — so a predecessor that survives the CAS refuses
+instead of looping.
+
+#### 3.3.2 The fence Lease's TTL is derived, and it expires on purpose (Sprint `2.48`)
+
+The Kubernetes Lease is the fence's **liveness witness**, never the binding constraint on a single
+request. Fence use is bounded by `min attemptDeadline leaseDeadline`, and the Lease is stamped
+`renewTime = now` *after* the request carrying it was accepted, so the invariant that keeps the
+`min` from ever selecting the Lease is
+
+```text
+1000 * leaseDurationSeconds >= maximumBrokerRequestDeadlineMilliseconds
+```
+
+That relationship is **derived with one owner**, not satisfied by two modules happening to name the
+same number. A budget raised without the TTL following would otherwise make every long operation fail
+closed on what looks like a Lease defect.
+
+**The Lease is deliberately not renewed, and this is a safety property rather than an omission.**
+§ 3.3.1's retirement takes over an abandoned fence only against a **positively expired** Lease, and
+the state it exists to recover from is a bring-up abandoned partway. A renewer outliving the wedged
+operation would hold the Lease live indefinitely, no successor could ever retire the fence, and the
+permanent wedge § 3.3.1 closes would return. For the same reason the derived TTL is the *tightest*
+value satisfying the invariant: a longer one only delays the instant a successor may act.
+
+#### 3.3.3 An acquisition that cannot establish its Lease releases the fence it created (Sprint `2.48`)
+
+Acquisition is two steps — CAS the durable fence, then establish the Lease — and a failure at the
+second step must not leave the first standing. The compensating release is an **exact-value CAS back
+to vacant with the released generation as the high-water floor**, so the generation is burned rather
+than reusable and a fence this call did not write can never be vacated by it.
+
+**It requires no observation of an owner, and that is the point.** Retirement must prove three things
+about a predecessor it cannot see. This releases a fence created moments earlier by the same call, on
+a path where no Lease witness was obtained — and since every effect permit requires a confirmed
+witness, a fence that never carried one cannot have authorized anything. Retirement could not serve
+here in any case: it requires the durable operation deadline to have elapsed, and a freshly acquired
+fence's has not.
+
+Only a **freshly CAS'd** fence may be released this way. A resumed fence pre-existed the call, and an
+earlier attempt of the same request may already have confirmed its Lease and run effects under it.
+The release is best-effort and never masks its cause: the original Lease refusal reaches the caller
+either way.
+
+#### 3.3.4 A pre-receipt checkpoint from a superseded generation is rolled, not refused (Sprint `2.50`)
+
+The durable secret-worker checkpoint may resume only under an identical
+operation/fence/action/request/storage/deadline binding, with exactly one exception, bounded three
+ways:
+
+1. **The checkpoint carries no result.** Only the pre-receipt constructors qualify — those whose
+   receipt and result are both absent by construction. A checkpoint that carries a receipt is a
+   *result* record mid-cleanup, and its cleanup binding names a Pod UID, session id, and session
+   accessor no successor can reconstruct; discarding one could leak a live Vault session. Those are
+   refused on every binding.
+2. **The stored fence generation is strictly older than the one held.** Not "some compared field
+   differs". Within one generation the identical-binding requirement is unchanged, because the worker
+   operations of one bootstrap session are ordered and discarding an interrupted predecessor could
+   skip a stage. A checkpoint from a *newer* generation is refused outright: that would mean the
+   reader is the stale party.
+3. **The predecessor's worker is destroyed, not observed absent.** The discard is a
+   UID-preconditioned delete followed by an absence wait, refusing if a replacement occupies the
+   fixed coordinate. This is strictly stronger than § 3.3.1's absence observation — it causes absence
+   rather than inferring it — and holding the current fence is what makes causing it safe.
+
+Without this, a bring-up abandoned after its first worker was created left a durable checkpoint no
+later invocation could match, because fence generation, owner nonce, **and** the operation deadline
+are all minted per invocation by construction. The replay hazard is unaffected and remains gated
+where it was: whether an un-receipted worker may be re-prompted at all is decided by the interruption,
+and a refusing interruption never reaches this arm.
+
+**Binding refusals name their site and their disagreeing fields.** One payload-free constructor
+covering five distinct comparisons is the § 0.5 failure in miniature — *cannot observe is never
+success* has a sibling in *cannot distinguish is never a diagnosis*. Field **labels** carry no value
+bytes, so the naming introduces no disclosure surface.
 
 The same index separation applies to private roles: `AuthorityBackupCommitReadBack` cannot execute
 TLS-prefix work; `TlsRetentionCommitReadBack` cannot address Authority backup; Provider apply cannot

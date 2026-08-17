@@ -2,8 +2,9 @@
 
 -- | Sprint 3.26 (increment A): one compiled source of truth for the physically
 -- separate Bootstrap Broker workload's static identities — the Pod
--- ServiceAccount, the bootstrap-only Vault Kubernetes-auth role, and the
--- constant-time liveness/readiness probe paths.
+-- ServiceAccount, the bootstrap-owned ordinary-cleanup caller, the
+-- bootstrap-only Vault Kubernetes-auth role, and the constant-time
+-- liveness/readiness probe paths.
 --
 -- __Standard-C correction (Sprint 3.35, 2026-08-13).__ This module used to say
 -- that the broker's listen port is deployment configuration
@@ -43,6 +44,7 @@ module Prodbox.Bootstrap.Broker.ChartStatics
   ( BrokerChartStatics (..)
   , brokerChartStatics
   , brokerChartStaticsServiceAccountValue
+  , brokerChartStaticsCleanupCallerValue
   , brokerChartStaticsClientValue
   , renderBrokerChartStaticsYaml
   )
@@ -52,12 +54,17 @@ import Data.Aeson (Value, object, (.=))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Bootstrap.Broker.Routes qualified as Routes
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( bootstrapCoreExternalControlPlaneCallerServiceAccount
+  )
 import Prodbox.Vault.RoleId (VaultRoleId (VaultRoleBootstrapBroker), vaultRoleIdText)
 
--- | The Bootstrap Broker chart's compiled static identities.
+-- | The Bootstrap Broker chart's compiled static identities, including the
+-- non-workload ordinary-cleanup caller rendered under this chart's lifetime.
 data BrokerChartStatics = BrokerChartStatics
   { brokerStaticServiceAccount :: Text
   , brokerStaticClientServiceAccount :: Text
+  , brokerStaticCleanupCallerServiceAccount :: Text
   , brokerStaticWorkerServiceAccount :: Text
   , brokerStaticWorkerImageRepository :: Text
   , brokerStaticTokenAudience :: Text
@@ -75,6 +82,8 @@ brokerChartStatics =
   BrokerChartStatics
     { brokerStaticServiceAccount = vaultRoleIdText VaultRoleBootstrapBroker
     , brokerStaticClientServiceAccount = "prodbox-bootstrap-broker-client"
+    , brokerStaticCleanupCallerServiceAccount =
+        bootstrapCoreExternalControlPlaneCallerServiceAccount
     , brokerStaticWorkerServiceAccount = "prodbox-bootstrap-secret-worker"
     , brokerStaticWorkerImageRepository =
         "127.0.0.1:30080/prodbox/prodbox-runtime"
@@ -90,6 +99,16 @@ brokerChartStaticsServiceAccountValue =
   object
     [ "name" .= brokerStaticServiceAccount brokerChartStatics
     , "workerName" .= brokerStaticWorkerServiceAccount brokerChartStatics
+    ]
+
+-- | Bootstrap-core host cleanup identity.  The chart renders a
+-- non-automounting ServiceAccount plus an exact, self-only TokenRequest grant;
+-- no workload or provider permissions are attached to it.
+brokerChartStaticsCleanupCallerValue :: Value
+brokerChartStaticsCleanupCallerValue =
+  object
+    [ "serviceAccountName"
+        .= brokerStaticCleanupCallerServiceAccount brokerChartStatics
     ]
 
 -- | Secret-free caller identity and custom TokenRequest audience. The client
@@ -111,6 +130,9 @@ renderBrokerChartStaticsYaml =
     [ "serviceAccount:"
     , "  name: " ++ Text.unpack (brokerStaticServiceAccount brokerChartStatics)
     , "  workerName: " ++ Text.unpack (brokerStaticWorkerServiceAccount brokerChartStatics)
+    , "cleanupCaller:"
+    , "  serviceAccountName: "
+        ++ Text.unpack (brokerStaticCleanupCallerServiceAccount brokerChartStatics)
     , "client:"
     , "  serviceAccountName: " ++ Text.unpack (brokerStaticClientServiceAccount brokerChartStatics)
     , "  tokenAudience: " ++ Text.unpack (brokerStaticTokenAudience brokerChartStatics)

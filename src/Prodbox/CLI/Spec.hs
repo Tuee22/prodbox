@@ -598,6 +598,8 @@ parserForPath path =
     ["test", "integration", "gateway-pods"] -> Just gatewayPodsTestParser
     ["test", "integration", "control-plane-counterexample"] ->
       Just (withCoverage (TestIntegration IntegrationControlPlaneCounterexample))
+    ["test", "integration", "teardown-recovery"] ->
+      Just (withCoverage (TestIntegration IntegrationTeardownRecovery))
     ["test", "integration", "certificate-scope"] ->
       Just (withCoverage (TestIntegration IntegrationCertificateScope))
     ["test", "integration", "clean-room-handoff"] ->
@@ -1240,8 +1242,9 @@ rke2DeleteFlagsParser =
           <> help
             ( "Orchestrate the full teardown — K8s drain, per-run "
                 ++ "Pulumi destroys, cluster uninstall, postflight tag "
-                ++ "sweep — as one atomic operator action. The K8s drain "
-                ++ "phase skips gracefully when no cluster is reachable. "
+                ++ "sweep — as one atomic operator action. Every phase runs "
+                ++ "even when an earlier one fails, and the run reports "
+                ++ "success only if each phase could confirm its own outcome. "
                 ++ "Without --cascade, `cluster delete` is a pure local "
                 ++ "uninstall and leaves per-run AWS stacks untouched."
             )
@@ -2564,6 +2567,7 @@ testGroupSpec =
                 "Run the live measured-profile recorder after gateway validation."
             ]
         , integrationLeaf "control-plane-counterexample" "Run the frozen control-plane counterexample"
+        , integrationLeaf "teardown-recovery" "Run the frozen exact-keyed teardown recovery counterexample"
         , integrationLeaf "certificate-scope" "Verify live TLS serving and the exact presented SAN scope"
         , integrationLeaf
             "clean-room-handoff"

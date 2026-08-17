@@ -277,7 +277,9 @@ covers only that substrate's row in the parity table in [substrates.md](substrat
 A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
 DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress (Envoy Gateway plus
 MetalLB or the substrate-equivalent), services, and workload charts; provides the prerequisites
-declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit.
+declared in `src/Prodbox/Prerequisite.hs`; and registers/schedules desired absence for every per-run
+artifact on suite exit. A suite result may report cleanup complete only after exact absence is
+observed; a failed, partial, or unobservable cleanup remains explicitly incomplete.
 
 The authoritative substrate inventory is [substrates.md](substrates.md). Today's substrates are:
 
@@ -383,8 +385,11 @@ into an unexercised claim about the aggregate deployment.
   host-direct Vault/MinIO seams, and the subprocess object-store and per-request login paths — must
   be enumerated in a machine-readable registry consumed by `prodbox dev check`; an unregistered new
   call site, or a registry entry with no surviving call site, fails the build. Qualification
-  remains non-blocking; escape-path drift is not. The registry implementation is owned by
-  Sprint `1.63`.
+  remains non-blocking; escape-path drift is not. Sprint `1.63` landed the initial registry and its
+  declared-entry↔source-marker bijection; that historical mechanism does not prove comprehensive
+  coverage of an unmarked surviving seam. Current corrective ownership and closure evidence live in
+  [README.md](README.md#current-plan-status) and the
+  [deletion ledger](legacy-tracking-for-deletion.md#pending-removal).
 - **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
   a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,
   cancellation, applied-but-response-lost, and residue checks appropriate to that surface.

@@ -7,8 +7,11 @@
 > **Purpose**: Single source of truth for the executable-sibling `prodbox.test.dhall`, generated
 > per-run config, `.test-data/` isolation, and the `test init` / `test run` surface.
 
-Real-resource preparation and cleanup scheduling remain owned by
-[integration_fixture_doctrine.md](./integration_fixture_doctrine.md).
+Real-resource cleanup scheduling and execution are owned by
+[Lifecycle Reconciliation Doctrine §3.3](./lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph).
+[Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-validation-as-a-cleanup-client)
+owns validation-specific preparation, cleanup-obligation registration, and consumption of the
+generic report.
 
 ## 1. A test run is fully described by its test Dhall
 
@@ -21,15 +24,19 @@ budgets, and the fixtures each suite needs. Nothing about a run is implicit in a
 state — the test Dhall is the audit trail of what will be stood up.
 
 The supported topology never rewrites an operator-authored production config from
-`test-secrets.dhall`. `test init` authors the distinct topology file; `test run` generates a
-disposable per-variant Tier-0 `prodbox.dhall`, points storage at `.test-data/<case>/`, and registers
-both generated artifacts in the always-run cleanup DAG. Migration and qualification status live in
-the [Development Plan](../../DEVELOPMENT_PLAN/README.md).
+`test-secrets.dhall`. `test init` authors the distinct topology file and `test run` generates a
+disposable per-variant Tier-0 `prodbox.dhall` with storage under `.test-data/<case>/`. **Target:**
+before mutation, both generated artifacts become durable obligations in the lifecycle-owned
+always-run cleanup DAG. **Current:** `TestRunner` still uses its pre-cutover process-local cleanup
+composition and enters the cleanup wrapper after some preparation mutations. Implementation,
+cutover, and qualification status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 `prodbox.test.dhall` is the **authored** half of the per-run-vs-authored split. The **per-run**
 half is the binary-sibling `prodbox.dhall` the harness renders for each variant (§3) plus the
-run's `.test-data/` (§4) — both disposable, both deleted on teardown (§5). The authored test
-Dhall is retained. Like jitML's `project init` (in the sibling project
+run's `.test-data/` (§4) — both disposable. In the target composition, both are registered for
+desired absence before creation (§5), and completion requires exact observed absence; a failed or
+unobservable delete remains incomplete. The authored test Dhall is retained. Like jitML's `project init` (in the sibling project
 `jitML/documents/engineering/durable_state_dsl.md` — mirrored in kind, no code dependency),
 `test init` **refuses to overwrite** an existing `prodbox.test.dhall` unless `--force` is passed.
 
@@ -98,7 +105,7 @@ read.
 
 **Two hard fail-fast preconditions** run before any `test init` / `test run` work, and both refuse
 rather than proceed. This is a closed gate, mirroring the three-valued residue gate of
-[lifecycle_reconciliation_doctrine.md §3](./lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern):
+[lifecycle_reconciliation_doctrine.md §3](./lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation):
 
 ```haskell
 -- Example: the two preconditions guarding every test entrypoint
@@ -118,8 +125,10 @@ data TestRefusal
    `prodbox.dhall` (`resolveTier0ConfigPath`, `src/Prodbox/Repo.hs`) and **fails fast when it is
    absent** (`src/Prodbox/Settings.hs`); the topology-mode test surface **fails fast when it is
    present**, so a run can never clobber a real operator config. The per-variant generated
-   `prodbox.dhall` (§3) is written only
-   after this gate clears and is deleted on teardown (§5).
+   `prodbox.dhall` (§3) is written only after this gate clears. The current runner places it in a
+   process-local cleanup list and attempts direct deletion from `finally`; the target registers its
+   desired-absence obligation before writing it and reports deletion only after exact absence is
+   observed (§5).
 2. **Refuse if a production cluster is running.** A test never mutates production cluster state.
 
 Durable test storage is the **`.test-data/` retained root** — a `storage.manual_pv_host_root`
@@ -128,19 +137,38 @@ override ([storage_lifecycle_doctrine.md §7](./storage_lifecycle_doctrine.md#7-
 instead of the production `.data/`. Each case is isolated under `.test-data/<case>/`. Test commands
 are **mechanically forbidden from touching `.data/`**, mirroring in kind the sibling project's
 `guardTestDelete` never-delete-`.data` rule (`hostbootstrap/documents/engineering/testing.md`;
-no code dependency). The guard's delete target is a closed ADT that cannot name `.data/`:
+no code dependency). The target guard accepts only opaque, run-indexed references; it never accepts a
+raw `FilePath` or stack name:
 
 ```haskell
--- Example: teardown can only name this-run generated artifacts and PerRun residue;
--- deleting .data/, the authored prodbox.test.dhall, or a LongLived resource is unconstructible.
-data TestDeleteTarget
-  = GeneratedRunConfig        -- .build/prodbox.dhall for this run
-  | ThisRunTestData FilePath  -- a path proven under .test-data/
-  | PerRunResidue StackName   -- LifecycleClass PerRun stacks only
-  deriving (Eq, Show)
+-- Example: hypothetical target cleanup references; all referenced constructors are private.
+data ThisRunTestDataPath run
+data PerRunStackRef run
+data GeneratedRunConfigRef run
 
-guardTestDelete :: FilePath -> Either TestRefusal TestDeleteTarget  -- refuses any path outside .test-data/
+data TestDeleteTarget run where
+  GeneratedRunConfig :: GeneratedRunConfigRef run -> TestDeleteTarget run
+  ThisRunTestData :: ThisRunTestDataPath run -> TestDeleteTarget run
+  PerRunResidue :: PerRunStackRef run -> TestDeleteTarget run
+
+refineThisRunTestDataPath
+  :: TestRunRoot run
+  -> ObservedCanonicalPath
+  -> Either TestRefusal (ThisRunTestDataPath run)
+
+projectPerRunStack
+  :: CleanupScope run
+  -> ManagedResource resource 'PerRun 'Stack
+  -> PerRunStackRef run
 ```
+
+`ThisRunTestDataPath` is minted only after the canonical observed path is proved to be inside the
+exact `.test-data/<case>/` root bound to `run`; traversal, symlink escape, the production `.data/`
+root, and a path from another run have no successful constructor. `PerRunStackRef` is projected only
+from a registry entry already indexed `'PerRun 'Stack` and the matching cleanup scope. Because both
+constructors and the `run` index are private, neither a raw path nor a `LongLived` stack can be
+relabelled as a legal delete target. This is the post-cutover MISU contract; implementation and
+activation status remain owned by the Development Plan.
 
 `src/Prodbox/TestValidation.hs` resolves the sealed-Vault host-disk audit root from the topology
 run's `PRODBOX_TEST_MANUAL_PV_HOST_ROOT` override when present, falling back to the production
@@ -148,11 +176,12 @@ run's `PRODBOX_TEST_MANUAL_PV_HOST_ROOT` override when present, falling back to 
 
 ## 5. Artifact teardown and lifecycle-class projection
 
-The topology runner registers deletion of its generated `.build/prodbox.dhall` and this run's
-`.test-data/` before creating them. Those artifact nodes participate in the always-run cleanup DAG
-owned by [Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-cleanup-failure-handling),
-so they run on success, failure, deadline exhaustion, and interruption without becoming the cleanup
-mechanism for real infrastructure. Artifact cleanup deletes **only the per-run half**. It
+In the target lifecycle-client composition, the topology runner registers desired absence for its
+generated `.build/prodbox.dhall` and this run's
+`.test-data/` before creating them. Those artifact obligations participate in the durable
+lifecycle-owned `CleanupRun`; the topology runner is a registration client, not a second scheduler.
+They therefore run on success, failure, deadline exhaustion, and interruption without becoming the
+cleanup mechanism for real infrastructure. Artifact cleanup deletes **only the per-run half**. It
 **retains** the authored `prodbox.test.dhall` and **every long-lived resource** — the `aws-ses`
 sending identity and the S3-backed `pulumi_state_backend` bucket, which take minutes to reprovision
 and are shared across runs.
@@ -167,23 +196,21 @@ owned by
 [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
 
 The test topology does not invent a parallel cleanup scheduler. It projects artifact obligations and
-managed-resource lifecycle classes into the fixture-owned DAG.
-The `LifecycleClass PerRun | LongLived | Operational` partition
-(`src/Prodbox/Lifecycle/ResourceClass.hs`), `partitionResidueByLifecycle` (`src/Prodbox/Aws.hs`),
-and the `noLiveLongLivedPulumiStacks` gate (`src/Prodbox/Lifecycle/Preconditions.hs`) are the same
-values [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-owns. Real-resource cleanup reconciles the `PerRun` slice to absent and **gates** the `LongLived`
-slice so a test can never destroy it; independent cleanup nodes continue after sibling failure and
-the final report aggregates the original failure with every cleanup failure. The two symmetric
-illegal states are:
+managed-resource lifecycle classes into the lifecycle-owned graph through typed client requests.
+The target projection is defined by the
+[managed-resource registry](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary):
+`PerRun` resources may be selected for ordinary cleanup, while no `LongLived` resource can inhabit
+that cleanup target. Independent ready nodes continue after sibling failure and the final report
+aggregates the originating validation result with every cleanup failure. The two symmetric illegal
+states are:
 
-- **Destroying a long-lived resource** — a test that tore down `aws-ses` or the state bucket. The
-  `LongLived` gate refuses; `noLiveLongLivedPulumiStacks`'s `Unreachable → refuse` soundness rule
-  means "could not observe" is never silently treated as "safe to delete."
+- **Destroying a long-lived resource** — a test that tore down `aws-ses` or the state bucket. No
+  ordinary validation-cleanup constructor accepts that lifecycle class; unobservability remains a
+  refusal rather than permission to reclassify it.
 - **Leaking a per-run resource** — a per-run stack or `.test-data/` root that survives a run. The
-  postflight sweep asserts the `PerRun` slice is empty; a non-empty sweep is a hard test failure
-  with the leak list in the record. A **retained long-lived** resource is *not* a leak — it is
-  correctly retained per its class.
+  exact observer for each registered key must return absence before cleanup can complete. The
+  terminal escape audit remains defense-in-depth and cannot prove that slice absent. A **retained
+  long-lived** resource is not a leak; it is correctly retained per its class.
 
 ## 6. Secrets travel by reference; one cleartext file, flagged
 
@@ -212,24 +239,29 @@ explicit, self-validating SSoT of one test run; the `test init` overwrite-refusa
 production sibling-config contract; `.test-data/` isolation with a never-touch-`.data/` delete
 guard; and artifact cleanup obligations that retain long-lived resources by lifecycle class.
 
-- Owned statement: a test run is fully described by its authored `prodbox.test.dhall`, drives the
-  real deploy path across every declared variant, and always tears down its per-run artifacts
-  without touching production config, production `.data/`, or a long-lived resource.
+- Owned target statement: a test run is fully described by its authored `prodbox.test.dhall`, drives
+  the real deploy path across every declared variant, and registers and schedules teardown of its
+  per-run artifacts without targeting production config, production `.data/`, or a long-lived
+  resource. Target completion is constructible only after exact absence is observed; partial or
+  unobservable cleanup remains explicitly incomplete. The current runner remains bounded by the
+  pre-cutover correspondence in §1.
 - Linked dependents: `dhall/TestTopologySchema.dhall`,
   `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs` (test-Dhall sibling resolution),
   `src/Prodbox/Settings.hs` (test-Dhall decode/validation), and `src/Prodbox/TestRunner.hs`
   (topology-mode sibling-config preflight).
 - Command/cleanup dependents: `src/Prodbox/CLI/Command.hs` (the `test init` /
   `test run` surface extending `TestCommand` / `TestScope`), `src/Prodbox/TestRunner.hs`
-  (per-variant generate → reconcile → assert plus registered cleanup-DAG nodes), `src/Prodbox/TestValidation.hs`
+  (current per-variant generate → reconcile → assert path; target lifecycle-client registration),
+  `src/Prodbox/TestValidation.hs`
   (`.test-data/` repointing), `src/Prodbox/Lib/Storage.hs` (the `.test-data/`
-  `manual_pv_host_root` override), `src/Prodbox/Lifecycle/ResourceClass.hs` + `src/Prodbox/Aws.hs` +
-  `src/Prodbox/Lifecycle/Preconditions.hs` (the lifecycle-class teardown reuse).
+  `manual_pv_host_root` override), and the lifecycle registry/cleanup core linked above.
 
 ## Cross-References
 
 - [config_doctrine.md](./config_doctrine.md) — the binary-sibling `prodbox.dhall` contract this doc inverts for tests.
-- [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) — `LifecycleClass`, `partitionResidueByLifecycle`, the `Unreachable → refuse` soundness rule, and the postflight sweep the teardown reuses.
+- [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) — exact keyed
+  observations, lifecycle-indexed cleanup targets, result-indexed programs, and the terminal escape
+  audit boundary.
 - [unit_testing_policy.md](./unit_testing_policy.md) — interpreter-only mocking, named validations, and infrastructure-test proof requirements.
 - [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) — fixture ownership, cleanup-failure-is-a-real-failure, and fixtures-vs-substrate-config.
 - [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) — the
@@ -238,6 +270,6 @@ guard; and artifact cleanup obligations that retain long-lived resources by life
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the `manual_pv_host_root` retained-root model that `.test-data/` overrides.
 - [pure_fp_standards.md](./pure_fp_standards.md) — closed ADTs, GADT-indexed / projection state, and the Dhall `assert` illegal-states-unrepresentable technique.
 - [vault_doctrine.md](./vault_doctrine.md) — the `SecretRef` model and the `test-secrets.dhall` `TestPlaintext` split.
-- [../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md) — Sprint 1.54 (schema + sibling-Dhall fail-fast inversion).
-- [../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md) — Sprint 5.11 (command topology, `.test-data/` isolation, finally teardown, never-touch-`.data/`).
+- [Development Plan status](../../DEVELOPMENT_PLAN/README.md#current-plan-status) — implementation,
+  migration, validation, and cleanup ownership.
 - [../documentation_standards.md](../documentation_standards.md) — documentation SSoT and header rules.

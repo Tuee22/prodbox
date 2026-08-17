@@ -1,0 +1,16 @@
+# TEARDOWN-2026-08-15 frozen cluster-wide AWS audit input.
+#
+# Two Resource Groups Tagging API rows describe one retained S3 bucket. They
+# are audit evidence only: neither row names an exact Pulumi stack request.
+
+fixture-id TEARDOWN-2026-08-15
+run-scope teardown-2026-08-15-run-0001
+registry-revision lifecycle-registry/v1
+surface cascade
+operation reconcile-desired-absent
+foundation home-linux-rke2
+aws-account 111122223333
+aws-region ca-central-1
+
+tag-row arn:aws:s3:::prodbox-retained-state-fixture prodbox.io/managed-by prodbox
+tag-row arn:aws:s3:::prodbox-retained-state-fixture prodbox.io/role long-lived-pulumi-state

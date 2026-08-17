@@ -43,6 +43,7 @@ data NativeValidation
   | ValidationGatewayDaemon
   | ValidationGatewayPods
   | ValidationControlPlaneCounterexample
+  | ValidationTeardownRecovery
   | ValidationCertificateScope
   | ValidationCleanRoomHandoff
   | ValidationChartsPlatform
@@ -235,6 +236,12 @@ testExecutionPlan substrate scope =
             "integration-control-plane-counterexample"
             [ValidationControlPlaneCounterexample]
             False
+        IntegrationTeardownRecovery ->
+          nativeNamedSuite
+            "integration teardown-recovery"
+            "integration-teardown-recovery"
+            [ValidationTeardownRecovery]
+            False
         IntegrationCertificateScope ->
           nativeNamedSuite
             "integration certificate-scope"
@@ -420,6 +427,7 @@ canonicalNativeValidations =
   , ValidationHaRke2Aws
   , ValidationGatewayDaemon
   , ValidationControlPlaneCounterexample
+  , ValidationTeardownRecovery
   , ValidationCertificateScope
   , ValidationCleanRoomHandoff
   , ValidationChartsPlatform
@@ -468,6 +476,7 @@ validationInitialPrerequisites validation =
     -- gateway-pods inspects in-cluster pods: cluster only.
     ValidationGatewayPods -> clusterPrerequisites
     ValidationControlPlaneCounterexample -> []
+    ValidationTeardownRecovery -> []
     ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
     ValidationCleanRoomHandoff -> []
     -- The chart-platform / storage / lifecycle validations operate on the
@@ -506,6 +515,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayDaemon -> []
     ValidationGatewayPods -> []
     ValidationControlPlaneCounterexample -> []
+    ValidationTeardownRecovery -> []
     ValidationCertificateScope -> []
     ValidationCleanRoomHandoff -> []
     ValidationChartsPlatform -> []
@@ -623,6 +633,7 @@ nativeValidationId validation =
     ValidationGatewayDaemon -> "gateway-daemon"
     ValidationGatewayPods -> "gateway-pods"
     ValidationControlPlaneCounterexample -> "control-plane-counterexample"
+    ValidationTeardownRecovery -> "teardown-recovery"
     ValidationCertificateScope -> "certificate-scope"
     ValidationCleanRoomHandoff -> "clean-room-handoff"
     ValidationChartsPlatform -> "charts-platform"

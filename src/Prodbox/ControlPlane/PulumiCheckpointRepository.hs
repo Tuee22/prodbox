@@ -22,10 +22,16 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , registeredGenerationForSlot
   )
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
-  ( PulumiCheckpointMutationTicket (..)
+  ( PulumiCheckpointCopyObservation (..)
+  , PulumiCheckpointMutationTicket (..)
   , PulumiCheckpointObservation (..)
+  , PulumiCheckpointPairObservation (..)
   , PulumiCheckpointPublicationResult (..)
   , PulumiCheckpointRepository (..)
+  , PulumiCheckpointRestoreReadBack (..)
+  , PulumiCheckpointRestoreResult (..)
+  , PulumiCheckpointRetirementAttemptResult (..)
+  , PulumiCheckpointRetirementReadBack (..)
   , PulumiCheckpointRetirementResult (..)
   )
 import Prodbox.ControlPlane.RequestAuthentication
@@ -38,6 +44,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , authorityCheckpointOperationStatus
   , stepAuthorityCheckpointPermit
   , stepAuthorityCheckpointPublication
+  , stepAuthorityCheckpointRestore
   , stepAuthorityCheckpointRetirement
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
@@ -45,14 +52,22 @@ import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   , CheckpointMutationDecision (..)
   , CheckpointOperationKind (..)
   , CheckpointPermitDecision (..)
+  , CheckpointRestoreReadBack (..)
+  , CheckpointRetirementReadBack (..)
   , VerifiedPulumiCheckpointRef
   , authorizeCheckpointPublication
+  , authorizeCheckpointRestore
   , authorizeCheckpointRetirement
   , observeAuthorityPulumiCheckpoint
+  , observeCheckpointRestoreReadBack
+  , observeCheckpointRetirementReadBack
+  , observeRetiredAuthorityPulumiCheckpoints
+  , verifiedPulumiCheckpointBackupVersion
   , verifiedPulumiCheckpointDigest
+  , verifiedPulumiCheckpointPrimaryVersion
   )
 import Prodbox.Lifecycle.Authority.Submission
-  ( SubmissionStatus (StatusSettled)
+  ( SubmissionStatus (StatusInFlight, StatusSettled)
   , TerminalOutcome (OperationCompletedOutcome)
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
@@ -82,6 +97,18 @@ data PulumiCheckpointBlobStore m = PulumiCheckpointBlobStore
       :: RegisteredPulumiCheckpoint
       -> VerifiedPulumiCheckpointRef
       -> m PulumiCheckpointObservation
+  , observePrimaryPulumiCheckpointCopy
+      :: RegisteredPulumiCheckpoint
+      -> VerifiedPulumiCheckpointRef
+      -> m PulumiCheckpointCopyObservation
+  , observeBackupPulumiCheckpointCopy
+      :: RegisteredPulumiCheckpoint
+      -> VerifiedPulumiCheckpointRef
+      -> m PulumiCheckpointCopyObservation
+  , restorePulumiCheckpointPrimary
+      :: RegisteredPulumiCheckpoint
+      -> VerifiedPulumiCheckpointRef
+      -> m (Either Text VerifiedPulumiCheckpointRef)
   }
 
 aggregatePulumiCheckpointRepository
@@ -95,8 +122,13 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
   repository =
     PulumiCheckpointRepository
       { observeRegisteredPulumiCheckpoint = observeCurrent
+      , observeRegisteredPulumiCheckpointPair = observePair
       , publishRegisteredPulumiCheckpoint = publish
       , retireRegisteredPulumiCheckpoint = retire
+      , restoreRegisteredPulumiCheckpointPrimary = restorePrimary
+      , readBackRegisteredPulumiCheckpointRestore = readBackRestore
+      , attemptRegisteredPulumiCheckpointRetirement = attemptRetirement
+      , readBackRegisteredPulumiCheckpointRetirement = readBackRetirement
       }
 
   observeCurrent _callerSlot registered = do
@@ -109,6 +141,510 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
           blobStore
           registered
           (authorityAdmissionSnapshotState snapshot)
+
+  observePair _callerSlot registered = do
+    observed <- readAuthorityAdmission authorityRepository
+    case observed of
+      Left detail -> pure (PulumiCheckpointPairUnobservable detail)
+      Right snapshot ->
+        observePairInAggregate
+          registered
+          (authorityAdmissionSnapshotState snapshot)
+
+  observePairInAggregate registered aggregate =
+    case observeAuthorityPulumiCheckpoint
+      registered
+      (authorityAggregatePulumiCheckpoints aggregate) of
+      Nothing -> pure PulumiCheckpointPairNoCurrentReference
+      Just reference -> do
+        -- These calls are deliberately independent.  In particular, a failed
+        -- primary observation must never suppress the backup read-back.
+        primary <-
+          observePrimaryPulumiCheckpointCopy blobStore registered reference
+        backup <-
+          observeBackupPulumiCheckpointCopy blobStore registered reference
+        pure (PulumiCheckpointPairCurrent reference primary backup)
+
+  restorePrimary callerSlot ticket registered predecessor =
+    case registeredGenerationForSlot callerSlot of
+      Left detail -> pure (PulumiCheckpointRestoreRefused detail)
+      Right generation ->
+        restoreForCaller callerSlot generation ticket registered predecessor
+
+  restoreForCaller callerSlot generation ticket registered predecessor = do
+    let operation = pulumiCheckpointTicketOperation ticket
+        expected = pulumiCheckpointTicketExpectedDigest ticket
+        predecessorDigest = verifiedPulumiCheckpointDigest predecessor
+    if expected /= Just predecessorDigest
+      then
+        pure
+          ( PulumiCheckpointRestoreRefused
+              "restore ticket does not bind the predecessor checkpoint digest"
+          )
+      else do
+        prepared <-
+          preparePermit
+            callerSlot
+            generation
+            operation
+            registered
+            RestoreCheckpoint
+            expected
+        case prepared of
+          CheckpointPermitRejected detail ->
+            pure (PulumiCheckpointRestoreRefused detail)
+          CheckpointPermitUnavailable detail ->
+            pure (PulumiCheckpointRestoreUnavailable detail)
+          CheckpointPermitReady snapshot operationReference ->
+            authorizeAndRestore
+              callerSlot
+              generation
+              snapshot
+              operationReference
+              operation
+              registered
+              predecessor
+
+  authorizeAndRestore
+    callerSlot
+    generation
+    snapshot
+    operationReference
+    operation
+    registered
+    predecessor =
+      case authorizeCheckpointRestore
+        operationReference
+        registered
+        predecessor
+        predecessor
+        checkpoints of
+        Left invariant -> pure (restoreInvariant invariant)
+        Right (CheckpointMutationAuthorizationRefused decision) ->
+          pure (PulumiCheckpointRestoreRefused (decisionText decision))
+        Right (CheckpointMutationAlreadyAppliedWith (Just current)) ->
+          pure (PulumiCheckpointRestoreAlreadyApplied current)
+        Right (CheckpointMutationAlreadyAppliedWith Nothing) ->
+          pure
+            ( PulumiCheckpointRestoreRefused
+                "restore operation has no current checkpoint reference"
+            )
+        Right CheckpointMutationAuthorized -> do
+          pair <- observePairInAggregate registered aggregate
+          case pair of
+            PulumiCheckpointPairCurrent actual primary backup
+              | actual /= predecessor ->
+                  pure
+                    ( PulumiCheckpointRestoreRefused
+                        "active checkpoint reference changed before restore"
+                    )
+              | otherwise ->
+                  restoreFromExactPair
+                    callerSlot
+                    generation
+                    snapshot
+                    operation
+                    registered
+                    predecessor
+                    primary
+                    backup
+            PulumiCheckpointPairNoCurrentReference ->
+              pure
+                ( PulumiCheckpointRestoreRefused
+                    "active checkpoint reference disappeared before restore"
+                )
+            PulumiCheckpointPairUnobservable detail ->
+              pure (PulumiCheckpointRestoreUnavailable detail)
+     where
+      aggregate = authorityAdmissionSnapshotState snapshot
+      checkpoints = authorityAggregatePulumiCheckpoints aggregate
+
+  restoreFromExactPair
+    callerSlot
+    generation
+    snapshot
+    operation
+    registered
+    predecessor
+    primary
+    backup =
+      case (exactPrimaryCopy predecessor primary, exactBackupCopy predecessor backup) of
+        (Right True, Right True) ->
+          applyRestore
+            callerSlot
+            generation
+            snapshot
+            operation
+            registered
+            predecessor
+            predecessor
+        (Right False, Right True) -> do
+          restored <- restorePulumiCheckpointPrimary blobStore registered predecessor
+          case restored of
+            Left detail -> pure (PulumiCheckpointRestoreUnavailable detail)
+            Right current ->
+              applyRestore
+                callerSlot
+                generation
+                snapshot
+                operation
+                registered
+                predecessor
+                current
+        (_, Right False) ->
+          pure
+            ( PulumiCheckpointRestoreRefused
+                "backup checkpoint is not current"
+            )
+        (Left (False, detail), _) ->
+          pure (PulumiCheckpointRestoreRefused detail)
+        (_, Left (False, detail)) ->
+          pure (PulumiCheckpointRestoreRefused detail)
+        (Left (True, detail), _) ->
+          pure (PulumiCheckpointRestoreUnavailable detail)
+        (_, Left (True, detail)) ->
+          pure (PulumiCheckpointRestoreUnavailable detail)
+
+  exactPrimaryCopy reference observation = case observation of
+    PulumiCheckpointCopyCurrent version
+      | version == verifiedPulumiCheckpointPrimaryVersion reference -> Right True
+      | otherwise -> Left (False, "primary checkpoint version changed")
+    PulumiCheckpointCopyMissing -> Right False
+    PulumiCheckpointCopyCorrupt detail ->
+      Left (False, "primary checkpoint is corrupt: " <> detail)
+    PulumiCheckpointCopyUnobservable detail ->
+      Left (True, "primary checkpoint is unobservable: " <> detail)
+
+  exactBackupCopy reference observation = case observation of
+    PulumiCheckpointCopyCurrent version
+      | version == verifiedPulumiCheckpointBackupVersion reference -> Right True
+      | otherwise -> Left (False, "backup checkpoint version changed")
+    PulumiCheckpointCopyMissing -> Left (False, "backup checkpoint is missing")
+    PulumiCheckpointCopyCorrupt detail ->
+      Left (False, "backup checkpoint is corrupt: " <> detail)
+    PulumiCheckpointCopyUnobservable detail ->
+      Left (True, "backup checkpoint is unobservable: " <> detail)
+
+  applyRestore
+    callerSlot
+    generation
+    snapshot
+    operation
+    registered
+    predecessor
+    current =
+      case stepAuthorityCheckpointRestore
+        (verifiedCallerSlotPrincipal callerSlot)
+        generation
+        operation
+        registered
+        predecessor
+        current
+        (authorityAdmissionSnapshotState snapshot) of
+        Left invariant -> pure (restoreInvariant invariant)
+        Right (decision, next)
+          | next /= authorityAdmissionSnapshotState snapshot -> do
+              attempted <-
+                compareAndSwapAuthorityAdmission
+                  authorityRepository
+                  (authorityAdmissionRevision snapshot)
+                  next
+              pure $ case attempted of
+                Right () -> PulumiCheckpointRestoreApplied current
+                Left detail -> PulumiCheckpointRestoreUnavailable detail
+          | decision == CheckpointMutationAlreadyApplied ->
+              pure (PulumiCheckpointRestoreAlreadyApplied current)
+          | otherwise ->
+              pure (PulumiCheckpointRestoreRefused (decisionText decision))
+
+  readBackRestore callerSlot operation registered =
+    case registeredGenerationForSlot callerSlot of
+      Left detail -> pure (PulumiCheckpointRestoreReadBackRefused detail)
+      Right generation -> do
+        observed <- readAuthorityAdmission authorityRepository
+        case observed of
+          Left detail ->
+            pure (PulumiCheckpointRestoreReadBackUnavailable detail)
+          Right snapshot ->
+            case authorityCheckpointOperationRef operation of
+              Left detail ->
+                pure
+                  ( PulumiCheckpointRestoreReadBackRefused
+                      ("authority operation identity is invalid: " <> Text.pack (show detail))
+                  )
+              Right operationReference ->
+                confirmRestoreReadBack
+                  callerSlot
+                  generation
+                  operation
+                  operationReference
+                  registered
+                  (authorityAdmissionSnapshotState snapshot)
+
+  confirmRestoreReadBack
+    callerSlot
+    generation
+    operation
+    operationReference
+    registered
+    aggregate =
+      case authorityCheckpointOperationStatus
+        (verifiedCallerSlotPrincipal callerSlot)
+        generation
+        operation
+        aggregate of
+        Left refusal ->
+          pure
+            ( PulumiCheckpointRestoreReadBackRefused
+                ("restore operation binding is invalid: " <> Text.pack (show refusal))
+            )
+        Right operationStatus ->
+          case observeCheckpointRestoreReadBack
+            operationReference
+            registered
+            checkpoints of
+            Nothing ->
+              pure
+                ( PulumiCheckpointRestoreReadBackRefused
+                    "restore operation is not bound to this checkpoint"
+                )
+            Just CheckpointRestoreOperationPending
+              | operationStatus == StatusInFlight ->
+                  pure PulumiCheckpointRestorePending
+              | otherwise ->
+                  pure
+                    ( PulumiCheckpointRestoreReadBackUnavailable
+                        "restore operation is pending but its submission is not in flight"
+                    )
+            Just (CheckpointRestoreOperationApplied predecessor current)
+              | operationStatus /= StatusSettled OperationCompletedOutcome ->
+                  pure
+                    ( PulumiCheckpointRestoreReadBackUnavailable
+                        "restore operation is applied but its submission is not settled"
+                    )
+              | observeAuthorityPulumiCheckpoint registered checkpoints
+                  /= Just current ->
+                  pure
+                    ( PulumiCheckpointRestoreReadBackRefused
+                        "restored checkpoint reference is not current"
+                    )
+              | otherwise -> do
+                  pair <- observePairInAggregate registered aggregate
+                  pure $ case pair of
+                    PulumiCheckpointPairCurrent actual primary backup
+                      | actual /= current ->
+                          PulumiCheckpointRestoreReadBackRefused
+                            "restored checkpoint reference changed during read-back"
+                      | otherwise ->
+                          case (exactPrimaryCopy current primary, exactBackupCopy current backup) of
+                            (Right True, Right True) ->
+                              PulumiCheckpointRestoreConfirmed predecessor current
+                            (Left (True, detail), _) ->
+                              PulumiCheckpointRestoreReadBackUnavailable detail
+                            (_, Left (True, detail)) ->
+                              PulumiCheckpointRestoreReadBackUnavailable detail
+                            (Left (_, detail), _) ->
+                              PulumiCheckpointRestoreReadBackRefused detail
+                            (_, Left (_, detail)) ->
+                              PulumiCheckpointRestoreReadBackRefused detail
+                            _ ->
+                              PulumiCheckpointRestoreReadBackRefused
+                                "restored checkpoint pair is incomplete"
+                    PulumiCheckpointPairNoCurrentReference ->
+                      PulumiCheckpointRestoreReadBackRefused
+                        "restored checkpoint reference is no longer current"
+                    PulumiCheckpointPairUnobservable detail ->
+                      PulumiCheckpointRestoreReadBackUnavailable detail
+     where
+      checkpoints = authorityAggregatePulumiCheckpoints aggregate
+
+  attemptRetirement callerSlot ticket registered expectedReference =
+    case registeredGenerationForSlot callerSlot of
+      Left detail -> pure (PulumiCheckpointRetirementAttemptRefused detail)
+      Right generation ->
+        attemptRetirementForCaller
+          callerSlot
+          generation
+          ticket
+          registered
+          expectedReference
+
+  attemptRetirementForCaller
+    callerSlot
+    generation
+    ticket
+    registered
+    expectedReference = do
+      let operation = pulumiCheckpointTicketOperation ticket
+          expected = pulumiCheckpointTicketExpectedDigest ticket
+          expectedDigest = fmap verifiedPulumiCheckpointDigest expectedReference
+      if expected /= expectedDigest
+        then
+          pure
+            ( PulumiCheckpointRetirementAttemptRefused
+                "retirement ticket does not bind the exact active reference"
+            )
+        else do
+          prepared <-
+            preparePermit
+              callerSlot
+              generation
+              operation
+              registered
+              RetireCheckpoint
+              expected
+          case prepared of
+            CheckpointPermitRejected detail ->
+              pure (PulumiCheckpointRetirementAttemptRefused detail)
+            CheckpointPermitUnavailable detail ->
+              pure (PulumiCheckpointRetirementAttemptUnavailable detail)
+            CheckpointPermitReady snapshot operationReference ->
+              authorizeAndRetire
+                callerSlot
+                generation
+                snapshot
+                operationReference
+                operation
+                registered
+                expectedReference
+
+  authorizeAndRetire
+    callerSlot
+    generation
+    snapshot
+    operationReference
+    operation
+    registered
+    expectedReference
+      | observeAuthorityPulumiCheckpoint registered checkpoints
+          /= expectedReference =
+          pure
+            ( PulumiCheckpointRetirementAttemptRefused
+                "active checkpoint reference changed before retirement"
+            )
+      | otherwise =
+          case authorizeCheckpointRetirement
+            operationReference
+            registered
+            checkpoints of
+            Left invariant -> pure (retirementAttemptInvariant invariant)
+            Right (CheckpointMutationAuthorizationRefused decision) ->
+              pure (PulumiCheckpointRetirementAttemptRefused (decisionText decision))
+            Right (CheckpointMutationAlreadyAppliedWith Nothing) ->
+              pure PulumiCheckpointRetirementAlreadyApplied
+            Right (CheckpointMutationAlreadyAppliedWith (Just _)) ->
+              pure
+                ( PulumiCheckpointRetirementAttemptRefused
+                    "retirement operation retained an unexpected current reference"
+                )
+            Right CheckpointMutationAuthorized ->
+              applyRetirementAttempt
+                callerSlot
+                generation
+                snapshot
+                operation
+                registered
+     where
+      checkpoints =
+        authorityAggregatePulumiCheckpoints
+          (authorityAdmissionSnapshotState snapshot)
+
+  applyRetirementAttempt callerSlot generation snapshot operation registered =
+    case stepAuthorityCheckpointRetirement
+      (verifiedCallerSlotPrincipal callerSlot)
+      generation
+      operation
+      registered
+      (authorityAdmissionSnapshotState snapshot) of
+      Left invariant -> pure (retirementAttemptInvariant invariant)
+      Right (decision, next)
+        | next /= authorityAdmissionSnapshotState snapshot -> do
+            attempted <-
+              compareAndSwapAuthorityAdmission
+                authorityRepository
+                (authorityAdmissionRevision snapshot)
+                next
+            pure $ case attempted of
+              Right () -> PulumiCheckpointRetirementApplied
+              Left detail -> PulumiCheckpointRetirementAttemptUnavailable detail
+        | decision == CheckpointMutationAlreadyApplied ->
+            pure PulumiCheckpointRetirementAlreadyApplied
+        | otherwise ->
+            pure (PulumiCheckpointRetirementAttemptRefused (decisionText decision))
+
+  readBackRetirement callerSlot operation registered =
+    case registeredGenerationForSlot callerSlot of
+      Left detail -> pure (PulumiCheckpointRetirementReadBackRefused detail)
+      Right generation -> do
+        observed <- readAuthorityAdmission authorityRepository
+        case observed of
+          Left detail ->
+            pure (PulumiCheckpointRetirementReadBackUnavailable detail)
+          Right snapshot ->
+            case authorityCheckpointOperationRef operation of
+              Left detail ->
+                pure
+                  ( PulumiCheckpointRetirementReadBackRefused
+                      ("authority operation identity is invalid: " <> Text.pack (show detail))
+                  )
+              Right operationReference ->
+                pure
+                  ( confirmRetirementReadBack
+                      callerSlot
+                      generation
+                      operation
+                      operationReference
+                      registered
+                      (authorityAdmissionSnapshotState snapshot)
+                  )
+
+  confirmRetirementReadBack
+    callerSlot
+    generation
+    operation
+    operationReference
+    registered
+    aggregate =
+      case authorityCheckpointOperationStatus
+        (verifiedCallerSlotPrincipal callerSlot)
+        generation
+        operation
+        aggregate of
+        Left refusal ->
+          PulumiCheckpointRetirementReadBackRefused
+            ("retirement operation binding is invalid: " <> Text.pack (show refusal))
+        Right operationStatus ->
+          case observeCheckpointRetirementReadBack
+            operationReference
+            registered
+            checkpoints of
+            Nothing ->
+              PulumiCheckpointRetirementReadBackRefused
+                "retirement operation is not bound to this checkpoint"
+            Just CheckpointRetirementOperationPending
+              | operationStatus == StatusInFlight ->
+                  PulumiCheckpointRetirementPending
+              | otherwise ->
+                  PulumiCheckpointRetirementReadBackUnavailable
+                    "retirement operation is pending but its submission is not in flight"
+            Just (CheckpointRetirementOperationApplied retiredReference)
+              | operationStatus /= StatusSettled OperationCompletedOutcome ->
+                  PulumiCheckpointRetirementReadBackUnavailable
+                    "retirement operation is applied but its submission is not settled"
+              | observeAuthorityPulumiCheckpoint registered checkpoints /= Nothing ->
+                  PulumiCheckpointReferenceStillCurrent
+                    (observeAuthorityPulumiCheckpoint registered checkpoints)
+              | not
+                  ( maybe
+                      True
+                      (`elem` observeRetiredAuthorityPulumiCheckpoints registered checkpoints)
+                      retiredReference
+                  ) ->
+                  PulumiCheckpointRetirementReadBackRefused
+                    "retired checkpoint reference is missing from the retained ledger"
+              | otherwise -> PulumiCheckpointReferenceRetired retiredReference
+     where
+      checkpoints = authorityAggregatePulumiCheckpoints aggregate
 
   publish callerSlot ticket registered checkpoint =
     case registeredGenerationForSlot callerSlot of
@@ -451,6 +987,23 @@ publicationInvariant =
 retirementInvariant :: (Show invariant) => invariant -> PulumiCheckpointRetirementResult
 retirementInvariant =
   PulumiCheckpointRetirementUnavailable
+    . ("authority checkpoint invariant failed: " <>)
+    . Text.pack
+    . show
+
+restoreInvariant :: (Show invariant) => invariant -> PulumiCheckpointRestoreResult
+restoreInvariant =
+  PulumiCheckpointRestoreRefused
+    . ("authority checkpoint invariant failed: " <>)
+    . Text.pack
+    . show
+
+retirementAttemptInvariant
+  :: (Show invariant)
+  => invariant
+  -> PulumiCheckpointRetirementAttemptResult
+retirementAttemptInvariant =
+  PulumiCheckpointRetirementAttemptRefused
     . ("authority checkpoint invariant failed: " <>)
     . Text.pack
     . show

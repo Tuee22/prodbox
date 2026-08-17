@@ -231,17 +231,18 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
 
 ## 3. Pure Capability Algebra
 
-> **Implementation status (2026-07-14, Sprint `1.61`)**: the pure foundation of this algebra has
-> landed additively as `src/Prodbox/ControlPlane/{CapabilityKind,Coordinate,CapabilityRef,
-> Observation,Permit,Program}.hs` (umbrella `src/Prodbox/ControlPlane.hs`). The landed layout
+> **Current source correspondence.** The pure foundation of this algebra is represented by
+> `src/Prodbox/ControlPlane/{CapabilityKind,Coordinate,CapabilityRef,
+> Observation,Permit,Program}.hs` (umbrella `src/Prodbox/ControlPlane.hs`). The current layout
 > refines the illustrative `Capability.hs`/`Program.hs`/`Interpreter.hs` target shapes below:
 > `CapabilityKind.hs` owns the kind universe, `CapabilityOp` value mirror, `KnownCapability`
 > witnesses, and the `MutatingKind`/`InternalCasKind`/`ExternalIntentKind` markers; `Coordinate.hs`
 > the coordinate + digest; `CapabilityRef.hs` the nominal-role opaque reference; `Observation.hs`
 > the flat evidence, `classifyEvidence`, and the fail-closed `AdmissionTicket`; `Permit.hs` the
 > opaque `WriterPermit` and the signed committed-intent chain; `Program.hs` the closed
-> `CapabilityProgram` GADT. The interpreter (§3 below) and the component-graph lowering remain a
-> scheduled follow-up cutover; the shapes below are the target the migration lands against.
+> `CapabilityProgram` GADT. The shapes below define the complete target, including interpreter and
+> component-graph lowering; implementation and cutover status live only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ### 3.1 Operation-indexed references
 
@@ -514,13 +515,21 @@ data RetainedMaterialCustodyObservation
   | RetainedMaterialCustodyDigestMismatch ExpectedDigest ObservedDigest
   | RetainedMaterialCustodyUnobservable RetainedMaterialObservationFailure
 
+data DecommissionHomeUninstallReady -- abstract
+data DecommissionAuditReady -- abstract
+data DecommissionTerminalFrameReady -- abstract
+
 data DecommissionProgramTag
   = DecommissionRegisteredManagedResource
   | DecommissionTargetVaultGeneration
   | DecommissionSesSmtpCustody
   | DecommissionAcmeEabCustody
+  | DecommissionHomeSubstrate
+  | DecommissionLocalData
   | DecommissionTlsRetentionTail
   | DecommissionAuthorityBackupTail
+  | DecommissionFinalEscapeAudit
+  | DecommissionTerminalReceipt
 
 data VerifiedDecommissionPermit (tag :: DecommissionProgramTag)
 
@@ -545,6 +554,19 @@ data DecommissionProgram (tag :: DecommissionProgramTag) result where
     -> DecommissionProgram
          'DecommissionAcmeEabCustody
          RetainedMaterialAbsenceReadBack
+  UninstallDecommissionHomeSubstrate
+    :: VerifiedDecommissionPermit 'DecommissionHomeSubstrate
+    -> DecommissionHomeUninstallReady
+    -> DecommissionProgram
+         'DecommissionHomeSubstrate
+         DecommissionHomeAbsenceReadBack
+  ApplyDecommissionLocalDataDisposition
+    :: VerifiedDecommissionPermit 'DecommissionLocalData
+    -> DecommissionHomeAbsenceReadBack
+    -> LocalDataDispositionPlan
+    -> DecommissionProgram
+         'DecommissionLocalData
+         LocalDataDispositionReadBack
   DeleteRegisteredTlsRetentionTail
     :: VerifiedDecommissionPermit 'DecommissionTlsRetentionTail
     -> DecommissionProgram
@@ -555,6 +577,18 @@ data DecommissionProgram (tag :: DecommissionProgramTag) result where
     -> DecommissionProgram
          'DecommissionAuthorityBackupTail
          AuthorityBackupDecommissionReadBack
+  AuditFinalDecommissionEscapes
+    :: VerifiedDecommissionPermit 'DecommissionFinalEscapeAudit
+    -> DecommissionAuditReady
+    -> DecommissionProgram
+         'DecommissionFinalEscapeAudit
+         DecommissionEscapeAuditReadBack
+  AppendAndReadBackDecommissionTerminalReceipt
+    :: VerifiedDecommissionPermit 'DecommissionTerminalReceipt
+    -> DecommissionTerminalFrameReady
+    -> DecommissionProgram
+         'DecommissionTerminalReceipt
+         ExternalDecommissionTerminalReceipt
 
 data CapabilityProgram (kind :: CapabilityKind) result where
   ObserveProcessService
@@ -777,6 +811,16 @@ constructor delegates to `ExecuteTargetDecommissionTombstone` on the still-live 
 every remaining constructor resolves only its tag-indexed registry coordinate. No constructor
 accepts a URL, command, bucket/prefix, Vault path, AWS request, shell fragment, or caller-selected
 coordinate, and there is no generic decommission escape interpreter.
+
+The four terminal tags are not implicit runner side effects. `DecommissionHomeSubstrate` consumes
+an opaque readiness witness proving every node that still needs the home plane terminal and returns
+exact host absence. `DecommissionLocalData` consumes that absence plus the manifest's explicit
+retain/delete plan and reads the selected disposition back. `DecommissionFinalEscapeAudit` consumes
+the exact no-retention audit readiness fold after the final backup bucket is absent.
+`DecommissionTerminalReceipt` consumes those bound results and returns only after appending,
+fsyncing, reopening, and verifying the terminal external frame. The private witness minters check
+one decommission run, manifest/runner/schema digest, dependency frontier, and receipt-chain digest;
+the runner cannot call a later constructor merely because an earlier process returned zero.
 
 The GADT indexes operation legality; it does not claim ownership of externally authoritative
 state. Every `CapabilityProgram` value is canonically serializable and secret-free. Prompt bytes,
@@ -1467,17 +1511,18 @@ Every authority-namespace object coordinate and CAS adapter is durability-indexe
 constructors partition the object namespaces by lifetime class. A retained-or-stronger object
 addressed through a chart-lifetime transport is unrepresentable rather than merely forbidden.
 
-> **Implementation status (2026-07-27, Sprint `4.51`)**: Increment A landed the phantom
-> `StoreLifetime` index on the Model-B coordinate / request / adapter types with a `nominal` role and
-> the full-name-tagging constructors, plus the compile + byte-erasure witness. A lease guard is
+> **Current source correspondence.** The Model-B coordinate/request/adapter types carry the phantom
+> `StoreLifetime` index with a `nominal` role and full-name-tagging constructors plus the compile and
+> byte-erasure witness. A lease guard is
 > monomorphically `'ClusterRetained'` (not lifetime-indexed) — a lease is always retained — which
-> lets a `'ChartLifetime'` checkpoint be guarded by a retained lease. Increment B now makes the
-> gateway adapter `'ChartLifetime'`-only and cuts retained SES lease/target/SMTP consumers to a
-> transaction-resolved host-direct `'ClusterRetained'` adapter with one short MinIO port-forward
+> lets a `'ChartLifetime'` checkpoint be guarded by a retained lease. The current gateway adapter
+> is `'ChartLifetime'`-only, while retained SES lease/target/SMTP consumers use a
+> transaction-resolved host-direct `'ClusterRetained'` adapter with one bounded MinIO transport
 > window per read/CAS. The durable SES operation fold arms a generation-scoped retained record
 > before key creation, completes it before projection publication, and replays a completed result
 > before inventory cleanup. Arm, completion, and projection response-loss prefixes are covered by
-> the Sprint `4.51` crash table; live AWS response-loss behavior remains Standard-O evidence.
+> deterministic crash schedules. Implementation and live-evidence status live only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 Garbage collection persists its candidate set and both complete scan receipts in the aggregate.
 Its GC fence is mutually exclusive with `RecordPendingBlob` and promotion. After the declared grace,
@@ -2113,10 +2158,10 @@ operation-indexed reference for admission/execution and one absolute request dea
 The cryptographic formats, unlock-bundle backend, bootstrap credential, sealed-state behavior, and
 Vault policies remain owned only by [Vault Secret-Management Doctrine](./vault_doctrine.md).
 
-These are the code-local target boundaries, not a deployment or cutover claim. The production
-facade remains fail closed for readiness and every non-health request until Sprint `3.26` supplies
-the physical Kubernetes TokenReview, Lease, workload/attestation, MinIO, Vault, and OpenPGP
-interpreters and renders the separate workload. Gateway target routing contains no bootstrap
+These are the code-local target boundaries, not a deployment or cutover claim. Sprint `3.26`
+supplied chart/render foundations, but the production facade still fails closed for readiness and
+every non-health request; physical interpreter activation and single-writer cutover remain
+plan-tracked work. Gateway target routing contains no bootstrap
 handler, and the former `Prodbox.Bootstrap.Broker.LegacyAdapter` is physically deleted. Standard-P
 qualification remains a deployment-evidence campaign and cannot re-enable that removed route.
 
@@ -2134,11 +2179,11 @@ on the heartbeat path. It stops publishing before local lease expiry. A Pod cann
 publish until every applicable fence is owned; peers reject a lower incarnation. Other workers
 submit pure intents to a bounded mailbox:
 
-The physical bindings above are the target contract. Sprint `2.32` supplies their typed claim-side
-inputs through `Prodbox.Gateway.Emitter.Persistence`; Sprint `3.26` owns rendering those inputs into
-StatefulSet templates, home PVs, EBS `volumeHandle`s, reclaim policy, and RBAC. This section does not
-assert production cutover or deployment qualification; those states belong only to the Development
-Plan.
+The physical bindings above are the target contract. Sprint `2.32` supplied their typed claim-side
+inputs through `Prodbox.Gateway.Emitter.Persistence`, and completed Sprint `3.26` supplied the
+chart/render foundation. The production selection still uses the pre-cutover topology; activation,
+legacy removal, and deployment qualification belong only to the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ```haskell
 -- Example: the landed shapes in src/Prodbox/Gateway/Emitter/Mailbox.hs (the
@@ -2360,8 +2405,9 @@ boundary, and the lifecycle gate retains the capability-scoped deep probe.
 
 ## 11. Always-Run Cleanup
 
-Before a suite mutation can obtain its `CommittedIntentRef`, the pure builder CAS-registers its
-typed cleanup node in a durable, backup-receipted `CleanupRun` journal and reads back an opaque
+Before any managed external mutation requested by a CLI command, validation client, or recovery
+worker can obtain its `CommittedIntentRef`, the pure builder CAS-registers its typed cleanup node in
+a durable, backup-receipted `CleanupRun` journal and reads back an opaque
 `CleanupObligationRef`. The mutation proof binds that obligation. Dynamic child coordinates are
 appended and read back before the parent/controller is allowed to create them. The cleanup run has a
 monotonic owner fence, node-level operation IDs, durable outcomes, and an independent recovery
@@ -2375,12 +2421,14 @@ the client API. Both the bounded namespace and every active revision require an 
 Authority Backup receipt before their primary CAS; scan repairs a missing per-run primary from the
 complete indexed plan before returning it to the recovery worker.
 
-The exact `RequiresSuccess`/`RequiresAttempt` edges, substrate-specific `DrainSkipped` treatment,
-canonical cleanup order, resume rules, and aggregate result are owned only by
-[Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-cleanup-failure-handling).
-This architecture requires that every ready node continues after sibling failure, credential nodes
+The exact `RequiresSuccess`/`RequiresAttempt` edges, substrate-specific drain treatment, canonical
+recover-to-clean order, resume rules, and proof-carrying aggregate are owned only by
+[Lifecycle Reconciliation Doctrine §3.3](./lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph).
+[Integration Fixture Doctrine §4](./integration_fixture_doctrine.md#4-validation-as-a-cleanup-client)
+owns how a validation registers its originating result and consumes the generic report. This
+architecture requires that every ready node continues after sibling failure, credential nodes
 remain blocked while their exact dependants need them, and the durable final report retains the
-primary suite result plus every cleanup failure and dependency-blocked reason.
+originating command or validation outcome plus every cleanup failure and dependency-blocked reason.
 
 Restore and cleanup dependency edges are derived, not authored per-site: the
 `RequiresSuccess`/`RequiresAttempt` structure is computed from registered chart-dependency and
@@ -2388,6 +2436,46 @@ storage-lifetime facts, so an independence claim cannot exist only as a comment.
 obligations — every long-lived registry entry has a restore node, every per-run entry has a
 destroy node, and no node reads retained-or-stronger state through a chart-lifetime transport that
 the same graph deletes — are pure checks that run pre-cluster.
+
+### 11.0 Ordinary teardown recovery profile
+
+Ordinary desired-absence reconciliation has a deliberately small deployment projection. It exists
+so cleanup can recover the authorities it needs without restoring Gateway Runtime or the
+application platform, and without creating a second host-direct authority.
+
+The profile contains only:
+
+- the RKE2 API and retained manual-PV bindings;
+- MinIO attached to its preserved lifecycle namespace;
+- Vault attached to its preserved PV, plus the Bootstrap Broker path required to unseal and
+  reconcile the bounded lifecycle baseline;
+- a bootstrap-core-owned external CLI ServiceAccount and exact RBAC, independent of the Gateway
+  chart and every application namespace;
+- Lifecycle Authority and Authority Backup Adapter;
+- Fenced Provider Worker; and
+- a Target Secret Agent only when a registered nonterminal cleanup node still needs its exact
+  target-generation or credential disposition.
+
+The projection is derived from requested teardown capabilities and the component graph's dependency
+closure. It cannot select Gateway Runtime, public-edge application charts, a generic object-store
+client, a host Vault root session, or ambient AWS credentials. The local admin kubeconfig may
+repair only RKE2 and the compiled bootstrap-core resources needed to mint the short-lived dedicated
+caller token; lifecycle work after that point uses the normal Vault Kubernetes-auth and Transit
+signing chain.
+
+If RKE2 is stopped, the recovery interpreter repairs and starts it. If RKE2 is absent while the
+retained establishment marker or cleanup-run namespace says lifecycle state exists, it reinstalls
+this profile against the same `.data` roots. MinIO, Vault, Authority, Backup Adapter, and Provider
+Worker are reconciled in dependency order; primary Authority loss restores exact receipt-committed
+bytes before a greater epoch opens. No second MinIO or Vault writer is started beside the cluster.
+
+Recovery scans and resumes nonterminal cleanup runs before admitting new lifecycle mutations in the
+same scope. A completed backup-receipted cleanup report permits the final local uninstall. An
+incomplete run returns its stable `CleanupRunId` and a typed recovery-plane disposition. When
+profile establishment was positively confirmed, that disposition records the live profile and every
+still-needed credential; when establishment failed, it records the exact unavailable capability and
+must not claim the profile is live. The next cascade resumes the same run. Total loss of the retained
+trust root refuses and does not widen ordinary teardown into decommission.
 
 ### 11.1 Total decommission and the final backup deletion
 

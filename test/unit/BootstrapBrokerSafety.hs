@@ -131,6 +131,50 @@ durableFenceSuite =
         `shouldBe` BootstrapFenceAcquireRefused
           (BootstrapFenceAcquireExpiredPredecessor expired)
 
+    -- Sprint 2.47: the acquire path asked this as a Bool, folding all three
+    -- AttemptDeadlineRefusal arms into "expired". Two of them mean *cannot
+    -- determine*. Both still refuse today, so the pair below is behaviour-
+    -- preserving -- it is pinned because the distinction becomes safety-critical
+    -- the moment a positive expiry authorises a retirement, and an unreadable
+    -- clock must never authorise one.
+    it "distinguishes a positively expired predecessor from one whose clock cannot be read" $ do
+      let expired =
+            fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 100
+      classifyPredecessorLiveness monoNow requestDeadline trustedNow expired
+        `shouldBe` PredecessorExpired
+      case classifyPredecessorLiveness
+        monoNow
+        requestDeadline
+        (AuthorityTimeUnobservable (ClockUnreadable "clock source unavailable"))
+        expired of
+        PredecessorLivenessUnobservable _ -> pure ()
+        other ->
+          expectationFailure
+            ("an unreadable clock must not read as expiry, got: " ++ show other)
+
+    -- The measurement that scoped this sprint: the acquire path CANNOT reach a
+    -- liveness-unobservable predecessor, because it derives the *request's*
+    -- attempt deadline from the same clock observation before it reads the
+    -- store. An untrusted clock therefore refuses at the request, never at the
+    -- predecessor. This is why no new refusal constructor was added -- it would
+    -- have been unreachable, which is the arm Sprint 4.78 deleted rather than
+    -- re-worded. The classifier keeps its third arm because
+    -- `decideBootstrapFenceRetire` reaches it on a path that does not pre-check
+    -- the request.
+    it "refuses on the request's own clock before a predecessor's liveness is ever classified" $ do
+      let expired =
+            fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 100
+      case decideBootstrapFenceAcquire
+        monoNow
+        requestDeadline
+        (AuthorityTimeUnobservable (ClockUnreadable "clock source unavailable"))
+        (acquireRequestFor canonicalFence)
+        (BootstrapFenceStoreHeld expired) of
+        BootstrapFenceAcquireRefused (BootstrapFenceAcquireDeadlineRefused _) -> pure ()
+        other ->
+          expectationFailure
+            ("an untrusted clock must refuse at the request deadline, got: " ++ show other)
+
     it "retires an expired owner only after exact Lease and cleanup absence, then advances generation" $ do
       let expired =
             fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 50
@@ -227,6 +271,212 @@ durableFenceSuite =
         retirement
         (BootstrapFenceRetireCasUnobservable "store down")
         `shouldSatisfy` isLeft
+
+    -- Sprint 2.48: the compensating release for the second defect Sprint 2.47's
+    -- live proof measured -- `acquireFence` CASed its fence and then abandoned
+    -- it when `ensureLease` failed, so one Lease fault cost a generation and
+    -- refused every successor `BootstrapFenceAcquireOverlap` until the
+    -- operation deadline elapsed. Measured across five consecutive bring-ups on
+    -- 2026-08-14, not inferred.
+    it "releases a freshly acquired fence and burns its generation rather than reusing it" $ do
+      let acquired =
+            fenceAt 5 canonicalOwner canonicalAction canonicalRequest canonicalStorage 5_000
+          release = abandonFreshlyAcquiredFence acquired
+          vacant = BootstrapFenceStoreVacant 5
+      -- exact-value CAS: it can never clobber a fence this call did not write
+      fenceRetireExpectedFence release `shouldBe` acquired
+      -- the floor is the released generation itself, so the successor allocates
+      -- 6. A floor of 4 would let a successor re-mint generation 5, and the
+      -- whole fence scheme rests on that never happening.
+      fenceRetireVacantGenerationFloor release `shouldBe` 5
+      confirmBootstrapFenceRetireCas
+        release
+        (BootstrapFenceRetireCasAppliedReadBack vacant)
+        `shouldBe` Right vacant
+      case decideBootstrapFenceAcquire
+        monoNow
+        requestDeadline
+        trustedNow
+        (acquireRequestFor canonicalFence)
+        vacant of
+        BootstrapFenceAcquireCas plan ->
+          bootstrapFenceGenerationValue
+            (bootstrapFenceGeneration (fenceCasProposedFence plan))
+            `shouldBe` 6
+        decision -> expectationFailure ("expected successor CAS plan, got " ++ show decision)
+
+    it "cannot release a fence other than the exact one it was given" $ do
+      let acquired =
+            fenceAt 5 canonicalOwner canonicalAction canonicalRequest canonicalStorage 5_000
+          someoneElse =
+            fenceAt 5 alternateOwner canonicalAction alternateRequest canonicalStorage 5_000
+          release = abandonFreshlyAcquiredFence acquired
+      -- The store CAS compares the whole value, so a fence that differs in any
+      -- field conflicts rather than being vacated -- which is what makes the
+      -- compensation safe without observing an owner.
+      fenceRetireExpectedFence release `shouldNotBe` someoneElse
+      confirmBootstrapFenceRetireCas
+        release
+        (BootstrapFenceRetireCasConflict (BootstrapFenceStoreHeld someoneElse))
+        `shouldSatisfy` isLeft
+      confirmBootstrapFenceRetireCas
+        release
+        (BootstrapFenceRetireCasAppliedReadBack (BootstrapFenceStoreVacant 4))
+        `shouldSatisfy` isLeft
+
+    -- Sprint 2.47: the adapter that gave `decideBootstrapFenceRetire` its first
+    -- production producer. It exists because a held `BootstrapSessionFence`
+    -- carries three of the seven fields a `SecretWorkerCleanupBinding` needs,
+    -- so the retire path could never be wired to the binding-keyed observer.
+    it "adapts a generation-scoped worker observation into the exact cleanup fact" $ do
+      let held = fenceAt 4 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          heldGeneration = bootstrapFenceGeneration held
+      bootstrapFenceOwnerCleanupFromWorkerObservation
+        held
+        (BootstrapFenceOwnerWorkerAbsent heldGeneration canonicalReceiptDigest)
+        `shouldBe` BootstrapFenceOwnerAbsent held canonicalReceiptDigest
+      bootstrapFenceOwnerCleanupFromWorkerObservation
+        held
+        (BootstrapFenceOwnerWorkerPresent heldGeneration)
+        `shouldBe` BootstrapFenceOwnerStillPresent held
+      bootstrapFenceOwnerCleanupFromWorkerObservation
+        held
+        (BootstrapFenceOwnerWorkerUnobservable "worker API down")
+        `shouldBe` BootstrapFenceOwnerCleanupUnobservable "worker API down"
+
+    -- The safety case, and the reason the observation carries a generation at
+    -- all: an answer about generation G' is not an answer about generation G,
+    -- in EITHER direction. An absence claim about someone else's worker must
+    -- never authorize this fence's takeover, and a presence claim about someone
+    -- else's worker must not be reported as this owner still holding.
+    it "never lets a worker observation about another generation authorize this takeover" $ do
+      let held = fenceAt 4 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          otherGeneration = generation 9
+          expired =
+            decideBootstrapFenceRetire
+              monoNow
+              requestDeadline
+              trustedNow
+              held
+              BootstrapLeaseMissing
+      forM_
+        [ BootstrapFenceOwnerWorkerAbsent otherGeneration canonicalReceiptDigest
+        , BootstrapFenceOwnerWorkerPresent otherGeneration
+        ]
+        $ \observation -> do
+          let cleanup = bootstrapFenceOwnerCleanupFromWorkerObservation held observation
+          cleanup `shouldSatisfy` isCleanupUnobservable
+          expired cleanup `shouldSatisfy` isLeft
+
+    -- The sequence Sprint 2.47 wired into `acquireFence`, asserted end to end as
+    -- pure decisions. Before it, `decideBootstrapFenceRetire` had zero
+    -- production callers while its store half was fully wired, so a fence
+    -- abandoned by a failed bring-up refused every later acquisition forever --
+    -- and `cluster delete --cascade` preserves the object by design.
+    it "acquires after retiring a positively expired predecessor, in one bounded pass" $ do
+      let abandoned =
+            fenceAt 4 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          successor = acquireRequestFor canonicalFence
+          firstAttempt =
+            decideBootstrapFenceAcquire
+              monoNow
+              requestDeadline
+              trustedNow
+              successor
+              (BootstrapFenceStoreHeld abandoned)
+      -- The refusal the operator host actually reported, five bring-ups running.
+      firstAttempt
+        `shouldBe` BootstrapFenceAcquireRefused
+          (BootstrapFenceAcquireExpiredPredecessor abandoned)
+      let retirement =
+            mustRight
+              ( decideBootstrapFenceRetire
+                  monoNow
+                  requestDeadline
+                  trustedNow
+                  abandoned
+                  BootstrapLeaseMissing
+                  ( bootstrapFenceOwnerCleanupFromWorkerObservation
+                      abandoned
+                      ( BootstrapFenceOwnerWorkerAbsent
+                          (bootstrapFenceGeneration abandoned)
+                          canonicalReceiptDigest
+                      )
+                  )
+              )
+          vacated =
+            mustRight
+              ( confirmBootstrapFenceRetireCas
+                  retirement
+                  (BootstrapFenceRetireCasAppliedReadBack (BootstrapFenceStoreVacant 4))
+              )
+      -- The successor re-decides against the confirmed post-retirement
+      -- read-back, not a fresh store read, and allocates floor + 1 exactly once.
+      case decideBootstrapFenceAcquire monoNow requestDeadline trustedNow successor vacated of
+        BootstrapFenceAcquireCas plan -> do
+          fenceCasExpectedGenerationFloor plan `shouldBe` 4
+          bootstrapFenceGenerationValue
+            (bootstrapFenceGeneration (fenceCasProposedFence plan))
+            `shouldBe` 5
+          bootstrapFenceOwnerNonce (fenceCasProposedFence plan) `shouldBe` canonicalOwner
+        decision -> expectationFailure ("expected successor CAS plan, got " ++ show decision)
+
+    -- The refusal arm must still refuse: a permissive branch proves nothing on
+    -- its own. A live worker for the same generation blocks the retirement, so
+    -- the successor is left with the original expired-predecessor refusal.
+    it "still refuses when the expired predecessor's worker is live or unreadable" $ do
+      let abandoned =
+            fenceAt 4 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          heldGeneration = bootstrapFenceGeneration abandoned
+      forM_
+        [ BootstrapFenceOwnerWorkerPresent heldGeneration
+        , BootstrapFenceOwnerWorkerUnobservable "worker Pod fence-owner GET returned a non-success status"
+        ]
+        $ \observation ->
+          decideBootstrapFenceRetire
+            monoNow
+            requestDeadline
+            trustedNow
+            abandoned
+            BootstrapLeaseMissing
+            (bootstrapFenceOwnerCleanupFromWorkerObservation abandoned observation)
+            `shouldSatisfy` isLeft
+
+    -- Sprint 2.49 regression. An already-expired Lease is encoded as a deadline
+    -- AT the instant it was observed, and `deadlineExpired now limit` is
+    -- `now >= limit`. So the instant handed to the retire decision must not
+    -- predate the observation, or a Lease that expired hours ago reads as still
+    -- live and the fence can never be retired. This was latent from Sprint 2.47
+    -- and unreachable until Sprint 2.48 made the Lease creatable at all --
+    -- before that every retirement saw `BootstrapLeaseMissing` and
+    -- short-circuited.
+    it "reads a Lease expired at the observation instant as expired, not as still live" $ do
+      let expired =
+            fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          observedAt = monotonicInstantFromMicros 400
+          -- exactly how bootstrapLeaseFromResponse encodes an expired Lease
+          staleLease =
+            BootstrapLeaseObserved
+              (bootstrapLeaseBindingForFence expired)
+              (deadlineFromInstant observedAt)
+              "stale-resource-version"
+          retireAt now =
+            decideBootstrapFenceRetire
+              now
+              requestDeadline
+              trustedNow
+              expired
+              staleLease
+              (BootstrapFenceOwnerAbsent expired canonicalReceiptDigest)
+      -- sampled at or after the observation: expired, so retirement proceeds
+      retireAt observedAt `shouldSatisfy` isRight
+      retireAt (monotonicInstantFromMicros 401) `shouldSatisfy` isRight
+      -- sampled before it: the defect -- the Lease reads as still live
+      case retireAt (monotonicInstantFromMicros 399) of
+        Left (BootstrapFenceRetireLeaseStillLive _) -> pure ()
+        other ->
+          expectationFailure
+            ("an instant predating the observation must read the Lease as live, got: " ++ show other)
 
     it "refuses expired requests and an unobservable durable store" $ do
       decideBootstrapFenceAcquire
@@ -910,6 +1160,11 @@ fencePermitAt clockObservation fence effect =
 acquireRefused :: BootstrapFenceAcquireDecision -> Bool
 acquireRefused decision = case decision of
   BootstrapFenceAcquireRefused _ -> True
+  _ -> False
+
+isCleanupUnobservable :: BootstrapFenceOwnerCleanupObservation -> Bool
+isCleanupUnobservable observation = case observation of
+  BootstrapFenceOwnerCleanupUnobservable _ -> True
   _ -> False
 
 canonicalPodUid :: WorkerPodUid

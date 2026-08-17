@@ -86,6 +86,12 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClientAuthRequestRegion
   , eksClientAuthRequestClusterName
   , eksClientAuthRequestDestinationPublicKey
+  , EksClusterIdentityRequest
+  , mkEksClusterIdentityRequest
+  , eksClusterIdentityRequestStackRef
+  , eksClusterIdentityRequestAccountId
+  , eksClusterIdentityRequestRegion
+  , eksClusterIdentityRequestClusterName
 
     -- * Provider revision
   , ProviderRevision
@@ -384,9 +390,58 @@ data EksClientAuthRequest = EksClientAuthRequest
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Exact read-only EKS identity lookup.  The registered stack reference is
+-- retained separately from the provider coordinates so admission can require
+-- the registry-owned @stack:aws-eks@ capability without inferring ownership
+-- from a cluster name or ARN returned at runtime.
+data EksClusterIdentityRequest = EksClusterIdentityRequest
+  { eksClusterIdentityRequestStackRef :: !ProviderStackRef
+  , eksClusterIdentityRequestAccountId :: !Text
+  , eksClusterIdentityRequestRegion :: !Text
+  , eksClusterIdentityRequestClusterName :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+mkEksClusterIdentityRequest
+  :: ProviderStackRef
+  -> Text
+  -> Text
+  -> Text
+  -> Either ProviderRefError EksClusterIdentityRequest
+mkEksClusterIdentityRequest stackRef accountId region clusterName = do
+  (validatedAccount, validatedRegion, validatedCluster) <-
+    validateEksClusterCoordinates accountId region clusterName
+  Right
+    EksClusterIdentityRequest
+      { eksClusterIdentityRequestStackRef = stackRef
+      , eksClusterIdentityRequestAccountId = validatedAccount
+      , eksClusterIdentityRequestRegion = validatedRegion
+      , eksClusterIdentityRequestClusterName = validatedCluster
+      }
+
 mkEksClientAuthRequest
   :: Text -> Text -> Text -> ByteString -> Either ProviderRefError EksClientAuthRequest
 mkEksClientAuthRequest accountId region clusterName destinationPublicKey = do
+  (validatedAccount, validatedRegion, validatedCluster) <-
+    validateEksClusterCoordinates accountId region clusterName
+  if ByteString.length destinationPublicKey /= 32
+    then Left (ProviderRefTooLong (ByteString.length destinationPublicKey))
+    else
+      Right
+        EksClientAuthRequest
+          { eksClientAuthRequestAccountId = validatedAccount
+          , eksClientAuthRequestRegion = validatedRegion
+          , eksClientAuthRequestClusterName = validatedCluster
+          , eksClientAuthRequestDestinationPublicKey = destinationPublicKey
+          }
+
+validateEksClusterCoordinates
+  :: Text
+  -> Text
+  -> Text
+  -> Either ProviderRefError (Text, Text, Text)
+validateEksClusterCoordinates accountId region clusterName = do
   validatedAccount <- validateProviderRef accountId
   validatedRegion <- validateProviderRef region
   validatedCluster <- validateProviderRef clusterName
@@ -399,16 +454,7 @@ mkEksClientAuthRequest accountId region clusterName destinationPublicKey = do
   if not (validClusterName validatedCluster)
     then Left (ProviderRefMalformed "eks-cluster-name")
     else Right ()
-  if ByteString.length destinationPublicKey /= 32
-    then Left (ProviderRefTooLong (ByteString.length destinationPublicKey))
-    else
-      Right
-        EksClientAuthRequest
-          { eksClientAuthRequestAccountId = validatedAccount
-          , eksClientAuthRequestRegion = validatedRegion
-          , eksClientAuthRequestClusterName = validatedCluster
-          , eksClientAuthRequestDestinationPublicKey = destinationPublicKey
-          }
+  Right (validatedAccount, validatedRegion, validatedCluster)
  where
   validAwsRegion value =
     Text.length value >= 6
@@ -519,6 +565,9 @@ data ProviderIntent
   | ObserveOperationalIdentity
   | ObserveProviderReadiness !ProviderReadinessProbe
   | IssueEksClientAuth !EksClientAuthRequest
+  | ObserveTestEbsVolumes !Text
+  | ObserveEksClusterIdentity !EksClusterIdentityRequest
+  | ObserveProviderAwsScope
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -560,10 +609,14 @@ providerIntentResourceKey intent = case intent of
       <> ":"
       <> providerSpotPriceProductDescription query
   ObserveOperationalIdentity -> "operational-identity"
+  ObserveProviderAwsScope -> "operational-identity"
   ObserveProviderReadiness probe -> case probe of
     ProviderReadinessStsIdentity -> "readiness:sts"
     ProviderReadinessRoute53Zone zoneId -> "readiness:route53:" <> zoneId
   IssueEksClientAuth _ -> "eks-client-auth"
+  ObserveTestEbsVolumes clusterName -> "ebs-reaper:test-scoped:" <> clusterName
+  ObserveEksClusterIdentity request ->
+    "stack:" <> providerStackRefText (eksClusterIdentityRequestStackRef request)
 
 publicARecordResourceKey :: PublicARecordRef -> Text
 publicARecordResourceKey ref =
@@ -641,6 +694,7 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> ":"
       <> providerSpotPriceProductDescription query
   ObserveOperationalIdentity -> "observe-operational-identity"
+  ObserveProviderAwsScope -> "observe-provider-aws-scope"
   ObserveProviderReadiness probe -> case probe of
     ProviderReadinessStsIdentity -> "observe-readiness:sts"
     ProviderReadinessRoute53Zone zoneId -> "observe-readiness:route53:" <> zoneId
@@ -653,6 +707,16 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> eksClientAuthRequestClusterName request
       <> ":"
       <> publicKeyDigest (eksClientAuthRequestDestinationPublicKey request)
+  ObserveTestEbsVolumes clusterName -> "observe-test-ebs:" <> clusterName
+  ObserveEksClusterIdentity request ->
+    "observe-eks-cluster:"
+      <> providerStackRefText (eksClusterIdentityRequestStackRef request)
+      <> ":"
+      <> eksClusterIdentityRequestAccountId request
+      <> ":"
+      <> eksClusterIdentityRequestRegion request
+      <> ":"
+      <> eksClusterIdentityRequestClusterName request
 
 providerStackConfigCoordinate :: ProviderStackConfig -> Text
 providerStackConfigCoordinate config = case config of

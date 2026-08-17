@@ -301,6 +301,7 @@ import Prodbox.Test.CertificateScopeServing
 import Prodbox.Test.CleanRoomHandoff qualified as CleanRoom
 import Prodbox.Test.CounterexampleValidation
   ( runControlPlaneCounterexampleValidation
+  , runTeardownRecoveryValidation
   )
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayPayloadSource (..)
@@ -1388,6 +1389,7 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
           environment
           maybeGatewayStability
       ValidationControlPlaneCounterexample -> runControlPlaneCounterexampleValidation repoRoot
+      ValidationTeardownRecovery -> runTeardownRecoveryValidation repoRoot
       ValidationCertificateScope -> runCertificateScopeServingValidation repoRoot substrate
       ValidationCleanRoomHandoff -> runCleanRoomHandoffValidation repoRoot
       ValidationChartsPlatform ->

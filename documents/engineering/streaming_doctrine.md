@@ -62,9 +62,10 @@ noisy upstream uninstaller. Its operator-facing output rule splits cleanly along
 
 - Success path: `deleteRke2ClusterSubstrate` captures the uninstaller's stdout and stderr through
   the lifecycle-local quiet path (`captureToolOutput`) and emits only the doctrine-owned summary
-  lines — `Deleting local RKE2 environment...`, AWS destroy dispositions,
-  `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the retained-root
-  notice. Benign upstream chatter that the uninstaller writes to its **own** stdout/stderr —
+  lines — `Deleting local RKE2 environment...`, `Local RKE2 substrate: cleanup complete`, the
+  kubeconfig disposition, and the retained-root notice. This local-only surface emits no AWS destroy
+  disposition because it neither observes nor mutates AWS. Benign upstream chatter that the
+  uninstaller writes to its **own** stdout/stderr —
   `Cannot find device "cni0"`, `semodule: not found`, and `Cleanup completed successfully` — does
   not reach the operator terminal, because `captureToolOutput` swallows those streams on success.
   The inotify warning `Failed to allocate directory watch: Too many open files` was historically
@@ -109,22 +110,36 @@ Per-run Pulumi destroys: skipped (no live per-run residue).
 and exited 0 — three non-observations narrated as one observed absence, one line after the status
 line said otherwise. The rule that follows:
 
-- Each skip reason gets its own sentence. `reconcileAbsent` narrates the observed-absent set and the
-  unobserved set separately and never shares a clause between them; its
-  "no destroy ran" sentence is a total function of the pair, so an all-unobserved batch cannot
-  borrow the all-absent wording.
+- Each typed node outcome gets its own sentence. The cleanup report narrates exact observed absence
+  and unobservability separately and never shares a clause between them; a "no destroy ran" sentence
+  is a total function of the recorded outcome, so an all-unobservable batch cannot borrow
+  observed-absent wording. The callback-era `reconcileAbsent` renderer is pre-cutover migration
+  inventory tracked in the
+  [legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md), not the target
+  narration source.
 - The unobserved sentence goes to the **diagnostic** stream and says what remains true afterwards
   (which resources, that this is not a confirmation, and the canonical command to resolve it).
-- An aggregate line that names phases must be derived from the recorded phase outcomes, not
-  restated. `prodbox cluster delete --cascade` closes with either "every phase reported success" or
-  the list of unresolved phases; neither sentence can be reached without the fold that produced it.
+- An aggregate line is derived from the typed terminal cleanup result, not from hand-maintained phase
+  exit codes. It may claim completion only from `CascadeComplete`; `CascadeIncomplete` renders every
+  unresolved keyed node and dependency blocker.
 - Advice must be a function of the mode that is running. The retained-state notice's per-run
   sentence takes the delete mode, because the shared uninstall step list previously closed a
   `--cascade` run by advising the operator to run `--cascade`.
 
-The soundness half of this rule — which of those outcomes may reach `ExitSuccess` — belongs to
-[lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md) invariant 3 and
-§ 5b, not here. This section owns only the sentences.
+The target recover-to-clean boundary strengthens this rule. Terminal cascade narration is rendered
+only from `CascadeComplete` or `CascadeIncomplete`; it is not reconstructed from phase exit codes.
+Every absence sentence names the exact registered resource key and confirming authority. Every
+unobservable sentence preserves the typed cause. `CascadeIncomplete` prints the stable
+`CleanupRunId`, renders the recovery-plane disposition, and names the retry surface. It states that
+the minimal recovery plane remains live only when that fact was positively established; a failed
+recovery-plane establishment is rendered as its own failure rather than narrated as availability.
+There is no operator-facing `confirm-MinIO` phase: checkpoint observation, provider inventory, and
+the terminal escape audit are distinct node outcomes and stay distinct in the report.
+
+The soundness half of this rule — which outcomes may reach `ExitSuccess` — belongs to the
+Soundness and Completion invariants in
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+and to §5b, not here. This section owns only the sentences.
 
 ## 7. Intent Ownership
 

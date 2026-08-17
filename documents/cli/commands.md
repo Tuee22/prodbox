@@ -143,7 +143,7 @@ keeps the public command names, binds observation, initialize/unseal/seal/rotati
 PKI to their distinct operation-indexed Bootstrap Broker references, and deletes the daemon
 NodePort and host fallback; sequencing lives only in the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md). The
-[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle) lives in the durable MinIO
+[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle-root-cluster) lives in the durable MinIO
 bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault. In the target,
 the initial root token is encrypted to a burn recipient and never usable; encrypted recovery-share
 receipt/custody precedes a separate short-lived baseline session. A sealed Vault fails closed; the

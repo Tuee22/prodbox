@@ -51,7 +51,7 @@ encrypted token is never decrypted or used:
 The root cluster is the only tier a human ever unseals. Its Vault uses Shamir seal mode; its
 unseal/recovery keys live only inside the password-AEAD unlock bundle in the durable MinIO bucket,
 and the only secret the operator memorizes is the bundle password (see
-[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle)). The target host path submits the
+[vault_doctrine.md § 6](./vault_doctrine.md#6-the-unlock-bundle-root-cluster)). The target host path submits the
 bounded unlock proof to Bootstrap Broker, the only pre-Vault process; the broker reads the bootstrap
 store and unseals Vault in-cluster. Gateway Runtime never receives the password or touches the
 unlock bundle. The test harness simulates the operator at the unseal prompt by reading that
@@ -112,7 +112,7 @@ convenience. The target custody record never contains a reusable initial root to
 
 At child cluster initialization (`vault init` running exactly once against an empty child Vault PV;
 see [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
-[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)), Vault PGP-encrypts recovery
+[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model-and-durability)), Vault PGP-encrypts recovery
 shares to the prepared parent-custody recipient and encrypts the initial root token to the pinned
 burn public key. Its private material existed only inside the isolated destructive ceremony, was
 never exported, was destroyed before adoption, is never accepted, retained, or available to
@@ -372,7 +372,7 @@ reads; this paragraph is retained only as historical provenance.
 Init-once / unseal-on-rebuild still holds per cluster: a child's Vault is initialized exactly once
 against an empty PV and every subsequent reconcile only auto-unseals it against the parent (see
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
-[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model)).
+[vault_doctrine.md § 5](./vault_doctrine.md#5-vault-deployment-model-and-durability)).
 
 Sprint `5.8` wires the named `sealed-vault` canonical validation surface for this proof. Its
 code-owned planner/parser surface is active; the deployed parent/child cascade proof remains part of

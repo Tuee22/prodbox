@@ -46,6 +46,7 @@ module Prodbox.Lifecycle.Authority.ClientRegistry
   , validateRegisteredClientTable
   , registeredClientTableConfigurationMatches
   , registeredClientReservationBindings
+  , registeredClientReservationEntries
   , RegisteredSubmissionInspection (..)
   , inspectRegisteredSubmission
   , RegisteredSubmissionDecision (..)
@@ -464,13 +465,33 @@ registeredClientReservationBindings
   :: RegisteredClientTable
   -> [(ClientId, ClientSequence, RequestDigest, AuthorityEpoch)]
 registeredClientReservationBindings table =
-  [ ( registeredClientId (registeredClientStateSpec client)
+  [ (client, sequenceNumber, digest, epoch)
+  | (_, client, sequenceNumber, digest, epoch) <-
+      registeredClientReservationEntries table
+  ]
+
+-- | Exact retained key-to-operation join for future admission-epoch
+-- validation. This is a read-only projection: it cannot reserve, settle, or
+-- compact an operation.
+registeredClientReservationEntries
+  :: RegisteredClientTable
+  -> [ ( ClientSubmissionKey
+       , ClientId
+       , ClientSequence
+       , RequestDigest
+       , AuthorityEpoch
+       )
+     ]
+registeredClientReservationEntries table =
+  [ ( submissionKey
+    , registeredClientId (registeredClientStateSpec client)
     , registeredReservationSequence reservation
     , registeredReservationDigest reservation
     , registeredReservationEpoch reservation
     )
   | client <- Map.elems (registeredClientStates table)
-  , reservation <- Map.elems (registeredClientReservations client)
+  , (submissionKey, reservation) <-
+      Map.toAscList (registeredClientReservations client)
   ]
 
 data RegisteredSubmissionDecision
@@ -606,7 +627,7 @@ replayExistingSubmission ledger client reservation digest
             _ -> RegisteredSubmissionDuplicate operationId
 
 data RegisteredSubmissionObservation
-  = RegisteredSubmissionObserved !SubmissionStatus
+  = RegisteredSubmissionObserved !OperationId !SubmissionStatus
   | RegisteredSubmissionUnknown
   | RegisteredSubmissionObserveRefusedUnregistered
   | RegisteredSubmissionObserveRefusedGenerationMismatch
@@ -633,12 +654,13 @@ observeRegisteredSubmission ledger table caller generation submissionKey =
       | otherwise -> case Map.lookup submissionKey (registeredClientReservations client) of
           Nothing -> RegisteredSubmissionUnknown
           Just reservation ->
-            case submissionStatus
-              (registeredClientId (registeredClientStateSpec client))
-              (registeredReservationSequence reservation)
-              ledger of
-              StatusUnknown -> RegisteredSubmissionObserveDiverged
-              status -> RegisteredSubmissionObserved status
+            let operationId = operationIdFor client reservation
+             in case submissionStatus
+                  (registeredClientId (registeredClientStateSpec client))
+                  (registeredReservationSequence reservation)
+                  ledger of
+                  StatusUnknown -> RegisteredSubmissionObserveDiverged
+                  status -> RegisteredSubmissionObserved operationId status
  where
   principal = clientPrincipalForCaller caller
 

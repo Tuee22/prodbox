@@ -59,7 +59,22 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , ProviderIntentAdmissionError (..)
   , admitProviderCommittedIntent
   , ProviderIntentExecutionResult (..)
+  , ExecutedProviderIntent
+  , executedProviderIntentAction
+  , executedProviderIntentCoordinate
+  , executedProviderIntentOperationId
+  , executedProviderIntentRevision
+  , executedProviderIntentCredentialSessionBinding
+  , executedProviderIntentAcceptedAuthorityDigest
+  , executedProviderIntentResult
   , ProviderIntentExecutionError (..)
+  , ProviderIntentCredentialBindingRegression
+  , fixedProviderIntentCredentialBindingRegression
+  , providerIntentCredentialBindingRegressionUnboundAccepted
+  , providerIntentCredentialBindingRegressionExactAccepted
+  , providerIntentCredentialBindingRegressionMissingRefused
+  , providerIntentCredentialBindingRegressionMismatchRefused
+  , executeVerifiedProviderIntentBound
   , executeVerifiedProviderIntent
   )
 where
@@ -90,6 +105,19 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
   , operationForProviderIntent
+  )
+import Prodbox.ControlPlane.ProviderCredentialSession
+  ( ProviderAcceptedAuthorityDigest
+  , ProviderCredentialSessionBinding
+  , providerAcceptedAuthorityDigestText
+  , providerCredentialSessionGeneration
+  , providerCredentialSessionReceiptDigest
+  , providerCredentialSessionVaultVersion
+  )
+import Prodbox.ControlPlane.ProviderCredentialSession.Internal
+  ( providerAcceptedAuthorityDigestFromCanonicalInternal
+  , providerAcceptedAuthorityDigestFromTextInternal
+  , providerCredentialSessionBindingFromWireInternal
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( CallerPrincipal (..)
@@ -122,8 +150,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClientAuthRequestClusterName
   , eksClientAuthRequestDestinationPublicKey
   , eksClientAuthRequestRegion
+  , eksClusterIdentityRequestAccountId
+  , eksClusterIdentityRequestClusterName
+  , eksClusterIdentityRequestRegion
+  , eksClusterIdentityRequestStackRef
   , isProviderResourceRegistered
   , mkEksClientAuthRequest
+  , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
@@ -158,6 +191,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetValueDigest
+  , credentialGenerationValue
   , mkTargetValueDigest
   , sha256TargetValueDigest
   , targetValueDigestText
@@ -367,6 +401,10 @@ data ProviderCommittedIntentSpec = ProviderCommittedIntentSpec
   , providerIntentAction :: !ProviderIntent
   , providerIntentDeadline :: !AuthorityTime
   , providerIntentIdempotencyKey :: !Text
+  , providerIntentExpectedCredentialSession
+      :: !(Maybe ProviderCredentialSessionBinding)
+  , providerIntentExpectedAcceptedAuthority
+      :: !(Maybe ProviderAcceptedAuthorityDigest)
   }
   deriving stock (Eq, Show)
 
@@ -424,7 +462,7 @@ data WireProviderActionBinding = WireProviderActionBinding
 wireProviderActionBinding :: ProviderCommittedIntentSpec -> WireProviderActionBinding
 wireProviderActionBinding spec =
   WireProviderActionBinding
-    { wireProviderActionDomainVersion = providerCommittedIntentCodecVersion
+    { wireProviderActionDomainVersion = providerCommittedActionBindingVersion
     , wireProviderActionOperationId = providerIntentOperationId spec
     , wireProviderBindingActionIndex = providerIntentActionIndex spec
     , wireProviderActionCommitReceiptDigest =
@@ -558,6 +596,21 @@ wireProviderIntent intent = case intent of
       (Just (eksClientAuthRequestClusterName request))
   ObservePublicARecord ref -> publicARecordWire 16 ref
   ReconcilePublicARecord ref -> publicARecordWire 17 ref
+  ObserveTestEbsVolumes clusterName -> simple 18 clusterName
+  ObserveEksClusterIdentity request ->
+    WireProviderIntent
+      19
+      (providerStackRefText (eksClusterIdentityRequestStackRef request))
+      Nothing
+      Nothing
+      (Just (eksClusterIdentityRequestAccountId request))
+      ( Just
+          ( eksClusterIdentityRequestRegion request
+              <> ":"
+              <> eksClusterIdentityRequestClusterName request
+          )
+      )
+  ObserveProviderAwsScope -> simple 20 "provider-aws-scope"
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -577,28 +630,65 @@ wireProviderIntent intent = case intent of
       Nothing
       Nothing
 
-data WireUnsignedProviderCommittedIntent = WireUnsignedProviderCommittedIntent
-  { wireProviderIntentVersion :: !Word16
-  , wireProviderIssuerGeneration :: !Natural
-  , wireProviderIssuerIdentity :: !Text
-  , wireProviderAuthorityEpoch :: !Natural
-  , wireProviderOperationId :: !Text
-  , wireProviderActionIndex :: !Natural
-  , wireProviderCommitReceiptDigest :: !Text
-  , wireProviderOwnerNonce :: !Text
-  , wireProviderFencingToken :: !Natural
-  , wireProviderRevision :: !Natural
-  , wireProviderAction :: !WireProviderIntent
-  , wireProviderActionDigest :: !Text
-  , wireProviderDeadlineMicros :: !Natural
-  , wireProviderIdempotencyKey :: !Text
+data WireUnsignedProviderCommittedIntentV2 = WireUnsignedProviderCommittedIntentV2
+  { wireProviderIntentV2Version :: !Word16
+  , wireProviderV2IssuerGeneration :: !Natural
+  , wireProviderV2IssuerIdentity :: !Text
+  , wireProviderV2AuthorityEpoch :: !Natural
+  , wireProviderV2OperationId :: !Text
+  , wireProviderV2ActionIndex :: !Natural
+  , wireProviderV2CommitReceiptDigest :: !Text
+  , wireProviderV2OwnerNonce :: !Text
+  , wireProviderV2FencingToken :: !Natural
+  , wireProviderV2Revision :: !Natural
+  , wireProviderV2Action :: !WireProviderIntent
+  , wireProviderV2ActionDigest :: !Text
+  , wireProviderV2DeadlineMicros :: !Natural
+  , wireProviderV2IdempotencyKey :: !Text
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
-data WireSignedProviderCommittedIntent = WireSignedProviderCommittedIntent
-  { wireSignedProviderUnsigned :: !WireUnsignedProviderCommittedIntent
-  , wireSignedProviderSignature :: !ByteString
+data WireSignedProviderCommittedIntentV2 = WireSignedProviderCommittedIntentV2
+  { wireSignedProviderV2Unsigned :: !WireUnsignedProviderCommittedIntentV2
+  , wireSignedProviderV2Signature :: !ByteString
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data WireProviderCredentialSessionBinding = WireProviderCredentialSessionBinding
+  { wireProviderCredentialGeneration :: !Natural
+  , wireProviderCredentialVaultVersion :: !Natural
+  , wireProviderCredentialReceiptDigest :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data WireUnsignedProviderCommittedIntentV3 = WireUnsignedProviderCommittedIntentV3
+  { wireProviderIntentV3Version :: !Word16
+  , wireProviderV3IssuerGeneration :: !Natural
+  , wireProviderV3IssuerIdentity :: !Text
+  , wireProviderV3AuthorityEpoch :: !Natural
+  , wireProviderV3OperationId :: !Text
+  , wireProviderV3ActionIndex :: !Natural
+  , wireProviderV3CommitReceiptDigest :: !Text
+  , wireProviderV3OwnerNonce :: !Text
+  , wireProviderV3FencingToken :: !Natural
+  , wireProviderV3Revision :: !Natural
+  , wireProviderV3Action :: !WireProviderIntent
+  , wireProviderV3ActionDigest :: !Text
+  , wireProviderV3DeadlineMicros :: !Natural
+  , wireProviderV3IdempotencyKey :: !Text
+  , wireProviderV3ExpectedCredentialSession
+      :: !(Maybe WireProviderCredentialSessionBinding)
+  , wireProviderV3ExpectedAcceptedAuthority :: !(Maybe Text)
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data WireSignedProviderCommittedIntentV3 = WireSignedProviderCommittedIntentV3
+  { wireSignedProviderV3Unsigned :: !WireUnsignedProviderCommittedIntentV3
+  , wireSignedProviderV3Signature :: !ByteString
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -694,12 +784,20 @@ data ProviderCommittedIntentCodecError
 providerCommittedIntentMaximumEncodedBytes :: Int
 providerCommittedIntentMaximumEncodedBytes = 32 * 1024
 
-providerCommittedIntentCodecVersion :: Word16
-providerCommittedIntentCodecVersion = 2
+providerCommittedActionBindingVersion :: Word16
+providerCommittedActionBindingVersion = 2
+
+providerCommittedIntentV2CodecVersion :: Word16
+providerCommittedIntentV2CodecVersion = 2
+
+providerCommittedIntentV3CodecVersion :: Word16
+providerCommittedIntentV3CodecVersion = 3
 
 encodeSignedProviderCommittedIntent :: SignedProviderCommittedIntent -> ByteString
-encodeSignedProviderCommittedIntent =
-  LazyByteString.toStrict . serialise . wireSignedProviderCommittedIntent
+encodeSignedProviderCommittedIntent signed =
+  LazyByteString.toStrict $ case providerIntentEnvelopeVersion signed of
+    ProviderIntentEnvelopeV2 -> serialise (wireSignedProviderCommittedIntentV2 signed)
+    ProviderIntentEnvelopeV3 -> serialise (wireSignedProviderCommittedIntentV3 signed)
 
 decodeSignedProviderCommittedIntent
   :: Int
@@ -708,107 +806,298 @@ decodeSignedProviderCommittedIntent
 decodeSignedProviderCommittedIntent maximumBytes bytes
   | maximumBytes < 0 || ByteString.length bytes > effectiveMaximum =
       Left (ProviderCommittedIntentTooLarge (ByteString.length bytes) effectiveMaximum)
-  | otherwise = do
-      wire <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
-        Left _ -> Left ProviderCommittedIntentInvalid
-        Right decoded -> Right decoded
-      let unsignedWire = wireSignedProviderUnsigned wire
-      if wireProviderIntentVersion unsignedWire == providerCommittedIntentCodecVersion
-        then Right ()
-        else
-          Left
-            ( ProviderCommittedIntentUnsupportedVersion
-                (wireProviderIntentVersion unsignedWire)
-            )
-      if ByteString.length (wireSignedProviderSignature wire) == 64
-        then Right ()
-        else
-          Left
-            ( ProviderCommittedIntentSignatureWidthInvalid
-                (ByteString.length (wireSignedProviderSignature wire))
-            )
-      unsigned <- unsignedProviderIntentFromWire unsignedWire
-      if targetValueDigestText (internalProviderCommittedActionDigest unsigned)
-        == wireProviderActionDigest unsignedWire
-        then Right ()
-        else Left ProviderCommittedIntentActionDigestInvalid
-      let signed =
-            SignedProviderCommittedIntent
-              { internalSignedProviderUnsigned = unsigned
-              , internalSignedProviderSignature = wireSignedProviderSignature wire
-              }
-      if encodeSignedProviderCommittedIntent signed == bytes
-        then Right signed
-        else Left ProviderCommittedIntentNonCanonical
+  | otherwise = case decodeWireSignedProviderIntentV2 bytes of
+      Just wire -> decodeSignedProviderCommittedIntentV2 bytes wire
+      Nothing -> case decodeWireSignedProviderIntentV3 bytes of
+        Just wire -> decodeSignedProviderCommittedIntentV3 bytes wire
+        Nothing -> Left ProviderCommittedIntentInvalid
  where
   effectiveMaximum = min maximumBytes providerCommittedIntentMaximumEncodedBytes
 
-wireSignedProviderCommittedIntent
+data ProviderIntentEnvelopeVersion
+  = ProviderIntentEnvelopeV2
+  | ProviderIntentEnvelopeV3
+
+providerIntentEnvelopeVersion
+  :: SignedProviderCommittedIntent -> ProviderIntentEnvelopeVersion
+providerIntentEnvelopeVersion signed =
+  providerIntentUnsignedEnvelopeVersion (internalSignedProviderUnsigned signed)
+
+providerIntentUnsignedEnvelopeVersion
+  :: UnsignedProviderCommittedIntent -> ProviderIntentEnvelopeVersion
+providerIntentUnsignedEnvelopeVersion unsigned =
+  let spec = internalProviderCommittedIntentSpec unsigned
+   in case
+        ( providerIntentExpectedCredentialSession spec
+        , providerIntentExpectedAcceptedAuthority spec
+        )
+        of
+          (Nothing, Nothing) -> ProviderIntentEnvelopeV2
+          _ -> ProviderIntentEnvelopeV3
+
+decodeWireSignedProviderIntentV2
+  :: ByteString -> Maybe WireSignedProviderCommittedIntentV2
+decodeWireSignedProviderIntentV2 =
+  either (const Nothing) Just
+    . deserialiseOrFail
+    . LazyByteString.fromStrict
+
+decodeWireSignedProviderIntentV3
+  :: ByteString -> Maybe WireSignedProviderCommittedIntentV3
+decodeWireSignedProviderIntentV3 =
+  either (const Nothing) Just
+    . deserialiseOrFail
+    . LazyByteString.fromStrict
+
+decodeSignedProviderCommittedIntentV2
+  :: ByteString
+  -> WireSignedProviderCommittedIntentV2
+  -> Either ProviderCommittedIntentCodecError SignedProviderCommittedIntent
+decodeSignedProviderCommittedIntentV2 bytes wire = do
+  let unsignedWire = wireSignedProviderV2Unsigned wire
+  validateProviderIntentWireVersion
+    providerCommittedIntentV2CodecVersion
+    (wireProviderIntentV2Version unsignedWire)
+  validateProviderIntentSignatureWidth (wireSignedProviderV2Signature wire)
+  unsigned <- unsignedProviderIntentFromWireV2 unsignedWire
+  validateProviderIntentActionDigest
+    unsigned
+    (wireProviderV2ActionDigest unsignedWire)
+  validateCanonicalSignedProviderIntent
+    bytes
+    SignedProviderCommittedIntent
+      { internalSignedProviderUnsigned = unsigned
+      , internalSignedProviderSignature = wireSignedProviderV2Signature wire
+      }
+
+decodeSignedProviderCommittedIntentV3
+  :: ByteString
+  -> WireSignedProviderCommittedIntentV3
+  -> Either ProviderCommittedIntentCodecError SignedProviderCommittedIntent
+decodeSignedProviderCommittedIntentV3 bytes wire = do
+  let unsignedWire = wireSignedProviderV3Unsigned wire
+  validateProviderIntentWireVersion
+    providerCommittedIntentV3CodecVersion
+    (wireProviderIntentV3Version unsignedWire)
+  validateProviderIntentSignatureWidth (wireSignedProviderV3Signature wire)
+  unsigned <- unsignedProviderIntentFromWireV3 unsignedWire
+  validateProviderIntentActionDigest
+    unsigned
+    (wireProviderV3ActionDigest unsignedWire)
+  validateCanonicalSignedProviderIntent
+    bytes
+    SignedProviderCommittedIntent
+      { internalSignedProviderUnsigned = unsigned
+      , internalSignedProviderSignature = wireSignedProviderV3Signature wire
+      }
+
+validateProviderIntentWireVersion
+  :: Word16 -> Word16 -> Either ProviderCommittedIntentCodecError ()
+validateProviderIntentWireVersion expected actual
+  | actual == expected = Right ()
+  | otherwise = Left (ProviderCommittedIntentUnsupportedVersion actual)
+
+validateProviderIntentSignatureWidth
+  :: ByteString -> Either ProviderCommittedIntentCodecError ()
+validateProviderIntentSignatureWidth signature
+  | ByteString.length signature == 64 = Right ()
+  | otherwise =
+      Left
+        (ProviderCommittedIntentSignatureWidthInvalid (ByteString.length signature))
+
+validateProviderIntentActionDigest
+  :: UnsignedProviderCommittedIntent
+  -> Text
+  -> Either ProviderCommittedIntentCodecError ()
+validateProviderIntentActionDigest unsigned wireDigest
+  | targetValueDigestText (internalProviderCommittedActionDigest unsigned)
+      == wireDigest = Right ()
+  | otherwise = Left ProviderCommittedIntentActionDigestInvalid
+
+validateCanonicalSignedProviderIntent
+  :: ByteString
+  -> SignedProviderCommittedIntent
+  -> Either ProviderCommittedIntentCodecError SignedProviderCommittedIntent
+validateCanonicalSignedProviderIntent bytes signed
+  | encodeSignedProviderCommittedIntent signed == bytes = Right signed
+  | otherwise = Left ProviderCommittedIntentNonCanonical
+
+wireSignedProviderCommittedIntentV2
   :: SignedProviderCommittedIntent
-  -> WireSignedProviderCommittedIntent
-wireSignedProviderCommittedIntent signed =
-  WireSignedProviderCommittedIntent
-    { wireSignedProviderUnsigned =
-        wireUnsignedProviderCommittedIntent
+  -> WireSignedProviderCommittedIntentV2
+wireSignedProviderCommittedIntentV2 signed =
+  WireSignedProviderCommittedIntentV2
+    { wireSignedProviderV2Unsigned =
+        wireUnsignedProviderCommittedIntentV2
           (internalSignedProviderUnsigned signed)
-    , wireSignedProviderSignature = internalSignedProviderSignature signed
+    , wireSignedProviderV2Signature = internalSignedProviderSignature signed
     }
 
-wireUnsignedProviderCommittedIntent
+wireSignedProviderCommittedIntentV3
+  :: SignedProviderCommittedIntent
+  -> WireSignedProviderCommittedIntentV3
+wireSignedProviderCommittedIntentV3 signed =
+  WireSignedProviderCommittedIntentV3
+    { wireSignedProviderV3Unsigned =
+        wireUnsignedProviderCommittedIntentV3
+          (internalSignedProviderUnsigned signed)
+    , wireSignedProviderV3Signature = internalSignedProviderSignature signed
+    }
+
+wireUnsignedProviderCommittedIntentV2
   :: UnsignedProviderCommittedIntent
-  -> WireUnsignedProviderCommittedIntent
-wireUnsignedProviderCommittedIntent unsigned =
+  -> WireUnsignedProviderCommittedIntentV2
+wireUnsignedProviderCommittedIntentV2 unsigned =
   let spec = internalProviderCommittedIntentSpec unsigned
-   in WireUnsignedProviderCommittedIntent
-        { wireProviderIntentVersion = providerCommittedIntentCodecVersion
-        , wireProviderIssuerGeneration =
+   in WireUnsignedProviderCommittedIntentV2
+        { wireProviderIntentV2Version = providerCommittedIntentV2CodecVersion
+        , wireProviderV2IssuerGeneration =
             providerIssuerKeyGenerationValue (providerIntentIssuerGeneration spec)
-        , wireProviderIssuerIdentity = providerIntentIssuerIdentity spec
-        , wireProviderAuthorityEpoch = authorityEpochValue (providerIntentAuthorityEpoch spec)
-        , wireProviderOperationId = providerIntentOperationId spec
-        , wireProviderActionIndex = providerIntentActionIndex spec
-        , wireProviderCommitReceiptDigest =
+        , wireProviderV2IssuerIdentity = providerIntentIssuerIdentity spec
+        , wireProviderV2AuthorityEpoch = authorityEpochValue (providerIntentAuthorityEpoch spec)
+        , wireProviderV2OperationId = providerIntentOperationId spec
+        , wireProviderV2ActionIndex = providerIntentActionIndex spec
+        , wireProviderV2CommitReceiptDigest =
             targetValueDigestText (providerIntentCommitReceiptDigest spec)
-        , wireProviderOwnerNonce = ownerNonceText (providerIntentOwnerNonce spec)
-        , wireProviderFencingToken = fencingTokenValue (providerIntentFencingToken spec)
-        , wireProviderRevision = providerRevisionNatural (providerIntentRevision spec)
-        , wireProviderAction = wireProviderIntent (providerIntentAction spec)
-        , wireProviderActionDigest =
+        , wireProviderV2OwnerNonce = ownerNonceText (providerIntentOwnerNonce spec)
+        , wireProviderV2FencingToken = fencingTokenValue (providerIntentFencingToken spec)
+        , wireProviderV2Revision = providerRevisionNatural (providerIntentRevision spec)
+        , wireProviderV2Action = wireProviderIntent (providerIntentAction spec)
+        , wireProviderV2ActionDigest =
             targetValueDigestText (internalProviderCommittedActionDigest unsigned)
-        , wireProviderDeadlineMicros = authorityTimeMicros (providerIntentDeadline spec)
-        , wireProviderIdempotencyKey = providerIntentIdempotencyKey spec
+        , wireProviderV2DeadlineMicros = authorityTimeMicros (providerIntentDeadline spec)
+        , wireProviderV2IdempotencyKey = providerIntentIdempotencyKey spec
         }
 
-unsignedProviderIntentFromWire
-  :: WireUnsignedProviderCommittedIntent
+wireUnsignedProviderCommittedIntentV3
+  :: UnsignedProviderCommittedIntent
+  -> WireUnsignedProviderCommittedIntentV3
+wireUnsignedProviderCommittedIntentV3 unsigned =
+  let spec = internalProviderCommittedIntentSpec unsigned
+   in WireUnsignedProviderCommittedIntentV3
+        { wireProviderIntentV3Version = providerCommittedIntentV3CodecVersion
+        , wireProviderV3IssuerGeneration =
+            providerIssuerKeyGenerationValue (providerIntentIssuerGeneration spec)
+        , wireProviderV3IssuerIdentity = providerIntentIssuerIdentity spec
+        , wireProviderV3AuthorityEpoch = authorityEpochValue (providerIntentAuthorityEpoch spec)
+        , wireProviderV3OperationId = providerIntentOperationId spec
+        , wireProviderV3ActionIndex = providerIntentActionIndex spec
+        , wireProviderV3CommitReceiptDigest =
+            targetValueDigestText (providerIntentCommitReceiptDigest spec)
+        , wireProviderV3OwnerNonce = ownerNonceText (providerIntentOwnerNonce spec)
+        , wireProviderV3FencingToken = fencingTokenValue (providerIntentFencingToken spec)
+        , wireProviderV3Revision = providerRevisionNatural (providerIntentRevision spec)
+        , wireProviderV3Action = wireProviderIntent (providerIntentAction spec)
+        , wireProviderV3ActionDigest =
+            targetValueDigestText (internalProviderCommittedActionDigest unsigned)
+        , wireProviderV3DeadlineMicros = authorityTimeMicros (providerIntentDeadline spec)
+        , wireProviderV3IdempotencyKey = providerIntentIdempotencyKey spec
+        , wireProviderV3ExpectedCredentialSession =
+            wireProviderCredentialSessionBinding
+              <$> providerIntentExpectedCredentialSession spec
+        , wireProviderV3ExpectedAcceptedAuthority =
+            providerAcceptedAuthorityDigestText
+              <$> providerIntentExpectedAcceptedAuthority spec
+        }
+
+wireProviderCredentialSessionBinding
+  :: ProviderCredentialSessionBinding -> WireProviderCredentialSessionBinding
+wireProviderCredentialSessionBinding binding =
+  WireProviderCredentialSessionBinding
+    { wireProviderCredentialGeneration =
+        credentialGenerationValue (providerCredentialSessionGeneration binding)
+    , wireProviderCredentialVaultVersion =
+        providerCredentialSessionVaultVersion binding
+    , wireProviderCredentialReceiptDigest =
+        targetValueDigestText (providerCredentialSessionReceiptDigest binding)
+    }
+
+unsignedProviderIntentFromWireV2
+  :: WireUnsignedProviderCommittedIntentV2
   -> Either ProviderCommittedIntentCodecError UnsignedProviderCommittedIntent
-unsignedProviderIntentFromWire wire = do
+unsignedProviderIntentFromWireV2 wire = do
   issuer <-
     mapIntentValue
-      (mkProviderIssuerKeyGeneration (wireProviderIssuerGeneration wire))
+      (mkProviderIssuerKeyGeneration (wireProviderV2IssuerGeneration wire))
   receipt <-
     mapIntentValue
-      (mkTargetValueDigest (wireProviderCommitReceiptDigest wire))
-  owner <- mapIntentValue (mkOwnerNonce (wireProviderOwnerNonce wire))
-  fence <- mapIntentValue (mkFencingToken (wireProviderFencingToken wire))
-  revision <- mapIntentValue (mkProviderRevision (wireProviderRevision wire))
-  action <- providerIntentFromWire (wireProviderAction wire)
+      (mkTargetValueDigest (wireProviderV2CommitReceiptDigest wire))
+  owner <- mapIntentValue (mkOwnerNonce (wireProviderV2OwnerNonce wire))
+  fence <- mapIntentValue (mkFencingToken (wireProviderV2FencingToken wire))
+  revision <- mapIntentValue (mkProviderRevision (wireProviderV2Revision wire))
+  action <- providerIntentFromWire (wireProviderV2Action wire)
   mapIntentValue
     ( mkUnsignedProviderCommittedIntent
         ProviderCommittedIntentSpec
           { providerIntentIssuerGeneration = issuer
-          , providerIntentIssuerIdentity = wireProviderIssuerIdentity wire
-          , providerIntentAuthorityEpoch = AuthorityEpoch (wireProviderAuthorityEpoch wire)
-          , providerIntentOperationId = wireProviderOperationId wire
-          , providerIntentActionIndex = wireProviderActionIndex wire
+          , providerIntentIssuerIdentity = wireProviderV2IssuerIdentity wire
+          , providerIntentAuthorityEpoch = AuthorityEpoch (wireProviderV2AuthorityEpoch wire)
+          , providerIntentOperationId = wireProviderV2OperationId wire
+          , providerIntentActionIndex = wireProviderV2ActionIndex wire
           , providerIntentCommitReceiptDigest = receipt
           , providerIntentOwnerNonce = owner
           , providerIntentFencingToken = fence
           , providerIntentRevision = revision
           , providerIntentAction = action
-          , providerIntentDeadline = authorityTimeFromMicros (wireProviderDeadlineMicros wire)
-          , providerIntentIdempotencyKey = wireProviderIdempotencyKey wire
+          , providerIntentDeadline = authorityTimeFromMicros (wireProviderV2DeadlineMicros wire)
+          , providerIntentIdempotencyKey = wireProviderV2IdempotencyKey wire
+          , providerIntentExpectedCredentialSession = Nothing
+          , providerIntentExpectedAcceptedAuthority = Nothing
           }
+    )
+
+unsignedProviderIntentFromWireV3
+  :: WireUnsignedProviderCommittedIntentV3
+  -> Either ProviderCommittedIntentCodecError UnsignedProviderCommittedIntent
+unsignedProviderIntentFromWireV3 wire = do
+  issuer <-
+    mapIntentValue
+      (mkProviderIssuerKeyGeneration (wireProviderV3IssuerGeneration wire))
+  receipt <-
+    mapIntentValue
+      (mkTargetValueDigest (wireProviderV3CommitReceiptDigest wire))
+  owner <- mapIntentValue (mkOwnerNonce (wireProviderV3OwnerNonce wire))
+  fence <- mapIntentValue (mkFencingToken (wireProviderV3FencingToken wire))
+  revision <- mapIntentValue (mkProviderRevision (wireProviderV3Revision wire))
+  action <- providerIntentFromWire (wireProviderV3Action wire)
+  expectedCredential <-
+    traverse providerCredentialSessionBindingFromWire
+      (wireProviderV3ExpectedCredentialSession wire)
+  expectedAuthority <-
+    traverse
+      ( mapIntentValue
+          . providerAcceptedAuthorityDigestFromTextInternal
+      )
+      (wireProviderV3ExpectedAcceptedAuthority wire)
+  mapIntentValue
+    ( mkUnsignedProviderCommittedIntent
+        ProviderCommittedIntentSpec
+          { providerIntentIssuerGeneration = issuer
+          , providerIntentIssuerIdentity = wireProviderV3IssuerIdentity wire
+          , providerIntentAuthorityEpoch = AuthorityEpoch (wireProviderV3AuthorityEpoch wire)
+          , providerIntentOperationId = wireProviderV3OperationId wire
+          , providerIntentActionIndex = wireProviderV3ActionIndex wire
+          , providerIntentCommitReceiptDigest = receipt
+          , providerIntentOwnerNonce = owner
+          , providerIntentFencingToken = fence
+          , providerIntentRevision = revision
+          , providerIntentAction = action
+          , providerIntentDeadline = authorityTimeFromMicros (wireProviderV3DeadlineMicros wire)
+          , providerIntentIdempotencyKey = wireProviderV3IdempotencyKey wire
+          , providerIntentExpectedCredentialSession = expectedCredential
+          , providerIntentExpectedAcceptedAuthority = expectedAuthority
+          }
+    )
+
+providerCredentialSessionBindingFromWire
+  :: WireProviderCredentialSessionBinding
+  -> Either ProviderCommittedIntentCodecError ProviderCredentialSessionBinding
+providerCredentialSessionBindingFromWire wire =
+  mapIntentValue
+    ( providerCredentialSessionBindingFromWireInternal
+        (wireProviderCredentialGeneration wire)
+        (wireProviderCredentialVaultVersion wire)
+        (wireProviderCredentialReceiptDigest wire)
     )
 
 providerIntentFromWire
@@ -893,6 +1182,24 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
       <$> mapIntentValue (mkEksClientAuthRequest account region cluster publicKey)
   16 -> publicARecordIntent ObservePublicARecord
   17 -> publicARecordIntent ReconcilePublicARecord
+  18 -> ObserveTestEbsVolumes <$> simpleText wire
+  19 -> do
+    noRevision wire
+    noStackConfig wire
+    stackRef <- mapIntentValue (mkProviderStackRef resource)
+    account <- requireSecondary "missing EKS identity account" wire
+    regionAndCluster <- requireTertiary "missing EKS identity region/cluster" wire
+    let (region, clusterWithSeparator) = Text.breakOn ":" regionAndCluster
+    cluster <- case Text.stripPrefix ":" clusterWithSeparator of
+      Nothing -> Left (ProviderCommittedIntentValueInvalid "missing EKS identity cluster")
+      Just value -> Right value
+    ObserveEksClusterIdentity
+      <$> mapIntentValue (mkEksClusterIdentityRequest stackRef account region cluster)
+  20 -> do
+    selector <- simpleText wire
+    if selector == "provider-aws-scope"
+      then Right ObserveProviderAwsScope
+      else Left (ProviderCommittedIntentValueInvalid "invalid Provider AWS-scope selector")
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire
@@ -967,8 +1274,10 @@ requireTertiary detail wire =
     (wireProviderIntentTertiary wire)
 
 canonicalUnsignedProviderBytes :: UnsignedProviderCommittedIntent -> ByteString
-canonicalUnsignedProviderBytes =
-  LazyByteString.toStrict . serialise . wireUnsignedProviderCommittedIntent
+canonicalUnsignedProviderBytes unsigned =
+  LazyByteString.toStrict $ case providerIntentUnsignedEnvelopeVersion unsigned of
+    ProviderIntentEnvelopeV2 -> serialise (wireUnsignedProviderCommittedIntentV2 unsigned)
+    ProviderIntentEnvelopeV3 -> serialise (wireUnsignedProviderCommittedIntentV3 unsigned)
 
 data VerifiedProviderCommittedIntent = VerifiedProviderCommittedIntent
   { internalVerifiedProviderUnsigned :: !UnsignedProviderCommittedIntent
@@ -1132,12 +1441,74 @@ data ProviderIntentExecutionResult
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | One terminal Provider result bound to the exact admitted signed intent
+-- that produced it.  The constructor is deliberately private: a raw wire
+-- result, even one with syntactically valid evidence, cannot be promoted into
+-- lifecycle authority without passing admission and execution under the
+-- Provider Worker's current trust record.
+data ExecutedProviderIntent = ExecutedProviderIntent
+  { internalExecutedProviderVerified :: !VerifiedProviderCommittedIntent
+  , internalExecutedProviderResult :: !ProviderIntentExecutionResult
+  , internalExecutedProviderCredentialSession
+      :: !(Maybe ProviderCredentialSessionBinding)
+  , internalExecutedProviderAcceptedAuthority
+      :: !ProviderAcceptedAuthorityDigest
+  }
+
+executedProviderIntentAction :: ExecutedProviderIntent -> ProviderIntent
+executedProviderIntentAction executed =
+  providerIntentAction (executedProviderIntentSpec executed)
+
+executedProviderIntentCoordinate
+  :: ExecutedProviderIntent -> ProviderIntentCoordinate
+executedProviderIntentCoordinate executed =
+  executionResultCoordinate (internalExecutedProviderResult executed)
+
+executedProviderIntentOperationId :: ExecutedProviderIntent -> Text
+executedProviderIntentOperationId executed =
+  providerIntentOperationId (executedProviderIntentSpec executed)
+
+executedProviderIntentRevision :: ExecutedProviderIntent -> ProviderRevision
+executedProviderIntentRevision executed =
+  providerIntentRevision (executedProviderIntentSpec executed)
+
+executedProviderIntentCredentialSessionBinding
+  :: ExecutedProviderIntent -> Maybe ProviderCredentialSessionBinding
+executedProviderIntentCredentialSessionBinding =
+  internalExecutedProviderCredentialSession
+
+executedProviderIntentAcceptedAuthorityDigest
+  :: ExecutedProviderIntent -> ProviderAcceptedAuthorityDigest
+executedProviderIntentAcceptedAuthorityDigest =
+  internalExecutedProviderAcceptedAuthority
+
+executedProviderIntentResult
+  :: ExecutedProviderIntent -> ProviderIntentExecutionResult
+executedProviderIntentResult = internalExecutedProviderResult
+
+executedProviderIntentSpec
+  :: ExecutedProviderIntent -> ProviderCommittedIntentSpec
+executedProviderIntentSpec =
+  internalProviderCommittedIntentSpec
+    . internalVerifiedProviderUnsigned
+    . internalExecutedProviderVerified
+
+executionResultCoordinate
+  :: ProviderIntentExecutionResult -> ProviderIntentCoordinate
+executionResultCoordinate result = case result of
+  ProviderIntentExecutionApplied coordinate _ -> coordinate
+  ProviderIntentExecutionAlreadySatisfied coordinate _ -> coordinate
+  ProviderIntentExecutionObserved coordinate _ -> coordinate
+
 data ProviderIntentExecutionError
   = ProviderIntentExecutionTrustUnavailable !Text
   | ProviderIntentExecutionTrustChanged
+  | ProviderIntentExecutionAcceptedAuthorityBindingMismatch
   | ProviderIntentExecutionClockUnavailable !Text
   | ProviderIntentExecutionDeadlineReached !AuthorityTime !AuthorityTime
   | ProviderIntentExecutionSessionUnavailable !Text
+  | ProviderIntentExecutionCredentialSessionBindingMissing
+  | ProviderIntentExecutionCredentialSessionBindingMismatch
   | ProviderIntentExecutionObservationUnavailable !Text
   | ProviderIntentExecutionReadOnlyUnavailable !Text
   | ProviderIntentExecutionMutationNotConfirmed !Text
@@ -1145,15 +1516,77 @@ data ProviderIntentExecutionError
   | ProviderIntentExecutionEvidenceInvalid !Text
   deriving stock (Eq, Show)
 
--- | Stage two.  Local trust and time are revalidated before the rank-2 session
--- opens.  Mutation executes zero or one apply and always uses authoritative
--- observation, never an apply return value, to decide success.
+-- | Fixed, non-authorizing diagnostics for the opaque credential-binding
+-- join.  No binding or constructor escapes through this value.
+data ProviderIntentCredentialBindingRegression =
+  ProviderIntentCredentialBindingRegression
+  { providerIntentCredentialBindingRegressionUnboundAccepted :: !Bool
+  , providerIntentCredentialBindingRegressionExactAccepted :: !Bool
+  , providerIntentCredentialBindingRegressionMissingRefused :: !Bool
+  , providerIntentCredentialBindingRegressionMismatchRefused :: !Bool
+  }
+
+fixedProviderIntentCredentialBindingRegression
+  :: ProviderIntentCredentialBindingRegression
+fixedProviderIntentCredentialBindingRegression =
+  case (fixedCredentialBinding 11 "a", fixedCredentialBinding 12 "b") of
+    (Right exact, Right other) ->
+      ProviderIntentCredentialBindingRegression
+        { providerIntentCredentialBindingRegressionUnboundAccepted =
+            credentialSessionExpectation Nothing Nothing == Right ()
+        , providerIntentCredentialBindingRegressionExactAccepted =
+            credentialSessionExpectation (Just exact) (Just exact) == Right ()
+        , providerIntentCredentialBindingRegressionMissingRefused =
+            credentialSessionExpectation (Just exact) Nothing
+              == Left ProviderIntentExecutionCredentialSessionBindingMissing
+        , providerIntentCredentialBindingRegressionMismatchRefused =
+            credentialSessionExpectation (Just exact) (Just other)
+              == Left ProviderIntentExecutionCredentialSessionBindingMismatch
+        }
+    _ ->
+      ProviderIntentCredentialBindingRegression False False False False
+ where
+  fixedCredentialBinding version digit =
+    providerCredentialSessionBindingFromWireInternal
+      7
+      version
+      (Text.replicate 64 digit)
+
+credentialSessionExpectation
+  :: Maybe ProviderCredentialSessionBinding
+  -> Maybe ProviderCredentialSessionBinding
+  -> Either ProviderIntentExecutionError ()
+credentialSessionExpectation expected actual = case expected of
+  Nothing -> Right ()
+  Just exact -> case actual of
+    Nothing -> Left ProviderIntentExecutionCredentialSessionBindingMissing
+    Just observed
+      | observed == exact -> Right ()
+      | otherwise -> Left ProviderIntentExecutionCredentialSessionBindingMismatch
+
+-- | Compatibility projection for callers that consume only the terminal wire
+-- result.  It cannot be fed to capability-sensitive adapters; those require
+-- the opaque value returned by 'executeVerifiedProviderIntentBound'.
 executeVerifiedProviderIntent
   :: (Monad m)
   => ProviderWorkerExecutionBoundary m session
   -> VerifiedProviderCommittedIntent
   -> m (Either ProviderIntentExecutionError ProviderIntentExecutionResult)
-executeVerifiedProviderIntent boundary verified = do
+executeVerifiedProviderIntent boundary verified =
+  fmap
+    (fmap executedProviderIntentResult)
+    (executeVerifiedProviderIntentBound boundary verified)
+
+-- | Stage two.  Local trust and time are revalidated before the rank-2 session
+-- opens.  A successful terminal result is sealed together with the exact
+-- admitted intent. Mutation executes zero or one apply and always uses
+-- authoritative observation, never an apply return value, to decide success.
+executeVerifiedProviderIntentBound
+  :: (Monad m)
+  => ProviderWorkerExecutionBoundary m session
+  -> VerifiedProviderCommittedIntent
+  -> m (Either ProviderIntentExecutionError ExecutedProviderIntent)
+executeVerifiedProviderIntentBound boundary verified = do
   acceptedResult <-
     readAcceptedProviderAuthority
       (providerExecutionTrustRepository boundary)
@@ -1162,6 +1595,8 @@ executeVerifiedProviderIntent boundary verified = do
     Right currentAccepted
       | currentAccepted /= internalVerifiedProviderAuthority verified ->
           pure (Left ProviderIntentExecutionTrustChanged)
+      | not (expectedAcceptedAuthorityMatches currentAccepted) ->
+          pure (Left ProviderIntentExecutionAcceptedAuthorityBindingMismatch)
       | otherwise -> do
           nowResult <- providerExecutionAuthorityNow boundary
           case nowResult of
@@ -1177,16 +1612,45 @@ executeVerifiedProviderIntent boundary verified = do
   coordinate = providerIntentCoordinate intent
   deadline = providerIntentDeadline spec
 
+  acceptedAuthorityDigest accepted =
+    providerAcceptedAuthorityDigestFromCanonicalInternal
+      (encodeAcceptedProviderAuthority accepted)
+
+  expectedAcceptedAuthorityMatches accepted =
+    case providerIntentExpectedAcceptedAuthority spec of
+      Nothing -> True
+      Just expected -> expected == acceptedAuthorityDigest accepted
+
   runNarrowSession = do
     sessionResult <-
       withProviderNarrowSession
         (providerExecutionNarrowSession boundary)
         intent
         deadline
-        (\session -> Right <$> executeUnderSession session)
+        executeWithCredentialBinding
     pure $ case sessionResult of
       Left detail -> Left (ProviderIntentExecutionSessionUnavailable detail)
-      Right result -> result
+      Right (Left err) -> Left err
+      Right (Right (result, actualCredentialBinding)) ->
+        Right
+          ExecutedProviderIntent
+            { internalExecutedProviderVerified = verified
+            , internalExecutedProviderResult = result
+            , internalExecutedProviderCredentialSession = actualCredentialBinding
+            , internalExecutedProviderAcceptedAuthority =
+                acceptedAuthorityDigest (internalVerifiedProviderAuthority verified)
+            }
+
+  executeWithCredentialBinding actualBinding session =
+    case
+        credentialSessionExpectation
+          (providerIntentExpectedCredentialSession spec)
+          actualBinding
+      of
+      Left err -> pure (Right (Left err))
+      Right () -> do
+        result <- executeUnderSession session
+        pure (Right (fmap (\terminal -> (terminal, actualBinding)) result))
 
   executeUnderSession session =
     case operationForProviderIntent (providerExecutionCapabilities boundary) intent of

@@ -11,6 +11,33 @@
 
 ## Phase Status
 
+✅ **Closed on its code-owned surface (2026-08-15).** Sprints `2.47` through `2.51` are all ✅ Done
+on their owned Bootstrap Broker fence, attestation, checkpoint-binding, and image-identity surfaces.
+The exact code-local and live-proof bounds remain in those sprint records; none is an active or
+planned sprint. Landing work against a `Pending Removal` row on this closed phase is the shape
+Standard I describes, not a reopen (Standard N).
+
+**Status correction (2026-08-15, Standard C).** After Sprints `2.48` through `2.51` had closed, this
+header still called `2.48` Active and `2.49` Planned and froze evidence from before `2.51`. The
+phase status now derives from the sprint records below rather than restating an intermediate
+checkpoint. This is the same drift class recorded by the earlier correction below, so it is
+corrected in place rather than hidden by rewriting that history.
+
+**Status correction (2026-08-14, Standard C) — the same defect this header was corrected for on
+2026-08-08, recurred.** This header led with the `🔄 Reopened 2026-08-10 on Sprint 2.42` paragraph
+until today, while Sprints `2.42` through `2.46` all read `✅ Done` in this file and
+[README.md](README.md) had recorded the reclose on Sprint `2.45` since 2026-08-13. The header had
+simply not been moved when `2.45` closed. It is corrected in place rather than rewritten, because
+the 2026-08-08 correction predicted exactly this: **a status that disagrees with its own contents is
+the failure mode Standard C exists to catch**, and recording that it recurred is worth more than
+quietly moving the paragraph a second time. The reclose on `2.45` is restored to the record below,
+where it belongs.
+
+✅ **Reclosed 2026-08-13 on Sprint `2.45`** — the Bootstrap Broker's durable reads now have validity
+predicates that can refuse. Sprint `2.46` follows on the same surface with no further reclose event:
+the fence-acquire refusal now names which of its five causes fired, without publishing the owner
+nonce two of them carry.
+
 🔄 **Reopened 2026-08-10 on Sprint `2.42` (Standard A/N)** — an own-surface reopen on the Bootstrap
 Broker readiness contract this phase already owns through Sprints `2.39` and `2.40`. A live
 `prodbox test all --substrate aws` investigation found a Phase-`3` chart defect blocking the
@@ -115,9 +142,10 @@ lint proving the Gateway registry carries no bootstrap route or credential. Post
 observed state transition, not the broker becoming the post-Vault Lifecycle Authority. Standard P
 keeps the public production gateway wrapper on the mutually exclusive `LegacyModelBEmitter` rollback
 topology (Sprint `2.32`) until current-revision qualification and later cutover; no dual writer or
-production cutover is claimed. Sprint `3.26` (Phase 3) renders the broker and later control-plane
-roles as physically separate workloads. Historical Sprint `2.31` remains Done for its bounded-state
-result.
+production cutover is claimed. Sprint `3.26` later supplied the chart/render foundations for
+physically separate roles, but did not activate that topology; current activation and removal are
+governed by the [plan status](README.md#current-plan-status). Historical Sprint `2.31` remains Done
+for its bounded-state result.
 
 ✅ **Sprint `2.32` code-owned target complete 2026-07-20.** The additive, mutually exclusive
 `JournalLeaseEmitter` topology replaces the global child-process permit and interleavable continuity
@@ -271,8 +299,8 @@ finite limits independent of daemon uptime. The code-owned target topology adds 
 single-writer emitter actor, an encrypted identity-bound retained journal, journal-first admission,
 an OS-lock plus Lease/incarnation fence, exact recovery, bounded acknowledgement/checkpoint repair,
 operation-specific lanes, and native Route 53 calls. Its typed persistence projection describes the
-stable identity, retained home and AWS claims, and exact Lease RBAC; Sprint `3.26` owns the physical
-StatefulSet, PV, EBS, and reclaim-policy rendering. Standard P keeps the public production wrapper
+stable identity, retained home and AWS claims, and exact Lease RBAC. Phase 3 supplied the physical
+rendering foundation; production adoption remains plan-tracked. Standard P keeps the public production wrapper
 on the process-construction-exclusive `LegacyModelBEmitter` rollback topology, including its
 capacity-one child schedule and AWS CLI Route 53 path, until current-revision qualification and
 later cutover; there is no runtime selector or dual writer. The gateway container doctrine is
@@ -409,6 +437,45 @@ phase; live infrastructure remains an orthogonal Standard-O axis.
 
 Keep the gateway daemon, DNS inspection command, and gateway-adjacent CLI surfaces on Haskell
 while preserving the implemented runtime contract and container doctrine.
+
+### The defect Sprint `2.47` introduced, and why its live proof still passed
+
+**`2.48`'s fix re-broke `2.47`'s retirement, and saying so plainly is the point of this section.**
+Sprint `2.47`'s live proof retired six fence generations on the operator host. Every one of those
+retirements saw `BootstrapLeaseMissing`, because the Lease had never been creatable — which is
+exactly what `2.48` then fixed. The moment a Lease existed, retirement began refusing
+`BootstrapFenceRetireLeaseStillLive` against a Lease that had expired **1h44m earlier**:
+
+```text
+renewTime = 2026-08-14T21:39:44Z   leaseDurationSeconds = 300   now = 23:29:21Z
+```
+
+**The mechanism is an ordering hazard in `retireExpiredPredecessor`, and it is `2.47`'s own code.**
+`bootstrapLeaseFromResponse` encodes an already-expired Lease as
+`deadlineFromInstant monotonicBeforeWall` — a deadline *at the instant the observation was taken* —
+and `deadlineExpired now limit` is `now >= limit`. `2.47` sampled its monotonic instant **before**
+issuing the observation, which guarantees `now < monotonicBeforeWall`, so an arbitrarily stale Lease
+reads as live and the fence can never be retired. The host was wedged again, for a new reason.
+
+Fixed by sampling the clock after the observations. More elapsed time is strictly safer for the
+instant's other two uses — the request deadline and the predecessor's expiry both only become more
+certain — so the ordering has one correct direction and no trade-off.
+
+**Two things this is evidence for.** First, the retirement is not merely a happy path: it fired
+against a *present* Lease only after this fix, retiring generation 7 on the live host. Second, and
+more usefully, **a live proof is only as strong as the states it actually reached** — `2.47`'s proof
+was real, and it could not have exercised this arm, because the arm did not exist until another
+sprint landed. That is recorded here rather than as a correction to `2.47`, because nothing `2.47`
+claimed was false; its coverage was bounded in a way nobody could state at the time.
+
+### The fourth instance of one defect class, and the widest
+
+With the fence and Lease clear, the refusal became `EngineSecretWorkerRefused` — one word for a
+**twenty-constructor** `EngineSecretWorkerError`. A permit deadline that elapsed, a checkpoint
+read-back mismatch, an attestation refusal, and a cleanup refusal were indistinguishable. Named to
+the nested constructor under the rule `2.46` established, which this session has now applied at four
+depths: five acquire refusals, six Lease refusals, the status code inside the non-success arm, and
+now twenty secret-worker causes.
 
 ### Deliverables
 
@@ -3007,9 +3074,8 @@ absolute deadline, and target DNS mutation uses the bounded native Route 53
 remain only in the mutually exclusive rollback topology required by Standard P.
 `Gateway/Emitter/Persistence.hs` supplies the typed claim-side projection for stable StatefulSet
 identity, the home node-pinned retained `hostPath`, the AWS manual retained claim with
-`ReadWriteOncePod`, and exact Lease RBAC. Sprint `3.26` owns physical workload, PV, EBS
-`volumeHandle`, and `Retain` rendering; those later consumers are not Sprint-2.32 implementation
-work.
+`ReadWriteOncePod`, and exact Lease RBAC. The Phase-3 chart/render foundation is a distinct
+consumer; production activation remains plan-tracked and is not Sprint-2.32 implementation work.
 
 `documents/engineering/tla/gateway_orders_rule.tla` models the complete five-step journal protocol,
 crash/Lease-loss rewind, overlapping incarnations, the OS-lock + fsynced-incarnation + Lease fence,
@@ -3058,9 +3124,9 @@ continuity loops and the overloaded global child-process permit on the target pa
   Kubernetes Lease/incarnation witness, and fsynced monotonically increasing emitter incarnation
   before readiness/publish; the Lease is not the sole fence and peers reject stale incarnations.
   Supply the typed substrate-exact persistence projection: stable StatefulSet identity, EKS CSI EBS
-  `ReadWriteOncePod`, and a home node-pinned retained `hostPath`/local-PV coordinate. Sprint `3.26`
-  owns the physical chart/PV/EBS render. Missing-journal recovery requires the explicit indexed
-  emitter-retirement program.
+  `ReadWriteOncePod`, and a home node-pinned retained `hostPath`/local-PV coordinate. Physical
+  chart/PV/EBS rendering and public activation remain distinct plan-tracked consumers.
+  Missing-journal recovery requires the explicit indexed emitter-retirement program.
 - Retain the latest signed assertion/previous anchor and peer-ack projection. Restart republishes
   unacknowledged state; ownership transitions compact only after every current peer acknowledges or
   a signed checkpoint makes the transition part of the bounded repair floor.
@@ -3086,9 +3152,9 @@ continuity loops and the overloaded global child-process permit on the target pa
   lock, Lease/incarnation fence, durable projection, exact recovery, acknowledgement/checkpoint
   repair, authenticated Orders migration, target operation lanes, native Route 53, typed
   persistence projection, formal model, and local validation fixtures are landed.
-- Sprint `3.26` consumes the typed persistence projection to render physical StatefulSets, PVs,
-  EBS identities, reclaim policy, and RBAC. That later phase-owned chart surface is not deferred
-  Sprint-2.32 implementation.
+- The later Phase-3 chart foundation consumes the typed persistence projection for physical
+  StatefulSets, PVs, EBS identities, reclaim policy, and RBAC. Its remaining production adoption is
+  plan-tracked and is not deferred Sprint-2.32 implementation.
 - Standard-O live proof and Standard-P deployment qualification remain pending. Until Standard P
   is proven, `LegacyModelBEmitter` remains the default production topology and its registered
   rollback routes/scheduler stay Pending Removal; the target is not an operational cutover.
@@ -3120,7 +3186,8 @@ scope cut, role-indexed config split, and loopback crash matrix are landed and v
 code-owned surface. Closing this sprint recloses Phase `2`.
 **Deployment qualification**: pending
 **Live-proof**: pending — the composed MinIO→broker→Vault→observed-handoff bring-up on a real
-cluster is the non-blocking Standard-O axis; Sprint `3.26` renders the physical broker workload.
+cluster is the non-blocking Standard-O axis. Phase 3 supplied the chart/render foundation; the
+current production composition remains pre-cutover.
 **Implementation**: ✅ landed — the closed `RuntimeRole`/`RuntimeConfigIdentity` split in
 `src/Prodbox/Runtime/Role.hs` (each role decodes only its own mounted Dhall; no shared daemon
 config); the full `src/Prodbox/Bootstrap/Broker/` subsystem (closed `BrokerRoute` registry with
@@ -3205,9 +3272,9 @@ initialization or unseal.
 
 - None (code-owned). The broker/runtime role split, prepared-init custody protocol, route removal,
   config split, and loopback crash matrix are landed and validated.
-- Sprint `3.26` (now unblocked) renders the broker and the later control-plane roles as separate
-  workloads. The composed real-cluster bring-up remains the non-blocking Standard-O live-proof axis,
-  and deployment qualification stays pending under Standard P.
+- The later Phase-3 chart/render foundation supplies separate role shapes. The composed real-cluster
+  bring-up remains the non-blocking Standard-O live-proof axis, and current activation and
+  deployment qualification remain governed by the plan status and Standard P.
 
 ## Documentation Requirements
 
@@ -3225,7 +3292,7 @@ initialization or unseal.
 
 **Cross-references to add:**
 
-- Link Sprint `3.26` as chart rendering adoption without making this phase depend on Phase 3.
+- Link the Phase-3 chart-rendering adoption boundary without making this phase depend on Phase 3.
 
 ## Sprint 2.34: Compiled Service Boundary and Latched Readiness [✅ Done]
 
@@ -3759,7 +3826,8 @@ than recorded, which is the defect; continuing is not.
 - **The decision is a pure total function.** `gatewayRuntimeSampleOutcome` maps the report's four
   constructors onto a four-constructor `GatewayRuntimeSampleOutcome`, and
   `gatewayRuntimeSampleOutcomeExit` lowers that to an `ExitCode`. This follows the repository's
-  purity boundary (`CLAUDE.md` — decisions pure, effects at the interpreter) and makes the
+  [pure-by-default interpreter boundary](../documents/engineering/pure_fp_standards.md#11-pure-by-default)
+  and makes the
   distinction testable without capturing a stream.
 - **Each arm says what it saw.** The not-yet-stable arm names the observed and required sample
   counts, states that the run continues *because this is a sampler and the gate owns the verdict*,
@@ -4508,7 +4576,1114 @@ this point.
 ### Remaining Work
 
 None on the observability row. The defect it makes diagnosable is its own work, and is deliberately
-not guessed at here.
+not guessed at here. **That work is now Sprint `2.47`, registered below (2026-08-14).**
+
+## Sprint 2.47: A Teardown That Preserves State By Design Preserves The Fence That Blocks The Next Bring-Up ✅
+
+**Status**: ✅ **Done (registered, part-landed, and closed 2026-08-14)** — Phase `2` own-surface work
+on the Bootstrap Broker fence this phase owns through Sprints `2.33`, `2.36`, `2.42`, and `2.46`.
+Phase `2` stays ✅ closed on its code-owned surface throughout: this sprint ran as the `Pending
+Removal` shape Standard I describes, never as a reopen (Standard N).
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Fence.hs`
+(`BootstrapFenceOwnerWorkerObservation`, `bootstrapFenceOwnerCleanupFromWorkerObservation`,
+`PredecessorLiveness`/`classifyPredecessorLiveness`),
+`src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` (`kubernetesObserveFenceOwnerWorker`,
+`fenceOwnerWorkerFromResponse`), and `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`
+(`acquireFence`'s acquire → retire → re-acquire sequence).
+**Blocked by**: none.
+**Deployment qualification**: pending. This was the recorded blocker of the **first Standard-P
+qualification campaign** ([README.md](README.md)); the code-owned half is closed and the campaign's
+next attempt is the live proof below.
+**Live-proof**: ✅ **PASSED on the operator host, 2026-08-14** — see *The live proof, run* below. Not
+a point probe: three consecutive retirements of three distinct fence generations, each with its own
+receipt digest.
+**Evidence**: `prodbox dev check` exit 0; `prodbox test unit` exit 0 at main Hspec **3453** plus 27,
+33, and 27 (3446 + this sprint's 7); `prodbox test integration cli` **57/57**.
+**Independent Validation**: every decision this sprint added or changed is a pure function over
+typed inputs, and the Kubernetes read-back is decided by an exported pure decoder over a status code
+and a response body. The whole surface is validated with no cluster, no Vault, and no MinIO
+(Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — row moved to
+`Completed`; root `README.md`'s `.data/` preservation paragraph;
+[bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md) — fence
+acquisition semantics changed, so the doctrine records the new rule. All three landed.
+
+### Objective
+
+A failed bring-up leaves a durable `bootstrap-session-fence` object that no supported command clears,
+and `cluster delete --cascade` preserves `.data/` **by design** because that tree also holds per-run
+Pulumi state. The fence lives in the same tree. An expired predecessor was never taken over
+implicitly — correct for single-writer safety — so every subsequent bring-up refused with
+`BootstrapFenceAcquireExpiredPredecessor`, and the host could never complete `prodbox vault init`
+again.
+
+The full causal chain, the killed hypotheses, and the second blocker discovered behind this one are
+recorded on the ledger row rather than restated here
+([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), Standard I:186).
+
+**The row's prediction was confirmed, which is what earned it an owner.** It closed by saying "the
+next failed run will re-poison the host identically". It did: a fence object dated `2026-08-13 23:06`
+was present on the operator host, written after the 2026-08-13 hand-clearing by a later abandoned
+bring-up, and it survived the `--cascade` teardown that followed. That is a second independent
+reproduction obtained for the cost of one `find`, and it moved the row from a predicted recurrence to
+a measured one.
+
+### What landed
+
+1. **`PredecessorLiveness` replaces a `Bool` on the acquire path.** `predecessorExpired` folded all
+   three `AttemptDeadlineRefusal` arms into *expired*; two of them —
+   `AttemptClockUnobservable` and `AttemptClockRegressed` — mean *cannot determine*. Landed first
+   precisely because it is fail-open **in shape**: the moment a positive expiry authorises a
+   retirement, an unreadable clock would authorise one too. `decideBootstrapFenceRetire` already drew
+   this distinction; the acquire path was brought level with it rather than a second rule being
+   invented. Class-D distinguishability,
+   [chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md), same
+   conversion class as Sprints `4.76` and `4.78`.
+2. **A production `BootstrapFenceOwnerCleanupObservation` producer.**
+   `kubernetesObserveFenceOwnerWorker` observes worker presence **by fence generation**, and
+   `bootstrapFenceOwnerCleanupFromWorkerObservation` adapts it to the cleanup fact the retire
+   decision consumes. This is the type's first producer since it was defined.
+3. **`acquireFence` wires acquire → retire → re-acquire.** A positively-expired predecessor is now
+   retired through the CAS that already existed, then the successor re-decides **once** against the
+   confirmed post-retirement read-back.
+4. **Two more closed name-only refusal renderings**, `bootstrapFenceRetireRefusalName` and
+   `bootstrapLeaseRefusalName` — see *The narration gap this sprint found on its way out*.
+
+### The mechanism already existed and could not be used, which is the sprint's real content
+
+**Options 1 and 3 from the ledger row were never needed.** `decideBootstrapFenceRetire` already
+retires an expired owner and is **more rigorous than all three recorded options**: it requires three
+independent facts and refuses closed on ambiguity in each — the durable deadline elapsed on a
+*trusted* clock, the exact Lease absent or expired, and the exact owner's cleanup read back absent.
+
+**Why it was never wired, stated exactly rather than as "a design decision".**
+`decideBootstrapFenceRetire` had **zero production callers** — the grep returned its definition, its
+export, and one comment. `confirmBootstrapFenceRetireCas` likewise. The store half *was* wired
+(`casRetireBootstrapSessionFence` → `retireFence`), so the two ends existed and nothing connected
+them: the enforcing-nothing shape Sprints `4.68`, `4.72`, and `4.77` each found.
+
+**And it could not be wired as it stood.** The retire decision requires a
+`BootstrapFenceOwnerCleanupObservation`, whose `BootstrapFenceOwnerAbsent` arm was bound to a
+`SecretWorkerCleanupBinding` — pod UID, session id, session accessor, request digest, storage
+generation, fence generation, receipt digest. **The durable fence carries only three of those
+seven.** The predecessor's pod UID, session id, accessor, and receipt digest are not recoverable from
+the one record that survives it. That is the structural reason the mechanism was unwired, and no
+amount of choosing between the row's three options addressed it.
+
+### Why proving the worker Pod is gone is enough, and why that is not a concession
+
+Absence of the predecessor's worker Pod does **not** prove absence of a Vault session it may still
+hold — and nothing short of widening the durable fence could prove that, because the predecessor's
+session id and accessor are not in the record that survives it.
+
+They do not need to be. **The retirement is the revocation, not merely what precedes it.** Every
+Vault effect and every durable mutation re-reads this exact fence through
+`authorizeBootstrapVaultEffect` / `authorizeBootstrapStoreMutation` immediately before acting, so a
+predecessor that somehow survived fails closed at its next effect with `BootstrapFenceUseFenceLost`
+or `BootstrapFenceUseFenceStale`. Retiring the fence positively withdraws the predecessor's
+authority; the three facts are what make it safe to conclude the predecessor is *finished*, and the
+per-effect recheck is what makes it safe to be wrong.
+
+This bound is stated in the Haddock at the wiring site rather than left to be re-derived.
+
+### The absence claim is whole rather than sampled
+
+The worker Pod is **one fixed coordinate** — `bootstrap-secret-worker` in the Broker namespace, built
+by a closed native manifest builder and granted by that exact name in the Broker's Role
+(`charts/bootstrap-broker/templates/tokenreview-rbac.yaml`). At most one can exist. So the decoder
+has three outcomes and the middle one is what makes the producer possible at all:
+
+- `404` — the coordinate is empty, so no worker exists for any generation.
+- `200` carrying a **different** fence generation — the sole coordinate is occupied by someone else,
+  which is itself proof this generation's worker is gone.
+- `200` carrying **this** fence generation — present. A terminating Pod still counts as present; a
+  deletion in flight is not a completed absence.
+
+Everything else — unparseable body, missing or non-canonical fence-generation annotation, rejected
+identity, any other status, transport failure — is unobservable, never absence. Absence is the only
+outcome that can authorize a takeover, so it is the only one that must be positively proven.
+
+The generation is compared in the adapter in **both** directions: an answer about generation `G'` is
+not an answer about generation `G`, whichever way it points, and both mismatches are unobservable.
+That is [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) made
+mechanical at the one place a boundary answer becomes a retirement authorization.
+
+### Seven prescribed remedies were refuted by measurement, and the pattern is the finding
+
+The first four were recorded when this sprint registered and part-landed; the last three were found
+closing it. Each was found by measuring before or just after writing.
+
+1. **Option 2 was inert.** Treating a predecessor from a different `VaultStorageGeneration` as vacant
+   cannot fire in the reported scenario: `observeOrCreateStorageGeneration` returns the **existing**
+   binding whenever the object is present, and `vault-storage-generation` lives in the same preserved
+   `.data/` tree as the fence. Both were observed on the operator host — generation written
+   `19:09:43`, fence `23:06:12`, same day. The successor carries **the same** generation, the
+   comparison is `G == G`, and the takeover never triggers. The most attractive option was the one
+   that does nothing.
+2. **The row's "this is a design decision, not a patch" framing.** The choice was not the sprint's
+   content; the unbuildable cleanup observation was.
+3. **This sprint's own fence-generation *selector* claim.** The fence generation is an **annotation**,
+   and Kubernetes cannot select on annotations — neither label nor field selectors reach them.
+4. **This sprint's own new refusal constructor.** `BootstrapFenceAcquirePredecessorLivenessUnobservable`
+   was added so the undetermined case would have its own name; the unit case written to pin it proved
+   the arm **cannot fire**, because `decideBootstrapFenceAcquire` derives the *request's* attempt
+   deadline from the same clock observation before it reads the store. It was **deleted rather than
+   shipped** (Sprint `4.78`'s precedent), and the test now pins the behaviour that actually occurs.
+5. **Shape 1's own replacement mechanism — "list broker-owned pods by the `app.kubernetes.io/name`
+   label and re-filter client-side on the annotation" — was unnecessary, and would have been
+   *worse*.** There is one worker Pod coordinate and it has a fixed name, so a direct `GET` on that
+   name is authoritative: no list, no client-side re-filter, and no dependency on the label at all.
+   The label list would also have been **less** precise, because the same label matches the Broker's
+   own controller Pod — `brokerPodsUrl` uses exactly that selector for controller self-observation —
+   so the re-filter would have had to exclude the controller as well. The correction recorded on
+   registration replaced a wrong mechanism with an unnecessary one.
+6. **"Every construction site including the fakes must supply the new field."** There are no fakes:
+   `KubernetesWorkerBoundary` has **exactly one** construction site in the tree,
+   `productionKubernetesWorkerBoundary`. The change the sprint called "larger and more invasive than
+   the landed half" was one field and one site. The estimate was prose; the count is a grep.
+7. **The never-renewed fence Lease looked like a defect and is not.** `bootstrapLeaseManifestForFence`
+   writes `leaseDurationSeconds = 300` once at acquisition and nothing renews it, while
+   `authorizeFenceUse` re-confirms the Lease — including its expiry — before **every** effect. That
+   reads as a hard 300-second ceiling on any fenced operation. It is not, because
+   `maximumBrokerRequestDeadlineMilliseconds` is `5 * 60 * 1000` — exactly 300 seconds — and the
+   Lease's `renewTime` is stamped *after* the request was accepted, so the Lease deadline is always
+   later than the request deadline and the `min` in `authorizeFenceUse` never selects it. **The
+   coupling is real and undeclared**: two `300`s in different modules with no stated relationship, and
+   raising the request budget alone would silently make every long operation fail closed at
+   `BootstrapLeaseExpired`. Recorded rather than absorbed, and owned by Sprint `2.48`.
+
+### The narration gap this sprint found on its way out
+
+The second blocker recorded behind the stale-fence row is a Lease refusal whose **constructor was
+never captured** — the ledger holds the paraphrase "no Lease present", where `BootstrapLeaseNotFound`
+and `BootstrapLeaseObservationUnobservable` would have named different faults with different causes.
+The reason it was not captured is in this phase's own code: `ensureLease` narrated the fixed string
+`lease not confirmed` for **all six** `BootstrapLeaseRefusal` constructors. That is the exact
+collapse Sprint `2.46` fixed one level up for the acquire refusals, and this function was missed by
+it.
+
+Closed here, on this sprint's own surface, by the same closed name-only rule — two of the six
+refusals carry a `BootstrapLeaseBinding`, which carries the owner nonce, so the constructor name is
+published and the payload is not. This does not fix the second blocker. It is the mechanism by which
+the next reproduction will name it, which is why it belongs to the sprint that found it rather than
+to the sprint that will close it.
+
+### Deliverables
+
+- **✅ The decision, argued from measurement.** All three recorded options refuted, one by direct
+  measurement of the operator host.
+- **✅ A production `BootstrapFenceOwnerCleanupObservation` producer.**
+  `kubernetesObserveFenceOwnerWorker` on `KubernetesWorkerBoundary`, its pure decoder
+  `fenceOwnerWorkerFromResponse`, and the pure adapter
+  `bootstrapFenceOwnerCleanupFromWorkerObservation`.
+- **✅ Wire acquire → retire → re-acquire** in `acquireFence`. The re-acquire is a **structurally**
+  bounded second pass — a separate function with no path back into the retire branch — rather than a
+  depth counter, so a predecessor that survives the CAS refuses instead of looping.
+- **✅ The acquire path's `predecessorExpired` is three-valued.**
+- **✅ The second blocker split out** as Sprint `2.48`, with its own ledger row, the measurements that
+  narrow it, and the narration fix above already landed so the next reproduction names the
+  constructor. The sprint text was explicit that it "gets its own registered sprint, not a mention".
+- **✅ A regression case that fails before the fix.** The acquire → retire → re-acquire sequence is
+  asserted end to end, starting from the exact refusal the operator host reported, and the refusal
+  arms are asserted beside it — a live worker for the same generation, an unreadable worker
+  observation, and a foreign-generation answer all still refuse. A permissive branch alone proves
+  nothing.
+
+### Validation
+
+1. **`prodbox dev check`** exit 0.
+2. **`prodbox test unit`** exit 0 — main Hspec **3453**, plus 27, 33, and 27. Seven new cases: four
+   over the adapter and the acquire → retire → re-acquire sequence in
+   `test/unit/BootstrapBrokerSafety.hs`, three over the boundary decoder in
+   `test/unit/BootstrapBrokerProductionBoundary.hs`.
+3. **`prodbox test integration cli`** **57/57**.
+4. **The live proof, stated as a sequence rather than a state** — ✅ **passed**, below.
+
+### The live proof, run (2026-08-14)
+
+**The setup step was not needed, because the host was already armed.** The precondition this proof
+requires — a host whose previous bring-up was abandoned and whose fence survived the teardown — was
+the operator host's actual state, measured before anything was run: `bootstrap-session-fence` written
+`2026-08-13 23:06:12.988`, `vault-storage-generation` written `19:09:43.633` beside it, and no RKE2
+install at all. Those are the exact objects and timestamps the ledger row recorded. So the proof is a
+bring-up on the real poisoned host, not a reconstruction of one.
+
+**What the Broker recorded on the first run**, verbatim from its own stderr:
+
+```text
+bootstrap-broker retired expired fence generation 1; worker-absence receipt 08f276ff…f808
+```
+
+`BootstrapFenceAcquireExpiredPredecessor` — the refusal that had wedged this host for two days and
+across five bring-ups — did not fire. The durable object was rewritten at `15:15:21`, so the CAS
+reached the store rather than the decision merely being taken. The worker-absence proof came from the
+new boundary observer answering `404` on the sole worker coordinate.
+
+**It is a consecutive-run result, not a point probe**, which is what
+[Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)'s
+aggregate rule requires of a cleanup claim. Five bring-ups were run:
+
+| Run | Fence state on entry | Result |
+|-----|----------------------|--------|
+| 1 | generation 1, stale from 2026-08-13 | **retired**, re-acquired as generation 2 |
+| 2 | generation 2, still inside its deadline | `BootstrapFenceAcquireOverlap` — correctly refused |
+| 3 | generation 2, still inside its deadline | `BootstrapFenceAcquireOverlap` — correctly refused |
+| 4 | generation 2, deadline elapsed | **retired**, re-acquired as generation 3 |
+| 5 | generation 3, deadline elapsed | **retired**, re-acquired as generation 4 |
+
+Three retirements of three distinct generations, each publishing a **different** receipt digest
+(`08f276ff…`, `1f63524a…`, `8a146171…`) — which also demonstrates live that the receipt is derived
+from the read-back rather than constant. And the refusal arm refused twice in between, on its own
+merits, without being contrived: runs 2 and 3 are the negative control this sprint would otherwise
+have had to construct.
+
+### A third defect, found by the live run rather than by reading
+
+`acquireFence` CASes the fence and **then** calls `ensureLease`. When the Lease step fails, the
+request returns an error and **the durable fence stays held** — nothing releases it. That is why runs
+2 and 3 saw `Overlap`: run 1's successor fence was live and abandoned in the same breath.
+
+**Before this sprint that leak was permanent.** Once the abandoned fence's deadline elapsed, the next
+acquisition would have refused `BootstrapFenceAcquireExpiredPredecessor` forever — the very defect
+this sprint closed. After it, the leak is self-healing within one operation deadline, which is what
+runs 4 and 5 demonstrate. **So the retirement is load-bearing for a defect that was not the one it was
+written for**, and that is the strongest available argument that it belongs on this path rather than
+being a narrower fix to the recorded symptom. The leak itself is recorded on the ledger and owned by
+Sprint `2.48`, which is where the Lease failure that triggers it lives.
+
+### A Standard-C correction to Sprint `4.82`'s recorded evidence
+
+`prodbox dev check` did **not** reproduce at exit 0 on this worktree, and the cause was not this
+sprint. Sprint `4.82` added `cascadePhaseDerivedFrom` to `CascadePhaseOutcome` and updated its own
+test block, but a Sprint-`4.76` block in `test/unit/Main.hs` still built the record as a literal —
+`-Wmissing-fields` under `dev check`'s `-Werror` build, which `prodbox test unit` does not enforce
+and therefore did not catch. Corrected in place: the fixture now goes through `independentPhase`, the
+smart constructor `4.82` added for exactly this shape, which also states what the fixture means. The
+lesson is recorded rather than the number quietly swapped: **`test unit` passing is not `dev check`
+passing, and an evidence line that names both must have run both.**
+
+### Remaining Work
+
+**None. The code-owned surface and the live proof are both closed.**
+
+**The bound is stated.** This sprint owns the fence that blocks re-acquisition. It does not own the
+underlying question of what `--cascade` should preserve — `.data/` preservation is deliberate,
+load-bearing for per-run Pulumi state, and documented in root `README.md`; narrowing it is
+[Phase 4](phase-4-lifecycle-canonical-paths.md)'s surface, not this one (Standard N). It also does
+not own the second blocker, which is Sprint `2.48` below.
+
+## Sprint 2.48: A Lease Refusal Recorded As A Paraphrase Cannot Be Told From Five Other Lease Refusals ✅
+
+**Status**: ✅ **Done (registered, part-landed, and closed 2026-08-14)** — Phase `2` own-surface work
+on the same Bootstrap Broker fence surface. Phase `2` stays ✅ closed on its code-owned surface; a
+sprint landing on a closed phase is the `Pending Removal` shape Standard I describes, not a reopen
+(Standard N).
+**Implementation**: `bootstrapLeaseManifestForFence` and `bootstrapLeaseFromResponse` in
+`src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`; `bootstrapFenceLeaseDurationSeconds` in
+`src/Prodbox/Bootstrap/Broker/Settings.hs`; `abandonFreshlyAcquiredFence` in
+`src/Prodbox/Bootstrap/Broker/Fence.hs` and `acquireFence`'s `releaseFreshlyAcquiredFence` in
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`.
+**Blocked by**: none. It was blocked on **evidence**, not on a prerequisite, and the distinction is
+deliberate — a `Blocked by` naming a missing observation would be a status word doing a
+reproduction's job.
+**Deployment qualification**: pending. This is the blocker that sits **behind** Sprint `2.47`'s, so it
+is on the first Standard-P campaign's path.
+**Live-proof**: ✅ **root cause found, fixed, and verified live 2026-08-14** — the fence Lease is
+created for the first time. See *The cause, and the fix that proved it* below.
+**Independent Validation**: `confirmBootstrapLease`, `bootstrapLeaseFromResponse`, the derived
+Lease TTL, and `abandonFreshlyAcquiredFence` are all pure over typed inputs, so every arm is pinned by
+unit cases with no cluster (Standard N).
+**Docs to update**: ✅ [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — both rows
+this sprint owned moved to `Completed`; ✅ `documents/engineering/bootstrap_readiness_doctrine.md`
+§ 3.3.2 and § 3.3.3, because the Lease's liveness contract did change.
+
+### Objective
+
+With the stale fence cleared, acquisition refused at `confirmBootstrapLease` with — as recorded —
+"no `coordination.k8s.io` Lease present in the `bootstrap-broker` namespace", although the Broker's
+Role grants `create` on leases and `get`/`update` on `bootstrap-broker-fence`. The ledger row for the
+stale fence is explicit that this is a live defect rather than stale state, and that it is **not that
+row**.
+
+**The first thing to fix was the record, and Sprint `2.47` already fixed it.** "No Lease present" is
+a paraphrase. `BootstrapLeaseNotFound` and `BootstrapLeaseObservationUnobservable` are different
+faults with different causes, and `ensureLease` narrated the same fixed string for both — and for
+four others. That narration is now constructor-named, and **the very next reproduction used it.**
+
+### What the live run settled, and what it refuted (2026-08-14)
+
+**The recorded paraphrase was wrong.** The constructor is `BootstrapLeaseObservationUnobservable`,
+**not** `BootstrapLeaseNotFound`. The Lease was not missing; the observation could not be made. Every
+inference that started from "no Lease present" started from the wrong fault.
+
+**Two hypotheses were killed by measurement, and one of them was this plan's own.**
+
+1. **RBAC is not the cause — ruled out directly, not argued.** Against the Broker's own
+   ServiceAccount: `can-i create leases.coordination.k8s.io` → **yes**;
+   `can-i get leases.coordination.k8s.io/bootstrap-broker-fence` → **yes**. The Role and RoleBinding
+   both exist in the Broker namespace.
+2. **The transient-window reading was refuted by repetition, and it was the reading this sprint
+   found most attractive.** The RoleBinding was created at `19:15:13Z` and the first refusal landed
+   eight seconds later, which matches `bootstrapLeaseFromResponse`'s own comment that `403` stays
+   non-terminal "because a cold cluster legitimately answers it while the broker's RoleBinding has
+   not yet been applied" — a near-perfect fit. It is wrong: the refusal reproduced **identically** on
+   four further bring-ups spanning twelve minutes, long after RBAC was established. **A hypothesis
+   that explains the first observation and not the fifth is not a diagnosis**, and recording that is
+   worth more than the hypothesis was.
+
+**What the Broker's Kubernetes access demonstrably can do**, which narrows the remaining causes
+sharply: the same credential, in the same request, successfully read the worker Pod coordinate — that
+`404` is what produced the worker-absence receipt Sprint `2.47`'s retirement published. So this is not
+a dead API client, not a network partition, and not a token problem.
+
+**The remaining collapse is three-way, and it is now the sprint's whole content.**
+`BootstrapLeaseObservationUnobservable` still covers a transport failure, a non-success API status,
+and a structurally invalid response body. Naming the constructor moved the record from a six-way
+collapse to a three-way one; it did not finish the job.
+
+### The cause, and the fix that proved it
+
+**`Lease.spec.renewTime` is a `MicroTime`, and Kubernetes parses it with the Go layout
+`2006-01-02T15:04:05.000000Z07:00` — exactly six fractional digits, mandatory.** Aeson's
+`ToJSON UTCTime` renders a *variable* count: it trims trailing zeros and can emit up to twelve from
+picosecond resolution. `bootstrapLeaseManifestForFence` encoded the `UTCTime` directly, so the API
+server rejected the body with `400 Bad Request` — **deterministically**, because `getCurrentTime`
+essentially never lands on exactly six significant digits. The Broker's fence Lease had therefore
+never been creatable, on any run, which is why `prodbox vault init` had never got past it.
+
+**Proven server-side rather than argued**, with `kubectl create --dry-run=server` against this exact
+resource — four probes, each falsifiable:
+
+| `renewTime` | Result |
+|-------------|--------|
+| `…37.123456789012Z` (12 digits) | `BadRequest` — `cannot parse "789012Z" as "Z07:00"` |
+| `…37.123456789Z` (9 digits) | `BadRequest` — `cannot parse "789Z" as "Z07:00"` |
+| `…37.123456Z` (6 digits) | **accepted** |
+| `…37Z` (0 digits) | `BadRequest` — `cannot parse "Z" as ".000000"` |
+
+**The fix is `kubernetesMicroTime`**, which renders exactly six fractional digits. Truncation is
+toward the past, which is also the safe direction: the rendered instant is never later than the
+`UTCTime` it came from, so the `renewTime > wallNow` guard in `bootstrapLeaseFromResponse` cannot be
+tripped by the encoding itself.
+
+**Verified live, and the verification is a positive observation rather than the absence of an
+error**: after the fix the Lease object exists in the Broker namespace —
+`bootstrapLeaseFromResponse` confirmed it, and `kubectl get leases` shows
+`bootstrap-broker-fence` held by the fence's owner nonce. The bring-up then advanced **past** the
+Lease to a stage it had never reached (see Sprint `2.49`).
+
+**A second, smaller defect closed with it.** The non-success detail read
+`Bootstrap Lease GET returned a non-success status` — on a decoder the ensure path reaches with a
+`POST`/`PUT`, and with the status dropped entirely, so a `400` from a malformed body and a `500`
+from a broken API server read identically and neither named the call. It now reports
+`Bootstrap Lease request returned HTTP <code>`. **The status code is the single fact that would have
+identified this defect in one run instead of five**, and it was being discarded.
+
+### The landed half
+
+`bootstrapLeaseRefusalName` now carries the **reason** for the two constructors whose payload is
+already a fixed, payload-free string, while the two that carry a `BootstrapLeaseBinding` still publish
+their constructor and nothing else. That is the same rule applied to different payloads, not a
+relaxation of it.
+
+**It is safe because Sprint `2.42` already made it safe**, and this consumes that guarantee rather
+than re-establishing it: these details are built by `unobservableReason` over
+`kubernetesTransportFailureLabel`, which maps every `HttpExceptionContent` constructor onto a fixed
+label with no wildcard arm and never inspects the `Request` — precisely because it carries an
+`Authorization: Bearer` header — and `2.42` asserted with a planted token that no bearer material
+reaches a rendered reason.
+
+**It has not yet been observed in the deployed Broker, and the reason is worth recording rather than
+retrying blindly.** The runtime image tag is `prodbox-<machine-id>`
+(`resolveMachineIdentity` in `src/Prodbox/CLI/Rke2.hs`) — **host-scoped by design, not
+content-addressed** — so a source change does not move the tag, the Deployment spec does not change,
+and the running Pod is not replaced. The deployed Broker on this host is still the `19:15:13Z` Pod.
+This is expected behaviour, not a defect, and it is stated here so the next attempt reaches for a Pod
+replacement rather than another reconcile.
+
+### What is already measured, without a cluster
+
+Every line below is a grep, not an inference, and each one narrows the search before a single live
+run is spent:
+
+1. **`kubernetesEnsureBootstrapLease` has exactly one caller** — `acquireFence`'s `ensureLease`. There
+   is no second write path to confuse the reproduction with.
+2. **`BootstrapLeaseMissing` — the observation behind `BootstrapLeaseNotFound` — is produced at
+   exactly one place: HTTP `404` in `bootstrapLeaseFromResponse`.** Nothing else in the tree
+   constructs it from a live response.
+3. **RBAC failure cannot produce it.** `403` maps to `BootstrapLeaseUnobservable` by an explicit
+   guard, and the guard's own comment says why: a cold cluster legitimately answers `403` while the
+   Broker's RoleBinding has not yet been applied. So if the refusal really was `NotFound`, the cause
+   is **not** the Role.
+4. **Which relocates the question.** A `404` from `POST .../namespaces/<ns>/leases` means the
+   namespace or the API group is absent — neither of which is plausible for a Pod that is running in
+   that namespace. The likelier reading is that the refusal came from the **`GET`** path
+   (`kubernetesObserveBootstrapLease`, which `observeFenceUse` calls before every effect), and the
+   question is then not "why did creation fail" but "why was the Lease absent between acquisition and
+   first use". The reproduction distinguishes these, and Sprint `2.47`'s narration is what lets it.
+5. **An undeclared coupling on the same surface, found by Sprint `2.47` and handed here.** The fence
+   Lease is written once with `leaseDurationSeconds = 300` and never renewed, while `authorizeFenceUse`
+   re-confirms its expiry before every effect. That is safe today only because
+   `maximumBrokerRequestDeadlineMilliseconds` is `5 * 60 * 1000` — the same 300 seconds — and the
+   Lease's `renewTime` is stamped after the request was accepted, so the Lease deadline is always the
+   later of the two and the `min` never selects it. The two constants live in different modules with
+   no stated relationship. Raising the request budget alone would make every long operation fail
+   closed at `BootstrapLeaseExpired`, and the failure would look like a Lease defect rather than a
+   budget change.
+
+### Deliverables
+
+- **✅ One reproduction that names the constructor**, not a description of it. Taken 2026-08-14; the
+  answer was that the refusal was never `NotFound` at all, and that correction is recorded above as
+  the result it is.
+- **✅ The reason published for the two constructors that can carry one safely**, reducing the
+  collapse from six-way to three-way.
+- **✅ The cause, argued from the reason** rather than from the constructor: a `MicroTime` encoding
+  the API server rejects with `400`, proven server-side with four `--dry-run=server` probes.
+- **✅ The fix, and a live verification that is a positive observation** — `kubernetesMicroTime`, and
+  the fence Lease existing in the cluster for the first time.
+- **✅ The misleading non-success detail** replaced with the status code it was discarding.
+- **✅ Unit cases pinning the encoding**: exactly six fractional digits across five input precisions,
+  never an instant later than the one given, and distinct rendering per status code.
+- **✅ The undeclared 300-second coupling declared, not removed by renewing.**
+  `bootstrapFenceLeaseDurationSeconds` now derives from
+  `maximumBrokerRequestDeadlineMilliseconds` by ceiling division, and the manifest builder reads it
+  instead of the literal `300`. **The evidence that chose declaration over renewal is that renewal is
+  adversarial to Sprint `2.47`, not merely more machinery**: `decideBootstrapFenceRetire` takes over
+  an abandoned fence only against a **positively expired** Lease, and the state it exists to recover
+  from is exactly a bring-up abandoned partway. A renewer thread outliving the wedged operation would
+  hold the Lease live forever, the fence could never be retired, and the host would return to the
+  permanent wedge `2.47` closed. A Lease that expires on its own is the mechanism, not an omission.
+  Ceiling division rather than `div 1000` because a budget that is not a whole number of seconds
+  would otherwise violate the invariant silently; the tightest satisfying value is chosen because a
+  longer TTL delays the instant a successor may declare a predecessor expired.
+- **✅ The fence leak on the acquisition path compensated**, closing the second ledger row this
+  sprint owned rather than leaving it to outlive its owner. `acquireFence` CASed its fence and then
+  abandoned it when `ensureLease` failed; `abandonFreshlyAcquiredFence` now produces an exact-value
+  CAS back to vacant with the released generation as the high-water floor. **It needs no facts of its
+  own, and that is the design rather than a shortcut**: retirement must prove three things about an
+  owner it cannot see, whereas this releases a fence *this call created moments ago*, and
+  `authorizeBootstrapVaultEffect` / `authorizeBootstrapStoreMutation` both require a confirmed Lease
+  witness before any effect — so a fence that never carried a witness cannot have authorized
+  anything. Retirement could not have served in any case: it requires the durable operation deadline
+  to have **elapsed**, and a freshly acquired fence's has not. **Only the freshly CAS'd fence is
+  released**; a resumed fence pre-existed the call and an earlier attempt of the same request may
+  already have run effects under it. **No refusal constructor was invented** — every
+  `BootstrapLeaseRefusal` justifies the release equally — on the same rule by which Sprint `2.47`
+  deleted an unreachable constructor rather than shipping it.
+- **✅ Unit cases pinning both.** The Lease-TTL invariant
+  (`1000 * duration >= maximumBrokerRequestDeadlineMilliseconds`), its tightness (one second shorter
+  violates it), and the rendered body carrying the derived value; and for the release, that the
+  vacated floor is the released generation itself — a floor one lower would let a successor re-mint
+  the same generation, which is the property the whole fence scheme rests on — plus that a fence
+  differing in any field conflicts rather than being vacated.
+
+### Validation
+
+1. `prodbox dev check` exit 0; `prodbox test unit`; `prodbox test integration cli`.
+2. The live proof: one bring-up that reaches `ensureLease` on a cluster where the fence is
+   acquirable, with the constructor recorded.
+
+### Remaining Work
+
+**None.** Both items this sprint carried open are closed above: the 300-second coupling is declared
+with one owner and one derivation, and the acquisition-path fence leak — measured directly by the
+live run, where runs 2 and 3 refused `BootstrapFenceAcquireOverlap` against run 1's abandoned
+successor fence — now compensates instead of leaking. Its ledger row moves to `Completed` with this
+sprint rather than outliving its owner, which is the shape this plan has caught three times.
+
+**One thing the closure does not claim.** The compensation is best-effort by construction: the
+original Lease refusal reaches the caller whether the release CAS lands or not, because a failed
+release is a cleanup of this call's own side effect and not a second diagnosis. When it fails, the
+behaviour is exactly what existed before — the leak, which Sprint `2.47`'s retirement path already
+makes self-healing within one operation deadline rather than permanent.
+
+**The discipline this sprint was bound by, and the outcome it produced**: two hypotheses were refuted
+by measurement before the cause was found — the ledger's own paraphrase, and the transient-RBAC
+window that matched the decoder's comment and an eight-second timing fit. The rule that broke the
+deadlock was to stop hypothesising and make the refusal say more: publishing the reason took one
+build, and the reason named the cause immediately. **Three of this session's findings were reached
+that way rather than by reasoning about the code**, which is the argument for the narration work
+being load-bearing rather than cosmetic.
+
+## Sprint 2.49: An Attestation That Tries Every Candidate And Reports Only That All Of Them Failed ✅
+
+**Status**: ✅ **Done (registered, landed, and closed 2026-08-14)** — Phase `2` own-surface work on the
+Bootstrap Broker's secret-worker attestation and on a defect Sprint `2.47` introduced that only became
+reachable once Sprint `2.48` landed. Evidence: `prodbox dev check` exit 0, `prodbox test unit` exit 0,
+and a live run in which the named refusal identified its cause on the first attempt. Phase `2` stays ✅ closed on its code-owned surface; a
+Planned sprint on a closed phase is the `Pending Removal` shape Standard I describes, not a reopen
+(Standard N).
+**Implementation**: `firstAttestedRequest` and `waitForAttestedWorker` in
+`src/Prodbox/Bootstrap/Broker/HostSecretWorker.hs`, over `workerRequestFromRunningResponse` in
+`src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. This is now the **first** blocker on the bring-up path, having
+been uncovered by Sprint `2.48`'s fix clearing the one in front of it.
+**Live-proof**: 🧪 pending (Standard O, non-blocking) — reproduction is already available and
+deterministic on the operator host.
+**Independent Validation**: `firstAttestedRequest` is pure over a candidate list and a response body,
+so every arm is exercised by unit cases with no cluster (Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) when the row
+moves to `Completed`.
+
+### Objective
+
+With the fence retired (Sprint `2.47`) and the Lease creatable (Sprint `2.48`), the bring-up now
+reaches secret-worker attestation and fails there:
+
+```text
+Vault initialize failed: attest Bootstrap secret worker:
+  "worker Pod does not match any expected closed operation"
+```
+
+**This is the third instance of one defect class in one session, and by now the pattern is the
+finding rather than the instance.** `firstAttestedRequest` walks its candidate list and discards
+every candidate's reason:
+
+```haskell
+go (candidate : rest) = case workerRequestFromRunningResponse … of
+  Right request -> Right request
+  Left _        -> go rest
+```
+
+`workerRequestFromRunningResponse` returns a specific `Left` for each mismatch — phase, deletion
+timestamp, ServiceAccount, operation, image digest, and each annotation — and every one of them is
+thrown away. The operator is told that nothing matched, never what did not match, and the candidate
+list has several entries, so the message is a disjunction reported as a dead end.
+
+Sprints `2.46`, `2.47`, and `2.48` each closed exactly this shape one layer up: `2.46` for the
+five acquire refusals, `2.47` for the six Lease refusals, `2.48` for the status code inside the
+non-success arm. **Each time, the narration was what produced the next diagnosis** — `2.48`'s root
+cause was found within one build of publishing the reason. This sprint is the same move, one layer
+further in.
+
+### Deliverables
+
+- **✅ A refusal that names the mismatch.** `firstAttestedRequest` now reports every candidate's
+  operation and the field it disagreed about, instead of `Left _ -> go rest`. The empty-expectation
+  case is split out as a distinct fault: nobody expecting anything is a caller defect, not a Pod that
+  matched nothing.
+- **✅ The payload judgement — and it was not needed, which measuring first is what established.**
+  This deliverable was registered assuming a comparison failure quotes the values it compared. It
+  does not: `requireCreateEqual` is `Left (label <> " mismatch")` and renders neither side, so the
+  reasons are payload-free by construction and propagating them needs no new rule. **That is the
+  eighth prescribed remedy this row has refuted by measurement**, and the first belonging to `2.49`
+  itself.
+- **✅ The ordering hazard in `retireExpiredPredecessor`**, above, with a regression case pinning both
+  directions.
+- **✅ `EngineSecretWorkerRefused` named to its nested constructor**, closing the widest remaining
+  collapse on this surface.
+- **The cause, once the refusal names it**, and the fix.
+- **Unit cases over `firstAttestedRequest`**: an empty candidate list, a matching candidate behind a
+  non-matching one, and a wholly non-matching list whose refusal names the first reason.
+
+### Validation
+
+1. `prodbox dev check` exit 0; `prodbox test unit`; `prodbox test integration cli`.
+2. The live proof: a bring-up that reaches an initialized Vault on the operator host.
+
+### Remaining Work
+
+**Landed**: the attestation narration and its three unit cases, the `2.47` ordering fix and its
+regression case, and the twenty-constructor secret-worker naming.
+
+**Open**: none. The cause the naming made readable is
+`EngineSecretWorkerRefused/StoredRequestBindingMismatch`, read on the first run after deploying the
+change — the fourth consecutive time this method produced a diagnosis within one build. It is a
+distinct defect on a distinct object and is registered as Sprint `2.50` rather than absorbed here,
+because it is the same design decision `2.47` faced rather than a follow-on patch.
+
+## Sprint 2.50: The Same Sentence As Sprint 2.47, With "Checkpoint" In Place Of "Fence" ✅
+
+**Status**: ✅ **Done (registered and closed 2026-08-14)** — Phase `2` own-surface work on the durable
+secret-worker checkpoint. Phase `2` stays ✅ closed on its code-owned surface; a sprint landing on a
+closed phase is the `Pending Removal` shape Standard I describes, not a reopen (Standard N).
+**Implementation**: `requestBindingMismatch`, `intentBindingMismatch`, `SecretWorkerBindingSite`,
+`SecretWorkerBindingField`, and the checkpoint resume/roll arms of `driveSecretWorker` in
+`src/Prodbox/Bootstrap/Broker/EngineSecretWorker.hs`; `engineSecretWorkerErrorName` in
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. This is now the **first** blocker on the bring-up path.
+**Live-proof**: ✅ **passed 2026-08-14 on the operator host, with nothing cleared by hand** — the
+bring-up advanced past this refusal and the roll is proven in the durable object, not inferred from a
+changed message. See *The live proof* below.
+**Independent Validation**: `requestBindingMismatch` and the resume/roll decision are pure over typed
+inputs; every arm is exercised without a cluster (Standard N).
+**Docs to update**: ✅ [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md);
+✅ `documents/engineering/bootstrap_readiness_doctrine.md`.
+
+### Objective
+
+**This phase's Sprint `2.47` was titled "a teardown that preserves state by design preserves the
+fence that blocks the next bring-up". This sprint is that sentence with one word changed.**
+
+With the fence retirable (`2.47`), the Lease creatable (`2.48`), and the secret-worker refusal
+nameable (`2.49`), the bring-up refused at:
+
+```text
+EngineSecretWorkerRefused/StoredRequestBindingMismatch
+```
+
+`secret-worker-checkpoint` sits in the preserved `.data/` tree beside the fence, written
+`2026-08-14 17:39:44` by the first run that ever got past the Lease. `--cascade` preserves it for the
+same reason it preserves the fence: the tree also holds per-run Pulumi state.
+
+### The checkpoint, decoded — and the correction it forced
+
+The registered deliverable was to decode the completion state rather than assume it. **Decoded, and
+the plan's own description of the object was wrong in two ways.**
+
+It is not Vault-enveloped. The bootstrap store's `StoredEnvelope` is canonical CBOR over
+`SecretFreeWorkerRequest` — *secret-free by construction*, which is what the type name says — inlined
+in the MinIO object. It was readable directly, with no Vault session, on a host whose Vault is
+uninitialized. **The sprint was registered believing the decode needed a facility the wedged host by
+definition could not offer**, and one `xxd` refuted that.
+
+The decode:
+
+| Field | Checkpoint (store version 2) | Held fence (store version 19) |
+|-------|------------------------------|-------------------------------|
+| constructor | **`InternalNoWorkerReceipt`** — pre-receipt | — |
+| operation | `SecretWorkerPrepareInitialization` | — |
+| session accessor | **`WorkerSessionNotIssued`** | — |
+| fence generation | **7** | **10** |
+| owner nonce | `6f79287b…` | `c8ac043c…` |
+| action digest | `db260513…` | `db260513…` |
+| request digest | `76fc5869…` | `76fc5869…` |
+| storage generation | `vault-423fc5df…` | `vault-423fc5df…` |
+| operation deadline | `1786743884304979` | `1786753521528879` |
+
+**Three of the seven compared fields differ, not two.** This plan recorded fence generation and owner
+nonce; the operation deadline is `acceptedAt + budget` and is therefore minted per invocation just as
+inevitably. That is a small number and it was wrong in the same direction as the "eleven layers"
+withdrawal recorded on 2026-08-14: **an inventory stated in prose is not a measurement.** The refusal
+being payload-free is precisely why nobody caught it — which is the argument for the first
+deliverable below rather than a separate observation about it.
+
+**The arm is named.** `decideSecretWorkerRecovery` returns `SecretWorkerRecoveryDestroyAndReprompt`
+for this checkpoint, and `recoverStoredWorker`'s catch-all binding guard sat **above** that arm and
+shadowed it.
+
+### The decision, and why it is narrower than any of the three options registered
+
+The three candidates were a retirement mirroring the fence's, a widened roll arm, or a supported
+recovery verb. **The evidence chose the roll arm, bounded three ways — and the bound this sprint was
+scoped by is what does the choosing rather than being argued across.**
+
+1. **No result exists to lose.** The bound was that a fence is an exclusion record while a checkpoint
+   is a *result* record. That is a statement about checkpoints which **carry** a result.
+   `InternalNoWorkerReceipt` is the constructor whose entire meaning is that no receipt was captured;
+   its receipt and its result are both `Nothing` by construction. The caution is measurably
+   inapplicable to the state that was actually stuck — and the codebase had already made this
+   judgement for the same constructor under a *matching* binding, where `DestroyAndReprompt` has
+   always destroyed and re-prompted.
+2. **A strictly superseded generation, not "some field differs".** Within one fence generation the
+   identical-binding requirement is **unchanged**: an incomplete checkpoint for a *different
+   operation* under the same fence still fails closed, because the worker operations of one bootstrap
+   session are ordered and discarding an interrupted predecessor could skip a stage. A checkpoint
+   from a *newer* generation is refused outright — that would mean this invocation is the stale one.
+   Exactly one of the seven cases in the pre-existing exhaustive mismatch table changes behaviour.
+3. **The predecessor's worker is destroyed, not assumed absent.**
+   `discardUnreceiptedSecretWorker` issues a UID-preconditioned delete and then waits for absence,
+   refusing outright if a replacement worker occupies the fixed coordinate. **That is stronger than
+   the worker-absence observation Sprint `2.47` built** — it does not infer absence, it causes it.
+   Holding the current fence is what makes it safe to do so: every Vault effect and durable mutation
+   re-reads that exact fence immediately before acting, so a surviving predecessor bound to an
+   earlier generation fails closed at its next effect.
+
+**What stays refused**: every checkpoint carrying a receipt, on any binding. Those are result records
+mid-cleanup whose cleanup binding names a Pod UID, session id and session accessor a successor cannot
+reconstruct; discarding one could leak a live Vault session. The replay hazard is unchanged and still
+gated where it was — `interruptionRequiresRefusal` decides whether an un-receipted worker may be
+re-prompted at all, and a refusing interruption yields `DestroyAndRefuse`, which the widened arm never
+sees.
+
+**The same wedge one stage earlier is closed with it.** A durable `InternalWorkerIntent` from a
+superseded generation had the identical dead end in `resumeWorkerIntent`, and is strictly safer to
+roll: no Pod UID is bound, no receipt exists, and nothing needs discarding. It rolls at the
+`recoverStoredWorker` call site rather than inside `resumeWorkerIntent`, because that function is also
+reached from `beginFreshWorker` with an intent minted moments earlier, where a mismatch is a boundary
+defect and must stay a hard refusal.
+
+### Deliverables
+
+- **✅ The refusal names what it refused.** `EngineSecretWorkerStoredRequestBindingMismatch` was
+  payload-free and produced at **five** distinct sites — a stale durable checkpoint, a stale durable
+  intent, a boundary that minted an intent for the wrong invocation, a boundary that created a
+  workload for a different intent, and the authoritative reconcile path — all reaching the operator as
+  one word. It now carries a `SecretWorkerBindingSite` and the list of fields that disagreed, rendered
+  as `StoredRequestBindingMismatch/stored-request[fence-generation,owner-nonce,operation-deadline]`.
+  **Field labels only, never values**, and this needed no new rule: Sprint `2.49` already established
+  that `requireCreateEqual` renders neither side of a comparison, so these reasons are payload-free by
+  construction. **This is the fifth instance of the collapse Sprints `2.46`–`2.49` each closed one
+  layer up**, and the cost is not hypothetical — it is the wrong field count two sections above.
+- **✅ The completion state decoded** rather than assumed, and the arm named from it.
+- **✅ The decision**, taken on that evidence and bounded three ways above.
+- **✅ The bound stated and kept**, not argued across: a receipted checkpoint from a superseded
+  generation is still refused, with a case covering every cleanup stage from receipt capture onward.
+- **✅ A regression case that fails before the fix**, and it was run against the frozen prior
+  behaviour rather than asserted: with the superseded-generation guard disabled the roll case fails
+  with exactly `StoredRequestBindingMismatch StoredRequestBinding [BindingFenceGeneration]`, while
+  both negative controls — a newer-generation checkpoint and a receipted one — still pass.
+
+### Validation
+
+1. ✅ `prodbox dev check` exit 0; `prodbox test unit` exit 0; `prodbox test integration cli` 57/57;
+   `prodbox test integration env` 57/57.
+2. ✅ The live proof, below.
+
+### The live proof
+
+**Both directions were observed on the operator host, on its own objects, with nothing cleared by
+hand.**
+
+The **pre-fix** refusal reproduced deterministically against the deployed Broker, twice in a row and
+each time behind a fresh fence retirement:
+
+```text
+bootstrap-broker retired expired fence generation 9;  worker-absence receipt 745452d2…
+bootstrap-broker refused /v1/bootstrap/vault/init: EngineSecretWorkerRefused/StoredRequestBindingMismatch
+bootstrap-broker retired expired fence generation 10; worker-absence receipt 02983f95…
+bootstrap-broker refused /v1/bootstrap/vault/init: EngineSecretWorkerRefused/StoredRequestBindingMismatch
+```
+
+After deploying the fix the same command advanced **past** that refusal, and the proof is the durable
+object rather than the absent error. `secret-worker-checkpoint`, stuck since `17:39:44` at store
+version 2 bound to fence generation 7, was rewritten at `23:32` to store version **4**, fence
+generation **13**, a fresh owner nonce and a fresh Pod UID. That is `driveSecretWorker` discarding a
+superseded pre-receipt checkpoint and CAS-rolling it onto a request bound to the fence it holds —
+exactly the arm this sprint widened, and nothing else in the tree writes that object.
+
+**The run did not reach an initialized Vault, and what stopped it is a new and distinct blocker**,
+registered as Sprint `2.51` rather than absorbed here: the worker Pod is created and then never
+starts, because the image reference the Broker pins it to cannot be resolved by the registry. That is
+the fifth defect in this chain and the fourth to become reachable only once the one in front of it was
+fixed.
+
+**Sprint `2.49` recorded why the distinction between the two directions is worth keeping**: a live
+proof is only as strong as the states it actually reached, and `2.47`'s passed while an arm behind it
+was still broken. This sprint's proof covers the arm it changed — the roll — and claims nothing about
+the stages beyond it.
+
+### Remaining Work
+
+None on the code-owned surface.
+
+## Sprint 2.51: A Config Digest And A Manifest Digest Are The Same Sixty-Four Hex Characters ✅
+
+**Status**: ✅ **Done (2026-08-15)** on the code-owned surface, with the changed arm **live-proven**
+and the forward bring-up proof outstanding behind a downstream refusal this sprint does not own —
+see Live-proof. Phase `2` stays ✅ closed; an Active sprint on a closed phase was the `Pending
+Removal` shape Standard I describes, not a reopen (Standard N).
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` (`ControllerImageIdentity`,
+`WorkerImagePullReference`, `mkWorkerImagePullReference`, `renderWorkerImagePullReference`,
+`controllerImageFromResponse`, `kubernetesObserveControllerImage`, `observeControllerImage`,
+`workerPodManifestForIntent`, `workerRequestFromCreateResponse`, `decodeWorkerPod`,
+`WorkerPodDecodeReason`, `renderWorkerPodDecodeReason`, `declaredImagePin`, `resetVaultStorage`,
+`ensureVaultResetPod`, `vaultResetPodManifest`, `validateResetPod`),
+`src/Prodbox/Bootstrap/Broker/ProductionSecretWorkerBoundary.hs`,
+`src/Prodbox/CheckCode.hs` (`checkWorkerImagePullReferenceOwner`,
+`workerImagePullReferenceViolations`), and
+`test/unit/BootstrapBrokerProductionBoundary.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending. This is now the **first** blocker on the bring-up path.
+**Live-proof**: ✅ **the arm this sprint changed is proven on the operator host (2026-08-15)**;
+🧪 the forward bring-up-to-initialized-Vault proof is **pending behind a downstream refusal this
+sprint does not own**, which is the Standard-O split and the distinction Sprint `2.49` insisted on —
+*a live proof is only as strong as the states it actually reached.* On a wiped-and-rebuilt cluster
+the secret-worker Pod is now declared as `…/prodbox-runtime:prodbox-<machine-id>` — the pullable tag
+rather than `@sha256:<config digest>` — it **pulled and ran** instead of sitting in
+`ImagePullBackOff`, and its observed `imageID` is `sha256:82ae5092…`, **identical to the
+controller's**, so the attestation identity this sprint moved to holds on real Pods. The bring-up
+then stops strictly further along, at a refusal with a different cause: the worker exits `1` logging
+`Root initialization journal is not pristine`, against a `.data/` tree the canonical teardown
+preserves by design.
+**Independent Validation**: `imageDigestFromRuntimeId` is pure over a `Text`, and
+`controllerImageDigestFromResponse` is pure over an HTTP status and body, so whichever remedy is
+chosen is pinned by unit cases with no cluster (Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+`documents/engineering/bootstrap_readiness_doctrine.md` if the worker-image attestation contract
+changes; `documents/engineering/local_registry_pipeline.md`, because the defect is a property of the
+local build-and-push pipeline meeting a by-digest pull.
+
+### Objective
+
+With the fence retirable (`2.47`), the Lease creatable (`2.48`), the refusals nameable (`2.49`), and
+the durable checkpoint rollable (`2.50`), the bring-up now creates its secret worker and the Pod never
+starts:
+
+```text
+Vault initialize failed: attest Bootstrap secret worker:
+  "worker Pod does not match any expected closed operation:
+   prepare-initialization -> worker Pod response is invalid; …"
+```
+
+### The cause, measured rather than argued
+
+**The worker Pod is in `ImagePullBackOff`, and the registry names the reason itself.** From the
+Broker namespace's own events:
+
+```text
+Failed to pull image "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:e3c7ab7c…":
+  failed to resolve reference … unexpected status from HEAD request to
+  /v2/prodbox/prodbox-runtime/manifests/sha256:e3c7ab7c…: 500 Internal Server Error
+```
+
+**Three probes against the live registry settle what that digest is**, and the third is the one that
+matters:
+
+| Request | Result |
+|---------|--------|
+| `manifests/prodbox-<machine-id>` (by tag) | **200**, `Docker-Content-Digest: sha256:52d86a90…` |
+| `manifests/sha256:e3c7ab7c…` (the digest the Broker pinned) | **500** |
+| the controller Pod's `status.containerStatuses[].imageID` | `sha256:e3c7ab7c…`, with **no registry prefix** |
+
+So the Broker derives the worker's image reference from the controller Pod's own `imageID` — which on
+this host is the image's **config digest**, the identity containerd reports for an image that is
+present locally rather than pulled from a registry — and constructs `repo@sha256:<config digest>`.
+The registry's manifest digest is `sha256:52d86a90…`. **The two are different objects, and only one of
+them is addressable by a registry pull.**
+
+**The chain is read end to end rather than inferred from the symptom**, which matters because the
+symptom appears four modules away from the cause: `allocateSecretWorkerIntent` calls
+`kubernetesObserveControllerImageDigest`; `controllerImageDigestFromResponse` reads the controller
+Pod's `status.containerStatuses[].imageID` through `imageDigestFromRuntimeId`; `mkSecretWorkerIntent`
+carries the result as `secretWorkerIntentImageDigest`; `workerImageReference` renders
+`<repo>@sha256:<digest>`; and `workerPodManifestForIntent` places it in the Pod with
+`imagePullPolicy: IfNotPresent`. The live Pod's `image` field is exactly the controller's `imageID`,
+which closes the loop.
+
+**The structural reason this was not caught by a type is worth stating, because it is the whole
+sprint.** `imageDigestFromRuntimeId` validates that the value is `sha256:` followed by sixty-four
+lower-hex characters. A config digest and a manifest digest are *both* exactly that. They are
+indistinguishable by syntax, distinguishable only by which endpoint resolves them, so no smart
+constructor over the text can separate them — which is precisely the shape
+[chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) describes: an
+observation has a layer, and this one names the container runtime's layer while being consumed as the
+registry's.
+
+**One probe of this sprint's own was wrong, and recording it is cheaper than repeating it.** The first
+registry probe asked for the tag with only the Docker v2 manifest `Accept` header and got **404**,
+which reads as "the registry lost the image" and would have produced a diagnosis about the push rather
+than the pull. Adding the OCI manifest and index media types to `Accept` returned **200**. The 404 was
+the probe's fault, not the registry's — *a measurement is only as good as the request that made it.*
+
+### The three candidate remedies, one refuted and one favoured on evidence
+
+The remedy is a design decision, not a patch, and the resemblance to a one-line fix is a reason for
+care. The digest pinning exists so the worker is provably the **same image** as the controller that
+attests it; changing what is pinned changes what is proven.
+
+**Option A — resolve the config digest to a manifest digest before pinning — is refuted, and not on
+cost.** It is not implementable: the OCI distribution API offers no reverse index from a config digest
+to the manifest that references it. `GET /v2/<name>/manifests/<config-digest>` is exactly the request
+kubelet already makes and the registry already answers **500**. Nothing the Broker could ask would turn
+one identity into the other. **That is the useful half of this analysis** — the option that reads as
+the obvious correct fix cannot be built at all.
+
+**Option B — pin the controller's own declared image reference — is pullable but proves less.** The
+controller's `spec.containers[].image` is `…/prodbox-runtime:prodbox-<machine-id>`, a *mutable* tag, so
+a worker launched from it is not provably the same bytes as the controller.
+
+**Option C is favoured: keep the observed runtime identity as the attestation, and use the declared
+reference only to tell the kubelet where to look.** The defect's precise shape is that
+`controllerImageDigestFromResponse` already reads the controller's declared reference — it validates
+that reference's repository against the compiled static — and then **discards it**, carrying forward
+only the config digest, which is the one of the two that no registry can resolve. Option C carries
+both: the worker Pod's `image` becomes the controller's declared, pullable reference, while
+attestation continues to require the worker's observed `imageID` to equal the controller's observed
+`imageID`.
+
+**This is stronger than what the spec-level pinning achieved, not a relaxation of it**, and the
+doctrine already says why:
+[bootstrap_readiness_doctrine.md § 0.4](../documents/engineering/bootstrap_readiness_doctrine.md) —
+*external state is observed, not commanded*. A digest in a Pod spec is a **request**; comparing the
+two Pods' runtime identities is an **observation** of what the kubelet actually ran.
+
+**Why it is still sprint-sized rather than a patch**, stated so the next session does not
+re-discover it: `ControllerImageObservation` must carry both identities instead of one, which reaches
+`SecretWorkerIntent`, `workerImageReference`, `workerPodManifestForIntent`, and the
+declared-versus-observed equality inside `decodeWorkerPod` — which must become conditional, because a
+tag reference carries no digest to compare. That last point is the only place where a check is
+genuinely surrendered, and the argument that it costs nothing (the runtime comparison subsumes it)
+belongs in the implementation with a unit case pinning it, not in this paragraph.
+
+### Deliverables
+
+- **The remedy chosen on an argument about what the pinning proves**, not on which change is smallest.
+  Option A is already refuted above and Option C is already favoured; what remains is the
+  implementation and the unit case that makes the surrendered spec-conformance check demonstrably
+  redundant.
+- **The two digests distinguished at the type level or at the boundary that consumes them**, so a
+  config digest can no longer be handed to a registry pull silently.
+- **The decode collapse closed.** `workerRequestFromRunningResponse` and `workerRequestFromSelfResponse`
+  both discard their decoder's reason with `const`, so a Pod that never started and a malformed API
+  response read identically — the **sixth** instance of the shape Sprints `2.46`–`2.50` each closed one
+  layer up, and the one that hid this cause behind four identical candidate reasons. The redaction
+  question is real here and must be answered rather than assumed: an Aeson decode error can quote a
+  value, and the worker Pod's annotations carry a Vault session accessor.
+- **Unit cases** over `imageDigestFromRuntimeId` pinning the distinction, and over the decode arm
+  pinning that a not-yet-started Pod is reported as such.
+
+### Validation
+
+1. `prodbox dev check` exit 0; `prodbox test unit`; `prodbox test integration cli`.
+2. The live proof: a bring-up reaching an initialized Vault on the operator host.
+
+### What the implementation found that the registration could not
+
+**The remedy the registration favoured is right, and the layer it named for carrying it is wrong —
+which one command settled.** The registration said `ControllerImageObservation` must carry both
+identities and that this "reaches `SecretWorkerIntent`". `SecretWorkerIntent` is the **durable**
+type: it is persisted before the POST so a lost create response is recoverable, and its codec is
+`deriving anyclass instance Serialise` — generic, positional, arity-checked. Measured directly
+rather than reasoned about:
+
+```text
+narrow bytes: [132,0,7,97,120,245]
+wide decode of narrow bytes: Left (DeserialiseFailure 1 "Wrong number of fields: expected=5 got=4")
+```
+
+So adding a field makes every already-written checkpoint undecodable. **That failure is not
+recoverable by anything this plan has built**: `decodeStoredEnvelope` returns `BootstrapStoreCorrupt`
+at the envelope, and `recoverStoredWorker` — including Sprint `2.50`'s roll of a superseded
+pre-receipt checkpoint — runs only *after* a successful decode. The registered shape would therefore
+have wedged the operator host permanently, on exactly the surface Sprints `2.47` and `2.50` each
+closed a permanent wedge. **The registration was not wrong to favour Option C; it had simply not
+measured the codec.**
+
+**The correct layer is the one the doctrine argument already implied.** A pull reference is *where
+the kubelet looks*; the runtime digest is *what is proven*. Recording an addressing hint in a durable
+binding would be the same layer confusion one level up. The declared reference is therefore observed
+afresh inside `kubernetesCreateWorkerWorkload`, which is the one place both the fresh path
+(`beginFreshWorker`) and the resumed path (`recoverStoredWorker` → `resumeWorkerIntent`) pass through.
+The durable intent is unchanged, byte for byte.
+
+**That relocation gained a check rather than only surrendering one.** Because the create boundary now
+observes the controller image anyway, it can refuse when the freshly observed runtime digest no longer
+equals the one the intent pinned — a controller redeployed between intent allocation and Pod creation
+is now refused *at the boundary, with its own reason*, instead of failing attestation four stages
+later. No such check existed before.
+
+**And it changes a deadline composition, which is stated rather than absorbed.** The create path
+shares one `workerApiBudgetMicros` deadline across every request it makes, and that count rises from
+at most two to at most three. The budget is deliberately **not** widened: the added request is the
+same in-cluster PodList read `allocateIntent` already performs under the same budget, and exhausting
+the deadline is a fail-closed refusal the outer reconcile retries rather than a wrong result.
+Recording it matters because absolute-deadline composition is a Standard-P surface, and a sprint that
+adds a round trip to a bounded path without saying so is how that ledger goes stale.
+
+### The second live instance, in the same module and never registered
+
+`resetVaultStorage` builds the Vault **pristine-reset** Pod by the identical concatenation, from the
+identical observation. It would have failed the identical way the moment a reset ran. It is fixed
+with the worker Pod rather than left for the next session to rediscover, and `vaultResetImageReference`
+— the duplicate of `workerImageReference` that made two copies of one defect — is deleted rather than
+repaired.
+
+### The surrendered check, discharged as a unit case rather than a paragraph
+
+The registration owed an argument that dropping `declaredDigest == observedDigest` costs nothing. It
+is now three assertions instead: a tag-declared Pod whose runtime identity **matches** the intent
+attests; a tag-declared Pod whose runtime identity **differs** is still refused; and a Pod that *does*
+pin a digest must still agree with the runtime. Two checks are added in exchange — the worker's
+declared reference must name the compiled worker repository (it previously was not checked at all),
+and the digest-pinned arm survives intact.
+
+### The sixth decode collapse, and the redaction question answered by construction
+
+`decodeWorkerPod` returned `Either String` and both host-side decoders discarded it with `const`. It
+now returns a closed `WorkerPodDecodeReason`. **The redaction question was real and is settled
+structurally, not by auditing Aeson**: every payload in the type is a controller-authored literal — a
+field label or an annotation key — and the one reason whose text could quote the body,
+`WorkerPodResponseUnparsable`, deliberately drops the parser's message. A unit case feeds a body
+carrying a distinctive Vault session accessor through three failing arms and asserts the accessor
+appears in neither the rendered reason nor the observation an operator reads.
+
+**One arm of that collapse was a decoder defect, not just a mute one.** `PodWire` required
+`status.containerStatuses`, which Kubernetes omits entirely on a Pod whose container has not started
+— so "not scheduled yet" was reported as *"the response is invalid"*, indistinguishable from
+malformed JSON. It is now `WorkerPodNotStarted`, and an `ImagePullBackOff` Pod — container status
+present, `imageID` empty — is `WorkerPodImageNotResolved`. **Those are the two states this sprint's own
+defect produces**, and neither could be named while it was being diagnosed.
+
+### The boundary is compiled-checked, and its scope is stated rather than assumed
+
+`checkWorkerImagePullReferenceOwner` forbids, in the Broker's modules, a Pod `"image" .=` fed by
+anything but `renderWorkerImagePullReference`, and any image reference assembled by concatenating
+`"@"`. It is scoped to `src/Prodbox/Bootstrap/Broker/` **deliberately**: three live-reachable sites
+outside it still assemble a digest reference, and a check that fails on work no sprint has taken is a
+broken build rather than a guard. Widening it belongs to Sprint `4.83`.
+
+### Remaining Work
+
+None on the code-owned surface.
+
+**The live proof caught this sprint under-implementing its own headline deliverable, which is the
+strongest argument available for taking it.** The decode-collapse work landed at
+`workerAttestationFromResponse` and `workerExitFromResponse` but **not** at
+`workerRequestFromRunningResponse` and `workerRequestFromSelfResponse` — the two functions the
+registration named explicitly. Both still discarded the reason with `const`, and because that arm
+compiles either way, `dev check`, a 3479-case unit suite, and both 57/57 integration suites all
+passed over it. What exposed it was the bring-up printing `worker Pod response is invalid` four
+times with no reason attached — *the exact string the sprint existed to delete*. It is fixed, and the
+lesson is narrower than "test more": **a deliverable phrased as removing a collapse is only verified
+by an observation that the collapsed value is gone**, and no local gate here could make that
+observation.
+
+**The forward proof stops at a refusal this sprint does not own, and the boundary is stated rather
+than blurred.** With the worker Pod pulling and running, the bring-up now fails at the worker's own
+exit: `Root initialization journal is not pristine`, against the `.data/` tree
+`cluster delete` preserves by design. That is a different cause at a later stage, it is not
+`ImagePullBackOff`, and attributing it to this sprint would be the "a live proof is only as strong as
+the states it actually reached" error Sprint `2.49` recorded, run in reverse.
+
+**A search for the same defect elsewhere found three candidates and measured all three away, which
+is worth more than a fourth fix would have been.** `workerImage` in
+`src/Prodbox/ControlPlane/TargetSecretWorkerKubernetes.hs` and the two credential-provisioner Jobs
+all build `repository@<digest>` with `imagePullPolicy: Always`, and all inherit their digest from
+`docker image inspect --format {{.Id}}` in `src/Prodbox/Lib/ChartPlatform.hs`. That reads as the same
+defect and **is not one**: measured on the operator host, `.Id`, `.RepoDigests`, and the registry's
+`Docker-Content-Digest` are all `sha256:52d86a90…`, while Kubernetes' `imageID` is `sha256:e3c7ab7c…`.
+`docker inspect` and the kubelet are **different reporters**, and carrying this sprint's measurement
+across to the other one was the error — caught only because the value was read rather than reasoned
+about, which is the same move that produced this sprint's own diagnosis.
+
+What survives is narrower and is registered as Sprint `4.83`: those three references are pullable
+because this host runs Docker's containerd image store, under which `.Id` happens to be the manifest
+digest, and nothing in the repository declares or asserts that dependency. A separate and genuinely
+independent row records that their observers compare a declared reference against itself and hold no
+runtime-identity attestation at all — the check this sprint added to the Broker.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/bootstrap_readiness_doctrine.md` — ✅ updated by Sprint `2.47`. Fence
+  acquisition semantics changed: a positively-expired predecessor is now retired and taken over
+  rather than refused forever, so the doctrine records the three facts that authorize it, the
+  direction the worker observation is scoped in, and why per-effect fence recheck is what makes the
+  takeover safe. ✅ updated again by Sprints `2.48`/`2.50`: the fence Lease's TTL is a derived value
+  with one owner rather than a coincidence between two modules, an acquisition that cannot establish
+  its Lease releases the fence it just created, and a pre-receipt checkpoint from a strictly
+  superseded fence generation is rolled rather than refused forever.
+- `documents/engineering/local_registry_pipeline.md` — 📋 pending under Sprint `2.51`. The
+  worker-image defect is a property of this pipeline meeting a by-digest pull: an image built and
+  pushed locally is reported by the container runtime under its **config** digest, while a registry
+  can only resolve a **manifest** digest, and the two are the same sixty-four hex characters.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- ✅ Root `README.md` — the `.data/` preservation paragraph names this consequence and its resolution.
+- ✅ `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` — the stale-fence row moved to `Completed` on
+  Sprint `2.47`; the second Lease blocker was registered as its own `Pending Removal` row owned by
+  Sprint `2.48` and moved to `Completed` when that sprint closed, together with the acquisition-path
+  fence-leak row; the durable-checkpoint row moved to `Completed` on Sprint `2.50`.
 
 ## Related Documents
 

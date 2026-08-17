@@ -57,7 +57,11 @@ awsEksSubzoneStackName = "aws-eks-subzone"
 
 awsEksSubzoneStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsEksSubzoneStackResidueStatus repoRoot =
-  LiveResidue.perRunAwsEksSubzone <$> LiveResidue.queryPerRunResidueStatuses repoRoot
+  -- Sprint 4.81: this registry adapter answers a status-shaped question, so it
+  -- projects the observation's status. The layer is not discarded silently --
+  -- the cascade path consumes the observation itself.
+  ResidueStatus.residueObservationStatus . LiveResidue.perRunAwsEksSubzone
+    <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 data AwsEksSubzoneStackSnapshot = AwsEksSubzoneStackSnapshot
   { subzoneSnapshotStackName :: String

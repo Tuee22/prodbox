@@ -1,0 +1,37 @@
+{{- /* Exact-name, GET-only observation for Broker and its bootstrap caller. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootstrap-broker-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["bootstrap-broker"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: [{{ .Values.cleanupCaller.serviceAccountName | quote }}]
+    verbs: ["get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    resourceNames: [{{ printf "%s-self-tokenrequest" .Values.cleanupCaller.serviceAccountName | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootstrap-broker-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bootstrap-broker-recovery-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ required "recoveryObserver.serviceAccountName is required" .Values.recoveryObserver.serviceAccountName | quote }}
+    namespace: {{ required "recoveryObserver.serviceAccountNamespace is required" .Values.recoveryObserver.serviceAccountNamespace | quote }}

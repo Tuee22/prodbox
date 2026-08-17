@@ -2331,9 +2331,9 @@ checkPulumiResidueBeforeTeardown repoRoot = do
   pure
     ( residueGateRefusalList
         ( pairPerRunResidue
-            (perRunAwsEksTest perRun)
-            (perRunAwsEksSubzone perRun)
-            (perRunAwsTest perRun)
+            (ResidueStatus.residueObservationStatus (perRunAwsEksTest perRun))
+            (ResidueStatus.residueObservationStatus (perRunAwsEksSubzone perRun))
+            (ResidueStatus.residueObservationStatus (perRunAwsTest perRun))
             ++ pairAwsSesResidue ses
         )
     )
@@ -2864,7 +2864,7 @@ parseHostedZoneChoice value = do
 cleanupAwsEksIamOrphans :: FilePath -> Credentials -> IO EksIamOrphanCleanupResult
 cleanupAwsEksIamOrphans repoRoot adminCredentials = do
   perRunResidue <- queryPerRunResidueStatuses repoRoot
-  let eksStatus = perRunAwsEksTest perRunResidue
+  let eksStatus = ResidueStatus.residueObservationStatus (perRunAwsEksTest perRunResidue)
   if not (ResidueStatus.isResidueAbsent eksStatus)
     then
       pure

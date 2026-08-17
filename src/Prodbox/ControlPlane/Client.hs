@@ -180,6 +180,20 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleCleanupRunRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleEksDrainIntentRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleEksDrainReadBackReceiptRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleAwsStackReaderRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleAwsStackCreationBindingRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleOwnershipManifestRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleRecoveryPlaneRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleLocalRke2HostObservationRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   ProviderWorkApplyRoute
     :: ControlPlaneRouteFor 'ProviderWorkerRuntime
   ProviderWorkObserveRoute
@@ -258,6 +272,13 @@ controlPlaneRouteForValue route = case route of
   LifecycleTargetIntentIssueRoute -> LifecycleTargetIntentIssue
   LifecycleRetainedMaterialDeliveryRoute -> LifecycleRetainedMaterialDelivery
   LifecycleCleanupRunRoute -> LifecycleCleanupRun
+  LifecycleEksDrainIntentRoute -> LifecycleEksDrainIntent
+  LifecycleEksDrainReadBackReceiptRoute -> LifecycleEksDrainReadBackReceipt
+  LifecycleAwsStackReaderRoute -> LifecycleAwsStackReader
+  LifecycleAwsStackCreationBindingRoute -> LifecycleAwsStackCreationBinding
+  LifecycleOwnershipManifestRoute -> LifecycleOwnershipManifest
+  LifecycleRecoveryPlaneRoute -> LifecycleRecoveryPlane
+  LifecycleLocalRke2HostObservationRoute -> LifecycleLocalRke2HostObservation
   ProviderWorkApplyRoute -> ProviderWorkApply
   ProviderWorkObserveRoute -> ProviderWorkObserve
   AuthorityBackupCopyRoute -> AuthorityBackupCopy

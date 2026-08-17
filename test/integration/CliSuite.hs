@@ -474,6 +474,101 @@ integrationCliSuite = do
         stdoutText `shouldContain` "INVITE_ASSERTIONS=8"
         stdoutText `shouldContain` "DEPLOYMENT_QUALIFICATION=QualificationPendingLiveEvidence"
 
+    it "runs the exhaustive frozen teardown-recovery oracle without consuming forged residue input" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        parentEnv <- getEnvironment
+        let exactEnvironment =
+              ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
+                : filter
+                  ( \(name, _) ->
+                      name /= "PRODBOX_TEST_RESIDUE_ABSENT"
+                        && name /= "PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE"
+                  )
+                  parentEnv
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "teardown-recovery"])
+              { cwd = Just repoRoot
+              , env = Just exactEnvironment
+              }
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stderrText
+          `shouldContain` "[validation=teardown-recovery substrate=home-local] body exit=ExitSuccess"
+        stdoutText `shouldContain` "TEARDOWN_COUNTEREXAMPLE=TEARDOWN-2026-08-15"
+        stdoutText `shouldContain` "TYPED_FAKE_BOUNDARIES=7"
+        stdoutText `shouldContain` "TYPED_FAKE_REQUESTS=11"
+        stdoutText `shouldContain` "EXTERNAL_STATE_ROWS=25"
+        stdoutText `shouldContain` "DURABLE_TRANSITIONS=8"
+        stdoutText `shouldContain` "INTERRUPTION_SCHEDULE_ROWS=80"
+        stdoutText `shouldContain` "CAUSAL_PROFILE=teardown-causal-v1"
+        stdoutText `shouldContain` "CAUSAL_INDEPENDENTLY_JUSTIFIED=false"
+        stdoutText `shouldContain` "PRODUCTION_PROFILE=teardown-production-v1"
+        stdoutText `shouldContain` "PRODUCTION_INDEPENDENTLY_JUSTIFIED=true"
+        stdoutText `shouldContain` "RETAINED_AUDIT_ARNS=1"
+        stdoutText
+          `shouldContain` "RETAINED_AUDIT_ARN=arn:aws:s3:::prodbox-retained-state-fixture"
+        stdoutText `shouldContain` "EXACT_STACK_UNOBSERVABLES=3"
+        mapM_
+          ( \stackKey ->
+              stdoutText
+                `shouldContain` ( "EXACT_STACK="
+                                    ++ stackKey
+                                    ++ " DISPOSITION=Unobservable FAILURE=exact-stack-authority-not-serving"
+                                )
+          )
+          ["aws-eks", "aws-eks-subzone", "aws-test"]
+        stdoutText `shouldContain` "CHECKPOINT_UNOBSERVABLES=3"
+        stdoutText `shouldContain` "DRAIN_SELECTION=NoDrainSelected"
+        stdoutText `shouldContain` "DESTROY_SELECTION=NoDestroySelected"
+        stdoutText
+          `shouldContain` "AUTHORITY_CALLER=local-cascade-caller DISPOSITION=Unobservable FAILURE=lifecycle-authority-caller-unobservable"
+        stdoutText `shouldContain` "ORIGINAL_FAILURES=1"
+        stdoutText `shouldContain` "CLEANUP_FAILURES=1"
+        stdoutText
+          `shouldContain` "CLEANUP_BOUNDARY=lifecycle-authority DISPOSITION=Unobservable FAILURE=lifecycle-authority-unobservable"
+        stdoutText `shouldContain` "CASCADE_RESULT=CascadeIncomplete"
+
+    it "fails against the committed teardown-recovery mutation fixture" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        parentEnv <- getEnvironment
+        let mutatedEnvironment =
+              ("PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE", "mutated")
+                : filter
+                  ((/= "PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE") . fst)
+                  parentEnv
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "teardown-recovery"])
+              { cwd = Just repoRoot
+              , env = Just mutatedEnvironment
+              }
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stdoutText `shouldContain` "Validation: teardown-recovery (substrate=home-local)"
+        stdoutText `shouldNotContain` "RETAINED_AUDIT_ARNS="
+        stderrText
+          `shouldContain` "TeardownExternalStateDispositionMismatch ExternalAwsUnobservable"
+
+    it "exposes the exact teardown-recovery integration command in help" $ do
+      binary <- resolveBinaryPath
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "teardown-recovery", "--help"])
+          ""
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText
+        `shouldContain` "Run the frozen exact-keyed teardown recovery counterexample"
+
     it "Sprint 5.32: the frozen counterexample fails against the committed mutation fixture" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         -- The acceptance criterion. Until Sprint 5.32,
@@ -811,15 +906,10 @@ integrationCliSuite = do
                 | path <- initialChartStateFiles
                 , take 13 path == "kubectl-apply"
                 ]
-            -- The second reconcile models the fully-deployed steady state, so
-            -- ALL THREE releases of the `vscode` chart root must appear in the
-            -- helm list — including `keycloak-postgres`. Under the deploy-missing
-            -- reconcile (`chartReleasesToDeploy`), omitting any release marks it
-            -- as needing (re)deployment; leaving `keycloak-postgres` out would
-            -- drive a redundant Patroni redeploy instead of the intended
-            -- idempotent no-op. (The partial-rollback heal — deploy only the
-            -- missing release — is covered by the `chartReleasesToDeploy` unit
-            -- test.)
+            -- The second reconcile models the fully-deployed steady state.
+            -- Sprint 3.38 deliberately converges all three releases again;
+            -- Helm's three-way merge, rather than a presence filter, owns the
+            -- idempotent no-change decision.
             alreadyDeployedEnvVars =
               ( "PRODBOX_FAKE_HELM_LIST_JSON"
               , "[{\"name\":\"keycloak-postgres\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
@@ -846,7 +936,10 @@ integrationCliSuite = do
         secondDeployStdout `shouldContain` "ROOT_CHART=vscode"
 
         upgradeRecordAfterSecondDeploy <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
-        upgradeRecordAfterSecondDeploy `shouldBe` upgradeRecord
+        upgradeRecordAfterSecondDeploy
+          `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|keycloak-postgres"
+        upgradeRecordAfterSecondDeploy
+          `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|vscode"
 
         chartStateFilesAfterSecondDeploy <- listDirectory (tmpDir </> "fake-chart-state")
         length
@@ -854,7 +947,7 @@ integrationCliSuite = do
           | path <- chartStateFilesAfterSecondDeploy
           , take 13 path == "kubectl-apply"
           ]
-          `shouldBe` initialApplyTargetCount
+          `shouldBe` (initialApplyTargetCount + 5)
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           runInstalledWithAuthorityEnvironment
@@ -1201,7 +1294,8 @@ integrationCliSuite = do
         -- NO `docker login` runs at all — the registry:2 NodePort is anonymous, so
         -- pushes carry no credential; public pulls use the host docker.io login.
         dockerRecord `shouldNotContain` "login|127.0.0.1:30080"
-        dockerRecord `shouldNotContain` "buildx|"
+        dockerRecord
+          `shouldContain` "buildx|imagetools|inspect|--raw|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
         dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
         dockerRecord `shouldContain` "pull|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
@@ -3094,6 +3188,7 @@ fakeKubectlScript =
     , "          printf '3\\n'"
     , "        fi"
     , "      else"
+    , "        : > \"$record_dir/patroni-ready.count\""
     , "        printf '3\\n'"
     , "      fi"
     , "    else"
@@ -3826,7 +3921,9 @@ fakeRke2KubectlScript =
     , "        fi"
     , "        ;;"
     , "      deployment)"
-    , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+    , "        if [[ \"$*\" == *'jsonpath={.metadata.generation}'* ]]; then"
+    , "          printf '1:1:1:1'"
+    , "        elif [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
     , "          printf 'True'"
     , "        fi"
     , "        ;;"
@@ -4050,6 +4147,13 @@ fakeRke2DockerScript =
     , "  image)"
     , "    if [[ \"${2:-}\" == 'inspect' ]]; then"
     , "      printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+    , "      exit 0"
+    , "    fi"
+    , "    exit 1"
+    , "    ;;"
+    , "  buildx)"
+    , "    if [[ \"${2:-}\" == 'imagetools' && \"${3:-}\" == 'inspect' && \"${4:-}\" == '--raw' ]]; then"
+    , "      printf '{\"config\":{\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}\\n'"
     , "      exit 0"
     , "    fi"
     , "    exit 1"

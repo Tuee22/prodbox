@@ -21,7 +21,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
   )
-import Prodbox.Test.CleanupRun
+import Prodbox.Lifecycle.CleanupRun
   ( CleanupNodeOutcome
   , CleanupNodePlan
   , CleanupOwnerId
@@ -30,7 +30,7 @@ import Prodbox.Test.CleanupRun
   , mkCleanupRunId
   , newCleanupRun
   )
-import Prodbox.Test.CleanupRunRunner
+import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverError
   , CleanupRunDriverResult
   , recoverNonterminalCleanupRuns

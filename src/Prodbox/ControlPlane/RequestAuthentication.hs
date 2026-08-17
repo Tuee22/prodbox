@@ -909,6 +909,13 @@ routeCode route = case route of
   LifecycleRetainedMaterialDelivery -> 45
   TargetRetainedMaterialRewrap -> 46
   LifecycleCleanupRun -> 50
+  LifecycleEksDrainIntent -> 51
+  LifecycleEksDrainReadBackReceipt -> 52
+  LifecycleAwsStackReader -> 53
+  LifecycleAwsStackCreationBinding -> 54
+  LifecycleOwnershipManifest -> 55
+  LifecycleRecoveryPlane -> 56
+  LifecycleLocalRke2HostObservation -> 57
   LifecycleFederationRegister -> 47
   LifecycleAwsAdminProvisioner -> 48
   LifecycleAuthorityBackupExport -> 49
@@ -977,4 +984,11 @@ routeFromCode code = case code of
   48 -> Just LifecycleAwsAdminProvisioner
   49 -> Just LifecycleAuthorityBackupExport
   50 -> Just LifecycleCleanupRun
+  51 -> Just LifecycleEksDrainIntent
+  52 -> Just LifecycleEksDrainReadBackReceipt
+  53 -> Just LifecycleAwsStackReader
+  54 -> Just LifecycleAwsStackCreationBinding
+  55 -> Just LifecycleOwnershipManifest
+  56 -> Just LifecycleRecoveryPlane
+  57 -> Just LifecycleLocalRke2HostObservation
   _ -> Nothing

@@ -23,7 +23,11 @@ module Prodbox.CLI.Rke2
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
   , CascadePhaseOutcome (..)
+  , independentPhase
+  , derivedPhase
+  , renderFailedCascadePhases
   , DeleteMode (..)
+  , CascadeSubstrateDecision (..)
   , aggregateCascadeExit
   , cascadeOrderNarration
   , inferCascadeSubstrate
@@ -50,6 +54,7 @@ module Prodbox.CLI.Rke2
   , classifyRegistryStorageEdgeProbe
   , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
+  , classifyKubernetesReadiness
   , classifyGatewayFullModeProbe
   , gatewayDaemonWorkloadRefs
   , gatewayNamespace
@@ -194,6 +199,11 @@ import Prodbox.Config.ComponentGraph
   , componentIdText
   , componentReconcileOrder
   , lookupComponentNode
+  )
+import Prodbox.Config.LocalRetainedRoot
+  ( reconcileAuthorityBoundRetainedRootMarker
+  , renderLocalRetainedRootError
+  , renderRetainedRootMarkerReconcileOutcome
   )
 import Prodbox.Config.Tier0
   ( ensureBasicsFloor
@@ -2096,7 +2106,13 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
         Left detail -> failWith detail
         Right outcome -> do
           writeOutputLine (renderSeedInForceOutcome outcome)
-          pure ExitSuccess
+          markerResult <- reconcileAuthorityBoundRetainedRootMarker repoRoot
+          case markerResult of
+            Left err -> failWith (Text.unpack (renderLocalRetainedRootError err))
+            Right markerOutcome -> do
+              writeOutputLine
+                (Text.unpack (renderRetainedRootMarkerReconcileOutcome markerOutcome))
+              pure ExitSuccess
     StepFederatedVaultLifecycle -> wrongPhaseStep PhaseTransition step
     StepLoadInForceSettings -> wrongPhaseStep PhaseTransition step
     StepRke2ResourceGuardrails -> wrongPhaseStep PhaseTransition step
@@ -2433,7 +2449,14 @@ nativeComponentReadinessTarget repoRoot settings component =
     ComponentChartWebsocket -> unsupportedNativeReadiness component
     ComponentChartGateway -> unsupportedNativeReadiness component
     ComponentChartBootstrapBroker ->
-      deploymentRolloutTarget component "bootstrap-broker" "bootstrap-broker"
+      Right
+        ( ResourceExistsTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [DeploymentRevisionObserved "bootstrap-broker" "bootstrap-broker"]
+            )
+        )
     ComponentChartLifecycleAuthority ->
       Right
         ( RolloutCompleteTarget
@@ -2492,6 +2515,7 @@ observeRke2ServiceActiveOnce repoRoot = do
 
 data KubernetesReadinessCheck
   = DeploymentAvailable String String
+  | DeploymentRevisionObserved String String
   | StatefulSetReady String String
   | DaemonSetReady String String
   | CrdEstablished String
@@ -2535,6 +2559,12 @@ kubernetesReadinessArguments check =
         namespace
         name
         "jsonpath={.status.conditions[?(@.type==\"Available\")].status}"
+    DeploymentRevisionObserved namespace name ->
+      namespacedGetArguments
+        "deployment"
+        namespace
+        name
+        "jsonpath={.metadata.generation}:{.status.observedGeneration}:{.spec.replicas}:{.status.updatedReplicas}"
     StatefulSetReady namespace name ->
       namespacedGetArguments
         "statefulset"
@@ -2573,6 +2603,7 @@ classifyKubernetesReadiness
 classifyKubernetesReadiness check raw =
   case check of
     DeploymentAvailable _ _ -> conditionResult
+    DeploymentRevisionObserved _ _ -> deploymentRevisionResult
     CrdEstablished _ -> conditionResult
     StatefulSetReady _ _ -> replicaResult
     DaemonSetReady _ _ -> replicaResult
@@ -2584,6 +2615,15 @@ classifyKubernetesReadiness check raw =
     case mapM readMaybe (splitOnColon raw) :: Maybe [Int] of
       Just [desired, ready, updated]
         | desired > 0 && ready >= desired && updated >= desired -> Right ReadinessProbeReady
+      _ -> Right (pendingResult raw)
+  deploymentRevisionResult =
+    case mapM readMaybe (splitOnColon raw) :: Maybe [Int] of
+      Just [generation, observedGeneration, desired, updated]
+        | generation > 0
+            && observedGeneration == generation
+            && desired > 0
+            && updated >= desired ->
+            Right ReadinessProbeReady
       _ -> Right (pendingResult raw)
   pendingResult detail =
     ReadinessProbePending
@@ -2798,6 +2838,11 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       (Left "The runtime image has no immutable Docker image digest.")
       Right
       (resolvedCustomImageRolloutToken image)
+  runtimeDigest <-
+    maybe
+      (Left "The runtime image manifest has no config digest.")
+      Right
+      (resolvedCustomImageRuntimeDigest image)
   selectedAgent <-
     either
       (Left . Text.unpack)
@@ -2825,7 +2870,7 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       parameters =
         GenesisAwsAdminIntentParameters
           { genesisIntentIamParameters = iamParameters
-          , genesisIntentImageDigest = Text.pack rollout
+          , genesisIntentImageDigest = Text.pack runtimeDigest
           , genesisIntentAuthorityScope = basicsClusterId basics
           , genesisIntentAuthorityEndpoint =
               -- Sprint 3.35: the port is the compiled owner. The host form is
@@ -2843,7 +2888,9 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
       kubernetes =
         productionAwsAdminKubernetesBoundary
           connection
-          (Text.pack (resolvedCustomImageRepository image))
+          ( Text.pack
+              (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
+          )
           resources
           heartbeat
   Right (coordinate, parameters, kubernetes)
@@ -3103,8 +3150,54 @@ cascadeOrderNarration =
 data CascadePhaseOutcome = CascadePhaseOutcome
   { cascadePhaseName :: String
   , cascadePhaseExit :: ExitCode
+  , cascadePhaseDerivedFrom :: Maybe String
+  -- ^ Sprint 4.82: the phase whose failure caused this one, when it did.
+  --
+  -- One unobservable authority used to produce two failed phases that read as
+  -- peers: @Unresolved phase(s): confirm-MinIO, drain@ presents a single cause
+  -- as two independent problems, and an operator cannot tell from that line
+  -- whether they have one fault or two. Class-D distinguishability,
+  -- @chaos_hardening_doctrine.md § 21@ — the outcome type could not express
+  -- @failed because an earlier phase could not be observed@, so it did not.
   }
   deriving (Eq, Show)
+
+-- | A phase that failed on its own merits.
+independentPhase :: String -> ExitCode -> CascadePhaseOutcome
+independentPhase name exit =
+  CascadePhaseOutcome
+    { cascadePhaseName = name
+    , cascadePhaseExit = exit
+    , cascadePhaseDerivedFrom = Nothing
+    }
+
+-- | A phase whose failure is downstream of another phase's. The edge is only
+-- recorded when this phase actually failed AND the named phase failed; a
+-- succeeding phase is never attributed to anything.
+derivedPhase :: String -> ExitCode -> String -> [CascadePhaseOutcome] -> CascadePhaseOutcome
+derivedPhase name exit cause earlier =
+  CascadePhaseOutcome
+    { cascadePhaseName = name
+    , cascadePhaseExit = exit
+    , cascadePhaseDerivedFrom =
+        if exit /= ExitSuccess && any causeFailed earlier then Just cause else Nothing
+    }
+ where
+  causeFailed outcome =
+    cascadePhaseName outcome == cause && cascadePhaseExit outcome /= ExitSuccess
+
+-- | Sprint 4.82: render the failed-phase list so a derived failure is not
+-- narrated as an independent one.
+renderFailedCascadePhases :: [CascadePhaseOutcome] -> String
+renderFailedCascadePhases outcomes =
+  intercalate
+    ", "
+    [ case cascadePhaseDerivedFrom outcome of
+        Nothing -> cascadePhaseName outcome
+        Just cause -> cascadePhaseName outcome ++ " (downstream of " ++ cause ++ ")"
+    | outcome <- outcomes
+    , cascadePhaseExit outcome /= ExitSuccess
+    ]
 
 -- | Pure: the cascade's aggregate verdict over its recorded phases.
 -- Exposed so a unit case can pin "one failed phase fails the run" without
@@ -3125,30 +3218,73 @@ runNativeDeleteCascade repoRoot = do
   -- encrypted checkpoints through the sole in-cluster Lifecycle Authority
   -- repository. No alternate Gateway or host object-store transport exists.
   perRun <- queryPerRunResidueStatuses repoRoot
-  let eksStatus = perRunAwsEksTest perRun
-      subzoneStatus = perRunAwsEksSubzone perRun
-      testStatus = perRunAwsTest perRun
-      -- Sprint 4.21: pair the per-run managed resources with their
-      -- already-batched statuses; `reconcileAbsent` destroys the present
-      -- ones (canonical order) using the same PulumiCommands as before.
-      perRunPairs = ResourceRegistry.pairPerRunResidue eksStatus subzoneStatus testStatus
+  -- Sprint 4.81: the observation carries the authority that answered; the
+  -- status is projected only where a status-shaped consumer needs it, so the
+  -- layer survives to the narration instead of being erased at the first use.
+  let eksObservation = perRunAwsEksTest perRun
+      subzoneObservation = perRunAwsEksSubzone perRun
+      testObservation = perRunAwsTest perRun
+  -- When the retained checkpoint store cannot answer, the cluster-wide AWS
+  -- tag sweep is still useful terminal audit evidence. It is not keyed by
+  -- stack, however, so it must never refine any of these exact observations.
+  awsAnswer <-
+    if perRunNeedsAwsLayer [eksObservation, subzoneObservation, testObservation]
+      then queryAwsLayerForPerRun repoRoot
+      else
+        pure
+          ( ResidueStatus.AwsLayerNotConsulted
+              "the retained checkpoint store answered for every per-run stack"
+          )
+  let eksResolution = ResidueStatus.resolveResidueAcrossLayers eksObservation awsAnswer
+      subzoneResolution = ResidueStatus.resolveResidueAcrossLayers subzoneObservation awsAnswer
+      testResolution = ResidueStatus.resolveResidueAcrossLayers testObservation awsAnswer
+      resolutions = [eksResolution, subzoneResolution, testResolution]
+      exactEks = ResidueStatus.residueObservationStatus eksObservation
+      exactSubzone = ResidueStatus.residueObservationStatus subzoneObservation
+      exactTest = ResidueStatus.residueObservationStatus testObservation
       liveSummary =
         intercalate
           ", "
-          ( [ "aws-eks=" ++ ResidueStatus.renderResidueStatus eksStatus
-            , "aws-eks-subzone=" ++ ResidueStatus.renderResidueStatus subzoneStatus
-            , "aws-test=" ++ ResidueStatus.renderResidueStatus testStatus
-            ]
+          ( zipWith
+              (\name resolution -> name ++ "=" ++ ResidueStatus.renderResidueResolution resolution)
+              ["aws-eks", "aws-eks-subzone", "aws-test"]
+              resolutions
           )
   writeOutputLine ("Per-run residue status: " ++ liveSummary)
-  -- Step 2: K8s drain. Runs before per-run destroys so in-cluster
-  -- controllers (AWS LBC, EBS CSI) release their AWS-side ENIs / ALBs /
-  -- EBS volumes while still alive. Substrate is inferred from per-run
-  -- residue observation (Sprint 4.17.b, corrected by Sprint 4.76): any
-  -- per-run stack not positively observed absent means the EKS cluster
-  -- may be in scope, so the drain must target the substrate's own
-  -- kubeconfig instead of the local RKE2 cluster's.
-  let cascadeSubstrate = inferCascadeSubstrate eksStatus subzoneStatus testStatus
+  case inferCascadeSubstrate exactEks exactSubzone exactTest of
+    CascadeSubstrateUnobservable stackNames -> do
+      writeDiagnosticLine
+        ( "cluster delete --cascade refused before drain, destroy, reaper, or uninstall: "
+            ++ "the exact Lifecycle Authority observation is unobservable for "
+            ++ intercalate ", " stackNames
+            ++ ". The cluster-wide AWS result above is audit-only; it cannot "
+            ++ "identify a Pulumi stack, select the EKS drain target, or authorize "
+            ++ "a destructive action. Restore the retained local RKE2 Lifecycle "
+            ++ "Authority and retry."
+        )
+      pure (ExitFailure 1)
+    CascadeSubstrateKnown cascadeSubstrate ->
+      runAuthorizedDeleteCascade
+        repoRoot
+        cascadeSubstrate
+        exactEks
+        exactSubzone
+        exactTest
+
+-- | Run mutating cascade phases only after every exact per-stack observation
+-- is known. Keeping this boundary separate prevents global audit evidence from
+-- being accidentally threaded into drain selection or destroy authorization.
+runAuthorizedDeleteCascade
+  :: FilePath
+  -> Substrate
+  -> ResidueStatus.ResidueStatus
+  -> ResidueStatus.ResidueStatus
+  -> ResidueStatus.ResidueStatus
+  -> IO ExitCode
+runAuthorizedDeleteCascade repoRoot cascadeSubstrate eksStatus subzoneStatus testStatus = do
+  let perRunPairs = ResourceRegistry.pairPerRunResidue eksStatus subzoneStatus testStatus
+  -- Step 2: drain before per-run destroys so in-cluster controllers can
+  -- release AWS-side resources while they are still serving.
   drainExit <- runCascadeDrainPhase repoRoot cascadeSubstrate
   -- Step 3: per-run Pulumi destroys. Runs even when the drain failed:
   -- doctrine § 5c makes drain→destroy an *attempt* edge, so last-resort
@@ -3176,20 +3312,24 @@ runNativeDeleteCascade repoRoot = do
   -- lifecycle actually had AWS state in scope.
   sweepExit <- runCascadePostflightTagSweep repoRoot cascadeSubstrate
   let phases =
-        [ CascadePhaseOutcome "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
-        , CascadePhaseOutcome "drain" drainExit
-        , CascadePhaseOutcome "per-run destroys" (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
-        , CascadePhaseOutcome "test-EBS reaper" reaperExit
-        , CascadePhaseOutcome "uninstall" uninstallExit
-        , CascadePhaseOutcome "sweep" sweepExit
-        ]
+        confirmPhase
+          : derivedPhase "drain" drainExit "confirm-MinIO" [confirmPhase]
+          : [ independentPhase
+                "per-run destroys"
+                (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
+            , independentPhase "test-EBS reaper" reaperExit
+            , independentPhase "uninstall" uninstallExit
+            , independentPhase "sweep" sweepExit
+            ]
+      confirmPhase =
+        independentPhase "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
       aggregate = aggregateCascadeExit phases
   case failedCascadePhases phases of
     [] -> writeOutputLine "cluster delete --cascade: every phase reported success."
-    failures ->
+    _ ->
       writeDiagnosticLine
         ( "cluster delete --cascade did NOT complete cleanly. Unresolved phase(s): "
-            ++ intercalate ", " failures
+            ++ renderFailedCascadePhases phases
             ++ ". Every phase above still ran; the aggregate reports failure because "
             ++ "at least one of them could not confirm the outcome it is responsible for."
         )
@@ -3210,31 +3350,37 @@ perRunResidueObservationExit outcome
 -- 'resourcesToDestroy', and the destroy dispatch into
 -- 'Prodbox.Lifecycle.ResourceRegistry.reconcileAbsent'.
 
--- | Sprint 4.17.b: derive the cascade's substrate from per-run residue
--- observation. Any per-run AWS stack that was **not positively observed
--- absent** means the AWS substrate may be in scope (the EKS cluster may
--- be alive and the substrate-platform install's controllers may have
--- created AWS-side ENIs / ALBs / EBS volumes that the drain phase must
--- release). The home substrate is the fallback only when every per-run
--- stack was observed absent.
---
--- Sprint 4.76 corrected the predicate. It tested 'isResiduePresent', so
--- an all-@ResidueUnreachable@ input — the exact case where the backend
--- could not be read — inferred @SubstrateHomeLocal@, which is precisely
--- the branch on which a skipped drain is treated as success. Reading
--- "I could not observe the AWS stacks" as "there are no AWS stacks"
--- selected the more permissive branch on the weaker evidence.
+-- | A drain target can be selected only from exact per-stack observations.
+-- Unknown does not mean local and it does not mean AWS: either choice could
+-- drain the wrong control plane, so it is a refusal before mutation.
+data CascadeSubstrateDecision
+  = CascadeSubstrateKnown !Substrate
+  | CascadeSubstrateUnobservable ![String]
+  deriving (Eq, Show)
+
 inferCascadeSubstrate
   :: ResidueStatus.ResidueStatus
   -> ResidueStatus.ResidueStatus
   -> ResidueStatus.ResidueStatus
-  -> Substrate
+  -> CascadeSubstrateDecision
 inferCascadeSubstrate eksStatus subzoneStatus testStatus =
-  if all
-    ResidueStatus.isResidueAbsent
-    [eksStatus, subzoneStatus, testStatus]
-    then SubstrateHomeLocal
-    else SubstrateAws
+  case [ name
+       | (name, status) <- namedStatuses
+       , ResidueStatus.isResidueUnreachable status
+       ] of
+    [] ->
+      CascadeSubstrateKnown
+        ( if all (ResidueStatus.isResidueAbsent . snd) namedStatuses
+            then SubstrateHomeLocal
+            else SubstrateAws
+        )
+    unobservable -> CascadeSubstrateUnobservable unobservable
+ where
+  namedStatuses =
+    [ ("aws-eks", eksStatus)
+    , ("aws-eks-subzone", subzoneStatus)
+    , ("aws-test", testStatus)
+    ]
 
 -- | Sprint 4.17.a/4.17.b helper: the K8s drain phase extracted from the
 -- prior single-block cascade so step 2 of the canonical order is
@@ -3246,7 +3392,7 @@ inferCascadeSubstrate eksStatus subzoneStatus testStatus =
 -- phase emits @DrainSkipped@ and the cascade continues (no in-cluster
 -- controllers means nothing to drain).
 --
--- For @SubstrateAws@: sets @KUBECONFIG@ to the scoped Provider-issued
+-- For @SubstrateAws@: binds kubectl explicitly to the scoped Provider-issued
 -- endpoint/CA configuration whose bearer is served through a FIFO. Treats
 -- @DrainSkipped@ as a hard failure because the EKS cluster is the
 -- source of the AWS resources the per-run destroys will try to delete
@@ -3293,13 +3439,10 @@ runCascadeDrainPhase repoRoot substrate = do
 -- exit code.
 runCascadeDrainResult :: FilePath -> Substrate -> IO K8sDrain.DrainResult
 runCascadeDrainResult repoRoot substrate = do
-  let drainWith drainEnvVars = do
-        let drainEnv =
-              K8sDrain.K8sDrainEnv
-                { K8sDrain.drainEnvironment = drainEnvVars
-                , K8sDrain.drainWorkingDirectory = Just repoRoot
-                }
-        K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
+  let drainWith preparedEnvironment = case preparedEnvironment of
+        Left detail -> pure (K8sDrain.DrainUnobservable detail)
+        Right drainEnv ->
+          K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
   case substrate of
     SubstrateHomeLocal -> do
       drainEnvVars <- buildDrainEnvironment repoRoot SubstrateHomeLocal Nothing
@@ -3323,34 +3466,34 @@ runCascadeDrainResult repoRoot substrate = do
       case bracketResult of
         Left exc ->
           pure
-            ( K8sDrain.DrainFailed
+            ( K8sDrain.DrainUnobservable
                 ( "AWS kubeconfig materialization failed: "
                     ++ show exc
                 )
             )
         Right result -> pure result
 
--- | Sprint 4.17.b helper, re-shaped for Sprint 4.18 fifth chunk: build
--- the env-var list passed to 'K8sDrain.K8sDrainEnv' per substrate. For
--- home-local, prepends @KUBECONFIG=\/etc\/rancher\/rke2\/rke2.yaml@ when
--- that file exists. For AWS, the caller materializes the kubeconfig via
--- 'withEksKubeconfig' and threads the resulting scoped temp path in via
--- the third argument. @KUBECONFIG@ + @AWS_*@ are projected from
--- @settings.aws@.
+-- | Prepare an exact drain target. Both substrates fail closed when their
+-- kubeconfig is unavailable. 'K8sDrain.prepareK8sDrainEnv' removes ambient
+-- @KUBECONFIG@ entries and binds the selected path exactly once via kubectl's
+-- explicit @--kubeconfig@ option.
 buildDrainEnvironment
-  :: FilePath -> Substrate -> Maybe FilePath -> IO [(String, String)]
-buildDrainEnvironment _repoRoot substrate maybeAwsKubeconfig = do
+  :: FilePath
+  -> Substrate
+  -> Maybe FilePath
+  -> IO (Either String K8sDrain.K8sDrainEnv)
+buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
   parentEnv <- getEnvironment
   case (substrate, maybeAwsKubeconfig) of
-    (SubstrateHomeLocal, _) -> do
-      rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
-      pure $
-        if rke2KubeconfigPresent
-          then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
-          else parentEnv
-    (SubstrateAws, Nothing) -> pure parentEnv
+    (SubstrateHomeLocal, _) ->
+      K8sDrain.prepareK8sDrainEnv rke2KubeconfigPath parentEnv (Just repoRoot)
+    (SubstrateAws, Nothing) ->
+      pure
+        ( Left
+            "AWS drain kubeconfig was not materialized. Refusing to use ambient KUBECONFIG or kubectl's default context."
+        )
     (SubstrateAws, Just kubeconfigPath) ->
-      pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
+      K8sDrain.prepareK8sDrainEnv kubeconfigPath parentEnv (Just repoRoot)
 
 -- | Sprint 4.76: the reaper reports an exit code instead of unit, so a
 -- failed query or delete reaches the cascade's phase fold. A missing
@@ -3408,18 +3551,18 @@ runCascadeTestEbsReaper repoRoot = do
 -- every host that has never provisioned an AWS substrate — the recommended
 -- wipe-and-rebuild path in @CLAUDE.md@.
 --
--- The question is answerable without adding a requirement, because the cascade
--- already computes the fact that decides it. 'inferCascadeSubstrate' (Sprint
--- @4.17.b@, corrected by @4.76@) yields 'SubstrateAws' when any per-run stack
--- was __not positively observed absent__, and 'SubstrateHomeLocal' only when
--- every one of them was. So:
+-- The cascade already computes the fact that decides it.
+-- 'inferCascadeSubstrate' refuses before reaching this function when an exact
+-- stack observation is unobservable; for fully-observed inputs it yields
+-- 'SubstrateAws' when a stack is present and 'SubstrateHomeLocal' when all are
+-- absent. So:
 --
 --   * 'SubstrateHomeLocal' — every per-run AWS stack was observed absent, so
 --     this cluster lifecycle created no AWS resources for the sweep to
 --     backstop. A skip confirms nothing and needs to confirm nothing.
---   * 'SubstrateAws' — AWS state was present or unobservable, the sweep is
---     exactly the § 6 backstop for it, and "I have no credential to query
---     with" is a case of cannot-confirm. That is a hard failure.
+--   * 'SubstrateAws' — AWS state was observed present, the sweep is exactly
+--     the § 6 backstop for it, and "I have no credential to query with" is a
+--     case of cannot-confirm. That is a hard failure.
 --
 -- The AWS-free host keeps exiting 0, and the host that actually had AWS state
 -- can no longer pass a cascade whose backstop never ran.
@@ -3427,6 +3570,45 @@ cascadeSweepCredentialAbsentExit :: Substrate -> ExitCode
 cascadeSweepCredentialAbsentExit substrate = case substrate of
   SubstrateHomeLocal -> ExitSuccess
   SubstrateAws -> ExitFailure 1
+
+-- | Run the cluster-wide AWS tag query as terminal audit evidence when an
+-- exact checkpoint observation is unavailable. This answer is never threaded
+-- into stack status, target selection, or mutation authorization: tags do not
+-- attribute a resource to one exact Pulumi stack. A missing credential is
+-- 'AwsLayerNotConsulted', never an absence.
+queryAwsLayerForPerRun :: FilePath -> IO ResidueStatus.AwsLayerAnswer
+queryAwsLayerForPerRun repoRoot = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left detail ->
+      pure
+        ( ResidueStatus.AwsLayerNotConsulted
+            ("no ephemeral admin AWS credential available: " ++ detail)
+        )
+    Right adminCredentials -> do
+      environment <- adminAwsEnvironment adminCredentials
+      let input =
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = environment
+              , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+              , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+              }
+      discovered <- TagSweep.discoverClusterTaggedAwsResources input
+      pure $ case discovered of
+        Left detail -> ResidueStatus.AwsLayerUnobservable detail
+        Right [] -> ResidueStatus.AwsLayerNoResources
+        Right resources ->
+          ResidueStatus.AwsLayerResourcesPresent
+            (map TagSweep.taggedResourceArn resources)
+
+-- | The global audit is consulted exactly when the exact authority failed to
+-- answer for at least one stack, and not otherwise.
+--
+-- Stated as its own pure predicate so the "we did not need to ask" case is a
+-- decision with a reason rather than an absent branch.
+perRunNeedsAwsLayer :: [ResidueStatus.ResidueObservation] -> Bool
+perRunNeedsAwsLayer =
+  any (ResidueStatus.isResidueUnreachable . ResidueStatus.residueObservationStatus)
 
 runCascadePostflightTagSweep :: FilePath -> Substrate -> IO ExitCode
 runCascadePostflightTagSweep repoRoot cascadeSubstrate = do
@@ -6607,11 +6789,13 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
     (_, Left detail) -> pure (Left detail)
     (_, Right Nothing) -> pure (Left "The runtime image is unavailable for ACME EAB ingress.")
     (Right basics, Right (Just image)) ->
-      case resolvedCustomImageRolloutToken image of
-        Nothing -> pure (Left "The runtime image has no immutable digest for ACME EAB ingress.")
+      case resolvedCustomImageRuntimeDigest image of
+        Nothing -> pure (Left "The runtime image manifest has no config digest for ACME EAB ingress.")
         Just digest -> do
           let operationId = "acme-eab-fixture-" <> basicsClusterId basics
-              repository = Text.pack (resolvedCustomImageRepository image)
+              repository =
+                Text.pack
+                  (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
               currentImageDigest = Text.pack digest
               jobs =
                 kubernetesExternalMaterialJobBoundary

@@ -1,0 +1,46 @@
+{{- /*
+The ordinary-teardown CLI identity lives with bootstrap core, not Gateway or
+any application release.  It can create only a TokenRequest for its own exact
+ServiceAccount, solely for short-lived Vault Kubernetes authentication.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.cleanupCaller.serviceAccountName | quote }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-self-tokenrequest" .Values.cleanupCaller.serviceAccountName | quote }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - serviceaccounts/token
+    resourceNames:
+      - {{ .Values.cleanupCaller.serviceAccountName | quote }}
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-self-tokenrequest" .Values.cleanupCaller.serviceAccountName | quote }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "bootstrap-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-self-tokenrequest" .Values.cleanupCaller.serviceAccountName | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.cleanupCaller.serviceAccountName | quote }}
+    namespace: {{ .Values.global.namespace }}

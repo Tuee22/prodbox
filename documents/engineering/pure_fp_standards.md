@@ -183,19 +183,19 @@ chart release is `ChartLifetime`, and storing retained-or-stronger state through
 error rather than a runtime review finding. The concrete instance indexes the Model-B object
 coordinates and CAS adapters; the retained-custody topology is owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md), and
-implementation is owned by the [Development Plan](../../DEVELOPMENT_PLAN/README.md)
-(Sprint `4.51`).
+source correspondence, migration, and qualification status are owned by the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
-> **Implementation status (2026-07-14, Sprint `4.51` Increment A)**: the phantom index landed on the
-> real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types (`ModelBObjectCoordinate l`,
-> `ModelBCasRequest l value`, `ModelBCasAdapter l m value`) with a `nominal` role and the
+> **Current source correspondence.** The real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types
+> (`ModelBObjectCoordinate l`,
+> `ModelBCasRequest l value`, `ModelBCasAdapter l m value`) carry a `nominal` role and expose the
 > full-name-tagging constructors `mkClusterRetainedCoordinate` / `mkChartLifetimeCoordinate` /
 > `mkCrossClusterDurableCoordinate`. One refinement over the sketch above: a **lease guard is not
 > lifetime-indexed** — a lease is always retained, so `ModelBLeaseGuard`'s coordinate is
 > monomorphically `'ClusterRetained'`, which lets a `'ChartLifetime'` object be guarded by a retained
-> lease under the request's single `l`. The gateway transport is still polymorphic in `l`;
-> retyping it to `'ChartLifetime'`-only and adding the host-direct `'ClusterRetained'` adapter (so
-> the "type error, not review finding" property holds in production) is Increment B.
+> lease under the request's single `l`. The target requires every concrete adapter to expose only
+> the lifetime it honestly provides. Source-to-target migration and qualification status live only
+> in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 ## 3. State, Decisions, and Evolution
 

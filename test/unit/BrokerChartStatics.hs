@@ -23,6 +23,9 @@ import Prodbox.CheckCode
   , controlPlaneChartLints
   , controlPlaneChartStaticViolations
   )
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( bootstrapCoreExternalControlPlaneCallerServiceAccount
+  )
 import Prodbox.Gateway.ChartStatics (gatewayChartStatics, gatewayStaticVaultRole)
 import Prodbox.Vault.RoleId
   ( VaultRoleId (VaultRoleBootstrapBroker, VaultRoleGatewayDaemon)
@@ -42,6 +45,10 @@ brokerChartStaticsSuite =
       brokerStaticVaultRole brokerChartStatics
         `shouldBe` vaultRoleIdText VaultRoleBootstrapBroker
       brokerStaticServiceAccount brokerChartStatics `shouldBe` "prodbox-bootstrap-broker"
+      brokerStaticCleanupCallerServiceAccount brokerChartStatics
+        `shouldBe` bootstrapCoreExternalControlPlaneCallerServiceAccount
+      bootstrapCoreExternalControlPlaneCallerServiceAccount
+        `shouldBe` "prodbox-control-plane-operator"
 
     it "gives the broker a distinct identity from the Gateway Runtime" $ do
       -- The physically separate workloads must never share a ServiceAccount or
@@ -74,6 +81,8 @@ brokerChartStaticsSuite =
           [ "serviceAccount:"
           , "  name: prodbox-bootstrap-broker"
           , "  workerName: prodbox-bootstrap-secret-worker"
+          , "cleanupCaller:"
+          , "  serviceAccountName: prodbox-control-plane-operator"
           , "client:"
           , "  serviceAccountName: prodbox-bootstrap-broker-client"
           , "  tokenAudience: prodbox-bootstrap-broker"
@@ -106,6 +115,26 @@ brokerChartStaticsSuite =
       valuesContents <- readFile (repoRoot </> "charts" </> "bootstrap-broker" </> "values.yaml")
       bootstrapBrokerChartStaticViolations serviceAccountContents deploymentContents valuesContents
         `shouldBe` []
+
+    it "renders the cleanup caller as bootstrap-owned exact self-TokenRequest RBAC" $ do
+      repoRoot <- getCurrentDirectory
+      let templatePath =
+            repoRoot
+              </> "charts"
+              </> "bootstrap-broker"
+              </> "templates"
+              </> "cleanup-caller-rbac.yaml"
+      template <- readFile templatePath
+      template `shouldContain` ".Values.cleanupCaller.serviceAccountName"
+      template `shouldContain` "automountServiceAccountToken: false"
+      template `shouldContain` "serviceaccounts/token"
+      template `shouldContain` "resourceNames:"
+      template `shouldContain` "verbs:"
+      template `shouldContain` "- create"
+      template `shouldContain` "kind: RoleBinding"
+      template `shouldNotContain` "prodbox-control-plane-operator"
+      template `shouldNotContain` "pods"
+      template `shouldNotContain` "secrets"
 
     it "rejects a hand-written ServiceAccount name hard-coded to the raw role literal" $ do
       let rawServiceAccount = "metadata:\n  name: prodbox-bootstrap-broker\n"

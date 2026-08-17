@@ -71,7 +71,7 @@ lifecycleAuthorityClientRegistrySuite =
               digestA
           )
       observeRegisteredSubmission ledger nextTable caller1 generation1 keyA
-        `shouldBe` RegisteredSubmissionObserved StatusInFlight
+        `shouldBe` RegisteredSubmissionObserved (acceptedOperation decision) StatusInFlight
       registeredClientReservationCount principal1 nextTable `shouldBe` Just 1
 
     it "returns the identical operation on exact submission-key replay" $ do
@@ -145,7 +145,7 @@ lifecycleAuthorityClientRegistrySuite =
           settled = mustRight (completeSubmission client sequenceNumber ledger1)
           compacted = mustRight (compactClientTerminalsBelow client sequenceNumber settled)
       observeRegisteredSubmission compacted table1 caller1 generation1 keyA
-        `shouldBe` RegisteredSubmissionObserved StatusExpired
+        `shouldBe` RegisteredSubmissionObserved (acceptedOperation accepted) StatusExpired
       reserve compacted table1 caller1 keyA digestA
         `shouldBe` (RegisteredSubmissionRefusedExpired, compacted, table1)
  where
@@ -184,6 +184,11 @@ mustRight result = case result of
 duplicateOf :: RegisteredSubmissionDecision -> RegisteredSubmissionDecision
 duplicateOf decision = case decision of
   RegisteredSubmissionAccepted operationId -> RegisteredSubmissionDuplicate operationId
+  other -> error ("expected accepted submission, got " <> show other)
+
+acceptedOperation :: RegisteredSubmissionDecision -> OperationId
+acceptedOperation decision = case decision of
+  RegisteredSubmissionAccepted operationId -> operationId
   other -> error ("expected accepted submission, got " <> show other)
 
 operationSequence :: RegisteredSubmissionDecision -> ClientSequence

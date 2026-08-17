@@ -31,7 +31,9 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityAggregatePulumiCheckpoints
   , authorityAggregateConfig
   , authorityAggregateDecommission
+  , authorityAggregateProviderAdmissionEpochView
   , authorityAggregateSubmissionEpoch
+  , authorityAggregateSubmissionEpochBindings
   , authorityAggregateProviderOperations
   , validateAuthorityAdmissionAggregate
   , validateAuthorityAdmissionAggregateWithRegisteredClients
@@ -77,11 +79,15 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityCheckpointOperationStatus
   , stepAuthorityCheckpointPermit
   , stepAuthorityCheckpointPublication
+  , stepAuthorityCheckpointRestore
   , stepAuthorityCheckpointRetirement
   )
 where
 
-import Codec.Serialise (Serialise, serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (decode, encode), serialise)
+import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -114,6 +120,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , observeRegisteredSubmission
   , registeredClientIdForCaller
   , registeredClientReservationBindings
+  , registeredClientReservationEntries
   , registeredClientTableConfigurationMatches
   , reserveRegisteredSubmission
   , validateRegisteredClientTable
@@ -154,6 +161,18 @@ import Prodbox.Lifecycle.Authority.Migration
   , stepMigration
   , stepMigrationImport
   )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( ProviderAdmissionEpochView
+  )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
+  ( ProviderAdmissionEpoch
+  , ProviderAdmissionEpochError
+  , ProviderAdmissionFreshSubmissionRefusal (..)
+  , initialLegacyProviderAdmissionEpochInternal
+  , providerAdmissionEpochView
+  , providerAdmissionFreshSubmissionRefusalInternal
+  , validateProviderAdmissionEpochInternal
+  )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   ( AuthorityPulumiCheckpointInvariantError
   , AuthorityPulumiCheckpoints
@@ -162,6 +181,7 @@ import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   , CheckpointPermitDecision (..)
   , VerifiedPulumiCheckpointRef
   , applyCheckpointPublication
+  , applyCheckpointRestore
   , applyCheckpointRetirement
   , compactTerminalCheckpointOperation
   , initialAuthorityPulumiCheckpoints
@@ -268,9 +288,68 @@ data AuthorityAdmissionAggregate = AuthorityAdmissionAggregate
   , authorityAggregatePulumiCheckpoints :: !AuthorityPulumiCheckpoints
   , authorityAggregateConfig :: !ConfigState
   , authorityAggregateDecommission :: !AuthorityDecommissionState
+  , internalAuthorityAggregateProviderAdmissionEpoch
+      :: !ProviderAdmissionEpoch
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+-- Keep the original ten-field aggregate readable.  Generic @Serialise@
+-- encodes a single-constructor product as a constructor tag followed by its
+-- fields, so v6 has list length 11 and v7 has list length 12.  The missing
+-- v6 field is never guessed as generation one: it becomes the explicit
+-- fail-closed legacy-unbound state.
+instance Serialise AuthorityAdmissionAggregate where
+  encode aggregate =
+    Cbor.encodeListLen 12
+      <> Cbor.encodeWord 0
+      <> encode (authorityAggregateAdmission aggregate)
+      <> encode (authorityAggregateMigration aggregate)
+      <> encode (authorityAggregateSubmissionLedger aggregate)
+      <> encode (authorityAggregateRetainedCapacity aggregate)
+      <> encode (authorityAggregateSubmissionEpochs aggregate)
+      <> encode (authorityAggregateProviderOperations aggregate)
+      <> encode (authorityAggregateRegisteredClients aggregate)
+      <> encode (authorityAggregatePulumiCheckpoints aggregate)
+      <> encode (authorityAggregateConfig aggregate)
+      <> encode (authorityAggregateDecommission aggregate)
+      <> encode (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+
+  decode = do
+    encodedFields <- Cbor.decodeListLen
+    unless (encodedFields == 11 || encodedFields == 12) $
+      fail "AuthorityAdmissionAggregate: expected v6 or v7 field count"
+    constructorTag <- Cbor.decodeWord
+    unless (constructorTag == (0 :: Word)) $
+      fail "AuthorityAdmissionAggregate: unknown constructor tag"
+    admission <- decode
+    migration <- decode
+    ledger <- decode
+    retainedCapacity <- decode
+    submissionEpochs <- decode
+    providerOperations <- decode
+    registeredClients <- decode
+    checkpoints <- decode
+    config <- decode
+    decommission <- decode
+    providerAdmissionEpoch <-
+      if encodedFields == 11
+        then pure initialLegacyProviderAdmissionEpochInternal
+        else decode
+    pure
+      AuthorityAdmissionAggregate
+        { authorityAggregateAdmission = admission
+        , authorityAggregateMigration = migration
+        , authorityAggregateSubmissionLedger = ledger
+        , authorityAggregateRetainedCapacity = retainedCapacity
+        , authorityAggregateSubmissionEpochs = submissionEpochs
+        , authorityAggregateProviderOperations = providerOperations
+        , authorityAggregateRegisteredClients = registeredClients
+        , authorityAggregatePulumiCheckpoints = checkpoints
+        , authorityAggregateConfig = config
+        , authorityAggregateDecommission = decommission
+        , internalAuthorityAggregateProviderAdmissionEpoch =
+            providerAdmissionEpoch
+        }
 
 data AuthorityAdmissionConfigurationError
   = AuthorityRetainedCapacityBelowLiveCapacity !Natural !Natural
@@ -293,6 +372,8 @@ data AuthorityAdmissionInvariantError
       !AuthorityPulumiCheckpointInvariantError
   | AuthorityConfigInvariant !ConfigStateInvariantError
   | AuthorityDecommissionBindingDigestInvalid
+  | AuthorityProviderAdmissionEpochInvalid !ProviderAdmissionEpochError
+  | AuthorityProviderOperationReservationMissing !ClientId !ClientSequence
   deriving stock (Eq, Show)
 
 initialCleanInstallAuthority
@@ -367,6 +448,8 @@ initialAuthorityWithRegisteredClients migration liveCapacity retainedCapacity re
               initialAuthorityPulumiCheckpoints
           , authorityAggregateConfig = initialConfigState
           , authorityAggregateDecommission = AuthorityServing
+          , internalAuthorityAggregateProviderAdmissionEpoch =
+              initialLegacyProviderAdmissionEpochInternal
           }
 
 authorityAggregateSubmissionEpoch
@@ -376,6 +459,17 @@ authorityAggregateSubmissionEpoch
   -> Maybe AuthorityEpoch
 authorityAggregateSubmissionEpoch client seqNo aggregate =
   Map.lookup (client, seqNo) (authorityAggregateSubmissionEpochs aggregate)
+
+authorityAggregateSubmissionEpochBindings
+  :: AuthorityAdmissionAggregate
+  -> Map (ClientId, ClientSequence) AuthorityEpoch
+authorityAggregateSubmissionEpochBindings = authorityAggregateSubmissionEpochs
+
+authorityAggregateProviderAdmissionEpochView
+  :: AuthorityAdmissionAggregate -> ProviderAdmissionEpochView
+authorityAggregateProviderAdmissionEpochView =
+  providerAdmissionEpochView
+    . internalAuthorityAggregateProviderAdmissionEpoch
 
 -- | Validate the retained object against runtime-pinned capacity.  In
 -- particular, an epoch entry may neither be absent for a known submission nor
@@ -416,6 +510,12 @@ validateAuthorityAdmissionAggregate expectedLive expectedRetained aggregate
         Right
         (validateConfigState (authorityAggregateConfig aggregate))
       validateDecommissionBinding (authorityAggregateDecommission aggregate)
+      either
+        (Left . AuthorityProviderAdmissionEpochInvalid)
+        Right
+        ( validateProviderAdmissionEpochInternal
+            (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+        )
       traverse_ validateProviderOperation (Map.toList (authorityAggregateProviderOperations aggregate))
  where
   ledger = authorityAggregateSubmissionLedger aggregate
@@ -431,10 +531,19 @@ validateAuthorityAdmissionAggregate expectedLive expectedRetained aggregate
       Just record
         | submissionRecordDigest record /= authorityProviderOperationDigest operation ->
             Left (AuthorityProviderOperationBindingMismatch client seqNo)
+        | Map.notMember (client, seqNo) reservationKeys ->
+            Left (AuthorityProviderOperationReservationMissing client seqNo)
         | otherwise -> Right ()
   registeredBindings =
     registeredClientReservationBindings
       (authorityAggregateRegisteredClients aggregate)
+  reservationKeys =
+    Map.fromList
+      [ ((client, seqNo), submissionKey)
+      | (submissionKey, client, seqNo, _, _) <-
+          registeredClientReservationEntries
+            (authorityAggregateRegisteredClients aggregate)
+      ]
   validateRegisteredBinding (client, seqNo, _, registeredEpoch) =
     case submissionStatus client seqNo ledger of
       StatusExpired -> Right ()
@@ -484,6 +593,8 @@ data AuthoritySubmissionGateRefusal
   | AuthorityDecommissionPermanentlyStopped
   | AuthorityLegacyWriterActive
   | AuthorityMigrationWritersQuiesced
+  | AuthorityProviderAdmissionCascadeFrozen
+  | AuthorityProviderAdmissionCredentialRevoked
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -922,30 +1033,52 @@ stepRegisteredProviderSubmission
        AuthorityAdmissionInvariantError
        (AuthorityProviderSubmissionDecision, AuthorityAdmissionAggregate)
 stepRegisteredProviderSubmission aggregate caller generation submissionKey digest intent = do
-  (decision, submitted) <-
-    stepRegisteredAuthoritySubmission
-      aggregate
-      caller
-      generation
-      submissionKey
-      digest
-  case decision of
-    AuthorityRegisteredSubmissionDecided (RegisteredSubmissionAccepted operation) -> do
-      let key = providerOperationKey operation
-          next =
-            submitted
-              { authorityAggregateProviderOperations =
-                  Map.insert
-                    key
-                    (AuthorityProviderPending digest intent)
-                    (authorityAggregateProviderOperations submitted)
-              }
-      validateCurrentAggregate next
-      pure (AuthorityProviderSubmissionAccepted operation, next)
-    AuthorityRegisteredSubmissionDecided (RegisteredSubmissionDuplicate operation) ->
-      confirmDuplicate operation submitted
-    _ -> pure (AuthorityProviderSubmissionRefused decision, submitted)
+  validateCurrentAggregate aggregate
+  case inspectRegisteredSubmission
+    (authorityAggregateSubmissionLedger aggregate)
+    (authorityAggregateRegisteredClients aggregate)
+    caller
+    generation
+    submissionKey
+    digest of
+    RegisteredSubmissionFresh
+      | Just refusal <-
+          providerAdmissionFreshSubmissionRefusalInternal
+            (internalAuthorityAggregateProviderAdmissionEpoch aggregate) ->
+          pure
+            ( AuthorityProviderSubmissionRefused
+                ( AuthorityRegisteredSubmissionRefusedByGate
+                    (providerAdmissionGateRefusal refusal)
+                )
+            , aggregate
+            )
+    _ -> submitOrReplay
  where
+  submitOrReplay = do
+    (decision, submitted) <-
+      stepRegisteredAuthoritySubmission
+        aggregate
+        caller
+        generation
+        submissionKey
+        digest
+    case decision of
+      AuthorityRegisteredSubmissionDecided (RegisteredSubmissionAccepted operation) -> do
+        let key = providerOperationKey operation
+            next =
+              submitted
+                { authorityAggregateProviderOperations =
+                    Map.insert
+                      key
+                      (AuthorityProviderPending digest intent)
+                      (authorityAggregateProviderOperations submitted)
+                }
+        validateCurrentAggregate next
+        pure (AuthorityProviderSubmissionAccepted operation, next)
+      AuthorityRegisteredSubmissionDecided (RegisteredSubmissionDuplicate operation) ->
+        confirmDuplicate operation submitted
+      _ -> pure (AuthorityProviderSubmissionRefused decision, submitted)
+
   confirmDuplicate operation submitted =
     case Map.lookup (providerOperationKey operation) (authorityAggregateProviderOperations submitted) of
       Just retained
@@ -965,6 +1098,15 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
               (operationIdClient operation)
               (operationIdSequence operation)
           )
+
+providerAdmissionGateRefusal
+  :: ProviderAdmissionFreshSubmissionRefusal
+  -> AuthoritySubmissionGateRefusal
+providerAdmissionGateRefusal refusal = case refusal of
+  ProviderAdmissionFreshSubmissionCascadeAuditFrozen ->
+    AuthorityProviderAdmissionCascadeFrozen
+  ProviderAdmissionFreshSubmissionCredentialRevoked ->
+    AuthorityProviderAdmissionCredentialRevoked
 
 -- | Settle the exact retained Provider operation and its submission ledger in
 -- one transition.  The completed evidence is immutable; a divergent replay is
@@ -1192,6 +1334,44 @@ stepAuthorityCheckpointPublication caller generation operationId registered refe
                 (authorityAggregatePulumiCheckpoints aggregate)
             )
         settleCheckpointMutation operationId record decision checkpoints aggregate
+
+stepAuthorityCheckpointRestore
+  :: CallerPrincipal
+  -> RegisteredClientGeneration
+  -> OperationId
+  -> RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> VerifiedPulumiCheckpointRef
+  -> AuthorityAdmissionAggregate
+  -> Either
+       AuthorityAdmissionInvariantError
+       (CheckpointMutationDecision, AuthorityAdmissionAggregate)
+stepAuthorityCheckpointRestore
+  caller
+  generation
+  operationId
+  registered
+  predecessor
+  current
+  aggregate = do
+    validateCurrentAggregate aggregate
+    case admittedOperationRecord caller generation operationId aggregate of
+      Left CheckpointPermitRefusedSubmissionUnknown ->
+        pure (CheckpointMutationRefusedUnknownOperation, aggregate)
+      Left _ -> pure (CheckpointMutationRefusedBinding, aggregate)
+      Right record -> case authorityCheckpointOperationRef operationId of
+        Left _ -> pure (CheckpointMutationRefusedBinding, aggregate)
+        Right operation -> do
+          (decision, checkpoints) <-
+            mapLeftInvariant
+              ( applyCheckpointRestore
+                  operation
+                  registered
+                  predecessor
+                  current
+                  (authorityAggregatePulumiCheckpoints aggregate)
+              )
+          settleCheckpointMutation operationId record decision checkpoints aggregate
 
 stepAuthorityCheckpointRetirement
   :: CallerPrincipal

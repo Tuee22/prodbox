@@ -25,13 +25,20 @@ module Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   , initialAuthorityPulumiCheckpoints
   , validateAuthorityPulumiCheckpoints
   , observeAuthorityPulumiCheckpoint
+  , observeRetiredAuthorityPulumiCheckpoints
+  , CheckpointRestoreReadBack (..)
+  , observeCheckpointRestoreReadBack
+  , CheckpointRetirementReadBack (..)
+  , observeCheckpointRetirementReadBack
   , CheckpointPermitDecision (..)
   , registerCheckpointOperationPermit
   , CheckpointMutationDecision (..)
   , CheckpointMutationAuthorization (..)
   , authorizeCheckpointPublication
+  , authorizeCheckpointRestore
   , authorizeCheckpointRetirement
   , applyCheckpointPublication
+  , applyCheckpointRestore
   , applyCheckpointRetirement
   , compactTerminalCheckpointOperation
   , authorityPulumiCheckpointOperationCount
@@ -136,6 +143,7 @@ verifiedPulumiCheckpointBackupVersion =
 
 data CheckpointOperationKind
   = PublishCheckpoint
+  | RestoreCheckpoint
   | RetireCheckpoint
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -143,7 +151,10 @@ data CheckpointOperationKind
 data CheckpointOperationPhase
   = CheckpointOperationPending
   | CheckpointPublicationApplied !VerifiedPulumiCheckpointRef
-  | CheckpointRetirementApplied
+  | CheckpointRestoreApplied
+      !VerifiedPulumiCheckpointRef
+      !VerifiedPulumiCheckpointRef
+  | CheckpointRetirementApplied !(Maybe VerifiedPulumiCheckpointRef)
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -160,6 +171,8 @@ data CheckpointOperationPermit = CheckpointOperationPermit
 data AuthorityPulumiCheckpoints = AuthorityPulumiCheckpoints
   { authorityCheckpointSlots
       :: !(Map Text (Maybe VerifiedPulumiCheckpointRef))
+  , authorityCheckpointRetired
+      :: !(Map Text [VerifiedPulumiCheckpointRef])
   , authorityCheckpointOperations
       :: !(Map Text CheckpointOperationPermit)
   }
@@ -169,12 +182,17 @@ data AuthorityPulumiCheckpoints = AuthorityPulumiCheckpoints
 authorityPulumiCheckpointOperationCapacity :: Natural
 authorityPulumiCheckpointOperationCapacity = 256
 
+authorityPulumiCheckpointRetiredCapacity :: Natural
+authorityPulumiCheckpointRetiredCapacity = 64
+
 authorityPulumiCheckpointOperationCount :: AuthorityPulumiCheckpoints -> Natural
 authorityPulumiCheckpointOperationCount =
   fromIntegral . Map.size . authorityCheckpointOperations
 
 data AuthorityPulumiCheckpointInvariantError
   = AuthorityCheckpointSlotInventoryMismatch
+  | AuthorityCheckpointRetiredInventoryMismatch
+  | AuthorityCheckpointRetiredOverCapacity !Text !Natural !Natural
   | AuthorityCheckpointOperationOverCapacity !Natural !Natural
   | AuthorityCheckpointOperationKeyMismatch !Text !Text
   | AuthorityCheckpointOperationRegistrationUnknown !Text
@@ -189,6 +207,11 @@ initialAuthorityPulumiCheckpoints =
           [ (registeredPulumiCheckpointName checkpoint, Nothing)
           | checkpoint <- registeredPulumiCheckpoints
           ]
+    , authorityCheckpointRetired =
+        Map.fromList
+          [ (registeredPulumiCheckpointName checkpoint, [])
+          | checkpoint <- registeredPulumiCheckpoints
+          ]
     , authorityCheckpointOperations = Map.empty
     }
 
@@ -198,20 +221,34 @@ validateAuthorityPulumiCheckpoints
 validateAuthorityPulumiCheckpoints registry
   | Map.keysSet slots /= registeredNames =
       Left AuthorityCheckpointSlotInventoryMismatch
+  | Map.keysSet retired /= registeredNames =
+      Left AuthorityCheckpointRetiredInventoryMismatch
   | operationCount > authorityPulumiCheckpointOperationCapacity =
       Left
         ( AuthorityCheckpointOperationOverCapacity
             operationCount
             authorityPulumiCheckpointOperationCapacity
         )
-  | otherwise = traverse_ validateOperation (Map.toList operations)
+  | otherwise = do
+      traverse_ validateRetired (Map.toList retired)
+      traverse_ validateOperation (Map.toList operations)
  where
   slots = authorityCheckpointSlots registry
+  retired = authorityCheckpointRetired registry
   operations = authorityCheckpointOperations registry
   operationCount = fromIntegral (Map.size operations)
   registeredNames =
     Set.fromList
       (map registeredPulumiCheckpointName registeredPulumiCheckpoints)
+  validateRetired (name, references)
+    | fromIntegral (length references) > authorityPulumiCheckpointRetiredCapacity =
+        Left
+          ( AuthorityCheckpointRetiredOverCapacity
+              name
+              (fromIntegral (length references))
+              authorityPulumiCheckpointRetiredCapacity
+          )
+    | otherwise = Right ()
   validateOperation (key, permit)
     | key /= pulumiCheckpointOperationRefText (checkpointPermitReference permit) =
         Left
@@ -227,7 +264,8 @@ validateAuthorityPulumiCheckpoints registry
     | otherwise = validatePhase key (checkpointPermitKind permit) (checkpointPermitPhase permit)
   validatePhase _ _ CheckpointOperationPending = Right ()
   validatePhase _ PublishCheckpoint (CheckpointPublicationApplied _) = Right ()
-  validatePhase _ RetireCheckpoint CheckpointRetirementApplied = Right ()
+  validatePhase _ RestoreCheckpoint (CheckpointRestoreApplied _ _) = Right ()
+  validatePhase _ RetireCheckpoint (CheckpointRetirementApplied _) = Right ()
   validatePhase key _ _ = Left (AuthorityCheckpointOperationPhaseMismatch key)
 
 observeAuthorityPulumiCheckpoint
@@ -239,6 +277,63 @@ observeAuthorityPulumiCheckpoint registered registry =
     (registeredPulumiCheckpointName registered)
     (authorityCheckpointSlots registry)
     >>= id
+
+observeRetiredAuthorityPulumiCheckpoints
+  :: RegisteredPulumiCheckpoint
+  -> AuthorityPulumiCheckpoints
+  -> [VerifiedPulumiCheckpointRef]
+observeRetiredAuthorityPulumiCheckpoints registered registry =
+  Map.findWithDefault
+    []
+    (registeredPulumiCheckpointName registered)
+    (authorityCheckpointRetired registry)
+
+data CheckpointRestoreReadBack
+  = CheckpointRestoreOperationPending
+  | CheckpointRestoreOperationApplied
+      !VerifiedPulumiCheckpointRef
+      !VerifiedPulumiCheckpointRef
+  deriving stock (Eq, Show)
+
+observeCheckpointRestoreReadBack
+  :: PulumiCheckpointOperationRef
+  -> RegisteredPulumiCheckpoint
+  -> AuthorityPulumiCheckpoints
+  -> Maybe CheckpointRestoreReadBack
+observeCheckpointRestoreReadBack operation registered registry = do
+  permit <- lookupPermit operation registry
+  if checkpointPermitRegistration permit
+    /= registeredPulumiCheckpointName registered
+    || checkpointPermitKind permit /= RestoreCheckpoint
+    then Nothing
+    else case checkpointPermitPhase permit of
+      CheckpointOperationPending -> Just CheckpointRestoreOperationPending
+      CheckpointRestoreApplied predecessor current ->
+        Just (CheckpointRestoreOperationApplied predecessor current)
+      _ -> Nothing
+
+data CheckpointRetirementReadBack
+  = CheckpointRetirementOperationPending
+  | CheckpointRetirementOperationApplied
+      !(Maybe VerifiedPulumiCheckpointRef)
+  deriving stock (Eq, Show)
+
+observeCheckpointRetirementReadBack
+  :: PulumiCheckpointOperationRef
+  -> RegisteredPulumiCheckpoint
+  -> AuthorityPulumiCheckpoints
+  -> Maybe CheckpointRetirementReadBack
+observeCheckpointRetirementReadBack operation registered registry = do
+  permit <- lookupPermit operation registry
+  if checkpointPermitRegistration permit
+    /= registeredPulumiCheckpointName registered
+    || checkpointPermitKind permit /= RetireCheckpoint
+    then Nothing
+    else case checkpointPermitPhase permit of
+      CheckpointOperationPending -> Just CheckpointRetirementOperationPending
+      CheckpointRetirementApplied reference ->
+        Just (CheckpointRetirementOperationApplied reference)
+      _ -> Nothing
 
 data CheckpointPermitDecision
   = CheckpointPermitRegistered
@@ -321,6 +416,9 @@ data CheckpointMutationDecision
   | CheckpointMutationRefusedDigestConflict
       !(Maybe VerifiedPulumiCheckpointRef)
   | CheckpointMutationRefusedReplayConflict
+  | CheckpointMutationRefusedRestoreReferenceMismatch
+      !(Maybe VerifiedPulumiCheckpointRef)
+  | CheckpointMutationRefusedRetiredCapacity
   deriving stock (Eq, Show)
 
 data CheckpointMutationAuthorization
@@ -364,8 +462,52 @@ authorizeCheckpointPublication operation registered candidateDigest registry = d
                   ( CheckpointMutationRefusedDigestConflict
                       (observeAuthorityPulumiCheckpoint registered registry)
                   )
-          CheckpointRetirementApplied ->
+          CheckpointRestoreApplied _ _ ->
             refused CheckpointMutationRefusedKind
+          CheckpointRetirementApplied _ ->
+            refused CheckpointMutationRefusedKind
+ where
+  refused = CheckpointMutationAuthorizationRefused
+
+authorizeCheckpointRestore
+  :: PulumiCheckpointOperationRef
+  -> RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> VerifiedPulumiCheckpointRef
+  -> AuthorityPulumiCheckpoints
+  -> Either
+       AuthorityPulumiCheckpointInvariantError
+       CheckpointMutationAuthorization
+authorizeCheckpointRestore operation registered predecessor candidate registry = do
+  validateAuthorityPulumiCheckpoints registry
+  pure $ case lookupPermit operation registry of
+    Nothing -> refused CheckpointMutationRefusedUnknownOperation
+    Just permit
+      | checkpointPermitRegistration permit
+          /= registeredPulumiCheckpointName registered ->
+          refused CheckpointMutationRefusedBinding
+      | checkpointPermitKind permit /= RestoreCheckpoint ->
+          refused CheckpointMutationRefusedKind
+      | not (validRestoreTransition predecessor candidate) ->
+          refused
+            (CheckpointMutationRefusedRestoreReferenceMismatch (Just candidate))
+      | otherwise -> case checkpointPermitPhase permit of
+          CheckpointRestoreApplied appliedPredecessor appliedCurrent
+            | appliedPredecessor == predecessor && appliedCurrent == candidate ->
+                CheckpointMutationAlreadyAppliedWith (Just appliedCurrent)
+            | otherwise -> refused CheckpointMutationRefusedReplayConflict
+          CheckpointOperationPending
+            | observeAuthorityPulumiCheckpoint registered registry
+                /= Just predecessor ->
+                refused
+                  ( CheckpointMutationRefusedRestoreReferenceMismatch
+                      (observeAuthorityPulumiCheckpoint registered registry)
+                  )
+            | predecessor /= candidate
+                && not (retiredCapacityAvailable registered predecessor registry) ->
+                refused CheckpointMutationRefusedRetiredCapacity
+            | otherwise -> CheckpointMutationAuthorized
+          _ -> refused CheckpointMutationRefusedKind
  where
   refused = CheckpointMutationAuthorizationRefused
 
@@ -387,7 +529,7 @@ authorizeCheckpointRetirement operation registered registry = do
       | checkpointPermitKind permit /= RetireCheckpoint ->
           refused CheckpointMutationRefusedKind
       | otherwise -> case checkpointPermitPhase permit of
-          CheckpointRetirementApplied ->
+          CheckpointRetirementApplied _ ->
             CheckpointMutationAlreadyAppliedWith Nothing
           CheckpointOperationPending
             | currentDigest registered registry
@@ -399,6 +541,8 @@ authorizeCheckpointRetirement operation registered registry = do
                       (observeAuthorityPulumiCheckpoint registered registry)
                   )
           CheckpointPublicationApplied _ ->
+            refused CheckpointMutationRefusedKind
+          CheckpointRestoreApplied _ _ ->
             refused CheckpointMutationRefusedKind
  where
   refused = CheckpointMutationAuthorizationRefused
@@ -440,8 +584,65 @@ applyCheckpointPublication operation registered reference registry = do
                   ( CheckpointMutationApplied
                   , updatePublished operation registered reference permit registry
                   )
-          CheckpointRetirementApplied ->
+          CheckpointRestoreApplied _ _ ->
             pure (CheckpointMutationRefusedKind, registry)
+          CheckpointRetirementApplied _ ->
+            pure (CheckpointMutationRefusedKind, registry)
+
+applyCheckpointRestore
+  :: PulumiCheckpointOperationRef
+  -> RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> VerifiedPulumiCheckpointRef
+  -> AuthorityPulumiCheckpoints
+  -> Either
+       AuthorityPulumiCheckpointInvariantError
+       (CheckpointMutationDecision, AuthorityPulumiCheckpoints)
+applyCheckpointRestore operation registered predecessor candidate registry = do
+  validateAuthorityPulumiCheckpoints registry
+  case lookupPermit operation registry of
+    Nothing -> pure (CheckpointMutationRefusedUnknownOperation, registry)
+    Just permit
+      | checkpointPermitRegistration permit
+          /= registeredPulumiCheckpointName registered ->
+          pure (CheckpointMutationRefusedBinding, registry)
+      | checkpointPermitKind permit /= RestoreCheckpoint ->
+          pure (CheckpointMutationRefusedKind, registry)
+      | not (validRestoreTransition predecessor candidate) ->
+          pure
+            ( CheckpointMutationRefusedRestoreReferenceMismatch
+                (observeAuthorityPulumiCheckpoint registered registry)
+            , registry
+            )
+      | otherwise -> case checkpointPermitPhase permit of
+          CheckpointRestoreApplied appliedPredecessor appliedCurrent
+            | appliedPredecessor == predecessor && appliedCurrent == candidate ->
+                pure (CheckpointMutationAlreadyApplied, registry)
+            | otherwise ->
+                pure (CheckpointMutationRefusedReplayConflict, registry)
+          CheckpointOperationPending
+            | observeAuthorityPulumiCheckpoint registered registry
+                /= Just predecessor ->
+                pure
+                  ( CheckpointMutationRefusedRestoreReferenceMismatch
+                      (observeAuthorityPulumiCheckpoint registered registry)
+                  , registry
+                  )
+            | predecessor /= candidate
+                && not (retiredCapacityAvailable registered predecessor registry) ->
+                pure (CheckpointMutationRefusedRetiredCapacity, registry)
+            | otherwise ->
+                pure
+                  ( CheckpointMutationApplied
+                  , updateRestored
+                      operation
+                      registered
+                      predecessor
+                      candidate
+                      permit
+                      registry
+                  )
+          _ -> pure (CheckpointMutationRefusedKind, registry)
 
 applyCheckpointRetirement
   :: PulumiCheckpointOperationRef
@@ -461,7 +662,7 @@ applyCheckpointRetirement operation registered registry = do
       | checkpointPermitKind permit /= RetireCheckpoint ->
           pure (CheckpointMutationRefusedKind, registry)
       | otherwise -> case checkpointPermitPhase permit of
-          CheckpointRetirementApplied ->
+          CheckpointRetirementApplied _ ->
             pure (CheckpointMutationAlreadyApplied, registry)
           CheckpointOperationPending
             | currentDigest registered registry
@@ -471,6 +672,13 @@ applyCheckpointRetirement operation registered registry = do
                       (observeAuthorityPulumiCheckpoint registered registry)
                   , registry
                   )
+            | not
+                ( maybe
+                    True
+                    (\reference -> retiredCapacityAvailable registered reference registry)
+                    (observeAuthorityPulumiCheckpoint registered registry)
+                ) ->
+                pure (CheckpointMutationRefusedRetiredCapacity, registry)
             | otherwise ->
                 pure
                   ( CheckpointMutationApplied
@@ -478,12 +686,15 @@ applyCheckpointRetirement operation registered registry = do
                   )
           CheckpointPublicationApplied _ ->
             pure (CheckpointMutationRefusedKind, registry)
+          CheckpointRestoreApplied _ _ ->
+            pure (CheckpointMutationRefusedKind, registry)
 
 -- | Remove one terminal operation tombstone after the owning submission has
--- been selected for compaction.  A missing checkpoint permit is already
--- compacted and therefore succeeds idempotently.  A pending permit refuses by
--- returning @False@: its admitted mutation has not reached a terminal state
--- and may not be evicted to make capacity.
+-- been selected for compaction.  Publication can be forgotten once its
+-- current aggregate reference is durable.  Restore and retirement phases
+-- retain the exact predecessor/reference needed by a cleanup read-back after
+-- response loss, so they deliberately apply bounded backpressure until a
+-- future explicit read-back acknowledgement/GC protocol exists.
 compactTerminalCheckpointOperation
   :: PulumiCheckpointOperationRef
   -> AuthorityPulumiCheckpoints
@@ -498,7 +709,8 @@ compactTerminalCheckpointOperation operation registry = do
     Just permit -> case checkpointPermitPhase permit of
       CheckpointOperationPending -> pure (False, registry)
       CheckpointPublicationApplied _ -> removed key
-      CheckpointRetirementApplied -> removed key
+      CheckpointRestoreApplied _ _ -> pure (False, registry)
+      CheckpointRetirementApplied _ -> pure (False, registry)
  where
   removed key = do
     let next =
@@ -546,6 +758,35 @@ updatePublished operation registered reference permit registry =
           (authorityCheckpointOperations registry)
     }
 
+updateRestored
+  :: PulumiCheckpointOperationRef
+  -> RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> VerifiedPulumiCheckpointRef
+  -> CheckpointOperationPermit
+  -> AuthorityPulumiCheckpoints
+  -> AuthorityPulumiCheckpoints
+updateRestored operation registered predecessor current permit registry =
+  restoredBase
+    { authorityCheckpointSlots =
+        Map.insert
+          (registeredPulumiCheckpointName registered)
+          (Just current)
+          (authorityCheckpointSlots registry)
+    , authorityCheckpointOperations =
+        Map.insert
+          (pulumiCheckpointOperationRefText operation)
+          permit
+            { checkpointPermitPhase =
+                CheckpointRestoreApplied predecessor current
+            }
+          (authorityCheckpointOperations registry)
+    }
+ where
+  restoredBase
+    | predecessor == current = registry
+    | otherwise = recordRetiredReference registered predecessor registry
+
 updateRetired
   :: PulumiCheckpointOperationRef
   -> RegisteredPulumiCheckpoint
@@ -553,7 +794,7 @@ updateRetired
   -> AuthorityPulumiCheckpoints
   -> AuthorityPulumiCheckpoints
 updateRetired operation registered permit registry =
-  registry
+  (recordMaybeRetiredReference registered current registry)
     { authorityCheckpointSlots =
         Map.insert
           (registeredPulumiCheckpointName registered)
@@ -562,9 +803,59 @@ updateRetired operation registered permit registry =
     , authorityCheckpointOperations =
         Map.insert
           (pulumiCheckpointOperationRefText operation)
-          permit {checkpointPermitPhase = CheckpointRetirementApplied}
+          permit {checkpointPermitPhase = CheckpointRetirementApplied current}
           (authorityCheckpointOperations registry)
     }
+ where
+  current = observeAuthorityPulumiCheckpoint registered registry
+
+validRestoreTransition
+  :: VerifiedPulumiCheckpointRef
+  -> VerifiedPulumiCheckpointRef
+  -> Bool
+validRestoreTransition predecessor candidate =
+  verifiedPulumiCheckpointDigest predecessor
+    == verifiedPulumiCheckpointDigest candidate
+    && verifiedPulumiCheckpointCiphertextDigest predecessor
+      == verifiedPulumiCheckpointCiphertextDigest candidate
+    && verifiedPulumiCheckpointBackupVersion predecessor
+      == verifiedPulumiCheckpointBackupVersion candidate
+
+retiredCapacityAvailable
+  :: RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> AuthorityPulumiCheckpoints
+  -> Bool
+retiredCapacityAvailable registered reference registry =
+  reference `elem` retired
+    || fromIntegral (length retired) < authorityPulumiCheckpointRetiredCapacity
+ where
+  retired = observeRetiredAuthorityPulumiCheckpoints registered registry
+
+recordMaybeRetiredReference
+  :: RegisteredPulumiCheckpoint
+  -> Maybe VerifiedPulumiCheckpointRef
+  -> AuthorityPulumiCheckpoints
+  -> AuthorityPulumiCheckpoints
+recordMaybeRetiredReference _ Nothing registry = registry
+recordMaybeRetiredReference registered (Just reference) registry =
+  recordRetiredReference registered reference registry
+
+recordRetiredReference
+  :: RegisteredPulumiCheckpoint
+  -> VerifiedPulumiCheckpointRef
+  -> AuthorityPulumiCheckpoints
+  -> AuthorityPulumiCheckpoints
+recordRetiredReference registered reference registry
+  | reference `elem` retired = registry
+  | otherwise =
+      registry
+        { authorityCheckpointRetired =
+            Map.insert name (retired <> [reference]) (authorityCheckpointRetired registry)
+        }
+ where
+  name = registeredPulumiCheckpointName registered
+  retired = observeRetiredAuthorityPulumiCheckpoints registered registry
 
 validateVersion
   :: (Text -> VerifiedPulumiCheckpointRefError)

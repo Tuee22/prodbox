@@ -98,8 +98,11 @@ import Prodbox.Infra.StackOutputs
   )
 import Prodbox.Lifecycle.ResidueStatus
   ( ResidueDetails (..)
+  , ResidueObservation
+  , ResidueObservationLayer (..)
   , ResidueStatus (..)
   , ResidueUnreachableReason (..)
+  , observeResidueAt
   , renderResidueUnreachableReason
   )
 import Prodbox.Observation.AbsenceMarker
@@ -166,9 +169,9 @@ awsSesStackName = "aws-ses"
 -- observation is made through the caller-bound Lifecycle Authority checkpoint
 -- client; there is no raw object-store or unauthenticated fallback transport.
 data PerRunResidueStatuses = PerRunResidueStatuses
-  { perRunAwsEksTest :: !ResidueStatus
-  , perRunAwsEksSubzone :: !ResidueStatus
-  , perRunAwsTest :: !ResidueStatus
+  { perRunAwsEksTest :: !ResidueObservation
+  , perRunAwsEksSubzone :: !ResidueObservation
+  , perRunAwsTest :: !ResidueObservation
   }
   deriving (Eq, Show)
 
@@ -225,12 +228,21 @@ perRunResidueBypass = do
 -- exercise the fail-closed delete gate.
 perRunUnreachableTriple :: PerRunResidueStatuses
 perRunUnreachableTriple =
-  let unreachable = ResidueUnreachable (ResidueBackendMinioUnreachable testResidueUnreachableEnvVar)
+  let unreachable =
+        observeResidueAt
+          ResidueLayerHarnessBypass
+          (ResidueUnreachable (ResidueBackendMinioUnreachable testResidueUnreachableEnvVar))
    in PerRunResidueStatuses unreachable unreachable unreachable
 
+-- | Sprint 4.81: an authentication failure is reported as one, at the layer
+-- that refused, rather than as a transport failure against a MinIO that was
+-- never dialled.
 perRunAuthenticationFailedTriple :: String -> PerRunResidueStatuses
 perRunAuthenticationFailedTriple detail =
-  let unreachable = ResidueUnreachable (ResidueBackendMinioUnreachable detail)
+  let unreachable =
+        observeResidueAt
+          ResidueLayerRetainedCheckpoint
+          (ResidueUnreachable (ResidueAuthorityUnauthenticated detail))
    in PerRunResidueStatuses unreachable unreachable unreachable
 
 -- | All three per-run stacks reported absent. Used for the
@@ -238,15 +250,17 @@ perRunAuthenticationFailedTriple detail =
 -- override individual fields.
 perRunAbsentTriple :: PerRunResidueStatuses
 perRunAbsentTriple =
-  PerRunResidueStatuses
-    { perRunAwsEksTest = ResidueAbsent
-    , perRunAwsEksSubzone = ResidueAbsent
-    , perRunAwsTest = ResidueAbsent
-    }
+  let absent = observeResidueAt ResidueLayerHarnessBypass ResidueAbsent
+   in PerRunResidueStatuses
+        { perRunAwsEksTest = absent
+        , perRunAwsEksSubzone = absent
+        , perRunAwsTest = absent
+        }
 
 perRunVaultGatedTriple :: VaultGateDecision -> PerRunResidueStatuses
 perRunVaultGatedTriple gate =
-  let blocked = residueStatusBlockedByVaultGate gate
+  let blocked =
+        observeResidueAt ResidueLayerVaultGate (residueStatusBlockedByVaultGate gate)
    in PerRunResidueStatuses blocked blocked blocked
 
 queryPerRunLive
@@ -262,12 +276,16 @@ queryPerRunLive authentication repoRoot = do
       authentication
       repoRoot
       [eksName, subzoneName, testName]
+  -- Sprint 4.81: every arm here answers at the retained-checkpoint layer —
+  -- including the internal-miss arm, which is a failure to read that store and
+  -- not a statement about AWS.
   let statusFor stackName@(StackName raw) =
-        case lookup stackName observed of
-          Just result -> residueStatusFromCheckpointObservabilityResult (Text.unpack raw) result
-          Nothing ->
-            ResidueUnreachable
-              (ResidueQueryFailed ("internal: missing per-run observation for " ++ Text.unpack raw))
+        observeResidueAt ResidueLayerRetainedCheckpoint $
+          case lookup stackName observed of
+            Just result -> residueStatusFromCheckpointObservabilityResult (Text.unpack raw) result
+            Nothing ->
+              ResidueUnreachable
+                (ResidueQueryFailed ("internal: missing per-run observation for " ++ Text.unpack raw))
   pure
     PerRunResidueStatuses
       { perRunAwsEksTest = statusFor eksName

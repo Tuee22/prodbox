@@ -1,0 +1,29 @@
+{{- /* Exact-name, GET-only self-observation for the recovery profile. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lifecycle-authority-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: ["lifecycle-authority"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lifecycle-authority-recovery-observer
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "lifecycle-authority.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lifecycle-authority-recovery-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ required "recoveryObserver.serviceAccountName is required" .Values.recoveryObserver.serviceAccountName | quote }}
+    namespace: {{ required "recoveryObserver.serviceAccountNamespace is required" .Values.recoveryObserver.serviceAccountNamespace | quote }}

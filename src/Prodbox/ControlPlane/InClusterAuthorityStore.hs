@@ -34,6 +34,7 @@ module Prodbox.ControlPlane.InClusterAuthorityStore
   , primaryPulumiCheckpointCiphertextDigest
   , primaryPulumiCheckpointVersion
   , publishPrimaryPulumiCheckpointBlob
+  , restorePrimaryPulumiCheckpointBlob
   , observePrimaryPulumiCheckpointBlob
   , PrimaryConfigBlob
   , PrimaryConfigObservation (..)
@@ -421,6 +422,65 @@ publishPrimaryPulumiCheckpointBlob store registered checkpoint = do
     sessionTransitCipher
       (authorityStoreVaultSession store)
       "prodbox-pulumi-state"
+
+-- | Restore the exact independently read-back backup ciphertext into the
+-- content-addressed primary namespace.  The bytes are never unsealed outside
+-- the Authority, and the returned primary version is produced only after a
+-- full decrypt/decode/digest read-back under the registered checkpoint AAD.
+restorePrimaryPulumiCheckpointBlob
+  :: InClusterAuthorityStore
+  -> RegisteredPulumiCheckpoint
+  -> Text
+  -- ^ canonical plaintext checkpoint digest from the active aggregate ref
+  -> Text
+  -- ^ exact ciphertext digest from the active aggregate ref
+  -> ByteString
+  -- ^ opaque ciphertext obtained through AuthorityCheckpointBackupClient
+  -> IO (Either Text PrimaryPulumiCheckpointBlob)
+restorePrimaryPulumiCheckpointBlob
+  store
+  registered
+  checkpointDigest
+  ciphertextDigest
+  ciphertext
+    | ByteString.null ciphertext =
+        pure (Left "backup checkpoint ciphertext must not be empty")
+    | ByteString.length ciphertext > primaryCheckpointCiphertextMaximumBytes =
+        pure (Left "backup checkpoint ciphertext exceeds the primary blob bound")
+    | sha256Text ciphertext /= ciphertextDigest =
+        pure (Left "backup checkpoint ciphertext digest mismatch")
+    | otherwise = do
+        let objectKey = checkpointBlobObjectKey store ciphertextDigest
+        attempted <-
+          Native.putIfAbsentObserved
+            (authorityStoreObjectConfig store)
+            objectKey
+            ciphertext
+        confirmed <-
+          confirmPrimaryCheckpointPut
+            store
+            objectKey
+            ciphertextDigest
+            ciphertext
+            attempted
+        case confirmed of
+          Left detail -> pure (Left detail)
+          Right primary -> do
+            observed <-
+              observePrimaryPulumiCheckpointBlob
+                store
+                registered
+                checkpointDigest
+                ciphertextDigest
+                (primaryPulumiCheckpointVersion primary)
+            pure $ case observed of
+              PrimaryPulumiCheckpointCurrent _ readBack -> Right readBack
+              PrimaryPulumiCheckpointMissing ->
+                Left "restored primary checkpoint was missing during read-back"
+              PrimaryPulumiCheckpointCorrupt detail ->
+                Left ("restored primary checkpoint was corrupt: " <> detail)
+              PrimaryPulumiCheckpointUnobservable detail ->
+                Left ("restored primary checkpoint was unobservable: " <> detail)
 
 observePrimaryPulumiCheckpointBlob
   :: InClusterAuthorityStore

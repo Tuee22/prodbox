@@ -10,9 +10,63 @@
 
 ## Phase Status
 
-✅ **Reclosed 2026-08-10 on Sprints `4.73`–`4.75`.** The 2026-08-09 own-surface reopen closes:
-**no `Pending Removal` row on a Phase-`4` surface is unowned any more**, which is the condition the
-reopen existed to remove. Sprints `4.62`–`4.75` are all ✅ **Done** on their code-owned surfaces.
+🔄 **Reopened 2026-08-15 on Sprints `4.84`–`4.86` (Standards A/L/P).** The pending live proof for
+`4.82` falsified its composition claim: AWS returned one `ResourceTagMapping` for a retained S3
+bucket with its full two-tag set; Prodbox's decoder emitted two internal rows, turned them into
+“2 resource(s)” for each of three per-run stacks whose exact observations remained `Unobservable`,
+and selected the AWS drain. No drain request reached
+the Kubernetes API and no Pulumi destroy reached a provider effect. `4.84` is Active on the pure
+exact-keyed registry and observation algebra, including replacement of the current single
+`aws-ebs-volumes :: LongLived` registry fact plus runtime-tag partition with distinct statically
+classified test-scoped `PerRun` and production-retained `LongLived` EBS identities. At the paused
+2026-08-16 checkpoint, `4.84`, `4.85`, and `4.86` all have dependency-safe implementation and are
+Active: the exact algebra, descriptor-bound durable kernel, recovery plane, authenticated routes,
+and bounded interpreters exist, while stable create generation, terminal audit, pre-uninstall
+authority, two-phase host completion, total-decommission parity, and public-client cutover remain.
+Checkpoint usability, exact provider truth, and escape-audit evidence remain separate. This changes
+persistence/lifecycle/destructive cleanup, so both substrate qualification rows remain pending.
+
+✅ **Reclosed 2026-08-15 on Sprint `4.83`.** Every lifecycle Job and target-worker Pod now pulls a
+declared `repository:tag`; the host-minted rollout identity is no longer consumed as a registry
+coordinate. `ResolvedCustomImage` separately observes the OCI config digest, and the three runtime
+observers compare Kubernetes `imageID` against that signed attestation identity rather than treating
+their own Pod spec as evidence. The dormant Admin Action validator accepts the same declared-tag
+contract, and the ownership check covers all four source regions.
+
+✅ **Reclosed 2026-08-14 on Sprints `4.81` ✅ and `4.82` ✅ (Standards A/N).** The same-day
+own-surface reopen on the residue-observation and destructive-cleanup paths this phase owns is
+closed. The trigger was a doctrine gap rather than a new failure: [chaos_hardening_doctrine.md
+§ 24](../documents/engineering/chaos_hardening_doctrine.md) (*an observation has a layer*, Sprint
+`0.26`) requires a derived value to be enforced at the layer its source object is authoritative for,
+and `ResidueStatus` — the common target of **nineteen** producers reading the Pulumi checkpoint
+store, AWS resource presence, AWS IAM, AWS EBS, config text, a Pulsar topic, a Vault gate, an
+object-store listing, SES consumer quiescence, and public-edge TLS — has no field in which to name
+one. [Standard L](development_plan_standards.md#l-cli-doctrine-alignment)
+makes scheduling that mandatory: "closing the gap silently without a sprint block is forbidden."
+
+`4.81` made the layer sayable and its minting restricted — a field with a class-A opaque minter and a
+mutation-proven `dev check` boundary, **not** a type index, because § 21 names *residue* explicitly
+in its prohibition on indexing an observed value. `4.82` made the cascade consume the layer it
+actually needs, using the admin credential the same command already loads for its postflight sweep,
+and stopped one unobservable cause being narrated as two peer phase failures. The consequence they
+existed to remove had been recorded in this plan's own prose since 2026-08-11 with no owner: the
+per-run residue query observes the in-cluster Authority, authoritative for *what checkpoints this
+cluster holds*, and the answer was consumed as *do these AWS resources exist*.
+
+**One Standard-O live proof stays pending and does not gate closure**: `4.82`'s inverse-of-`4.76`
+reproduction on a host whose API server is stopped. Both sprints move Standard-P
+destructive-cleanup surfaces, so both substrate qualification rows remain `pending` and no
+qualification identity captured before them survives.
+
+Evidence: `prodbox dev check` exit 0, `prodbox test unit` exit 0 at main Hspec **3444** plus 27, 33,
+and 27, and `prodbox test integration cli` **57/57**.
+
+**Prior reclose — ✅ 2026-08-13 on Sprints `4.78`, `4.79`, and `4.80`.** The 2026-08-11 own-surface
+reopen on the observation-producer and destructive-cleanup surfaces closed, taking this phase's last
+three unowned `Pending Removal` rows. **Prior reclose — ✅ 2026-08-10 on Sprints `4.73`–`4.75`.** The
+2026-08-09 own-surface reopen closed: **no `Pending Removal` row on a Phase-`4` surface was unowned
+any more**, which was the condition that reopen existed to remove. Sprints `4.62`–`4.80` are all ✅
+**Done** on their code-owned surfaces.
 
 The closing three are worth reading together, because each answers a row that had been deferred with
 a stated reason and each found the row understated itself.
@@ -121,7 +175,7 @@ Standard A): the host-direct object-store / lease path gains a distinct retryabl
 state (`ModelBEndpointUnready` / `LeaseAuthorityEndpointUnready`) so a transient MinIO-endpoint blip is
 retried within the lease budget rather than collapsed into terminal authority-loss. Phase 1 (read) and
 1b (write) landed and are `dev check`-green; Phase 2 (deep-probe witness) is the remaining Standard-O
-increment. See [Sprint 4.53](#sprint-453-typed-endpoint-readiness-for-the-host-direct-object-store--lease-path-).
+increment. See [Sprint 4.53](#sprint-453-typed-endpoint-readiness-for-the-host-direct-object-store--lease-path--done).
 
 **Authority-cutover history:** Sprints `4.48` and `4.49` completed the
 restart-resumable retained Lifecycle Authority, fenced target outbox, and substrate-local Target
@@ -338,6 +392,13 @@ the identical-rebinding validation is Phase 5 (Sprint `5.12`). All earlier Phase
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Phase Summary
+
+Current Sprints `4.84`–`4.86` replace the global residue funnel with exact keyed observations,
+statically lifecycle-classed resource identities (including separate test-scoped and retained EBS
+families), total desired-absence programs, a lifecycle-owned durable graph, and a proof-carrying
+recover-to-clean candidate. Sprint `4.86` implements and independently validates that replacement
+only; Sprint `6.5` later owns public generic/home activation and legacy-route removal, while Sprint
+`7.36` owns AWS-specific adapters.
 
 This phase closes the hard migration gap between parity and replacement. It owns the
 in-cluster-registry-first local lifecycle, the bounded public-image bootstrap doctrine, the public
@@ -560,12 +621,12 @@ local-cluster supported ownership from the public Pulumi path.
   on the lifecycle path rather than on the public `prodbox aws stack ...` surface.
 - The AWS substrate stack inputs are split by sensitivity: non-secret operator-CIDR and
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
-  Haskell infra modules, while the generated operational `prodbox` IAM provider credential is
-  minted into Vault KV (`secret/gateway/gateway/aws`) and `prodbox-config.dhall` carries only a
-  `SecretRef.Vault` reference to it — never the plaintext key; the Haskell-owned subprocess
-  environment resolves that reference from Vault and projects the credential into Pulumi.
-  (Original framing read the provider credential from a stored `prodbox-config.dhall` block;
-  reframed per [Sprint 7.16](phase-7-aws-substrate-foundations.md).)
+  Haskell infra modules. The Tier-0 `aws.*` fields point at the registered Lifecycle-provider
+  Target-Agent generation (`secret/aws/lifecycle-provider`), never plaintext. Current host
+  plaintext materialization refuses; the surviving generic aggregate and legacy reader callers are
+  Pending removal under Sprint `4.50`, while the fenced Provider Worker retains the role-specific
+  credential. (Original framing read a stored provider credential and later used
+  `secret/gateway/gateway/aws`; both are historical.)
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` read authoritative
   encrypted checkpoint outputs; the HA-RKE2 SSH key is bracketed in a scoped temporary file. Stale
   retained EC2 nodes are repaired by one destroy-and-recreate retry when SSH validation fails after
@@ -1200,7 +1261,7 @@ Code framework landed May 21, 2026: `prodbox dev check` exits 0;
   absent (`kubectl delete services ...` returns `DrainFailed`
   because kubectl falls back to `localhost:8080`); the doctrine
   alignment landed in
-  [lifecycle_reconciliation_doctrine.md § 3 layer 1 + § 4](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern)
+  [lifecycle_reconciliation_doctrine.md § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation)
   (`DrainSkipped` outcome treated as success-with-reason), the
   implementation landed in Sprint `4.15` on May 21, 2026.
   Operator-facing
@@ -1433,7 +1494,7 @@ constant at line 179; extend the `DrainResult` case-of with a
 `DrainSkipped reason -> writeOutputLine ("K8s drain skipped: " ++ reason) >> runNativeDelete repoRoot`
 arm; add an inline comment naming the skip-is-success invariant
 per
-[lifecycle_reconciliation_doctrine.md § 3 layer 1](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern)).
+[lifecycle_reconciliation_doctrine.md § 3](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation)).
 **Docs to update**:
 `documents/engineering/lifecycle_reconciliation_doctrine.md`
 (already captures the `DrainResult` outcome ADT and the
@@ -2869,8 +2930,9 @@ retained-PV teardown model is extended, not reversed.
   unlock bundle is a password-AEAD (Argon2id + ChaCha20-Poly1305) object in the durable MinIO bucket,
   not an on-disk `.age` file — see [config_doctrine.md §0](../documents/engineering/config_doctrine.md#0-three-tier-config-model).**]** A cluster rebuild is not a fresh Vault.
 - `prodbox cluster delete --yes` and `--cascade --yes` both preserve the durable Vault PV
-  (`.data/vault/vault/0`) exactly like the MinIO PV; no `prodbox` command removes it. Vault KV is as
-  durable across `cluster delete` + `cluster reconcile` rebuild cycles as any retained PV.
+  (`.data/vault/vault/0`) exactly like the MinIO PV; neither ordinary delete form removes it.
+  Total decommission through `prodbox nuke` is the explicit exception. Vault KV is as durable
+  across `cluster delete` + `cluster reconcile` rebuild cycles as any retained PV.
 - `prodbox cluster status` / `prodbox edge status` surface Vault sealed/unsealed/uninitialized as a
   first-class line.
 - Lifecycle commands gain absolute fail-closed readiness gates: a sealed, unreachable, or
@@ -3498,8 +3560,12 @@ markers.
 
 ### Remaining Work
 
-- None on the Sprint `4.39` code-owned surface. Sprint `4.40` owns the suite postflight
-  test-scoped EBS reaper; Sprint `7.28` owns live static EBS PV materialization on EKS.
+- None on Sprint `4.39`'s historical tag-partition surface. Its one
+  `aws-ebs-volumes :: LongLived` registry identity did **not** make the test-scoped family
+  statically `PerRun`; Sprint `4.84` owns that target correction by replacing the one identity with
+  distinct test-scoped and production-retained EBS identities whose classes are selected before
+  provider observation. Sprint `4.40` owns the historical suite postflight reaper, and Sprint
+  `7.28` owns live static EBS PV materialization on EKS.
 
 ## Sprint 4.40: Suite Postflight Test-EBS Reaper + Retain-Safe Drain ✅
 
@@ -3755,7 +3821,7 @@ directly for post-bootstrap lifecycle work.
   folded into the canonical cluster lifecycle on the init-once / unseal-on-rebuild contract (reconcile
   deploys/unseals, teardown preserves the durable Vault PV alongside the MinIO PV, sealed Vault is a
   first-class fail-closed `cluster status` line — vault_doctrine
-  [§5](../documents/engineering/vault_doctrine.md#5-vault-deployment-model),
+  [§5](../documents/engineering/vault_doctrine.md#5-vault-deployment-model-and-durability),
   [§7](../documents/engineering/vault_doctrine.md#7-vault-lifecycle-commands),
   [§15](../documents/engineering/vault_doctrine.md#15-sealed-state-behavior-matrix)), for
   Sprint `4.30` the Model B object-store — Vault-keyed-HMAC opaque IDs, the `prodbox-envelope-v2`
@@ -4572,10 +4638,12 @@ a best-effort release response.
    the independent backup reconstructs exact envelope/blob bytes before activating a greater epoch.
 7. Unit/integration suites, warning-clean build, and `prodbox dev check` pass.
 
-### Remaining Work
+### Closure Boundary
 
-- Blocked until Sprint `3.26` renders the dedicated role and identity.
-- Sprint `4.49` adds target delivery; Sprint `4.50` performs the production cutover.
+Sprint `4.48` closes on the independently validatable pure Authority kernel. Dedicated-role
+rendering, target delivery, and production cutover are deliberately separate surfaces owned by
+their corresponding chart and lifecycle sprints; none is remaining work required to keep this
+historical sprint Done.
 
 ## Documentation Requirements
 
@@ -5684,8 +5752,13 @@ receipt-header binding, semantic node/attempt validation, fsync-ordered frames, 
 recovery, and real pinned-process replacement are production-wired. Evidence: decommission 130/130,
 control-plane routes 66/66, request authentication 33/33, authenticated transport 27/27, both
 modified NetworkPolicies rendered successfully, warning-clean library/unit builds, negative scans,
-and `git diff --check`. This closes the decommission code-owned subgraph only; steady-state Target
-delivery, Provider execution, config, credentials, and legacy-route deletion remain open.
+and `git diff --check`. This closed the then-enumerated external-receipt resource-node subgraph;
+steady-state Target delivery, Provider execution, config, credentials, and legacy-route deletion
+remained open. **Standard-C correction (2026-08-15):** that enumeration omitted home-substrate
+uninstall/read-back, explicit `.data` disposition, final no-retention audit, and terminal-receipt
+read-back. The current terminal tag sweep still runs outside the receipt graph. Sprint `4.85` owns
+that newly measured closed-program-universe residual; this paragraph is not evidence that those
+effects landed in Increment FF.
 **Implementation in progress (Increment GG, 2026-07-31 — schema-indexed Credential Provisioner)**:
 `Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial`, `.Kubernetes`, `.TargetMaterial`, and
 `.Execution` now define the closed AWS-admin versus external-EAB ingress schemas, distinct
@@ -5743,14 +5816,17 @@ an indefinite dual-write or fallback regime.
   coordinates and cut home public-record writes to Gateway-DNS with ensure/delete/read-back and no
   alternate writer. Sprint `7.33` alone cuts the AWS A-record call sites to the authority provider
   projection; Sprint `4.50` does not claim that AWS production cutover.
-- Add the closed cert-manager DNS01 Challenge/TXT descriptor and program variants. Sprint `5.18`
-  alone owns run-time pre-issuance registration, always-run Challenge deletion, and exact TXT
-  absence observation.
+- Add the closed cert-manager DNS01 Challenge/TXT descriptor and program variants. Sprint `5.29`
+  landed run-time pre-issuance registration, always-run Challenge deletion, and exact TXT absence
+  observation. Sprint `4.85` owns migration of that landed operation into the generic lifecycle
+  kernel; Sprint `5.18` is only the historical origin of the corrected deliverable.
 - Cut config readers/writers to authority-owned config generations. Reconcile and register the
   Operational Lifecycle-provider plus LongLived Authority-backup, TLS-retention, Gateway-DNS,
   home cert-manager-DNS01, and SES-SMTP IAM/key/Vault resources, Target-Agent generations,
-  non-recoverable-material custody receipts, and dependency-ordered cleanup nodes; revoke the shared
-  `secret/gateway/gateway/aws` identity only after every consumer is re-observed. Sprint `7.33`
+  non-recoverable-material custody receipts, and dependency-ordered cleanup nodes; delete the
+  generic Tier-0 `aws.*` projection and legacy host readers only after every remaining operation is
+  re-observed through its role-specific capability. Retain `secret/aws/lifecycle-provider` for the
+  fenced Provider Worker; the old `secret/gateway/gateway/aws` coordinate is already gone. Sprint `7.33`
   owns only the AWS-target projection and its substrate-local DNS01 identity. This sprint establishes
   the SES-SMTP descriptor/protocol and excludes it from generic provider authority; Sprint `8.11`
   alone freezes and migrates the live legacy Pulumi-owned principal/policy/key family, with no
@@ -5862,7 +5938,11 @@ an indefinite dual-write or fallback regime.
 
 ### Remaining Work
 
-None. The TLS lane is exact-observe/CAS/read-back and passes 12/12. The retained signed Provider
+None on Sprint `4.50`'s now-explicit resource-node/authority foundation. Sprint `4.85` owns the
+separate terminal decommission-program residual corrected under Increment FF: home uninstall,
+`.data` disposition, final audit, and terminal-receipt read-back must enter the signed manifest and
+external receipt graph before total-decommission completion is constructible. The TLS lane is
+exact-observe/CAS/read-back and passes 12/12. The retained signed Provider
 vocabulary supplies encrypted, expiring EKS client authentication without credential projection
 (5/5 projection and 18/18 execution), while native SES/Route53 production reconciliation dispatches
 through authenticated Provider intents. `HostDirectAuthorityStore`, `HostDirectObjectStore`, and the
@@ -8005,8 +8085,9 @@ exercise the post-`4.76` cascade.
 **Independent Validation**: the reproduction below runs on the home substrate with RKE2 installed
 but not serving — no AWS, no live cluster API. `prodbox dev check`, `prodbox test unit`, and
 `prodbox test integration cli` / `env` exit 0.
-**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md` (§ 3.1 invariant 3
-and § 6), `documents/engineering/streaming_doctrine.md` § 6.
+**Docs to update**: at landing, `documents/engineering/lifecycle_reconciliation_doctrine.md`'s
+soundness/terminal-audit rules and `documents/engineering/streaming_doctrine.md` § 6. The target is
+now superseded by the exact-keyed correction in Sprints `4.84`–`4.86`.
 
 ### Objective
 
@@ -8147,13 +8228,12 @@ confirmation, never rendering the clean sentence. It is **registered rather than
 
 ### Remaining Work
 
-None on the code-owned surface. The doctrine half is discharged in the same change per
-[Standard L](development_plan_standards.md#l-cli-doctrine-alignment) — the code moved and the
-doctrine text says which surface owns the refusal, rather than the doctrine being rewritten down:
-`lifecycle_reconciliation_doctrine.md` § 3.1 invariant 3 now names the three owners (gate, destroy
-loop, aggregate) and records what the pre-`4.76` cascade printed; § 6 replaces its
-implementation-gap block with the verdict algebra and carries the one residual forward;
-`streaming_doctrine.md` gains § 6a, *A narrated skip is not a narrated absence*.
+None on the sprint's original code-owned surface. At landing, the then-current reconciliation
+doctrine named the gate/destroy/aggregate refusal owners and terminal sweep verdict, and
+`streaming_doctrine.md` gained *A narrated skip is not a narrated absence*. **2026-08-15
+correction**: that composition still admitted a global audit answer as per-stack truth and
+uninstalled on incomplete recovery. Sprints `4.84`–`4.86` supersede the target without withdrawing
+the narrower `4.76` fail-closed and narration work.
 
 **A regression found while validating this sprint, and fixed here rather than left.**
 `prodbox test integration cli` did not pass 55/55 at the start of this sprint — it failed **8 of
@@ -8216,7 +8296,9 @@ Separately, `--yes` on all four `aws stack <stack> destroy` verbs is inert. It i
 `confirmed` with help text "Skip confirmation prompts", renamed `summary` at dispatch, wildcarded by
 three of four sinks, and consumed by the fourth as a **quietness** selector
 (`| summary = pulumiLoginQuiet`). No `requireInteractiveTty` guard covers these verbs. The command
-is *intentionally* non-interactive per `CLAUDE.md`, so the defect is not a missing prompt — it is a
+is *intentionally* non-interactive per the
+[AGENTS.md command-selection contract](../AGENTS.md#command-selection-automation-vs-operator-interactive),
+so the defect is not a missing prompt — it is a
 surface advertising a safety property it does not have, where omitting the flag is byte-identical to
 passing it.
 
@@ -8247,7 +8329,9 @@ All four are landed.
   `Left` reaches `TagSweepUnconfirmed` and exits non-zero rather than stopping at the parser.
 - **`--yes` gates the destroy.** The row offered gate-or-remove; **gate** is the right resolution
   and the reason is not preference. `prodbox aws stack <stack> destroy --yes` is the documented
-  automation entrypoint in `CLAUDE.md` and is the `resourceDestroyCommand` string in the
+  automation entrypoint in
+  [AGENTS.md](../AGENTS.md#command-selection-automation-vs-operator-interactive) and is the
+  `resourceDestroyCommand` string in the
   managed-resource registry, which the teardown refusal surfaces print to operators. Removing the
   flag would have required changing all three and would have left the automation contract narrower
   than the doctrine. `requireDestroyConfirmation` refuses when the flag is unset, in the shape
@@ -8470,7 +8554,7 @@ exercised on a live host that has AWS state *and* no admin credential. The compo
 unit case; the field observation is not.
 **Independent Validation**: a pure two-arm decision composed with the existing pure substrate
 inference, validated by the unit suite — no cluster, no AWS. `prodbox dev check` exit 0;
-`prodbox test unit` exit 0 at main Hspec **3419/3419**.
+`prodbox test unit` exit 0 at main Hspec ~~**3419/3419**~~ — **corrected 2026-08-14 under Standard C**: the figure recorded here and the `3420` recorded in this plan's phase table disagreed with each other, and Sprint `4.81` measured the pre-`4.81` tree at **3430** by deriving the delta from its own case count rather than by subtracting totals.
 **Docs updated**: none under `documents/` —
 [lifecycle_reconciliation_doctrine.md § 6](../documents/engineering/lifecycle_reconciliation_doctrine.md)
 already states the rule, and this sprint makes the code satisfy it rather than changing it.
@@ -8486,7 +8570,8 @@ two fail closed.
 Sprint `4.76` registered it as **a policy question, not an honesty one**: the arm no longer claimed
 absence, so what remained open was whether the home cascade should *require* an AWS credential it
 has no other use for. Refusing outright would fail `prodbox cluster delete --cascade` on every host
-that has never provisioned an AWS substrate — the recommended wipe-and-rebuild path in `CLAUDE.md`.
+that has never provisioned an AWS substrate — an authorized lifecycle path in
+[AGENTS.md](../AGENTS.md#live-infrastructure-deployment-is-authorized).
 Both horns are real, which is why the row sat unowned.
 
 **The dilemma dissolves once you notice the cascade already computes the fact that decides it.**
@@ -8528,6 +8613,885 @@ observed absent but which nonetheless has orphaned AWS resources from some earli
 skips — correctly, because the cascade's sweep is scoped to the cluster lifecycle it is tearing
 down, and § 6 already says the sweep is defence-in-depth for a controller that diverged from its
 registered family, never the ownership registry.
+
+## Sprint 4.81: A Residue Answer Does Not Say Which Authority Answered It ✅
+
+**Status**: ✅ **Done (2026-08-14)** — Phase `4` own-surface reopen (Standard A) on the
+residue-observation surface this phase owns through Sprints `4.16`, `4.19`, `4.21`, `4.76`, and
+`4.78`.
+**Implementation**: `src/Prodbox/Lifecycle/ResidueStatus.hs` (`ResidueObservationLayer`,
+`ResidueObservation`, `observeResidueAt`, `ResidueAuthorityUnauthenticated`),
+`src/Prodbox/Lifecycle/LiveResidue.hs` (`PerRunResidueStatuses`, the four triples),
+`src/Prodbox/CLI/Rke2.hs` (`renderPerRunObservation`), `src/Prodbox/CheckCode.hs`
+(`checkResidueObservationMinter`), `src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
+`src/Prodbox/Aws.hs`, `test/unit/Main.hs`.
+**Blocked by**: none.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface** —
+§ P names lifecycle orchestration and destructive cleanup among the surfaces a change invalidates).
+Both substrate rows were already `pending`; no qualification identity captured before this sprint
+survives it.
+**Live-proof**: no live-infra axis (Standard O). Every deliverable is a pure projection or a
+compile-time boundary, so there is nothing here that live infrastructure would falsify; the
+consuming behaviour change is Sprint `4.82`'s and carries the live proof. This is an absent axis,
+not a pending one.
+**Independent Validation**: the layer projection is pure and total, and the minting boundary is a
+`dev check` lint — unit suite only, no cluster and no AWS (Standard N).
+**Docs updated**: the doctrine half was discharged in the change that registered this sprint, per
+Standard L — [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+§ 5a records the residual and § 5b states which layer owns which question, and
+[chaos_hardening_doctrine.md](../documents/engineering/chaos_hardening_doctrine.md) § 24 names the
+second in-tree instance while citing the plan for the measurement (§ 22).
+[system-components.md](system-components.md) still describes the layer distinction as the target
+state; it is corrected when Sprint `4.82` makes the cascade consume it.
+
+### Objective
+
+[chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) requires
+that *a derived value is only as correct as the layer at which its source object is authoritative,
+and that layer must match the layer at which the value is enforced*, and its corollary requires a
+derivation to **name the layer whenever it names the source**. `ResidueStatus` had nowhere to name
+one.
+
+Measured rather than asserted: **nineteen** top-level producers, enumerated by signature over `src/`.
+The authoritative sources they read are the Pulumi checkpoint store, AWS resource presence, AWS IAM,
+AWS EBS, local config text, a Pulsar topic, a Vault gate decision, an object-store listing, SES
+consumer quiescence, and public-edge TLS — plus two producers that are not observations at all: an
+aggregate fold over other statuses and a bare transport-failure constructor.
+
+**The producer count is mechanical; the layer count is a judgement, so this sprint states the list
+and not a number.** An earlier draft said "eleven layers", arrived at by counting table rows rather
+than distinct external authorities — EBS and IAM are both AWS, and a fold and a failure constructor
+are neither. Publishing a numeral whose derivation is a bucketing choice is a restated inventory
+wearing a derived one's clothes; the enumeration is falsifiable and the numeral was not.
+
+**The defining module stated the rule and erased it ten lines later.** `PresenceObservation` and
+`CheckpointObservation` are documented there as "deliberately independent … live resources and a
+usable encrypted checkpoint are separate external facts"; `presenceObservationToResidue` joins the
+first into `ResidueStatus` and `residueStatusFromCheckpointObservability` the second, after which
+nothing distinguished them.
+
+### The remedy was constrained by doctrine, not chosen
+
+[chaos_hardening_doctrine.md § 21](../documents/engineering/chaos_hardening_doctrine.md) names this
+surface explicitly: *"externally-authoritative state — readiness, leases, provider state, ownership,
+**residue** — stays a flat exhaustive ADT computed by pure projection … the proof belongs in the
+compile or decode gate, **never as an index on an observed value**."* A phantom or GADT layer index
+was therefore out before the sprint began. Two further constraints bound the deliverable rather than
+being discovered during it: § 24's anti-dedup rule — *say which layer a value is for, do not reduce
+the count of values* — so `PresenceObservation` and `CheckpointObservation` are **not** merged; and
+no § 25 was added, because § 24 already prescribes the behaviour and § 12 already carries its
+strength row.
+
+### Deliverables
+
+- **`ResidueObservationLayer`** — a flat, `Bounded`/`Enum` ADT naming the authority that answered:
+  retained checkpoint store, AWS, Vault gate, harness bypass. Carried as a **field**, per § 21.
+- **`ResidueObservation`, with its constructor unexported** and `observeResidueAt` as the sole
+  minter, so a consumer cannot obtain an answer without also obtaining the layer it was answered at.
+- **`checkResidueObservationMinter`** restricts the minter to the two modules that hold an
+  observation boundary. This is § 21's class-A move — *a witness is returned by performing the
+  operation, never constructed by describing it* — in the same idiom as the Sprint `1.76`
+  `RoundTripWitness` and Sprint `4.58` `TargetSinkVersion` boundaries and Sprint `3.32`'s
+  `checkDnsOwnerAuthorityBoundary`.
+- **`ResidueAuthorityUnauthenticated` replaces the mislabel.** `perRunAuthenticationFailedTriple`
+  stamped `ResidueBackendMinioUnreachable` onto every `LifecycleAuthorityAuthentication` failure, so
+  a live cascade run printed `MinIO backend unreachable` about a MinIO that was never dialled — three
+  healthy subsystems named, and the one that failed named nowhere. Conversion class, § 23.
+- **The cascade says who answered.** `renderPerRunObservation` prints
+  `… [answered by: retained checkpoint store]` beside each status, which is § 24's corollary applied
+  to the operator-facing sentence.
+- **`residueAbsent` withdrawn.** It was an exported alias for `ResidueAbsent` with **no production
+  caller**, whose only test asserted it equalled the constructor — a tautology about a redundant
+  second minter, the enforcing-nothing shape Sprints `4.68`, `4.72`, and `4.77` each found. Deleted
+  rather than re-worded, per § 23's "count the encoders" and "remove the conversion before adding a
+  proof".
+
+### Validation
+
+1. **The reproduction as a unit case, side by side.** An absence observed at the checkpoint layer and
+   one observed at AWS were the *same value* before this sprint; both are now asserted to share a
+   status and differ in layer and in identity. That is the same shape of case Sprint `4.76` used to
+   pin `ResidueUnreachable` against `ResidueAbsent`, and it is what makes the defect falsifiable
+   rather than argued. ✅
+2. **The closed property, asserted rather than the list restated**: no authentication failure renders
+   as a claim about a backend that was never contacted, and the MinIO reason is retained for a
+   boundary that genuinely was dialled. ✅
+3. Layer rendering is total and injective over `[minBound .. maxBound]`, so a narration cannot
+   conflate two authorities; and `mapResidueObservationStatus` is pinned not to relabel the
+   authority. ✅
+4. **`checkResidueObservationMinter` mutation-proven.** A minter call was introduced in
+   `src/Prodbox/Infra/AwsTestStack.hs`; `dev check` failed naming file and line and listing the
+   permitted modules; the file was restored and verified byte-exact by `md5sum -c`. ✅
+5. **6 new cases**, measured by running only them (`prodbox-unit -p "/Sprint 4.81/"` → `All 6 tests
+   passed`) rather than by subtracting totals. ✅
+6. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3436** plus 27, 33, and
+   27 ✅.
+
+**A recorded baseline was wrong, and deriving the delta is what showed it.** 3436 − 6 = **3430**
+before this sprint, but Sprint `4.80`'s block records `3419` and this plan's phase table records
+`3420` — two figures that already disagreed with each other and both of which disagree with the
+tree. Corrected under Standard C in both places rather than the newer number being quietly written
+over the older.
+
+### Remaining Work
+
+None on this sprint's surface.
+
+**The bound is stated.** This makes the layer *sayable*, its minting *restricted*, and the narration
+*honest about who answered*. It does not make any consumer read the right layer — a producer may
+record one and a consumer still ignore it. That is Sprint `4.82`'s surface and this sprint is not
+credited with it. The gate is a compiled rule over a source region, not a property of the type
+(§ 22): it cannot prove a permitted module named the *correct* layer, only that a module with no
+observation boundary cannot name one at all.
+
+## Sprint 4.82: Historical AWS-Layer Resolver — Composition Falsified ✅
+
+**Status**: ✅ **Done (2026-08-14)** — Phase `4` own-surface reopen (Standard A), same
+destructive-path surface as Sprints `4.76`–`4.81`, split from `4.81` because the root cause is
+consumption rather than representation.
+**Implementation**: `src/Prodbox/Lifecycle/ResidueStatus.hs` (`AwsLayerAnswer`,
+`ResidueResolution`, `resolveResidueAcrossLayers`, `residueResolutionStatus`,
+`residueResolutionConfirmedAbsence`, `renderResidueResolution`), `src/Prodbox/CLI/Rke2.hs`
+(`queryAwsLayerForPerRun`, `perRunNeedsAwsLayer`, `independentPhase`, `derivedPhase`,
+`renderFailedCascadePhases`, `runNativeDeleteCascade`), `src/Prodbox/CLI/Spec.hs`,
+`test/unit/Main.hs`.
+**Blocked by**: none remaining — Sprint `4.81` (same phase, lower number, Standard N compliant)
+landed first and is Done.
+**Deployment qualification**: pending (**this moves a Standard-P destructive-cleanup surface**, and
+it is the sprint that changes what `cluster delete --cascade` *does* rather than what it says). Both
+substrate rows were already `pending`. A qualification run must exercise the post-`4.82` cascade,
+and its Cleanup/residue cell must name which layer confirmed absence — recording a bare "clean"
+would reintroduce at the evidence layer exactly the collapse this sprint removes.
+**Live-proof correction (2026-08-15)**: ❌ falsified. The pure resolver cases did not compose raw
+tag discovery, lifecycle partition, ARN cardinality, and per-stack attribution. See Validation 7.
+**Independent Validation**: the resolution is a pure total function over `(observation × AWS
+answer)`, and the phase-attribution helpers are pure over recorded outcomes — unit suite only, no
+cluster and no live AWS (Standard N).
+**Docs updated**: [lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+§ 5a and § 5b already state which layer owns which question and record the residual this sprint
+closes; [system-components.md](system-components.md)'s residue row no longer describes the layer
+distinction as a target state.
+
+### Historical objective and corrected finding
+
+With the layer recordable after Sprint `4.81`, the cascade can ask the authority that owns the
+question it actually consumes. Before this sprint `queryPerRunResidueStatuses` asked the in-cluster
+Lifecycle Authority — unreachable whenever the control plane is down, which is the normal state when
+an operator reaches for `cluster delete --cascade` — and the cascade then treated that
+non-observation as grounds to fail `confirm-MinIO` **and** to infer `SubstrateAws`, so one
+unobservable cause produced two failed phases.
+
+**The command held an AWS answer, but not the exact answer the stack decision required.**
+`runCascadePostflightTagSweep` loads `loadAdminAwsCredentials` and reaches the real AWS Tagging API.
+The sprint treated that global audit as authoritative for per-stack presence. The 2026-08-15 run
+falsified that composition: AWS returned one `ResourceTagMapping` for the retained bucket with its
+full two-tag set; Prodbox's decoder emitted two internal rows and copied the resulting global
+answer to three stack identities whose exact observations remained `Unobservable`. Postflight correctly
+partitioned both internal rows as retained and rendered the ARN once, but that scoped audit result was not
+exact per-stack observation and could not authorize a per-stack decision.
+
+### Deliverables
+
+- **Historical second-layer observation, consulted only when the first failed.** `queryAwsLayerForPerRun`
+  reuses `TagSweep.discoverClusterTaggedAwsResources` and `loadAdminAwsCredentials`, both already
+  production-proven on this path. `perRunNeedsAwsLayer` states the "we did not need to ask" case as
+  a decision with a reason rather than an absent branch, and a missing credential is
+  `AwsLayerNotConsulted` — **never** an absence.
+- **Historical `resolveResidueAcrossLayers`, total over both inputs.** A positive answer at the authority layer
+  is never overridden by AWS, because the two answer different questions. Only
+  `ResolutionAwsLayerAbsent` and an authority-observed `ResidueAbsent` establish absence, and
+  `residueResolutionConfirmedAbsence` returns *which layer* established it.
+- **`ResolutionAwsLayerPresent` maps to `ResidueUnreachable`, deliberately.** The abstract unit arm
+  records a caller-supplied presence answer, but the production global query proved only that some
+  query-matching AWS resource mapping existed; it did not identify the requested stack. Mapping the
+  arm to refusal was fail-closed, but treating the raw query as that arm was unsound and could not
+  authorize or attribute a stack destroy.
+- **`inferCascadeSubstrate` consumed the resolved value.** Its synthetic exact-absence case remains
+  a valid unit result, but the production observer did not produce exact per-stack evidence; the
+  live composition therefore could not justify the inferred substrate or skipped drain.
+- **Historical phase narration was narrower than the causal claim made for it.**
+  `cascadePhaseDerivedFrom` is populated when both the drain and the nominated predecessor failed;
+  it does not carry provenance from the decision that selected or blocked the drain. The rendered
+  “downstream” label landed, but simultaneous failure cannot establish causality. Sprint `4.85`'s
+  dependency graph replaces that inference with typed edges and independent outcomes.
+- **The `--cascade` help text stops advertising a property the code removed.** It promised "the K8s
+  drain phase skips gracefully when no cluster is reachable"; Sprint `4.76` ended that and this
+  sprint changes the condition again, so the text now states what is actually true — every phase
+  runs, and success requires each phase to confirm its own outcome.
+- **A superseded renderer deleted rather than left.** Sprint `4.81`'s `renderPerRunObservation` is
+  replaced by `renderResidueResolution`; keeping both would be the second-encoder shape § 23 warns
+  about.
+
+### Validation
+
+1. **The two arms that decide the reported defect, asserted side by side.** An unreachable authority
+   with AWS reporting none resolves to absence at the AWS layer; the same observation with AWS
+   unobservable or not consulted still fails closed. Before this sprint both inputs produced the same
+   refusal and the same exit 1, so the pair differing is what makes the fix falsifiable rather than
+   argued. ✅
+2. **AWS never overrides an authority that answered** — asserted over the full cross-product of both
+   answering observations against all four `AwsLayerAnswer` constructors. ✅
+3. **The refusal arm is pinned**: AWS-reports-resources with an unreadable checkpoint confirms no
+   absence and renders "not destroyable". ✅
+4. **Historical renderer cases are pinned, not causal provenance**: simultaneous predecessor/drain
+   failure renders the nominated predecessor, while predecessor success and drain success suppress
+   it. Those cases do not distinguish an independently failing drain from a truly downstream one;
+   the live counterexample therefore falsified the stronger attribution claim. ✅ narrow renderer /
+   ❌ causal claim
+5. **8 new cases**, measured by running only them (`prodbox-unit -p "/Sprint 4.82/"` → `All 8 tests
+   passed`) rather than by subtracting totals. ✅
+6. `prodbox dev check` exit 0 ✅; `prodbox test unit` exit 0 at main Hspec **3444** plus 27, 33, and
+   27 ✅ — reconciling exactly with `4.81`'s measured 3430 baseline plus 6 plus 8;
+   `prodbox test integration cli` **57/57** ✅. The tree measures **3446** at the time of writing
+   because Sprint `2.47` added two cases on a Phase-`2` surface in the same session; the figure above
+   is this sprint's, stated as measured rather than as the tree's current total.
+7. **The live reproduction was taken and falsified this composition (2026-08-15).** With the local
+   Lifecycle Authority caller unobservable, AWS returned one `ResourceTagMapping` for the
+   intentionally retained long-lived state bucket with its full two-tag set. Prodbox's decoder
+   emitted two internal rows; the same global answer was copied to all three per-run stacks whose
+   exact observations remained `Unobservable`; AWS drain was selected; and neither Kubernetes drain
+   nor Pulumi destroy reached an external effect. Postflight partitioned both internal rows as retained and rendered the ARN
+   once, with no escapees. Expected exit 0 did not occur. This is the stable counterexample owned
+   by Sprints `4.84`–`4.86` and `5.35`. ❌
+
+### Remaining Work
+
+The narrow layer field/resolver implementation remains historical, but its production composition
+is not accepted as the target. Sprints `4.84`–`4.86` own the exact-keyed replacement and deletion of
+the global fallback.
+
+**Corrected bound.** The AWS query was authoritative only for the cluster-wide tag-query response it
+obtained; the pre-`4.84` path did not normalize that response into domain resources. It
+was not keyed per stack, did not partition lifecycle class before the decision, and counted tag
+rows rather than domain identities. Naming the AWS layer did not make those missing coordinates
+true.
+
+
+## Sprint 4.83: A Pullable Digest By Configuration Rather Than By Contract ✅
+
+**Status**: ✅ **Done (2026-08-15)** — Phase `4` is reclosed. The rollout token remains the
+host-reported Docker identity, while a distinct OCI config digest is resolved for runtime
+attestation and every Pod pull uses its declared `repository:tag`.
+**Implementation**: `resolveLocalImageBuildToken` and the runtime config-digest resolver in `src/Prodbox/Lib/ChartPlatform.hs`,
+the observers `decodeAndValidateJob` / `validatePod` in
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminKubernetes.hs`, `parseJobBinding` /
+`podObservation` in `src/Prodbox/Lifecycle/CredentialProvisioner/KubernetesJob.hs`, `podObservation`
+and `ContainerStatusDto` in `src/Prodbox/ControlPlane/TargetSecretWorkerProduction.hs`, and
+`validateImageReference` in `src/Prodbox/Lifecycle/AdminAction/Kubernetes.hs`.
+**Blocked by**: none.
+**Deployment qualification**: code-owned validation complete; current-revision live qualification
+remains Standard O/P evidence rather than a closure gate.
+**Live-proof**: 🧪 pending, and deliberately low-value — the prior live tree already passed the pull
+arm; this sprint closes the contract and runtime-attestation gap with deterministic cases.
+**Independent Validation**: every Pod/Job manifest builder is pure over its intent and a caller-supplied
+image reference, and every observer is pure over an HTTP status and body — unit cases only, no cluster
+(Standard N).
+**Docs to update**: [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) on closure;
+`documents/engineering/local_registry_pipeline.md` § 6.2 already carries the measurement and the rule
+this sprint enforces.
+
+### Objective
+
+Sprint `2.51` fixed two Bootstrap Broker Pod-image references built as
+`repository@sha256:<config digest>`, which no OCI registry can resolve. Three further sites in this
+phase build a reference the same way — `workerImage` in
+`src/Prodbox/ControlPlane/TargetSecretWorkerKubernetes.hs`, the AWS-admin provisioner Job in
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminKubernetes.hs`, and the external ACME-EAB
+ingress Job in `src/Prodbox/Lifecycle/CredentialProvisioner/KubernetesJob.hs`, all with
+`imagePullPolicy: Always`.
+
+### The correction that defines this sprint, and it is the whole finding
+
+**These three sites were registered as defective, and they are not. Measuring the value settled it
+against the analysis, and the analysis was this plan's own.** The claim was that they inherit a
+config digest from `resolveLocalImageBuildToken`, which runs
+`docker image inspect --format '{{.Id}}'`. Measured on the operator host against one image:
+
+| Reporter | Value |
+|----------|-------|
+| Kubernetes `status.containerStatuses[].imageID` | `sha256:e3c7ab7c…` |
+| registry `Docker-Content-Digest` for the tag | `sha256:52d86a90…` |
+| `docker image inspect --format '{{.Id}}'` | `sha256:52d86a90…` |
+| `docker image inspect --format '{{json .RepoDigests}}'` | `…@sha256:52d86a90…` |
+
+`.Id` equals the registry's manifest digest, so the rendered references **are** pullable and none of
+the three is broken. **The inference that failed was reasoning from the Broker's measurement to a
+different reporter**: the Broker reads Kubernetes' `imageID`, which genuinely is the config digest,
+and "`docker inspect .Id` is the config digest" was carried across as though the two reporters were
+one. They are not, and the plan has now made this class of error four times — *an identity stated in
+prose is not a measurement, and the difference is a command away.*
+
+**What is real is why it works.** This host runs the Docker daemon with the **containerd image
+store** (`docker info` → `driver-type io.containerd.snapshotter.v1`), under which `.Id` is the
+manifest digest. Under Docker's classic image store `.Id` is the config digest — same field, different
+layer, selected by daemon configuration this repository never sets, asserts, or documents. So three
+`imagePullPolicy: Always` Jobs are pullable **by host configuration rather than by contract**, and the
+failure mode if that configuration differs is the one Sprint `2.51` spent a session diagnosing.
+
+### Deliverables
+
+- **The three sites stop needing a registry-resolvable digest at all.** The first draft of this
+  deliverable proposed changing `resolveLocalImageBuildToken` to read `.RepoDigests`. **That is the
+  wrong fix and is recorded as refuted rather than deleted.** Two reasons: `.RepoDigests` is empty
+  until an image has been pushed, so a locally built image would silently lose its rollout token and
+  with it the change detection Sprint `3.38` just made load-bearing; and more fundamentally, a
+  rollout token does not need to be a registry coordinate at all — it only has to **change when the
+  image changes**, which `.Id` does under either image store. The layer confusion is not in the token,
+  it is in the three sites that consume a token as a pull reference. So the remedy is Sprint `2.51`'s
+  exactly: the `image` field carries the declared `repository:tag` that `ResolvedCustomImage` already
+  holds beside the token, and the digest stays an attestation identity compared against an observed
+  `imageID`.
+- **The observers given a runtime identity to attest against**, which is a defect independent of the
+  digest question and does not go away with it.
+
+  **A constraint that makes this harder than the Broker's version, measured so the next session does
+  not design around a false premise.** The Broker could attest one Pod against another because both
+  identities came from the *same reporter* — Kubernetes `imageID`. These three cannot: their intent
+  digest is minted on the **host** by `docker image inspect`, and on the operator host that value is
+  `sha256:5baff542…` while the Pod running that exact image reports
+  `imageID sha256:fad071f2…`. Measured side by side. **So comparing the observed `imageID` against the
+  intent digest can never pass**, and the naive form of this deliverable is unimplementable.
+
+  Two shapes remain and the choice is not settled here: attest a Job Pod against a **counterpart Pod**
+  observed through the same reporter (the Target Agent for the target worker, the Lifecycle Authority
+  for the credential-provisioner Jobs), which is the Broker's pattern and needs no host-minted digest;
+  or have the host mint a *config* digest rather than `.Id`, which requires establishing that one is
+  obtainable at all under the containerd image store before it can be relied on. `decodeAndValidateJob` / `validatePod`, `parseJobBinding` /
+  `podObservation`, and `TargetSecretWorkerProduction.podObservation` each validate a Pod by
+  re-deriving the same `repository@digest` string and comparing it to `spec.containers[].image` — a
+  value the same code path wrote, so the comparison is self-consistent by construction and can only
+  ever pass. `ContainerStatusDto` does not parse `imageID` at all, so the runtime identity is not
+  merely unused there; it is unavailable. The contract to adopt is
+  [bootstrap_readiness_doctrine.md § 0.4.1](../documents/engineering/bootstrap_readiness_doctrine.md):
+  the attestation identity is the **observed** runtime digest, and a spec field is a request rather
+  than a proof.
+- **The latent fourth site addressed**: `validateImageReference` in
+  `src/Prodbox/Lifecycle/AdminAction/Kubernetes.hs` *requires* a digest-suffixed reference and has no
+  production caller today.
+- **`checkWorkerImagePullReferenceOwner` widened** beyond `src/Prodbox/Bootstrap/Broker/` once these
+  paths no longer assemble references, which is the point at which the Sprint `2.51` guard stops
+  being Broker-local.
+
+### Validation
+
+1. Warning-clean `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror` exit 0. ✅
+2. `prodbox test unit`: **3482/3482** in the main suite, including the new negative runtime-identity
+   case; the additional registered suites are run by the final repository gate. ✅
+3. `prodbox dev check` exit 0; `prodbox test integration cli` **57/57**; `prodbox test integration
+   env` **57/57**. ✅
+4. The target-worker observer decision is pinned directly: a `containerd://sha256:…` identity equal
+   to the intent is accepted and a different observed digest is refused. The production observer
+   uses that decision after parsing `status.containerStatuses[].imageID`; its declared image is not
+   an attestation input. ✅
+
+### Remaining Work
+
+None on the code-owned surface. The deliberately non-blocking Standard-O live proof remains evidence
+work.
+
+
+**Two facts established while scoping, so the implementation does not start by rediscovering them.**
+First, **no durable type needs to widen**: `imageRepository` is already a caller-supplied parameter on
+`renderAwsAdminJob` and `renderCredentialProvisionerExternalJob`, and `ResolvedCustomImage` already
+carries the tag beside the repository, so the `image` field can become a declared reference without
+touching `AwsAdminPermitIntent` or the external-ingress intent — both of which **are** `Serialise` and
+would have hit exactly the arity trap Sprint `2.51` measured. Second, the observer half is blocked on
+the reporter mismatch recorded under Deliverables and must resolve that before it can be written.
+
+**What is deliberately not folded in.** The config digest is not removed from
+`resolvedCustomImageRolloutToken`'s *purpose*: a rollout token only has to change when the image
+changes, and either digest satisfies that. The defect is a value whose layer depends on host
+configuration being consumed where a registry coordinate is required.
+
+## Sprint 4.84: Pure Registry and Exact-Keyed Observation Algebra [🔄 Active]
+
+**Status**: Active (opened 2026-08-15; updated 2026-08-16). The pure exact-keyed foundation is
+implemented and validated; legacy composition, stable creation identity, and audit completeness
+remain.
+**Blocked by**: none.
+**Deployment qualification**: pending — lifecycle selection and destructive-cleanup evidence change.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 3.1, “The managed-resource registry and exact
+observation boundary”](../documents/engineering/lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary),
+[Pure FP Standards § 1.3, “Programs are data”](../documents/engineering/pure_fp_standards.md#13-programs-are-data),
+and [Pure FP Standards § 6, “External-System Boundaries”](../documents/engineering/pure_fp_standards.md#6-external-system-boundaries).
+**Implementation**: `Prodbox.Lifecycle.Teardown.Model`, `Registry`, `Decision`, the exact observation
+and ownership facades under `Prodbox.Lifecycle.Teardown`, and `Prodbox.Lifecycle.AwsInventory` now
+exist. The old `ResourceClass`/`EbsVolume`/`TagSweep` and CLI residue funnel remain pre-cutover.
+**Live-proof**: pending and non-blocking for code-local closure; the pure counterexample is
+independently validatable first.
+**Independent Validation**: exhaustive tables and properties over registry projection, keyed
+observation-set construction, ARN normalization, and decision inputs; warning-clean build and
+`prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/substrates.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make it impossible for cascade to target a `LongLived` resource, for a global audit answer to
+inhabit exact per-stack truth, for tag-row cardinality to become resource cardinality, or for a
+runtime EBS tag set to choose the lifecycle class of the resource being observed.
+
+### Measured counterexample and correction to Sprint 4.82
+
+The 2026-08-15 run falsifies `4.82`'s remaining-work and live-proof premise. The AWS Tagging API
+worked: it returned one `ResourceTagMapping` for the intentionally retained bucket with its full
+two-tag set; Prodbox's decoder emitted two internal rows and copied one global answer to `aws-eks`,
+`aws-eks-subzone`, and `aws-test`, whose exact observations remained `Unobservable`. Postflight partitioned
+both internal rows as retained and rendered the ARN once, with no escapees. The preliminary
+caller-ServiceAccount observation reported unobservable, but discarded stderr leaves its cause and
+API reach unknown. No Kubernetes drain request and no Pulumi provider effect occurred. The evidence
+supports a Prodbox identity/scope/cardinality composition failure, not an AWS or Kubernetes failure.
+
+### Current Implementation Checkpoint (2026-08-16, paused)
+
+- Pure lifecycle/surface/target registries, exact observation scopes and complete-set decisions,
+  ARN normalization, and distinct checkpoint/manifest/audit types have focused exhaustive tests.
+- Authority-facing stack-creation and ownership routes (`54`/`55`) use bounded authenticated
+  requests and independent read-back. Provider AWS-scope receipts and stack-reader repositories
+  expose opaque proof facades; raw repository/codec/remint paths are hidden.
+- The direct public ownership-manifest and stack-reader proof-laundering chains were removed;
+  route `55` remains deliberately observation-only until an exact admitted-create join exists.
+- The remaining identity defect is structural: current creation/manifest slots are keyed by cleanup
+  surface/run, so a later cleanup run cannot select the same created stack. A stable
+  registered-stack lifecycle generation, causally bound to the admitted create and exact Provider
+  credential session, is not yet implemented.
+- The terminal retained-resource inventory is incomplete (for example, it does not yet carry the
+  full S3/SES/shared/dynamic matcher catalog), and the old global tag/residue composition and
+  incomplete legacy-escape registry remain Pending Removal.
+
+### Deliverables
+
+- Replace callback-bearing lifecycle metadata with a pure registry indexed by static
+  `LifecycleClass`, `ResourceKind`, and cleanup surface. The closed surfaces are local-only,
+  cascade, explicit per-run stack, operational teardown, explicit long-lived, and external total
+  decommission. Cascade targets are constructible from `PerRun` entries, separately typed
+  `Operational` credentials whose dependency edges keep them live until every final consumer is
+  terminal, and the separately typed final local-substrate target. `LongLived` cannot enter
+  cascade; local-only and explicit per-run surfaces cannot be conflated with it.
+- Replace the single `aws-ebs-volumes :: LongLived` registry identity with two distinct registered
+  target identities: test-scoped EBS indexed `PerRun`, and production-retained EBS indexed
+  `LongLived`. Creators, observers, and cleanup-program projection select the typed descriptor
+  before any provider response is read. Runtime tags remain ownership/coordinate/spec evidence;
+  no tag classifier may mint, change, or recover `LifecycleClass`.
+- Introduce distinct flat ADTs for exact resource observation, checkpoint-copy observation,
+  ownership-manifest observation, and terminal escape audit. An exact-resource observation carries
+  its registered key, coordinate digest, authority layer, observation revision, opaque durable-run
+  scope, and explicit absent/present/partial/unobservable result. Checkpoint and manifest wrappers
+  retain their own stack/copy or manifest provenance plus that scope. The aggregate escape audit
+  instead carries its surface-indexed query/registry/run scope and retained/escaped/unobservable
+  result; it cannot inhabit a keyed resource observation. The durable descriptor supplies each
+  scope explicitly to the observer, so a prior run or surface cannot enter the current fold.
+- Add a private `CompleteObservationSet` smart constructor requiring exactly one correctly bound
+  observation for every selected key. `Absent`, `Present`, `Partial`, and `Unobservable` are all
+  legitimate observations; the constructor refuses only incomplete coverage, duplicate keys, or
+  wrong key/coordinate/authority/scope bindings. The total decision fold maps `Partial` and
+  `Unobservable` to typed refusal, never to absence.
+- Normalize AWS responses to `Map Arn AwsResource` before lifecycle partition, cardinality, or
+  narration. Conflicting facts for one ARN refuse.
+- Delete the conversion path by which `AwsLayerAnswer`, `ResidueResolution`, positional pairing, or
+  a cluster-wide tag result becomes per-stack presence.
+- Make the legacy-escape inventory comprehensive, not merely internally bijective: every surviving
+  compatibility seam named by the Pending ledger must project to one typed escape category, exact
+  source marker, removal owner, and deletion condition. The current one-entry registry is retained
+  as measured input, not accepted as proof that no other escape exists.
+
+### Validation
+
+1. Complete registry/surface table: every `PerRun` entry is selected exactly once; each
+   cascade-owned `Operational` credential is selected only through its separate constructor and
+   dependency edges keep it present until all final consumers are terminal; no `LongLived` entry
+   can inhabit `CleanupTarget 'Cascade`; local-only and explicit-per-run targets cannot inhabit
+   cascade; and the local substrate cannot enter a generic resource destroyer. The table contains
+   exactly two EBS family identities with different keys and fixed classes: test-scoped `PerRun`
+   and production-retained `LongLived`; it contains no catch-all EBS identity spanning both.
+2. Smart-constructor tables reject missing, duplicate, reordered-with-wrong-key, wrong-coordinate,
+   wrong-authority, wrong-registry-revision, wrong-account/region/substrate/operation, and wrong-run/
+   surface bindings. Pure exact-resource, checkpoint-pair, and ownership-manifest observation
+   requests require the opaque durable-run scope explicitly; no request smart constructor accepts
+   an ambient or mismatched value. Complete sets containing `Partial` or `Unobservable` construct
+   successfully and the decision table deterministically refuses them.
+3. One returned `ResourceTagMapping` with a full two-tag set may decode to two internal rows, but
+   normalizes to one ARN; duplicated filters/pages/retries remain one, and a conflicting
+   tag/resource fact refuses.
+4. The frozen retained-bucket input yields one retained audit resource while all three exact stack
+   observations remain `Unobservable`; the audit cannot construct per-run presence or absence.
+5. Source/gate proof: registry modules contain no `IO`, callbacks, client endpoints, command
+   strings, or generic `Maybe` destroy hooks; external observations remain flat ADTs, not
+   state-indexed GADTs. No production function converts EBS tags or provider rows into
+   `LifecycleClass`; mutation/removal of a lifecycle tag can produce mismatch, partial, or
+   unobservable evidence, but can never reclassify retained EBS as `PerRun` or test-scoped EBS as
+   `LongLived`.
+6. Projection and negative-construction tables prove the test-scoped EBS key alone can enter the
+   cascade/test-reaper cleanup-target projection, the production-retained key alone can enter
+   explicit-long-lived or total-decommission target projections, and every wrong-key/class/tag
+   cross-product refuses. Regenerating documentation from the implemented registry replaces the one
+   current generated EBS row with the two target rows; `prodbox dev docs check` then pins that result.
+7. Escape-registry coverage joins the compiled inventory to every still-Pending compatibility seam:
+   an unmarked generic Tier-0 `aws.*`/`secret/aws/lifecycle-provider` legacy-reader, host-MinIO, or
+   bespoke-cascade escape fails even though the
+   existing marker↔entry bijection remains satisfied; deleted source plus stale entry also fails.
+
+### Remaining Work
+
+Finish the stable registered-stack lifecycle-generation identity and its exact create/read-back
+join, complete the terminal retained matcher/query inventory, convert every remaining producer and
+consumer, and delete the unkeyed funnel plus ambient residue-absence path. The landed exact modules
+are foundations, not evidence that the public cascade stopped using the old composition. The layer
+field from `4.81` remains valid; this sprint adds the exact object, key, scope, and cardinality that
+layer alone could not express.
+
+## Sprint 4.85: Desired-Absence Programs and Durable Cleanup Kernel [🔄 Active]
+
+**Status**: Active (implementation began 2026-08-15; updated 2026-08-16). The descriptor-bound
+kernel and major proof repositories are landed; final closure still consumes unfinished Sprint
+`4.84` creation-generation and audit-catalog inputs.
+**Closure dependency**: Sprint `4.84` for the stable registered-stack lifecycle generation and
+complete retained audit inventory. Dependency-safe kernel work is independently testable now.
+**Deployment qualification**: pending — persistence, operation recovery, and cleanup execution change.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 3.2, “Checkpoint recovery and the
+desired-absence decision”](../documents/engineering/lifecycle_reconciliation_doctrine.md#32-checkpoint-recovery-and-the-desired-absence-decision),
+[Lifecycle Reconciliation Doctrine § 3.3, “Result-indexed programs and the durable cleanup
+graph”](../documents/engineering/lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph),
+[Pure FP Standards § 3.4, “Always-run work uses a DAG result
+fold”](../documents/engineering/pure_fp_standards.md#34-always-run-work-uses-a-dag-result-fold),
+and [Pure FP Standards § 7, “GADT-Indexed State
+Machines”](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines).
+**Implementation**: `Prodbox.Lifecycle.Teardown.{Program,Graph,Execution,Report}`, lifecycle core
+`CleanupRun`/`CleanupRunRunner`, `CleanupProgramDescriptor`, RecoveryCapability/Requirement, and
+their bounded Authority repositories/clients now exist. Total-decommission parity and terminal
+proof protocols remain.
+**Live-proof**: pending and non-blocking after code-local deterministic crash/response-loss
+validation.
+**Independent Validation**: total decision matrices, graph properties, fake interpreters, and
+deterministic restart/cancellation schedules; no Phase 5 or 7 implementation is required.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Replace caller-injected actions and hand-authored phase folds with one result-indexed program
+algebra and durable desired-absence kernel whose distinct surface-specific success constructors
+require exact evidence.
+
+### Current Implementation Checkpoint (2026-08-16, paused)
+
+- `CleanupRun` and its index/stored aggregates have descriptor-bound v2 forms, retain v1
+  compatibility where safe, and recover an opaque `DescriptorBoundCleanupRun` only after fresh
+  authenticated descriptor read-back and exact recompile. Create/replay/scan/claim/node/primary/
+  compact paths and response-loss repair are covered by focused tests.
+- Canonical `CleanupProgramDescriptor` bytes retain surface, foundation, optional AWS scope,
+  registry/compiler/capability versions, initial run, semantic operation map, and graph/catalog
+  digests. Hidden rank-2 eliminators are the only restart path to a compiled program.
+- Result-indexed Program/Graph/Execution/Report, RecoveryCapability/Requirement, RecoveryPlane,
+  checkpoint, drain, registered-target, ownership, stack-reader, and surface-report foundations are
+  present behind opaque facades. Public raw proof/remint seams found during the audit were closed.
+- Route-local authenticated repositories `54` through `57` are additive; route `56` re-observes
+  RecoveryPlane state and route `57` commits only an exact post-Begin Healthy host observation.
+- The latest combined green kernel-era checkpoint was 610 library modules and 193 unit modules
+  linked under `-Werror`; the last full unit runtime was 3921/3921 on the preceding source set.
+- Unfinished work includes stable create-generation binding, atomic audit reservation plus durable
+  read-back, credential disposition/revocation, Stage-C pre-uninstall report authority,
+  descriptor-bound two-phase host absence/completion, total-decommission program parity, and
+  deletion of the legacy callback clients.
+
+### Deliverables
+
+- Implement the total stack decision over exact provider inventory, primary/backup checkpoint
+  observations, and ownership-manifest completeness: already absent; destroy from verified primary;
+  restore backup then destroy; destroy from complete manifest; or refuse.
+- Receipt-commit a bounded exact ownership manifest before the first provider/controller mutation.
+  Append dynamic IDs and read them back before the owner may create another child. Index manifest
+  writes/read-backs by `WriteAheadOwnership` versus `LegacyAdoptionOwnership surface`: only the
+  former may authorize create/append, while either can be bound into cleanup only after exact
+  target, surface, coordinate, and plan-digest agreement. A cleanup adoption receipt has no path to
+  a future create.
+- Define closed result-indexed teardown programs indexed by cleanup surface. A non-stack cleanup
+  witness has no `Stack`/`LocalSubstrate` constructor; stack effects require checkpoint or manifest
+  authority; local-only, cascade, explicit-per-run, operational, explicit-long-lived, and external
+  decommission values cannot cross surfaces. The interpreter is total and admits no callback, raw
+  shell command, ambient credential, `error`, or discarded `Left` path.
+- Index escape-audit authority, scope, report, and clean evidence by cleanup surface. Only cascade
+  and total decommission have an `AuditEscapes` authority: cascade binds its exact
+  intentionally-retained projection, while total decommission admits no retained carve-out. Their
+  clean witnesses cannot convert across surfaces; local-only, explicit-per-run, operational, and
+  explicit-long-lived programs have no audit-authority constructor. The cascade audit constructor
+  additionally requires the opaque aggregate of exact per-run, family, and operational-credential
+  read-back, so scheduling the audit before convergence is unrepresentable.
+- Allocate and receipt stable operation references before every registered desired-absence effect—
+  including stack, controller-family, and singleton/direct-resource programs—and before every
+  checkpoint-restore, checkpoint-retirement, cascade convergence-report, ordinary surface-report,
+  local-uninstall, local-completion, decommission local-data, and decommission terminal-receipt
+  effect. Mandatory `RequiresAttempt` read-back consumes the stable reference rather than the effect
+  response, so applied-with-response-lost and process-loss arms remain expressible and resumable. A
+  checkpoint restore outcome cannot mint the verified primary; only exact read-back through that
+  reference can.
+- Add the checkpoint retirement/quarantine program selected only by an opaque authorization that
+  already contains exact stack-absence evidence; retirement effect success still requires its own
+  read-back.
+- Bind a legacy-adoption plan and admin permit into one opaque request only after exact target,
+  candidate-set, rendered-plan digest, permit ID/expiry, and cleanup scope agree. The interpreter
+  never accepts the plan and permit as independently composable values.
+- Promote the generic cleanup journal, fencing, stable node operation IDs, scanning, report, and
+  compaction from the test namespace into lifecycle core. Validation becomes a client.
+- Give cascade, explicit-per-run, operational, and explicit-long-lived their own closed recovery-
+  plane authority constructors; local-only and total decommission have none. Give the three
+  non-cascade ordinary cleanup surfaces closed commit/read-back report programs over stable
+  references so their required `SurfaceCompletionReceipt surface` values are actually producible.
+- Derive every `RequiresSuccess`/`RequiresAttempt` edge from registry ownership, dependency,
+  storage-lifetime, and credential-lifetime facts. Delete lifecycle-owned fail-fast/sequential
+  cleanup projections; Sprint `5.36` owns migration and removal of the `TestRunner` client-side
+  projection after this kernel exists.
+- Give `ReadyToUninstallEvidence` a private constructor requiring exact per-run/family absence,
+  complete credential disposition, an opaque `TerminalAuditEvidence` that is either a clean exact
+  intended-retained AWS audit or a private complete no-AWS-target projection, a backed-up/read-back
+  pre-uninstall report, and a one-shot local-completion permit. Give `CascadeCompleteEvidence` a separate private constructor
+  requiring that readiness witness, exact `LocalUninstallEvidence`, and a read-back
+  `LocalCompletionReceipt`. Every witness must bind the same `CleanupRunId`, registry revision,
+  account, region, substrate, operation scope, and report digest; merely completing an audit or
+  uninstall call is not clean or complete evidence.
+- Admit total-decommission local uninstall only from private
+  `ReadyForDecommissionLocalUninstall`, minted after the external receipt proves every node that
+  still needs the home Agent, Vault, Gateway, cert-manager, or control-plane service terminal. The
+  external decommission permit alone cannot authorize local uninstall; exact local absence, final
+  backup-store work, and the no-retention total audit remain separately ordered evidence.
+- Extend the signed decommission manifest/`DecommissionProgramTag`/required-node registry and
+  external receipt graph with home-substrate uninstall/read-back, explicit `.data` retain/delete/
+  read-back, final no-retention audit, and terminal-receipt append/read-back. Delete the current
+  out-of-band `runNukeTerminalTagSweep` tail only after the closed runner owns it; no decommission
+  interpreter effect may exist without a manifest tag and result-indexed source case. The pure
+  compiler maps one semantic operation to one tag. It fuses the lifecycle graph's distinct effect
+  and `RequiresAttempt` read-back nodes, plus their stable operation reference, into the runner's
+  one resumable program for that tag; the runner operation owns effect plus read-back and returns
+  the final observation. Generic registered destroys select provider, TLS, and Authority-backup
+  tags through their closed registry program tags.
+- Define separate complete/incomplete result types and private completion evidence for local-only,
+  cascade, explicit-per-run, operational teardown, explicit-long-lived, and total decommission.
+  Explicit per-run requires selected-stack/child-family absence plus checkpoint disposition;
+  operational requires consumer quiescence, credential/lease absence, and retained-dependency
+  observation; explicit long-lived requires its aggregate permit, aggregate/family absence,
+  credential/tombstone and checkpoint disposition; total decommission requires non-local absence,
+  exact local absence, no-retention audit evidence, explicit local-data disposition, and external
+  terminal-receipt read-back. No generic exit-zero wrapper or cross-surface conversion can mint
+  completion.
+- Model cascade, explicit-per-run, operational, and explicit-long-lived incomplete results with
+  surface-indexed `RecoveryPlaneDisposition`: `Established`, `NotEstablished`, or `Lost`. Private
+  incomplete-evidence minters seal the stable run ID, disposition, and scope-bound nonempty failure
+  set together; values from different runs/surfaces cannot be paired. A local-only incomplete result
+  carries only its bound local-delete evidence; total decommission carries its separately bound
+  `DecommissionRunnerDisposition` and decommission failures. No result can promise that a recovery
+  or decommission plane which failed to establish or was subsequently lost remains live.
+
+### Validation
+
+1. Exhaustive provider-inventory × checkpoint-pair × manifest table covers every constructor once.
+2. Graph properties prove coverage, uniqueness, acyclicity, stable IDs, credential lifetime, and
+   that sibling failure cannot suppress an independent or attempt-dependent node.
+3. Crash/response-loss/cancellation is injected before and after every durable transition and every
+   registered stack/controller-family/direct-resource desired-absence, checkpoint, cascade-report,
+   surface-report, local, decommission-local-data, and decommission-terminal-receipt effect; the
+   same operation reference resumes read-back without requiring the lost return value or
+   duplicating mutation. A lost checkpoint-restore response cannot suppress primary read-back or
+   directly produce `VerifiedCheckpointRef`; a lost cascade-report response cannot directly
+   produce `PreUninstallCommit`.
+4. A provider exit zero without exact absence cannot construct success; a corrupt checkpoint cannot
+   be pruned before exact resource absence, and a checkpoint-retirement exit cannot replace its
+   read-back.
+5. A no-AWS registry projection can construct the no-audit terminal witness; an AWS-bearing scope
+   cannot. Missing credentials, empty tag output, and failed audit cannot construct that witness.
+6. Surface-indexed audit tables prove only cascade and total decommission can construct
+   `AuditEscapes`; a clean cascade audit with its exact retained set cannot satisfy total
+   decommission, a total audit refuses any retained resource, and neither escaped nor unobservable
+   reports can mint either clean witness. Cascade audit authority cannot construct before the exact
+   per-run/family/operational convergence aggregate exists.
+7. Wrong-surface targets and wrong-plan legacy permits fail at the smart-constructor/export
+   boundary; compile tests show no generic stack/local destroy constructor exists. Total
+   decommission local uninstall also fails without matching
+   `ReadyForDecommissionLocalUninstall`, including when the external permit is otherwise valid;
+   the readiness witness cannot be minted while any home-plane-dependent node is non-terminal.
+   Observer-program construction requires the same opaque scope for exact-resource, checkpoint-
+   pair, ownership-manifest, and legacy-adoption requests; compile tests also prove only the EBS
+   target projections admitted by `4.84` can enter their corresponding cleanup programs.
+8. Surface-completion matrices exercise the complete and every incomplete arm for explicit
+   per-run, operational teardown, explicit long-lived, and total decommission. Missing, wrong-run,
+   or cross-surface evidence refuses; a completion witness for one surface cannot construct any
+   other surface's result. Each ordinary explicit surface can establish/observe its own recovery
+   disposition and commit/read back its own report; incomplete evidence rejects a run/disposition/
+   failure scope mismatch. These are generic kernel/fake-interpreter proofs and require no Phase 5
+   client or Phase 7 AWS adapter.
+9. Manifest provenance compile tests prove a legacy-adoption write/read-back cannot enter
+   `SubmitRegisteredCreate` or write-ahead append, cannot bind to a different cleanup surface, and
+   can enter desired absence only through the digest-bound cleanup binder. Write-ahead append also
+   requires the exact registry ownership edge, so a present resource from stack A cannot enter
+   stack B's manifest.
+10. Decommission registry/compiler parity is bidirectional across the complete closed universe:
+    every total-decommission source operation or registered projection maps to exactly one semantic
+    tag, and every `DecommissionProgramTag` has exactly one source operation, runner program,
+    manifest dependency relation, interpreter, and receipt codec. The table covers managed
+    resources, target generations, SES/EAB custody, TLS and Authority-backup tails, home uninstall,
+    local-data disposition, final audit, and terminal receipt. Compiler tests prove each lifecycle
+    graph effect/read-back pair and stable reference fuse into its one resumable runner program;
+    they do not equate lifecycle graph-node count with tag count. Crash/response loss before and
+    after each resumes the same stable operation; source scans prove `runNukeTerminalTagSweep` and
+    every other out-of-graph terminal effect are absent.
+11. The old `ManagedResource`/`CapabilityBoundCleanupAction` callback shapes and test-owned generic
+   kernel are absent from supported production composition.
+
+### Remaining Work
+
+Finish the enumerated terminal proof protocols and total-decommission parity, consume Sprint
+`4.84`'s future stable generation/audit catalog, and remove every remaining callback/executor owner.
+The landed descriptor-bound kernel must remain unactivated wherever a required opaque proof cannot
+yet be obtained; no raw `CleanupRun`, public repository record, or write response may substitute.
+
+## Sprint 4.86: Recover-to-Clean Cascade and Proof-Carrying Completion [🔄 Active]
+
+**Status**: Active (implementation began 2026-08-15; updated 2026-08-16). RecoveryPlane,
+authenticated phase routes, production observation, and descriptor dispatcher foundations exist;
+the complete cascade proof chain does not.
+**Closure dependencies**: Sprint `3.41` for the recovery-only renderer/artifact authority and Sprint
+`4.85` for the remaining terminal proof protocols. Both are same/earlier-phase dependencies.
+**Deployment qualification**: pending — destructive orchestration, topology, credentials, and local
+uninstall order change.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 5b, “Canonical recover-to-clean
+cascade”](../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade),
+[Pure FP Standards § 8, “Plan / Apply”](../documents/engineering/pure_fp_standards.md#8-plan--apply),
+and [CLI Command Surface, “Reconcilers: Idempotent Mutation as a Single
+Command”](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
+**Implementation**: `RecoveryPlane`, `RecoveryPlaneRepository`, `RecoveryPlaneInterpreter`, routes
+`56`/`57`, `RecoveryPlaneComponentObserver`, `RecoveryPlaneHostRuntime`, and the source-stable hidden
+`DescriptorBoundLifecycleRuntime` dispatcher form the unactivated candidate foundation. Retain the
+existing public `runNativeDeleteCascade` route until Sprint `6.5` performs one-writer activation.
+**Live-proof**: pending and non-blocking for code-local closure; home recovery/counterexample and
+repeated-cascade evidence are required by Standard P before public activation.
+**Independent Validation**: installed-binary fake trace plus pure graph/result tests; live AWS
+adapter proof belongs to Phase 7.
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/streaming_doctrine.md`, root `README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Implement the typed recover-to-clean candidate that restores its own narrow authority, proves exact
+convergence, records it durably, and can construct a local-uninstall plan only after success. Public
+`cluster delete --cascade` activation and legacy-path removal belong solely to Sprint `6.5`.
+
+### Current Implementation Checkpoint (2026-08-16, paused)
+
+- RecoveryPlane identity commits run, descriptor, graph, scope, capability profile, exact recovery
+  operations, and distinct Establish/initial-read-back/final-disposition attempts. Only final
+  independently read-back `Established` evidence exposes Ready.
+- Lifecycle Authority constructs the production component observer once, then each phase freshly
+  reloads the descriptor-bound running handle and re-observes exact Kubernetes/Vault/host facts.
+  Authenticated route `56` returns only phase outcome; route `57` accepts only the operator's exact
+  post-Begin Healthy host observation and returns no proof.
+- The hidden total dispatcher classifies all 38 compiled operation shapes (3 RecoveryPlane, 14
+  cloud-runtime, 21 typed unsupported). Its strengthened diagnostic uses real authenticated
+  descriptor reconstruction and checks one real cloud dispatch plus a zero-effect typed refusal.
+  It is source-stable and style-clean but was deliberately paused before the current-tree aggregate.
+- No Runtime, CLI, or `TestRunner` constructs the total dispatcher. The active public cascade is
+  unchanged.
+- Cascade Stage C is absent: no production path can yet mint/read back the descriptor-bound
+  pre-uninstall readiness evidence. Stage D/E drafts are unregistered and unvalidated. Their
+  one-phase post-uninstall write is rejected because a crash after uninstall loses the attempt;
+  the replacement must be a locked immutable `Prepared -> Absent` retained-root record created
+  before uninstall and resumable from the exact bootstrap locator while Authority is absent.
+
+### Deliverables
+
+- Acquire/resume one durable cleanup run and derive substrate/account/region/cluster identity from
+  its descriptor, never from residue.
+- Repair/start or reinstall the Sprint-`3.41` minimal profile against preserved `.data`; restore
+  exact Authority bytes from the independent backup when needed; scan old runs before new admission.
+- Observe each target independently; attempt typed EKS drain only from positive EKS evidence; run
+  controller/provider backstops through `RequiresAttempt`; re-observe exact absence.
+- Run normalized escape audit only after exact resource convergence, then receipt-commit and
+  independently read back the pre-uninstall report and obtain its one-shot completion permit.
+- Make the candidate interpreter admit its local-uninstall node only from
+  `ReadyToUninstallEvidence`. After uninstall, require exact host-absence read-back plus the matching
+  read-back `LocalCompletionReceipt` before `CascadeCompleteEvidence` is constructible.
+- On incomplete cleanup, render the stable `CleanupRunId`, return the exact failures and
+  `RecoveryPlaneDisposition`, and retain every credential still required by a nonterminal
+  obligation. Claim that the recovery profile and its credentials remain live only when the
+  disposition is `Established`; `NotEstablished` and `Lost` make no liveness claim and do not by
+  themselves authorize credential deletion.
+- Preserve the public `cluster delete --yes` behavior and the currently active cascade writer in
+  this sprint. Implement its distinct typed local-only program/result so it can observe local
+  absence and complete without AWS/recovery evidence but has no constructor or conversion capable
+  of claiming cascade completion.
+- Implement replacement typed equivalents for the hand-written phases, inferred
+  causality/substrate, no-RKE2 shortcut, and uninstall-on-incomplete behavior. Sprint `6.5` removes
+  those legacy symbols when it activates the replacement as sole public writer.
+
+### Validation
+
+1. Frozen composition: Authority unavailable + one returned `ResourceTagMapping` carrying the
+   retained bucket's full two-tag set + two decoder rows + three `Unobservable` exact stack
+   observations reports one retained audit resource, selects no EKS drain/destroy from the audit,
+   and preserves every exact-stack and Authority failure independently.
+2. No plan with an incomplete exact obligation or a missing pre-uninstall report receipt,
+   terminal-audit witness (clean scoped AWS audit or exact no-AWS projection), or completion permit
+   can construct `ReadyToUninstallEvidence` or the uninstall node;
+   no uninstall exit status without exact local absence and the matching read-back receipt can
+   construct `CascadeCompleteEvidence`.
+3. Local-only absent/install/uninstall/failure tables close only through
+   `LocalUninstallEvidence 'LocalOnly`; neither that evidence nor an explicit one-stack target can
+   inhabit aggregate cascade readiness/completion.
+4. API stopped and API absent both derive the same bounded recovery-profile repair before exact
+   observation; unrecoverable trust-root loss refuses without uninstall.
+5. Original and all cleanup failures survive; dependency causality is carried by graph edges rather
+   than inferred from simultaneous exit failures.
+6. A second cascade resumes the same run or accepts its scoped read-back local-completion receipt
+   idempotently; it does not allocate a second ambiguous provider operation or reinstall merely to
+   rewrite completion history.
+7. Installed CLI fake traces cover success, failure, cancellation, response loss, restart, and
+   terminal narration with exact keys/authorities and `CleanupRunId`.
+
+### Remaining Work
+
+Finish the Sprint-`3.41` recovery renderer, Stage-C pre-uninstall repository/interpreter, the locked
+two-phase host absence record plus Authority completion read-back, terminal audit/credential
+disposition, and the complete Plan/Apply/fault matrix. Then run the total dispatcher through the
+serialized aggregate and compose it behind a non-public candidate entrypoint. This sprint does not
+activate a public writer or delete the legacy route; Sprint `6.5` owns those cutover actions.
+
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — exact-keyed observation,
+  checkpoint recovery, the closed desired-absence program, durable graph, and proof-carrying
+  recover-to-clean terminal contract.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — recovery-profile consumption,
+  cleanup-run ownership, and uninstall-last authority lifetime.
+- `documents/engineering/chaos_hardening_doctrine.md` — the measured authority/key/lifecycle/
+  cardinality counterexample and its MISU rule.
+- `documents/engineering/cli_command_surface.md`,
+  `documents/engineering/storage_lifecycle_doctrine.md`, and
+  `documents/engineering/streaming_doctrine.md` — public semantics and narration by reference to the lifecycle SSoT,
+  without copying its phase sequence.
+
+**Product docs to create/update:**
+
+- Root `README.md` — local-only versus cascade semantics and incomplete-run recovery behavior.
+
+**Cross-references to add:**
+
+- [system-components.md](system-components.md) — lifecycle kernel and recovery-profile consumers.
+- [substrates.md](substrates.md) — exact adapter/qualification ownership without restating the
+  lifecycle algorithm.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — every superseded funnel,
+  callback, executor, and false completion has one removal owner.
 
 ## Related Documents
 

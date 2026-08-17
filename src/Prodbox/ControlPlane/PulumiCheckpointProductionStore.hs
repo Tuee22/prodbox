@@ -26,28 +26,33 @@ import Prodbox.ControlPlane.AuthorityBackupEndpoint
   )
 import Prodbox.ControlPlane.InClusterAuthorityStore
   ( InClusterAuthorityStore
+  , PrimaryPulumiCheckpointBlob
   , PrimaryPulumiCheckpointObservation (..)
   , observePrimaryPulumiCheckpointBlob
   , primaryPulumiCheckpointCiphertext
   , primaryPulumiCheckpointCiphertextDigest
   , primaryPulumiCheckpointVersion
   , publishPrimaryPulumiCheckpointBlob
+  , restorePrimaryPulumiCheckpointBlob
   )
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
-  ( PulumiCheckpointObservation (..)
+  ( PulumiCheckpointCopyObservation (..)
+  , PulumiCheckpointObservation (..)
   )
 import Prodbox.ControlPlane.PulumiCheckpointRepository
   ( PulumiCheckpointBlobStore (..)
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
-  ( mkVerifiedPulumiCheckpointRef
+  ( VerifiedPulumiCheckpointRef
+  , mkVerifiedPulumiCheckpointRef
   , verifiedPulumiCheckpointBackupVersion
   , verifiedPulumiCheckpointCiphertextDigest
   , verifiedPulumiCheckpointDigest
   , verifiedPulumiCheckpointPrimaryVersion
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
-  ( canonicalPulumiCheckpointDigest
+  ( CanonicalPulumiCheckpoint
+  , canonicalPulumiCheckpointDigest
   , pulumiCheckpointDigestText
   )
 
@@ -59,6 +64,9 @@ productionPulumiCheckpointBlobStore primaryStore backupClient =
   PulumiCheckpointBlobStore
     { replicatePulumiCheckpointBlob = replicateBlob
     , observePulumiCheckpointBlob = observeBlob
+    , observePrimaryPulumiCheckpointCopy = observePrimaryCopy
+    , observeBackupPulumiCheckpointCopy = observeBackupCopy
+    , restorePulumiCheckpointPrimary = restorePrimary
     }
  where
   replicateBlob registered checkpoint = do
@@ -93,47 +101,146 @@ productionPulumiCheckpointBlobStore primaryStore backupClient =
             )
 
   observeBlob registered reference = do
-    primary <-
-      observePrimaryPulumiCheckpointBlob
-        primaryStore
-        registered
-        (pulumiCheckpointDigestText (verifiedPulumiCheckpointDigest reference))
-        (verifiedPulumiCheckpointCiphertextDigest reference)
-        (verifiedPulumiCheckpointPrimaryVersion reference)
-    case primary of
-      PrimaryPulumiCheckpointMissing ->
-        pure
-          (PulumiCheckpointCorrupt "authority aggregate references a missing primary checkpoint")
-      PrimaryPulumiCheckpointCorrupt detail ->
-        pure (PulumiCheckpointCorrupt detail)
-      PrimaryPulumiCheckpointUnobservable detail ->
-        pure (PulumiCheckpointEndpointUnready detail)
-      PrimaryPulumiCheckpointCurrent checkpoint primaryBlob -> do
-        backup <-
-          observeCheckpointBackup
-            backupClient
-            (verifiedPulumiCheckpointCiphertextDigest reference)
-        pure $ case backup of
-          Left err -> PulumiCheckpointEndpointUnready (renderClientError err)
-          Right AuthorityCheckpointBackupMissing ->
-            PulumiCheckpointCorrupt
-              "authority aggregate references a missing independent checkpoint backup"
-          Right (AuthorityCheckpointBackupCorrupt detail) ->
-            PulumiCheckpointCorrupt detail
-          Right (AuthorityCheckpointBackupCurrent ciphertext receipt)
-            | authorityBackupCiphertextBytes ciphertext
-                /= primaryPulumiCheckpointCiphertext primaryBlob ->
-                PulumiCheckpointCorrupt
-                  "primary and backup checkpoint ciphertext differ"
+    primary <- observePrimary registered reference
+    backup <- observeBackup reference
+    pure $ case (primary, backup) of
+      (PrimaryPulumiCheckpointCurrent checkpoint primaryBlob, Right backupObservation) ->
+        validateCompletePair reference checkpoint primaryBlob backupObservation
+      (PrimaryPulumiCheckpointMissing, _) ->
+        PulumiCheckpointCorrupt
+          "authority aggregate references a missing primary checkpoint"
+      (PrimaryPulumiCheckpointCorrupt detail, _) ->
+        PulumiCheckpointCorrupt detail
+      (PrimaryPulumiCheckpointUnobservable detail, _) ->
+        PulumiCheckpointEndpointUnready detail
+      (_, Left err) -> PulumiCheckpointEndpointUnready (renderClientError err)
+
+  observePrimaryCopy registered reference =
+    primaryCopyObservation reference <$> observePrimary registered reference
+
+  observeBackupCopy _registered reference =
+    fmap
+      (either (const (PulumiCheckpointCopyUnobservable "backup checkpoint request failed")) (backupCopyObservation reference))
+      (observeBackup reference)
+
+  restorePrimary registered reference = do
+    primary <- observePrimary registered reference
+    backup <- observeBackup reference
+    case (primary, backup) of
+      (PrimaryPulumiCheckpointCurrent _ _, Right backupObservation) ->
+        case backupCopyObservation reference backupObservation of
+          PulumiCheckpointCopyCurrent _ -> pure (Right reference)
+          other -> pure (Left (copyFailure "backup" other))
+      (PrimaryPulumiCheckpointMissing, Right backupObservation) ->
+        case backupObservation of
+          AuthorityCheckpointBackupCurrent ciphertext receipt
             | authorityBackupReceiptObjectVersion receipt
                 /= verifiedPulumiCheckpointBackupVersion reference ->
-                PulumiCheckpointCorrupt
-                  "checkpoint backup receipt version changed"
+                pure (Left "checkpoint backup receipt version changed")
             | authorityBackupDigestText (authorityBackupReceiptDigest receipt)
                 /= verifiedPulumiCheckpointCiphertextDigest reference ->
-                PulumiCheckpointCorrupt
-                  "checkpoint backup receipt digest changed"
-            | otherwise -> PulumiCheckpointCurrent checkpoint
+                pure (Left "checkpoint backup receipt digest changed")
+            | otherwise -> do
+                restored <-
+                  restorePrimaryPulumiCheckpointBlob
+                    primaryStore
+                    registered
+                    (pulumiCheckpointDigestText (verifiedPulumiCheckpointDigest reference))
+                    (verifiedPulumiCheckpointCiphertextDigest reference)
+                    (authorityBackupCiphertextBytes ciphertext)
+                pure $ do
+                  primaryBlob <- restored
+                  first
+                    (Text.pack . show)
+                    ( mkVerifiedPulumiCheckpointRef
+                        (verifiedPulumiCheckpointDigest reference)
+                        (verifiedPulumiCheckpointCiphertextDigest reference)
+                        (primaryPulumiCheckpointVersion primaryBlob)
+                        (verifiedPulumiCheckpointCiphertextDigest reference)
+                        (verifiedPulumiCheckpointBackupVersion reference)
+                    )
+          other ->
+            pure
+              ( Left
+                  (copyFailure "backup" (backupCopyObservation reference other))
+              )
+      (PrimaryPulumiCheckpointCorrupt detail, _) ->
+        pure (Left ("primary checkpoint is corrupt: " <> detail))
+      (PrimaryPulumiCheckpointUnobservable detail, _) ->
+        pure (Left ("primary checkpoint is unobservable: " <> detail))
+      (_, Left err) ->
+        pure (Left ("backup checkpoint is unobservable: " <> renderClientError err))
+
+  observePrimary registered reference =
+    observePrimaryPulumiCheckpointBlob
+      primaryStore
+      registered
+      (pulumiCheckpointDigestText (verifiedPulumiCheckpointDigest reference))
+      (verifiedPulumiCheckpointCiphertextDigest reference)
+      (verifiedPulumiCheckpointPrimaryVersion reference)
+
+  observeBackup reference =
+    observeCheckpointBackup
+      backupClient
+      (verifiedPulumiCheckpointCiphertextDigest reference)
+
+validateCompletePair
+  :: VerifiedPulumiCheckpointRef
+  -> CanonicalPulumiCheckpoint
+  -> PrimaryPulumiCheckpointBlob
+  -> AuthorityCheckpointBackupObservation
+  -> PulumiCheckpointObservation
+validateCompletePair reference checkpoint primaryBlob backup = case backup of
+  AuthorityCheckpointBackupMissing ->
+    PulumiCheckpointCorrupt
+      "authority aggregate references a missing independent checkpoint backup"
+  AuthorityCheckpointBackupCorrupt detail -> PulumiCheckpointCorrupt detail
+  AuthorityCheckpointBackupCurrent ciphertext receipt
+    | authorityBackupCiphertextBytes ciphertext
+        /= primaryPulumiCheckpointCiphertext primaryBlob ->
+        PulumiCheckpointCorrupt "primary and backup checkpoint ciphertext differ"
+    | authorityBackupReceiptObjectVersion receipt
+        /= verifiedPulumiCheckpointBackupVersion reference ->
+        PulumiCheckpointCorrupt "checkpoint backup receipt version changed"
+    | authorityBackupDigestText (authorityBackupReceiptDigest receipt)
+        /= verifiedPulumiCheckpointCiphertextDigest reference ->
+        PulumiCheckpointCorrupt "checkpoint backup receipt digest changed"
+    | otherwise -> PulumiCheckpointCurrent checkpoint
+
+primaryCopyObservation
+  :: VerifiedPulumiCheckpointRef
+  -> PrimaryPulumiCheckpointObservation
+  -> PulumiCheckpointCopyObservation
+primaryCopyObservation reference observation = case observation of
+  PrimaryPulumiCheckpointMissing -> PulumiCheckpointCopyMissing
+  PrimaryPulumiCheckpointCurrent _ blob
+    | primaryPulumiCheckpointVersion blob
+        == verifiedPulumiCheckpointPrimaryVersion reference ->
+        PulumiCheckpointCopyCurrent (primaryPulumiCheckpointVersion blob)
+    | otherwise -> PulumiCheckpointCopyCorrupt "primary checkpoint version changed"
+  PrimaryPulumiCheckpointCorrupt detail -> PulumiCheckpointCopyCorrupt detail
+  PrimaryPulumiCheckpointUnobservable detail ->
+    PulumiCheckpointCopyUnobservable detail
+
+backupCopyObservation
+  :: VerifiedPulumiCheckpointRef
+  -> AuthorityCheckpointBackupObservation
+  -> PulumiCheckpointCopyObservation
+backupCopyObservation reference observation = case observation of
+  AuthorityCheckpointBackupMissing -> PulumiCheckpointCopyMissing
+  AuthorityCheckpointBackupCorrupt detail ->
+    PulumiCheckpointCopyCorrupt detail
+  AuthorityCheckpointBackupCurrent _ receipt
+    | authorityBackupReceiptObjectVersion receipt
+        == verifiedPulumiCheckpointBackupVersion reference
+        && authorityBackupDigestText (authorityBackupReceiptDigest receipt)
+          == verifiedPulumiCheckpointCiphertextDigest reference ->
+        PulumiCheckpointCopyCurrent (authorityBackupReceiptObjectVersion receipt)
+    | otherwise -> PulumiCheckpointCopyCorrupt "backup checkpoint receipt changed"
+
+copyFailure :: Text -> PulumiCheckpointCopyObservation -> Text
+copyFailure label observation =
+  label <> " checkpoint copy is not exact: " <> Text.pack (show observation)
 
 renderClientError :: (Show err) => err -> Text
 renderClientError = Text.pack . show

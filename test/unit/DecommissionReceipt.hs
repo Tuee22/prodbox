@@ -17,6 +17,7 @@ import Prodbox.Lifecycle.Decommission.Journal
 import Prodbox.Lifecycle.Decommission.Manifest
 import Prodbox.Lifecycle.Decommission.Receipt
 import Prodbox.Lifecycle.Decommission.Verifier
+import System.Directory (canonicalizePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
@@ -103,12 +104,23 @@ decommissionReceiptSuite =
             boundReopenOutcome ready `shouldBe` RecoveryComplete
     it "requires an exact path-and-header acknowledgement after durable receipt creation" $
       withSystemTempDirectory "prodbox-external-receipt-ack" $ \dir -> do
-        let receiptPath = mustRight (mkExternalReceiptPath (dir </> "receipt.log"))
+        canonicalTemporaryRoot <- canonicalizePath "/tmp"
+        let canonicalArtifactPath =
+              mustRight
+                ( mkExternalArtifactPath
+                    (canonicalTemporaryRoot </> "prodbox-export" </> "decommission-runner")
+                )
+            canonicalVerified =
+              verifiedWith plan (verifierBindingOf canonicalArtifactPath artifact)
+            receiptPath = mustRight (mkExternalReceiptPath (dir </> "receipt.log"))
             deletionRoot = mustRight (mkDeletionRootPath (dir </> "deleted-cluster"))
         durablePaths <-
           mustRight
-            <$> validateExternalDurablePathsOnHost [deletionRoot] artifactPath receiptPath
-        prepared <- prepareExternalReceiptAcknowledgement durablePaths verified
+            <$> validateExternalDurablePathsOnHost
+              [deletionRoot]
+              canonicalArtifactPath
+              receiptPath
+        prepared <- prepareExternalReceiptAcknowledgement durablePaths canonicalVerified
         pending <- case prepared of
           Left refusal -> expectationFailure ("expected receipt preparation, got " <> show refusal) >> fail "unreachable"
           Right value -> pure value
@@ -118,11 +130,14 @@ decommissionReceiptSuite =
         let literal = receiptAcknowledgementLiteral pending
             acknowledged = mustRight (acknowledgeExternalReceipt literal pending)
         acknowledgedExternalReceiptPath acknowledged `shouldBe` receiptPath
-        acknowledgedExternalReceiptHeader acknowledged `shouldBe` mkReceiptHeader verified
-        initializeBoundReceipt (externalReceiptPath receiptPath) verified
+        acknowledgedExternalReceiptHeader acknowledged `shouldBe` mkReceiptHeader canonicalVerified
+        initializeBoundReceipt (externalReceiptPath receiptPath) canonicalVerified
           `shouldReturn` Right BoundReceiptAlreadyInitialized
         let otherArtifactPath =
-              mustRight (mkExternalArtifactPath (dir </> "other-artifact"))
+              mustRight
+                ( mkExternalArtifactPath
+                    (canonicalTemporaryRoot </> "prodbox-export" </> "other-artifact")
+                )
         wrongPaths <-
           mustRight
             <$> validateExternalDurablePathsOnHost [deletionRoot] otherArtifactPath receiptPath

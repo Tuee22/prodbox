@@ -1240,10 +1240,50 @@ dials, and the endpoint's address and port are what a policy engine matches. Col
 they "describe the same thing" breaks the client path. The discipline is to say which layer a value
 is for, not to reduce the count of values.
 
-**The corollary — name the layer whenever you name the source.** A derivation that records only
+**A second in-tree instance, measured 2026-08-15, shows that layer alone is not
+enough.** In a `cluster delete --cascade` run, the preliminary caller-ServiceAccount observation was
+unobservable; discarded stderr leaves both its cause and whether it reached the Kubernetes API
+unknown. Separately, the AWS Resource Groups Tagging API returned one `ResourceTagMapping` for the
+intentionally retained long-lived state-bucket ARN with its full two-tag set. The pre-cutover decoder
+emitted two rows from that one mapping. Every exact observation for `aws-eks`, `aws-eks-subzone`, and
+`aws-test` remained unobservable, not an empty inventory, but the cascade counted the two decoded
+rows as “2 resource(s),” copied that unkeyed global answer to all three stack identities, and selected
+the AWS/EKS drain branch. The later audit partitioned both decoded rows as retained, and its renderer
+displayed the ARN once with no escapees.
+
+No drain request reached the Kubernetes API; no Pulumi destroy reached its provider effect. The
+evidence therefore supports a Prodbox composition failure, not an AWS or Kubernetes failure: a
+successful global audit observation was consumed as three exact per-resource observations that it
+never made.
+
+The missing coordinates do not map one-for-one onto the eight §21 classes. The incident crosses three
+of those classes and three domain refinements made explicit by this section and the lifecycle
+doctrine:
+
+- **Class A, Provenance** — the value carried no opaque receipt proving which observer produced it;
+- **Class D, Distinguishability** — distinct caller-observation failure causes collapsed to one
+  generic ServiceAccount sentence while both the cause and Kubernetes API reach were discarded;
+- **Class G, Totality** — the decision did not receive one complete keyed observation for every
+  selected stack; it fanned one cluster-wide answer out across three obligations;
+- **authority layer (§24)** — an escape audit was consumed as desired-absence inventory;
+- **exact consumer key/scope (§24)** — one cluster-wide answer was reused for three stack keys. This
+  is resource-observation scope, not §21 Class H's actor-supervision scope; and
+- **domain identity normalization** — tag rows were counted before normalization to one resource per
+  ARN. This is the lifecycle registry's cardinality invariant, not §21 Class C, which governs who is
+  entitled to act through a checked `WritePermit`.
+
+The strengthened rule is: *name the source object, authority layer, exact consumer key/scope, and
+domain identity used for normalization and cardinality*. Matching only the layer still permits an
+answer about the wrong object to inhabit the decision. External observations remain flat exhaustive ADTs; static
+registry scope and operation legality may be indexed because those are program-owned facts. The
+domain-specific type boundary is owned by
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary).
+
+**The corollary — name the object, key, scope, and layer whenever you name the source.** A derivation that records only
 "observed from the cluster" has recorded half a provenance. State the object observed, the layer at
-which that object is authoritative, and the layer at which the derived value is consumed; where they
-differ, the derivation is a defect even though it observed a real thing. This is the same discipline
+which that object is authoritative, the exact key/scope answered, and the layer at which the derived
+value is consumed; where any differ, the derivation is a defect even though it observed a real
+thing. This is the same discipline
 [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md) applies to a ring's region, and
 the same one [pure_fp_standards.md § 1.4](./pure_fp_standards.md) applies to a projection's source.
 
@@ -1430,7 +1470,7 @@ partition itself, and its healing latency once views reconverge bounded by propa
 stops writing). The invariant is therefore stated conditionally — *≤ 1 writer once views converge* —
 exactly as R7 demands, and the chosen mode is recorded in the ledger. (The prodbox gateway is the concrete
 instantiation — also **availability-first** under partition — and its model and posture are owned by
-[tla_modelling_assumptions.md §6](./tla_modelling_assumptions.md#6-flp-impossibility-acknowledgment) and
+[tla_modelling_assumptions.md §5](./tla_modelling_assumptions.md#5-deliberate-abstractions) and
 [distributed_gateway_architecture.md §5](./distributed_gateway_architecture.md#5-safety-boundary-important);
 the §5 "safety boundary" is the FLP impossibility *limit*, not a safety-first choice.) Safety further rests
 on a **bounded clock-skew premise** (R8): heartbeat freshness compares wall-clock UTC stamps across

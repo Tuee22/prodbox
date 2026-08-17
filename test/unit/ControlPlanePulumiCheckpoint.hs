@@ -336,6 +336,8 @@ memoryRepository = do
               record (RepositoryObserved registered)
               current <- readIORef state
               pure (maybe PulumiCheckpointMissing PulumiCheckpointCurrent current)
+          , observeRegisteredPulumiCheckpointPair = \_callerSlot _ ->
+              pure (PulumiCheckpointPairUnobservable "fixture unavailable")
           , publishRegisteredPulumiCheckpoint = \_callerSlot ticket registered checkpoint -> do
               record
                 ( RepositoryPublished
@@ -355,6 +357,14 @@ memoryRepository = do
                 )
               writeIORef state Nothing
               pure PulumiCheckpointRetiredAndReadBack
+          , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
+              pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
+          , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
+              pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
+          , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+              pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
+          , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
+              pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
           }
   pure (repository, state, calls)
 
@@ -363,12 +373,22 @@ countingRepository effects =
   PulumiCheckpointRepository
     { observeRegisteredPulumiCheckpoint = \_callerSlot _ ->
         effect >> pure PulumiCheckpointMissing
+    , observeRegisteredPulumiCheckpointPair = \_callerSlot _ ->
+        effect >> pure (PulumiCheckpointPairUnobservable "fixture unavailable")
     , publishRegisteredPulumiCheckpoint = \_callerSlot _ _ checkpoint ->
         effect
           >> pure
             (PulumiCheckpointPublished (canonicalPulumiCheckpointDigest checkpoint))
     , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
         effect >> pure PulumiCheckpointRetiredAndReadBack
+    , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
+        effect >> pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
+    , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
+        effect >> pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
+    , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+        effect >> pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
+    , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
+        effect >> pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
     }
  where
   effect = modifyIORef' effects (+ 1)

@@ -495,6 +495,7 @@ data IntegrationSuite
   | IntegrationGatewayDaemon
   | IntegrationGatewayPods
   | IntegrationControlPlaneCounterexample
+  | IntegrationTeardownRecovery
   | IntegrationCertificateScope
   | IntegrationCleanRoomHandoff
   | IntegrationHaRke2Aws

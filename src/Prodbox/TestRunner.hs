@@ -172,13 +172,13 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Test.CleanupRun
+import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependencyKind (..)
   , CleanupNodeOutcome (..)
   , CleanupNodeState (..)
   , CleanupRunReport (..)
   )
-import Prodbox.Test.CleanupRunRunner
+import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverResult (..)
   )
 import Prodbox.Test.DurableCleanupComposition
@@ -880,6 +880,7 @@ cleanupNodeFailed :: CleanupNodeState -> Bool
 cleanupNodeFailed state = case state of
   CleanupNodeCompleted _ CleanupNodeSucceeded -> False
   CleanupNodeCompleted _ (CleanupNodeFailed _) -> True
+  CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> True
   CleanupNodeBlocked _ -> True
   CleanupNodePending -> True
   CleanupNodeRunning _ -> True
@@ -2022,6 +2023,7 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationGatewayDaemon -> GatewayRuntimeNoBoundary
     ValidationGatewayPods -> GatewayRuntimeNoBoundary
     ValidationControlPlaneCounterexample -> GatewayRuntimeNoBoundary
+    ValidationTeardownRecovery -> GatewayRuntimeNoBoundary
     ValidationCertificateScope -> GatewayRuntimeNoBoundary
     ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary
     ValidationChartsPlatform -> GatewayRuntimeNoBoundary

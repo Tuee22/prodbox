@@ -445,6 +445,7 @@ commandPathOfRequest request =
                     IntegrationGatewayDaemon -> ["gateway-daemon"]
                     IntegrationGatewayPods -> ["gateway-pods"]
                     IntegrationControlPlaneCounterexample -> ["control-plane-counterexample"]
+                    IntegrationTeardownRecovery -> ["teardown-recovery"]
                     IntegrationCertificateScope -> ["certificate-scope"]
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]

@@ -559,10 +559,11 @@ checkpoint; none is a caller-supplied object-store key.
   Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
   their owning later sprints (§12, §16, §18).
 
-The code-local role deliberately serves liveness but refuses readiness and non-health execution
-until Sprint `3.26` supplies the physical TokenReview, Kubernetes Lease/workload, MinIO, Vault, and
-OpenPGP adapters and renders the separate workload. This doctrine does not promote that boundary to
-deployment-qualified or cut over; those states remain in the Development Plan.
+The code-local role deliberately serves liveness but refuses readiness and non-health execution.
+Completed Sprint `3.26` supplied the separate chart/render foundation, but the physical TokenReview,
+Kubernetes Lease/workload, MinIO, Vault, and OpenPGP path is not the active production selection.
+This doctrine does not promote that boundary to deployment-qualified or cut over; activation and
+removal status remain in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
 
 **Historical implementation record.** Lifecycle integration into `prodbox cluster reconcile` was
 split by cluster role: Sprint `4.29`

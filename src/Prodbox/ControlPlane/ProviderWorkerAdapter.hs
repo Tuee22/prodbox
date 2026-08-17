@@ -71,6 +71,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
+  , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -90,8 +91,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClientAuthRequestClusterName
   , eksClientAuthRequestDestinationPublicKey
   , eksClientAuthRequestRegion
+  , eksClusterIdentityRequestAccountId
+  , eksClusterIdentityRequestClusterName
+  , eksClusterIdentityRequestRegion
+  , eksClusterIdentityRequestStackRef
   , initialProviderWorkState
   , mkEksClientAuthRequest
+  , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
@@ -197,16 +203,24 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , reapTestEbsVolumesCapability
       :: Text
       -> ProviderMutation m session
+  , observeTestEbsVolumesCapability
+      :: Text
+      -> ProviderReadOnly m session
   , observeSpotPriceCapability
       :: ProviderSpotPriceQuery
       -> ProviderReadOnly m session
   , observeOperationalIdentityCapability
+      :: ProviderReadOnly m session
+  , observeProviderAwsScopeCapability
       :: ProviderReadOnly m session
   , observeProviderReadinessCapability
       :: ProviderReadinessProbe
       -> ProviderReadOnly m session
   , issueEksClientAuthCapability
       :: EksClientAuthRequest
+      -> ProviderReadOnly m session
+  , observeEksClusterIdentityCapability
+      :: EksClusterIdentityRequest
       -> ProviderReadOnly m session
   }
 
@@ -399,6 +413,7 @@ validateProviderIntent intent = case intent of
         | actual == query -> Right ()
         | otherwise -> Left (ProviderWorkStateIntentInvalid "spot-price")
   ObserveOperationalIdentity -> Right ()
+  ObserveProviderAwsScope -> Right ()
   ObserveProviderReadiness probe -> case probe of
     ProviderReadinessStsIdentity -> Right ()
     ProviderReadinessRoute53Zone zoneId -> validateTextRef "route53-zone" zoneId
@@ -412,6 +427,18 @@ validateProviderIntent intent = case intent of
       Right actual
         | actual == request -> Right ()
         | otherwise -> Left (ProviderWorkStateIntentInvalid "eks-client-auth")
+  ObserveTestEbsVolumes clusterName ->
+    validateTextRef "cluster-name" clusterName
+  ObserveEksClusterIdentity request ->
+    case mkEksClusterIdentityRequest
+      (eksClusterIdentityRequestStackRef request)
+      (eksClusterIdentityRequestAccountId request)
+      (eksClusterIdentityRequestRegion request)
+      (eksClusterIdentityRequestClusterName request) of
+      Left _ -> Left (ProviderWorkStateIntentInvalid "eks-cluster-identity")
+      Right actual
+        | actual == request -> Right ()
+        | otherwise -> Left (ProviderWorkStateIntentInvalid "eks-cluster-identity")
  where
   validateRef label rebuilt expected = case rebuilt of
     Left _ -> Left (ProviderWorkStateIntentInvalid label)
@@ -773,10 +800,16 @@ operationForIntent capabilities intent = case intent of
     IntentReadOnly (observeSpotPriceCapability capabilities query)
   ObserveOperationalIdentity ->
     IntentReadOnly (observeOperationalIdentityCapability capabilities)
+  ObserveProviderAwsScope ->
+    IntentReadOnly (observeProviderAwsScopeCapability capabilities)
   ObserveProviderReadiness probe ->
     IntentReadOnly (observeProviderReadinessCapability capabilities probe)
   IssueEksClientAuth request ->
     IntentReadOnly (issueEksClientAuthCapability capabilities request)
+  ObserveTestEbsVolumes clusterName ->
+    IntentReadOnly (observeTestEbsVolumesCapability capabilities clusterName)
+  ObserveEksClusterIdentity request ->
+    IntentReadOnly (observeEksClusterIdentityCapability capabilities request)
 
 markSnapshotRecovering
   :: (Monad m)

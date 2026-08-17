@@ -175,9 +175,12 @@ controlPlaneVaultSessionSuite =
     it "keeps operator and harness signing roles separate and seeds only the public epoch" $ do
       let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
           policies = vaultReconcilePolicies defaultVaultReconcilePlan
-          assertExternal name = do
-            filter ((== name) . vaultKubernetesRoleSpecName) roles
-              `shouldSatisfy` ((== 1) . length)
+          assertExternal name namespace = do
+            case filter ((== name) . vaultKubernetesRoleSpecName) roles of
+              [role] ->
+                vaultKubernetesRoleSpecNamespaces role `shouldBe` [namespace]
+              other ->
+                expectationFailure ("expected one external role, got " ++ show other)
             case filter ((== name) . vaultPolicySpecName) policies of
               [policy] -> do
                 let document = Text.unpack (vaultPolicySpecDocument policy)
@@ -186,8 +189,8 @@ controlPlaneVaultSessionSuite =
                 document `shouldNotContain` "request-replay"
                 document `shouldNotContain` "*"
               other -> expectationFailure ("expected one external policy, got " ++ show other)
-      assertExternal operatorControlPlaneVaultRole
-      assertExternal harnessControlPlaneVaultRole
+      assertExternal operatorControlPlaneVaultRole "bootstrap-broker"
+      assertExternal harnessControlPlaneVaultRole "gateway"
       filter
         ( (== VaultInventory.VaultSecretPath "secret" controlPlaneAuthorityEpochPath)
             . VaultInventory.vaultSecretObjectPath
@@ -204,15 +207,16 @@ controlPlaneVaultSessionSuite =
     it "binds each host caller to an exact non-automounting self-TokenRequest identity" $ do
       let operator = LifecycleAuthorityOperator
           harness = LifecycleAuthorityTestHarness
-          expectedSubject name = "--as=system:serviceaccount:gateway:" ++ name
-          assertCaller caller name duration = do
+          expectedSubject namespace name =
+            "--as=system:serviceaccount:" ++ namespace ++ ":" ++ name
+          assertCaller caller namespace name duration = do
             externalCallerServiceAccount caller `shouldBe` Text.pack name
             externalCallerServiceAccountReadArguments caller
               `shouldBe` [ "get"
                          , "serviceaccount"
                          , name
                          , "--namespace"
-                         , "gateway"
+                         , namespace
                          , "-o"
                          , "jsonpath={.metadata.namespace}{'\\n'}{.metadata.name}{'\\n'}{.automountServiceAccountToken}{'\\n'}"
                          ]
@@ -223,28 +227,28 @@ controlPlaneVaultSessionSuite =
                          , "serviceaccounts/" ++ name
                          , "--subresource=token"
                          , "--namespace"
-                         , "gateway"
-                         , expectedSubject name
+                         , namespace
+                         , expectedSubject namespace name
                          ]
             externalCallerTokenRequestArguments caller
               `shouldBe` [ "create"
                          , "token"
                          , name
                          , "--namespace"
-                         , "gateway"
+                         , namespace
                          , "--duration=" ++ duration
-                         , expectedSubject name
+                         , expectedSubject namespace name
                          ]
             validateExternalCallerServiceAccountReadBack
               caller
-              ("gateway\n" ++ name ++ "\nfalse\n")
+              (namespace ++ "\n" ++ name ++ "\nfalse\n")
               `shouldBe` Right ()
             validateExternalCallerServiceAccountReadBack
               caller
-              ("gateway\n" ++ name ++ "\ntrue\n")
+              (namespace ++ "\n" ++ name ++ "\ntrue\n")
               `shouldSatisfy` isLeft
-      assertCaller operator "prodbox-control-plane-operator" "5m"
-      assertCaller harness "prodbox-control-plane-test-harness" "15m"
+      assertCaller operator "bootstrap-broker" "prodbox-control-plane-operator" "5m"
+      assertCaller harness "gateway" "prodbox-control-plane-test-harness" "15m"
 
     it "keeps shared Gateway AWS and MinIO-root credentials out of standing-role policies" $ do
       let documents =

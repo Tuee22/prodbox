@@ -31,9 +31,7 @@ gatewayChartStaticsSuite =
       gatewayStaticEventsPort gatewayChartStatics `shouldBe` 8444
       gatewayStaticNodePort gatewayChartStatics `shouldBe` 30443
       gatewayStaticExternalCallerServiceAccounts gatewayChartStatics
-        `shouldBe` [ "prodbox-control-plane-operator"
-                   , "prodbox-control-plane-test-harness"
-                   ]
+        `shouldBe` ["prodbox-control-plane-test-harness"]
 
     it "renders the generated values block from the typed statics" $ do
       renderGatewayChartStaticsYaml
@@ -47,7 +45,6 @@ gatewayChartStaticsSuite =
           , "  name: prodbox-gateway-daemon"
           , "externalCallers:"
           , "  serviceAccounts:"
-          , "    - prodbox-control-plane-operator"
           , "    - prodbox-control-plane-test-harness"
           ]
 
@@ -89,6 +86,12 @@ gatewayChartStaticsSuite =
       template `shouldContain` "kind: RoleBinding"
       template `shouldNotContain` "prodbox-control-plane-operator"
       template `shouldNotContain` "prodbox-control-plane-test-harness"
+
+    it "does not render the ordinary teardown operator under Gateway lifetime" $ do
+      repoRoot <- getCurrentDirectory
+      valuesContents <- readFile (repoRoot </> "charts" </> "gateway" </> "values.yaml")
+      renderGatewayChartStaticsYaml `shouldNotContain` "prodbox-control-plane-operator"
+      valuesContents `shouldNotContain` "prodbox-control-plane-operator"
 
     it "rejects a hand-written ServiceAccount name hard-coded to the raw role literal" $ do
       let rawServiceAccount = "metadata:\n  name: prodbox-gateway-daemon\n"

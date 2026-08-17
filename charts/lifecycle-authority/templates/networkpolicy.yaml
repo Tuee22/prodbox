@@ -72,6 +72,17 @@ spec:
           port: {{ .Values.ports.dns }}
         - protocol: TCP
           port: {{ .Values.ports.dns }}
+    # Exact POST-DNAT Kubernetes API coordinate observed by ChartPlatform.
+    # Namespace-local RBAC separately limits this egress to named GETs for the
+    # closed recovery profile; no list/watch/Secret verb is granted.
+    - to:
+        {{- range .Values.kubernetesApiEgress.addresses }}
+        - ipBlock:
+            cidr: {{ . }}/32
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kubernetesApiEgress.port }}
     - to:
         - namespaceSelector:
             matchLabels:

@@ -324,21 +324,56 @@ engineSecretWorkerSuite =
       countEvent WorkerRan events `shouldBe` 2
       countEvent WorkerRecovered events `shouldBe` 0
 
-    it "fails closed on every incomplete operation/fence/action/request/storage/deadline mismatch" $ do
+    -- Sprint 2.50 narrowed this from seven cases to six. The identical-binding
+    -- requirement is unchanged WITHIN one fence generation; only a strictly
+    -- superseded generation may roll, and that case moved to its own block
+    -- below. Six of the seven fixtures hold generation 1 like the stored
+    -- request, so they still fail closed -- and each now names the field it
+    -- disagreed about rather than reporting one word for six faults.
+    it "fails closed on every incomplete same-generation binding mismatch" $ do
       let storedRequest =
             workerRequest "bound" '1' SecretWorkerInitialize canonicalFence
           cases
-            :: [(String, SecretWorkerOperation, BootstrapSessionFence)]
+            :: [ ( String
+                 , SecretWorkerOperation
+                 , BootstrapSessionFence
+                 , [SecretWorkerBindingField]
+                 )
+               ]
           cases =
-            [ ("operation", SecretWorkerUnseal, canonicalFence)
-            , ("generation", SecretWorkerInitialize, generationFence)
-            , ("owner", SecretWorkerInitialize, ownerFence)
-            , ("action", SecretWorkerInitialize, actionFence)
-            , ("request", SecretWorkerInitialize, requestFence)
-            , ("storage", SecretWorkerInitialize, storageFence)
-            , ("deadline", SecretWorkerInitialize, deadlineFence)
+            [ ("operation", SecretWorkerUnseal, canonicalFence, [BindingOperation])
+            ,
+              ( "owner"
+              , SecretWorkerInitialize
+              , ownerFence
+              , [BindingOwnerNonce]
+              )
+            ,
+              ( "action"
+              , SecretWorkerInitialize
+              , actionFence
+              , [BindingActionDigest]
+              )
+            ,
+              ( "request"
+              , SecretWorkerInitialize
+              , requestFence
+              , [BindingRequestDigest]
+              )
+            ,
+              ( "storage"
+              , SecretWorkerInitialize
+              , storageFence
+              , [BindingStorageGeneration]
+              )
+            ,
+              ( "deadline"
+              , SecretWorkerInitialize
+              , deadlineFence
+              , [BindingOperationDeadline]
+              )
             ]
-      forM_ cases $ \(label, operation, suppliedFence) -> do
+      forM_ cases $ \(label, operation, suppliedFence, expectedFields) -> do
         harness <-
           newHarness
             NoFault
@@ -360,9 +395,141 @@ engineSecretWorkerSuite =
             (unexpectedRunner harness)
             (unexpectedRecovery harness)
         (label, result)
-          `shouldBe` (label, Left EngineSecretWorkerStoredRequestBindingMismatch)
+          `shouldBe` ( label
+                     , Left
+                         ( EngineSecretWorkerStoredRequestBindingMismatch
+                             StoredRequestBinding
+                             expectedFields
+                         )
+                     )
         events <- harnessEvents harness
         withoutReads events `shouldBe` []
+
+    describe "Sprint 2.50 a superseded pre-receipt checkpoint rolls" $ do
+      -- Measured on the operator host rather than inferred: the durable
+      -- `secret-worker-checkpoint` decoded to `InternalNoWorkerReceipt` -- the
+      -- pre-receipt constructor -- bound to fence generation 7, while the held
+      -- fence was generation 10. Fence generation, owner nonce AND operation
+      -- deadline all differed; this plan had recorded two such fields, and the
+      -- refusal being payload-free is why the third went unnoticed.
+      --
+      -- Before this sprint every later invocation refused
+      -- `StoredRequestBindingMismatch` forever, and `--cascade` preserves the
+      -- object by design, so `prodbox vault init` could never complete again
+      -- without hand-clearing a durable object -- the same sentence as Sprint
+      -- 2.47 with "checkpoint" in place of "fence".
+      it "discards the superseded worker and rolls to a freshly allocated request" $ do
+        let storedRequest =
+              workerRequest "stale" '1' SecretWorkerInitialize canonicalFence
+            -- generation 2 supersedes the stored generation 1
+            heldFence = generationFence
+            replacement =
+              workerRequest "rolled" '2' SecretWorkerInitialize heldFence
+        harness <-
+          newHarness
+            NoFault
+            [replacement]
+            ( Just
+                ( StoreVersion 4
+                , checkpointDigest
+                , noSecretWorkerReceipt storedRequest
+                )
+            )
+            healthyTimes
+        result <-
+          drive
+            harness
+            SecretWorkerControllerRestarted
+            SecretWorkerInitialize
+            heldFence
+            (vaultPermitFor heldFence SecretWorkerInitialize)
+            (successfulRunner harness replacement)
+            (unexpectedRecovery harness)
+        case result of
+          Left failure -> expectationFailure (show failure)
+          Right (receipt, "executed") ->
+            assertCompletedCheckpoint harness replacement receipt
+          Right success -> expectationFailure ("unexpected result: " ++ show success)
+        events <- harnessEvents harness
+        -- the superseded worker is destroyed, not assumed absent, and a fresh
+        -- worker is then allocated and run under the held fence
+        countEvent WorkerDiscarded events `shouldBe` 1
+        countEvent WorkerAllocated events `shouldBe` 1
+        countEvent WorkerRan events `shouldBe` 1
+
+      -- The negative control. A checkpoint from a generation NEWER than the one
+      -- held would mean this invocation is the stale one; the comparison is
+      -- strict so it fails closed rather than rolling.
+      it "refuses a checkpoint bound to a newer generation than the fence held" $ do
+        let storedRequest =
+              workerRequest "future" '1' SecretWorkerInitialize generationFence
+        harness <-
+          newHarness
+            NoFault
+            []
+            ( Just
+                ( StoreVersion 4
+                , checkpointDigest
+                , noSecretWorkerReceipt storedRequest
+                )
+            )
+            healthyTimes
+        result <-
+          drive
+            harness
+            SecretWorkerControllerRestarted
+            SecretWorkerInitialize
+            canonicalFence
+            (vaultPermitFor canonicalFence SecretWorkerInitialize)
+            (unexpectedRunner harness)
+            (unexpectedRecovery harness)
+        result
+          `shouldBe` Left
+            ( EngineSecretWorkerStoredRequestBindingMismatch
+                StoredRequestBinding
+                [BindingFenceGeneration]
+            )
+        events <- harnessEvents harness
+        withoutReads events `shouldBe` []
+
+      -- The bound this sprint was scoped by, kept: a fence is an exclusion record
+      -- and a checkpoint is a result record. Retiring an exclusion loses nothing;
+      -- discarding a result can lose work that already happened. A receipted
+      -- checkpoint from a superseded generation is still refused, because its
+      -- cleanup binding names a Pod UID, session id and session accessor no
+      -- successor can reconstruct -- discarding one could leak a live Vault
+      -- session.
+      it "still refuses every receipted checkpoint from a superseded generation" $ do
+        let storedRequest =
+              workerRequest "receipted" '1' SecretWorkerInitialize canonicalFence
+            -- every cleanup stage from receipt capture onward, except the last:
+            -- an absent checkpoint is a COMPLETED predecessor, which the roll arm
+            -- above this one has always been allowed to take.
+            (_, stages) = checkpointStages storedRequest canonicalFence
+        forM_ (init stages) $ \(checkpoint, _) -> do
+          harness <-
+            newHarness
+              NoFault
+              []
+              (Just (StoreVersion 4, checkpointDigest, checkpoint))
+              healthyTimes
+          result <-
+            drive
+              harness
+              SecretWorkerControllerRestarted
+              SecretWorkerInitialize
+              generationFence
+              (vaultPermitFor generationFence SecretWorkerInitialize)
+              (unexpectedRunner harness)
+              (unexpectedRecovery harness)
+          result
+            `shouldBe` Left
+              ( EngineSecretWorkerStoredRequestBindingMismatch
+                  StoredRequestBinding
+                  [BindingFenceGeneration]
+              )
+          events <- harnessEvents harness
+          withoutReads events `shouldBe` []
 
     it "destroys and refuses every non-repromptable pre-receipt interruption"
       $ forM_

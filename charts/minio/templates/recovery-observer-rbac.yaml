@@ -1,0 +1,27 @@
+{{- /* Exact-name, GET-only observation for the retained recovery profile. */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: minio-recovery-observer
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: ["minio"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: minio-recovery-observer
+  labels:
+    {{- include "minio.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: minio-recovery-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ required "recoveryObserver.serviceAccountName is required" .Values.recoveryObserver.serviceAccountName | quote }}
+    namespace: {{ required "recoveryObserver.serviceAccountNamespace is required" .Values.recoveryObserver.serviceAccountNamespace | quote }}

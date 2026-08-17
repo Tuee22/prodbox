@@ -67,6 +67,62 @@ controlPlaneRouteSuite =
         )
         (filter (/= LifecycleAuthorityRuntime) standingRoles)
 
+    it "owns the AWS stack-reader boundary only at the Lifecycle Authority" $ do
+      controlPlaneRouteMethod LifecycleAwsStackReader `shouldBe` ControlPlanePost
+      controlPlaneRoutePath LifecycleAwsStackReader
+        `shouldBe` "/v1/authority/aws-stack-reader"
+      decodeRoleRoute
+        LifecycleAuthorityRuntime
+        ControlPlanePost
+        "/v1/authority/aws-stack-reader"
+        `shouldBe` Just LifecycleAwsStackReader
+      mapM_
+        ( \otherRole ->
+            decodeRoleRoute
+              otherRole
+              ControlPlanePost
+              "/v1/authority/aws-stack-reader"
+              `shouldBe` Nothing
+        )
+        (filter (/= LifecycleAuthorityRuntime) standingRoles)
+
+    it "owns the two distinct lifecycle-input boundaries only at the Lifecycle Authority" $ do
+      let expected =
+            [
+              ( LifecycleAwsStackCreationBinding
+              , "/v1/authority/aws-stack-creation-binding"
+              )
+            ,
+              ( LifecycleOwnershipManifest
+              , "/v1/authority/ownership-manifest"
+              )
+            ]
+      mapM_
+        ( \(route, path) -> do
+            controlPlaneRouteMethod route `shouldBe` ControlPlanePost
+            controlPlaneRoutePath route `shouldBe` path
+            decodeRoleRoute LifecycleAuthorityRuntime ControlPlanePost path
+              `shouldBe` Just route
+            mapM_
+              ( \otherRole ->
+                  decodeRoleRoute otherRole ControlPlanePost path
+                    `shouldBe` Nothing
+              )
+              (filter (/= LifecycleAuthorityRuntime) standingRoles)
+        )
+        expected
+
+    it "freezes additive authentication route codes 54 and 55" $ do
+      source <- readFile "src/Prodbox/ControlPlane/RequestAuthentication.hs"
+      source
+        `shouldContain` "LifecycleAwsStackCreationBinding -> 54"
+      source
+        `shouldContain` "LifecycleOwnershipManifest -> 55"
+      source
+        `shouldContain` "54 -> Just LifecycleAwsStackCreationBinding"
+      source
+        `shouldContain` "55 -> Just LifecycleOwnershipManifest"
+
     it "contains no generic object-store or Vault route" $
       mapM_
         ( \route -> do

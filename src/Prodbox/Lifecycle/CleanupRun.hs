@@ -7,7 +7,7 @@
 -- | Sprint 5.18: durable, capability-bound ownership of a canonical-suite
 -- cleanup run.  The aggregate is pure; the Lifecycle Authority repository is
 -- the only production interpreter allowed to persist it.
-module Prodbox.Test.CleanupRun
+module Prodbox.Lifecycle.CleanupRun
   ( CleanupRunId
   , mkCleanupRunId
   , cleanupRunIdText
@@ -19,11 +19,14 @@ module Prodbox.Test.CleanupRun
   , cleanupNodeIdText
   , CleanupOperationId
   , mkCleanupOperationId
+  , cleanupOperationIdText
   , CleanupAttemptId
   , mkCleanupAttemptId
   , cleanupAttemptIdText
   , CleanupDigest
   , mkCleanupDigest
+  , cleanupDigestText
+  , cleanupDigestOfBytes
   , CleanupDependencyKind (..)
   , CleanupDependency (..)
   , CleanupNodePlan
@@ -59,6 +62,8 @@ module Prodbox.Test.CleanupRun
   , cleanupRunCodec
   , CleanupRunSnapshot (..)
   , CleanupRunRepository (..)
+  , DescriptorBoundCleanupRunSnapshot (..)
+  , DescriptorBoundCleanupRunRepository (..)
   , CleanupRunStored (..)
   , cleanupRunStoredCodec
   , CleanupRunIndex (..)
@@ -71,14 +76,22 @@ module Prodbox.Test.CleanupRun
   , modelBCleanupRunIndexRepository
   , replicatedCleanupRunIndexRepository
   , registerCleanupRun
+  , registerDescriptorBoundCleanupRun
   , compactCleanupRunIndex
+  , compactDescriptorBoundCleanupRunIndex
   , publishCleanupRunTombstone
+  , publishDescriptorBoundCleanupRunTombstone
   , compactCleanupRunDurably
+  , compactDescriptorBoundCleanupRunDurably
   , modelBCleanupRunRepository
+  , modelBDescriptorBoundCleanupRunRepository
   , replicatedCleanupRunRepository
+  , replicatedDescriptorBoundCleanupRunRepository
   , CleanupRunStoreError (..)
   , createCleanupRunDurably
+  , createDescriptorBoundCleanupRunDurably
   , applyCleanupRunTransition
+  , applyDescriptorBoundCleanupRunTransition
   )
 where
 
@@ -169,6 +182,9 @@ cleanupNodeIdText (CleanupNodeId value) = value
 mkCleanupOperationId :: Text -> Either Text CleanupOperationId
 mkCleanupOperationId = fmap CleanupOperationId . boundedIdentity "cleanup operation id"
 
+cleanupOperationIdText :: CleanupOperationId -> Text
+cleanupOperationIdText (CleanupOperationId value) = value
+
 mkCleanupAttemptId :: Text -> Either Text CleanupAttemptId
 mkCleanupAttemptId = fmap CleanupAttemptId . boundedIdentity "cleanup attempt id"
 
@@ -183,6 +199,12 @@ mkCleanupDigest raw
   | otherwise = Left "cleanup digest must contain exactly 64 lowercase hexadecimal characters"
  where
   isLowerHex character = character `elem` ("0123456789abcdef" :: String)
+
+cleanupDigestText :: CleanupDigest -> Text
+cleanupDigestText (CleanupDigest value) = value
+
+cleanupDigestOfBytes :: ByteString -> CleanupDigest
+cleanupDigestOfBytes = CleanupDigest . TextEncoding.decodeUtf8 . hexSha256
 
 boundedIdentity :: Text -> Text -> Either Text Text
 boundedIdentity label raw
@@ -200,6 +222,7 @@ boundedIdentity label raw
 data CleanupDependencyKind
   = CleanupRequiresSuccess
   | CleanupRequiresAttempt
+  | CleanupRequiresTerminal
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -309,6 +332,7 @@ data CleanupPrimaryOutcome
 data CleanupNodeOutcome
   = CleanupNodeSucceeded
   | CleanupNodeFailed !Text
+  | CleanupNodeEffectUnconfirmed !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -351,7 +375,8 @@ data CleanupRunError
   | CleanupAttemptConflict !CleanupNodeId
   | CleanupDependenciesUnsatisfied !CleanupNodeId ![CleanupNodeId]
   | CleanupRunNotTerminal
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 newCleanupRun
   :: CleanupRunId
@@ -494,7 +519,11 @@ unsatisfiedDependencies run plan =
     case Map.lookup (cleanupDependencyNode dependency) (cleanupRunNodeStates run) of
       Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> True
       Just (CleanupNodeCompleted _ (CleanupNodeFailed _)) ->
-        cleanupDependencyKind dependency == CleanupRequiresAttempt
+        cleanupDependencyKind dependency /= CleanupRequiresSuccess
+      Just (CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _)) ->
+        cleanupDependencyKind dependency /= CleanupRequiresSuccess
+      Just (CleanupNodeBlocked _) ->
+        cleanupDependencyKind dependency == CleanupRequiresTerminal
       _ -> False
 
 settleBlockedCleanupNodes :: CleanupRun -> CleanupRun
@@ -516,8 +545,11 @@ settleBlockedCleanupNodes run =
     ]
   dependencyBlocks states dependency =
     case Map.lookup (cleanupDependencyNode dependency) states of
-      Just (CleanupNodeBlocked _) -> True
+      Just (CleanupNodeBlocked _) ->
+        cleanupDependencyKind dependency /= CleanupRequiresTerminal
       Just (CleanupNodeCompleted _ (CleanupNodeFailed _)) ->
+        cleanupDependencyKind dependency == CleanupRequiresSuccess
+      Just (CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _)) ->
         cleanupDependencyKind dependency == CleanupRequiresSuccess
       _ -> False
 
@@ -593,7 +625,8 @@ data CleanupRunCodecError
 
 encodeCleanupRun :: Int -> CleanupRun -> Either CleanupRunCodecError ByteString
 encodeCleanupRun maximumBytes run =
-  let bytes = LazyByteString.toStrict (serialise (CleanupRunEnvelope 1 run))
+  let version = if cleanupRunUsesV2Features run then 2 else 1
+      bytes = LazyByteString.toStrict (serialise (CleanupRunEnvelope version run))
    in if ByteString.length bytes > maximumBytes
         then Left (CleanupRunEnvelopeTooLarge (ByteString.length bytes) maximumBytes)
         else Right bytes
@@ -605,10 +638,22 @@ decodeCleanupRun maximumBytes bytes
   | otherwise = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
       Left _ -> Left CleanupRunEnvelopeInvalid
       Right envelope
-        | cleanupRunEnvelopeVersion envelope /= 1 ->
+        | cleanupRunEnvelopeVersion envelope /= 1
+            && cleanupRunEnvelopeVersion envelope /= 2 ->
             Left (CleanupRunEnvelopeUnsupportedVersion (cleanupRunEnvelopeVersion envelope))
         | LazyByteString.toStrict (serialise envelope) /= bytes -> Left CleanupRunEnvelopeNonCanonical
+        | cleanupRunEnvelopeVersion envelope == 1
+            && cleanupRunUsesV2Features (cleanupRunEnvelopeValue envelope) ->
+            Left CleanupRunEnvelopeInvalid
         | otherwise -> validateDecodedCleanupRun (cleanupRunEnvelopeValue envelope)
+
+cleanupRunUsesV2Features :: CleanupRun -> Bool
+cleanupRunUsesV2Features run =
+  any nodeUsesTerminalDependency (cleanupGraphNodes (cleanupRunGraph run))
+ where
+  nodeUsesTerminalDependency =
+    any ((== CleanupRequiresTerminal) . cleanupDependencyKind)
+      . cleanupNodeDependencies
 
 validateDecodedCleanupRun :: CleanupRun -> Either CleanupRunCodecError CleanupRun
 validateDecodedCleanupRun run = do
@@ -652,9 +697,42 @@ data CleanupRunRepository m revision = CleanupRunRepository
       -> m (Either Text ())
   }
 
+-- | A descriptor-bound snapshot is deliberately disjoint from the legacy
+-- repository view.  The explicit legacy arm prevents either protocol from
+-- interpreting the other protocol's bytes as a runnable aggregate.
+data DescriptorBoundCleanupRunSnapshot revision
+  = DescriptorBoundCleanupRunMissing
+  | DescriptorBoundCleanupRunLegacyState !revision
+  | DescriptorBoundCleanupRunObserved !revision !CleanupDigest !CleanupRun
+  | DescriptorBoundCleanupRunTombstoned
+      !revision
+      !CleanupDigest
+      !CleanupRunTombstone
+  deriving stock (Eq, Show)
+
+data DescriptorBoundCleanupRunRepository m revision
+  = DescriptorBoundCleanupRunRepository
+  { readDescriptorBoundCleanupRun
+      :: m (Either Text (DescriptorBoundCleanupRunSnapshot revision))
+  , compareAndSwapDescriptorBoundCleanupRun
+      :: Maybe revision
+      -> CleanupDigest
+      -> CleanupRun
+      -> m (Either Text ())
+  , compareAndSwapDescriptorBoundCleanupRunTombstone
+      :: revision
+      -> CleanupDigest
+      -> CleanupRunTombstone
+      -> m (Either Text ())
+  }
+
 data CleanupRunStored
   = CleanupRunStoredActive !CleanupRun
   | CleanupRunStoredTombstone !CleanupRunTombstone
+  | CleanupRunStoredDescriptorBoundActive !CleanupDigest !CleanupRun
+  | CleanupRunStoredDescriptorBoundTombstone
+      !CleanupDigest
+      !CleanupRunTombstone
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -666,7 +744,8 @@ cleanupRunStoredCodec :: Int -> ModelBCodec CleanupRunStored
 cleanupRunStoredCodec maximumBytes =
   ModelBCodec
     { encodeModelBValue = \stored ->
-        let bytes = LazyByteString.toStrict (serialise (CleanupRunStoredEnvelope 1 stored))
+        let version = if storedUsesV2Features stored then 2 else 1
+            bytes = LazyByteString.toStrict (serialise (CleanupRunStoredEnvelope version stored))
          in if ByteString.length bytes > maximumBytes
               then Left "stored cleanup run exceeds its encoded bound"
               else Right bytes
@@ -676,9 +755,11 @@ cleanupRunStoredCodec maximumBytes =
           else case deserialiseOrFail (LazyByteString.fromStrict bytes) of
             Left _ -> Left "stored cleanup run is invalid"
             Right envelope@(CleanupRunStoredEnvelope version stored)
-              | version /= 1 -> Left "stored cleanup run version is unsupported"
+              | version /= 1 && version /= 2 -> Left "stored cleanup run version is unsupported"
               | LazyByteString.toStrict (serialise envelope) /= bytes ->
                   Left "stored cleanup run is non-canonical"
+              | version == 1 && storedUsesV2Features stored ->
+                  Left "stored cleanup run v1 contains v2 state"
               | otherwise -> validateStored stored
     }
  where
@@ -689,6 +770,22 @@ cleanupRunStoredCodec maximumBytes =
       case mkCleanupDigest (cleanupRunTombstoneReportDigest tombstone) of
         Left detail -> Left (Text.unpack detail)
         Right _ -> Right stored
+    CleanupRunStoredDescriptorBoundActive descriptorDigest run -> do
+      validateDigest descriptorDigest
+      either (Left . show) (const (Right stored)) (validateDecodedCleanupRun run)
+    CleanupRunStoredDescriptorBoundTombstone descriptorDigest tombstone -> do
+      validateDigest descriptorDigest
+      case mkCleanupDigest (cleanupRunTombstoneReportDigest tombstone) of
+        Left detail -> Left (Text.unpack detail)
+        Right _ -> Right stored
+
+  validateDigest = either (Left . Text.unpack) (const (Right ())) . mkCleanupDigest . cleanupDigestText
+
+  storedUsesV2Features stored = case stored of
+    CleanupRunStoredActive run -> cleanupRunUsesV2Features run
+    CleanupRunStoredTombstone _ -> False
+    CleanupRunStoredDescriptorBoundActive {} -> True
+    CleanupRunStoredDescriptorBoundTombstone {} -> True
 
 data CleanupRunTombstone = CleanupRunTombstone
   { cleanupRunTombstoneId :: !CleanupRunId
@@ -700,6 +797,10 @@ data CleanupRunTombstone = CleanupRunTombstone
 data CleanupRunIndexEntry
   = CleanupRunIndexActive !CleanupRun
   | CleanupRunIndexTombstone !CleanupRunTombstone
+  | CleanupRunIndexDescriptorBoundActive !CleanupDigest !CleanupRun
+  | CleanupRunIndexDescriptorBoundTombstone
+      !CleanupDigest
+      !CleanupRunTombstone
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -724,7 +825,11 @@ cleanupRunIndexCodec maximumBytes =
     }
  where
   encodeIndex index =
-    let bytes = LazyByteString.toStrict (serialise (CleanupRunIndexEnvelope 1 index))
+    let version =
+          if any indexEntryUsesV2 (cleanupRunIndexEntries index)
+            then 2
+            else 1
+        bytes = LazyByteString.toStrict (serialise (CleanupRunIndexEnvelope version index))
      in if ByteString.length bytes > maximumBytes
           then Left "cleanup run index exceeds its encoded bound"
           else Right bytes
@@ -733,8 +838,10 @@ cleanupRunIndexCodec maximumBytes =
     | otherwise = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
         Left _ -> Left "cleanup run index is invalid"
         Right envelope@(CleanupRunIndexEnvelope version index)
-          | version /= 1 -> Left "cleanup run index version is unsupported"
+          | version /= 1 && version /= 2 -> Left "cleanup run index version is unsupported"
           | LazyByteString.toStrict (serialise envelope) /= bytes -> Left "cleanup run index is non-canonical"
+          | version == 1 && any indexEntryUsesV2 (cleanupRunIndexEntries index) ->
+              Left "cleanup run index v1 contains v2 state"
           | length (cleanupRunIndexEntries index) > 256 -> Left "cleanup run index exceeds 256 entries"
           | length (nub (map indexEntryRunId (cleanupRunIndexEntries index)))
               /= length (cleanupRunIndexEntries index) ->
@@ -748,11 +855,30 @@ cleanupRunIndexCodec maximumBytes =
       case mkCleanupDigest (cleanupRunTombstoneReportDigest tombstone) of
         Left detail -> Left (Text.unpack detail)
         Right _ -> Right ()
+    CleanupRunIndexDescriptorBoundActive descriptorDigest run -> do
+      validateDigest descriptorDigest
+      either (Left . show) (const (Right ())) (validateDecodedCleanupRun run)
+    CleanupRunIndexDescriptorBoundTombstone descriptorDigest tombstone -> do
+      validateDigest descriptorDigest
+      case mkCleanupDigest (cleanupRunTombstoneReportDigest tombstone) of
+        Left detail -> Left (Text.unpack detail)
+        Right _ -> Right ()
+
+  validateDigest = either (Left . Text.unpack) (const (Right ())) . mkCleanupDigest . cleanupDigestText
+
+  indexEntryUsesV2 entry = case entry of
+    CleanupRunIndexActive run -> cleanupRunUsesV2Features run
+    CleanupRunIndexTombstone _ -> False
+    CleanupRunIndexDescriptorBoundActive {} -> True
+    CleanupRunIndexDescriptorBoundTombstone {} -> True
 
 indexEntryRunId :: CleanupRunIndexEntry -> CleanupRunId
 indexEntryRunId entry = case entry of
   CleanupRunIndexActive run -> cleanupRunId run
   CleanupRunIndexTombstone tombstone -> cleanupRunTombstoneId tombstone
+  CleanupRunIndexDescriptorBoundActive _ run -> cleanupRunId run
+  CleanupRunIndexDescriptorBoundTombstone _ tombstone ->
+    cleanupRunTombstoneId tombstone
 
 data CleanupRunIndexSnapshot revision
   = CleanupRunIndexMissing
@@ -878,6 +1004,70 @@ registerCleanupRun repository run = do
       Left detail -> Left detail
       _ -> Left "cleanup run index read-back mismatch"
 
+-- | Publish and independently read back the descriptor-bound index entry
+-- after the exact descriptor has been independently read back and before the
+-- per-run aggregate is created. The index retains the descriptor-recompiled
+-- initial run so a crash before the primary write remains discoverable and
+-- repairable without accepting caller-supplied aggregate bytes.
+registerDescriptorBoundCleanupRun
+  :: (Monad m)
+  => CleanupRunIndexRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> m (Either Text CleanupRunIndex)
+registerDescriptorBoundCleanupRun repository descriptorDigest initialRun = do
+  observed <- readCleanupRunIndex repository
+  case observed of
+    Left detail -> pure (Left detail)
+    Right CleanupRunIndexMissing ->
+      commit
+        Nothing
+        ( CleanupRunIndex
+            [CleanupRunIndexDescriptorBoundActive descriptorDigest initialRun]
+        )
+    Right (CleanupRunIndexObserved revision index)
+      | Just existing <-
+          find
+            ((== cleanupRunId initialRun) . indexEntryRunId)
+            (cleanupRunIndexEntries index) ->
+          case existing of
+            CleanupRunIndexDescriptorBoundActive existingDigest existingRun
+              | existingDigest == descriptorDigest
+                  && existingRun == initialRun ->
+                  pure (Right index)
+            _ ->
+              pure
+                ( Left
+                    "cleanup run id is already registered under a different protocol or descriptor"
+                )
+      | length (cleanupRunIndexEntries index) >= 256 ->
+          pure (Left "cleanup run index capacity is exhausted")
+      | otherwise ->
+          commit
+            (Just revision)
+            ( CleanupRunIndex
+                ( cleanupRunIndexEntries index
+                    ++ [ CleanupRunIndexDescriptorBoundActive
+                           descriptorDigest
+                           initialRun
+                       ]
+                )
+            )
+ where
+  commit expected index = do
+    committed <- compareAndSwapCleanupRunIndex repository expected index
+    case committed of
+      Right () -> confirm index
+      Left detail -> do
+        readBack <- confirm index
+        pure (either (const (Left detail)) Right readBack)
+  confirm expected = do
+    observed <- readCleanupRunIndex repository
+    pure $ case observed of
+      Right (CleanupRunIndexObserved _ actual) | actual == expected -> Right actual
+      Left detail -> Left detail
+      _ -> Left "descriptor-bound cleanup run index read-back mismatch"
+
 compactCleanupRunIndex
   :: (Monad m)
   => CleanupRunIndexRepository m revision
@@ -903,6 +1093,10 @@ compactCleanupRunIndex repository run reportDigest =
                   pure (Left "cleanup run immutable plan differs from its registration")
               | not (cleanupRunTerminal run) -> pure (Left "cleanup run is not terminal")
               | otherwise -> commit revision index
+            Just CleanupRunIndexDescriptorBoundActive {} ->
+              pure (Left "cleanup run is descriptor-bound")
+            Just CleanupRunIndexDescriptorBoundTombstone {} ->
+              pure (Left "cleanup run is descriptor-bound")
  where
   sameImmutablePlan left right =
     cleanupRunId left == cleanupRunId right
@@ -926,6 +1120,64 @@ compactCleanupRunIndex repository run reportDigest =
       Right (CleanupRunIndexObserved _ actual) | actual == expected -> Right actual
       Left detail -> Left detail
       _ -> Left "cleanup run index compaction read-back mismatch"
+
+compactDescriptorBoundCleanupRunIndex
+  :: (Monad m)
+  => CleanupRunIndexRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> Text
+  -> m (Either Text CleanupRunIndex)
+compactDescriptorBoundCleanupRunIndex repository descriptorDigest run reportDigest =
+  case mkCleanupDigest reportDigest of
+    Left detail -> pure (Left detail)
+    Right _ -> do
+      observed <- readCleanupRunIndex repository
+      case observed of
+        Left detail -> pure (Left detail)
+        Right CleanupRunIndexMissing -> pure (Left "cleanup run index is missing")
+        Right (CleanupRunIndexObserved revision index) ->
+          case find ((== cleanupRunId run) . indexEntryRunId) (cleanupRunIndexEntries index) of
+            Nothing -> pure (Left "descriptor-bound cleanup run is not registered")
+            Just (CleanupRunIndexDescriptorBoundTombstone existingDigest tombstone)
+              | existingDigest == descriptorDigest
+                  && cleanupRunTombstoneReportDigest tombstone == reportDigest ->
+                  pure (Right index)
+              | otherwise ->
+                  pure (Left "descriptor-bound cleanup run tombstone conflicts")
+            Just (CleanupRunIndexDescriptorBoundActive existingDigest registered)
+              | existingDigest /= descriptorDigest ->
+                  pure (Left "descriptor-bound cleanup descriptor digest conflicts")
+              | not (sameImmutablePlan registered run) ->
+                  pure (Left "descriptor-bound cleanup immutable plan differs from its registration")
+              | not (cleanupRunTerminal run) ->
+                  pure (Left "descriptor-bound cleanup run is not terminal")
+              | otherwise -> commit revision index
+            Just _ -> pure (Left "cleanup run index entry uses the legacy protocol")
+ where
+  sameImmutablePlan left right =
+    cleanupRunId left == cleanupRunId right
+      && cleanupRunGraphDigest left == cleanupRunGraphDigest right
+      && cleanupRunGraph left == cleanupRunGraph right
+  commit revision index = do
+    let tombstone = CleanupRunTombstone (cleanupRunId run) reportDigest
+        replace entry
+          | indexEntryRunId entry == cleanupRunId run =
+              CleanupRunIndexDescriptorBoundTombstone descriptorDigest tombstone
+          | otherwise = entry
+        expected = CleanupRunIndex (map replace (cleanupRunIndexEntries index))
+    committed <- compareAndSwapCleanupRunIndex repository (Just revision) expected
+    case committed of
+      Right () -> confirm expected
+      Left detail -> do
+        readBack <- confirm expected
+        pure (either (const (Left detail)) Right readBack)
+  confirm expected = do
+    observed <- readCleanupRunIndex repository
+    pure $ case observed of
+      Right (CleanupRunIndexObserved _ actual) | actual == expected -> Right actual
+      Left detail -> Left detail
+      _ -> Left "descriptor-bound cleanup run index compaction read-back mismatch"
 
 compactCleanupRunDurably
   :: (Monad m)
@@ -964,6 +1216,64 @@ compactCleanupRunDurably maximumBytes backup runRepository indexRepository run =
                         compacted <- publishCleanupRunTombstone indexRepository tombstone
                         pure (report <$ compacted)
 
+compactDescriptorBoundCleanupRunDurably
+  :: (Monad m)
+  => Int
+  -> AuthorityAggregateBackupClient m
+  -> DescriptorBoundCleanupRunRepository m revision
+  -> CleanupRunIndexRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> m (Either Text CleanupRunReport)
+compactDescriptorBoundCleanupRunDurably
+  maximumBytes
+  backup
+  runRepository
+  indexRepository
+  descriptorDigest
+  run =
+    case compactCleanupRun run of
+      Left detail -> pure (Left (Text.pack (show detail)))
+      Right report -> case encodeCleanupRunReport maximumBytes report of
+        Left detail -> pure (Left (Text.pack (show detail)))
+        Right bytes -> do
+          copied <- copyAuthorityAggregateBackup backup bytes
+          case copied of
+            Left detail ->
+              pure (Left ("cleanup report backup copy failed: " <> Text.pack (show detail)))
+            Right receipt -> do
+              let digest = authorityBackupDigestText (authorityBackupReceiptDigest receipt)
+              observed <- observeAuthorityAggregateBackup backup digest
+              case observed of
+                Left detail ->
+                  pure (Left ("cleanup report backup observation failed: " <> Text.pack (show detail)))
+                Right AuthorityAggregateBackupMissing ->
+                  pure (Left "cleanup report backup is missing")
+                Right (AuthorityAggregateBackupCorrupt detail) ->
+                  pure (Left ("cleanup report backup is corrupt: " <> detail))
+                Right (AuthorityAggregateBackupCurrent ciphertext observedReceipt)
+                  | authorityBackupCiphertextBytes ciphertext /= bytes ->
+                      pure (Left "cleanup report backup bytes differ")
+                  | authorityBackupReceiptDigest observedReceipt
+                      /= authorityBackupReceiptDigest receipt ->
+                      pure (Left "cleanup report backup receipt differs")
+                  | otherwise -> do
+                      stored <-
+                        compactDescriptorBoundCleanupRunStorage
+                          runRepository
+                          descriptorDigest
+                          run
+                          digest
+                      case stored of
+                        Left detail -> pure (Left detail)
+                        Right tombstone -> do
+                          compacted <-
+                            publishDescriptorBoundCleanupRunTombstone
+                              indexRepository
+                              descriptorDigest
+                              tombstone
+                          pure (report <$ compacted)
+
 compactCleanupRunStorage
   :: (Monad m)
   => CleanupRunRepository m revision
@@ -999,6 +1309,55 @@ compactCleanupRunStorage repository run reportDigest = do
       Left detail -> Left detail
       _ -> Left "cleanup run tombstone read-back mismatch"
 
+compactDescriptorBoundCleanupRunStorage
+  :: (Monad m)
+  => DescriptorBoundCleanupRunRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> Text
+  -> m (Either Text CleanupRunTombstone)
+compactDescriptorBoundCleanupRunStorage repository descriptorDigest run reportDigest = do
+  observed <- readDescriptorBoundCleanupRun repository
+  case observed of
+    Left detail -> pure (Left detail)
+    Right DescriptorBoundCleanupRunMissing ->
+      pure (Left "descriptor-bound cleanup run primary is missing during compaction")
+    Right (DescriptorBoundCleanupRunLegacyState _) ->
+      pure (Left "cleanup run primary uses the legacy protocol")
+    Right (DescriptorBoundCleanupRunTombstoned _ actualDigest tombstone)
+      | actualDigest == descriptorDigest
+          && cleanupRunTombstoneId tombstone == cleanupRunId run
+          && cleanupRunTombstoneReportDigest tombstone == reportDigest ->
+          pure (Right tombstone)
+      | otherwise -> pure (Left "descriptor-bound cleanup run tombstone conflicts")
+    Right (DescriptorBoundCleanupRunObserved revision actualDigest current)
+      | actualDigest /= descriptorDigest ->
+          pure (Left "descriptor-bound cleanup descriptor digest conflicts")
+      | current /= run -> pure (Left "descriptor-bound cleanup run changed before compaction")
+      | not (cleanupRunTerminal current) ->
+          pure (Left "descriptor-bound cleanup run is not terminal")
+      | otherwise -> do
+          let tombstone = CleanupRunTombstone (cleanupRunId run) reportDigest
+          committed <-
+            compareAndSwapDescriptorBoundCleanupRunTombstone
+              repository
+              revision
+              descriptorDigest
+              tombstone
+          case committed of
+            Right () -> confirm tombstone
+            Left detail -> do
+              readBack <- confirm tombstone
+              pure (either (const (Left detail)) Right readBack)
+ where
+  confirm expected = do
+    observed <- readDescriptorBoundCleanupRun repository
+    pure $ case observed of
+      Right (DescriptorBoundCleanupRunTombstoned _ actualDigest actual)
+        | actualDigest == descriptorDigest && actual == expected -> Right actual
+      Left detail -> Left detail
+      _ -> Left "descriptor-bound cleanup run tombstone read-back mismatch"
+
 publishCleanupRunTombstone
   :: (Monad m)
   => CleanupRunIndexRepository m revision
@@ -1016,6 +1375,10 @@ publishCleanupRunTombstone repository tombstone = do
           | existing == tombstone -> pure (Right index)
           | otherwise -> pure (Left "cleanup run tombstone conflicts")
         Just (CleanupRunIndexActive _) -> commit revision index
+        Just CleanupRunIndexDescriptorBoundActive {} ->
+          pure (Left "cleanup run is descriptor-bound")
+        Just CleanupRunIndexDescriptorBoundTombstone {} ->
+          pure (Left "cleanup run is descriptor-bound")
  where
   commit revision index = do
     let replace entry
@@ -1035,6 +1398,50 @@ publishCleanupRunTombstone repository tombstone = do
       Left detail -> Left detail
       _ -> Left "cleanup run index tombstone read-back mismatch"
 
+publishDescriptorBoundCleanupRunTombstone
+  :: (Monad m)
+  => CleanupRunIndexRepository m revision
+  -> CleanupDigest
+  -> CleanupRunTombstone
+  -> m (Either Text CleanupRunIndex)
+publishDescriptorBoundCleanupRunTombstone repository descriptorDigest tombstone = do
+  observed <- readCleanupRunIndex repository
+  case observed of
+    Left detail -> pure (Left detail)
+    Right CleanupRunIndexMissing -> pure (Left "cleanup run index is missing")
+    Right (CleanupRunIndexObserved revision index) ->
+      case find ((== cleanupRunTombstoneId tombstone) . indexEntryRunId) (cleanupRunIndexEntries index) of
+        Nothing -> pure (Left "descriptor-bound cleanup run is not registered")
+        Just (CleanupRunIndexDescriptorBoundTombstone existingDigest existing)
+          | existingDigest == descriptorDigest && existing == tombstone ->
+              pure (Right index)
+          | otherwise ->
+              pure (Left "descriptor-bound cleanup run tombstone conflicts")
+        Just (CleanupRunIndexDescriptorBoundActive existingDigest _)
+          | existingDigest == descriptorDigest -> commit revision index
+          | otherwise ->
+              pure (Left "descriptor-bound cleanup descriptor digest conflicts")
+        Just _ -> pure (Left "cleanup run index entry uses the legacy protocol")
+ where
+  commit revision index = do
+    let replace entry
+          | indexEntryRunId entry == cleanupRunTombstoneId tombstone =
+              CleanupRunIndexDescriptorBoundTombstone descriptorDigest tombstone
+          | otherwise = entry
+        expected = CleanupRunIndex (map replace (cleanupRunIndexEntries index))
+    committed <- compareAndSwapCleanupRunIndex repository (Just revision) expected
+    case committed of
+      Right () -> confirm expected
+      Left detail -> do
+        readBack <- confirm expected
+        pure (either (const (Left detail)) Right readBack)
+  confirm expected = do
+    observed <- readCleanupRunIndex repository
+    pure $ case observed of
+      Right (CleanupRunIndexObserved _ actual) | actual == expected -> Right actual
+      Left detail -> Left detail
+      _ -> Left "descriptor-bound cleanup run index tombstone read-back mismatch"
+
 modelBCleanupRunRepository
   :: (Monad m)
   => ModelBCasAdapter 'ClusterRetained m CleanupRunStored
@@ -1049,6 +1456,10 @@ modelBCleanupRunRepository adapter coordinate =
           ModelBObserved revision stored -> case stored of
             CleanupRunStoredActive run -> Right (CleanupRunObserved revision run)
             CleanupRunStoredTombstone tombstone -> Right (CleanupRunTombstoned revision tombstone)
+            CleanupRunStoredDescriptorBoundActive {} ->
+              Left "cleanup run uses the descriptor-bound protocol"
+            CleanupRunStoredDescriptorBoundTombstone {} ->
+              Left "cleanup run uses the descriptor-bound protocol"
           ModelBCorrupt detail -> Left ("cleanup run is corrupt: " <> detail)
           ModelBEndpointUnready detail -> Left ("cleanup run endpoint is not ready: " <> detail)
           ModelBUnobservable detail -> Left ("cleanup run is unobservable: " <> detail)
@@ -1063,6 +1474,75 @@ modelBCleanupRunRepository adapter coordinate =
             adapter
             (ModelBReplace coordinate revision (CleanupRunStoredTombstone tombstone))
         pure $ projectCas result
+    }
+ where
+  projectCas result = case result of
+    ModelBCasApplied _ _ -> Right ()
+    ModelBCasConflict _ -> Left "cleanup run CAS conflict"
+    ModelBCasRefusedCorrupt detail -> Left ("cleanup run CAS refused corrupt state: " <> detail)
+    ModelBCasEndpointUnready detail -> Left ("cleanup run CAS endpoint is not ready: " <> detail)
+    ModelBCasUnobservable detail -> Left ("cleanup run CAS is unobservable: " <> detail)
+
+modelBDescriptorBoundCleanupRunRepository
+  :: (Monad m)
+  => ModelBCasAdapter 'ClusterRetained m CleanupRunStored
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> DescriptorBoundCleanupRunRepository m ModelBObjectVersion
+modelBDescriptorBoundCleanupRunRepository adapter coordinate =
+  DescriptorBoundCleanupRunRepository
+    { readDescriptorBoundCleanupRun = do
+        observed <- modelBObserve adapter coordinate
+        pure $ case observed of
+          ModelBMissing -> Right DescriptorBoundCleanupRunMissing
+          ModelBObserved revision stored -> case stored of
+            CleanupRunStoredActive _ ->
+              Right (DescriptorBoundCleanupRunLegacyState revision)
+            CleanupRunStoredTombstone _ ->
+              Right (DescriptorBoundCleanupRunLegacyState revision)
+            CleanupRunStoredDescriptorBoundActive descriptorDigest run ->
+              Right
+                ( DescriptorBoundCleanupRunObserved
+                    revision
+                    descriptorDigest
+                    run
+                )
+            CleanupRunStoredDescriptorBoundTombstone descriptorDigest tombstone ->
+              Right
+                ( DescriptorBoundCleanupRunTombstoned
+                    revision
+                    descriptorDigest
+                    tombstone
+                )
+          ModelBCorrupt detail -> Left ("cleanup run is corrupt: " <> detail)
+          ModelBEndpointUnready detail ->
+            Left ("cleanup run endpoint is not ready: " <> detail)
+          ModelBUnobservable detail -> Left ("cleanup run is unobservable: " <> detail)
+    , compareAndSwapDescriptorBoundCleanupRun = \expected descriptorDigest run -> do
+        result <- modelBCompareAndSwap adapter $ case expected of
+          Nothing ->
+            ModelBInitialize
+              coordinate
+              (CleanupRunStoredDescriptorBoundActive descriptorDigest run)
+          Just revision ->
+            ModelBReplace
+              coordinate
+              revision
+              (CleanupRunStoredDescriptorBoundActive descriptorDigest run)
+        pure $ projectCas result
+    , compareAndSwapDescriptorBoundCleanupRunTombstone =
+        \revision descriptorDigest tombstone -> do
+          result <-
+            modelBCompareAndSwap
+              adapter
+              ( ModelBReplace
+                  coordinate
+                  revision
+                  ( CleanupRunStoredDescriptorBoundTombstone
+                      descriptorDigest
+                      tombstone
+                  )
+              )
+          pure $ projectCas result
     }
  where
   projectCas result = case result of
@@ -1145,6 +1625,94 @@ replicatedCleanupRunRepository maximumBytes backup primary =
         | otherwise -> Right ()
   firstText = either (Left . Text.pack) Right
 
+replicatedDescriptorBoundCleanupRunRepository
+  :: Int
+  -> AuthorityAggregateBackupClient IO
+  -> DescriptorBoundCleanupRunRepository IO revision
+  -> DescriptorBoundCleanupRunRepository IO revision
+replicatedDescriptorBoundCleanupRunRepository maximumBytes backup primary =
+  DescriptorBoundCleanupRunRepository
+    { readDescriptorBoundCleanupRun = do
+        observed <- readDescriptorBoundCleanupRun primary
+        case observed of
+          Left detail -> pure (Left detail)
+          Right DescriptorBoundCleanupRunMissing ->
+            pure (Right DescriptorBoundCleanupRunMissing)
+          Right snapshot@(DescriptorBoundCleanupRunLegacyState _) ->
+            pure (Right snapshot)
+          Right snapshot@(DescriptorBoundCleanupRunObserved _ descriptorDigest run) -> do
+            verified <-
+              verifyStoredBackup
+                (CleanupRunStoredDescriptorBoundActive descriptorDigest run)
+            pure (snapshot <$ verified)
+          Right snapshot@(DescriptorBoundCleanupRunTombstoned _ descriptorDigest tombstone) -> do
+            verified <-
+              verifyStoredBackup
+                ( CleanupRunStoredDescriptorBoundTombstone
+                    descriptorDigest
+                    tombstone
+                )
+            pure (snapshot <$ verified)
+    , compareAndSwapDescriptorBoundCleanupRun =
+        \expected descriptorDigest run -> do
+          let stored = CleanupRunStoredDescriptorBoundActive descriptorDigest run
+          verified <- publishAndVerifyStoredBackup stored
+          case verified of
+            Left detail -> pure (Left detail)
+            Right () ->
+              compareAndSwapDescriptorBoundCleanupRun
+                primary
+                expected
+                descriptorDigest
+                run
+    , compareAndSwapDescriptorBoundCleanupRunTombstone =
+        \revision descriptorDigest tombstone -> do
+          let stored =
+                CleanupRunStoredDescriptorBoundTombstone
+                  descriptorDigest
+                  tombstone
+          verified <- publishAndVerifyStoredBackup stored
+          case verified of
+            Left detail -> pure (Left detail)
+            Right () ->
+              compareAndSwapDescriptorBoundCleanupRunTombstone
+                primary
+                revision
+                descriptorDigest
+                tombstone
+    }
+ where
+  canonical stored =
+    firstText (encodeModelBValue (cleanupRunStoredCodec maximumBytes) stored)
+  publishAndVerifyStoredBackup stored = case canonical stored of
+    Left detail -> pure (Left detail)
+    Right bytes -> do
+      copied <- copyAuthorityAggregateBackup backup bytes
+      case copied of
+        Left err ->
+          pure (Left ("cleanup backup copy failed: " <> Text.pack (show err)))
+        Right receipt ->
+          verifyBackupDigest
+            bytes
+            (authorityBackupDigestText (authorityBackupReceiptDigest receipt))
+  verifyStoredBackup stored = case canonical stored of
+    Left detail -> pure (Left detail)
+    Right bytes -> verifyBackupDigest bytes (sha256Text bytes)
+  verifyBackupDigest bytes digest = do
+    observed <- observeAuthorityAggregateBackup backup digest
+    pure $ case observed of
+      Left err -> Left ("cleanup backup observation failed: " <> Text.pack (show err))
+      Right AuthorityAggregateBackupMissing -> Left "cleanup backup is missing"
+      Right (AuthorityAggregateBackupCorrupt detail) ->
+        Left ("cleanup backup is corrupt: " <> detail)
+      Right (AuthorityAggregateBackupCurrent ciphertext receipt)
+        | authorityBackupCiphertextBytes ciphertext /= bytes ->
+            Left "cleanup primary and backup bytes differ"
+        | authorityBackupDigestText (authorityBackupReceiptDigest receipt) /= digest ->
+            Left "cleanup backup receipt digest mismatch"
+        | otherwise -> Right ()
+  firstText = either (Left . Text.pack) Right
+
 sha256Text :: ByteString -> Text
 sha256Text = TextEncoding.decodeUtf8 . hexSha256
 
@@ -1189,6 +1757,55 @@ createCleanupRunDurably repository expected = do
       Left detail -> Left (CleanupRunStoreUnavailable detail)
       _ -> Left CleanupRunStoreReadBackMismatch
 
+createDescriptorBoundCleanupRunDurably
+  :: (Monad m)
+  => DescriptorBoundCleanupRunRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> m (Either CleanupRunStoreError CleanupRun)
+createDescriptorBoundCleanupRunDurably repository descriptorDigest expected = do
+  observed <- readDescriptorBoundCleanupRun repository
+  case observed of
+    Left detail -> pure (Left (CleanupRunStoreUnavailable detail))
+    Right (DescriptorBoundCleanupRunObserved _ existingDigest existing)
+      | existingDigest == descriptorDigest && existing == expected ->
+          pure (Right existing)
+      | otherwise -> pure (Left CleanupRunStoreReadBackMismatch)
+    Right (DescriptorBoundCleanupRunTombstoned _ _ tombstone) ->
+      pure (Left (CleanupRunStoreAlreadyCompacted tombstone))
+    Right (DescriptorBoundCleanupRunLegacyState _) ->
+      pure
+        ( Left
+            ( CleanupRunStoreUnavailable
+                "cleanup run primary uses the legacy protocol"
+            )
+        )
+    Right DescriptorBoundCleanupRunMissing -> do
+      committed <-
+        compareAndSwapDescriptorBoundCleanupRun
+          repository
+          Nothing
+          descriptorDigest
+          expected
+      case committed of
+        Right () -> confirm
+        Left detail -> do
+          readBack <- confirm
+          pure $ case readBack of
+            Right value -> Right value
+            Left _ -> Left (CleanupRunStoreCommitFailed detail)
+ where
+  confirm = do
+    readBack <- readDescriptorBoundCleanupRun repository
+    pure $ case readBack of
+      Right (DescriptorBoundCleanupRunObserved _ observedDigest observed)
+        | observedDigest == descriptorDigest && observed == expected ->
+            Right observed
+      Right DescriptorBoundCleanupRunTombstoned {} ->
+        Left CleanupRunStoreReadBackMismatch
+      Left detail -> Left (CleanupRunStoreUnavailable detail)
+      _ -> Left CleanupRunStoreReadBackMismatch
+
 -- | Apply one pure transition through exact-revision CAS.  A failed CAS response
 -- is ambiguous: exact read-back of the expected value is success; every other
 -- observation refuses rather than repeating blindly.
@@ -1223,3 +1840,65 @@ applyCleanupRunTransition repository transition = do
       Right (CleanupRunObserved _ observed) | observed == expected -> Right observed
       Right (CleanupRunTombstoned _ _) -> Left CleanupRunStoreReadBackMismatch
       _ -> Left CleanupRunStoreReadBackMismatch
+
+applyDescriptorBoundCleanupRunTransition
+  :: (Monad m)
+  => DescriptorBoundCleanupRunRepository m revision
+  -> CleanupDigest
+  -> CleanupRun
+  -> (CleanupRun -> Either CleanupRunError CleanupRun)
+  -> m (Either CleanupRunStoreError CleanupRun)
+applyDescriptorBoundCleanupRunTransition
+  repository
+  descriptorDigest
+  descriptorInitialRun
+  transition = do
+    observed <- readDescriptorBoundCleanupRun repository
+    case observed of
+      Left detail -> pure (Left (CleanupRunStoreUnavailable detail))
+      Right DescriptorBoundCleanupRunMissing -> pure (Left CleanupRunStoreMissing)
+      Right (DescriptorBoundCleanupRunLegacyState _) ->
+        pure
+          ( Left
+              ( CleanupRunStoreUnavailable
+                  "cleanup run primary uses the legacy protocol"
+              )
+          )
+      Right (DescriptorBoundCleanupRunTombstoned _ _ tombstone) ->
+        pure (Left (CleanupRunStoreAlreadyCompacted tombstone))
+      Right (DescriptorBoundCleanupRunObserved revision observedDigest current)
+        | observedDigest /= descriptorDigest ->
+            pure (Left CleanupRunStoreReadBackMismatch)
+        | not (sameImmutablePlan descriptorInitialRun current) ->
+            pure (Left CleanupRunStoreReadBackMismatch)
+        | otherwise -> case transition current of
+            Left err -> pure (Left (CleanupRunStoreTransitionRejected err))
+            Right expected -> do
+              committed <-
+                compareAndSwapDescriptorBoundCleanupRun
+                  repository
+                  (Just revision)
+                  descriptorDigest
+                  expected
+              case committed of
+                Right () -> confirm expected
+                Left detail -> do
+                  readBack <- confirm expected
+                  pure $ case readBack of
+                    Right value -> Right value
+                    Left _ -> Left (CleanupRunStoreCommitFailed detail)
+   where
+    confirm expected = do
+      readBack <- readDescriptorBoundCleanupRun repository
+      pure $ case readBack of
+        Left detail -> Left (CleanupRunStoreUnavailable detail)
+        Right (DescriptorBoundCleanupRunObserved _ observedDigest observed)
+          | observedDigest == descriptorDigest && observed == expected ->
+              Right observed
+        Right DescriptorBoundCleanupRunTombstoned {} ->
+          Left CleanupRunStoreReadBackMismatch
+        _ -> Left CleanupRunStoreReadBackMismatch
+    sameImmutablePlan initial current =
+      cleanupRunId initial == cleanupRunId current
+        && cleanupRunGraphDigest initial == cleanupRunGraphDigest current
+        && cleanupRunGraph initial == cleanupRunGraph current

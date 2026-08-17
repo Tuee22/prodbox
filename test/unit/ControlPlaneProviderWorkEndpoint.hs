@@ -123,6 +123,7 @@ controlPlaneProviderWorkEndpointSuite =
     , nonStack ReapTestEbsVolumesIntent "prodbox-test" ""
     , nonStack ObserveSpotPriceIntent "t3.small" "Linux/UNIX"
     , nonStack ObserveOperationalIdentityIntent "" ""
+    , nonStack ObserveProviderAwsScopeIntent "" ""
     , nonStack ObserveReadinessStsIntent "" ""
     , nonStack ObserveReadinessRoute53Intent "Z123EXAMPLE" ""
     ]

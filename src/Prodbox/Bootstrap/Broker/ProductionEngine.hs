@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -57,14 +58,24 @@ import Prodbox.Bootstrap.Broker.Engine
 import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceAcquireDecision (..)
   , BootstrapFenceAcquireRefusal (..)
+  , BootstrapFenceOwnerCleanupObservation (..)
+  , BootstrapFenceRetireConfirmationRefusal (..)
+  , BootstrapFenceRetireRefusal (..)
   , BootstrapFenceStoreObservation
   , BootstrapLeaseObservation (..)
+  , BootstrapLeaseRefusal (..)
   , BootstrapSessionFence
   , BootstrapStoreMutationPermit
   , BootstrapVaultEffectPermit
+  , abandonFreshlyAcquiredFence
+  , bootstrapFenceGeneration
+  , bootstrapFenceGenerationValue
+  , bootstrapFenceOwnerCleanupFromWorkerObservation
   , confirmBootstrapFenceCas
+  , confirmBootstrapFenceRetireCas
   , confirmBootstrapLease
   , decideBootstrapFenceAcquire
+  , decideBootstrapFenceRetire
   , mkBootstrapFenceAcquireRequest
   , vaultEffectPermitActionDigest
   , vaultEffectPermitDeadline
@@ -914,6 +925,79 @@ bootstrapFenceAcquireRefusalName refusal = case refusal of
   BootstrapFenceAcquireOverlap _ -> "BootstrapFenceAcquireOverlap"
   BootstrapFenceAcquireExpiredPredecessor _ -> "BootstrapFenceAcquireExpiredPredecessor"
 
+-- | Sprint 2.47: the same closed name-only rule as
+-- 'bootstrapFenceAcquireRefusalName', applied to the retirement refusals.
+-- Three of the eight carry a 'BootstrapSessionFence' or a Lease witness, both
+-- of which carry the owner nonce.
+bootstrapFenceRetireRefusalName :: BootstrapFenceRetireRefusal -> String
+bootstrapFenceRetireRefusalName refusal = case refusal of
+  BootstrapFenceRetireRequestDeadlineExpired ->
+    "BootstrapFenceRetireRequestDeadlineExpired"
+  BootstrapFenceRetirePredecessorStillLive _ ->
+    "BootstrapFenceRetirePredecessorStillLive"
+  BootstrapFenceRetireDeadlineUnobservable _ ->
+    "BootstrapFenceRetireDeadlineUnobservable"
+  BootstrapFenceRetireLeaseStillLive _ -> "BootstrapFenceRetireLeaseStillLive"
+  BootstrapFenceRetireLeaseRefused _ -> "BootstrapFenceRetireLeaseRefused"
+  BootstrapFenceRetireOwnerStillPresent _ -> "BootstrapFenceRetireOwnerStillPresent"
+  BootstrapFenceRetireOwnerMismatch _ _ -> "BootstrapFenceRetireOwnerMismatch"
+  BootstrapFenceRetireCleanupUnobservable _ -> "BootstrapFenceRetireCleanupUnobservable"
+
+-- | Sprint 2.48: the same closed name-only rule for the retirement CAS's own
+-- confirmation refusals, which the compensating release in 'acquireFence'
+-- narrates. All three carry a 'BootstrapFenceStoreObservation', which carries
+-- the owner nonce.
+bootstrapFenceRetireConfirmationRefusalName
+  :: BootstrapFenceRetireConfirmationRefusal -> String
+bootstrapFenceRetireConfirmationRefusalName refusal = case refusal of
+  BootstrapFenceRetireReadBackMismatch _ _ -> "BootstrapFenceRetireReadBackMismatch"
+  BootstrapFenceRetireCasConflictRefusal _ -> "BootstrapFenceRetireCasConflictRefusal"
+  BootstrapFenceRetireCasResultUnobservable _ ->
+    "BootstrapFenceRetireCasResultUnobservable"
+
+-- | Sprint 2.48: how this invocation came to hold the fence it is establishing
+-- a Lease for. It decides one thing only — whether a failed @ensureLease@ may
+-- release the fence as its own side effect — and it is an ADT rather than a
+-- 'Bool' because that is the question, not the answer.
+data FenceAcquisitionOrigin
+  = -- | This call CAS'd the fence into existence and nothing has used it.
+    FreshlyCasAcquired
+  | -- | The durable fence already held exactly this request; an earlier attempt
+    -- of the same request may already have confirmed its Lease.
+    ResumedExisting
+  deriving stock (Eq, Show)
+
+-- | Sprint 2.47: the same closed name-only rule again, for the Lease
+-- refusals. Two of the six carry a 'BootstrapLeaseBinding', which carries the
+-- owner nonce, so those two publish their constructor and nothing else.
+--
+-- Sprint 2.48 carries the __reason__ through for the two constructors whose
+-- payload is already a fixed, payload-free string, and the distinction is not a
+-- relaxation of the rule — it is the rule applied to different payloads. The
+-- first live reproduction after 2.47 named
+-- 'BootstrapLeaseObservationUnobservable' and stopped there, while that one
+-- constructor still covers three unrelated causes: a transport failure, a
+-- non-success API status, and a structurally invalid response body. Naming the
+-- constructor moved the record from a six-way collapse to a three-way one.
+--
+-- Publishing the reason is safe because Sprint 2.42 already made it so: these
+-- details are built by @unobservableReason@ over
+-- @kubernetesTransportFailureLabel@, which maps every @HttpExceptionContent@
+-- constructor onto a fixed label with no wildcard arm and never inspects the
+-- 'Request' — precisely because it carries an @Authorization: Bearer@ header.
+-- 2.42 asserted with a planted token that no bearer material reaches a rendered
+-- reason. This consumes that guarantee rather than re-establishing it.
+bootstrapLeaseRefusalName :: BootstrapLeaseRefusal -> String
+bootstrapLeaseRefusalName refusal = case refusal of
+  BootstrapLeaseNotFound -> "BootstrapLeaseNotFound"
+  BootstrapLeaseObservationUnobservable detail ->
+    "BootstrapLeaseObservationUnobservable: " ++ Text.unpack detail
+  BootstrapLeaseBindingMismatch _ _ -> "BootstrapLeaseBindingMismatch"
+  BootstrapLeaseExpired -> "BootstrapLeaseExpired"
+  BootstrapLeaseResourceVersionEmpty -> "BootstrapLeaseResourceVersionEmpty"
+  BootstrapLeaseIdentityRefused detail ->
+    "BootstrapLeaseIdentityRefused: " ++ Text.unpack detail
+
 acquireFence
   :: OwnerNonce
   -> BootstrapStoreBoundary IO
@@ -945,31 +1029,187 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
             Left failure -> pure (Left (storeBoundaryError failure))
             Right observation ->
               case decideBootstrapFenceAcquire monotonicNow requestDeadline clock request observation of
-                BootstrapFenceAcquireRefused refusal -> do
-                  -- Sprint 2.47: name which of the five fence refusals fired.
-                  -- Constructor only: two of them carry a BootstrapSessionFence,
-                  -- which carries the owner nonce.
-                  writeDiagnosticLine
-                    ( "bootstrap-broker fence acquire refused: "
-                        ++ bootstrapFenceAcquireRefusalName refusal
-                    )
-                  boundaryRefused (Text.pack (show refusal))
-                BootstrapFenceAcquireResume fence -> ensureLease fence
-                BootstrapFenceAcquireCas plan -> do
-                  applied <- casBootstrapSessionFence store plan
-                  case applied of
-                    Left failure -> pure (Left (storeBoundaryError failure))
-                    Right result -> case confirmBootstrapFenceCas plan result of
-                      Left refusal -> boundaryRefused (Text.pack (show refusal))
-                      Right fence -> ensureLease fence
+                -- Sprint 2.47: the one refusal that has a supported remedy.
+                -- Every other arm still refuses immediately.
+                BootstrapFenceAcquireRefused (BootstrapFenceAcquireExpiredPredecessor held) ->
+                  retireExpiredPredecessor request held
+                BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
+                BootstrapFenceAcquireResume fence -> ensureLease ResumedExisting fence
+                BootstrapFenceAcquireCas plan -> applyAcquireCas plan
     _ -> boundaryRefused "request deadline is expired or authority clock is unavailable"
  where
-  ensureLease fence = do
+  refuseAcquire refusal = do
+    -- Sprint 2.46/2.47: name which of the five fence refusals fired.
+    -- Constructor only: two of them carry a BootstrapSessionFence, which
+    -- carries the owner nonce.
+    writeDiagnosticLine
+      ( "bootstrap-broker fence acquire refused: "
+          ++ bootstrapFenceAcquireRefusalName refusal
+      )
+    boundaryRefused (Text.pack (show refusal))
+
+  applyAcquireCas plan = do
+    applied <- casBootstrapSessionFence store plan
+    case applied of
+      Left failure -> pure (Left (storeBoundaryError failure))
+      Right result -> case confirmBootstrapFenceCas plan result of
+        Left refusal -> boundaryRefused (Text.pack (show refusal))
+        Right fence -> ensureLease FreshlyCasAcquired fence
+
+  -- Sprint 2.47: retire a positively-expired predecessor through the existing
+  -- CAS, then re-acquire exactly once.
+  --
+  -- Before this, @decideBootstrapFenceRetire@ had zero production callers while
+  -- its store half was fully wired, so a predecessor abandoned by a failed
+  -- bring-up refused every subsequent acquisition forever — and @cluster delete
+  -- --cascade@ preserves the object by design, because the same @.data/@ tree
+  -- holds per-run Pulumi state. The host could never complete @vault init@
+  -- again without hand-clearing a durable object.
+  --
+  -- __The retirement is what makes takeover safe, not merely what follows it.__
+  -- Absence of the predecessor's worker Pod does not prove absence of a Vault
+  -- session it may still hold — and no shape short of widening the durable
+  -- fence could prove that, because the predecessor's session id and accessor
+  -- are not recoverable from the record that survives it. They do not need to
+  -- be: every Vault effect and every durable mutation re-reads this exact fence
+  -- through 'authorizeBootstrapVaultEffect' /
+  -- 'authorizeBootstrapStoreMutation' immediately before acting. Retiring the
+  -- fence is therefore the positive revocation, and any surviving predecessor
+  -- fails closed at its next effect with @BootstrapFenceUseFenceLost@ or
+  -- @BootstrapFenceUseFenceStale@.
+  retireExpiredPredecessor request held = do
+    leaseObservation <- kubernetesObserveBootstrapLease kubernetes requestDeadline
+    workerObservation <-
+      kubernetesObserveFenceOwnerWorker
+        kubernetes
+        requestDeadline
+        (bootstrapFenceGeneration held)
+    -- Sprint 2.49: sample the clock AFTER the observations, and the ordering is
+    -- load-bearing rather than stylistic.
+    --
+    -- `bootstrapLeaseFromResponse` encodes an already-expired Lease as
+    -- `deadlineFromInstant monotonicBeforeWall` — a deadline at the instant the
+    -- observation was taken — and `deadlineExpired now limit` is `now >= limit`.
+    -- Sampling before the observation therefore guarantees
+    -- `now < monotonicBeforeWall`, so a Lease that expired hours ago reads as
+    -- __still live__, `decideBootstrapFenceRetire` refuses
+    -- `BootstrapFenceRetireLeaseStillLive`, and the fence can never be retired.
+    --
+    -- This was latent in Sprint 2.47 and unreachable until Sprint 2.48 made the
+    -- Lease creatable at all: before that, every retirement saw
+    -- `BootstrapLeaseMissing` and short-circuited. Fixing the Lease is what
+    -- exposed it, which is the honest reason the earlier live proof passed and
+    -- this arm still failed. More elapsed time is also strictly safer for the
+    -- other two uses of this instant — the request deadline and the
+    -- predecessor's expiry both only become more certain.
+    retireMonotonicNow <- realMonotonicNow
+    retireClock <- authorityClockNow
+    let cleanupObservation =
+          bootstrapFenceOwnerCleanupFromWorkerObservation held workerObservation
+    case decideBootstrapFenceRetire
+      retireMonotonicNow
+      requestDeadline
+      retireClock
+      held
+      leaseObservation
+      cleanupObservation of
+      Left retireRefusal -> do
+        writeDiagnosticLine
+          ( "bootstrap-broker expired-fence retirement refused: "
+              ++ bootstrapFenceRetireRefusalName retireRefusal
+          )
+        refuseAcquire (BootstrapFenceAcquireExpiredPredecessor held)
+      Right plan -> do
+        retired <- casRetireBootstrapSessionFence store plan
+        case retired of
+          Left failure -> pure (Left (storeBoundaryError failure))
+          Right result -> case confirmBootstrapFenceRetireCas plan result of
+            Left refusal -> boundaryRefused (Text.pack (show refusal))
+            Right vacated -> do
+              writeDiagnosticLine
+                ( "bootstrap-broker retired expired fence generation "
+                    ++ show (bootstrapFenceGenerationValue (bootstrapFenceGeneration held))
+                    ++ "; worker-absence receipt "
+                    ++ absenceReceiptName cleanupObservation
+                )
+              reacquireAfterRetirement
+                retireMonotonicNow
+                retireClock
+                request
+                vacated
+
+  -- Exactly one second pass, against the confirmed post-retirement read-back
+  -- rather than a fresh store read. The bound is structural: this function has
+  -- no path back into 'retireExpiredPredecessor', so a predecessor that somehow
+  -- survives the CAS refuses instead of looping.
+  reacquireAfterRetirement retireMonotonicNow retireClock request vacated =
+    case decideBootstrapFenceAcquire
+      retireMonotonicNow
+      requestDeadline
+      retireClock
+      request
+      vacated of
+      BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
+      BootstrapFenceAcquireResume fence -> ensureLease ResumedExisting fence
+      BootstrapFenceAcquireCas plan -> applyAcquireCas plan
+
+  -- Sprint 2.48: compensate a fence this call CAS'd but never made usable.
+  --
+  -- Best-effort and never masking: the original Lease refusal is what the
+  -- caller receives whether the release lands or not, because the release is a
+  -- cleanup of this call's own side effect and not a second diagnosis. A failed
+  -- release is narrated and then falls back to exactly the behaviour that
+  -- existed before this arm — the leak, which Sprint 2.47's retirement path
+  -- already makes self-healing within one operation deadline.
+  releaseFreshlyAcquiredFence fence = do
+    released <- casRetireBootstrapSessionFence store (abandonFreshlyAcquiredFence fence)
+    let generation =
+          show (bootstrapFenceGenerationValue (bootstrapFenceGeneration fence))
+    case released of
+      Left _ ->
+        writeDiagnosticLine
+          ( "bootstrap-broker could not release unusable fence generation "
+              ++ generation
+              ++ "; it expires with its operation deadline"
+          )
+      Right result -> case confirmBootstrapFenceRetireCas (abandonFreshlyAcquiredFence fence) result of
+        Left refusal ->
+          writeDiagnosticLine
+            ( "bootstrap-broker unusable-fence release refused: "
+                ++ bootstrapFenceRetireConfirmationRefusalName refusal
+            )
+        Right _ ->
+          writeDiagnosticLine
+            ( "bootstrap-broker released unusable fence generation "
+                ++ generation
+                ++ " after its Lease could not be confirmed"
+            )
+
+  ensureLease origin fence = do
     observed <- kubernetesEnsureBootstrapLease kubernetes requestDeadline fence
     now <- realMonotonicNow
     case confirmBootstrapLease now fence observed of
       Left refusal -> do
-        writeDiagnosticLine "bootstrap-broker fence acquire refused: lease not confirmed"
+        -- Sprint 2.47: this narrated the fixed string "lease not confirmed"
+        -- for all six refusals, which is the exact collapse Sprint 2.46 fixed
+        -- one level up for the acquire refusals and this function was missed
+        -- by. It matters beyond tidiness: the second blocker recorded behind
+        -- the stale-fence row is a Lease refusal whose constructor was never
+        -- captured, and the ledger holds a paraphrase — "no Lease present" —
+        -- where `BootstrapLeaseNotFound` and `BootstrapLeaseObservationUnobservable`
+        -- would have named different faults. The next reproduction names it.
+        writeDiagnosticLine
+          ( "bootstrap-broker fence acquire refused: lease not confirmed: "
+              ++ bootstrapLeaseRefusalName refusal
+          )
+        -- Sprint 2.48: only the freshly CAS'd fence is released. A resumed
+        -- fence pre-existed this call and an earlier attempt of the same
+        -- request may already have confirmed its Lease and run effects under
+        -- it, so releasing it would discard exactly the exclusion those effects
+        -- rely on.
+        case origin of
+          FreshlyCasAcquired -> releaseFreshlyAcquiredFence fence
+          ResumedExisting -> pure ()
         pure (Left (EngineBoundaryRefused (Text.pack (show refusal))))
       Right _ -> pure (Right fence)
 
@@ -1903,6 +2143,19 @@ mapReconcileResult :: Either error value -> Either EngineBoundaryError value
 mapReconcileResult =
   either (const (Left (EngineBoundaryUnavailable "Vault baseline reconcile failed"))) Right
 
+-- | Sprint 2.47: publish the absence receipt that authorized a takeover.
+--
+-- This is the digest's only consumer. 'decideBootstrapFenceRetire' has nothing
+-- to compare it against and does not read it, so narrating it is what keeps it
+-- from being a field that enforces nothing — the shape Sprints 4.68, 4.72, and
+-- 4.77 each found. A digest is safe to publish; the observation it commits to
+-- binds only API-assigned coordinates and never the owner nonce.
+absenceReceiptName :: BootstrapFenceOwnerCleanupObservation -> String
+absenceReceiptName observation = case observation of
+  BootstrapFenceOwnerAbsent _ receipt -> Text.unpack (renderArtifactDigest receipt)
+  BootstrapFenceOwnerStillPresent _ -> "none"
+  BootstrapFenceOwnerCleanupUnobservable _ -> "none"
+
 digestSerialised :: (Serialise value) => value -> ArtifactDigest
 digestSerialised value =
   case mkArtifactDigest (lowerHexBytes (SHA256.hash (LazyByteString.toStrict (serialise value)))) of
@@ -2010,7 +2263,7 @@ observeBrokerReadinessFacts capabilityRegistry settings kubernetes = do
       kubernetes
       (deadlineAtOffset now (RemainingDuration (observationBudgetMicros brokerReadinessSchedule)))
   image <-
-    kubernetesObserveControllerImageDigest
+    kubernetesObserveControllerImage
       kubernetes
       -- Never the worker-launch scope: requiring this Pod's own Ready
       -- condition here is the circular dependency that made a cold bring-up

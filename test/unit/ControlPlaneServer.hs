@@ -44,8 +44,13 @@ import Prodbox.ControlPlane.ProjectionImportEndpoint (mkProjectionImportHandler)
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointHandler
   , PulumiCheckpointObservation (PulumiCheckpointMissing)
+  , PulumiCheckpointPairObservation (PulumiCheckpointPairUnobservable)
   , PulumiCheckpointPublicationResult (PulumiCheckpointPublicationUnavailable)
   , PulumiCheckpointRepository (..)
+  , PulumiCheckpointRestoreReadBack (PulumiCheckpointRestoreReadBackUnavailable)
+  , PulumiCheckpointRestoreResult (PulumiCheckpointRestoreUnavailable)
+  , PulumiCheckpointRetirementAttemptResult (PulumiCheckpointRetirementAttemptUnavailable)
+  , PulumiCheckpointRetirementReadBack (PulumiCheckpointRetirementReadBackUnavailable)
   , PulumiCheckpointRetirementResult (PulumiCheckpointRetirementUnavailable)
   , mkPulumiCheckpointHandler
   )
@@ -139,13 +144,22 @@ controlPlaneServerSuite =
       inspectControlPlaneRequestFraming
         (declaredRequest "POST" "/v1/migration/apply" (controlPlaneMaximumBodyBytes + 1))
         `shouldBe` Left ControlPlaneBodyTooLarge
-    it "admits the large ceiling only for the two typed checkpoint-bearing routes" $ do
+    it "admits the large ceiling only for typed Authority proof routes" $ do
       fmap
         inspectControlPlaneRequestFraming
         [ declaredRequest "POST" "/v1/authority/pulumi-checkpoint" controlPlaneMaximumLargeBodyBytes
         , declaredRequest "POST" "/v1/authority-backup/copy" controlPlaneMaximumLargeBodyBytes
+        , declaredRequest "POST" "/v1/authority/eks-drain-intent" controlPlaneMaximumLargeBodyBytes
+        , declaredRequest
+            "POST"
+            "/v1/authority/eks-drain-readback-receipt"
+            controlPlaneMaximumLargeBodyBytes
+        , declaredRequest
+            "POST"
+            "/v1/authority/aws-stack-reader"
+            controlPlaneMaximumLargeBodyBytes
         ]
-        `shouldBe` replicate 2 (Right ControlPlaneFramingIncomplete)
+        `shouldBe` replicate 5 (Right ControlPlaneFramingIncomplete)
       controlPlaneMaximumLargeBodyBytes `shouldSatisfy` (> 96 * 1024 * 1024)
     it "refuses oversized large-route declarations from the header alone" $ do
       fmap
@@ -158,8 +172,49 @@ controlPlaneServerSuite =
             "POST"
             "/v1/authority-backup/copy"
             (controlPlaneMaximumLargeBodyBytes + 1)
+        , declaredRequest
+            "POST"
+            "/v1/authority/eks-drain-intent"
+            (controlPlaneMaximumLargeBodyBytes + 1)
+        , declaredRequest
+            "POST"
+            "/v1/authority/eks-drain-readback-receipt"
+            (controlPlaneMaximumLargeBodyBytes + 1)
+        , declaredRequest
+            "POST"
+            "/v1/authority/aws-stack-reader"
+            (controlPlaneMaximumLargeBodyBytes + 1)
         ]
+        `shouldBe` replicate 5 (Left ControlPlaneBodyTooLarge)
+    it "uses a separate tight preflight ceiling for immutable lifecycle inputs" $ do
+      let paths =
+            [ "/v1/authority/aws-stack-creation-binding"
+            , "/v1/authority/ownership-manifest"
+            ]
+      fmap
+        ( \path ->
+            inspectControlPlaneRequestFraming
+              ( declaredRequest
+                  "POST"
+                  path
+                  controlPlaneMaximumLifecycleInputBodyBytes
+              )
+        )
+        paths
+        `shouldBe` replicate 2 (Right ControlPlaneFramingIncomplete)
+      fmap
+        ( \path ->
+            inspectControlPlaneRequestFraming
+              ( declaredRequest
+                  "POST"
+                  path
+                  (controlPlaneMaximumLifecycleInputBodyBytes + 1)
+              )
+        )
+        paths
         `shouldBe` replicate 2 (Left ControlPlaneBodyTooLarge)
+      controlPlaneMaximumLifecycleInputBodyBytes
+        `shouldSatisfy` (< controlPlaneMaximumBodyBytes)
     it "keeps ordinary, wrong-method, observe, and unknown routes at one MiB" $ do
       fmap
         inspectControlPlaneRequestFraming
@@ -498,10 +553,20 @@ fixturePulumiCheckpointHandler =
   mkPulumiCheckpointHandler
     PulumiCheckpointRepository
       { observeRegisteredPulumiCheckpoint = \_callerSlot _ -> pure PulumiCheckpointMissing
+      , observeRegisteredPulumiCheckpointPair = \_callerSlot _ ->
+          pure (PulumiCheckpointPairUnobservable "fixture unavailable")
       , publishRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointPublicationUnavailable "fixture unavailable")
       , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
           pure (PulumiCheckpointRetirementUnavailable "fixture unavailable")
+      , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
+      , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+          pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
+      , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
+          pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
       }
 
 freshMigrationRepository :: IO (MigrationRepository IO Word)

@@ -58,7 +58,10 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   )
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( encodeEksClientAuthEnvelope
-  , mkEksClientAuthProjection
+  , validateEksClusterArnBinding
+  )
+import Prodbox.ControlPlane.EksClientAuthProjection.Internal
+  ( mkEksClientAuthProjection
   , mkEksClientAuthPublicKey
   , sealEksClientAuthProjection
   )
@@ -68,6 +71,12 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderMutation (..)
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
+  )
+import Prodbox.ControlPlane.ProviderCredentialSession.Internal
+  ( ValidatedProviderCredentialSession
+  , validateProviderCredentialSessionInternal
+  , validatedProviderCredentialSessionBindingInternal
+  , validatedProviderCredentialSessionCredentialsInternal
   )
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
@@ -108,6 +117,7 @@ import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordT
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
+  , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntentCoordinate
   , ProviderReadinessProbe (..)
@@ -123,6 +133,9 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClientAuthRequestClusterName
   , eksClientAuthRequestDestinationPublicKey
   , eksClientAuthRequestRegion
+  , eksClusterIdentityRequestAccountId
+  , eksClusterIdentityRequestClusterName
+  , eksClusterIdentityRequestRegion
   , providerCheckpointRefText
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
@@ -140,6 +153,9 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetRecipient
   , sesRuleSetRefText
   )
+import Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter.Internal
+  ( encodeProviderAwsScopeEvidence
+  )
 import Prodbox.Pulumi.EncryptedBackend
   ( EncryptedBackendError
   , PulumiStackRef (..)
@@ -151,14 +167,19 @@ import Prodbox.Result (Result (..))
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
-import Prodbox.Settings (Credentials (..))
+import Prodbox.Http.Client (renderHttpError)
+import Prodbox.Settings (Credentials)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (SubstrateAws))
-import Prodbox.Vault.Client (vaultKvReadV2)
+import Prodbox.Vault.Client
+  ( KvV2SecretMetadata (kvV2SecretMetadataCurrentVersion)
+  , vaultKvReadExactVersionV2
+  , vaultKvReadMetadataV2
+  )
 import Prodbox.Vault.Session
   ( VaultSession
   , sessionAddress
@@ -188,13 +209,15 @@ providerProductionNarrowSession
 providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpoch =
   ProviderNarrowSessionRunner
     { withProviderNarrowSession = \_intent _deadline action -> do
-        credentials <- readProviderCredentials vaultSession
-        case credentials of
+        credentialSession <- readProviderCredentialSession vaultSession
+        case credentialSession of
           Left detail -> pure (Left detail)
           Right resolved ->
             action
+              (Just (validatedProviderCredentialSessionBindingInternal resolved))
               ProviderProductionSession
-                { productionSessionCredentials = resolved
+                { productionSessionCredentials =
+                    validatedProviderCredentialSessionCredentialsInternal resolved
                 , productionSessionAuthorityTransport = authorityTransport
                 , productionSessionAuthorityEpoch = readAuthorityEpoch
                 }
@@ -221,10 +244,13 @@ providerProductionCapabilities =
     , observePublicARecordCapability = publicARecordObservation
     , reconcilePublicARecordCapability = publicARecordMutation
     , reapTestEbsVolumesCapability = ebsReaperMutation
+    , observeTestEbsVolumesCapability = testEbsObservation
     , observeSpotPriceCapability = spotPriceObservation
     , observeOperationalIdentityCapability = operationalIdentityObservation
+    , observeProviderAwsScopeCapability = providerAwsScopeObservation
     , observeProviderReadinessCapability = readinessObservation
     , issueEksClientAuthCapability = eksClientAuthObservation
+    , observeEksClusterIdentityCapability = eksClusterIdentityObservation
     }
 
 -- | Deep readiness for the production worker: the exact Provider Vault KV
@@ -232,11 +258,13 @@ providerProductionCapabilities =
 -- round trip. No ambient AWS source participates.
 providerProductionReady :: VaultSession -> IO Bool
 providerProductionReady vaultSession = do
-  credentialsResult <- readProviderCredentials vaultSession
-  case credentialsResult of
+  credentialSession <- readProviderCredentialSession vaultSession
+  case credentialSession of
     Left _ -> pure False
-    Right credentials -> do
-      environment <- awsCliSubprocessEnvironment credentials
+    Right resolved -> do
+      environment <-
+        awsCliSubprocessEnvironment
+          (validatedProviderCredentialSessionCredentialsInternal resolved)
       output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
       pure $ case commandSuccess output of
         Left _ -> False
@@ -591,37 +619,33 @@ sha256Text = Text.pack . concatMap renderByte . ByteString.unpack . SHA256.hash
     [digit] -> ['0', digit]
     digits -> digits
 
-readProviderCredentials :: VaultSession -> IO (Either Text Credentials)
-readProviderCredentials session = do
-  result <-
-    withSessionToken session $ \token ->
-      vaultKvReadV2 (sessionAddress session) token "secret" "aws/lifecycle-provider"
-  pure $ case result of
-    Left err -> Left (Text.pack (show err))
-    Right fields -> credentialsFromFields fields
-
-credentialsFromFields :: Map.Map Text Text -> Either Text Credentials
-credentialsFromFields fields = do
-  accessKey <- required "access_key_id"
-  secretKey <- required "secret_access_key"
-  awsRegion <- required "region"
-  let token = nonEmpty =<< Map.lookup "session_token" fields
-  Right
-    Credentials
-      { access_key_id = accessKey
-      , secret_access_key = secretKey
-      , session_token = token
-      , region = awsRegion
-      }
- where
-  required key =
-    maybe
-      (Left ("provider credential field is missing: " <> key))
-      Right
-      (nonEmpty =<< Map.lookup key fields)
-  nonEmpty value =
-    let normalized = Text.strip value
-     in if Text.null normalized then Nothing else Just normalized
+readProviderCredentialSession
+  :: VaultSession
+  -> IO (Either Text ValidatedProviderCredentialSession)
+readProviderCredentialSession session =
+  withSessionToken session $ \token -> do
+    metadataResult <-
+      vaultKvReadMetadataV2
+        (sessionAddress session)
+        token
+        "secret"
+        "aws/lifecycle-provider"
+    case metadataResult of
+      Left err -> pure (Left (Text.pack (renderHttpError err)))
+      Right metadata -> do
+        exactResult <-
+          vaultKvReadExactVersionV2
+            (sessionAddress session)
+            token
+            "secret"
+            "aws/lifecycle-provider"
+            (kvV2SecretMetadataCurrentVersion metadata)
+        pure $ case exactResult of
+          Left err -> Left (Text.pack (renderHttpError err))
+          Right exact ->
+            first
+              (Text.pack . show)
+              (validateProviderCredentialSessionInternal metadata exact)
 
 ebsReaperMutation :: Text -> ProviderMutation IO ProviderProductionSession
 ebsReaperMutation clusterName =
@@ -650,6 +674,34 @@ ebsReaperMutation clusterName =
               }
         pure (either (Left . Text.pack) (const (Right ())) result)
     }
+
+-- | Read-only, exact family observation for the lifecycle graph.  The
+-- Provider session supplies the AWS account/region binding; the signed intent
+-- supplies the cluster coordinate; and the evidence codec retains only the
+-- bounded, client-side re-filtered volume identities.
+testEbsObservation
+  :: Text
+  -> ProviderReadOnly IO ProviderProductionSession
+testEbsObservation clusterName = ProviderReadOnly $ \session _ -> do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  observed <-
+    EbsVolume.discoverEbsVolumes
+      EbsVolume.EbsDiscoverInput
+        { EbsVolume.ebsDiscoverEnvironment = environment
+        , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
+        , EbsVolume.ebsDiscoverScope =
+            EbsVolume.EbsPerRunTest (Text.unpack clusterName)
+        }
+  pure $ case observed of
+    Left detail -> Left (Text.pack detail)
+    Right volumes ->
+      Right
+        ( EbsVolume.renderTestScopedEbsObservation
+            ( EbsVolume.testScopedEbsObservation
+                (Text.unpack clusterName)
+                volumes
+            )
+        )
 
 spotPriceObservation
   :: ProviderSpotPriceQuery
@@ -698,6 +750,23 @@ operationalIdentityObservation = ProviderReadOnly $ \session _ -> do
       then Left "STS identity ARN is absent or exceeds the evidence bound"
       else Right ("sts-identity:" <> arn)
 
+-- | Exact account/region observation for lifecycle admission.  Account comes
+-- only from a successful STS response under the scoped Provider session;
+-- region comes from the same session's sealed Vault credentials.  The hidden
+-- codec emits neither credentials nor the raw STS response.
+providerAwsScopeObservation :: ProviderReadOnly IO ProviderProductionSession
+providerAwsScopeObservation = ProviderReadOnly $ \session _ -> do
+  let credentials = productionSessionCredentials session
+  environment <- awsCliSubprocessEnvironment credentials
+  output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+  pure $ do
+    successful <- firstText (processStdout <$> commandSuccess output)
+    root <- decodeObject successful
+    account <- requireTextField "Account" root
+    first
+      (Text.pack . show)
+      (encodeProviderAwsScopeEvidence account (region credentials))
+
 readinessObservation
   :: ProviderReadinessProbe
   -> ProviderReadOnly IO ProviderProductionSession
@@ -720,6 +789,74 @@ readinessObservation probe = ProviderReadOnly $ \session _ -> do
                   <> TextEncoding.decodeUtf8
                     (Base64.encode (TextEncoding.encodeUtf8 (Text.pack payload)))
               )
+
+-- | Exact EKS control-plane identity observation.  Only a successful
+-- DescribeCluster response can produce an ARN.  Absence is recognized from
+-- the exact AWS CLI error grammar for this named request; every other failure
+-- remains unobservable at the Provider boundary.
+eksClusterIdentityObservation
+  :: EksClusterIdentityRequest
+  -> ProviderReadOnly IO ProviderProductionSession
+eksClusterIdentityObservation request = ProviderReadOnly $ \session _ -> do
+  let credentials = productionSessionCredentials session
+      requestedAccount = eksClusterIdentityRequestAccountId request
+      requestedRegion = eksClusterIdentityRequestRegion request
+      requestedCluster = eksClusterIdentityRequestClusterName request
+  if Text.strip (region credentials) /= requestedRegion
+    then pure (Left "EKS identity request region does not match the Provider session")
+    else do
+      environment <- awsCliSubprocessEnvironment credentials
+      identityOutput <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+      clusterOutput <-
+        runAws
+          environment
+          [ "eks"
+          , "describe-cluster"
+          , "--region"
+          , Text.unpack requestedRegion
+          , "--name"
+          , Text.unpack requestedCluster
+          , "--output"
+          , "json"
+          ]
+      pure $ do
+        identity <- firstText (processStdout <$> commandSuccess identityOutput) >>= decodeObject
+        account <- requireTextField "Account" identity
+        if account == requestedAccount
+          then Right ()
+          else Left "EKS identity request account does not match the Provider session"
+        case commandSuccess clusterOutput of
+          Left _
+            | exactEksClusterNotFound requestedCluster clusterOutput ->
+                Right "registered EKS cluster is absent"
+            | otherwise -> Left (Text.pack (commandDetail clusterOutput))
+          Right successful -> do
+            clusterRoot <- decodeObject (processStdout successful)
+            cluster <- requireObjectField "cluster" clusterRoot
+            clusterName <- requireTextField "name" cluster
+            clusterArn <- requireTextField "arn" cluster
+            if clusterName == requestedCluster
+              then Right ()
+              else Left "EKS describe-cluster returned the wrong cluster identity"
+            firstShow
+              ( validateEksClusterArnBinding
+                  account
+                  requestedRegion
+                  requestedCluster
+                  clusterArn
+              )
+            Right ("eks-cluster-arn:" <> clusterArn)
+
+exactEksClusterNotFound :: Text -> ProcessOutput -> Bool
+exactEksClusterNotFound clusterName output =
+  processExitCode output /= ExitSuccess
+    && Text.null (Text.strip (Text.pack (processStdout output)))
+    && Text.strip (Text.pack (processStderr output))
+      == ( "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: "
+             <> "No cluster found for name: "
+             <> clusterName
+             <> "."
+         )
 
 eksClientAuthObservation
   :: EksClientAuthRequest
@@ -778,6 +915,7 @@ eksClientAuthObservation request = ProviderReadOnly $ \session _ -> do
     clusterRoot <- firstText (processStdout <$> commandSuccess clusterOutput) >>= decodeObject
     cluster <- requireObjectField "cluster" clusterRoot
     clusterName <- requireTextField "name" cluster
+    clusterArn <- requireTextField "arn" cluster
     endpoint <- requireTextField "endpoint" cluster
     certificateAuthority <- requireObjectField "certificateAuthority" cluster
     certificateAuthorityData <- requireTextField "data" certificateAuthority
@@ -798,6 +936,7 @@ eksClientAuthObservation request = ProviderReadOnly $ \session _ -> do
             account
             (eksClientAuthRequestRegion request)
             (eksClientAuthRequestClusterName request)
+            clusterArn
             endpoint
             certificateAuthorityData
             bearer

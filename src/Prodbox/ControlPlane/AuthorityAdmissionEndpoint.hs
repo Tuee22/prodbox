@@ -62,6 +62,7 @@ import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
 import Data.Either (fromLeft)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word16)
@@ -85,10 +86,21 @@ import Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommand (..)
   , AuthorityAdmissionDecision (..)
   , AuthorityAdmissionInvariantError
+  , AuthorityDecommissionState
   , AuthorityMigrationMode (..)
+  , AuthorityProviderOperation
   , AuthorityRegisteredSubmissionDecision (..)
   , AuthoritySubmissionGateRefusal (..)
+  , authorityAggregateAdmission
+  , authorityAggregateConfig
+  , authorityAggregateDecommission
   , authorityAggregateMigration
+  , authorityAggregateProviderOperations
+  , authorityAggregatePulumiCheckpoints
+  , authorityAggregateRegisteredClients
+  , authorityAggregateRetainedCapacity
+  , authorityAggregateSubmissionEpochBindings
+  , authorityAggregateSubmissionLedger
   , decideRegisteredAuthoritySubmission
   , observeRegisteredAuthoritySubmission
   , stepAuthorityAdmission
@@ -110,8 +122,11 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , mkClientSubmissionKey
   , mkRegisteredClientGeneration
   )
+import Prodbox.Lifecycle.Authority.Config (ConfigState)
 import Prodbox.Lifecycle.Authority.Genesis
-  ( AuthorityGenesisCommand
+  ( AuthorityAdmissionState
+  , AuthorityEpoch
+  , AuthorityGenesisCommand
   , GenesisDecision (..)
   )
 import Prodbox.Lifecycle.Authority.Migration
@@ -129,9 +144,15 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   , MigrationImportCommandApplicator
   , mkMigrationImportCommandApplicator
   )
+import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
+  ( AuthorityPulumiCheckpoints
+  )
 import Prodbox.Lifecycle.Authority.Submission
-  ( OperationId
+  ( ClientId
+  , ClientSequence
+  , OperationId
   , RequestDigest (RequestDigest)
+  , SubmissionLedger
   , SubmissionStatus (..)
   , TerminalOutcome (..)
   )
@@ -210,11 +231,42 @@ data AuthorityAdmissionEnvelope = AuthorityAdmissionEnvelope
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- Exact pre-epoch wire shape.  Field order is the old aggregate order; the
+-- constructor tag emitted by generic 'Serialise' is therefore byte-identical
+-- to retained v6 objects.  It is decode-migration scaffolding only and never
+-- becomes a second mutable domain type.
+data AuthorityAdmissionAggregateV6Wire = AuthorityAdmissionAggregateV6Wire
+  { authorityAdmissionV6Admission :: !AuthorityAdmissionState
+  , authorityAdmissionV6Migration :: !AuthorityMigrationMode
+  , authorityAdmissionV6SubmissionLedger :: !SubmissionLedger
+  , authorityAdmissionV6RetainedCapacity :: !Natural
+  , authorityAdmissionV6SubmissionEpochs
+      :: !(Map (ClientId, ClientSequence) AuthorityEpoch)
+  , authorityAdmissionV6ProviderOperations
+      :: !(Map (ClientId, ClientSequence) AuthorityProviderOperation)
+  , authorityAdmissionV6RegisteredClients :: !RegisteredClientTable
+  , authorityAdmissionV6PulumiCheckpoints :: !AuthorityPulumiCheckpoints
+  , authorityAdmissionV6Config :: !ConfigState
+  , authorityAdmissionV6Decommission :: !AuthorityDecommissionState
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data AuthorityAdmissionEnvelopeV6 = AuthorityAdmissionEnvelopeV6
+  { authorityAdmissionEnvelopeV6Version :: !Word16
+  , authorityAdmissionEnvelopeV6State :: !AuthorityAdmissionAggregateV6Wire
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 authorityAdmissionMaximumEncodedBytes :: Int
 authorityAdmissionMaximumEncodedBytes = 512 * 1024
 
 authorityAdmissionCodecVersion :: Word16
-authorityAdmissionCodecVersion = 6
+authorityAdmissionCodecVersion = 7
+
+authorityAdmissionLegacyCodecVersion :: Word16
+authorityAdmissionLegacyCodecVersion = 6
 
 authorityAdmissionStateCodec
   :: Int
@@ -330,13 +382,12 @@ decodeAuthorityAdmission
         envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
           Left _ -> Left AuthorityAdmissionInvalid
           Right decoded -> Right decoded
-        if authorityAdmissionEnvelopeVersion envelope /= authorityAdmissionCodecVersion
-          then
-            Left
-              ( AuthorityAdmissionUnsupportedVersion
-                  (authorityAdmissionEnvelopeVersion envelope)
-              )
-          else Right ()
+        case authorityAdmissionEnvelopeVersion envelope of
+          version
+            | version == authorityAdmissionCodecVersion -> Right ()
+            | version == authorityAdmissionLegacyCodecVersion -> Right ()
+            | otherwise ->
+                Left (AuthorityAdmissionUnsupportedVersion version)
         let aggregate = authorityAdmissionEnvelopeState envelope
         either
           (Left . AuthorityAdmissionInvariant)
@@ -347,9 +398,49 @@ decodeAuthorityAdmission
               expectedRegisteredClients
               aggregate
           )
-        if LazyByteString.toStrict (serialise envelope) /= bytes
+        if canonicalAuthorityAdmissionEnvelope envelope /= bytes
           then Left AuthorityAdmissionNonCanonical
           else Right aggregate
+
+canonicalAuthorityAdmissionEnvelope
+  :: AuthorityAdmissionEnvelope -> StrictByteString.ByteString
+canonicalAuthorityAdmissionEnvelope envelope
+  | authorityAdmissionEnvelopeVersion envelope
+      == authorityAdmissionLegacyCodecVersion =
+      LazyByteString.toStrict
+        ( serialise
+            AuthorityAdmissionEnvelopeV6
+              { authorityAdmissionEnvelopeV6Version =
+                  authorityAdmissionLegacyCodecVersion
+              , authorityAdmissionEnvelopeV6State =
+                  authorityAdmissionAggregateV6Wire
+                    (authorityAdmissionEnvelopeState envelope)
+              }
+        )
+  | otherwise = LazyByteString.toStrict (serialise envelope)
+
+authorityAdmissionAggregateV6Wire
+  :: AuthorityAdmissionAggregate -> AuthorityAdmissionAggregateV6Wire
+authorityAdmissionAggregateV6Wire aggregate =
+  AuthorityAdmissionAggregateV6Wire
+    { authorityAdmissionV6Admission = authorityAggregateAdmission aggregate
+    , authorityAdmissionV6Migration = authorityAggregateMigration aggregate
+    , authorityAdmissionV6SubmissionLedger =
+        authorityAggregateSubmissionLedger aggregate
+    , authorityAdmissionV6RetainedCapacity =
+        authorityAggregateRetainedCapacity aggregate
+    , authorityAdmissionV6SubmissionEpochs =
+        authorityAggregateSubmissionEpochBindings aggregate
+    , authorityAdmissionV6ProviderOperations =
+        authorityAggregateProviderOperations aggregate
+    , authorityAdmissionV6RegisteredClients =
+        authorityAggregateRegisteredClients aggregate
+    , authorityAdmissionV6PulumiCheckpoints =
+        authorityAggregatePulumiCheckpoints aggregate
+    , authorityAdmissionV6Config = authorityAggregateConfig aggregate
+    , authorityAdmissionV6Decommission =
+        authorityAggregateDecommission aggregate
+    }
 
 validateConfiguredAuthorityAdmission
   :: Natural
@@ -650,7 +741,7 @@ data AuthorityOperationSubmitResponse
   deriving anyclass (Serialise)
 
 data AuthorityOperationObserveResponse
-  = AuthorityOperationObserved !SubmissionStatus
+  = AuthorityOperationObserved !OperationId !SubmissionStatus
   | AuthorityOperationUnknown
   | AuthorityOperationObserveRefused !Text
   deriving stock (Eq, Show, Generic)
@@ -920,6 +1011,10 @@ authorityOperationSubmitSummary result = case result of
       "authority-operation-refused-legacy-writer-active"
     AuthorityMigrationWritersQuiesced ->
       "authority-operation-refused-migration-writers-quiesced"
+    AuthorityProviderAdmissionCascadeFrozen ->
+      "authority-operation-refused-provider-cascade-audit-frozen"
+    AuthorityProviderAdmissionCredentialRevoked ->
+      "authority-operation-refused-provider-credential-revoked"
 
 authorityOperationSubmitResponseBody
   :: AuthorityOperationSubmitResult -> StrictByteString.ByteString
@@ -945,7 +1040,7 @@ authorityOperationObserveHttpStatus result = case result of
   AuthorityOperationObserveInvalidField _ -> ReplyBadRequest
   AuthorityOperationObserveReadFailed _ -> ReplyServiceUnavailable
   AuthorityOperationObserveDecided decision -> case decision of
-    RegisteredSubmissionObserved _ -> ReplyOk
+    RegisteredSubmissionObserved _ _ -> ReplyOk
     RegisteredSubmissionUnknown -> ReplyNotFound
     RegisteredSubmissionObserveRefusedUnregistered -> ReplyForbidden
     RegisteredSubmissionObserveRefusedGenerationMismatch {} -> ReplyForbidden
@@ -965,7 +1060,7 @@ authorityOperationObserveSummary result = case result of
       "authority-operation-observe-refused-generation-mismatch"
     RegisteredSubmissionObserveDiverged ->
       "authority-operation-observe-ledger-diverged"
-    RegisteredSubmissionObserved status -> case status of
+    RegisteredSubmissionObserved _ status -> case status of
       StatusUnknown -> "authority-operation-observe-ledger-diverged"
       StatusInFlight -> "authority-operation-in-flight"
       StatusSettled OperationCompletedOutcome ->
@@ -982,8 +1077,8 @@ authorityOperationObserveResponseBody =
     . observeResponse
  where
   observeResponse result = case result of
-    AuthorityOperationObserveDecided (RegisteredSubmissionObserved status) ->
-      AuthorityOperationObserved status
+    AuthorityOperationObserveDecided (RegisteredSubmissionObserved operation status) ->
+      AuthorityOperationObserved operation status
     AuthorityOperationObserveDecided RegisteredSubmissionUnknown ->
       AuthorityOperationUnknown
     _ -> AuthorityOperationObserveRefused (authorityOperationObserveSummary result)

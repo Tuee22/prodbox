@@ -19,6 +19,7 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint
   , targetMaterialObservationAuthenticatedHandler
   , targetMaterialResponseMaximumBytes
   , targetMaterialMetadataGenerationField
+  , targetMaterialMetadataVaultVersionField
   , targetMaterialMetadataCommitmentField
   , targetMaterialMetadataOwnerNonceField
   , targetMaterialMetadataFencingTokenField
@@ -34,8 +35,6 @@ import Control.Monad (void)
 import Data.Bifunctor qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.Char (isControl)
-import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
@@ -61,6 +60,28 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , compiledTargetSecretSink
   , targetSecretIdToken
   )
+import Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
+  ( targetMaterialMetadataActionDigestField
+  , targetMaterialMetadataCommitmentField
+  , targetMaterialMetadataFencingTokenField
+  , targetMaterialMetadataGenerationField
+  , targetMaterialMetadataImageDigestField
+  , targetMaterialMetadataOwnerNonceField
+  , targetMaterialMetadataPodUidField
+  , targetMaterialMetadataRequestDigestField
+  , targetMaterialMetadataVaultVersionField
+  , validateTargetMaterialMetadataInternal
+  , validateTargetMaterialMetadataReadinessInternal
+  , validatedTargetMaterialActionDigest
+  , validatedTargetMaterialCommitment
+  , validatedTargetMaterialFencingToken
+  , validatedTargetMaterialGeneration
+  , validatedTargetMaterialImageDigest
+  , validatedTargetMaterialOwnerNonce
+  , validatedTargetMaterialPodUid
+  , validatedTargetMaterialRequestDigest
+  , validatedTargetMaterialVaultVersion
+  )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -76,7 +97,6 @@ import Prodbox.Vault.Session
   , sessionAddress
   , withSessionToken
   )
-import Text.Read (readMaybe)
 
 newtype TargetMaterialObserveRequest = TargetMaterialObserveRequest
   { targetMaterialObserveTarget :: TargetSecretId
@@ -160,17 +180,26 @@ observeVaultTargetMaterialDependencies session =
   traverse observeOne allTargetMaterialIds
  where
   observeOne target = do
-    observed <- observeVaultTargetMaterialMetadata session target
+    observed <- readVaultTargetMaterialMetadata session target
     pure
       ( "target-material:" <> targetSecretIdToken target
-      , roleDependencyFromOutcome (void observed)
+      , roleDependencyFromOutcome
+          ( observed >>= traverse validateTargetMaterialMetadataReadinessInternal >> pure ()
+          )
       )
 
 observeVaultTargetMaterialMetadata
   :: VaultSession
   -> TargetSecretId
   -> IO (Either Text (Maybe TargetMaterialObservation))
-observeVaultTargetMaterialMetadata session target = case compiledTargetSecretSink target of
+observeVaultTargetMaterialMetadata session target =
+  fmap (traverse observationFromMetadata) <$> readVaultTargetMaterialMetadata session target
+
+readVaultTargetMaterialMetadata
+  :: VaultSession
+  -> TargetSecretId
+  -> IO (Either Text (Maybe KvV2SecretMetadata))
+readVaultTargetMaterialMetadata session target = case compiledTargetSecretSink target of
   Left detail -> pure (Left detail)
   Right sink -> do
     result <-
@@ -189,106 +218,25 @@ observationFromMetadata
   :: KvV2SecretMetadata
   -> Either Text TargetMaterialObservation
 observationFromMetadata metadata = do
-  generationText <-
-    maybe
-      (Left "target metadata has no committed generation")
-      Right
-      (Map.lookup targetMaterialMetadataGenerationField custom)
-  generation <-
-    maybe
-      (Left "target metadata generation is invalid")
-      Right
-      (readNatural generationText)
-  if generation == 0
-    then Left "target metadata generation must be positive"
-    else Right ()
-  commitment <-
-    maybe
-      (Left "target metadata has no opaque commitment")
-      validateCommitment
-      (Map.lookup targetMaterialMetadataCommitmentField custom)
-  ownerNonce <-
-    maybe
-      (Left "target metadata has no owner nonce")
-      validateOwnerNonce
-      (Map.lookup targetMaterialMetadataOwnerNonceField custom)
-  fencingText <-
-    maybe
-      (Left "target metadata has no fencing token")
-      Right
-      (Map.lookup targetMaterialMetadataFencingTokenField custom)
-  fencing <-
-    maybe
-      (Left "target metadata fencing token is invalid")
-      Right
-      (readNatural fencingText)
-  if fencing == 0
-    then Left "target metadata fencing token must be positive"
-    else Right ()
-  requestDigest <-
-    requiredBounded "request digest" targetMaterialMetadataRequestDigestField 256 custom
-  actionDigest <- requiredBounded "action digest" targetMaterialMetadataActionDigestField 256 custom
-  podUid <- requiredBounded "Pod UID" targetMaterialMetadataPodUidField 256 custom
-  imageDigest <- requiredBounded "image digest" targetMaterialMetadataImageDigestField 256 custom
+  validated <- validateTargetMaterialMetadataInternal metadata
   pure
     TargetMaterialObservation
-      { targetMaterialObservedGeneration = generation
-      , targetMaterialObservedVaultVersion = kvV2SecretMetadataCurrentVersion metadata
-      , targetMaterialObservedCommitment = commitment
-      , targetMaterialObservedOwnerNonce = ownerNonce
-      , targetMaterialObservedFencingToken = fencing
-      , targetMaterialObservedRequestDigest = requestDigest
-      , targetMaterialObservedActionDigest = actionDigest
-      , targetMaterialObservedPodUid = podUid
-      , targetMaterialObservedImageDigest = imageDigest
+      { targetMaterialObservedGeneration =
+          validatedTargetMaterialGeneration validated
+      , targetMaterialObservedVaultVersion =
+          validatedTargetMaterialVaultVersion validated
+      , targetMaterialObservedCommitment =
+          validatedTargetMaterialCommitment validated
+      , targetMaterialObservedOwnerNonce =
+          validatedTargetMaterialOwnerNonce validated
+      , targetMaterialObservedFencingToken =
+          validatedTargetMaterialFencingToken validated
+      , targetMaterialObservedRequestDigest =
+          validatedTargetMaterialRequestDigest validated
+      , targetMaterialObservedActionDigest =
+          validatedTargetMaterialActionDigest validated
+      , targetMaterialObservedPodUid =
+          validatedTargetMaterialPodUid validated
+      , targetMaterialObservedImageDigest =
+          validatedTargetMaterialImageDigest validated
       }
- where
-  custom = kvV2SecretMetadataCustom metadata
-
-validateCommitment :: Text -> Either Text Text
-validateCommitment value
-  | Text.null value = Left "target metadata commitment is empty"
-  | Text.length value > 256 = Left "target metadata commitment is over bound"
-  | Text.any isControl value = Left "target metadata commitment contains control characters"
-  | otherwise = Right value
-
-validateOwnerNonce :: Text -> Either Text Text
-validateOwnerNonce value
-  | Text.null value = Left "target metadata owner nonce is empty"
-  | Text.length value > 128 = Left "target metadata owner nonce is over bound"
-  | Text.any isControl value = Left "target metadata owner nonce contains control characters"
-  | Text.any (== ' ') value = Left "target metadata owner nonce contains whitespace"
-  | otherwise = Right value
-
-requiredBounded :: Text -> Text -> Int -> Map.Map Text Text -> Either Text Text
-requiredBounded label field maximumLength fields = do
-  value <- maybe (Left ("target metadata has no " <> label)) Right (Map.lookup field fields)
-  if Text.null value || Text.length value > maximumLength || Text.strip value /= value
-    then Left ("target metadata " <> label <> " is invalid")
-    else Right value
-
-readNatural :: Text -> Maybe Natural
-readNatural = readMaybe . Text.unpack
-targetMaterialMetadataGenerationField :: Text
-targetMaterialMetadataGenerationField = "prodbox_generation"
-
-targetMaterialMetadataCommitmentField :: Text
-targetMaterialMetadataCommitmentField = "prodbox_commitment"
-
-targetMaterialMetadataOwnerNonceField :: Text
-targetMaterialMetadataOwnerNonceField = "prodbox_owner_nonce"
-
-targetMaterialMetadataFencingTokenField :: Text
-targetMaterialMetadataFencingTokenField = "prodbox_fencing_token"
-
-targetMaterialMetadataRequestDigestField :: Text
-targetMaterialMetadataRequestDigestField = "prodbox_request_digest"
-
-targetMaterialMetadataActionDigestField :: Text
-targetMaterialMetadataActionDigestField = "prodbox_action_digest"
-
-targetMaterialMetadataPodUidField :: Text
-targetMaterialMetadataPodUidField = "prodbox_worker_pod_uid"
-
-targetMaterialMetadataImageDigestField :: Text
-targetMaterialMetadataImageDigestField = "prodbox_worker_image_digest"

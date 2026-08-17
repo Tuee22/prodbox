@@ -28,6 +28,13 @@ module Prodbox.ControlPlane.RoleInterpreters
   ( lifecycleAuthorityInterpreter
   , lifecycleAuthorityAdmissionInterpreter
   , lifecycleAuthorityAdmissionAuthenticatedHandler
+  , lifecycleAuthorityEksDrainIntentAuthenticatedHandler
+  , lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
+  , lifecycleAuthorityAwsStackReaderAuthenticatedHandler
+  , lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
+  , lifecycleAuthorityOwnershipManifestAuthenticatedHandler
+  , lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
+  , lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
   , LifecycleAuthorityDecommissionInputs (..)
   , lifecycleAuthorityDecommissionAuthenticatedHandler
   , lifecycleAuthorityTlsRetentionAuthenticatedHandler
@@ -97,6 +104,23 @@ import Prodbox.ControlPlane.AuthorityObservationEndpoint
   , serveLifecycleAuthorityAggregateObserveRequest
   , serveLifecycleAuthorityObserveRequest
   )
+import Prodbox.ControlPlane.AwsStackCreationBindingEndpoint
+  ( awsStackCreationEndpointBody
+  , awsStackCreationEndpointStatus
+  , serveAwsStackCreationEndpointRequest
+  )
+import Prodbox.ControlPlane.AwsStackCreationBindingRepository
+  ( AwsStackCreationBindingClient
+  , AwsStackCreationBindingRepository
+  )
+import Prodbox.ControlPlane.AwsStackReaderEndpoint
+  ( awsStackReaderEndpointBody
+  , awsStackReaderEndpointStatus
+  , serveAwsStackReaderEndpointRequest
+  )
+import Prodbox.ControlPlane.AwsStackReaderRepository
+  ( AwsStackReaderClient
+  )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerAdminActionRunner)
   )
@@ -113,11 +137,41 @@ import Prodbox.ControlPlane.ConfigEndpoint
   , serveConfigObserveRequest
   , serveConfigProposeCasRequest
   )
+import Prodbox.ControlPlane.EksDrainIntentClient
+  ( EksDrainIntentClient
+  )
+import Prodbox.ControlPlane.EksDrainIntentEndpoint
+  ( eksDrainIntentEndpointBody
+  , eksDrainIntentEndpointStatus
+  , serveEksDrainIntentEndpointRequest
+  )
+import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
+  ( EksDrainReadBackReceiptClient
+  )
+import Prodbox.ControlPlane.EksDrainReadBackReceiptEndpoint
+  ( eksDrainReadBackReceiptEndpointBody
+  , eksDrainReadBackReceiptEndpointStatus
+  , serveEksDrainReadBackReceiptEndpointRequest
+  )
+import Prodbox.ControlPlane.LocalRke2HostObservationEndpoint
+  ( LocalRke2HostObservationEndpointHandler
+  , localRke2HostObservationEndpointBody
+  , localRke2HostObservationEndpointStatus
+  , serveLocalRke2HostObservationEndpointRequest
+  )
 import Prodbox.ControlPlane.MigrationEndpoint
   ( migrationEndpointHttpStatus
   , migrationEndpointSummary
   , serveAuthorityMigrationApply
   , serveMigrationApply
+  )
+import Prodbox.ControlPlane.OwnershipManifestEndpoint
+  ( ownershipManifestEndpointBody
+  , ownershipManifestEndpointStatus
+  , serveOwnershipManifestEndpointRequest
+  )
+import Prodbox.ControlPlane.OwnershipManifestRepository
+  ( OwnershipManifestRepository
   )
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( ProjectionImportHandler
@@ -139,6 +193,12 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , pulumiCheckpointResponseBody
   , pulumiCheckpointResponseHttpStatus
   , runPulumiCheckpointHandler
+  )
+import Prodbox.ControlPlane.RecoveryPlaneEndpoint
+  ( RecoveryPlaneEndpointHandler
+  , recoveryPlaneEndpointBody
+  , recoveryPlaneEndpointStatus
+  , serveRecoveryPlaneEndpointRequest
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot (verifiedCallerSlotPrincipal)
@@ -164,14 +224,21 @@ import Prodbox.ControlPlane.Route
       , LifecycleAuthorityDecommissionExport
       , LifecycleAuthorityDecommissionStop
       , LifecycleAuthorityObserve
+      , LifecycleAwsStackCreationBinding
+      , LifecycleAwsStackReader
       , LifecycleCleanupRun
       , LifecycleConfigObserve
       , LifecycleConfigProposeCas
+      , LifecycleEksDrainIntent
+      , LifecycleEksDrainReadBackReceipt
+      , LifecycleLocalRke2HostObservation
       , LifecycleMigrationApply
       , LifecycleOperationObserve
       , LifecycleOperationSubmit
+      , LifecycleOwnershipManifest
       , LifecycleProjectionImport
       , LifecyclePulumiCheckpoint
+      , LifecycleRecoveryPlane
       , LifecycleRetainedSesLease
       , LifecycleTlsRetentionObserve
       , LifecycleTlsRetentionPromote
@@ -242,6 +309,7 @@ import Prodbox.Lifecycle.AdminAction.Authority
   )
 import Prodbox.Lifecycle.Authority.Admission (AuthorityAdmissionAggregate)
 import Prodbox.Lifecycle.Authority.MigrationInterpreter (MigrationRepository)
+import Prodbox.Lifecycle.CleanupRun (CleanupDigest, CleanupRunId)
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityDecommissionExportRepository
   , AuthorityManifestSigner
@@ -501,6 +569,193 @@ lifecycleAuthorityAdmissionAuthenticatedHandler
               )
           )
       _ -> interpreterHandle contextFree route body
+
+-- | Add the authenticated EKS drain-intent endpoint around the standing
+-- Authority handler.  Route authentication and replay admission have already
+-- produced the caller slot before this layer runs; the endpoint receives only
+-- its closed, versioned request and the retained repository client.
+lifecycleAuthorityEksDrainIntentAuthenticatedHandler
+  :: (Monad m)
+  => EksDrainIntentClient m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityEksDrainIntentAuthenticatedHandler client inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleEksDrainIntent -> do
+          result <-
+            serveEksDrainIntentEndpointRequest
+              client
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( eksDrainIntentEndpointStatus result
+                , eksDrainIntentEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the authenticated EKS drain read-back receipt endpoint around the
+-- standing Authority handler.  The endpoint itself recovers the retained
+-- intent by stable identity and only emits proof-bearing canonical bytes after
+-- an independent Authority repository read-back.
+lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
+  :: (Monad m)
+  => EksDrainReadBackReceiptClient m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler client inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleEksDrainReadBackReceipt -> do
+          result <-
+            serveEksDrainReadBackReceiptEndpointRequest
+              client
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( eksDrainReadBackReceiptEndpointStatus result
+                , eksDrainReadBackReceiptEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the independently read-back AWS stack-reader bundle endpoint. Commit
+-- responses retain only their write disposition; proof-bearing bytes are
+-- returned solely by the separate read-back action.
+lifecycleAuthorityAwsStackReaderAuthenticatedHandler
+  :: (Monad m)
+  => (CleanupRunId -> CleanupDigest -> AwsStackReaderClient m)
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityAwsStackReaderAuthenticatedHandler clientFor inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleAwsStackReader -> do
+          result <-
+            serveAwsStackReaderEndpointRequest
+              clientFor
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( awsStackReaderEndpointStatus result
+                , awsStackReaderEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the Authority-reobserved AWS stack-creation binding protocol.  The
+-- endpoint receives no caller-minted observation; it combines the exact
+-- operation/revision/scope request with the retained admission repository.
+lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
+  :: (Monad m)
+  => AwsStackCreationBindingClient m
+  -> AwsStackCreationBindingRepository m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler client repository inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleAwsStackCreationBinding -> do
+          result <-
+            serveAwsStackCreationEndpointRequest
+              client
+              repository
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( awsStackCreationEndpointStatus result
+                , awsStackCreationEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the raw Authority ownership-manifest observation protocol.  Its
+-- authenticated transport client alone maps an exact Missing observation to
+-- observation-only Absent for the caller's target.
+lifecycleAuthorityOwnershipManifestAuthenticatedHandler
+  :: (Monad m)
+  => OwnershipManifestRepository m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityOwnershipManifestAuthenticatedHandler repository inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleOwnershipManifest -> do
+          result <-
+            serveOwnershipManifestEndpointRequest
+              repository
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( ownershipManifestEndpointStatus result
+                , ownershipManifestEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the Authority-executed recovery-plane read-back protocol.  The
+-- abstract handler is constructed only inside the package-private Authority
+-- boundary; this dispatch layer never sees component observations or a
+-- descriptor repository provider.
+lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
+  :: (Monad m)
+  => RecoveryPlaneEndpointHandler m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityRecoveryPlaneAuthenticatedHandler handler inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleRecoveryPlane -> do
+          result <-
+            serveRecoveryPlaneEndpointRequest
+              handler
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( recoveryPlaneEndpointStatus result
+                , recoveryPlaneEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
+
+-- | Add the host-only commit endpoint.  The abstract handler reloads the
+-- descriptor-bound Establish attempt and commits canonical Healthy bytes;
+-- this dispatch layer has no candidate constructor or repository client.
+lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
+  :: (Monad m)
+  => LocalRke2HostObservationEndpointHandler m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler handler inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = \callerSlot route body -> case route of
+        LifecycleLocalRke2HostObservation -> do
+          result <-
+            serveLocalRke2HostObservationEndpointRequest
+              handler
+              (LazyByteString.fromStrict body)
+          pure
+            ( Just
+                ( localRke2HostObservationEndpointStatus result
+                , localRke2HostObservationEndpointBody result
+                )
+            )
+        _ -> authenticatedHandlerHandle inner callerSlot route body
+    }
 
 -- | Production inputs for Authority-owned decommission export.  The
 -- unprovisioned constructor is an explicit deployment state, rather than a

@@ -506,7 +506,7 @@ externalCallerServiceAccountReadArguments caller =
   , "serviceaccount"
   , Text.unpack (externalCallerServiceAccount caller)
   , "--namespace"
-  , externalCallerNamespace
+  , externalCallerNamespace caller
   , "-o"
   , "jsonpath={.metadata.namespace}{'\\n'}{.metadata.name}{'\\n'}{.automountServiceAccountToken}{'\\n'}"
   ]
@@ -520,7 +520,7 @@ externalCallerTokenEligibilityArguments caller =
   , "serviceaccounts/" ++ Text.unpack (externalCallerServiceAccount caller)
   , "--subresource=token"
   , "--namespace"
-  , externalCallerNamespace
+  , externalCallerNamespace caller
   , "--as=" ++ externalCallerKubernetesSubject caller
   ]
 
@@ -531,7 +531,7 @@ externalCallerTokenRequestArguments caller =
   , "token"
   , Text.unpack (externalCallerServiceAccount caller)
   , "--namespace"
-  , externalCallerNamespace
+  , externalCallerNamespace caller
   , "--duration=" ++ externalCallerTokenDuration caller
   , "--as=" ++ externalCallerKubernetesSubject caller
   ]
@@ -549,7 +549,7 @@ validateExternalCallerServiceAccountReadBack caller raw =
         )
  where
   expected =
-    [ externalCallerNamespace
+    [ externalCallerNamespace caller
     , Text.unpack (externalCallerServiceAccount caller)
     , "false"
     ]
@@ -557,7 +557,7 @@ validateExternalCallerServiceAccountReadBack caller raw =
 externalCallerKubernetesSubject :: ExternalLifecycleAuthorityCaller -> String
 externalCallerKubernetesSubject caller =
   "system:serviceaccount:"
-    ++ externalCallerNamespace
+    ++ externalCallerNamespace caller
     ++ ":"
     ++ Text.unpack (externalCallerServiceAccount caller)
 
@@ -576,8 +576,10 @@ externalCallerVaultRole caller = case caller of
   LifecycleAuthorityOperator -> operatorControlPlaneVaultRole
   LifecycleAuthorityTestHarness -> harnessControlPlaneVaultRole
 
-externalCallerNamespace :: String
-externalCallerNamespace = "gateway"
+externalCallerNamespace :: ExternalLifecycleAuthorityCaller -> String
+externalCallerNamespace caller = case caller of
+  LifecycleAuthorityOperator -> "bootstrap-broker"
+  LifecycleAuthorityTestHarness -> "gateway"
 
 tokenRequestLimits :: BoundedSubprocessLimits
 tokenRequestLimits =

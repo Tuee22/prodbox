@@ -40,21 +40,21 @@ cross-substrate shared infrastructure (see
 | [dependency_management.md](./dependency_management.md) | Cabal/toolchain dependency doctrine, including executable-only RTS parsing for generated heap policy without hard-coded caps |
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
 | [config_doctrine.md](./config_doctrine.md) | The canonical three-tier config model (§0: Tier 0 self-contained non-secret bootstrap context; Tier 1 password-gated recovery material; Tier 2 Vault-gated operational secrets/state), the Lifecycle Authority generation/reference that selects an immutable encrypted config blob, generated/local-only Dhall rules, mount/reload contracts, and forbidden config surfaces |
-| [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
+| [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | AWS-specific exact inventory, EKS drain-session, provider-backstop, tagging, and integration cleanup adapters |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership/failover doctrine: bounded mesh state, a single-writer emitter journal, credential-gated DNS, and constant-time lifecycle projections; lifecycle/bootstrap authority is explicitly outside the gateway |
-| [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) | Pure-functional physical topology for Bootstrap Broker, Lifecycle Authority, private Backup/TLS adapters and Provider/Credential/Admin workers, substrate Target Agents, capability-indexed programs, authority cutover/repair, independent failure/resource domains, proof-carrying structured shutdown, the compiled service boundary, durability-indexed retained custody, and measured-capacity certification of authored envelopes, plus the §5.4/§5.5 TLS custody closure — public-edge retention re-keyed to a canonical scope-set serialization, certificate private keys excluded from the closed retained-material schema |
+| [lifecycle_control_plane_architecture.md](./lifecycle_control_plane_architecture.md) | Pure-functional physical topology for the separated lifecycle roles, including the bootstrap-owned ordinary teardown recovery profile, authority repair, capability-indexed programs, independent failure/resource domains, proof-carrying shutdown, and retained custody |
 | [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine, including JWT, Redis, and WebSocket boundaries; each explicit served hostname is bound to and covered by the configured certificate scope set, with wildcard certificate SANs supported when anchored at a config-declared delegated zone |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine, review-guidance split, and the landed opaque runtime-memory/generated RTS boundary |
-| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
-| [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Reconciler-with-predicates pattern for desired absence/presence, managed-resource classes, durable lifecycle operations, authority fencing, immutable checkpoint references, target-delivery outbox, always-run cleanup semantics, the derived restore/cleanup graph with total executor, and the per-run-only harness residue bypass |
+| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Integration preparation, receipt-backed cleanup registration, and validation-specific consumption of the shared lifecycle cleanup report |
+| [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Exact-keyed desired-absence reconciliation: pure lifecycle-indexed registry, separate checkpoint/resource/audit observations, total recovery decisions, result-indexed teardown programs, durable cleanup graph, and proof-carrying recover-to-clean cascade |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | In-cluster registry (registry:2) workload sourcing, public-image reconcile, and native-host-architecture image publication |
-| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: static `Retain` no-provisioner PVs on both substrates (home `hostPath`, EKS pre-created EBS) and deterministic PVC/PV rebinding |
+| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: preserved recovery roots, static `Retain` PVs on both substrates, deterministic rebinding, and storage consequences of uninstall-last cleanup |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |
 | [bootstrap_readiness_doctrine.md](./bootstrap_readiness_doctrine.md) | Capability-indexed dependency barriers whose observation, admission, and execution share one exact reference; distinguishes process health, operational admission, capability evidence, and temporal stability |
-| [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
+| [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and typed terminal-record narration, including exact cleanup evidence and resumable run IDs |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
 | [unit_testing_policy.md](./unit_testing_policy.md) | Test-runner doctrine, validation contract, and the seconds-fast pre-cluster conformance tier for cross-artifact agreement |
@@ -68,9 +68,9 @@ cross-substrate shared infrastructure (see
 | [cluster_federation_doctrine.md](./cluster_federation_doctrine.md) | Cluster federation: the root/child Vault transit-seal trust tree, parent custody of child recovery material, downstream-cluster metadata as secret, generation-CAS config authority, and the fail-closed unseal cascade; child-cluster public-edge TLS is per-zone self-issuance with delivered `AcmeEabMaterial` (a parent never hands a child certificate private-key material) |
 | [pulsar_messaging_doctrine.md](./pulsar_messaging_doctrine.md) | Self-maintained native-protocol Pulsar client and the project-wide CBOR-always payload rule (no codec-selection field — non-CBOR payloads unrepresentable), the derived `topicFor` topic algebra, and the `Work*` envelope family |
 | [resource_scaling_doctrine.md](./resource_scaling_doctrine.md) | Resource governor separating admission/containment from runtime demand: memory algebra, CPU service-rate and queue/deadline proofs, independent control-plane envelopes, temporal stability evidence, substrate-indexed scaling, price/quota gates, an opaque proof-carrying `AllocatedResourcePlan` (over-commitment unrepresentable), namespace quotas derived from the workloads' actual draws, and measured resource profiles certifying authored envelopes |
-| [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) | Pulsar topics as first-class managed resources — typed three-valued broker discover, typed idempotent destroy, and a lifecycle class reconciled through the §3.1 registry; names from the topic algebra, retention drawn from the finite storage budget |
+| [pulsar_topic_lifecycle_doctrine.md](./pulsar_topic_lifecycle_doctrine.md) | Pulsar topics as first-class managed resources — the current three-valued `TopicResidueStatus`/callback adapter distinguished from the target lifecycle-indexed exact four-arm observation and closed program tags; names come from the topic algebra, while the proof-carrying topic-capacity binding is a target contract rather than a current-source guarantee |
 | [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md) | Finite-budget durable-storage capacity DSL: no `Infinite` constructor, sizeless-claim and over-quota unrepresentable, MinIO "unlimited" only with an autoscaling witness, AWS region service-quota as the real cloud ceiling, mandatory ML JIT + model-cache budgets, and no durable-destruction primitive |
-| [host_platform_doctrine.md](./host_platform_doctrine.md) | Per-OS host-provider model mirrored in kind from hostbootstrap: the detected `HostSubstrate`, the closed `HostTool` enum, and the `LiftLayer` provider fold (Lima on Apple, WSL2 on Windows, Incus/native on Linux) with "everything Docker-inward is OS-agnostic Linux"; makes rke2-without-a-VM (Apple/Windows) and host-frame `docker` on Windows unrepresentable |
+| [host_platform_doctrine.md](./host_platform_doctrine.md) | Per-OS host-provider model mirrored in kind from hostbootstrap: the detected `HostSubstrate` and `LiftLayer` provider fold are current; the closed `HostTool`/absolute-path subprocess boundary is an explicitly marked target. Lima on Apple, WSL2 on Windows, and Incus/native on Linux keep everything Docker-inward OS-agnostic Linux. |
 | [cluster_topology_doctrine.md](./cluster_topology_doctrine.md) | The three explicit cluster types (`kind`/`rke2`/`eks`, never inferred), the substrate-indexed one-compute-worker-per-machine rule, and the type shapes that make ill-formed topologies (multi-node rke2 on one machine, cross-machine kind, wrong-substrate worker, mixed-substrate kind/eks) unrepresentable |
 | [test_topology_doctrine.md](./test_topology_doctrine.md) | The executable-sibling `prodbox.test.dhall` SSoT, `.test-data/` isolation, per-run teardown, and the rule that retaining long-lived resources during cleanup does not exclude capability-derived desired-present preparation |
 
@@ -94,7 +94,7 @@ cross-substrate shared infrastructure (see
 - [Runtime Memory Contract](./distributed_gateway_architecture.md#123-runtime-memory-contract)
 - [Public Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
-- [Gateway Container Build Doctrine](./local_registry_pipeline.md#6-gateway-container-build-doctrine)
+- [Union Runtime Container Build Doctrine](./local_registry_pipeline.md#6-union-runtime-container-build-doctrine)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [TLA+ Models](./tla/README.md)
 - [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md)
@@ -165,13 +165,13 @@ cross-substrate shared infrastructure (see
 
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Chart Storage Contract](./helm_chart_platform_doctrine.md#6-datanamespacestatefulsetordinal-host-path-contract)
-- [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
+- [Delete Semantics](./helm_chart_platform_doctrine.md#7-delete-semantics)
 - [Probe and Route Single-Source Rule](./helm_chart_platform_doctrine.md#probe-and-route-single-source-rule)
 - [Supported Public Auth Model (public-edge production TLS retention)](./helm_chart_platform_doctrine.md#9-supported-public-auth-model)
 - [ACME Provider Guide](./acme_provider_guide.md)
-- [Managed-Resource Registry (production-cert LongLived registration)](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-the-reconciler-substrate)
-- [Derived Restore/Cleanup Graph and Total Executor](./lifecycle_reconciliation_doctrine.md#33-the-derived-restorecleanup-graph-and-total-executor)
-- [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
+- [Managed-Resource Registry and Exact Observation Boundary](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+- [Result-Indexed Programs and Durable Cleanup Graph](./lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph)
+- [Single Retained Operator-Host Root](./storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
 
 ### Resource Governance

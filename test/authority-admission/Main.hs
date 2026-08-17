@@ -363,7 +363,10 @@ endpointTests =
         serveAuthorityOperationObserve repository providerSlot submissionKeyA
           >>= ( @?=
                   AuthorityOperationObserveDecided
-                    (RegisteredSubmissionObserved StatusInFlight)
+                    ( RegisteredSubmissionObserved
+                        (acceptedResultOperation result)
+                        StatusInFlight
+                    )
               )
     , testCase "closed control and migration routes mutate the same exact-revision aggregate" $ do
         (repository, _, revisionRef) <- mutableRepository registeredOpened
@@ -426,7 +429,10 @@ endpointTests =
           submissionKeyA
           >>= ( @?=
                   AuthorityOperationObserveDecided
-                    (RegisteredSubmissionObserved StatusInFlight)
+                    ( RegisteredSubmissionObserved
+                        (acceptedResultOperation result)
+                        StatusInFlight
+                    )
               )
     , testCase "an applied genesis transition with a lost response is confirmed" $ do
         stateRef <- newIORef frozen
@@ -737,6 +743,14 @@ assertAcceptedResult result = case result of
       AuthorityRegisteredSubmissionDecided (RegisteredSubmissionAccepted _) -> pure ()
       _ -> assertFailure ("expected accepted result, got " <> show result)
   _ -> assertFailure ("expected accepted result, got " <> show result)
+
+acceptedResultOperation :: AuthorityOperationSubmitResult -> OperationId
+acceptedResultOperation result = case result of
+  AuthorityOperationSubmitDecided
+    ( AuthorityRegisteredSubmissionDecided
+        (RegisteredSubmissionAccepted operationId)
+      ) -> operationId
+  other -> error ("expected accepted result, got " <> show other)
 
 duplicateResultOperation :: AuthorityOperationSubmitResult -> OperationId
 duplicateResultOperation result = case result of

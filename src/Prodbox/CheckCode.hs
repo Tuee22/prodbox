@@ -11,6 +11,7 @@ module Prodbox.CheckCode
   , controlPlaneChartStaticViolations
   , checkCommittedValueHygiene
   , checkCreateCallSiteCoverage
+  , checkWorkerImagePullReferenceOwner
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
   , checkProductionEnvVarReads
@@ -87,6 +88,7 @@ module Prodbox.CheckCode
   , runDocsCommand
   , runLintCommand
   , substrateImagePinningViolations
+  , workerImagePullReferenceViolations
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , tier0DriftFindings
@@ -159,6 +161,7 @@ import Prodbox.Legacy.EscapeRegistry
   ( escapeRegistryViolations
   , isLegacyEscapeScanFile
   )
+import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
 import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
@@ -338,6 +341,58 @@ generatedSectionRules =
       , generatedSectionEndMarker = "# prodbox:target-secret-agent-chart-statics.values:end"
       , generatedSectionRender = const TargetSecretAgentStatics.renderTargetSecretAgentChartStaticsYaml
       , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/TargetSecretAgent/ChartStatics.hs"]
+      }
+  , -- The recovery observer subject is one compiled Lifecycle Authority
+    -- identity projected into each namespace-local exact-name GET RoleBinding.
+    -- These generated defaults keep raw-chart rendering aligned with the
+    -- supported ChartPlatform value injection.
+    GeneratedSectionRule
+      { generatedSectionKey = "minio-recovery-observer.values"
+      , generatedSectionPath = "charts/minio/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "vault-recovery-observer.values"
+      , generatedSectionPath = "charts/vault/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "bootstrap-broker-recovery-observer.values"
+      , generatedSectionPath = "charts/bootstrap-broker/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "authority-backup-recovery-observer.values"
+      , generatedSectionPath = "charts/authority-backup/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "provider-worker-recovery-observer.values"
+      , generatedSectionPath = "charts/provider-worker/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "target-secret-agent-recovery-observer.values"
+      , generatedSectionPath = "charts/target-secret-agent/values.yaml"
+      , generatedSectionStartMarker = "# prodbox:lifecycle-authority-recovery-observer.values:start"
+      , generatedSectionEndMarker = "# prodbox:lifecycle-authority-recovery-observer.values:end"
+      , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
       }
   , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
     -- are rendered into substrates.md so `prodbox dev docs check` fails the
@@ -1319,6 +1374,11 @@ bootstrapBrokerChartStaticsConformanceViolations valuesContents =
       , "name: " ++ Text.unpack (BrokerChartStatics.brokerStaticServiceAccount statics)
       )
     ,
+      ( "cleanupCaller.serviceAccountName"
+      , "serviceAccountName: "
+          ++ Text.unpack (BrokerChartStatics.brokerStaticCleanupCallerServiceAccount statics)
+      )
+    ,
       ( "client.serviceAccountName"
       , "serviceAccountName: "
           ++ Text.unpack (BrokerChartStatics.brokerStaticClientServiceAccount statics)
@@ -1503,6 +1563,8 @@ haskellStyleViolations repoRoot = do
   validatedSettingsFindings <- checkValidatedSettingsMinter repoRoot
   tier0CoordinateFindings <- checkTier0CoordinateReads repoRoot
   listenPortFindings <- checkControlPlaneListenPortOwner repoRoot
+  residueMinterFindings <- checkResidueObservationMinter repoRoot
+  workerImagePullFindings <- checkWorkerImagePullReferenceOwner repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1535,6 +1597,8 @@ haskellStyleViolations repoRoot = do
         ++ validatedSettingsFindings
         ++ tier0CoordinateFindings
         ++ listenPortFindings
+        ++ workerImagePullFindings
+        ++ residueMinterFindings
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -1732,6 +1796,78 @@ controlPlaneListenPortLiteral = "8600"
 controlPlaneListenPortOwnerPaths :: [FilePath]
 controlPlaneListenPortOwnerPaths = ["src/Prodbox/ControlPlane/ListenPort.hs"]
 
+-- | Sprint 2.51: a Bootstrap Broker Pod's @image@ field is __observed, never
+-- assembled__.
+--
+-- A container image has two sha256 identities and they are the same sixty-four
+-- lower-hex characters: the __config__ digest the container runtime reports as
+-- @status.containerStatuses[].imageID@, and the __manifest__ digest an OCI
+-- registry can resolve. There is no reverse index from the first to the second,
+-- so a reference built as @repo\@sha256:\<config digest\>@ is unpullable — and
+-- because the two are syntactically identical, no smart constructor over the
+-- digest text can tell them apart. That is
+-- @chaos_hardening_doctrine.md@ § 24 exactly: an observation has a layer, and
+-- this one named the runtime's layer while being consumed as the registry's.
+--
+-- The separation therefore lives at the consuming boundary rather than in the
+-- digest, and this rule is what keeps it there. Two things are forbidden in the
+-- Broker's own modules:
+--
+--   1. a Pod manifest @\"image\" .=@ applied to anything other than
+--      'Prodbox.Bootstrap.Broker.KubernetesWorker.renderWorkerImagePullReference',
+--      which is constructible only from a __declared__ reference naming the
+--      compiled worker repository; and
+--   2. building any reference by concatenating @\"\@\"@, which is the exact
+--      shape the defect took at both sites it occupied.
+--
+-- __The bound is stated rather than implied.__ The rule is scoped to
+-- @src\/Prodbox\/Bootstrap\/Broker\/@ because that is Sprint 2.51's owned
+-- surface. Three sites outside it still assemble a digest reference and are
+-- tracked as their own @Pending Removal@ rows; widening this scope belongs to
+-- the sprint that fixes them, not to this one — a check that fails on work no
+-- sprint has taken is a broken build, not a guard.
+checkWorkerImagePullReferenceOwner :: FilePath -> IO [String]
+checkWorkerImagePullReferenceOwner repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , any (`isPrefixOf` path) workerImageSourcePrefixes
+      , ".hs" `isSuffixOf` path
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (workerImagePullReferenceViolations (path, contents))
+      )
+
+bootstrapBrokerSourcePrefix :: FilePath
+bootstrapBrokerSourcePrefix = "src/Prodbox/Bootstrap/Broker/"
+
+workerImageSourcePrefixes :: [FilePath]
+workerImageSourcePrefixes =
+  [ bootstrapBrokerSourcePrefix
+  , "src/Prodbox/ControlPlane/TargetSecretWorker"
+  , "src/Prodbox/Lifecycle/CredentialProvisioner/"
+  , "src/Prodbox/Lifecycle/AdminAction/"
+  ]
+
+-- | Pure so the unit suite can pin both contracts: it fires on the exact
+-- pre-Sprint-2.51 source shape, and it passes on the current tree.
+workerImagePullReferenceViolations :: (FilePath, String) -> [String]
+workerImagePullReferenceViolations (path, contents) =
+  [ path
+      ++ ":"
+      ++ show lineNumber
+      ++ " builds an image reference by concatenating `\"@\"`. A pull reference"
+      ++ " is observed from the controller's declared image, never assembled"
+      ++ " from a digest — see `WorkerImagePullReference`."
+  | (lineNumber, line) <- numberedLines
+  , "<> \"@\"" `isInfixOf` line || "\"@\" <>" `isInfixOf` line
+  ]
+ where
+  numberedLines = zip [(1 :: Int) ..] (lines contents)
+
 -- | Sprint 1.88: a 'Prodbox.Settings.ValidatedSettings' asserts that
 -- @validateConfig@ ran and every Tier-0 invariant it decides was satisfied.
 -- Before this sprint that was a property of 'validateConfig' rather than of the
@@ -1927,6 +2063,69 @@ checkDnsOwnerAuthorityBoundary repoRoot = do
           contents <- readFileStrict (repoRoot </> path)
           pure (dnsOwnerAuthorityInternalSourceViolations (path, contents))
       )
+
+-- | Sprint 4.81: a residue observation is minted by the module that made the
+-- observation, or not at all.
+--
+-- 'Prodbox.Lifecycle.ResidueStatus.ResidueObservation' pairs a residue answer
+-- with the authority that produced it, and its constructor is unexported so
+-- 'observeResidueAt' is the sole minter. That alone stops a caller
+-- /fabricating/ the pair, but not a caller far from any observation asserting a
+-- layer it did not consult — which is the class-A defect in its original form:
+-- a witness constructed by describing the operation rather than returned by
+-- performing it.
+--
+-- This rule supplies the missing force over the compiled source region: only
+-- the modules that actually hold an observation boundary may name the minter.
+-- It is the same idiom as the Sprint @1.76@ @RoundTripWitness@ and Sprint
+-- @4.58@ @TargetSinkVersion@ boundaries and Sprint @3.32@'s
+-- 'checkDnsOwnerAuthorityBoundary'.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- compiled rule over a source region, not a property of the type. It cannot
+-- prove that a permitted module named the /correct/ layer — only that a module
+-- with no observation boundary cannot name one at all.
+residueObservationMinterOwners :: [FilePath]
+residueObservationMinterOwners =
+  [ "src/Prodbox/Lifecycle/ResidueStatus.hs"
+  , "src/Prodbox/Lifecycle/LiveResidue.hs"
+  ]
+
+checkResidueObservationMinter :: FilePath -> IO [String]
+checkResidueObservationMinter repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      , path `notElem` residueObservationMinterOwners
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (residueObservationMinterViolations (path, contents))
+      )
+
+residueObservationMinterViolations :: (FilePath, String) -> [String]
+residueObservationMinterViolations (path, contents) =
+  [ path
+      ++ ":"
+      ++ show lineNumber
+      ++ " names `observeResidueAt` outside a residue-observation boundary. A "
+      ++ "residue observation records which authority answered, so it must be "
+      ++ "minted where the observation is made, not asserted by a consumer "
+      ++ "downstream (chaos_hardening_doctrine.md § 21 class-A, § 24). The "
+      ++ "modules permitted to mint are: "
+      ++ intercalate ", " residueObservationMinterOwners
+      ++ ". If this module genuinely observes residue at a new authority, add it "
+      ++ "to `residueObservationMinterOwners` in the same change that adds the "
+      ++ "boundary -- never to silence this rule."
+  | (lineNumber, line) <- zip [1 :: Int ..] (lines contents)
+  , "observeResidueAt" `isInfixOf` line
+  , not ("--" `isPrefixOf` dropWhile isSpace line)
+  ]
 
 -- | Sprint 4.74: a Vault CAS result is read through its classifier or not at
 -- all.
@@ -5808,6 +6007,8 @@ chartViolationsFor repoRoot relativeChartPath = do
   staticsViolations <- gatewayStaticsChartViolations (takeFileName chartDir) chartDir
   brokerStaticsViolations <- bootstrapBrokerStaticsChartViolations (takeFileName chartDir) chartDir
   controlPlaneStaticsViolations <- controlPlaneChartStaticsViolations (takeFileName chartDir) chartDir
+  recoveryObserverViolations <-
+    recoveryObserverRbacChartViolations (takeFileName chartDir) chartDir
   pure
     ( manifestViolations relativeChartPath chartContents
         ++ helperViolations
@@ -5818,10 +6019,88 @@ chartViolationsFor repoRoot relativeChartPath = do
         ++ staticsViolations
         ++ brokerStaticsViolations
         ++ controlPlaneStaticsViolations
+        ++ recoveryObserverViolations
     )
  where
   manifestViolations path contents =
     missingPrefixedFields path contents ["apiVersion: v2", "name:", "version:", "appVersion:"]
+
+-- | Every recovery-profile namespace owns only an exact-name GET Role for the
+-- Lifecycle Authority.  This guard deliberately scans the rendered source
+-- shape rather than accepting a generic RBAC value: list/watch and Secret
+-- access cannot be introduced without failing the canonical code check.
+recoveryObserverRbacChartViolations :: String -> FilePath -> IO [String]
+recoveryObserverRbacChartViolations chartName chartDir
+  | chartName `notElem` ChartPlatform.recoveryObserverRbacChartNames = pure []
+  | otherwise = do
+      let templatePath = chartDir </> "templates" </> "recovery-observer-rbac.yaml"
+          valuesPath = chartDir </> "values.yaml"
+      template <- readFileIfExists templatePath
+      values <- readFileIfExists valuesPath
+      networkPolicy <-
+        if chartName == "lifecycle-authority"
+          then readFileIfExists (chartDir </> "templates" </> "networkpolicy.yaml")
+          else pure ""
+      pure
+        ( missingTemplate templatePath template
+            ++ requiredTemplateBindings templatePath template
+            ++ forbiddenAuthority templatePath template
+            ++ generatedSubject valuesPath values
+            ++ lifecycleAuthorityApiEgress networkPolicy
+        )
+ where
+  readFileIfExists path = do
+    exists <- doesFileExist path
+    if exists then readFileStrict path else pure ""
+
+  missingTemplate path contents =
+    [path ++ " is missing the exact recovery-observer RBAC template." | null contents]
+
+  requiredTemplateBindings path contents =
+    [ path ++ " must bind the recovery observer through `" ++ needle ++ "`."
+    | needle <-
+        [ "resourceNames:"
+        , "verbs: [\"get\"]"
+        , ".Values.recoveryObserver.serviceAccountName"
+        , ".Values.recoveryObserver.serviceAccountNamespace"
+        ]
+    , needle `notElemIn` contents
+    ]
+
+  forbiddenAuthority path contents =
+    [ path ++ " grants forbidden recovery-observer authority `" ++ token ++ "`."
+    | token <-
+        [ "verbs: [\"list\"]"
+        , "verbs: [\"watch\"]"
+        , "verbs: [\"create\"]"
+        , "verbs: [\"update\"]"
+        , "verbs: [\"patch\"]"
+        , "verbs: [\"delete\"]"
+        , "resources: [\"secrets\"]"
+        , "resources: [\"pods\"]"
+        ]
+    , token `isInfixOf` contents
+    ]
+
+  generatedSubject path contents =
+    [ path
+        ++ " must contain the generated Lifecycle Authority recovery-observer subject."
+    | AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
+        `notElemIn` contents
+    ]
+
+  lifecycleAuthorityApiEgress contents
+    | chartName /= "lifecycle-authority" = []
+    | otherwise =
+        [ "charts/lifecycle-authority NetworkPolicy must consume the observed Kubernetes API egress coordinate."
+        | any
+            (`notElemIn` contents)
+            [ "range .Values.kubernetesApiEgress.addresses"
+            , ".Values.kubernetesApiEgress.port"
+            ]
+        ]
+
+  needle `notElemIn` haystack = not (needle `isInfixOf` haystack)
 
 gatewayProbeChartViolations :: String -> FilePath -> IO [String]
 gatewayProbeChartViolations chartName chartDir =

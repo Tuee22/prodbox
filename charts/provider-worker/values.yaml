@@ -2,6 +2,12 @@ global:
   namespace: provider-worker
   rootChart: provider-worker
 
+# prodbox:lifecycle-authority-recovery-observer.values:start
+recoveryObserver:
+  serviceAccountName: prodbox-lifecycle-authority
+  serviceAccountNamespace: lifecycle-authority
+# prodbox:lifecycle-authority-recovery-observer.values:end
+
 podAnnotations: {}
 
 image:

@@ -48,7 +48,7 @@ Vault KV object is as durable across cluster rebuilds as any retained PV. A clus
 is **not** a fresh Vault: `vault init` runs exactly once ever, and every subsequent
 `cluster reconcile` only **unseals** the existing data (init-once / unseal-on-rebuild).
 See [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) and
-[vault_doctrine.md §5](./vault_doctrine.md#5-vault-deployment-model).
+[vault_doctrine.md §5](./vault_doctrine.md#5-vault-deployment-model-and-durability).
 
 For workload data-bound secrets, the secret and data it protects share the retained home trust
 root: wiping all `.data/` removes both Vault storage and those protected local datastores, and a

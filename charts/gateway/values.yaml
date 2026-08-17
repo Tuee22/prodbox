@@ -49,7 +49,6 @@ serviceAccount:
   name: prodbox-gateway-daemon
 externalCallers:
   serviceAccounts:
-    - prodbox-control-plane-operator
     - prodbox-control-plane-test-harness
 # prodbox:gateway-chart-statics.values:end
 

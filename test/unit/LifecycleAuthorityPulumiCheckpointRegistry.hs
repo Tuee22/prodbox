@@ -295,7 +295,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
         caller
         generation
         keyOne
-        `shouldBe` Right (RegisteredSubmissionObserved StatusExpired)
+        `shouldBe` Right (RegisteredSubmissionObserved firstOperation StatusExpired)
 
     it "fences successor publication and retirement on the observed predecessor digest" $ do
       registered <- checkpointRegistration "aws-test"
@@ -365,6 +365,67 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
       observeAuthorityPulumiCheckpoint registered retired `shouldBe` Nothing
       fmap fst (applyCheckpointRetirement retireOperation registered retired)
         `shouldBe` Right CheckpointMutationAlreadyApplied
+
+    it
+      "retains applied restore and retirement references until an explicit read-back acknowledgement exists"
+      $ do
+        registered <- checkpointRegistration "aws-test"
+        publishOperation <- checkpointOperation "retain-publication"
+        restoreOperation <- checkpointOperation "retain-restore"
+        retirementOperation <- checkpointOperation "retain-retirement"
+        predecessor <- checkpointReference "primary-1" "backup-1" checkpointOne
+        restoredReference <- checkpointReference "primary-restored" "backup-1" checkpointOne
+        (_, publishPermit) <-
+          accepted
+            ( registerCheckpointOperationPermit
+                publishOperation
+                registered
+                PublishCheckpoint
+                Nothing
+                initialAuthorityPulumiCheckpoints
+            )
+        (_, published) <-
+          accepted
+            ( applyCheckpointPublication
+                publishOperation
+                registered
+                predecessor
+                publishPermit
+            )
+        (_, restorePermit) <-
+          accepted
+            ( registerCheckpointOperationPermit
+                restoreOperation
+                registered
+                RestoreCheckpoint
+                (Just (verifiedPulumiCheckpointDigest predecessor))
+                published
+            )
+        (_, restored) <-
+          accepted
+            ( applyCheckpointRestore
+                restoreOperation
+                registered
+                predecessor
+                restoredReference
+                restorePermit
+            )
+        compactTerminalCheckpointOperation restoreOperation restored
+          `shouldBe` Right (False, restored)
+        (_, retirementPermit) <-
+          accepted
+            ( registerCheckpointOperationPermit
+                retirementOperation
+                registered
+                RetireCheckpoint
+                (Just (verifiedPulumiCheckpointDigest restoredReference))
+                restored
+            )
+        (_, retired) <-
+          accepted
+            (applyCheckpointRetirement retirementOperation registered retirementPermit)
+        compactTerminalCheckpointOperation retirementOperation retired
+          `shouldBe` Right (False, retired)
 
     it "refuses a backup digest mismatch and whitespace-bearing receipt versions" $ do
       checkpoint <- checkpointFixture checkpointOne

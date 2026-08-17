@@ -26,7 +26,7 @@ import Prodbox.ControlPlane.CapabilityRef (CapabilityRef, refCoordinateDigest)
 import Prodbox.ControlPlane.Coordinate (CoordinateDigest (..))
 import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
 import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
-import Prodbox.Test.CleanupRun
+import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependency (..)
   , CleanupDependencyKind
   , CleanupGraph

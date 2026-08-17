@@ -169,6 +169,16 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( awsAdminProvisionerAuthenticatedHandler
   , awsAdminProvisionerMaximumBytes
   )
+import Prodbox.ControlPlane.AwsStackCreationBindingRepository
+  ( awsStackCreationBindingModelBCodec
+  , lifecycleAuthorityAwsStackCreationBindingClient
+  , modelBAwsStackCreationBindingRepository
+  )
+import Prodbox.ControlPlane.AwsStackReaderRepository.Internal
+  ( awsStackReaderModelBCodec
+  , lifecycleAuthorityAwsStackReaderClient
+  , modelBAwsStackReaderRepository
+  )
 import Prodbox.ControlPlane.BootstrapCustodyClient qualified as BootstrapCustody
 import Prodbox.ControlPlane.BootstrapCustodyEndpoint (observeTargetChildCustodyDependency)
 import Prodbox.ControlPlane.BootstrapHandoffEndpoint
@@ -195,6 +205,10 @@ import Prodbox.ControlPlane.Capacity
   , mkServiceCapacityPlan
   , serviceCapacityQueueCapacity
   , serviceCapacityWorkerCount
+  )
+import Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
+  ( cleanupProgramDescriptorModelBCodec
+  , modelBCleanupProgramDescriptorRepository
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunRepositoryProvider (..)
@@ -245,6 +259,20 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , newAuthorityBackupAdapterBinding
   , newTlsRetentionAdapterBinding
   )
+import Prodbox.ControlPlane.EksDrainIntentClient
+  ( lifecycleAuthorityEksDrainIntentClient
+  )
+import Prodbox.ControlPlane.EksDrainIntentRepository
+  ( eksDrainIntentModelBCodec
+  , modelBEksDrainIntentRepository
+  )
+import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
+  ( lifecycleAuthorityEksDrainReadBackReceiptClient
+  )
+import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
+  ( eksDrainReadBackReceiptModelBCodec
+  , modelBEksDrainReadBackReceiptRepository
+  )
 import Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
   ( externalMaterialIngressAuthenticatedHandler
   , externalMaterialIngressMaximumEncodedBytes
@@ -273,6 +301,17 @@ import Prodbox.ControlPlane.ListenPort
   ( controlPlaneClusterServiceUrlText
   , controlPlaneListenPort
   , controlPlaneListenPortNumber
+  )
+import Prodbox.ControlPlane.LocalRke2HostObservationEndpoint.Internal
+  ( lifecycleAuthorityLocalRke2HostObservationEndpointHandlerInternal
+  )
+import Prodbox.ControlPlane.LocalRke2HostObservationRepository.Internal
+  ( localRke2HostObservationModelBCodecInternal
+  , modelBLocalRke2HostObservationRepositoryInternal
+  )
+import Prodbox.ControlPlane.OwnershipManifestRepository
+  ( modelBOwnershipManifestRepository
+  , ownershipManifestModelBCodec
   )
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( mkProjectionImportHandlerWithApplicator
@@ -314,6 +353,13 @@ import Prodbox.ControlPlane.PulumiCheckpointProductionStore
   )
 import Prodbox.ControlPlane.PulumiCheckpointRepository
   ( aggregatePulumiCheckpointRepository
+  )
+import Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
+  ( lifecycleAuthorityRecoveryPlaneEndpointHandlerInternal
+  )
+import Prodbox.ControlPlane.RecoveryPlaneRepository.Internal
+  ( modelBRecoveryPlaneRepository
+  , recoveryPlaneModelBCodecInternal
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( RequestSigningCapability
@@ -371,7 +417,14 @@ import Prodbox.ControlPlane.RoleInterpreters
   , authorityBackupInterpreter
   , lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
   , lifecycleAuthorityAdmissionAuthenticatedHandler
+  , lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
+  , lifecycleAuthorityAwsStackReaderAuthenticatedHandler
   , lifecycleAuthorityDecommissionAuthenticatedHandler
+  , lifecycleAuthorityEksDrainIntentAuthenticatedHandler
+  , lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
+  , lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
+  , lifecycleAuthorityOwnershipManifestAuthenticatedHandler
+  , lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
   , lifecycleAuthorityTlsRetentionAuthenticatedHandler
   , targetSecretAgentAdminActionAuthenticatedHandler
   , targetSecretAgentDecommissionAuthenticatedHandler
@@ -583,6 +636,20 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , mkCrossClusterDurableCoordinate
   , mkLongLivedCheckpointAuthority
   )
+import Prodbox.Lifecycle.CleanupRun
+  ( CleanupRunIndexRepository (..)
+  , CleanupRunRepository (..)
+  , DescriptorBoundCleanupRunRepository (..)
+  , cleanupRunIdText
+  , cleanupRunIndexCodec
+  , cleanupRunStoredCodec
+  , modelBCleanupRunIndexRepository
+  , modelBCleanupRunRepository
+  , modelBDescriptorBoundCleanupRunRepository
+  , replicatedCleanupRunIndexRepository
+  , replicatedCleanupRunRepository
+  , replicatedDescriptorBoundCleanupRunRepository
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   ( awsAdminAuthorityStateCodec
   , modelBAwsAdminAuthorityRepository
@@ -636,6 +703,12 @@ import Prodbox.Lifecycle.TargetCommitIntent
   ( mkCredentialGeneration
   , targetValueDigestText
   )
+import Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver.Internal
+  ( productionRecoveryPlaneComponentObserverInternal
+  )
+import Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
+  ( recoveryPlaneAuthorityReadBackInterpreterInternal
+  )
 import Prodbox.Pulumi.EncryptedBackend
   ( LegacyPulumiBackend (..)
   , PulumiStackRef (..)
@@ -643,17 +716,6 @@ import Prodbox.Pulumi.EncryptedBackend
   , renderEncryptedBackendError
   )
 import Prodbox.Runtime.Role (RuntimeRole (..), runtimeRoleName)
-import Prodbox.Test.CleanupRun
-  ( CleanupRunIndexRepository (..)
-  , CleanupRunRepository (..)
-  , cleanupRunIdText
-  , cleanupRunIndexCodec
-  , cleanupRunStoredCodec
-  , modelBCleanupRunIndexRepository
-  , modelBCleanupRunRepository
-  , replicatedCleanupRunIndexRepository
-  , replicatedCleanupRunRepository
-  )
 import Prodbox.Vault.Client
   ( VaultKubernetesLoginResult (..)
   , vaultKubernetesLoginWithLease
@@ -1023,6 +1085,17 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         , localAuthorityClient
         , providerClient
         ) -> do
+        let localRke2HostObservationRepository =
+              modelBLocalRke2HostObservationRepositoryInternal
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    localRke2HostObservationModelBCodecInternal
+                )
+        recoveryPlaneObserverResult <-
+          productionRecoveryPlaneComponentObserverInternal
+            localRke2HostObservationRepository
         let admissionCodec =
               authorityAdmissionStateCodecWithRegisteredClients
                 authorityAdmissionMaximumEncodedBytes
@@ -1124,9 +1197,21 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             cleanupRunProvider =
               CleanupRunRepositoryProvider
                 { cleanupRunRepositoryFor = cleanupRunRepositoryForId
+                , descriptorBoundCleanupRunRepositoryFor =
+                    descriptorBoundCleanupRunRepositoryForId
                 , cleanupRunIndexRepository = cleanupRunIndexRepo
                 , cleanupRunAggregateBackup = aggregateBackupClient
+                , cleanupProgramDescriptorAuthorityClient =
+                    Just cleanupProgramDescriptorClient
                 }
+            cleanupProgramDescriptorClient =
+              modelBCleanupProgramDescriptorRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    cleanupProgramDescriptorModelBCodec
+                )
             cleanupRunIndexRepo =
               case mkClusterRetainedCoordinate authority "authority/cleanup-runs/index" of
                 Left detail ->
@@ -1168,6 +1253,90 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                         )
                         coordinate
                     )
+            descriptorBoundCleanupRunRepositoryForId runId =
+              case mkClusterRetainedCoordinate
+                authority
+                ("authority/cleanup-runs/" <> cleanupRunIdText runId) of
+                Left detail ->
+                  DescriptorBoundCleanupRunRepository
+                    { readDescriptorBoundCleanupRun =
+                        pure (Left (Text.pack (show detail)))
+                    , compareAndSwapDescriptorBoundCleanupRun =
+                        \_ _ _ -> pure (Left (Text.pack (show detail)))
+                    , compareAndSwapDescriptorBoundCleanupRunTombstone =
+                        \_ _ _ -> pure (Left (Text.pack (show detail)))
+                    }
+                Right coordinate ->
+                  replicatedDescriptorBoundCleanupRunRepository
+                    (1024 * 1024)
+                    aggregateBackupClient
+                    ( modelBDescriptorBoundCleanupRunRepository
+                        ( inClusterAuthorityModelBCasAdapter
+                            store
+                            authority
+                            (cleanupRunStoredCodec (1024 * 1024))
+                        )
+                        coordinate
+                    )
+            eksDrainIntentRepository =
+              modelBEksDrainIntentRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    eksDrainIntentModelBCodec
+                )
+            eksDrainIntentClient =
+              lifecycleAuthorityEksDrainIntentClient eksDrainIntentRepository
+            eksDrainReadBackReceiptRepository =
+              modelBEksDrainReadBackReceiptRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    eksDrainReadBackReceiptModelBCodec
+                )
+            eksDrainReadBackReceiptClient =
+              lifecycleAuthorityEksDrainReadBackReceiptClient
+                eksDrainIntentClient
+                eksDrainReadBackReceiptRepository
+            awsStackReaderRepository =
+              modelBAwsStackReaderRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    awsStackReaderModelBCodec
+                )
+            awsStackReaderClientFor runId graphDigest =
+              lifecycleAuthorityAwsStackReaderClient
+                runId
+                graphDigest
+                awsStackReaderRepository
+            awsStackCreationBindingRepository =
+              modelBAwsStackCreationBindingRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    awsStackCreationBindingModelBCodec
+                )
+            awsStackCreationBindingClient =
+              lifecycleAuthorityAwsStackCreationBindingClient
+                admissionRepository
+                awsStackCreationBindingRepository
+            ownershipManifestRepository =
+              modelBOwnershipManifestRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    ownershipManifestModelBCodec
+                )
+            localRke2HostObservationHandler =
+              lifecycleAuthorityLocalRke2HostObservationEndpointHandlerInternal
+                localRke2HostObservationRepository
+                cleanupRunProvider
             baseAuthenticatedHandler =
               lifecycleAuthorityAdmissionAuthenticatedHandler
                 controlPlaneMaximumBodyBytes
@@ -1451,7 +1620,26 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   noRoleReadinessContribution
                   externalMaterialRepository
                   manifestSigner
-                  baseAuthenticatedHandler
+                  ( lifecycleAuthorityEksDrainIntentAuthenticatedHandler
+                      eksDrainIntentClient
+                      ( lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
+                          eksDrainReadBackReceiptClient
+                          ( lifecycleAuthorityAwsStackReaderAuthenticatedHandler
+                              awsStackReaderClientFor
+                              ( lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
+                                  awsStackCreationBindingClient
+                                  awsStackCreationBindingRepository
+                                  ( lifecycleAuthorityOwnershipManifestAuthenticatedHandler
+                                      ownershipManifestRepository
+                                      ( lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
+                                          localRke2HostObservationHandler
+                                          baseAuthenticatedHandler
+                                      )
+                                  )
+                              )
+                          )
+                      )
+                  )
               providerHandler =
                 authorityProviderDispatchAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
@@ -1585,16 +1773,43 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   controlPlaneMaximumBodyBytes
                   targetIntentBoundary
                   retainedDeliveryHandler
-          mapLeft
-            (Text.pack . show)
-            ( fmap
-                (,readinessObserver)
-                ( installAuthenticatedRuntimeInterpreter
-                    LifecycleAuthorityRuntime
-                    runtimeInputs
-                    authenticatedHandler
+          case recoveryPlaneObserverResult of
+            Left err ->
+              Left
+                ( "construct Lifecycle Authority recovery-plane observer: "
+                    <> Text.pack (show err)
                 )
-            )
+            Right recoveryPlaneObserver ->
+              let recoveryPlaneRepository =
+                    modelBRecoveryPlaneRepository
+                      authority
+                      ( inClusterAuthorityModelBCasAdapter
+                          store
+                          authority
+                          recoveryPlaneModelBCodecInternal
+                      )
+                  recoveryPlaneInterpreter =
+                    recoveryPlaneAuthorityReadBackInterpreterInternal
+                      recoveryPlaneRepository
+                      recoveryPlaneObserver
+                  recoveryPlaneHandler =
+                    lifecycleAuthorityRecoveryPlaneEndpointHandlerInternal
+                      recoveryPlaneInterpreter
+                      cleanupRunProvider
+                  completeAuthenticatedHandler =
+                    lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
+                      recoveryPlaneHandler
+                      authenticatedHandler
+               in mapLeft
+                    (Text.pack . show)
+                    ( fmap
+                        (,readinessObserver)
+                        ( installAuthenticatedRuntimeInterpreter
+                            LifecycleAuthorityRuntime
+                            runtimeInputs
+                            completeAuthenticatedHandler
+                        )
+                    )
  where
   authority = lifecycleCheckpointAuthority coordinates
   discoverProductionDecommissionPlan targetTransport = do

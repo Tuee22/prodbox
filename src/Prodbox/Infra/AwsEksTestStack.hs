@@ -82,7 +82,11 @@ awsEksCanonicalClusterName = awsEksTestStackName ++ "-cluster"
 
 awsEksTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsEksTestStackResidueStatus repoRoot =
-  LiveResidue.perRunAwsEksTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
+  -- Sprint 4.81: this registry adapter answers a status-shaped question, so it
+  -- projects the observation's status. The layer is not discarded silently --
+  -- the cascade path consumes the observation itself.
+  ResidueStatus.residueObservationStatus . LiveResidue.perRunAwsEksTest
+    <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
   { eksSnapshotStackName :: String

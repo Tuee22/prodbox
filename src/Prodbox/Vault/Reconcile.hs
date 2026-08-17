@@ -465,7 +465,7 @@ defaultVaultReconcilePlan =
         , VaultKubernetesRoleSpec
             operatorControlPlaneVaultRole
             [operatorControlPlaneVaultRole]
-            ["gateway"]
+            ["bootstrap-broker"]
             [operatorControlPlaneVaultRole]
             Nothing
             "5m"
@@ -1356,6 +1356,7 @@ lifecycleAuthorityPolicy =
 providerWorkerPolicy :: Text
 providerWorkerPolicy =
   readOnlyKvPolicy "secret/data/aws/lifecycle-provider"
+    <> readOnlyKvPolicy "secret/metadata/aws/lifecycle-provider"
 
 authorityBackupPolicy :: Text
 authorityBackupPolicy =

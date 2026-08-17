@@ -54,6 +54,9 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , targetSecretPayloadId
   , targetSecretPayloadToVaultFields
   )
+import Prodbox.ControlPlane.TargetMaterialEndpoint
+  ( targetMaterialMetadataVaultVersionField
+  )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
 import Prodbox.ControlPlane.TargetSecretWorker
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
@@ -63,6 +66,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerProduction
   , parseTargetAgentRolloutObservation
   , parseTargetWorkerServiceAccountObservation
   , recoverTargetWorkerCreateWith
+  , runtimeImageIdentityMatches
   , targetWorkerActiveAccessorSubject
   , targetWorkerRetainedExecutionBoundary
   , targetWorkerRoleWideAccessorSubject
@@ -140,6 +144,13 @@ controlPlaneTargetSecretWorkerSuite =
         (rawWorkerObservation intent) {observedTargetWorkerImageDigest = otherImageDigestText} of
         Left TargetWorkerAttestationImageMismatch -> pure ()
         _ -> expectationFailure "expected immutable-image attestation refusal"
+
+    it "refuses a Pod whose observed runtime identity differs from the intent" $ do
+      let expected = targetWorkerImageDigestText workerImageDigest
+      runtimeImageIdentityMatches expected ("containerd://" <> expected)
+        `shouldBe` True
+      runtimeImageIdentityMatches expected ("containerd://" <> otherImageDigestText)
+        `shouldBe` False
 
     it "requires a fully observed exact Agent rollout on both Deployment surfaces" $ do
       parseTargetAgentRolloutObservation
@@ -441,6 +452,31 @@ controlPlaneTargetSecretWorkerSuite =
       result `shouldSatisfy` isRecovered
       readIORef (vaultCasWrites fixture) `shouldReturn` 0
       readIORef (vaultMetadataWrites fixture) `shouldReturn` 1
+
+    it "keeps exact legacy metadata readable for rollout and repairs its Vault-version binding" $ do
+      fixture <- freshVaultFixture TargetWorkerDataMissing TargetWorkerMetadataMissing
+      initial <- runMaterialization fixture
+      initial `shouldSatisfy` isApplied
+      observed <- readIORef (vaultMetadata fixture)
+      case observed of
+        TargetWorkerMetadataMissing -> expectationFailure "expected published metadata"
+        TargetWorkerMetadataPresent version custom ->
+          writeIORef
+            (vaultMetadata fixture)
+            ( TargetWorkerMetadataPresent
+                version
+                (Map.delete targetMaterialMetadataVaultVersionField custom)
+            )
+      writeIORef (vaultMetadataWrites fixture) 0
+      recovered <- runMaterialization fixture
+      recovered `shouldSatisfy` isRecovered
+      readIORef (vaultMetadataWrites fixture) `shouldReturn` 1
+      repaired <- readIORef (vaultMetadata fixture)
+      case repaired of
+        TargetWorkerMetadataMissing -> expectationFailure "expected repaired metadata"
+        TargetWorkerMetadataPresent version custom ->
+          Map.lookup targetMaterialMetadataVaultVersionField custom
+            `shouldBe` Just (Text.pack (show version))
 
     it "recovers a CAS response loss through authoritative readback without retry" $ do
       fixture <- freshVaultFixture TargetWorkerDataMissing TargetWorkerMetadataMissing

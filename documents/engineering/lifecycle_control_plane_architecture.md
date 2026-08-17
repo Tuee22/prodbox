@@ -45,6 +45,13 @@ effect may run, and every referenced blob is digest-verified there. Store-loss r
 only receipt-committed transitions while all writers are frozen, re-observes external effects, and
 activates a strictly greater authority epoch.
 
+The retained home/control-plane substrate is the mandatory local RKE2 control plane for supported
+operation. AWS is an optional target substrate and never substitutes for it. An AWS-targeted CLI
+request authenticates to this Authority and delegates effects only to the exact fenced Provider
+Worker or permit-indexed adapter/runner. If the local Authority, its durable registration, or the
+required worker path is unavailable, admission refuses; the host process must not run a direct
+provider/Pulumi mutation as a fallback.
+
 Here “store loss” means loss/corruption of the Authority primary MinIO namespace while the retained
 home Vault/Transit keys, `secret/aws/authority-backup-store` generation, and long-lived S3 backup
 remain intact. Loss of the whole home `.data` trust root, including Vault custody/Transit keys, is
@@ -57,9 +64,11 @@ proxy. Its architecture remains canonical in
 [Distributed Gateway Architecture](./distributed_gateway_architecture.md).
 
 On AWS the role topology is enforced before any substrate mutation by the total
-`AwsControlPlaneRole` registry. Bootstrap Broker, Gateway diagnostics, Target Secret Agent, and
-Provider Worker each use a distinct EKS Service transport; the sole Lifecycle Authority transport
-is explicitly located on retained home. Public-edge A-record observation/reconcile is a closed
+`AwsControlPlaneRole` registry. Bootstrap Broker, Gateway diagnostics, and Target Secret Agent use
+distinct EKS Service transports. Lifecycle Authority and the fenced Provider Worker are explicitly
+located in retained home RKE2; registered Provider intents reach that home-only worker through its
+private local transport, never through an EKS Provider Worker Service. Public-edge A-record
+observation/reconcile is a closed
 `ObservePublicARecord`/`ReconcilePublicARecord` Provider intent registered by exact zone and
 canonical FQDN. The EKS Gateway cannot represent either intent. AWS cert-manager receives only the
 run-scoped `secret/aws/cert-manager/aws/dns01` generation through its target-local one-shot
@@ -242,7 +251,7 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
 > opaque `WriterPermit` and the signed committed-intent chain; `Program.hs` the closed
 > `CapabilityProgram` GADT. The shapes below define the complete target, including interpreter and
 > component-graph lowering; implementation and cutover status live only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### 3.1 Operation-indexed references
 
@@ -1522,7 +1531,7 @@ addressed through a chart-lifetime transport is unrepresentable rather than mere
 > before key creation, completes it before projection publication, and replays a completed result
 > before inventory cleanup. Arm, completion, and projection response-loss prefixes are covered by
 > deterministic crash schedules. Implementation and live-evidence status live only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Garbage collection persists its candidate set and both complete scan receipts in the aggregate.
 Its GC fence is mutually exclusive with `RecordPendingBlob` and promotion. After the declared grace,
@@ -2183,7 +2192,7 @@ The physical bindings above are the target contract. Sprint `2.32` supplied thei
 inputs through `Prodbox.Gateway.Emitter.Persistence`, and completed Sprint `3.26` supplied the
 chart/render foundation. The production selection still uses the pre-cutover topology; activation,
 legacy removal, and deployment qualification belong only to the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ```haskell
 -- Example: the landed shapes in src/Prodbox/Gateway/Emitter/Mailbox.hs (the

@@ -1030,7 +1030,8 @@ independentlyReadBackRecoveryPlaneFinal
 -- disposition: it intentionally does not re-derive the dynamic recovery
 -- requirement from later node states.
 withRecoveredRecoveryPlaneInitialInternal
-  :: (Monad m)
+  :: forall m result
+   . (Monad m)
   => RecoveryPlaneRepositoryClient m
   -> DescriptorBoundCleanupRun
   -> CleanupAttemptId
@@ -1045,7 +1046,18 @@ withRecoveredRecoveryPlaneInitialInternal
   bound
   expectedReadBackAttempt
   consume =
-    case withDescriptorBoundCleanupProgram bound $ \witness compiled _ -> do
+    case withDescriptorBoundCleanupProgram bound recover of
+      Left err ->
+        pure (Left (RecoveryPlaneRepositoryDescriptorBindingInvalid err))
+      Right action -> action
+   where
+    recover
+      :: forall surface
+       . CleanupSurfaceWitness surface
+      -> CompiledDesiredAbsenceProgram surface
+      -> DescriptorBoundCleanupRun
+      -> m (Either RecoveryPlaneRepositoryError result)
+    recover witness compiled _ =
       case recoveryWitnessFromCleanup witness of
         Left err -> pure (Left err)
         Right recoveryWitness -> do
@@ -1082,10 +1094,7 @@ withRecoveredRecoveryPlaneInitialInternal
                     readBackBinding
                     (decodedRecoveryPlaneInitialFacts aggregate)
                 )
-            pure (consume identity initial) of
-      Left err ->
-        pure (Left (RecoveryPlaneRepositoryDescriptorBindingInvalid err))
-      Right action -> action
+            pure (consume identity initial)
 
 -- | Typed restart recovery for a caller already executing one closed recovery
 -- operation. Unlike the public rank-2 readback, this preserves the caller's
@@ -2441,11 +2450,11 @@ regressionAdapter harness =
     version <- firstShowIO (mkModelBObjectVersion ("version-" <> Text.pack (show versionNumber)))
     atomicModifyIORef'
       (regressionStore harness)
-      ( \stored ->
+      ( \current ->
           ( Map.insert
               (modelBObjectLogicalName coordinate)
               (version, bytes)
-              stored
+              current
           , ()
           )
       )
@@ -2461,7 +2470,7 @@ writeRegressionBytes harness logicalName bytes = do
   version <- firstShowIO (mkModelBObjectVersion "injected-version")
   atomicModifyIORef'
     (regressionStore harness)
-    (\stored -> (Map.insert logicalName (version, bytes) stored, ()))
+    (\current -> (Map.insert logicalName (version, bytes) current, ()))
 
 isResponseLost :: RecoveryPlaneCommitResult -> Bool
 isResponseLost result = case result of

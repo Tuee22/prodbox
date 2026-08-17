@@ -14,7 +14,7 @@
 > projections, and separated Broker/Adapter/Worker topology below are the target contract; they are
 > not yet the active production selection. Explicit “current” and “historical” paragraphs describe
 > the pre-cutover source. Implementation status and cutover ownership live only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 0. Three-Tier Config Model
 

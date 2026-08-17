@@ -238,7 +238,7 @@ observation. These are recorded as investigation, not a shipped control.
 
 The current implementation includes the scope algebra and its derived edge projections.
 Implementation and serving-level validation status are tracked only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## ACME credentials and TLS key material under Vault
 

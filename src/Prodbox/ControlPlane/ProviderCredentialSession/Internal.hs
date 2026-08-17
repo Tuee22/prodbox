@@ -31,6 +31,8 @@ module Prodbox.ControlPlane.ProviderCredentialSession.Internal
   , providerCredentialSessionRegressionDestroyedVersionRefused
   , providerCredentialSessionRegressionMissingDataRefused
   , providerCredentialSessionRegressionExtraSecretFieldRefused
+  , providerCredentialSessionRegressionBindingSecretOpaque
+  , providerCredentialSessionRegressionErrorSecretOpaque
   )
 where
 
@@ -202,15 +204,25 @@ validateProviderCredentialSessionInternal metadata exact = do
     _ -> Left ProviderCredentialSessionTargetIdentityMismatch
   generation <-
     first
-      (const (ProviderCredentialSessionGenerationInvalid (validatedTargetMaterialGeneration validatedMetadata)))
+      ( const
+          (ProviderCredentialSessionGenerationInvalid (validatedTargetMaterialGeneration validatedMetadata))
+      )
       (mkCredentialGeneration (validatedTargetMaterialGeneration validatedMetadata))
   requestDigest <-
     first
-      (const (ProviderCredentialSessionMetadataFieldInvalid targetMaterialMetadataRequestDigestField))
+      ( const
+          ( ProviderCredentialSessionMetadataInvalid
+              ("target metadata field is invalid: " <> targetMaterialMetadataRequestDigestField)
+          )
+      )
       (mkTargetValueDigest (validatedTargetMaterialRequestDigest validatedMetadata))
   actionDigest <-
     first
-      (const (ProviderCredentialSessionMetadataFieldInvalid targetMaterialMetadataActionDigestField))
+      ( const
+          ( ProviderCredentialSessionMetadataInvalid
+              ("target metadata field is invalid: " <> targetMaterialMetadataActionDigestField)
+          )
+      )
       (mkTargetValueDigest (validatedTargetMaterialActionDigest validatedMetadata))
   receipt <-
     first
@@ -295,6 +307,8 @@ data ProviderCredentialSessionRegression = ProviderCredentialSessionRegression
   , providerCredentialSessionRegressionDestroyedVersionRefused :: !Bool
   , providerCredentialSessionRegressionMissingDataRefused :: !Bool
   , providerCredentialSessionRegressionExtraSecretFieldRefused :: !Bool
+  , providerCredentialSessionRegressionBindingSecretOpaque :: !Bool
+  , providerCredentialSessionRegressionErrorSecretOpaque :: !Bool
   }
   deriving stock (Eq, Show)
 
@@ -339,6 +353,26 @@ fixedProviderCredentialSessionRegression =
         case validateProviderCredentialSessionInternal validMetadata extraFieldExact of
           Left (ProviderCredentialSessionTargetPayloadInvalid _) -> True
           _ -> False
+    , providerCredentialSessionRegressionBindingSecretOpaque =
+        case validateProviderCredentialSessionInternal validMetadata validExact of
+          Right validated ->
+            let renderedBinding =
+                  Text.pack
+                    ( show
+                        (validatedProviderCredentialSessionBindingInternal validated)
+                    )
+             in all
+                  (\secretValue -> not (secretValue `Text.isInfixOf` renderedBinding))
+                  ["AKIAEXAMPLE", "secret-value", "ca-central-1"]
+          Left _ -> False
+    , providerCredentialSessionRegressionErrorSecretOpaque =
+        case validateProviderCredentialSessionInternal validMetadata extraFieldExact of
+          Left err ->
+            not
+              ( "sensitive-extra-field-value"
+                  `Text.isInfixOf` Text.pack (show err)
+              )
+          Right _ -> False
     }
 
 validMetadata :: KvV2SecretMetadata
@@ -349,7 +383,8 @@ validMetadata =
         Map.fromList
           [ (targetMaterialMetadataGenerationField, "7")
           , (targetMaterialMetadataVaultVersionField, "11")
-          , ( targetMaterialMetadataCommitmentField
+          ,
+            ( targetMaterialMetadataCommitmentField
             , "vault:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             )
           , (targetMaterialMetadataOwnerNonceField, "provider-target-owner")
@@ -357,7 +392,8 @@ validMetadata =
           , (targetMaterialMetadataRequestDigestField, digestA)
           , (targetMaterialMetadataActionDigestField, digestB)
           , (targetMaterialMetadataPodUidField, "provider-target-pod")
-          , ( targetMaterialMetadataImageDigestField
+          ,
+            ( targetMaterialMetadataImageDigestField
             , "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             )
           ]
@@ -403,7 +439,12 @@ extraFieldExact :: KvV2ExactVersionSecret
 extraFieldExact =
   validExact
     { kvV2ExactVersionSecretData =
-        Just (Map.insert "unexpected" "value" validCredentialFields)
+        Just
+          ( Map.insert
+              "unexpected"
+              "sensitive-extra-field-value"
+              validCredentialFields
+          )
     }
 
 validCredentialFields :: Map Text Text

@@ -24,8 +24,6 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.CapabilityKind (CapabilityKind (ManagedDestroy))
 import Prodbox.ControlPlane.CapabilityRef (CapabilityRef, refCoordinateDigest)
 import Prodbox.ControlPlane.Coordinate (CoordinateDigest (..))
-import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
-import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependency (..)
   , CleanupDependencyKind
@@ -43,6 +41,8 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupNodePlan
   , mkCleanupOperationId
   )
+import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
+import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
 import System.Exit (ExitCode (..))
 
 data ManagedCleanupEdge = ManagedCleanupEdge

@@ -530,19 +530,26 @@ serveDescriptorCommand provider command = case command of
                         (CleanupRunDescriptorUnavailable detail)
                     Right report -> descriptorCompacted descriptorDigest report
   CleanupRunDescriptorReadBackProgram rawRunId ->
-    withDescriptorRunId rawRunId $ \runId ->
-      case cleanupProgramDescriptorAuthorityClient provider of
-        Nothing -> pure descriptorRepositoryUnavailable
-        Just descriptorClient -> do
-          observed <-
-            independentlyReadBackCommittedCleanupProgramDescriptor
-              descriptorClient
-              runId
-          pure $ case observed of
-            Left failure ->
-              CleanupRunDescriptorRefused
-                (descriptorRepositoryRefusal failure)
-            Right committed -> descriptorProgramPresent committed
+    withDescriptorRunId rawRunId (readBackDescriptorProgram provider)
+
+readBackDescriptorProgram
+  :: (Monad m)
+  => CleanupRunRepositoryProvider m revision
+  -> CleanupRunId
+  -> m CleanupRunDescriptorResponse
+readBackDescriptorProgram provider runId =
+  case cleanupProgramDescriptorAuthorityClient provider of
+    Nothing -> pure descriptorRepositoryUnavailable
+    Just descriptorClient -> do
+      observed <-
+        independentlyReadBackCommittedCleanupProgramDescriptor
+          descriptorClient
+          runId
+      pure $ case observed of
+        Left failure ->
+          CleanupRunDescriptorRefused
+            (descriptorRepositoryRefusal failure)
+        Right committed -> descriptorProgramPresent committed
 
 createAfterDescriptorReadBack
   :: (Monad m)

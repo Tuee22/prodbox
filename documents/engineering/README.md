@@ -14,7 +14,8 @@ recovered by search rather than authored
 ## Roadmap
 
 Clean-room build order, sprint status, blockers, validation closure, and cleanup ownership are
-tracked only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+tracked only in [DEVELOPMENT_PLAN/README.md → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here)
+and its linked phase/ledger records.
 
 The documents in this directory are stable doctrine and architecture references. A document may
 define a target before cutover only when it says so explicitly and delegates implementation and
@@ -27,6 +28,12 @@ Pulumi doctrine in this directory applies only to the AWS substrate stacks under
 `aws-eks`, `aws-eks-subzone`, and `aws-test` are per-run stacks; `aws-ses` is long-lived
 cross-substrate shared infrastructure (see
 [../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)).
+
+The retained local RKE2 deployment is the mandatory lifecycle control plane. AWS is an optional
+target substrate, not a second authority: every supported AWS mutation is submitted through the
+authenticated CLI client to the local Lifecycle Authority and executed only by its exact fenced
+worker or permit-indexed adapter/runner. Loss of that path fails closed; no stable doctrine permits
+a host-direct provider, Pulumi, or AWS-CLI mutation fallback.
 
 ## Documents
 

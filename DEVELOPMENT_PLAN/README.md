@@ -12,9 +12,68 @@
 See [development_plan_standards.md](development_plan_standards.md) for the maintenance rules that
 govern this plan suite.
 
-## Closure Status
+## Resume Here
 
-**Current head state (2026-08-16, implementation paused at the operator's request).** Phases `3`,
+This is the only current-status and resumption ledger in `DEVELOPMENT_PLAN/`. A new session must
+start here, then open that sprint in its phase file for the first row whose state is `Next`. Work the
+queue from top to bottom. `Parked` means useful foundations may already exist but no further work
+is admitted ahead of the queue; `Blocked` means the row has an unmet dependency named earlier in
+the same queue.
+
+| Order | Sprint | Phase | State | Dependency |
+|-------|--------|-------|-------|------------|
+| 1 | `3.41` | 3 | Next | — |
+| 2 | `4.84` | 4 | Parked | — |
+| 3 | `4.85` | 4 | Parked | `4.84` |
+| 4 | `4.86` | 4 | Parked | `3.41`, `4.85` |
+| 5 | `5.36` | 5 | Parked | `4.85` |
+| 6 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
+| 7 | `7.36` | 7 | Parked | `4.85` |
+
+Sprint `5.35` is Done on its code-owned frozen-oracle surface and is not an open queue row. Its
+oracle remains a required gate for `5.36` and for the repository-level release checks. The
+partially implemented Phase 4, 5, and 7 foundations stay preserved while parked; their presence
+does not authorize skipping the numerical queue.
+
+The mandatory control plane is the retained local RKE2 deployment containing the Lifecycle
+Authority and its bounded workers/adapters. AWS is an optional target substrate, never an alternate
+authority. Every supported AWS mutation begins as an authenticated `prodbox` CLI submission to
+that local Authority and executes only through the permitted Provider Worker or other exact
+role-specific interpreter. If the retained control plane cannot authenticate, durably register,
+or observe the operation, the command fails closed; there is no host-direct `pulumi`, `aws`,
+`eksctl`, or `terraform` mutation fallback.
+
+The existing cascade remains the public writer until Sprint `6.5` performs the qualified
+single-writer cutover. The replacement cannot construct completion until the pre-uninstall proof
+is durable and the retained-root host record has made its exact locked `Prepared -> Absent`
+transition with independent read-back. Deployment qualification remains pending and cannot be
+substituted for by partially landed code or an old live run.
+
+**Repository reconciliation checkpoint (2026-08-16).** The reconciled current tree passes the
+code-owned release surface: the canonical `dev check` completed with **615 library modules** and
+**194 unit modules** warning-clean; the unit wrapper passed **3,954 main + 27 admission + 33
+authentication + 29 authenticated-transport tests**; the installed frozen teardown-recovery
+integration passed with artifact digest
+`7338a7228fb7c79929d23f64af285d5daa0b180918c7bea694897972a255b76d`; and generated docs,
+documentation lint, chart lint, Fourmolu, HLint, and diff checks are clean. These results validate
+the repository checkpoint but do not close or reorder any row in Resume Here.
+
+The combined CLI/environment integration binary was also exercised from the reconciliation host.
+Its stale fake-Kubernetes ServiceAccount namespace was corrected to preserve the exact operator
+(`bootstrap-broker`) and harness (`gateway`) identities; every affected config/Authority case then
+passed. The resulting macOS run was **44/60 passed and 16/60 refused or failed**, with every
+remaining failure entering a Linux-only RKE2/gateway surface. That is an explicit pending
+supported-Linux qualification boundary, not a code-owned regression and not evidence against the
+mandatory retained-local-control-plane architecture. Rerun `prodbox test integration cli`,
+`prodbox test integration env`, and the applicable Standard-P live qualification inside the
+supported Linux RKE2 frame before claiming deployment closure.
+
+## Historical Closure Record
+
+The dated records below preserve earlier checkpoints and counterexamples. They are not a resume
+ledger and cannot override [Resume Here](#resume-here).
+
+**Paused head-state record (2026-08-16, superseded as a resume instruction).** Phases `3`,
 `4`, `5`, and `7` are 🔄 Active. Sprints `3.41`, `4.84`, `4.85`, `4.86`, `5.35`, `5.36`, and
 `7.36` all have real implementation in the worktree; their final closure dependencies remain
 forward-only even where dependency-safe foundations were implemented in parallel. Phase `6`
@@ -22,24 +81,23 @@ remains ⏸️ Blocked on Sprint `6.5` by the unfinished candidate and `TestRunn
 `1`, `2`, and `8` remain closed. No public cascade writer or legacy-path deletion has been
 activated.
 
-The paused checkpoint distinguishes validated foundations from drafts:
+The paused checkpoint distinguished validated foundations from incomplete protocols:
 
-| Sprint | Current implementation checkpoint | Validation / remaining boundary |
+| Sprint | Recorded implementation checkpoint | Validation / remaining boundary |
 |--------|-----------------------------------|---------------------------------|
 | `3.41` | The exact recovery component projection, bootstrap-owned operator identity, opaque local-RKE2 and retained-root observations, RecoveryPlane component observer, exact-name RBAC, and Authority API egress are landed. | Code-local library/unit/chart gates passed. A recovery-only renderer and immutable absent-cluster RKE2/OCI artifact inventory do not exist; stopped/absent live proof remains pending. |
 | `4.84` | Pure lifecycle model/registry/observation/decision foundations, ARN normalization, exact Authority read-back seams, and public-proof opacity closures are landed. | The old unkeyed public composition and incomplete legacy-escape inventory remain. Stable registered-stack lifecycle generation and a complete terminal-audit catalog are not yet available. |
 | `4.85` | Lifecycle-owned `CleanupRun`/runner, result-indexed Program/Graph/Execution/Report, canonical program descriptors, descriptor-bound restart, RecoveryCapability/Requirement, ownership/checkpoint/read-back repositories, and opaque cleanup clients are landed. | Total-decommission parity, stable create-generation binding, terminal-audit reservation/read-back, and several final proof joins remain. |
-| `4.86` | RecoveryPlane identity/repository/interpreter, authenticated routes `56`/`57`, production component observation, host runtime, and a source-stable total descriptor-bound dispatcher foundation are present. | The dispatcher still needs the paused current-tree aggregate. Cascade pre-uninstall authority is absent; the D/E host-absence/completion drafts are unregistered and unvalidated, and the rejected one-phase design must become a locked `Prepared -> Absent` protocol before use. |
+| `4.86` | RecoveryPlane identity/repository/interpreter, authenticated routes `56`/`57`, production component observation, host runtime, and a source-stable total descriptor-bound dispatcher foundation are present. | The dispatcher still needed the paused current-tree aggregate. Cascade pre-uninstall authority and the required locked `Prepared -> Absent` host-absence/completion protocol remained incomplete. |
 | `5.35` | The standalone `TEARDOWN-2026-08-15` oracle, canonical artifacts, 25-row external-state matrix, 80 interruption rows, mutation fixture, and installed command are code-locally green. | The current paused tree has not rerun the full canonical quality gate; replacement production integration and live qualification are outside this sprint. |
 | `5.36` | `LifecycleCleanupClient` now speaks only the authenticated descriptor-bound protocol and was focused-test green. | `TestRunner` and `DurableCleanupComposition` still own the old callback graph/executor, mutate before descriptor registration, and have not cut over. |
-| `7.36` | Exact stack/checkpoint/drain/read-back repositories and routes, Provider AWS-scope receipt, creation/ownership observation routes, and registered-target interpreters are landed on bounded foundations. | Provider credential-session envelope v3 is paused mid-draft and uncompiled; stable cross-run stack generation, causal create admission, complete escape-audit reservation/catalog/receipt, and live all-three-stack proof remain. |
+| `7.36` | Exact stack/checkpoint/drain/read-back repositories and routes, Provider AWS-scope receipt, creation/ownership observation routes, and registered-target interpreters are landed on bounded foundations. | Stable cross-run stack generation, a credential-session-bound causal create admission, complete escape-audit reservation/catalog/receipt, and live all-three-stack proof remained. |
 
-The last combined compile/link checkpoint before the two paused drafts was **610 library modules +
+The last combined compile/link checkpoint before the paused follow-on work was **610 library modules +
 193 unit modules under `-Werror`**, with an immediate same-builddir no-op. The last complete unit
 runtime checkpoint was **3921/3921** on the preceding 604-library/192-unit source set. Those are
-historical green baselines, not validation of the current worktree: Provider credential-session v3
-and Cascade D/E have not been registered or compiled. The source-stable descriptor dispatcher has
-passed Fourmolu and HLint but likewise awaits the next serialized aggregate.
+historical green baselines, not validation of a later worktree. The source-stable descriptor
+dispatcher had passed Fourmolu and HLint but still awaited the next serialized aggregate.
 
 The trigger is a taken counterexample, not an infrastructure accusation. AWS's Tagging API answered
 successfully with one `ResourceTagMapping` for an intentionally retained bucket and its full
@@ -66,7 +124,7 @@ followed by exact host-absence and read-back local-completion evidence. The live
 acceptance criterion, so Standard O cannot preserve that composition claim. Both substrate
 qualification rows remain `pending` under Standard P.
 
-### Prior closure record
+### Earlier closure record
 
 **Prior head state (2026-08-15 — Sprint `3.40` ✅ closed by changed-arm live proof.)**
 Every phase is ✅ closed on its code-owned surface. `3.39` separates the
@@ -1274,8 +1332,9 @@ remains pending.
 > per-sprint changelog. The authoritative per-sprint closure detail lives in the phase documents
 > ([phase-0](phase-0-planning-documentation.md) … [phase-8](phase-8-email-invite-auth.md)) and the
 > cleanup history lives in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md); the
-> live status is the [Phase Overview](#phase-overview) and [Current Plan Status](#current-plan-status)
-> tables below. The dated blow-by-blow was consolidated here on review to keep the plan declarative.
+> current status is only [Resume Here](#resume-here), while prior phase tables are retained in the
+> [Historical Phase Record](#historical-phase-record) below. The dated blow-by-blow was consolidated
+> here on review to keep the plan declarative.
 
 **Historical head state (2026-07-21 — superseded on 2026-07-26 by Sprint `2.36`).** At that
 revision, Phases `0`–`2` were recorded reclosed and the lifecycle-control-plane redesign continued
@@ -1301,7 +1360,7 @@ Done on its code-owned single-writer emitter surface, and Phase `2` was then rec
 which extracts pre-Vault recovery into a minimal Bootstrap Broker and cuts the pre-Vault scope from
 the Gateway Runtime. The 2026-07-26 shutdown counterexample supersedes only that reclosure claim.
 The later numerical completion pass reclosed Phases `3`–`8` on their expanded code-owned
-surfaces. Their closure states are recorded in the Phase Overview and phase documents; live
+surfaces. Their historical closure states are recorded below and in the phase documents; live
 deployment qualification remains separate under Standards O/P.
 
 **Foundation Epoch (2026-07-12).** Governance Sprint `0.17` recloses Phase `0` a second time on
@@ -1556,10 +1615,11 @@ operator-supplied credential) does **not** prevent `Done`; it is tracked as a di
 entry may name only an earlier-or-same-phase sprint or an external prerequisite — never a later phase
 or a higher-numbered sprint — and an incomplete later phase never reopens or blocks an earlier phase.
 
-## Phase Overview
+## Historical Phase Record
 
-The table below is the current status. The long table that follows it is the dated prior-closure
-record retained for audit history.
+The compact table below records the superseded 2026-08-16 paused checkpoint. It and the longer
+dated table are retained for audit history; neither is a current-status ledger. Use
+[Resume Here](#resume-here) for the only current execution order and posture.
 
 | Phase | Current status | Teardown-correction owner |
 |-------|----------------|---------------------------|
@@ -1617,8 +1677,9 @@ Per [development_plan_standards.md → M. Test Suite Substrates](development_pla
 the canonical test suite is composed of per-substrate runs against both supported substrates,
 with no fallback between them (see
 [Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)).
-A complete canonical-suite proof requires both the home local and AWS substrate rows below to
-land independently against their own real infrastructure. The authoritative substrate
+A complete canonical-suite proof requires both the home local and AWS rows below to land
+independently against their own target application/platform infrastructure. The AWS row also
+depends intentionally on the retained-home Lifecycle Authority and Provider Worker. The authoritative substrate
 inventory is [substrates.md](substrates.md); this section is the live tracker for substrate
 parity. The authoritative target AWS resource inventory and per-resource lifecycle class
 (cleanup-managed per-run stacks whose exact obligations are durably registered/scheduled vs
@@ -1627,7 +1688,7 @@ long-lived cross-substrate shared infrastructure retained by design) live in
 
 | Substrate | Provision | Current teardown and target correction | Suite parity | Teardown prerequisite owner / final parity owner |
 |-----------|-----------|----------------------------------------|--------------|-------------------------------------------------|
-| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Current explicit local-only escape: `prodbox cluster delete --yes`, which makes no AWS claim. Target pending `3.41`/`4.84`–`4.86`/`5.35`/`5.36`/`6.5`: `prodbox cluster delete --cascade --yes` uses bootstrap-owned recovery; `ReadyToUninstallEvidence` admits uninstall from exact convergence and terminal-audit evidence plus the backed-up/read-back report and one-shot permit, while distinct `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` and the matching read-back receipt. Public activation and legacy deletion are qualification-gated. | **pending.** Must include `TEARDOWN-2026-08-15`, stopped/absent-RKE2 recovery, every interruption prefix, exact `RecoveryPlaneDisposition`, the distinct readiness/completion witnesses, and two consecutive clean-room cycles. | Sprint `6.5` prerequisite / Sprint `8.12` final ([phase 6](phase-6-clean-room-handoff.md)) |
+| Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Current explicit local-only escape: `prodbox cluster delete --yes`, which makes no AWS claim. Target pending `3.41`/`4.84`–`4.86`/`5.36`/`6.5`, consuming the completed `5.35` oracle: `prodbox cluster delete --cascade --yes` uses bootstrap-owned recovery; `ReadyToUninstallEvidence` admits uninstall from exact convergence and terminal-audit evidence plus the backed-up/read-back report and one-shot permit, while distinct `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` and the matching read-back receipt. Public activation and legacy deletion are qualification-gated. | **pending.** Must include `TEARDOWN-2026-08-15`, stopped/absent-RKE2 recovery, every interruption prefix, exact `RecoveryPlaneDisposition`, the distinct readiness/completion witnesses, and two consecutive clean-room cycles. | Sprint `6.5` prerequisite / Sprint `8.12` final ([phase 6](phase-6-clean-room-handoff.md)) |
 | AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | Current explicit stack surfaces: the corresponding `prodbox aws stack <cli-verb> destroy --yes` commands. Target pending `7.36`: lifecycle-kernel adapters with exact stack/family read-back, write-ahead manifests, bounded admin-confirmed/read-back adoption manifests for known pre-manifest stacks, a provider-issued EKS drain session, and normalized escape audit. | **pending.** Must prove all three stacks independently, every checkpoint/write-ahead/adoption-manifest arm, AWS/drain unobservability, retained-bucket isolation, exact absence, and repeated cascade. | Sprint `7.36` prerequisite / Sprint `8.12` final ([phase 7](phase-7-aws-substrate-foundations.md)) |
 
 ## Deployment Qualification
@@ -1939,23 +2000,20 @@ run must bind the post-`0.20` manifest, not an earlier one. The remediated commi
 fixture and narrative data only; none participates in a rendered envelope, image reference, or
 resolved topology.
 
-## Current Plan Status
+## Superseded Paused-Status Record
 
-**Current authoritative status (2026-08-16, paused checkpoint): Phases `3`, `4`, `5`, and `7` are
-Active; Phase `6` is Blocked by its explicit earlier-phase prerequisites; Phases `0`, `1`, `2`, and
-`8` are closed.** Final closure still orders `3.41` + `4.84` before the remaining `4.85` work,
-then `4.86`; `5.35` supplies the independent frozen oracle and `5.36` must finish the
-`TestRunner` cutover; `6.5` consumes completed `4.86` + `5.36`; and `7.36` closes only after the
-remaining `4.85` proof inputs are stable. Dependency-safe repository, route, and interpreter
-foundations were implemented ahead of those closures, so the affected sprints are Active rather
-than still described as untouched Blocked work. Live home/AWS destructive campaigns are
-non-blocking qualification evidence and do not substitute for phase-local validation. They also
-cannot authorize public activation or legacy deletion until the matching current-revision
-qualification row is `proven`.
+**Historical status recorded at the 2026-08-16 paused checkpoint: Phases `3`, `4`, `5`, and `7` were
+Active; Phase `6` was Blocked by its explicit earlier-phase prerequisites; Phases `0`, `1`, `2`,
+and `8` were closed.** That checkpoint recorded a different interleaved closure narrative; it is
+preserved as history and must not be used to resume work. Current ordering lives only in
+[Resume Here](#resume-here). Live home/AWS destructive campaigns were non-blocking qualification
+evidence and did not substitute for phase-local validation or authorize public activation and
+legacy deletion without matching current-revision qualification.
 
-The old cascade remains the active public writer and Pending Removal; it is not accepted as the
-target recovery path. The new descriptor-bound dispatcher is not wired into Runtime, `TestRunner`,
-or the CLI, and the new Cascade D/E draft is not a valid proof boundary. An incomplete
+At that checkpoint, the old cascade remained the active public writer and Pending Removal; it was
+not accepted as the target recovery path. The new descriptor-bound dispatcher was not wired into
+Runtime, `TestRunner`, or the CLI, and the locked `Prepared -> Absent` host record plus exact
+read-back remained required before completion could be constructed. An incomplete
 replacement returns a stable `CleanupRunId`, exact failures, and a `RecoveryPlaneDisposition`
 (`Established`, `NotEstablished`, or `Lost`); it claims a live recovery plane only in the first
 case. `ReadyToUninstallEvidence` requires exact clean observations, the exact intended-retained set,
@@ -1963,7 +2021,7 @@ a backed-up pre-uninstall report, and a one-shot permit. `CascadeCompleteEvidenc
 requires exact host absence plus the matching read-back local-completion receipt. The 2026-08-15
 run is stable counterexample `TEARDOWN-2026-08-15` for Standard P.
 
-### Prior current-status record
+### Earlier current-status record
 
 **All nine phases are closed on their code-owned surfaces (2026-08-14). One sprint is open —
 Sprint `2.51` 🔄 — and it was opened by a live proof rather than by a failure to finish.** Sprints
@@ -2021,8 +2079,8 @@ Phase `0` surface with no reclose event.
 
 **A Standard-J correction landed with this entry.** This section still read "2026-08-11, second
 entry" and cited main Hspec **3374/3374** after the 2026-08-12 pass had closed seven sprints and
-moved the count; the Closure Status and Phase Overview above had been updated and this one had not.
-It is corrected in place rather than silently replaced, because the divergence is the kind Standard
+moved the count; the then-current closure and phase-overview records had been updated and this one
+had not. It is corrected in place rather than silently replaced, because the divergence is the kind Standard
 J exists to prevent.
 
 `prodbox dev check` / `dev docs check` / `dev lint docs` exit 0, canonical `prodbox test unit` exits
@@ -2141,7 +2199,7 @@ pre-Vault scope out of the Gateway Runtime, so every Phase-2 sprint (`2.30`–`2
 `3` was reclosed on Sprint `3.27`; the later numerical pass also reclosed Phases `4`–`8` on their
 then-owned surfaces, with Phase `5` then reclosed on `5.31`. This paragraph is historical evidence,
 not the current status ledger; the reopened state is defined in
-[Current Plan Status](#current-plan-status). Production remained on the
+[Resume Here](#resume-here). Production remained on the
 mutually exclusive `LegacyModelBEmitter` pending
 Standard P. Sprint `3.26` supplied the chart/render foundations for separate roles but did not
 activate the target production topology; remaining activation and removal are plan-tracked.

@@ -65,6 +65,11 @@
   Pulumi checkpoint blobs live in `prodbox-state`, while the Lifecycle Authority aggregate owns
   the operation/fence/outbox state and immutable checkpoint references. A ready gateway is not a
   prerequisite for this capability.
+- AWS is an optional target substrate; the retained local RKE2 control plane is mandatory and
+  remains the sole lifecycle authority when AWS is selected. Every supported AWS mutation is an
+  authenticated CLI submission to that Authority and executes only through the exact Provider
+  Worker or permit-indexed adapter/runner. Missing local authority, durable registration, or worker
+  admission fails closed and has no host-direct Pulumi/provider fallback.
 - AWS-substrate canonical-suite runs (`--substrate aws`) require the operator-supplied
   `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` Dhall fields, populated by
   `prodbox aws stack aws-subzone reconcile` provisioning a per-substrate Route 53 subzone with NS
@@ -79,24 +84,27 @@
   by `checkEnvVarConfigReads` so it cannot reappear). The single public-edge ACME
   `ClusterIssuer` is named `zerossl-dns01` (DNS-01-honest; renamed from the misleading
   HTTP-01-claiming name in Sprint `7.13`).
-- **The home substrate and the AWS substrate stand up the same shared service set** (Sprint
-  `7.12` substrate equivalence): The in-cluster registry (registry:2) + MinIO + the Percona PostgreSQL operator are installed
+- **The home substrate and the AWS target stand up the same shared application/platform service
+  set** (Sprint `7.12` substrate equivalence): The in-cluster registry (registry:2) + MinIO + the Percona PostgreSQL operator are installed
   on **both** substrates — the AWS substrate is **not** a "no-registry on EKS" cluster. The AWS
   registry is the EKS-side registry reached through the node-local registry proxy (the EKS containerd
   registry-mirror DaemonSet that makes `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring
   the home NodePort-on-`127.0.0.1` pattern), so the canonical chart image refs are identical
-  across substrates. The two installers differ only in their LOWER layer (MetalLB on home, the
+  across substrates. Within the application/platform projection the installers differ only in
+  their LOWER layer (MetalLB on home, the
   AWS Load Balancer Controller on EKS; parent zone on home, the delegated subzone on AWS; and
   the block-storage volume source — hostPath on home, pre-created EBS on EKS — though the static
   `Retain` storage discipline is identical across both, see
   [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md#1-canonical-doctrine-statements)). The
   shared platform-component pins (Envoy Gateway, cert-manager, the registry, MinIO, Percona) come from
   the single `Prodbox.ContainerImage` SSoT and are enforced by the `checkSubstrateImagePinning`
-  lint plus the `[PlatformComponent]` coverage test. See
+  lint plus the `[PlatformComponent]` coverage test. Lifecycle Authority and Provider Worker stay
+  on retained home RKE2 and are outside this duplicated target inventory. See
   [`DEVELOPMENT_PLAN/substrates.md` → Substrate Equivalence (Structural Invariant)](../../DEVELOPMENT_PLAN/substrates.md#substrate-equivalence-structural-invariant).
 - The `prodbox` command surface is the **exclusive AWS mutation boundary**. In the target
   composition, the CLI, validation harness, recovery flow, cascade, and explicit stack commands are
-  peer clients of the registered lifecycle core and role-specific interpreters. The current
+  authenticated peer clients of the retained local lifecycle core and role-specific interpreters;
+  none is a host-side mutation interpreter. The current
   pre-cutover compositions are stated in §5.2. Ad-hoc `pulumi`, `aws` CLI, `eksctl`, or `terraform`
   mutations outside the `prodbox` surface are forbidden. The authoritative AWS resource
   inventory and per-resource lifecycle classification — cleanup-managed **per-run stacks** vs
@@ -711,10 +719,12 @@ the `stack-command-surface` generated section of
 [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
 by `prodbox dev docs generate`; `prodbox dev docs check` fails the build if it drifts.
 
-The standalone Sprint `7.5.c.v` workflow makes the per-run prerequisite explicit as
-[Sprint Workflow Step `0.5`](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
-suite-driven runs (`prodbox test all`) schedule it through the historical Sprint `7.6` postflight
-and, after cutover, consume the lifecycle-owned exact cleanup result.
+The stable prerequisite is the already-serving retained local RKE2 Lifecycle Authority described
+by [Lifecycle Control Plane Architecture](./lifecycle_control_plane_architecture.md); only then may
+an AWS setup or per-run request be admitted. The Sprint `7.5.c.v` Step `0.5` ordering is historical
+closure evidence, not the current operator sequence. Suite-driven runs (`prodbox test all`)
+establish the same prerequisite and, after cutover, consume the lifecycle-owned exact cleanup
+result.
 
 ### 4.6 Retained SES Desired-Presence Preparation
 
@@ -923,7 +933,7 @@ to the retained home/control-plane state authority and the per-run EKS secret si
 The desired-present/lease primitive, capability-derived test preparation, and semantic SES
 readiness are separate proof surfaces. Their implementation, validation, and qualification status
 remain exclusively in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status); this doctrine owns their
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here); this doctrine owns their
 authority and ordering contracts, not a second status ledger.
 
 ## 5. Ownership And Cleanup
@@ -947,7 +957,7 @@ separate pre-cutover compositions. `TestRunner` performs some preparation mutati
 `runWithAwsHarnessCleanup` creates its Lifecycle-Authority-backed durable cleanup run, and
 `runNativeDeleteCascade` retains its manual phase fold. Those source-backed residuals remain
 plan-tracked; this section does not claim they have already been replaced. Status lives in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### 5.3 Cleanup Must Run After Validation Failure
 
@@ -1136,9 +1146,11 @@ the AWS outbox from retained custody without a Gateway dependency, admin prompt,
 
 ## Live AWS Invite Evidence
 
-Final AWS qualification runs exactly `prodbox test all --substrate aws` against AWS-owned
-Kubernetes, DNS, TLS, ingress, Vault/EBS, and Target-Agent coordinates. It cannot reuse a home
-endpoint, credential, or result. The artifact includes fresh-AWS-Vault restoration of the same
+Final AWS qualification runs exactly `prodbox test all --substrate aws` against AWS-target
+Kubernetes, DNS, TLS, ingress, Vault/EBS, and Target-Agent coordinates. It cannot substitute a
+home-workload target endpoint, credential, or result. It intentionally authenticates through the
+retained-home Lifecycle Authority and consumes the home-only Provider Worker/custody plane. The
+artifact includes fresh-AWS-Vault restoration of the same
 retained SES-SMTP, ACME-EAB, and TLS generations, the full invite fault inventory, aggregate
 success, cleanup takeover, and authoritative per-run absence. Artifact availability and the
 qualification outcome are recorded only in the

@@ -230,7 +230,7 @@ current executor. Today `runNativeDeleteCascade` may short-circuit when RKE2 is 
 uninstall the local substrate after an unresolved observation/destroy; test EBS cleanup remains the
 legacy tag-partitioned reaper. A nonzero result is therefore unresolved, not evidence that this
 target storage contract ran. Implementation/cutover status and removal ownership live in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here) and
 [legacy ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 
 Both delete surfaces preserve the operator-host `.data/` root. Local-only

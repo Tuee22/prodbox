@@ -563,7 +563,7 @@ The code-local role deliberately serves liveness but refuses readiness and non-h
 Completed Sprint `3.26` supplied the separate chart/render foundation, but the physical TokenReview,
 Kubernetes Lease/workload, MinIO, Vault, and OpenPGP path is not the active production selection.
 This doctrine does not promote that boundary to deployment-qualified or cut over; activation and
-removal status remain in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+removal status remain in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 **Historical implementation record.** Lifecycle integration into `prodbox cluster reconcile` was
 split by cluster role: Sprint `4.29`
@@ -862,10 +862,12 @@ check Pulumi backend decryptable
 only then run Pulumi
 ```
 
-Sprint `1.37` enforces the host-side apply-path gate for the readiness checks that exist before the
-encrypted backend interposition: Vault reachable, initialized, and unsealed. Dry-runs render the
-plan without probing Vault. Sprint `7.14` extends the same gate with Transit-key and backend
-decryptability checks for the decrypt-to-scratch Pulumi backend.
+Sprint `1.37`'s host-side apply-path gate is pre-cutover correspondence for the readiness checks
+that existed before encrypted backend interposition: Vault reachable, initialized, and unsealed.
+Dry-runs render the plan without probing Vault. Sprint `7.14` extended that legacy gate with
+Transit-key and backend decryptability checks. In the target composition the host performs only
+client-side fail-fast diagnostics; retained Lifecycle Authority owns admission/readiness and the
+home Provider Worker owns decrypt-to-scratch Pulumi execution.
 
 A sealed Vault produces a clear, safe error before any AWS-side mutation is attempted:
 

@@ -1233,9 +1233,14 @@ encodeSurface surface = case surface of
   Cascade -> 1
   ExplicitPerRun -> 2
   TotalDecommission -> 3
-  LocalOnly -> 101
-  OperationalTeardown -> 102
-  ExplicitLongLived -> 103
+  LocalOnly -> localOnlySurfaceTag
+  OperationalTeardown -> operationalTeardownSurfaceTag
+  ExplicitLongLived -> explicitLongLivedSurfaceTag
+
+localOnlySurfaceTag, operationalTeardownSurfaceTag, explicitLongLivedSurfaceTag :: Word16
+localOnlySurfaceTag = 101
+operationalTeardownSurfaceTag = 102
+explicitLongLivedSurfaceTag = 103
 
 decodeSurface
   :: Word16 -> Either EksDrainReadBackReceiptError CleanupSurface
@@ -1248,8 +1253,12 @@ decodeSurface tag = case tag of
 encodeOperation :: LifecycleOperation -> Word16
 encodeOperation operation = case operation of
   ReconcileDesiredAbsent -> 1
-  ReconcileDesiredPresent -> 101
-  RunTerminalEscapeAudit -> 102
+  ReconcileDesiredPresent -> reconcileDesiredPresentOperationTag
+  RunTerminalEscapeAudit -> runTerminalEscapeAuditOperationTag
+
+reconcileDesiredPresentOperationTag, runTerminalEscapeAuditOperationTag :: Word16
+reconcileDesiredPresentOperationTag = 101
+runTerminalEscapeAuditOperationTag = 102
 
 decodeOperation
   :: Word16 -> Either EksDrainReadBackReceiptError LifecycleOperation

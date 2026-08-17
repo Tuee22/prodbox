@@ -24,6 +24,11 @@ prodbox is the proven single-node **root control-plane** specialization of the ~
 declared field of the in-force config ([config_doctrine.md](./config_doctrine.md)); it is **never**
 detected from the host or defaulted:
 
+This topology choice selects the workload/target cluster only. The retained local RKE2 Lifecycle
+Authority and Provider Worker are outside the choice: they are mandatory for supported operation
+and provision/manage an `eks` target. Selecting `eks` never relocates lifecycle authority to AWS,
+and the forward-looking `kind` arm cannot replace that retained control plane.
+
 | Cluster type | Bring-up | Node ↔ machine | prodbox reality |
 |---|---|---|---|
 | `kind` | container nodes inside one Docker host | many nodes, **one** machine | forward-looking (admin-laptop root, per the umbrella) |
@@ -34,9 +39,10 @@ This is the prodbox reading of the umbrella's two-kind lifecycle (self-managed `
 provider-managed `eks`; see amoebius `cluster_lifecycle_doctrine.md` + `substrate_doctrine.md`) and
 mirrors — in kind, no code dependency — the per-substrate cluster shapes and one-worker-per-node
 placement proven in jitML `cluster_topology.md`. prodbox's existing `home-local | aws` axis
-([substrates.md](../../DEVELOPMENT_PLAN/substrates.md)) is the *cluster-hosting* axis: `home-local`
-is a single-node `rke2` cluster, `aws` is an `eks` cluster. The **worker substrate** axis (below) is
-orthogonal to it.
+([substrates.md](../../DEVELOPMENT_PLAN/substrates.md)) is the *selected workload/target-cluster*
+axis: `home-local` uses the retained single-node `rke2` cluster for workloads, while `aws` selects
+an `eks` workload target without replacing that retained RKE2 control plane. The **worker
+substrate** axis (below) is orthogonal to it.
 
 ```dhall
 -- Example: cluster-type and worker-substrate closed unions (dhall/cluster/Schema.dhall)

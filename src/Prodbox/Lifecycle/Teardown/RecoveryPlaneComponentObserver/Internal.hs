@@ -508,10 +508,12 @@ classifyBootstrapCallerObservations serviceAccountResult roleResult bindingResul
 firstDefiniteFailure
   :: [RecoveryPlaneKubernetesResult]
   -> Maybe RecoveryPlaneKubernetesResult
-firstDefiniteFailure =
-  find $ \result -> case result of
-    RecoveryPlaneKubernetesFound _ -> False
-    _ -> True
+firstDefiniteFailure = find isDefiniteFailure
+
+isDefiniteFailure :: RecoveryPlaneKubernetesResult -> Bool
+isDefiniteFailure result = case result of
+  RecoveryPlaneKubernetesFound _ -> False
+  _ -> True
 
 classifyCallerTransportFailure
   :: RecoveryPlaneKubernetesResult -> RecoveryPlaneRawComponentResult

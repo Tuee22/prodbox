@@ -48,9 +48,9 @@ hostCleanupRke2Suite =
       observedMarkers <- newIORef []
       let adapter =
             adapterWith
-              (\marker -> do
-                modifyIORef' observedMarkers (++ [marker])
-                pure LocalRke2MarkerAbsent
+              ( \marker -> do
+                  modifyIORef' observedMarkers (++ [marker])
+                  pure LocalRke2MarkerAbsent
               )
               unexpectedCommand
       observeLocalRke2Install adapter
@@ -62,12 +62,12 @@ hostCleanupRke2Suite =
         observation <-
           observeLocalRke2Install
             ( adapterWith
-                (\marker ->
-                  pure
-                    ( if marker == soleSurvivor
-                        then LocalRke2MarkerPresent
-                        else LocalRke2MarkerAbsent
-                    )
+                ( \marker ->
+                    pure
+                      ( if marker == soleSurvivor
+                          then LocalRke2MarkerPresent
+                          else LocalRke2MarkerAbsent
+                      )
                 )
                 unexpectedCommand
             )
@@ -80,7 +80,8 @@ hostCleanupRke2Suite =
             adapterWith
               ( markerAnswer
                   [ (LocalRke2DataDirectoryMarker, LocalRke2MarkerPresent)
-                  , ( LocalRke2SystemdUnitMarker
+                  ,
+                    ( LocalRke2SystemdUnitMarker
                     , LocalRke2MarkerUnconfirmed "systemd is not serving"
                     )
                   ]
@@ -99,7 +100,8 @@ hostCleanupRke2Suite =
       let adapter =
             adapterWith
               ( markerAnswer
-                  [ ( LocalRke2ConfigDirectoryMarker
+                  [
+                    ( LocalRke2ConfigDirectoryMarker
                     , LocalRke2MarkerUnconfirmed "permission denied"
                     )
                   ]
@@ -139,7 +141,8 @@ hostCleanupRke2Suite =
             adapterWith
               ( markerAnswer
                   [ (LocalRke2DataDirectoryMarker, LocalRke2MarkerPresent)
-                  , ( LocalRke2UninstallScriptMarker
+                  ,
+                    ( LocalRke2UninstallScriptMarker
                     , LocalRke2MarkerUnconfirmed "lstat interrupted"
                     )
                   ]
@@ -163,9 +166,9 @@ hostCleanupRke2Suite =
                   [ (LocalRke2UninstallScriptMarker, LocalRke2MarkerPresent)
                   ]
               )
-              (\operation spec -> do
-                writeIORef captured (Just (operation, spec))
-                pure successfulCommand
+              ( \operation spec -> do
+                  writeIORef captured (Just (operation, spec))
+                  pure successfulCommand
               )
       withEnvironmentVariable
         "KUBECONFIG"
@@ -188,10 +191,9 @@ hostCleanupRke2Suite =
           subprocessArguments spec
             `shouldContain` ["KUBECONFIG=/etc/rancher/rke2/rke2.yaml"]
           subprocessArguments spec
-            `shouldContain`
-              [ "PRODBOX_CLEANUP_OPERATION_ID="
-                  ++ Text.unpack (cleanupOperationIdText fixtureOperation)
-              ]
+            `shouldContain` [ "PRODBOX_CLEANUP_OPERATION_ID="
+                                ++ Text.unpack (cleanupOperationIdText fixtureOperation)
+                            ]
           subprocessArguments spec
             `shouldSatisfy` all (not . isInfixOf "hostile-remote")
           unwords (subprocessPath spec : subprocessArguments spec)
@@ -232,10 +234,10 @@ hostCleanupRke2Suite =
       let adapter =
             adapterWith
               (\marker -> answerFromState markerState marker)
-              (\_ _ -> do
-                modifyIORef' commandCount (+ 1)
-                writeIORef markerState allAbsent
-                pure (Left "transport closed after process start")
+              ( \_ _ -> do
+                  modifyIORef' commandCount (+ 1)
+                  writeIORef markerState allAbsent
+                  pure (Left "transport closed after process start")
               )
       attemptLocalRke2Uninstall adapter fixtureOperation
         `shouldReturn` LocalRke2UninstallResponseLost
@@ -260,10 +262,10 @@ hostCleanupRke2Suite =
       let adapter =
             adapterWith
               (\marker -> answerFromState markerState marker)
-              (\_ _ -> do
-                modifyIORef' commandCount (+ 1)
-                writeIORef markerState allAbsent
-                ioError (userError "interrupted after local uninstall")
+              ( \_ _ -> do
+                  modifyIORef' commandCount (+ 1)
+                  writeIORef markerState allAbsent
+                  ioError (userError "interrupted after local uninstall")
               )
       interrupted <-
         try (attemptLocalRke2Uninstall adapter fixtureOperation)
@@ -280,15 +282,15 @@ hostCleanupRke2Suite =
       let adapter =
             adapterWith
               (\marker -> answerFromState markerState marker)
-              (\_ _ -> do
-                writeIORef
-                  markerState
-                  ( replaceMarker
-                      LocalRke2ConfigDirectoryMarker
-                      (LocalRke2MarkerUnconfirmed "read-back permission denied")
-                      allAbsent
-                  )
-                pure (Left "response lost")
+              ( \_ _ -> do
+                  writeIORef
+                    markerState
+                    ( replaceMarker
+                        LocalRke2ConfigDirectoryMarker
+                        (LocalRke2MarkerUnconfirmed "read-back permission denied")
+                        allAbsent
+                    )
+                  pure (Left "response lost")
               )
       attemptLocalRke2Uninstall adapter fixtureOperation
         `shouldReturn` LocalRke2UninstallResponseLost fixtureOperation "response lost"
@@ -388,10 +390,10 @@ exactAbsence =
 withEnvironmentVariable :: String -> String -> IO value -> IO value
 withEnvironmentVariable key value action =
   bracket
-    (do
-      original <- lookupEnv key
-      setEnv key value
-      pure original
+    ( do
+        original <- lookupEnv key
+        setEnv key value
+        pure original
     )
     (\original -> maybe (unsetEnv key) (setEnv key) original)
     (const action)

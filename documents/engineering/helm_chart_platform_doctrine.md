@@ -88,7 +88,7 @@ typed claim-side inputs in `Prodbox.Gateway.Emitter.Persistence`: stable identit
 node-pinned claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Sprint
 `3.26` supplied their chart/render consumption. The production default remains pre-cutover;
 activation and deployment-qualification status remain owned only by the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 1Z. Release State Is Decoded, and a Mutation Needs a Permit (Sprint `3.31`)
 
@@ -297,10 +297,12 @@ dependency beyond that shared-edge model is the lifecycle-owned Percona PostgreS
 
 ## 3A. Substrate-Equivalence Mechanism
 
-The home local substrate and the AWS substrate stand up the same platform components; the only
-deliberate differences are the lower-layer load balancer (MetalLB on home, AWS Load Balancer
-Controller on EKS), Route 53 hosting, and the block-storage volume source (a `hostPath` under
-`.data/` on home, a pre-created EBS volume on EKS). The storage *discipline* is identical on
+The home local substrate and the AWS substrate stand up the same application/platform components;
+within that projection the only deliberate differences are the lower-layer load balancer (MetalLB
+on home, AWS Load Balancer Controller on EKS), Route 53 hosting, and the block-storage volume
+source (a `hostPath` under `.data/` on home, a pre-created EBS volume on EKS). Lifecycle runtime
+placement is outside this equivalence claim: Lifecycle Authority and Provider Worker remain on
+mandatory local RKE2 while managing the optional AWS target. The storage *discipline* is identical on
 both substrates — the static `manual` no-provisioner `Retain` PV model with deterministic
 rebinding, no dynamic provisioning (Sprint `7.28`;
 [storage_lifecycle_doctrine.md § 1](./storage_lifecycle_doctrine.md)). Substrate equivalence is

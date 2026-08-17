@@ -38,36 +38,37 @@ lifecycleTeardownRecoveryCapabilitySuite = do
           `shouldBe` False
 
     it "binds every current operation to ResumeOrdinaryCleanup only" $ do
-      forM_ surfaceCases $ \(SurfaceCase surface maybeAwsScope) ->
-        case compileDesiredAbsenceGraph runId foundation maybeAwsScope surface of
-          Left err -> expectationFailure (show err)
-          Right compiled -> do
-            let programNodes =
-                  desiredAbsenceProgramNodes
-                    (compiledDesiredAbsenceProgram compiled)
-                graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
-                catalog =
-                  compiledDesiredAbsenceRecoveryCapabilityCatalog compiled
-            forM_ programNodes $ \node -> do
-              recoveryCapabilitySetNames (programNodeRecoveryCapabilities node)
-                `shouldBe` ["resume-ordinary-cleanup"]
-              recoveryCapabilitySetRequiresTargetAgent
-                (programNodeRecoveryCapabilities node)
-                `shouldBe` False
-            recoveryCapabilityCatalogNodes catalog
-              `shouldBe` sort (map cleanupNodeId graphNodes)
-            forM_ graphNodes $ \node -> do
-              recoveryCapabilityCatalogOperationForNode
-                (cleanupNodeId node)
-                catalog
-                `shouldBe` Just (cleanupNodeOperationId node)
-              fmap
-                recoveryCapabilitySetNames
-                ( recoveryCapabilityCatalogCapabilitiesForNode
+      let checkSurface (SurfaceCase surface maybeAwsScope) =
+            case compileDesiredAbsenceGraph runId foundation maybeAwsScope surface of
+              Left err -> expectationFailure (show err)
+              Right compiled -> do
+                let programNodes =
+                      desiredAbsenceProgramNodes
+                        (compiledDesiredAbsenceProgram compiled)
+                    graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
+                    catalog =
+                      compiledDesiredAbsenceRecoveryCapabilityCatalog compiled
+                forM_ programNodes $ \node -> do
+                  recoveryCapabilitySetNames (programNodeRecoveryCapabilities node)
+                    `shouldBe` ["resume-ordinary-cleanup"]
+                  recoveryCapabilitySetRequiresTargetAgent
+                    (programNodeRecoveryCapabilities node)
+                    `shouldBe` False
+                recoveryCapabilityCatalogNodes catalog
+                  `shouldBe` sort (map cleanupNodeId graphNodes)
+                forM_ graphNodes $ \node -> do
+                  recoveryCapabilityCatalogOperationForNode
                     (cleanupNodeId node)
                     catalog
-                )
-                `shouldBe` Just ["resume-ordinary-cleanup"]
+                    `shouldBe` Just (cleanupNodeOperationId node)
+                  fmap
+                    recoveryCapabilitySetNames
+                    ( recoveryCapabilityCatalogCapabilitiesForNode
+                        (cleanupNodeId node)
+                        catalog
+                    )
+                    `shouldBe` Just ["resume-ordinary-cleanup"]
+      forM_ surfaceCases checkSurface
 
     it "proves synthetic Target-Agent and adversarial joins through a fixed diagnostic vector" $ do
       case fixedRecoveryRequirementFixtureRegression of

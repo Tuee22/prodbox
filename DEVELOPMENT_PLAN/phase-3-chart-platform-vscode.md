@@ -153,14 +153,14 @@ cluster-state validation landed in Phase `5` Sprint `5.13`.
 ✅ **Live-proven 2026-06-26 — the full chart stack passes end-to-end under the green home `test all`.**
 The `charts-vscode`, `charts-api`, `charts-websocket`, `charts-platform`, and `charts-storage` named
 validations all pass `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
-[00-overview.md](00-overview.md) Alignment Status), so Phase 3's chart-orchestration / retained-storage
+[00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)), so Phase 3's chart-orchestration / retained-storage
 / Keycloak-OIDC / Redis / Patroni-PostgreSQL surfaces are home-substrate live-proven. This run also
 fixed two chart defects en route — the `api` chart `config.dhall` `oidc.client_secret` type and the
-`websocket-isolation` NetworkPolicy Vault egress (see [README.md](README.md) Closure Status). The
+`websocket-isolation` NetworkPolicy Vault egress (see [README.md → Historical Closure Record](README.md#historical-closure-record)). The
 `--substrate aws` chart coverage stays orthogonal ([substrates.md](substrates.md)).
 
 ✅ **Reclosed 2026-06-16** — the Vault secrets model is finalized to the Vault-root architecture
-(narrated in the [README.md](README.md) Closure Status and harmonized across the plan suite per
+(narrated in the [README.md → Historical Closure Record](README.md#historical-closure-record) and harmonized across the plan suite per
 [development_plan_standards.md](development_plan_standards.md) rule J). Vault is the sole
 secrets/KMS/PKI root for the chart platform; the master-seed HMAC-SHA-256 derivation model is
 **retired, not extended**; the `SecretRef.FileSecret` / Secret-mounted plaintext Dhall fragment is
@@ -193,7 +193,7 @@ See
 and [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md).
 
 ✅ **Reclosed 2026-06-09** — reopened for Sprints `3.15`–`3.16` (design-intention review,
-2026-06-09; narrated in the [README.md](README.md) Closure Status per
+2026-06-09; narrated in the [README.md → Historical Closure Record](README.md#historical-closure-record) per
 [development_plan_standards.md](development_plan_standards.md) rule A); both landed. Sprint `3.15` ✅
 made the public-workload binary config-as-data: deleted the `src/Prodbox/Workload.hs` `PRODBOX_*`
 env-var ladder (`--config` is now mandatory and `Workload.hs` has zero `lookupEnv`), gave the

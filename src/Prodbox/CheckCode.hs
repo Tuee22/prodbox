@@ -39,6 +39,7 @@ module Prodbox.CheckCode
   , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
   , planSprintBlocks
+  , developmentPlanResumeViolations
   , sprintBlockMissingFields
   , documentSectionNumbers
   , headingSectionNumber
@@ -626,6 +627,7 @@ runGovernedDocChecks repoRoot = do
   citedPathViolations <- checkPlanCitedSourcePaths repoRoot
   sectionCitationViolations <- checkDoctrineSectionCitations repoRoot
   sprintFieldViolations <- checkSprintRequiredFields repoRoot
+  resumeLedgerViolations <- checkDevelopmentPlanResumeLedger repoRoot
   pure
     ( harmonyViolations
         ++ linkViolations
@@ -633,6 +635,7 @@ runGovernedDocChecks repoRoot = do
         ++ citedPathViolations
         ++ sectionCitationViolations
         ++ sprintFieldViolations
+        ++ resumeLedgerViolations
     )
 
 runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
@@ -4848,6 +4851,582 @@ planSprintBlocks contents = go (lines contents) Nothing []
         Just (heading, collected) -> go rest (Just (heading, lineText : collected)) acc
   close Nothing acc = acc
   close (Just (heading, collected)) acc = (heading, unlines (reverse collected)) : acc
+
+-- | The development plan's one hand-maintained execution ledger.  The plan is
+-- intentionally split into detailed phase documents, but "what should a fresh
+-- session do next?" has exactly one answer: the numerically ordered
+-- @DEVELOPMENT_PLAN/README.md#resume-here@ table.  This pure check keeps that
+-- table a projection of the sprint blocks instead of a second plan that can
+-- quietly diverge from them.
+--
+-- The input is the repo-relative path and contents of every Markdown document
+-- under @DEVELOPMENT_PLAN/@.  Keeping the check pure makes the queue grammar
+-- and its failure modes directly testable; 'checkDevelopmentPlanResumeLedger'
+-- is the filesystem wrapper used by the documentation gate.
+developmentPlanResumeViolations :: [(FilePath, String)] -> [String]
+developmentPlanResumeViolations planDocuments =
+  requiredDocumentViolations
+    ++ resumeHeadingViolations
+    ++ competingLedgerViolations
+    ++ sprintIdentityViolations
+    ++ resumeParseViolations
+    ++ queueShapeViolations
+    ++ queueCoverageViolations
+    ++ pendingOwnerViolations
+ where
+  requiredPaths =
+    [ "DEVELOPMENT_PLAN/README.md"
+    , "DEVELOPMENT_PLAN/00-overview.md"
+    , "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
+    ]
+  requiredDocumentViolations =
+    [ "The development-plan resume gate cannot find `" ++ path ++ "`."
+    | path <- requiredPaths
+    , lookup path planDocuments == Nothing
+    ]
+  contentsAt path = maybe "" id (lookup path planDocuments)
+  readmeContents = contentsAt "DEVELOPMENT_PLAN/README.md"
+  ledgerContents = contentsAt "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
+  phaseDocuments =
+    [ (path, contents)
+    | (path, contents) <- planDocuments
+    , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
+    , ".md" `isSuffixOf` path
+    ]
+  sprintBlocks =
+    [ (path, heading, body)
+    | (path, contents) <- phaseDocuments
+    , (heading, body) <- planSprintBlocks (unlines (stripFencedCodeBlocks (lines contents)))
+    ]
+  sprintRecords =
+    [ (path, sprintId, uniqueSprintStatus body)
+    | (path, heading, body) <- sprintBlocks
+    , Just sprintId <- [sprintIdFromHeading heading]
+    ]
+  allSprintIds = [sprintId | (_, sprintId, _) <- sprintRecords]
+  openSprints =
+    [ (sprintId, status)
+    | (_, sprintId, Just status) <- sprintRecords
+    , status /= "Done"
+    ]
+
+  resumeOccurrences =
+    [ path
+    | (path, contents) <- planDocuments
+    , lineText <- stripFencedCodeBlocks (lines contents)
+    , lineText == "## Resume Here"
+    ]
+  resumeHeadingViolations = case resumeOccurrences of
+    ["DEVELOPMENT_PLAN/README.md"] -> []
+    [] ->
+      [ "The development plan has no `## Resume Here` ledger. "
+          ++ "Define it once in `DEVELOPMENT_PLAN/README.md`."
+      ]
+    occurrences ->
+      [ "The development plan must have exactly one `## Resume Here` ledger in "
+          ++ "`DEVELOPMENT_PLAN/README.md`; found it in "
+          ++ intercalate ", " (map (\path -> "`" ++ path ++ "`") occurrences)
+          ++ "."
+      ]
+
+  competingLedgerHeadings =
+    [ ("DEVELOPMENT_PLAN/README.md", "## Closure Status")
+    , ("DEVELOPMENT_PLAN/README.md", "## Phase Overview")
+    , ("DEVELOPMENT_PLAN/README.md", "## Current Plan Status")
+    , ("DEVELOPMENT_PLAN/00-overview.md", "## Clean-Room Sequence")
+    , ("DEVELOPMENT_PLAN/00-overview.md", "## Alignment Status")
+    , ("DEVELOPMENT_PLAN/00-overview.md", "## Current Execution State")
+    ]
+  competingLedgerViolations =
+    [ path
+        ++ " retains the competing current-state ledger `"
+        ++ heading
+        ++ "`. Keep current execution state only in "
+        ++ "`DEVELOPMENT_PLAN/README.md#resume-here`; make this section static "
+        ++ "reference material or remove it."
+    | (path, heading) <- competingLedgerHeadings
+    , heading `elem` stripFencedCodeBlocks (lines (contentsAt path))
+    ]
+
+  duplicateSprintIds =
+    [ sprintId
+    | sprintId <- nub allSprintIds
+    , length (filter (== sprintId) allSprintIds) > 1
+    ]
+  duplicateViolations =
+    [ "Sprint `" ++ sprintId ++ "` is declared more than once across the phase plan."
+    | sprintId <- duplicateSprintIds
+    ]
+  malformedHeadingViolations =
+    [ path
+        ++ " contains malformed sprint heading `"
+        ++ heading
+        ++ "`; use `## Sprint <phase>.<number>: <name>`."
+    | (path, heading, _) <- sprintBlocks
+    , sprintIdFromHeading heading == Nothing
+    ]
+  phasePrefixViolations =
+    [ path
+        ++ " declares Sprint `"
+        ++ sprintId
+        ++ "`, whose numeric prefix does not match the phase file."
+    | (path, sprintId, _) <- sprintRecords
+    , Just phaseNumber <- [phaseNumberFromPlanPath path]
+    , takeWhile isDigit sprintId /= phaseNumber
+    ]
+  statusViolations =
+    concat
+      [ sprintStatusViolations path sprintId body
+      | (path, heading, body) <- sprintBlocks
+      , Just sprintId <- [sprintIdFromHeading heading]
+      ]
+  sprintIdentityViolations =
+    malformedHeadingViolations
+      ++ duplicateViolations
+      ++ phasePrefixViolations
+      ++ statusViolations
+
+  (resumeParseViolations, resumeRows) = parseResumeQueue readmeContents
+  queueIds = [sprintId | (_, sprintId, _, _, _) <- resumeRows]
+  queueShapeViolations =
+    sequentialOrderViolations resumeRows
+      ++ numericOrderViolations resumeRows
+      ++ nextEntryViolations resumeRows
+      ++ rowPhaseViolations resumeRows
+      ++ rowStateViolations openSprints resumeRows
+      ++ rowDependencyViolations resumeRows
+      ++ [ "The Resume Here queue repeats Sprint `" ++ sprintId ++ "`."
+         | sprintId <- nub queueIds
+         , length (filter (== sprintId) queueIds) > 1
+         ]
+  openIds = map fst openSprints
+  queueCoverageViolations =
+    [ "Open Sprint `"
+        ++ sprintId
+        ++ "` is missing from `DEVELOPMENT_PLAN/README.md#resume-here`."
+    | sprintId <- openIds
+    , sprintId `notElem` queueIds
+    ]
+      ++ [ "The Resume Here queue lists Sprint `"
+             ++ sprintId
+             ++ "`, but its phase block is not Active, Planned, or Blocked."
+         | sprintId <- queueIds
+         , sprintId `notElem` openIds
+         ]
+
+  pendingOwnerViolations =
+    pendingRemovalOwnerViolations allSprintIds ledgerContents
+
+-- | Parse the sole current-plan table.  A row is @(order, sprint, phase,
+-- state, dependencies)@.  The intentionally small grammar keeps a human edit
+-- obvious in review and makes forward dependencies impossible to disguise in
+-- prose.
+parseResumeQueue :: String -> ([String], [(Int, String, String, String, [String])])
+parseResumeQueue contents = case markdownHeadingSections "## Resume Here" contents of
+  [] -> ([], [])
+  [sectionLines] -> parseTable sectionLines
+  sections ->
+    (
+      [ "`DEVELOPMENT_PLAN/README.md` contains "
+          ++ show (length sections)
+          ++ " `## Resume Here` sections; exactly one is permitted."
+      ]
+    , []
+    )
+ where
+  expectedHeader = ["Order", "Sprint", "Phase", "State", "Dependency"]
+
+  parseTable sectionLines = case map markdownTableCells tableLines of
+    [] ->
+      (
+        [ "`DEVELOPMENT_PLAN/README.md#resume-here` must contain the table "
+            ++ "`Order | Sprint | Phase | State | Dependency`."
+        ]
+      , []
+      )
+    [header]
+      | header /= expectedHeader ->
+          (
+            [ "The Resume Here table header must be exactly `Order | Sprint | Phase | "
+                ++ "State | Dependency`."
+            ]
+          , []
+          )
+      | otherwise ->
+          ( ["The Resume Here table is missing its Markdown separator row."]
+          , []
+          )
+    header : separator : remaining
+      | header /= expectedHeader ->
+          (
+            [ "The Resume Here table header must be exactly `Order | Sprint | Phase | "
+                ++ "State | Dependency`."
+            ]
+          , []
+          )
+      | length separator /= length expectedHeader || not (isMarkdownSeparatorRow separator) ->
+          ( ["The Resume Here table must place a Markdown separator directly below its header."]
+          , []
+          )
+      | otherwise -> foldRows remaining
+   where
+    tableLines =
+      [ lineText
+      | lineText <- sectionLines
+      , "|" `isPrefixOf` trimLine lineText
+      ]
+
+  foldRows rows =
+    let parsed = zipWith parseRow [1 :: Int ..] rows
+     in (concatMap fst parsed, [row | (_, Just row) <- parsed])
+
+  parseRow rowNumber cells = case cells of
+    [orderText, sprintText, phaseText, stateText, dependencyText] ->
+      case parseDecimal orderText of
+        Nothing ->
+          (
+            [ "Resume Here table row "
+                ++ show rowNumber
+                ++ " has non-numeric Order `"
+                ++ orderText
+                ++ "`."
+            ]
+          , Nothing
+          )
+        Just orderValue ->
+          let sprintId = stripSingleCodeSpan sprintText
+              dependencyIds =
+                filter isPlanSprintId (inlineCodeSpansInLine dependencyText)
+              canonicalDependencyText =
+                intercalate ", " (map (\dependencyId -> "`" ++ dependencyId ++ "`") dependencyIds)
+              rowViolations =
+                [ "Resume Here table row "
+                    ++ show rowNumber
+                    ++ " has invalid Sprint `"
+                    ++ sprintText
+                    ++ "`; use a backtick-quoted numeric id such as `3.41`."
+                | stripSingleCodeSpan sprintText == sprintText
+                    || numericSprintKey sprintId == Nothing
+                ]
+                  ++ [ "Resume Here table row "
+                         ++ show rowNumber
+                         ++ " must spell dependencies exactly as `—` or as a comma-separated "
+                         ++ "list of backtick-quoted sprint ids."
+                     | dependencyText /= "—"
+                     , dependencyText /= canonicalDependencyText
+                     ]
+                  ++ [ "Resume Here table row "
+                         ++ show rowNumber
+                         ++ " repeats dependency `"
+                         ++ dependencyId
+                         ++ "`."
+                     | dependencyId <- nub dependencyIds
+                     , length (filter (== dependencyId) dependencyIds) > 1
+                     ]
+           in ( rowViolations
+              , Just (orderValue, sprintId, phaseText, stateText, dependencyIds)
+              )
+    _ ->
+      (
+        [ "Resume Here table row "
+            ++ show rowNumber
+            ++ " has "
+            ++ show (length cells)
+            ++ " cells; exactly five are required."
+        ]
+      , Nothing
+      )
+
+sequentialOrderViolations :: [(Int, String, String, String, [String])] -> [String]
+sequentialOrderViolations rows =
+  [ "Resume Here Order values must be consecutive starting at 1; found `"
+      ++ intercalate ", " (map (show . firstOfFive) rows)
+      ++ "`."
+  | map firstOfFive rows /= [1 .. length rows]
+  ]
+ where
+  firstOfFive (value, _, _, _, _) = value
+
+numericOrderViolations :: [(Int, String, String, String, [String])] -> [String]
+numericOrderViolations rows =
+  [ "Resume Here sprint ids must be in strict numerical order; found `"
+      ++ intercalate " -> " sprintIds
+      ++ "`."
+  | not (and (zipWith (<) numericKeys (drop 1 numericKeys)))
+  ]
+ where
+  sprintIds = [sprintId | (_, sprintId, _, _, _) <- rows]
+  numericKeys = [key | sprintId <- sprintIds, Just key <- [numericSprintKey sprintId]]
+
+nextEntryViolations :: [(Int, String, String, String, [String])] -> [String]
+nextEntryViolations rows =
+  [ "Resume Here must mark exactly its first row `Next`; found Next at order values `"
+      ++ intercalate ", " (map show nextOrders)
+      ++ "`."
+  | nextOrders /= [1]
+  ]
+ where
+  nextOrders = [orderValue | (orderValue, _, _, state, _) <- rows, state == "Next"]
+
+rowPhaseViolations :: [(Int, String, String, String, [String])] -> [String]
+rowPhaseViolations rows =
+  [ "Resume Here Sprint `"
+      ++ sprintId
+      ++ "` must name Phase `"
+      ++ takeWhile isDigit sprintId
+      ++ "`, not `"
+      ++ phaseText
+      ++ "`."
+  | (_, sprintId, phaseText, _, _) <- rows
+  , phaseText /= takeWhile isDigit sprintId
+  ]
+
+rowStateViolations :: [(String, String)] -> [(Int, String, String, String, [String])] -> [String]
+rowStateViolations openSprints rows = concatMap checkRow rows
+ where
+  checkRow (_, sprintId, _, queueState, _) = case lookup sprintId openSprints of
+    Nothing -> []
+    Just "Blocked"
+      | queueState == "Blocked" -> []
+      | otherwise -> [wrongState sprintId "Blocked" queueState]
+    Just "Active"
+      | queueState `elem` ["Next", "Parked"] -> []
+      | otherwise -> [wrongState sprintId "Next or Parked" queueState]
+    Just "Planned"
+      | queueState `elem` ["Next", "Parked"] -> []
+      | otherwise -> [wrongState sprintId "Next or Parked" queueState]
+    Just _ -> []
+  wrongState sprintId expected actual =
+    "Resume Here Sprint `"
+      ++ sprintId
+      ++ "` must have State `"
+      ++ expected
+      ++ "`, not `"
+      ++ actual
+      ++ "`."
+
+rowDependencyViolations :: [(Int, String, String, String, [String])] -> [String]
+rowDependencyViolations rows = concatMap checkRow (zip [0 :: Int ..] rows)
+ where
+  checkRow (rowIndex, (_, sprintId, _, queueState, dependencyIds)) =
+    [ "Resume Here Sprint `"
+        ++ sprintId
+        ++ "` is Blocked but names no earlier dependency."
+    | queueState == "Blocked"
+    , null dependencyIds
+    ]
+      ++ [ "Resume Here Sprint `"
+             ++ sprintId
+             ++ "` depends on `"
+             ++ dependencyId
+             ++ "`, which is not an earlier row in the numerical queue."
+         | dependencyId <- dependencyIds
+         , dependencyId `notElem` earlierIds rowIndex
+         ]
+  earlierIds rowIndex =
+    [ sprintId
+    | (_, sprintId, _, _, _) <- take rowIndex rows
+    ]
+
+pendingRemovalOwnerViolations :: [String] -> String -> [String]
+pendingRemovalOwnerViolations knownSprintIds contents =
+  case markdownHeadingSections "## Pending Removal" contents of
+    [sectionLines] -> checkTable sectionLines
+    [] ->
+      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` has no exact "
+          ++ "`## Pending Removal` section."
+      ]
+    sections ->
+      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` contains "
+          ++ show (length sections)
+          ++ " exact `## Pending Removal` sections; exactly one is permitted."
+      ]
+ where
+  expectedHeader = ["Item", "Owning Sprint", "Notes"]
+
+  checkTable sectionLines = case map markdownTableCells tableLines of
+    [] ->
+      [ "The Pending Removal section must contain the table "
+          ++ "`Item | Owning Sprint | Notes`."
+      ]
+    [header]
+      | header /= expectedHeader -> [wrongHeader]
+      | otherwise -> ["The Pending Removal table is missing its Markdown separator row."]
+    header : separator : remaining
+      | header /= expectedHeader -> [wrongHeader]
+      | length separator /= length expectedHeader || not (isMarkdownSeparatorRow separator) ->
+          ["The Pending Removal table must place a Markdown separator directly below its header."]
+      | otherwise -> concat (zipWith checkRow [1 :: Int ..] remaining)
+   where
+    tableLines =
+      [ lineText
+      | lineText <- sectionLines
+      , "|" `isPrefixOf` trimLine lineText
+      ]
+    wrongHeader =
+      "The Pending Removal table header must be exactly `Item | Owning Sprint | Notes`."
+
+  checkRow rowNumber cells = case cells of
+    [_, owner, _]
+      | explicitlyUnowned owner -> []
+      | otherwise ->
+          let ownerSprintIds = filter isPlanSprintId (inlineCodeSpansInLine owner)
+           in [ "A Pending Removal row has no sprint owner and is not explicitly "
+                  ++ "`Unowned`: `"
+                  ++ owner
+                  ++ "`."
+              | null ownerSprintIds
+              ]
+                ++ [ "A Pending Removal row names nonexistent Sprint `"
+                       ++ sprintId
+                       ++ "` as its owner. Register the sprint or mark the row "
+                       ++ "explicitly `Unowned`."
+                   | sprintId <- ownerSprintIds
+                   , sprintId `notElem` knownSprintIds
+                   ]
+    _ ->
+      [ "Pending Removal table row "
+          ++ show rowNumber
+          ++ " has "
+          ++ show (length cells)
+          ++ " cells; exactly three are required."
+      ]
+
+  explicitlyUnowned owner = case words (filter (/= '*') owner) of
+    "Unowned" : _ -> True
+    _ -> False
+
+markdownHeadingSections :: String -> String -> [[String]]
+markdownHeadingSections heading contents =
+  [ takeWhile (not . ("## " `isPrefixOf`)) remaining
+  | lineText : remaining <- tails (stripFencedCodeBlocks (lines contents))
+  , lineText == heading
+  ]
+
+markdownTableCells :: String -> [String]
+markdownTableCells lineText =
+  map trimLine (dropTrailingEmpty (dropLeadingEmpty (splitMarkdownRow (trimLine lineText))))
+ where
+  dropLeadingEmpty ("" : rest) = rest
+  dropLeadingEmpty values = values
+  dropTrailingEmpty values = case reverse values of
+    "" : rest -> reverse rest
+    _ -> values
+
+splitMarkdownRow :: String -> [String]
+splitMarkdownRow = go [] []
+ where
+  go cells current [] = reverse (reverse current : cells)
+  go cells current ('\\' : '|' : rest) = go cells ('|' : '\\' : current) rest
+  go cells current ('|' : rest) = go (reverse current : cells) [] rest
+  go cells current (character : rest) = go cells (character : current) rest
+
+isMarkdownSeparatorRow :: [String] -> Bool
+isMarkdownSeparatorRow cells =
+  not (null cells)
+    && all (\cell -> not (null cell) && all (`elem` ['-', ':']) cell) cells
+
+splitOnCharacter :: Char -> String -> [String]
+splitOnCharacter delimiter value = case break (== delimiter) value of
+  (before, []) -> [before]
+  (before, _ : after) -> before : splitOnCharacter delimiter after
+
+parseDecimal :: String -> Maybe Int
+parseDecimal value = case reads value of
+  [(parsed, "")] -> Just parsed
+  _ -> Nothing
+
+stripSingleCodeSpan :: String -> String
+stripSingleCodeSpan value = case value of
+  '`' : rest -> case reverse rest of
+    '`' : middleReversed -> reverse middleReversed
+    _ -> value
+  _ -> value
+
+numericSprintKey :: String -> Maybe [Int]
+numericSprintKey sprintId =
+  traverse parseDecimal (splitOnCharacter '.' sprintId)
+
+isPlanSprintId :: String -> Bool
+isPlanSprintId sprintId = case break (== '.') sprintId of
+  (phaseNumber, '.' : rest) ->
+    not (null phaseNumber)
+      && all isDigit phaseNumber
+      && not (null rest)
+      && all (\character -> isAlphaNum character || character == '.') rest
+      && any isDigit rest
+  _ -> False
+
+sprintIdFromHeading :: String -> Maybe String
+sprintIdFromHeading heading = do
+  rest <- stripPrefix "## Sprint " heading
+  let sprintId = takeWhile (/= ':') rest
+  if isPlanSprintId sprintId then Just sprintId else Nothing
+
+uniqueSprintStatus :: String -> Maybe String
+uniqueSprintStatus body = case sprintStatusDeclarations body of
+  [Just status] -> Just status
+  _ -> Nothing
+
+sprintStatusViolations :: FilePath -> String -> String -> [String]
+sprintStatusViolations path sprintId body = case sprintStatusDeclarations body of
+  [] -> [prefix ++ "has no `**Status**:` declaration."]
+  [Nothing] ->
+    [ prefix
+        ++ "has an unrecognized `**Status**:` value; the leading status must be "
+        ++ "Done, Active, Planned, or Blocked."
+    ]
+  [Just _] -> []
+  declarations ->
+    [ prefix
+        ++ "has "
+        ++ show (length declarations)
+        ++ " `**Status**:` declarations; exactly one is permitted."
+    ]
+ where
+  prefix = path ++ " Sprint `" ++ sprintId ++ "` "
+
+sprintStatusDeclarations :: String -> [Maybe String]
+sprintStatusDeclarations body =
+  [ leadingSprintStatus statusText
+  | lineText <- stripFencedCodeBlocks (lines body)
+  , Just statusText <- [stripPrefix "**Status**:" lineText]
+  ]
+
+leadingSprintStatus :: String -> Maybe String
+leadingSprintStatus statusText = case statusWords of
+  status : _
+    | status `elem` ["Done", "Active", "Planned", "Blocked"] -> Just status
+  _ -> Nothing
+ where
+  statusWords =
+    [ word
+    | token <- words statusText
+    , let word = takeWhile isAlpha (dropWhile (not . isAlpha) token)
+    , not (null word)
+    ]
+
+phaseNumberFromPlanPath :: FilePath -> Maybe String
+phaseNumberFromPlanPath path = do
+  rest <- stripPrefix "DEVELOPMENT_PLAN/phase-" path
+  let phaseNumber = takeWhile isDigit rest
+  if null phaseNumber then Nothing else Just phaseNumber
+
+-- | Filesystem wrapper for 'developmentPlanResumeViolations'.
+checkDevelopmentPlanResumeLedger :: FilePath -> IO [String]
+checkDevelopmentPlanResumeLedger repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let planPaths =
+        [ path
+        | path <- repoPaths
+        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
+        , ".md" `isSuffixOf` path
+        ]
+  planDocuments <-
+    forM planPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  pure (developmentPlanResumeViolations planDocuments)
 
 -- | Sprint 0.27 (IO wrapper). Every sprint block in @DEVELOPMENT_PLAN/phase-*.md@
 -- carries its Standard-H @Implementation@ and docs fields.

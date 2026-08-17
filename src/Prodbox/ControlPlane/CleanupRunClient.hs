@@ -65,6 +65,10 @@ import Prodbox.ControlPlane.Client
   , ControlPlaneRouteFor (LifecycleCleanupRunRoute)
   )
 import Prodbox.ControlPlane.Codec (encodeControlPlaneRequest)
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (..)
+  , replyStatusCode
+  )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupAttemptId
   , CleanupDigest
@@ -473,7 +477,7 @@ descriptorBoundCleanupRunClient transport =
         first
           CleanupRunClientDescriptorResponseInvalid
           (decodeCleanupRunDescriptorResponse body)
-      if descriptorResponseStatus response == status
+      if replyStatusCode (descriptorResponseStatus response) == status
         then Right response
         else
           Left
@@ -614,23 +618,23 @@ descriptorBoundCleanupRunClient transport =
         )
 
   descriptorResponseStatus response = case response of
-    CleanupRunDescriptorPresent {} -> 200
-    CleanupRunDescriptorScanned {} -> 200
-    CleanupRunDescriptorCompacted {} -> 200
-    CleanupRunDescriptorTombstoned {} -> 410
-    CleanupRunDescriptorNotFound -> 404
-    CleanupRunDescriptorProgramPresent {} -> 200
+    CleanupRunDescriptorPresent {} -> ReplyOk
+    CleanupRunDescriptorScanned {} -> ReplyOk
+    CleanupRunDescriptorCompacted {} -> ReplyOk
+    CleanupRunDescriptorTombstoned {} -> ReplyGone
+    CleanupRunDescriptorNotFound -> ReplyNotFound
+    CleanupRunDescriptorProgramPresent {} -> ReplyOk
     CleanupRunDescriptorRefused refusal -> case refusal of
-      CleanupRunDescriptorCommitConflict -> 409
-      CleanupRunDescriptorTransitionRefused _ -> 409
-      CleanupRunDescriptorMissing -> 404
-      CleanupRunDescriptorInvalid _ -> 400
-      CleanupRunDescriptorUnbounded _ _ -> 400
-      CleanupRunDescriptorBindingMismatch _ -> 409
-      CleanupRunDescriptorLegacyState -> 409
-      CleanupRunDescriptorCorrupt _ -> 503
-      CleanupRunDescriptorUnobservable _ -> 503
-      CleanupRunDescriptorUnavailable _ -> 503
+      CleanupRunDescriptorCommitConflict -> ReplyConflict
+      CleanupRunDescriptorTransitionRefused _ -> ReplyConflict
+      CleanupRunDescriptorMissing -> ReplyNotFound
+      CleanupRunDescriptorInvalid _ -> ReplyBadRequest
+      CleanupRunDescriptorUnbounded _ _ -> ReplyBadRequest
+      CleanupRunDescriptorBindingMismatch _ -> ReplyConflict
+      CleanupRunDescriptorLegacyState -> ReplyConflict
+      CleanupRunDescriptorCorrupt _ -> ReplyServiceUnavailable
+      CleanupRunDescriptorUnobservable _ -> ReplyServiceUnavailable
+      CleanupRunDescriptorUnavailable _ -> ReplyServiceUnavailable
 
   boundRunIdText = cleanupRunIdText . descriptorBoundCleanupRunId
   boundDescriptorDigestText =

@@ -1461,57 +1461,59 @@ retireHostCleanupIntent store expected suppliedReceipt
   | otherwise = case encodeHostCleanupIntent expected of
       Left err -> pure (Left err)
       Right expectedBytes ->
-        withHostCleanupIntentLock store $ \preparedStore ->
-          case hostCleanupIntentRetiredPath preparedStore expected of
-            Left err -> pure (Left err)
-            Right archivePath -> do
-              active <- readStoredIntent (hostCleanupIntentPath preparedStore)
-              archived <- readStoredIntent archivePath
-              case (active, archived) of
-                (Left err, _) -> pure (Left err)
-                (_, Left err) -> pure (Left err)
-                (Right StoredIntentMissing, Right StoredIntentMissing) ->
-                  pure (Left HostCleanupIntentMissing)
-                (Right StoredIntentMissing, Right archive) ->
-                  case exactStoredIntent expectedBytes expected archive of
-                    False -> pure (Left HostCleanupIntentRetirementArchiveConflict)
-                    True ->
-                      finishRetirementReadBack
-                        preparedStore
-                        archivePath
-                        expectedBytes
-                        expected
-                        suppliedReceipt
-                (Right activeIntent, Right archive) ->
-                  case exactStoredIntent expectedBytes expected activeIntent of
-                    False -> pure (Left HostCleanupIntentActiveConflict)
-                    True -> case archive of
-                      StoredIntentPresent archiveBytes archiveIntent
-                        | archiveBytes /= expectedBytes || archiveIntent /= expected ->
-                            pure (Left HostCleanupIntentRetirementArchiveConflict)
-                      _ -> do
-                        moved <-
-                          durableRetire
-                            preparedStore
-                            archivePath
-                            (archive == StoredIntentMissing)
-                        case moved of
-                          Left err -> pure (Left err)
-                          Right () -> do
-                            finalArchive <- readStoredIntent archivePath
-                            case finalArchive of
-                              Left err -> pure (Left err)
-                              Right archiveIntent ->
-                                case exactStoredIntent expectedBytes expected archiveIntent of
-                                  False ->
-                                    pure (Left HostCleanupIntentRetirementArchiveConflict)
-                                  True ->
-                                    finishRetirementReadBack
-                                      preparedStore
-                                      archivePath
-                                      expectedBytes
-                                      expected
-                                      suppliedReceipt
+        withHostCleanupIntentLock store (retirePreparedStore expectedBytes)
+ where
+  retirePreparedStore expectedBytes preparedStore =
+    case hostCleanupIntentRetiredPath preparedStore expected of
+      Left err -> pure (Left err)
+      Right archivePath -> do
+        active <- readStoredIntent (hostCleanupIntentPath preparedStore)
+        archived <- readStoredIntent archivePath
+        case (active, archived) of
+          (Left err, _) -> pure (Left err)
+          (_, Left err) -> pure (Left err)
+          (Right StoredIntentMissing, Right StoredIntentMissing) ->
+            pure (Left HostCleanupIntentMissing)
+          (Right StoredIntentMissing, Right archive) ->
+            case exactStoredIntent expectedBytes expected archive of
+              False -> pure (Left HostCleanupIntentRetirementArchiveConflict)
+              True ->
+                finishRetirementReadBack
+                  preparedStore
+                  archivePath
+                  expectedBytes
+                  expected
+                  suppliedReceipt
+          (Right activeIntent, Right archive) ->
+            case exactStoredIntent expectedBytes expected activeIntent of
+              False -> pure (Left HostCleanupIntentActiveConflict)
+              True -> case archive of
+                StoredIntentPresent archiveBytes archiveIntent
+                  | archiveBytes /= expectedBytes || archiveIntent /= expected ->
+                      pure (Left HostCleanupIntentRetirementArchiveConflict)
+                _ -> do
+                  moved <-
+                    durableRetire
+                      preparedStore
+                      archivePath
+                      (archive == StoredIntentMissing)
+                  case moved of
+                    Left err -> pure (Left err)
+                    Right () -> do
+                      finalArchive <- readStoredIntent archivePath
+                      case finalArchive of
+                        Left err -> pure (Left err)
+                        Right archiveIntent ->
+                          case exactStoredIntent expectedBytes expected archiveIntent of
+                            False ->
+                              pure (Left HostCleanupIntentRetirementArchiveConflict)
+                            True ->
+                              finishRetirementReadBack
+                                preparedStore
+                                archivePath
+                                expectedBytes
+                                expected
+                                suppliedReceipt
 
 exactStoredIntent :: ByteString -> HostCleanupIntent -> StoredIntent -> Bool
 exactStoredIntent expectedBytes expected stored = case stored of

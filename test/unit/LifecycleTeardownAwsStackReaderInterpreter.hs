@@ -45,13 +45,12 @@ lifecycleTeardownAwsStackReaderInterpreterSuite =
         cleanupNodeOperationId commit `shouldNotBe` cleanupNodeOperationId readBack
         cleanupNodeOperationId readBack `shouldNotBe` cleanupNodeOperationId reconcile
 
+      let isNotReaderOperation operation = case operation of
+            CommitAwsStackReaderBundle _ -> False
+            ReadBackAwsStackReaderBundle _ -> False
+            _ -> True
       operationsFor AwsEbsPerRunTestKey
-        `shouldSatisfy` all
-          ( \operation -> case operation of
-              CommitAwsStackReaderBundle _ -> False
-              ReadBackAwsStackReaderBundle _ -> False
-              _ -> True
-          )
+        `shouldSatisfy` all isNotReaderOperation
 
     it "requires a durable recovery predecessor instead of accepting direct execution" $ do
       let direct =

@@ -53,3 +53,6 @@
 - ignore: {name: "Use <$>"}
 - ignore: {name: "Use enumerate"}
 - ignore: {name: "Use nubSort"}
+# HLint 3.10 proposes this newer base API, but the repository's pinned
+# GHC 9.12.4 toolchain does not export it from Data.IORef.
+- ignore: {name: "Use atomicModifyIORef'_"}

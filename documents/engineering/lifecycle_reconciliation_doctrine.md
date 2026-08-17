@@ -83,8 +83,13 @@ cleanup. The generic desired-present contract and the `aws-ses` specialization a
 [AWS Integration Environment Doctrine §4.6](./aws_integration_environment_doctrine.md#46-retained-ses-desired-presence-preparation).
 
 **Cross-substrate authority split.** Long-lived lifecycle state and a selected workload substrate
-are different authorities even when both happen to run on the home cluster. The pure lifecycle
-plan receives two non-interchangeable coordinates:
+are different authorities even when both happen to run on the home cluster. The retained local
+RKE2 control plane is mandatory; AWS is an optional target selected by the
+plan, not an alternate authority. Every AWS effect follows an authenticated CLI submission to the
+retained Lifecycle Authority and its exact worker/adapter interpreter. Failure to establish that
+path is an `Unobservable`/incomplete outcome, never permission for host-direct mutation.
+
+The pure lifecycle plan receives two non-interchangeable coordinates:
 
 - `LongLivedCheckpointAuthority` identifies an authority epoch, the retained lifecycle aggregate,
   and the immutable checkpoint-blob namespace owned by the Lifecycle Authority. It contains no

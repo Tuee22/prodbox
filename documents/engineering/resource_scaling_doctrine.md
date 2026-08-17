@@ -433,12 +433,12 @@ Guaranteed-QoS envelopes, queues, ServiceAccounts, and metrics. Background heart
 consume lifecycle admission capacity, and a slow provider worker cannot block constant-time health
 or target-secret read-back.
 
-The AWS projection preserves those lanes as distinct EKS Service transports for Broker, Gateway
-diagnostics, Target Secret Agent, and Provider Worker; retained Authority traffic remains on its
-independent home transport. The pre-mutation topology validator rejects a missing/duplicate role or
+The AWS projection preserves distinct EKS Service transports for Broker, Gateway diagnostics, and
+Target Secret Agent; Lifecycle Authority and the fenced Provider Worker retain their independent
+home-RKE2 transports. The pre-mutation topology validator rejects a missing/duplicate role or
 shared Service. Fault evidence is therefore evaluated per lane: gateway saturation/loss cannot
-consume target or Authority admission, and EKS replacement must refresh the target/provider clients
-without changing the retained Authority envelope.
+consume target or Authority admission, and EKS replacement must refresh the target and Provider
+clients without moving either retained runtime or changing the Authority envelope.
 
 The runtime observation is a flat exhaustive fold over:
 

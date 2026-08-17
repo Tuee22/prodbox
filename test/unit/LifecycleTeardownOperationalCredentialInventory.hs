@@ -5,8 +5,8 @@ module LifecycleTeardownOperationalCredentialInventory
   )
 where
 
-import qualified Data.ByteString as ByteString
-import qualified Data.List.NonEmpty as NonEmpty
+import Data.ByteString qualified as ByteString
+import Data.List.NonEmpty qualified as NonEmpty
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   , CredentialLifetime (..)

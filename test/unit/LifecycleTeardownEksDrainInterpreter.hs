@@ -899,14 +899,22 @@ nextCommitSelectionUid =
     modifyIORef'
       (commitSelectionCalls environment)
       (<> [CommitSelectionObserveUid])
-    atomicModifyIORef' (commitSelectionUidAnswers environment) $ \answers ->
-      case answers of
-        answer : remaining -> (remaining, answer)
-        [] ->
-          ( []
-          , EksDrainKubernetesUidUnobservable
-              (ObservationFailure "fake UID response omitted" :| [])
-          )
+    atomicModifyIORef'
+      (commitSelectionUidAnswers environment)
+      takeNextCommitSelectionUid
+
+takeNextCommitSelectionUid
+  :: [EksDrainKubernetesUidObservation]
+  -> ( [EksDrainKubernetesUidObservation]
+     , EksDrainKubernetesUidObservation
+     )
+takeNextCommitSelectionUid answers = case answers of
+  answer : remaining -> (remaining, answer)
+  [] ->
+    ( []
+    , EksDrainKubernetesUidUnobservable
+        (ObservationFailure "fake UID response omitted" :| [])
+    )
 
 tracedCommitSelection
   :: CommitSelectionCall -> value -> CommitSelectionEffects value
@@ -1701,21 +1709,33 @@ commitSelectionCommitPlan
   , commitSelectionReconcilePlan
     :: CleanupNodePlan
 commitSelectionCommitPlan =
-  commitSelectionPlanFor $ \operation -> case operation of
-    CommitEksDrainIntent target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionPlanFor isCommitSelectionCommitOperation
 commitSelectionEffectPlan =
-  commitSelectionPlanFor $ \operation -> case operation of
-    DrainEksKubernetesResources target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionPlanFor isCommitSelectionEffectOperation
 commitSelectionReadBackPlan =
-  commitSelectionPlanFor $ \operation -> case operation of
-    ReadBackEksKubernetesDrain target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionPlanFor isCommitSelectionReadBackOperation
 commitSelectionReconcilePlan =
-  commitSelectionPlanFor $ \operation -> case operation of
-    ReconcileRegisteredTargetAbsent target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionPlanFor isCommitSelectionReconcileOperation
+
+isCommitSelectionCommitOperation :: TeardownOperation 'Cascade -> Bool
+isCommitSelectionCommitOperation operation = case operation of
+  CommitEksDrainIntent target -> target == commitSelectionEksTarget
+  _ -> False
+
+isCommitSelectionEffectOperation :: TeardownOperation 'Cascade -> Bool
+isCommitSelectionEffectOperation operation = case operation of
+  DrainEksKubernetesResources target -> target == commitSelectionEksTarget
+  _ -> False
+
+isCommitSelectionReadBackOperation :: TeardownOperation 'Cascade -> Bool
+isCommitSelectionReadBackOperation operation = case operation of
+  ReadBackEksKubernetesDrain target -> target == commitSelectionEksTarget
+  _ -> False
+
+isCommitSelectionReconcileOperation :: TeardownOperation 'Cascade -> Bool
+isCommitSelectionReconcileOperation operation = case operation of
+  ReconcileRegisteredTargetAbsent target -> target == commitSelectionEksTarget
+  _ -> False
 
 commitSelectionPlanFor
   :: (TeardownOperation 'Cascade -> Bool) -> CleanupNodePlan
@@ -1736,19 +1756,19 @@ commitSelectionCommitOperation
   , commitSelectionDestroyOperation
     :: CleanupOperationId
 commitSelectionCommitOperation =
-  commitSelectionOperationFor $ \operation -> case operation of
-    CommitEksDrainIntent target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionOperationFor isCommitSelectionCommitOperation
 commitSelectionIntentReadBackOperation =
-  commitSelectionOperationFor $ \operation -> case operation of
-    ReadBackEksDrainIntent target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionOperationFor isCommitSelectionIntentReadBackOperation
 commitSelectionEffectOperation = cleanupNodeOperationId commitSelectionEffectPlan
 commitSelectionDrainReadBackOperation =
-  commitSelectionOperationFor $ \operation -> case operation of
-    ReadBackEksKubernetesDrain target -> target == commitSelectionEksTarget
-    _ -> False
+  commitSelectionOperationFor isCommitSelectionReadBackOperation
 commitSelectionDestroyOperation = cleanupNodeOperationId commitSelectionReconcilePlan
+
+isCommitSelectionIntentReadBackOperation
+  :: TeardownOperation 'Cascade -> Bool
+isCommitSelectionIntentReadBackOperation operation = case operation of
+  ReadBackEksDrainIntent target -> target == commitSelectionEksTarget
+  _ -> False
 
 commitSelectionOperationFor
   :: (TeardownOperation 'Cascade -> Bool) -> CleanupOperationId

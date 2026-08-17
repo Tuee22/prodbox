@@ -2,6 +2,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 -- | Package-private total dispatcher for descriptor-bound lifecycle work.
@@ -64,25 +65,30 @@ import Prodbox.ControlPlane.Client
   , mkLifecycleAuthorityEndpoint
   )
 import Prodbox.ControlPlane.Coordinate
-  ( AuthorityScope
-  , mkAuthorityScope
+  ( mkAuthorityScope
   )
 import Prodbox.ControlPlane.EksDrainIntentClient
 import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
+import Prodbox.ControlPlane.PulumiCheckpointClient
+  ( PulumiCheckpointAuthority (..)
+  , PulumiCheckpointClientError (..)
+  )
 import Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal
   ( fixedRecoveryPlaneHostRuntimeRegression
   , recoveryPlaneHostDescriptorBoundNodeActionInternal
   , recoveryPlaneHostRuntimeClosedOperationsExact
   )
 import Prodbox.ControlPlane.RequestAuthentication
-  ( RequestNonce
-  , RequestSigner
-  , localRequestSigningCapability
+  ( localRequestSigningCapability
   , mkRequestNonce
   , mkRequestSigner
   , mkSigningKeyGeneration
   )
-import Prodbox.Http.ReplyStatus (replyStatusCode)
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (ReplyInternalError)
+  , replyStatusCode
+  )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupNodeOutcome (..)
@@ -90,7 +96,6 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupOwnerId
   , CleanupPrimaryOutcome (CleanupPrimarySucceeded)
   , CleanupRun
-  , CleanupRunId
   , beginCleanupNode
   , cleanupDigestText
   , cleanupGraphNodes
@@ -147,17 +152,16 @@ import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
   , AwsRegion (..)
   , AwsScope (..)
+  , CleanupSurface (Cascade)
   , CleanupSurfaceWitness (..)
   , LinuxRke2FoundationId (..)
   , ObservationFailure (..)
   )
-import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (..)
   , teardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
-import Prodbox.Lifecycle.Teardown.Registry
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime)
   )
@@ -256,33 +260,40 @@ descriptorBoundLifecycleNodeActionInternal
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> DescriptorBoundCleanupNodeExecutionAction
 descriptorBoundLifecycleNodeActionInternal cloudRuntime transport =
-  descriptorBoundCleanupNodeAction $ \running _ compiled context plan ->
-    case operationForPlan compiled plan of
-      Left err -> pure (refusalOutcome err)
-      Right operation -> case routeOperation operation of
-        DescriptorBoundLifecycleRecoveryRoute ->
-          recoveryAction running context plan
-        DescriptorBoundLifecycleCloudRoute ->
-          runClosedLifecycleEffects
-            ( runCompiledTeardownNodeWithDescriptorContext
-                running
-                compiled
-                context
-                plan
-            )
-            cloudRuntime
-        DescriptorBoundLifecycleUnsupportedRoute _ ->
-          runClosedLifecycleEffects
-            ( runCompiledTeardownNodeWithDescriptorContext
-                running
-                compiled
-                context
-                plan
-            )
-            cloudRuntime
+  descriptorBoundCleanupNodeAction
+    (dispatchDescriptorBoundLifecycleNode cloudRuntime transport)
+
+dispatchDescriptorBoundLifecycleNode
+  :: CloudRuntime IO
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupRun
+  -> CleanupSurfaceWitness surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> CleanupNodeExecutionContext
+  -> CleanupNodePlan
+  -> IO CleanupNodeOutcome
+dispatchDescriptorBoundLifecycleNode cloudRuntime transport running _ compiled context plan =
+  case operationForPlan compiled plan of
+    Left err -> pure (refusalOutcome err)
+    Right operation -> case routeOperation operation of
+      DescriptorBoundLifecycleRecoveryRoute ->
+        recoveryPlaneHostDescriptorBoundNodeActionInternal
+          transport
+          running
+          context
+          plan
+      DescriptorBoundLifecycleCloudRoute -> runCloudAction
+      DescriptorBoundLifecycleUnsupportedRoute _ -> runCloudAction
  where
-  recoveryAction =
-    recoveryPlaneHostDescriptorBoundNodeActionInternal transport
+  runCloudAction =
+    runClosedLifecycleEffects
+      ( runCompiledTeardownNodeWithDescriptorContext
+          running
+          compiled
+          context
+          plan
+      )
+      cloudRuntime
 
 operationForPlan
   :: CompiledDesiredAbsenceProgram surface
@@ -485,7 +496,9 @@ instance Monad ClosedLifecycleEffects where
 
 instance LifecycleTeardownEffects ClosedLifecycleEffects where
   executeLifecycleTeardownOperation context operation =
-    ClosedLifecycleEffects $ \runtime -> case routeOperation operation of
+    ClosedLifecycleEffects executeOperation
+   where
+    executeOperation runtime = case routeOperation operation of
       DescriptorBoundLifecycleCloudRoute -> do
         result <- executeCloudOperation runtime context operation
         pure
@@ -811,10 +824,10 @@ runningAtRegressionOperation expectedOperation compiled initialRun = do
           CleanupPrimarySucceeded
           initialRun
       )
-  drive withPrimary (cleanupGraphNodes (compiledDesiredAbsenceGraph compiled))
+  drive owner withPrimary (cleanupGraphNodes (compiledDesiredAbsenceGraph compiled))
  where
-  drive _ [] = Left ("compiled program lacks operation " <> expectedOperation)
-  drive run (plan : remaining) = do
+  drive _ _ [] = Left ("compiled program lacks operation " <> expectedOperation)
+  drive owner run (plan : remaining) = do
     operation <- operationTagForPlan compiled plan
     attempt <-
       firstShow
@@ -843,7 +856,7 @@ runningAtRegressionOperation expectedOperation compiled initialRun = do
                 CleanupNodeSucceeded
                 running
             )
-        drive completed remaining
+        drive owner completed remaining
 
 operationTagForPlan
   :: CompiledDesiredAbsenceProgram surface
@@ -906,7 +919,7 @@ regressionDescriptorClient
        , AuthenticatedClientTransport 'LifecycleAuthorityRuntime
        )
 regressionDescriptorClient queuedResponses = do
-  endpoint <- firstShow (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+  endpoint <- firstShow (mkLifecycleAuthorityEndpoint regressionAuthorityEndpoint)
   rawClient <-
     firstShow
       ( controlPlaneClientWithTransport
@@ -914,11 +927,13 @@ regressionDescriptorClient queuedResponses = do
           endpoint
           ( \_ _ _ _ -> do
               next <-
-                atomicModifyIORef' queuedResponses $ \queued -> case queued of
-                  [] -> ([], Nothing)
-                  response : remaining -> (remaining, Just response)
+                atomicModifyIORef' queuedResponses dequeueQueuedResponse
               pure $ case next of
-                Nothing -> Right (500, ByteString.empty)
+                Nothing ->
+                  Right
+                    ( replyStatusCode ReplyInternalError
+                    , ByteString.empty
+                    )
                 Just response ->
                   let result = CleanupRunEndpointDescriptorBound response
                    in Right
@@ -937,6 +952,15 @@ regressionDescriptorClient queuedResponses = do
   providers <- regressionClientProviders
   let transport = mkAuthenticatedClientTransport bounds providers rawClient
   pure (descriptorBoundCleanupRunClient transport, transport)
+
+regressionAuthorityEndpoint :: Text
+regressionAuthorityEndpoint =
+  "http://lifecycle-authority:" <> Text.pack (show controlPlaneListenPort)
+
+dequeueQueuedResponse :: [value] -> ([value], Maybe value)
+dequeueQueuedResponse queued = case queued of
+  [] -> ([], Nothing)
+  response : remaining -> (remaining, Just response)
 
 regressionClientProviders
   :: Either Text (AuthenticatedClientProviders IO)

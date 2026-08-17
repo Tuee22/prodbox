@@ -48,6 +48,7 @@ where
 
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (CleanupRequiresAttempt))
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
   , DnsCoordinateError
@@ -66,7 +67,6 @@ import Prodbox.Lifecycle.DnsRecord
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass)
 import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..), managedDestroyCapability)
-import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (CleanupRequiresAttempt))
 import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
 import System.Exit (ExitCode (..))
 

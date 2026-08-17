@@ -32,79 +32,87 @@ lifecycleTeardownProgramSuite :: SuiteBuilder ()
 lifecycleTeardownProgramSuite = do
   describe "Sprint 4.84 closed lifecycle teardown program" $ do
     it "compiles the exact operation surface for every cleanup authority" $ do
-      forM_ surfaceCases $ \(SurfaceCase surface expectedCount expectedTargets) ->
-        case compileDesiredAbsenceProgram surface of
-          Left err -> expectationFailure (show err)
-          Right program -> do
-            cleanupSurfaceFromWitness (desiredAbsenceProgramSurface program)
-              `shouldBe` cleanupSurfaceFromWitness surface
-            let nodes = desiredAbsenceProgramNodes program
-                operations = map programNodeOperation nodes
-                operationTags = map teardownOperationTag operations
-            length nodes `shouldBe` expectedCount
-            operationTags `shouldBe` expectedOperationTags surface expectedTargets
-            assertTopologicallyOrdered nodes
-            length (nub (map programNodeName nodes)) `shouldBe` expectedCount
-            length (nub operationTags) `shouldBe` expectedCount
-            mapMaybe registeredObservationKey operations `shouldBe` expectedTargets
-            sort (mapMaybe registeredReconcileKey operations)
-              `shouldBe` sort expectedTargets
-            sort (mapMaybe registeredReadBackKey operations)
-              `shouldBe` sort expectedTargets
-            mapMaybe checkpointObservationKey operations `shouldBe` stackTargetKeysFor expectedTargets
-            mapMaybe checkpointRestoreKey operations `shouldBe` stackTargetKeysFor expectedTargets
-            mapMaybe checkpointRecoveryReadBackKey operations
-              `shouldBe` stackTargetKeysFor expectedTargets
-            mapMaybe awsStackReaderCommitKey operations
-              `shouldBe` stackTargetKeysFor expectedTargets
-            mapMaybe awsStackReaderReadBackKey operations
-              `shouldBe` stackTargetKeysFor expectedTargets
-            mapMaybe eksDrainIntentCommitKey operations `shouldBe` eksTargetKeysFor expectedTargets
-            mapMaybe eksDrainIntentReadBackKey operations `shouldBe` eksTargetKeysFor expectedTargets
-            mapMaybe eksDrainKey operations `shouldBe` eksTargetKeysFor expectedTargets
-            mapMaybe eksDrainReadBackKey operations `shouldBe` eksTargetKeysFor expectedTargets
-            sort (mapMaybe checkpointRetirementKey operations)
-              `shouldBe` sort (stackTargetKeysFor expectedTargets)
-            sort (mapMaybe checkpointRetirementReadBackKey operations)
-              `shouldBe` sort (stackTargetKeysFor expectedTargets)
-            mapMaybe registeredBindingKind operations
-              `shouldSatisfy` notElem LocalSubstrate
+      let checkSurface (SurfaceCase surface expectedCount expectedTargets) =
+            case compileDesiredAbsenceProgram surface of
+              Left err -> expectationFailure (show err)
+              Right program -> do
+                cleanupSurfaceFromWitness (desiredAbsenceProgramSurface program)
+                  `shouldBe` cleanupSurfaceFromWitness surface
+                let nodes = desiredAbsenceProgramNodes program
+                    operations = map programNodeOperation nodes
+                    operationTags = map teardownOperationTag operations
+                length nodes `shouldBe` expectedCount
+                operationTags `shouldBe` expectedOperationTags surface expectedTargets
+                assertTopologicallyOrdered nodes
+                length (nub (map programNodeName nodes)) `shouldBe` expectedCount
+                length (nub operationTags) `shouldBe` expectedCount
+                mapMaybe registeredObservationKey operations `shouldBe` expectedTargets
+                sort (mapMaybe registeredReconcileKey operations)
+                  `shouldBe` sort expectedTargets
+                sort (mapMaybe registeredReadBackKey operations)
+                  `shouldBe` sort expectedTargets
+                mapMaybe checkpointObservationKey operations
+                  `shouldBe` stackTargetKeysFor expectedTargets
+                mapMaybe checkpointRestoreKey operations
+                  `shouldBe` stackTargetKeysFor expectedTargets
+                mapMaybe checkpointRecoveryReadBackKey operations
+                  `shouldBe` stackTargetKeysFor expectedTargets
+                mapMaybe awsStackReaderCommitKey operations
+                  `shouldBe` stackTargetKeysFor expectedTargets
+                mapMaybe awsStackReaderReadBackKey operations
+                  `shouldBe` stackTargetKeysFor expectedTargets
+                mapMaybe eksDrainIntentCommitKey operations
+                  `shouldBe` eksTargetKeysFor expectedTargets
+                mapMaybe eksDrainIntentReadBackKey operations
+                  `shouldBe` eksTargetKeysFor expectedTargets
+                mapMaybe eksDrainKey operations `shouldBe` eksTargetKeysFor expectedTargets
+                mapMaybe eksDrainReadBackKey operations
+                  `shouldBe` eksTargetKeysFor expectedTargets
+                sort (mapMaybe checkpointRetirementKey operations)
+                  `shouldBe` sort (stackTargetKeysFor expectedTargets)
+                sort (mapMaybe checkpointRetirementReadBackKey operations)
+                  `shouldBe` sort (stackTargetKeysFor expectedTargets)
+                mapMaybe registeredBindingKind operations
+                  `shouldSatisfy` notElem LocalSubstrate
+      forM_ surfaceCases checkSurface
 
     it "pairs every accepted effect with one attempt-gated mandatory read-back" $ do
-      forM_ surfaceCases $ \(SurfaceCase surface _ expectedTargets) ->
-        case compileDesiredAbsenceProgram surface of
-          Left err -> expectationFailure (show err)
-          Right program -> do
-            let nodes = desiredAbsenceProgramNodes program
-                effects =
-                  [ (node, confirmation)
-                  | node <- nodes
-                  , Just confirmation <- [confirmationTag (programNodeOperation node)]
-                  ]
-                readBackTags =
-                  sort
-                    [ teardownOperationTag operation
-                    | node <- nodes
-                    , let operation = programNodeOperation node
-                    , isMandatoryReadBack operation
-                    ]
-            length effects `shouldBe` expectedEffectCount surface expectedTargets
-            readBackTags `shouldBe` sort (map snd effects)
-            forM_ effects $ \(effectNode, readBackTag) ->
-              case nodesWithTag readBackTag nodes of
-                [readBackNode] ->
-                  programNodeDependencies readBackNode
-                    `shouldBe` [ ProgramDependency
-                                   (programNodeName effectNode)
-                                   CleanupRequiresAttempt
-                               ]
-                matches ->
-                  expectationFailure
-                    ( "expected exactly one read-back for "
-                        ++ Text.unpack readBackTag
-                        ++ ", observed "
-                        ++ show (length matches)
-                    )
+      let checkEffect nodes (effectNode, readBackTag) =
+            case nodesWithTag readBackTag nodes of
+              [readBackNode] ->
+                programNodeDependencies readBackNode
+                  `shouldBe` [ ProgramDependency
+                                 (programNodeName effectNode)
+                                 CleanupRequiresAttempt
+                             ]
+              matches ->
+                expectationFailure
+                  ( "expected exactly one read-back for "
+                      ++ Text.unpack readBackTag
+                      ++ ", observed "
+                      ++ show (length matches)
+                  )
+          checkSurface (SurfaceCase surface _ expectedTargets) =
+            case compileDesiredAbsenceProgram surface of
+              Left err -> expectationFailure (show err)
+              Right program -> do
+                let nodes = desiredAbsenceProgramNodes program
+                    effects =
+                      [ (node, confirmation)
+                      | node <- nodes
+                      , Just confirmation <- [confirmationTag (programNodeOperation node)]
+                      ]
+                    readBackTags =
+                      sort
+                        [ teardownOperationTag operation
+                        | node <- nodes
+                        , let operation = programNodeOperation node
+                        , isMandatoryReadBack operation
+                        ]
+                length effects `shouldBe` expectedEffectCount surface expectedTargets
+                readBackTags `shouldBe` sort (map snd effects)
+                forM_ effects (checkEffect nodes)
+      forM_ surfaceCases checkSurface
 
     it "keeps local uninstall and terminal authority behind successful proof edges" $ do
       cascade <- expectProgram CascadeSurface
@@ -223,53 +231,56 @@ lifecycleTeardownProgramSuite = do
         LocalOnlySurface of
         Left err -> err `shouldBe` DesiredAbsenceAwsScopeForbidden LocalOnly
         Right _ -> expectationFailure "local-only graph accepted an AWS scope"
-      forM_ nonLocalSurfaceCases $ \(SurfaceCase surface _ _) ->
-        case compileDesiredAbsenceGraph fixtureRunId fixtureFoundation Nothing surface of
-          Left err ->
-            err
-              `shouldBe` DesiredAbsenceAwsScopeRequired
-                (cleanupSurfaceFromWitness surface)
-          Right _ -> expectationFailure "non-local graph compiled without an AWS scope"
-
-      forM_ surfaceCases $ \(SurfaceCase surface _ _) ->
-        case compileGraph fixtureRunId surface of
-          Left err -> expectationFailure (show err)
-          Right compiled -> do
-            let evidence = compiledDesiredAbsenceObservationScope compiled
-                expectedAwsScope = awsScopeFor surface
-            evidenceCleanupSurface evidence
-              `shouldBe` cleanupSurfaceFromWitness surface
-            evidenceRegistryRevision evidence `shouldBe` lifecycleRegistryRevision
-            evidenceDurableRunScope evidence
-              `shouldBe` DurableObservationRunScope (cleanupRunIdText fixtureRunId)
-            evidenceLinuxRke2Foundation evidence `shouldBe` fixtureFoundation
-            evidenceAwsScope evidence `shouldBe` expectedAwsScope
-            evidenceLifecycleOperation evidence `shouldBe` ReconcileDesiredAbsent
+      let checkMissingAwsScope (SurfaceCase surface _ _) =
+            case compileDesiredAbsenceGraph fixtureRunId fixtureFoundation Nothing surface of
+              Left err ->
+                err
+                  `shouldBe` DesiredAbsenceAwsScopeRequired
+                    (cleanupSurfaceFromWitness surface)
+              Right _ -> expectationFailure "non-local graph compiled without an AWS scope"
+          checkEvidenceScope (SurfaceCase surface _ _) =
+            case compileGraph fixtureRunId surface of
+              Left err -> expectationFailure (show err)
+              Right compiled -> do
+                let evidence = compiledDesiredAbsenceObservationScope compiled
+                    expectedAwsScope = awsScopeFor surface
+                evidenceCleanupSurface evidence
+                  `shouldBe` cleanupSurfaceFromWitness surface
+                evidenceRegistryRevision evidence `shouldBe` lifecycleRegistryRevision
+                evidenceDurableRunScope evidence
+                  `shouldBe` DurableObservationRunScope (cleanupRunIdText fixtureRunId)
+                evidenceLinuxRke2Foundation evidence `shouldBe` fixtureFoundation
+                evidenceAwsScope evidence `shouldBe` expectedAwsScope
+                evidenceLifecycleOperation evidence `shouldBe` ReconcileDesiredAbsent
+      forM_ nonLocalSurfaceCases checkMissingAwsScope
+      forM_ surfaceCases checkEvidenceScope
 
     it "lowers every program node and dependency exactly once" $ do
-      forM_ surfaceCases $ \(SurfaceCase surface expectedCount _) ->
-        case compileGraph fixtureRunId surface of
-          Left err -> expectationFailure (show err)
-          Right compiled -> do
-            let sourceNodes =
-                  desiredAbsenceProgramNodes
-                    (compiledDesiredAbsenceProgram compiled)
-                graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
-                operationMap = compiledDesiredAbsenceOperations compiled
-            length sourceNodes `shouldBe` expectedCount
-            length graphNodes `shouldBe` expectedCount
-            length operationMap `shouldBe` expectedCount
-            length (nub (map cleanupNodeId graphNodes)) `shouldBe` expectedCount
-            length (nub (map cleanupNodeOperationId graphNodes)) `shouldBe` expectedCount
-            forM_ (zip sourceNodes graphNodes) $ \(sourceNode, graphNode) -> do
-              let expectedNodeId = nodeIdForName (programNodeName sourceNode)
-              cleanupNodeId graphNode `shouldBe` expectedNodeId
-              cleanupNodeIdText expectedNodeId `shouldSatisfy` Text.isPrefixOf "lifecycle/"
-              cleanupNodeDependencies graphNode
-                `shouldBe` map lowerDependency (programNodeDependencies sourceNode)
-              cleanupNodeCapabilityDigest graphNode `shouldSatisfy` isSha256
-              compiledOperationForNode expectedNodeId compiled
-                `shouldBe` Just (programNodeOperation sourceNode)
+      let checkLoweredNode compiled (sourceNode, graphNode) = do
+            let expectedNodeId = nodeIdForName (programNodeName sourceNode)
+            cleanupNodeId graphNode `shouldBe` expectedNodeId
+            cleanupNodeIdText expectedNodeId `shouldSatisfy` Text.isPrefixOf "lifecycle/"
+            cleanupNodeDependencies graphNode
+              `shouldBe` map lowerDependency (programNodeDependencies sourceNode)
+            cleanupNodeCapabilityDigest graphNode `shouldSatisfy` isSha256
+            compiledOperationForNode expectedNodeId compiled
+              `shouldBe` Just (programNodeOperation sourceNode)
+          checkSurface (SurfaceCase surface expectedCount _) =
+            case compileGraph fixtureRunId surface of
+              Left err -> expectationFailure (show err)
+              Right compiled -> do
+                let sourceNodes =
+                      desiredAbsenceProgramNodes
+                        (compiledDesiredAbsenceProgram compiled)
+                    graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
+                    operationMap = compiledDesiredAbsenceOperations compiled
+                length sourceNodes `shouldBe` expectedCount
+                length graphNodes `shouldBe` expectedCount
+                length operationMap `shouldBe` expectedCount
+                length (nub (map cleanupNodeId graphNodes)) `shouldBe` expectedCount
+                length (nub (map cleanupNodeOperationId graphNodes)) `shouldBe` expectedCount
+                forM_ (zip sourceNodes graphNodes) (checkLoweredNode compiled)
+      forM_ surfaceCases checkSurface
 
     it "is deterministic within a run and separates operation identities across runs" $ do
       firstCompiled <- expectGraph fixtureRunId CascadeSurface
@@ -545,19 +556,21 @@ eksTargetForOperation operation = case operation of
 
 assertTopologicallyOrdered :: [ProgramNode surface] -> Expectation
 assertTopologicallyOrdered nodes =
-  forM_ (zip [(0 :: Int) ..] nodes) $ \(nodeIndex, node) ->
-    forM_ (programNodeDependencies node) $ \dependency ->
-      case Map.lookup (programDependencyNode dependency) positions of
-        Nothing ->
-          expectationFailure
-            ( "dependency is absent from the rendered program: "
-                ++ show (programDependencyNode dependency)
-            )
-        Just dependencyIndex ->
-          dependencyIndex
-            `shouldSatisfy` (< nodeIndex)
+  forM_ (zip [(0 :: Int) ..] nodes) checkNode
  where
   positions = Map.fromList (zip (map programNodeName nodes) [(0 :: Int) ..])
+  checkNode (nodeIndex, node) =
+    forM_ (programNodeDependencies node) (checkDependency nodeIndex)
+  checkDependency nodeIndex dependency =
+    case Map.lookup (programDependencyNode dependency) positions of
+      Nothing ->
+        expectationFailure
+          ( "dependency is absent from the rendered program: "
+              ++ show (programDependencyNode dependency)
+          )
+      Just dependencyIndex ->
+        dependencyIndex
+          `shouldSatisfy` (< nodeIndex)
 
 surfaceCases :: [SurfaceCase]
 surfaceCases =

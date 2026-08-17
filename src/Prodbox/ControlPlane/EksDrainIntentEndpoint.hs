@@ -54,8 +54,8 @@ import Prodbox.ControlPlane.EksDrainIntentRepository
   ( EksDrainIntentAuthorityIdentity
   , EksDrainIntentCommitResult (..)
   , decodeEksDrainIntentAuthorityIdentity
-  , encodeEksDrainIntentAuthorityIdentity
   , eksDrainIntentAuthorityIdentity
+  , encodeEksDrainIntentAuthorityIdentity
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
@@ -345,10 +345,8 @@ serveEksDrainIntentEndpointRequest client requestBytes =
             )
       | otherwise -> case eksDrainIntentWireRequestAction request of
           EksDrainIntentWireRecover ->
-            case
-              decodeEksDrainIntentAuthorityIdentity
-                (eksDrainIntentWireRequestCanonicalBytes request)
-            of
+            case decodeEksDrainIntentAuthorityIdentity
+              (eksDrainIntentWireRequestCanonicalBytes request) of
               Left _ ->
                 pure
                   ( refusedResponse
@@ -359,10 +357,8 @@ serveEksDrainIntentEndpointRequest client requestBytes =
           EksDrainIntentWireReadBack -> serveIntentAction request
  where
   serveIntentAction request =
-    case
-      decodeEksDrainIntent
-        (eksDrainIntentWireRequestCanonicalBytes request)
-    of
+    case decodeEksDrainIntent
+      (eksDrainIntentWireRequestCanonicalBytes request) of
       Left _ -> pure (refusedResponse EksDrainIntentWireIntentInvalid)
       Right intent -> serveAction request intent
 
@@ -649,7 +645,8 @@ confirmEksDrainIntentRecoveryResponse expectedIdentity response =
             )
       | otherwise -> do
           observedIntent <-
-            first EksDrainIntentEndpointResponseProofInvalid
+            first
+              EksDrainIntentEndpointResponseProofInvalid
               (decodeEksDrainIntent bytes)
           let observedIdentity =
                 eksDrainIntentAuthorityIdentity observedIntent

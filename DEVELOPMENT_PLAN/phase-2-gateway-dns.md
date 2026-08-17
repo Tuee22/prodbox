@@ -144,7 +144,7 @@ keeps the public production gateway wrapper on the mutually exclusive `LegacyMod
 topology (Sprint `2.32`) until current-revision qualification and later cutover; no dual writer or
 production cutover is claimed. Sprint `3.26` later supplied the chart/render foundations for
 physically separate roles, but did not activate that topology; current activation and removal are
-governed by the [plan status](README.md#current-plan-status). Historical Sprint `2.31` remains Done
+governed by the [plan status](README.md#resume-here). Historical Sprint `2.31` remains Done
 for its bounded-state result.
 
 ✅ **Sprint `2.32` code-owned target complete 2026-07-20.** The additive, mutually exclusive
@@ -203,14 +203,14 @@ remain `Done` on their owned validation axes.
 `test all`.** The `gateway-daemon`, `gateway-pods`, and `gateway-partition` named validations —
 previously the operator-driven `🧪 Live-proof: pending` axis (a running cluster is required, see below)
 — all pass `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
-[00-overview.md](00-overview.md) Alignment Status). Phase 2's gateway-runtime + DNS-ownership surfaces
+[00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)). Phase 2's gateway-runtime + DNS-ownership surfaces
 are thereby home-substrate live-proven (this run also corrected the `gateway-daemon` validation's
 `config.dhall` renderer — empty `event_keys`, `vault = None`, `SecretRef`-typed creds — so the host
 `gateway status` decodes and queries the live daemon; recorded in [README.md](README.md) Closure
 Status). The `--substrate aws` partition-tolerance axis stays a distinct, non-blocking live-infra note
 ([substrates.md](substrates.md)).
 
-✅ **Reclosed 2026-06-16** — the Vault-root finalization (see [README.md](README.md) Closure Status
+✅ **Reclosed 2026-06-16** — the Vault-root finalization (see [README.md → Historical Closure Record](README.md#historical-closure-record),
 2026-06-14, [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)) makes
 prodbox manage a hierarchy of clusters whose trust and unseal authority form a Vault transit-seal
@@ -222,7 +222,8 @@ This reopens Phase `2` to own the gateway/CLI federation-trust surface that did 
 phase last closed. Sprint `2.26` is now ✅ Done: the typed custody foundation, direct parent-side
 live registration path, gateway-mediated child-listing / bootstrap-reference endpoints, and full
 downstream-inventory metadata shape are landed and validated. The 2026-06-15 Model-B + whole-system
-zero-child-info refinement (see the 2026-06-15 Closure Status in [README.md](README.md) and
+zero-child-info refinement (see the 2026-06-15 entry in the
+[Historical Closure Record](README.md#historical-closure-record) and
 [vault_doctrine.md §9](../documents/engineering/vault_doctrine.md)) extends Sprint `2.26`'s custody
 surface with the downstream-identity-to-Vault-KV + opaque-namespace deliverable: downstream identity
 rides the Model-B object-store as `DownstreamCluster <id>` logical objects, and per-child Kubernetes
@@ -233,7 +234,7 @@ code-owned gateway-runtime, DNS-ownership, peer-transport, and daemon-lifecycle 
 reopen.
 
 ✅ **Reclosed on the code-owned surface 2026-06-09** — reopened 2026-06-09 for Sprints `2.24`–`2.25`
-(design-intention review; see [README.md](README.md) Closure Status); both have now landed. Sprint
+(design-intention review; see [README.md → Historical Closure Record](README.md#historical-closure-record)); both have now landed. Sprint
 `2.24` ✅ deleted the daemon/workload `--log-level` / `--port` / `--foreground` override flags + their
 threading (the pending Sprint 2.20 ledger removal; the daemon now sources log-level from Dhall and
 the REST port from Orders). Sprint `2.25` ✅ hardened the gateway runtime — per-connection `withAsync`

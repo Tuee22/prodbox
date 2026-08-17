@@ -87,6 +87,9 @@ import ControlPlaneProjectionImportRegistration
   )
 import ControlPlaneProviderWorkEndpoint (controlPlaneProviderWorkEndpointSuite)
 import ControlPlaneProviderWorkerAdapter (controlPlaneProviderWorkerAdapterSuite)
+import ControlPlaneProviderWorkerExecution
+  ( controlPlaneProviderWorkerExecutionSuite
+  )
 import ControlPlanePulumiCheckpoint (controlPlanePulumiCheckpointSuite)
 import ControlPlanePulumiCheckpointRepository
   ( controlPlanePulumiCheckpointRepositorySuite
@@ -138,6 +141,7 @@ import Data.List
   , find
   , isInfixOf
   , isPrefixOf
+  , isSuffixOf
   , nub
   , sort
   )
@@ -541,6 +545,7 @@ import Prodbox.CheckCode
   , brokerReadinessProjectionViolations
   , citedSourcePathsInDoc
   , destructivePlanOptionsArms
+  , developmentPlanResumeViolations
   , doctrineViolationsInPaths
   , documentSectionNumbers
   , extractMarkdownLinkTargets
@@ -1853,6 +1858,7 @@ unitSuite = do
   controlPlaneOperationEndpointSuite
   controlPlaneProviderWorkEndpointSuite
   controlPlaneProviderWorkerAdapterSuite
+  controlPlaneProviderWorkerExecutionSuite
   controlPlaneServerSuite
   controlPlaneRoleInterpretersSuite
   controlPlaneTargetSecretWorkerSuite
@@ -15641,6 +15647,156 @@ unitSuite = do
           (block "1.1: A" ["**Implementation notes are below**: see § 2", "**Docs**: d"])
           `shouldBe` []
 
+    describe "development-plan Resume Here projection" $ do
+      let resumeHeader =
+            [ "| Order | Sprint | Phase | State | Dependency |"
+            , "|-------|--------|-------|-------|------------|"
+            ]
+          activeRow = "| 1 | `3.41` | 3 | Next | — |"
+          phaseDocument phaseNumber sprintId statusText =
+            ( "DEVELOPMENT_PLAN/phase-" ++ phaseNumber ++ "-fixture.md"
+            , unlines
+                [ "# Phase " ++ phaseNumber
+                , ""
+                , "## Sprint " ++ sprintId ++ ": Fixture"
+                , ""
+                , "**Status**: " ++ statusText
+                , "**Implementation**: `src/Fixture.hs`"
+                , "**Docs to update**: `DEVELOPMENT_PLAN/README.md`"
+                ]
+            )
+          fixture statusText rows owner =
+            [
+              ( "DEVELOPMENT_PLAN/README.md"
+              , unlines (["# Plan", "", "## Resume Here", ""] ++ resumeHeader ++ rows)
+              )
+            , ("DEVELOPMENT_PLAN/00-overview.md", "# Static overview\n")
+            ,
+              ( "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
+              , unlines
+                  [ "# Legacy"
+                  , ""
+                  , "## Pending Removal"
+                  , ""
+                  , "| Item | Owning Sprint | Notes |"
+                  , "|------|---------------|-------|"
+                  , "| Fixture debt | " ++ owner ++ " | Remove it. |"
+                  , ""
+                  , "## Pending Removal Notes"
+                  ]
+              )
+            , phaseDocument "3" "3.41" statusText
+            ]
+          replaceDocument path replacement =
+            map
+              ( \(candidatePath, contents) ->
+                  if candidatePath == path
+                    then (candidatePath, replacement)
+                    else (candidatePath, contents)
+              )
+          hasViolation needle = any (needle `isInfixOf`) . developmentPlanResumeViolations
+
+      it "accepts an exact Active numerical queue" $
+        developmentPlanResumeViolations (fixture "Active" [activeRow] "Sprint `3.41`")
+          `shouldBe` []
+
+      it "classifies status by its leading token rather than later Done prose" $
+        developmentPlanResumeViolations
+          (fixture "Active (Done criteria remain open)." [activeRow] "Sprint `3.41`")
+          `shouldBe` []
+
+      it "allows the first Planned sprint to be Next" $
+        developmentPlanResumeViolations (fixture "Planned" [activeRow] "Sprint `3.41`")
+          `shouldBe` []
+
+      it "requires every Blocked row to name an earlier queue dependency" $ do
+        let documents =
+              fixture
+                "Active"
+                [activeRow, "| 2 | `4.84` | 4 | Blocked | — |"]
+                "Sprint `3.41`"
+                ++ [phaseDocument "4" "4.84" "Blocked"]
+        documents `shouldSatisfy` hasViolation "Blocked but names no earlier dependency"
+
+      it "rejects prose and duplicate ids in the dependency cell" $ do
+        let phaseFour = phaseDocument "4" "4.84" "Active"
+            proseDocuments =
+              fixture
+                "Active"
+                [activeRow, "| 2 | `4.84` | 4 | Parked | `3.41`, prose |"]
+                "Sprint `3.41`"
+                ++ [phaseFour]
+            duplicateDocuments =
+              fixture
+                "Active"
+                [activeRow, "| 2 | `4.84` | 4 | Parked | `3.41`, `3.41` |"]
+                "Sprint `3.41`"
+                ++ [phaseFour]
+        proseDocuments `shouldSatisfy` hasViolation "must spell dependencies exactly"
+        duplicateDocuments `shouldSatisfy` hasViolation "repeats dependency `3.41`"
+
+      it "rejects a missing Pending Removal table and a nonexistent owner" $ do
+        let baseDocuments = fixture "Active" [activeRow] "Sprint `3.41`"
+            noTableDocuments =
+              replaceDocument
+                "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
+                "# Legacy\n\n## Pending Removal\n\nNo table.\n"
+                baseDocuments
+            phantomOwnerDocuments = fixture "Active" [activeRow] "Sprint `9.99`"
+        noTableDocuments `shouldSatisfy` hasViolation "must contain the table"
+        phantomOwnerDocuments `shouldSatisfy` hasViolation "nonexistent Sprint `9.99`"
+
+      it "accepts an explicitly Unowned Pending Removal row" $
+        developmentPlanResumeViolations
+          (fixture "Active" [activeRow] "**Unowned** — no canonical owner")
+          `shouldBe` []
+
+      it "ignores Resume and Sprint examples inside fenced Markdown" $ do
+        let fencedDocuments =
+              map
+                ( \(path, contents) ->
+                    if path == "DEVELOPMENT_PLAN/README.md"
+                      then
+                        ( path
+                        , contents
+                            ++ "\n```markdown\n## Resume Here\n| fake |\n```\n"
+                        )
+                      else
+                        if "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
+                          then
+                            ( path
+                            , contents
+                                ++ "\n```markdown\n## Sprint 9.99: Fake\n**Status**: Active\n```\n"
+                            )
+                          else (path, contents)
+                )
+                (fixture "Active" [activeRow] "Sprint `3.41`")
+        developmentPlanResumeViolations fencedDocuments `shouldBe` []
+
+      it "rejects duplicate real sprint identifiers across phase files" $ do
+        let documents =
+              fixture "Active" [activeRow] "Sprint `3.41`"
+                ++ [phaseDocument "3" "3.41" "Done"]
+        documents `shouldSatisfy` hasViolation "declared more than once"
+
+      it "accepts the complete current DEVELOPMENT_PLAN projection" $ do
+        repoRoot <- getCurrentDirectory
+        repoPaths <- listRepoOwnedPaths repoRoot
+        let planPaths =
+              [ path
+              | path <- repoPaths
+              , "DEVELOPMENT_PLAN/" `isPrefixOf` path
+              , ".md" `isSuffixOf` path
+              ]
+        planDocuments <-
+          mapM
+            ( \relativePath -> do
+                contents <- readFile' (repoRoot </> relativePath)
+                pure (relativePath, contents)
+            )
+            planPaths
+        developmentPlanResumeViolations planDocuments `shouldBe` []
+
     describe "Sprint 0.22 headingSectionNumber / documentSectionNumbers" $ do
       it "reads a plain numbered heading" $
         headingSectionNumber "## 7. Testing Implications" `shouldBe` Just "7"
@@ -15971,6 +16127,10 @@ unitSuite = do
               , processStdout = ""
               , processStderr = stderrText
               }
+        assertClusterProbeUnobservable failureText =
+          case classifyClusterProbe (probeOutput (ExitFailure 7) failureText) of
+            ClusterUnobservable _ -> pure ()
+            other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
 
     it "a serving API server is reachable" $
       classifyClusterProbe (probeOutput ExitSuccess "")
@@ -16001,8 +16161,8 @@ unitSuite = do
         ClusterUnobservable detail -> detail `shouldContain` "Unauthorized"
         _ -> expectationFailure ("expected ClusterUnobservable, got: " ++ show probe)
 
-    it "transport, DNS, routing, auth, and malformed-context failures all stay unknown"
-      $ forM_
+    it "transport, DNS, routing, auth, and malformed-context failures all stay unknown" $
+      forM_
         [ "connect: no route to host"
         , "connect: network is unreachable"
         , "dial tcp: lookup stopped.example: no such host"
@@ -16012,10 +16172,7 @@ unitSuite = do
         , "server could not find the requested resource"
         , "something nobody has seen before"
         ]
-      $ \failureText ->
-        case classifyClusterProbe (probeOutput (ExitFailure 7) failureText) of
-          ClusterUnobservable _ -> pure ()
-          other -> expectationFailure ("expected ClusterUnobservable, got: " ++ show other)
+        assertClusterProbeUnobservable
 
     it "a probe that could not be started is unobservable" $
       case classifyClusterProbe (Result.Failure "kubectl: no such file") of

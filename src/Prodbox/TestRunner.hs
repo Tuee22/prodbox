@@ -119,6 +119,15 @@ import Prodbox.Lifecycle.AuthorityConfig (resolveLongLivedCheckpointAuthority)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( checkpointAuthorityClusterId
   )
+import Prodbox.Lifecycle.CleanupRun
+  ( CleanupDependencyKind (..)
+  , CleanupNodeOutcome (..)
+  , CleanupNodeState (..)
+  , CleanupRunReport (..)
+  )
+import Prodbox.Lifecycle.CleanupRunRunner
+  ( CleanupRunDriverResult (..)
+  )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry
@@ -172,15 +181,6 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Lifecycle.CleanupRun
-  ( CleanupDependencyKind (..)
-  , CleanupNodeOutcome (..)
-  , CleanupNodeState (..)
-  , CleanupRunReport (..)
-  )
-import Prodbox.Lifecycle.CleanupRunRunner
-  ( CleanupRunDriverResult (..)
-  )
 import Prodbox.Test.DurableCleanupComposition
   ( runDurableCleanupComposition
   )

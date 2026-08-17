@@ -19,6 +19,8 @@ module Prodbox.ControlPlane.ProviderCredentialSession
   , providerCredentialSessionRegressionDestroyedVersionRefused
   , providerCredentialSessionRegressionMissingDataRefused
   , providerCredentialSessionRegressionExtraSecretFieldRefused
+  , providerCredentialSessionRegressionBindingSecretOpaque
+  , providerCredentialSessionRegressionErrorSecretOpaque
   )
 where
 
@@ -31,11 +33,13 @@ import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   , providerAcceptedAuthorityDigestText
   , providerCredentialSessionGeneration
   , providerCredentialSessionReceiptDigest
+  , providerCredentialSessionRegressionBindingSecretOpaque
   , providerCredentialSessionRegressionDestroyedVersionRefused
+  , providerCredentialSessionRegressionErrorSecretOpaque
   , providerCredentialSessionRegressionExactJoinAccepted
   , providerCredentialSessionRegressionExtraSecretFieldRefused
-  , providerCredentialSessionRegressionLegacyMetadataRefused
   , providerCredentialSessionRegressionLegacyMetadataReadinessAccepted
+  , providerCredentialSessionRegressionLegacyMetadataRefused
   , providerCredentialSessionRegressionMetadataRaceRefused
   , providerCredentialSessionRegressionMissingDataRefused
   , providerCredentialSessionRegressionWrongExactVersionRefused

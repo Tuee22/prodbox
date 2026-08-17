@@ -66,9 +66,10 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
         `shouldBe` [ operationText (nodeFor ObserveNode AwsTestKey) <> ":decision-observe"
                    , operationText (nodeFor ReadBackNode AwsTestKey) <> ":absence-readback"
                    ]
-      map snd calls `shouldSatisfy` \intents -> case intents of
-        [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
-        _ -> False
+      let hasObservationAndReadBack intents = case intents of
+            [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
+            _ -> False
+      map snd calls `shouldSatisfy` hasObservationAndReadBack
 
     it "keeps unavailable and refused observations unobservable, never absent" $ do
       mapM_
@@ -91,12 +92,13 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
             runNode environment reconcilePlan `shouldReturn` CleanupNodeSucceeded
             runNode environment readBackPlan `shouldReturn` CleanupNodeSucceeded
             calls <- readIORef (fakeProviderCalls environment)
-            map snd calls `shouldSatisfy` \intents -> case intents of
-              [ ObserveRegisteredStack _
-                , DestroyRegisteredStack {}
-                , ReadBackRegisteredStack _
-                ] -> True
-              _ -> False
+            let hasDestroySequence intents = case intents of
+                  [ ObserveRegisteredStack _
+                    , DestroyRegisteredStack {}
+                    , ReadBackRegisteredStack _
+                    ] -> True
+                  _ -> False
+            map snd calls `shouldSatisfy` hasDestroySequence
             let firstKeys = map (clientSubmissionKeyText . fst) calls
             runNode environment reconcilePlan `shouldReturn` CleanupNodeSucceeded
             retryCalls <- readIORef (fakeProviderCalls environment)
@@ -128,18 +130,20 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
       outcome <- runNode environment (nodeFor ReconcileNode AwsTestKey)
       outcome `shouldSatisfy` failedWith "AwsRegisteredTargetCheckpointRecoveryRequired"
       calls <- readIORef (fakeProviderCalls environment)
-      map snd calls `shouldSatisfy` \intents -> case intents of
-        [ObserveRegisteredStack _] -> True
-        _ -> False
+      let isSingleStackObservation intents = case intents of
+            [ObserveRegisteredStack _] -> True
+            _ -> False
+      map snd calls `shouldSatisfy` isSingleStackObservation
 
     it "requires an explicit EKS drain proof before stack destruction" $ do
       environment <- newEnvironment BoundaryHealthy DecisionPrimary False
       outcome <- runNode environment (nodeFor ReconcileNode AwsEksKey)
       outcome `shouldSatisfy` failedWith "AwsRegisteredTargetEksDrainProofRequired"
       calls <- readIORef (fakeProviderCalls environment)
-      map snd calls `shouldSatisfy` \intents -> case intents of
-        [ObserveEksClusterIdentity _] -> True
-        _ -> False
+      let isSingleEksObservation intents = case intents of
+            [ObserveEksClusterIdentity _] -> True
+            _ -> False
+      map snd calls `shouldSatisfy` isSingleEksObservation
 
     it "returns only the opaque exact Provider-decoded EKS decision proof" $ do
       environment <- newEnvironment BoundaryHealthy DecisionPrimary False
@@ -176,10 +180,11 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
         newEnvironment BoundaryDecisionWrongTargetProbe DecisionPrimary False
       outcome <- runNode environment (nodeFor ObserveNode AwsTestKey)
       outcome `shouldSatisfy` failedWith "AwsRegisteredTargetEksKeyMismatch AwsTestKey"
+      let isExactKeyMismatch decisions = case decisions of
+            [Left (AwsRegisteredTargetEksKeyMismatch AwsTestKey)] -> True
+            _ -> False
       readIORef (fakeVerifiedEksDecisions environment)
-        `shouldReturnSatisfying` \decisions -> case decisions of
-          [Left (AwsRegisteredTargetEksKeyMismatch AwsTestKey)] -> True
-          _ -> False
+        `shouldReturnSatisfying` isExactKeyMismatch
       readIORef (fakeProviderCalls environment) `shouldReturn` []
 
     it "reaps only the registered per-run EBS family and performs a distinct read-back" $ do
@@ -195,12 +200,13 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
                    , ObserveTestEbsVolumes "aws-eks-test-cluster"
                    ]
       let submissionKeys = map (clientSubmissionKeyText . fst) calls
-      submissionKeys `shouldSatisfy` \keys -> case keys of
-        [decisionKey, mutationKey, readBackKey] ->
-          decisionKey /= mutationKey
-            && mutationKey /= readBackKey
-            && decisionKey /= readBackKey
-        _ -> False
+          areDistinctSubmissionKeys keys = case keys of
+            [decisionKey, mutationKey, readBackKey] ->
+              decisionKey /= mutationKey
+                && mutationKey /= readBackKey
+                && decisionKey /= readBackKey
+            _ -> False
+      submissionKeys `shouldSatisfy` areDistinctSubmissionKeys
 
     it "refuses stale decision and provider bindings before mutation" $ do
       staleDecision <- newEnvironment BoundaryHealthy DecisionWrongOperation False

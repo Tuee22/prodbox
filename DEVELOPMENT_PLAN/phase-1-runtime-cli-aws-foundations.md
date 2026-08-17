@@ -131,7 +131,7 @@ this reopen expanded only Phase `1`'s own schema/config surface per Standards A/
 ✅ **Reclosed 2026-06-26 (Tier-0 binary-sibling config + harness-generated run config + secrets
 routing) — live-proven.** The whole config/secrets reopen arc, Sprints `1.39`–`1.50`, is `Done` on its
 code-owned surface and now **live-proven** by the green home `prodbox test all` (2026-06-26, 18/18; see
-[00-overview.md](00-overview.md) Alignment Status). The run exercises end-to-end: every `prodbox` binary
+[00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)). The run exercises end-to-end: every `prodbox` binary
 resolving its binary-sibling `prodbox.dhall` (`1.48`), the container generating it post-build (`1.49`),
 the harness regenerating the run config from `test-secrets.dhall` through the shared
 `configFromSetupInput` builder (`1.50`/`5.10`) and force-syncing the in-force MinIO SSoT, the union
@@ -153,7 +153,7 @@ the cluster daemon from a ConfigMap (the context-init pattern). Both are forward
 closed Sprint `1.38` Tier 2 / SSoT-inversion surface; they adopt
 [config_doctrine.md §0 (Three-Tier Config Model)](../documents/engineering/config_doctrine.md#0-three-tier-config-model)
 and leave Tiers 1–2 unchanged. The `1.1`–`1.38` sprints remain `Done` on their owned surfaces (see
-[README.md](README.md) Closure Status and rule A).
+[README.md → Historical Closure Record](README.md#historical-closure-record) and rule A).
 
 ✅ **Reclosed 2026-06-16** (Vault-root + cluster federation foundations) — the Phase `1` Vault model is
 finalized to the Vault-root end state: Vault is the sole secrets/KMS/PKI root, the master-seed
@@ -163,7 +163,7 @@ Vault-Transit-enveloped MinIO object, filesystem `prodbox-config.dhall` is a see
 only, and root-cluster config writes require the root Vault token) joins the reframed Sprints
 `1.35`–`1.37` (the `SecretRef` union carries **no** `FileSecret` arm; the `prodbox vault` group covers root init/unseal plus root lifecycle recovery; the
 Pulumi sealed-Vault gate is mandatory before any `aws stack` op) — done on their Phase-owned surfaces
-with the landed increments recorded below (see [README.md](README.md) Closure Status 2026-06-14,
+with the landed increments recorded below (see [README.md → Historical Closure Record](README.md#historical-closure-record), dated 2026-06-14,
 rule A,
 [vault_doctrine.md](../documents/engineering/vault_doctrine.md), and
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md)). The
@@ -189,7 +189,7 @@ extends — it does not replace" framing for the derivation model specifically: 
 sole secret store and the HMAC-derivation model is retired.
 
 ✅ **Reclosed 2026-06-09** — Phase 1 was reopened for Sprints `1.29`–`1.32` by the 2026-06-09
-design-intention review (see [README.md](README.md) Closure Status and rule A); all four have now
+design-intention review (see [README.md → Historical Closure Record](README.md#historical-closure-record) and rule A); all four have now
 landed on their code-owned surfaces. Sprint `1.29` ✅ added a positional-args field to `CommandSpec`
 and generated the [cli_command_surface.md](../documents/engineering/cli_command_surface.md) §2/§3
 operator matrix from `commandRegistry` (the daemon/workload one-knob parser reduction was deferred

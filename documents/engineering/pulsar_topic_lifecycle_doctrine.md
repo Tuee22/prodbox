@@ -21,7 +21,7 @@ teaching examples of the invariant, not claims that an executable schema artifac
 That current `ResidueStatus`/callback adapter is pre-cutover implementation provenance. The target
 registry described below stores exact coordinates and closed program tags rather than `IO` actions;
 migration and qualification status remain in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status), and retirement of
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here), and retirement of
 callback-era lifecycle surfaces is tracked in the
 [legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 
@@ -187,7 +187,7 @@ without its region is a claim about a different set of files than the reader wil
 ## 7. Status Ownership
 
 Implementation, migration, validation closure, and qualification status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status). This doctrine owns the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). This doctrine owns the
 current-source correspondence and target invariant boundaries above, not a sprint ledger. It does
 not reserve a schema artifact or assign schema implementation ownership.
 
@@ -215,4 +215,4 @@ This doctrine owns "a Pulsar topic is a managed resource" intention.
 - [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) — the retained MinIO storage that offloaded segments occupy
 - [pure_fp_standards.md](pure_fp_standards.md) — ADTs over strings, exhaustive matching, Plan/Apply
 - [README.md](README.md) — engineering doctrine index
-- [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md#current-plan-status) — implementation and migration status
+- [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md#resume-here) — implementation and migration status

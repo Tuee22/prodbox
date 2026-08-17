@@ -30,7 +30,7 @@ before mutation, both generated artifacts become durable obligations in the life
 always-run cleanup DAG. **Current:** `TestRunner` still uses its pre-cutover process-local cleanup
 composition and enters the cleanup wrapper after some preparation mutations. Implementation,
 cutover, and qualification status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 `prodbox.test.dhall` is the **authored** half of the per-run-vs-authored split. The **per-run**
 half is the binary-sibling `prodbox.dhall` the harness renders for each variant (§3) plus the
@@ -270,6 +270,6 @@ guard; and artifact cleanup obligations that retain long-lived resources by life
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the `manual_pv_host_root` retained-root model that `.test-data/` overrides.
 - [pure_fp_standards.md](./pure_fp_standards.md) — closed ADTs, GADT-indexed / projection state, and the Dhall `assert` illegal-states-unrepresentable technique.
 - [vault_doctrine.md](./vault_doctrine.md) — the `SecretRef` model and the `test-secrets.dhall` `TestPlaintext` split.
-- [Development Plan status](../../DEVELOPMENT_PLAN/README.md#current-plan-status) — implementation,
+- [Development Plan status](../../DEVELOPMENT_PLAN/README.md#resume-here) — implementation,
   migration, validation, and cleanup ownership.
 - [../documentation_standards.md](../documentation_standards.md) — documentation SSoT and header rules.

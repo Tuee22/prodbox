@@ -547,15 +547,21 @@ fixtureCommitOperation
   , fixtureReadBackOperation
     :: CleanupOperationId
 fixtureCommitOperation =
-  operationIdFor
-    ( \operation -> case operation of CommitEksDrainIntent target -> target == fixtureAwsEksTarget; _ -> False
-    )
+  operationIdFor isFixtureEksDrainIntentCommit
 fixtureIntentReadBackOperation =
-  operationIdFor
-    ( \operation -> case operation of ReadBackEksDrainIntent target -> target == fixtureAwsEksTarget; _ -> False
-    )
+  operationIdFor isFixtureEksDrainIntentReadBack
 fixtureEffectOperation = operationIdFor eksDrainEffectPlan
 fixtureReadBackOperation = operationIdFor eksDrainReadBackPlan
+
+isFixtureEksDrainIntentCommit :: TeardownOperation 'Cascade -> Bool
+isFixtureEksDrainIntentCommit operation = case operation of
+  CommitEksDrainIntent target -> target == fixtureAwsEksTarget
+  _ -> False
+
+isFixtureEksDrainIntentReadBack :: TeardownOperation 'Cascade -> Bool
+isFixtureEksDrainIntentReadBack operation = case operation of
+  ReadBackEksDrainIntent target -> target == fixtureAwsEksTarget
+  _ -> False
 
 fixtureEffectNodeId :: CleanupNodeId
 fixtureEffectNodeId = cleanupNodeId (uniquePlan eksDrainEffectPlan)

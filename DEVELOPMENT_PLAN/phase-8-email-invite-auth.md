@@ -35,13 +35,13 @@ under Standard O.
 ✅ **Live-proven 2026-06-26 (home substrate) — `keycloak-invite` passes under the green `test all`,
 satisfying Sprint `8.9`'s home live-proof.** The `keycloak-invite` named validation passes
 `ExitSuccess` in the green home `prodbox test all` (2026-06-26, 18/18; see
-[00-overview.md](00-overview.md) Alignment Status), exercising the operator-invited, email-verified
+[00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)), exercising the operator-invited, email-verified
 flow end-to-end — a real SES invite send + S3 capture + link-follow — over the Vault-routed invite
 secrets (the `keycloak-smtp` credential and the OIDC client secrets as `SecretRef.Vault`, consumed by
 Keycloak via Vault Kubernetes auth). The same run hardened that path: the durable Keycloak realm-secret
 reconciler (`reconcileRealmOidcSecretsAtPublicHost`) now re-syncs the realm's OIDC client secrets +
 demo-user password from Vault before the OIDC grants, fixing a persistent `invalid_client_credentials`
-401 where `--import-realm` never updated a preserved realm (see [README.md](README.md) Closure Status).
+401 where `--import-realm` never updated a preserved realm (see [README.md → Historical Closure Record](README.md#historical-closure-record)).
 So Sprint `8.9`'s previously-`📋`/`Live-proof: pending` invite-secret end state is home-substrate
 live-proven (Standard O). The **both-substrate** live `keycloak-invite` exercise keeps its `--substrate
 aws` half as a distinct, non-blocking axis ([substrates.md](substrates.md)).
@@ -60,7 +60,7 @@ cluster, unsealed Vault) is tracked as a distinct non-blocking 'Live-proof: pend
 marks an earlier phase or this phase's code-owned closure ⏸️ Blocked.
 
 ✅ **Reclosed after the 2026-06-11 reopen and 2026-06-14 finalization** (Vault-root + cluster federation) — the
-Vault-root finalization (narrated in [README.md → Closure Status](README.md) per rule A) makes
+Vault-root finalization (narrated in [README.md → Historical Closure Record](README.md#historical-closure-record) per rule A) makes
 Vault the sole, finalized secrets / KMS / PKI root for the whole stack. Sprint `8.9`
 (✅ Done on its code-owned surface, 2026-06-17 — its deliverables were already provided by the
 Sprint `3.18` Vault-materialization work and verified here; live invite is `Live-proof: pending`)
@@ -327,7 +327,7 @@ single ZeroSSL issuer.
 
 Per-sprint status, deliverables, and remaining work are tracked in the sprint blocks
 below. The authoritative status row is in
-[`README.md`](README.md#phase-overview).
+[`README.md` historical phase record](README.md#historical-phase-record).
 
 ## Phase Summary
 
@@ -1243,7 +1243,8 @@ The engineering docs (`helm_chart_platform_doctrine.md`, `envoy_gateway_edge_doc
 **Status**: Done (2026-06-09) — home `prodbox test all` green (`TESTALL_HOME4_EXIT=0`) including `keycloak-invite`; AWS aggregate `prodbox test all --substrate aws` green (`TESTALL_AWS_EXIT=0`); the certificate round-trip restore-no-reorder proven live (a rebuild restores the cert from the long-lived S3 store and cert-manager adopts it with zero new ACME orders, via `retainReadyPublicEdgeCertificate` + `certManagerAdoptionAnnotations`); and the `prodbox nuke` nuke-only-removes-the-retained-cert proof exercised through the interactive integration harness (three `CliSuite.hs` cases) plus the Sprint 4.24 `LongLived` registry classification. Gates: `check-code` 0, `test unit` 695/695, `test integration cli` 35/35.
 **Implementation**: exercises `prodbox test all` / `prodbox test integration keycloak-invite`
 (suite content; no new validation added)
-**Docs to update**: `DEVELOPMENT_PLAN/README.md` (Substrate Parity + Phase Overview),
+**Docs updated at closure**: `DEVELOPMENT_PLAN/README.md` (the then-current substrate-parity and
+historical phase records),
 `DEVELOPMENT_PLAN/substrates.md`
 
 ### Objective
@@ -1378,7 +1379,7 @@ re-derived from any non-Vault source on each consumer.
   inventory.
 - `phase-5-canonical-test-suite.md` adds `keycloak-invite` to its canonical-suite inventory
   table when Sprint `8.5` closes.
-- `README.md` updates the Substrate Parity and Phase Overview rows when Sprint `8.8` flips
+- `README.md` recorded the substrate-parity and historical phase rows when Sprint `8.8` flipped
   `keycloak-invite` to ✅ on both substrates.
 - `substrates.md` flips the `keycloak-invite` substrate-parity rows to ✅ when Sprint `8.8`
   closes the live gate.
@@ -1716,8 +1717,10 @@ to exact current-revision evidence.
   production-envelope profile.
 - Require invite send, capture, link follow, OIDC claim assertion, target convergence, operation
   completion, platform restoration, and zero per-run residue under the same qualification record.
-- Run the canonical home and AWS aggregate commands independently against their own configuration;
-  neither substrate may substitute endpoints, credentials, DNS, or evidence from the other.
+- Run the canonical home and AWS aggregate commands independently against their own target
+  configuration; neither may substitute workload endpoints, target credentials, DNS, or target
+  evidence from the other. The AWS run still authenticates through the intentional retained-home
+  Lifecycle Authority, Provider Worker, and custody dependencies.
 - Extend the exact Sprint-`5.19` typed qualification artifact—never a partial local schema—with the
   invite assertions and authority epoch. It retains separate complete frozen-superseded and
   replacement secret-safe source/config/image/topology-wiring/envelope/load identities, including

@@ -350,8 +350,8 @@ not yet honor was owned by an explicit sprint block, per
 - `legacy-tracking-for-deletion.md` enqueued `Pending Removal` rows for the pre-doctrine
   residue corresponding to each audit finding, with the owning sprint named in every
   row; those rows have now moved to `Completed`.
-- `README.md` and `00-overview.md` update the Phase `1` sprint-range strings (`Sprints
-  1.6–1.23` → `Sprints 1.6–1.26`), add Sprint 0.3 to the Phase Overview entry for
+- `README.md` and `00-overview.md` updated the Phase `1` sprint-range strings (`Sprints
+  1.6–1.23` → `Sprints 1.6–1.26`) and added Sprint 0.3 to the historical phase entry for
   Phase `0`, and add a narrative paragraph naming the audit.
 
 ### Validation
@@ -940,8 +940,8 @@ implementation of the new doctrine is scheduled in Phase 1 (Sprint 1.28), Phase 
   `--port` runtime override flags).
 - Revision passes on `README.md`, `CLAUDE.md`, and `AGENTS.md` to point operators and
   agents at the new SSoT and remove env-var precedence claims.
-- Revision passes on `DEVELOPMENT_PLAN/README.md` (Closure Status reopen paragraph,
-  Phase Overview table updates for Phases 0/1/2/3), `00-overview.md` (BootConfig /
+- Revision passes on `DEVELOPMENT_PLAN/README.md` (the then-current closure and phase-record
+  updates for Phases 0/1/2/3), `00-overview.md` (BootConfig /
   LiveConfig and daemon CLI plumbing paragraphs), `system-components.md` (rows for
   BootConfig / LiveConfig, daemon CLI, prescribed daemon config shape, reload trigger,
   reload procedure), and `legacy-tracking-for-deletion.md` (new Pending Removal rows
@@ -1363,7 +1363,7 @@ sprint; the code adoption lands in the cited implementation sprints.
 - `streaming_doctrine.md` cross-links the no-name-in-logs and no exists-vs-absent oracle rules.
 - Repo-root `README.md` and `CLAUDE.md` harmonize the MinIO / Pulumi / Vault summary paragraphs to
   Model B + uniform envelope, dropping any "long-lived SSE" wording.
-- The plan suite — `DEVELOPMENT_PLAN/README.md` (new dated 2026-06-15 Closure Status entry
+- The plan suite — `DEVELOPMENT_PLAN/README.md` (new dated 2026-06-15 historical closure entry
   framed as a refinement that reopens no new phase), `00-overview.md`, `system-components.md`
   (the "Pulumi backend state" row → enveloped + opaque-named via the object-store; MinIO objects
   opaque-named), and `legacy-tracking-for-deletion.md` (a 2026-06-15 Ledger Status paragraph and
@@ -1388,7 +1388,7 @@ sprint; the code adoption lands in the cited implementation sprints.
    `0.21` (2026-08-05)** — it was never satisfied on any revision. The Standard-J harmony half
    stands.
 5. A grep replay confirms no "Option A/B/C" Pulumi ladder and no "long-lived SSE" wording
-   survives in any governed doc, the 2026-06-15 Closure Status reads as a refinement (not a phase
+   survives in any governed doc, the 2026-06-15 historical closure entry reads as a refinement (not a phase
    reopen), and every `📋` / `🔄` implementation status stays honest.
 
 ### Remaining Work

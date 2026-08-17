@@ -56,9 +56,10 @@ lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite =
       readIORef (fakeReceiptCalls environment) `shouldReturn` []
       readIORef (fakeSessionCalls environment) `shouldReturn` []
       calls <- readIORef (fakeProviderCalls environment)
-      map snd calls `shouldSatisfy` \intents -> case intents of
-        [ObserveEksClusterIdentity _] -> True
-        _ -> False
+      let isSingleEksObservation intents = case intents of
+            [ObserveEksClusterIdentity _] -> True
+            _ -> False
+      map snd calls `shouldSatisfy` isSingleEksObservation
 
     it "refuses an unsealed direct invocation before any durable reader or mutation" $ do
       environment <- newEnvironment True

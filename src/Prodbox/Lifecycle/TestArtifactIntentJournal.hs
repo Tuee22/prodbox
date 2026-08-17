@@ -1137,7 +1137,9 @@ runFixedTestArtifactIntentJournalRegression
   -> CascadeCompleteEvidence
   -> IO (Either Text TestArtifactIntentJournalRegression)
 runFixedTestArtifactIntentJournalRegression completion otherCompletion =
-  withSystemTempDirectory "prodbox-artifact-journal-fixed" $ \root ->
+  withSystemTempDirectory "prodbox-artifact-journal-fixed" runInRoot
+ where
+  runInRoot root =
     case fixedInputs root of
       Left err -> pure (Left err)
       Right (store, plan, wrongGraphPlan) -> do
@@ -1181,7 +1183,6 @@ runFixedTestArtifactIntentJournalRegression completion otherCompletion =
                         replayed == retired && isRetired replayed
                     }
               )
- where
   fixedInputs root = do
     store <-
       mapFixedLeft

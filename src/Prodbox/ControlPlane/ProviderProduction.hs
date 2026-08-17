@@ -38,7 +38,6 @@ import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NonEmpty
-import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -65,6 +64,12 @@ import Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , mkEksClientAuthPublicKey
   , sealEksClientAuthProjection
   )
+import Prodbox.ControlPlane.ProviderCredentialSession.Internal
+  ( ValidatedProviderCredentialSession
+  , validateProviderCredentialSessionInternal
+  , validatedProviderCredentialSessionBindingInternal
+  , validatedProviderCredentialSessionCredentialsInternal
+  )
 import Prodbox.ControlPlane.ProviderNarrowSession
   ( ProviderEffectObservation (..)
   , ProviderIntentCapabilities (..)
@@ -72,12 +77,7 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
   )
-import Prodbox.ControlPlane.ProviderCredentialSession.Internal
-  ( ValidatedProviderCredentialSession
-  , validateProviderCredentialSessionInternal
-  , validatedProviderCredentialSessionBindingInternal
-  , validatedProviderCredentialSessionCredentialsInternal
-  )
+import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.DnsRecord
@@ -167,8 +167,7 @@ import Prodbox.Result (Result (..))
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
-import Prodbox.Http.Client (renderHttpError)
-import Prodbox.Settings (Credentials)
+import Prodbox.Settings (Credentials (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -622,30 +621,32 @@ sha256Text = Text.pack . concatMap renderByte . ByteString.unpack . SHA256.hash
 readProviderCredentialSession
   :: VaultSession
   -> IO (Either Text ValidatedProviderCredentialSession)
-readProviderCredentialSession session =
-  withSessionToken session $ \token -> do
-    metadataResult <-
-      vaultKvReadMetadataV2
-        (sessionAddress session)
-        token
-        "secret"
-        "aws/lifecycle-provider"
-    case metadataResult of
-      Left err -> pure (Left (Text.pack (renderHttpError err)))
-      Right metadata -> do
-        exactResult <-
-          vaultKvReadExactVersionV2
-            (sessionAddress session)
-            token
-            "secret"
-            "aws/lifecycle-provider"
-            (kvV2SecretMetadataCurrentVersion metadata)
-        pure $ case exactResult of
-          Left err -> Left (Text.pack (renderHttpError err))
-          Right exact ->
-            first
-              (Text.pack . show)
-              (validateProviderCredentialSessionInternal metadata exact)
+readProviderCredentialSession session = do
+  observed <-
+    withSessionToken session $ \token -> do
+      metadataResult <-
+        vaultKvReadMetadataV2
+          (sessionAddress session)
+          token
+          "secret"
+          "aws/lifecycle-provider"
+      case metadataResult of
+        Left err -> pure (Left err)
+        Right metadata -> do
+          exactResult <-
+            vaultKvReadExactVersionV2
+              (sessionAddress session)
+              token
+              "secret"
+              "aws/lifecycle-provider"
+              (kvV2SecretMetadataCurrentVersion metadata)
+          pure ((metadata,) <$> exactResult)
+  pure $ case observed of
+    Left err -> Left (Text.pack (renderHttpError err))
+    Right (metadata, exact) ->
+      first
+        (Text.pack . show)
+        (validateProviderCredentialSessionInternal metadata exact)
 
 ebsReaperMutation :: Text -> ProviderMutation IO ProviderProductionSession
 ebsReaperMutation clusterName =

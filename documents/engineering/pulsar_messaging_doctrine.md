@@ -19,7 +19,7 @@ sanctioned prodbox payload and envelope format.
 > generated external schema dependency and no second-runtime transport. Per
 > [development_plan_standards §D](../../DEVELOPMENT_PLAN/development_plan_standards.md) this doc
 > states source correspondence in present tense; delivery sequencing and status are owned only by
-> [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+> [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 > The current gateway replication path retains CBOR-always encoding with bounded
 > semantic cursor/delta and per-emitter snapshot-repair frames. The durable Pulsar/`Daemon.Events`

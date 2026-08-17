@@ -58,18 +58,7 @@ lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedClient
   -> EksDrainReadBackReceiptClient IO
 lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedClient transport =
   EksDrainReadBackReceiptClient
-    { commitAndReadBackEksDrainReceipt = \committed attempt observation ->
-        case eksDrainReadBackReceiptCommitWireRequest
-          committed
-          attempt
-          observation of
-          Left err ->
-            pure (Left (EksDrainReadBackReceiptClientReceiptFailed err))
-          Right request ->
-            callExpectedEndpoint
-              committed
-              EksDrainReadBackReceiptCommitConfirmed
-              request
+    { commitAndReadBackEksDrainReceipt = commitAndReadBack
     , readBackEksDrainReceipt = \committed ->
         callExpectedEndpoint
           committed
@@ -86,6 +75,19 @@ lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedClient transport =
           (eksDrainReadBackReceiptRecoveryWireRequest identity)
     }
  where
+  commitAndReadBack committed attempt observation =
+    case eksDrainReadBackReceiptCommitWireRequest
+      committed
+      attempt
+      observation of
+      Left err ->
+        pure (Left (EksDrainReadBackReceiptClientReceiptFailed err))
+      Right request ->
+        callExpectedEndpoint
+          committed
+          EksDrainReadBackReceiptCommitConfirmed
+          request
+
   callExpectedEndpoint committed expectedKind request = do
     response <- callWire request
     pure $ do

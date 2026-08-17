@@ -28,6 +28,7 @@ where
 import Control.Monad (foldM)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentDependency (..)
@@ -222,9 +223,7 @@ recoveryDependencies targetRequirement component = case component of
 recoveryGraphDependencies
   :: OrdinaryTeardownTargetAgent -> ComponentId -> [ComponentId]
 recoveryGraphDependencies targetRequirement component =
-  case recoveryGraphDependenciesMaybe targetRequirement component of
-    Just dependencies -> dependencies
-    Nothing -> []
+  fromMaybe [] (recoveryGraphDependenciesMaybe targetRequirement component)
 
 -- | Recovery-only dependency policy.  Returning 'Nothing' for every other
 -- normal component makes Gateway/application inclusion unavailable to the

@@ -70,10 +70,11 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
         `shouldReturn` CleanupNodeEffectUnconfirmed "checkpoint restore response lost"
       runNode environment (nodeFor RecoveryReadBackNode AwsTestKey)
         `shouldReturn` CleanupNodeSucceeded
+      let hasObservationAndReadBack calls = case map snd calls of
+            [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
+            _ -> False
       readIORef (fakeProviderCalls environment)
-        `shouldReturnSatisfying` \calls -> case map snd calls of
-          [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
-          _ -> False
+        `shouldReturnSatisfying` hasObservationAndReadBack
       readIORef (fakeCheckpointCalls environment)
         `shouldReturnSatisfying` hasSeparateRestoreAttemptAndReadBack
 

@@ -25,6 +25,8 @@ and bounded interpreters exist, while stable create generation, terminal audit, 
 authority, two-phase host completion, total-decommission parity, and public-client cutover remain.
 Checkpoint usability, exact provider truth, and escape-audit evidence remain separate. This changes
 persistence/lifecycle/destructive cleanup, so both substrate qualification rows remain pending.
+Their implementation status does not select the next work item: all three are parked behind Sprint
+`3.41` by [README.md → Resume Here](README.md#resume-here).
 
 ✅ **Reclosed 2026-08-15 on Sprint `4.83`.** Every lifecycle Job and target-worker Pod now pulls a
 declared `repository:tag`; the host-minted rollout identity is no longer consumed as a registry
@@ -273,12 +275,12 @@ host-availability proof remains a non-blocking Standard O live-proof axis.
 ✅ **Live-proven 2026-06-26 — the destructive `lifecycle` validation passes under the green home
 `test all`.** The `lifecycle` named validation (`cluster delete` → `cluster reconcile` → `cluster
 health`, with the suite's postflight per-run AWS destroy) passes `ExitSuccess` in the green home
-`prodbox test all` (2026-06-26, 18/18; see [00-overview.md](00-overview.md) Alignment Status), so Phase
+`prodbox test all` (2026-06-26, 18/18; see [00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)), so Phase
 4's Vault-before-MinIO reconcile, Model-B object-store, retained-storage topology, and idempotent
 teardown surfaces are home-substrate live-proven. The teardown was also hardened this run to close a
 non-functional race at the cluster-teardown boundary — an EKS-ENI-detachment wait plus idempotent
 `vault unseal` retries so the reconcile→destroy path never strands a freshly-sealed Vault under host
-memory pressure (see [README.md](README.md) Closure Status). The `--substrate aws` lifecycle axis stays
+memory pressure (see [README.md → Historical Closure Record](README.md#historical-closure-record)). The `--substrate aws` lifecycle axis stays
 orthogonal ([substrates.md](substrates.md)).
 
 ✅ **Reclosed 2026-06-09** — Phase 4 was reopened for Sprints `4.26`–`4.27` (design-intention
@@ -315,7 +317,7 @@ sealed-state residue gate, redaction, and opaque-namespace audit surface.
 retained-storage topology — a machine-id-free `.data/<namespace>/<StatefulSet>/<replica>` layout
 under one reconciler, with MinIO and `vscode` converted to StatefulSets), also now ✅ Done. All
 earlier Phase 4 sprints remain `Done` on their owned surfaces; the authoritative reopen narration is
-the [README.md → Closure Status](README.md#closure-status) entries of the same dates. Sprint `4.31`
+the [README.md → Historical Closure Record](README.md#historical-closure-record) entries of the same dates. Sprint `4.31`
 refines the canonical retained-storage paths — it extends, it does not reverse, the Phase `3`
 storage-binding model (Sprint `3.1`).
 
@@ -331,7 +333,7 @@ federation trust topology this lifecycle wiring depends on is owned by Sprint `3
 transit-seal hierarchy) and the new
 [cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md). All
 earlier Phase 4 sprints remain `Done` on their owned surfaces; the authoritative reopen narration is
-the [README.md → Closure Status](README.md#closure-status) 2026-06-14 entry. Sprint `4.32` extends,
+the [README.md → Historical Closure Record](README.md#historical-closure-record) 2026-06-14 entry. Sprint `4.32` extends,
 it does not reverse, the Sprint `4.29` retained-Vault-PV lifecycle and the Phase `3` storage-binding
 model.
 
@@ -354,7 +356,7 @@ enforcement. Live cross-surface sealed-Vault red-team validation remains Sprint 
 Pulumi checkpoint decrypt-to-scratch interposition remains Sprint `7.14`.
 This **refines, it does not reverse**, the 2026-06-14
 finalized model and reopens no new phase; the authoritative narration is the
-[README.md → Closure Status](README.md#closure-status) 2026-06-15 entry, and the doctrine SSoT is
+[README.md → Historical Closure Record](README.md#historical-closure-record) 2026-06-15 entry, and the doctrine SSoT is
 [vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md#9-minio-as-a-ciphertext-store).
 All earlier Phase 4 sprints remain `Done` on their owned surfaces.
 
@@ -378,7 +380,7 @@ open files` is emitted out-of-band by systemd/journald to the console and is not
 quiet path, so it may still appear on a successful run; it is benign — see streaming_doctrine.md §6.)
 
 ✅ **Reclosed 2026-07-03 after the AWS EBS block-storage lifecycle reopen** — two new sprints
-expanded Phase 4's own lifecycle/teardown surface (narrated in [README.md → Closure Status](README.md) per
+expanded Phase 4's own lifecycle/teardown surface (narrated in [README.md → Historical Closure Record](README.md#historical-closure-record) per
 rule A). Sprint `4.39` is ✅ Done: the **pre-created EBS volume is a registered managed
 resource** (typed `discover`/`destroy`, extending the Sprint `4.20`/`4.22` registry) with
 retain-vs-test-scoped tag markers, so production EBS is retained on teardown exactly like `.data/`
@@ -9401,10 +9403,10 @@ convergence, records it durably, and can construct a local-uninstall plan only a
 - No Runtime, CLI, or `TestRunner` constructs the total dispatcher. The active public cascade is
   unchanged.
 - Cascade Stage C is absent: no production path can yet mint/read back the descriptor-bound
-  pre-uninstall readiness evidence. Stage D/E drafts are unregistered and unvalidated. Their
-  one-phase post-uninstall write is rejected because a crash after uninstall loses the attempt;
-  the replacement must be a locked immutable `Prepared -> Absent` retained-root record created
-  before uninstall and resumable from the exact bootstrap locator while Authority is absent.
+  pre-uninstall readiness evidence. The target host-completion boundary remains a locked immutable
+  `Prepared -> Absent` retained-root record created before uninstall and resumable from the exact
+  bootstrap locator while Authority is absent; no production path implements that complete
+  protocol yet.
 
 ### Deliverables
 

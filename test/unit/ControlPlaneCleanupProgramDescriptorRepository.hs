@@ -89,32 +89,33 @@ controlPlaneCleanupProgramDescriptorRepositorySuite :: SuiteBuilder ()
 controlPlaneCleanupProgramDescriptorRepositorySuite =
   describe "Authority cleanup-program descriptor repository" $ do
     it "captures every closed surface only from its exact initial compiled run" $ do
-      forM_ surfaceCases $ \(SurfaceCase witness expectedSurface maybeAwsScope) ->
-        case descriptorFixture witness fixtureRunId fixtureFoundation maybeAwsScope of
-          Left detail -> expectationFailure (Text.unpack detail)
-          Right (compiled, initialRun, descriptor) -> do
-            cleanupProgramDescriptorRunId descriptor `shouldBe` fixtureRunId
-            cleanupProgramDescriptorSurface descriptor `shouldBe` expectedSurface
-            cleanupProgramDescriptorFoundation descriptor `shouldBe` fixtureFoundation
-            cleanupProgramDescriptorAwsScope descriptor `shouldBe` maybeAwsScope
-            cleanupProgramDescriptorRegistryRevision descriptor
-              `shouldBe` lifecycleRegistryRevision
-            cleanupProgramDescriptorLifecycleOperation descriptor
-              `shouldBe` ReconcileDesiredAbsent
-            cleanupProgramDescriptorGraphDigest descriptor
-              `shouldBe` cleanupRunGraphDigest initialRun
-            cleanupProgramDescriptorCapabilityCatalogDigest descriptor
-              `shouldBe` compiledDesiredAbsenceRecoveryCapabilityCatalogDigest compiled
-            cleanupProgramDescriptorOperationIdentityVersion
-              `shouldBe` "lifecycle-cleanup-operation/v3"
-            cleanupProgramDescriptorCompilerVersion
-              `shouldBe` "lifecycle-desired-absence-program-compiler/v3"
-            cleanupProgramDescriptorCapabilityCatalogVersion
-              `shouldBe` "lifecycle-recovery-capability-catalog/v1"
-            cleanupProgramDescriptorCapabilitySetVersion
-              `shouldBe` "lifecycle-recovery-capability-set/v1"
-            ByteString.length (cleanupProgramDescriptorBytes descriptor)
-              `shouldSatisfy` (<= maximumCleanupProgramDescriptorBytes)
+      let checkSurface (SurfaceCase witness expectedSurface maybeAwsScope) =
+            case descriptorFixture witness fixtureRunId fixtureFoundation maybeAwsScope of
+              Left detail -> expectationFailure (Text.unpack detail)
+              Right (compiled, initialRun, descriptor) -> do
+                cleanupProgramDescriptorRunId descriptor `shouldBe` fixtureRunId
+                cleanupProgramDescriptorSurface descriptor `shouldBe` expectedSurface
+                cleanupProgramDescriptorFoundation descriptor `shouldBe` fixtureFoundation
+                cleanupProgramDescriptorAwsScope descriptor `shouldBe` maybeAwsScope
+                cleanupProgramDescriptorRegistryRevision descriptor
+                  `shouldBe` lifecycleRegistryRevision
+                cleanupProgramDescriptorLifecycleOperation descriptor
+                  `shouldBe` ReconcileDesiredAbsent
+                cleanupProgramDescriptorGraphDigest descriptor
+                  `shouldBe` cleanupRunGraphDigest initialRun
+                cleanupProgramDescriptorCapabilityCatalogDigest descriptor
+                  `shouldBe` compiledDesiredAbsenceRecoveryCapabilityCatalogDigest compiled
+                cleanupProgramDescriptorOperationIdentityVersion
+                  `shouldBe` "lifecycle-cleanup-operation/v3"
+                cleanupProgramDescriptorCompilerVersion
+                  `shouldBe` "lifecycle-desired-absence-program-compiler/v3"
+                cleanupProgramDescriptorCapabilityCatalogVersion
+                  `shouldBe` "lifecycle-recovery-capability-catalog/v1"
+                cleanupProgramDescriptorCapabilitySetVersion
+                  `shouldBe` "lifecycle-recovery-capability-set/v1"
+                ByteString.length (cleanupProgramDescriptorBytes descriptor)
+                  `shouldSatisfy` (<= maximumCleanupProgramDescriptorBytes)
+      forM_ surfaceCases checkSurface
 
     it "refuses a transitioned run and any compiled/run identity disagreement" $ do
       case descriptorFixture
@@ -610,10 +611,11 @@ descriptorClientTransport queuedResponses method _ url _ = do
   method `shouldBe` "POST"
   url
     `shouldBe` "http://lifecycle-authority:8600/v1/authority/cleanup-run"
+  let dequeue queued = case queued of
+        [] -> ([], Nothing)
+        response : remaining -> (remaining, Just response)
   nextResponse <-
-    atomicModifyIORef' queuedResponses $ \queued -> case queued of
-      [] -> ([], Nothing)
-      response : remaining -> (remaining, Just response)
+    atomicModifyIORef' queuedResponses dequeue
   case nextResponse of
     Nothing -> do
       expectationFailure "descriptor client issued an unexpected request"

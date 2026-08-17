@@ -22,7 +22,7 @@ zero surviving legacy gateway authority routes. The June 26 run remains historic
 then-current topology; current-revision live qualification remains pending under Standards O/P.
 
 🧾 **Historical live evidence from 2026-06-26 (home substrate).** The then-current home
-`prodbox test all` reported 18/18 (see [00-overview.md](00-overview.md) Alignment Status), exercised
+`prodbox test all` reported 18/18 (see [00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)), exercised
 `cluster delete` → `cluster reconcile` → `cluster health`, and reported successful provider destroy
 and residue-check results for the per-run AWS stacks. That is command/provider/residue-check evidence
 for the superseded topology, not independent exact absence evidence for every registered stack and

@@ -252,7 +252,7 @@ algebra and its three-ring enforcement boundary are owned by
 [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)
 / [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings); observed-host recompile is the
 current implementation. Implementation and qualification status remain in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 This keeps the host-provider model pure: macOS/Windows only choose the Lima/WSL2 Linux frame; the
 capacity contract is then evaluated against facts observed in that frame. The resource algebra and

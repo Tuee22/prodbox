@@ -6,8 +6,9 @@
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
-`DEVELOPMENT_PLAN/README.md` is the authoritative source for sprint status, blockers, validation
-closure, and cleanup/removal ownership. Stable target architecture and doctrine are distributed
+`DEVELOPMENT_PLAN/README.md#resume-here` is the sole current sprint-status and resumption ledger;
+the rest of the plan suite carries per-sprint closure and cleanup/removal ownership. Stable target
+architecture and doctrine are distributed
 across the per-surface engineering docs under
 [documents/engineering/](./documents/engineering/README.md): command
 topology and reconcilers in `cli_command_surface.md`; the target exact-keyed registry, separate
@@ -29,13 +30,18 @@ Route 53, SES, S3, EC2/EBS) — through the documented `prodbox` entrypoints. Th
 supported work; it makes real, persistent state changes to this host and incurs real live AWS
 spend, and it does **not** need separate approval beyond the user's original request.
 
+The local RKE2 deployment is the mandatory retained control plane for supported operation. AWS is
+an optional target substrate: selecting it never moves lifecycle authority to EKS or to the host
+process. Except for the explicit total-decommission path, the local Lifecycle Authority and its
+bounded workers/adapters remain available for every AWS-targeted operation.
+
 - Local cluster: `prodbox cluster reconcile` (installs RKE2 if absent and reconciles),
   `prodbox charts reconcile ...`, `prodbox gateway ...`, `prodbox cluster delete --yes`
   and `prodbox cluster delete --cascade --yes`. Running these on this host is the supported,
   expected operation, not an unauthorized state change. The current cascade is a pre-cutover
   implementation: a non-zero result is unresolved and is not evidence that per-run AWS resources
   are absent. Target behavior and rollout status live in
-  [DEVELOPMENT_PLAN/README.md → Current Plan Status](DEVELOPMENT_PLAN/README.md#current-plan-status).
+  [DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here).
 - AWS substrate + end-to-end: `prodbox test all`, `prodbox test all --substrate aws`,
   `prodbox test integration <name> --substrate aws`, and `prodbox aws stack <cli-verb>
   reconcile` / `destroy --yes` (see [AWS Mutation Is Prodbox-Surface-Owned](#aws-mutation-is-prodbox-surface-owned)).
@@ -128,12 +134,22 @@ development.
 
 ### AWS Mutation Is Prodbox-Surface-Owned
 
-- The `prodbox` command surface is the **exclusive mutation boundary** for every AWS resource the
-  project touches — IAM, ECR, S3, Route 53, SES, EKS, EC2/EBS, the lot. In the target lifecycle
+- The `prodbox` command surface is the **exclusive mutation boundary** for every prodbox-managed
+  AWS resource — IAM, ECR, S3, Route 53, SES, EKS, EC2/EBS, the lot. In the target lifecycle
   design, the CLI, validation harness, recovery flow, cascade, and explicit stack commands are peer
   clients of the registered lifecycle core and its role-specific interpreters. There is no second
   supported mutation owner:
   no "operator runs `aws` CLI on the side", ad-hoc `eksctl`, `terraform`, or `pulumi up`.
+- The operator-owned AWS account/domain, externally owned parent hosted zone, and one temporary
+  bootstrap credential source are narrow onboarding prerequisites, not prodbox-managed runtime
+  resources. Their documented account-console creation is permitted before Authority admission;
+  it is neither a Provider fallback nor harness-owned cleanup. Once onboarding hands control to
+  the retained Authority, every project-managed AWS mutation remains `prodbox`-surface-owned.
+- Every supported AWS command is an authenticated client submission to the retained local
+  Lifecycle Authority. Provider effects run only through the fenced Provider Worker or the exact
+  permit-indexed adapter/runner assigned to that operation. If the local control plane cannot
+  authenticate, durably register, or observe the operation, the command fails closed. It never
+  falls back to host-direct `pulumi`, `aws`, `eksctl`, or `terraform` mutation.
 - Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
   `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
   `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
@@ -171,15 +187,19 @@ failure, or Ctrl-C does not turn a partial or unobservable result into proven ab
 
 ### Substrate Equivalence
 
-- The home local substrate and the AWS substrate stand up the **same set of services**:
+- The home local substrate and the AWS substrate stand up the **same application/platform service
+  set**:
   the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`,
   `redis`, `websocket`) plus the same supporting platform pieces — MinIO, the in-cluster
   registry (single-binary `registry:2`), the Percona PostgreSQL operator, Envoy Gateway,
   cert-manager, real ZeroSSL via
   cert-manager DNS01. The two substrates differ in their load-balancer (MetalLB on home,
   AWS Load Balancer Controller on EKS) and their Route 53 hosting (parent zone on home,
-  dedicated subzone provisioned by `prodbox aws stack aws-subzone reconcile` on AWS).
-  Nothing else.
+  dedicated subzone provisioned by `prodbox aws stack aws-subzone reconcile` on AWS), plus their
+  block-storage volume source (`hostPath` on home, pre-created EBS on EKS). Nothing else differs
+  within that application/platform projection. Lifecycle control-plane placement is
+  intentionally outside this equivalence claim: Lifecycle Authority and Provider Worker remain on
+  mandatory local RKE2 while they provision and manage the optional AWS target.
 - The in-cluster registry (`registry:2`) + MinIO + Percona are installed on **both**
   substrates. The AWS substrate is not a "no-registry" cluster. If
   `prodbox charts reconcile ... --substrate aws` fails because chart pods can't reach
@@ -268,4 +288,4 @@ automation equivalent.
 - **[documents/engineering/README.md](./documents/engineering/README.md)**: Engineering docs index (canonical CLI doctrine is distributed across these per-surface docs)
 - **documents/documentation_standards.md**: Documentation rules
 - **documents/engineering/**: Architecture and doctrine documentation
-- **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and cleanup ownership
+- **[DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here)**: sole current sprint-status/resumption ledger and links to cleanup ownership

@@ -43,7 +43,7 @@ are indexed by [documents/engineering/README.md](./documents/engineering/README.
 | Automation versus operator-interactive commands | [AGENTS.md → Command Selection](./AGENTS.md#command-selection-automation-vs-operator-interactive) |
 | Substrate-equivalence operational rule | [AGENTS.md → Substrate Equivalence](./AGENTS.md#substrate-equivalence) |
 | Local and cascade teardown behavior | [AGENTS.md → Live Infrastructure Deployment Is Authorized](./AGENTS.md#live-infrastructure-deployment-is-authorized) and [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md) |
-| Current lifecycle rollout status | [Development Plan → Current Plan Status](./DEVELOPMENT_PLAN/README.md#current-plan-status) |
+| Current lifecycle rollout status | [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here) |
 | Pure-functional implementation rules | [Pure FP Standards](./documents/engineering/pure_fp_standards.md) and [AGENTS.md → Coding Style](./AGENTS.md#coding-style) |
 | Test design and prerequisite behavior | [Unit Testing Policy](./documents/engineering/unit_testing_policy.md) and [AGENTS.md → Testing Guidelines](./AGENTS.md#testing-guidelines) |
 | Documentation ownership and generated sections | [Documentation Standards](./documents/documentation_standards.md) |

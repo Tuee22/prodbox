@@ -365,7 +365,7 @@ config or a generic endpoint. Completed Sprint `3.26` supplied chart/render foun
 production boundary still reports only process liveness and keeps readiness and every non-health
 capability closed; a deterministic fake proves composition without becoming a production selection
 path. Physical adapter activation and cutover status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps

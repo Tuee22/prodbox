@@ -258,7 +258,9 @@ controlPlaneRecoveryPlaneEndpointSuite =
           "import Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal"
       shouldBe
         hostRuntimeImporters
-        ["src/Prodbox/ControlPlane/RecoveryPlaneHostRuntime.hs"]
+        [ "src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime/Internal.hs"
+        , "src/Prodbox/ControlPlane/RecoveryPlaneHostRuntime.hs"
+        ]
 
       hostRuntimeFacade <-
         readFile "src/Prodbox/ControlPlane/RecoveryPlaneHostRuntime.hs"

@@ -353,8 +353,8 @@ encodeEksDrainIntentAuthorityIdentity =
 decodeEksDrainIntentAuthorityIdentity
   :: ByteString
   -> Either
-      EksDrainIntentAuthorityIdentityError
-      EksDrainIntentAuthorityIdentity
+       EksDrainIntentAuthorityIdentityError
+       EksDrainIntentAuthorityIdentity
 decodeEksDrainIntentAuthorityIdentity bytes
   | ByteString.null bytes = Left EksDrainIntentAuthorityIdentityEmpty
   | ByteString.length bytes > maximumEksDrainIntentAuthorityIdentityBytes =
@@ -427,8 +427,8 @@ authorityIdentityWire identity =
 decodeAuthorityIdentityWire
   :: EksDrainIntentAuthorityIdentityWire
   -> Either
-      EksDrainIntentAuthorityIdentityError
-      EksDrainIntentAuthorityIdentity
+       EksDrainIntentAuthorityIdentityError
+       EksDrainIntentAuthorityIdentity
 decodeAuthorityIdentityWire wire = do
   unlessIdentity
     (identityWireVersion wire == eksDrainIntentAuthorityIdentityFormatVersion)
@@ -548,9 +548,14 @@ encodeIdentitySurface surface = case surface of
   Cascade -> 1
   ExplicitPerRun -> 2
   TotalDecommission -> 3
-  LocalOnly -> 101
-  OperationalTeardown -> 102
-  ExplicitLongLived -> 103
+  LocalOnly -> localOnlySurfaceTag
+  OperationalTeardown -> operationalTeardownSurfaceTag
+  ExplicitLongLived -> explicitLongLivedSurfaceTag
+
+localOnlySurfaceTag, operationalTeardownSurfaceTag, explicitLongLivedSurfaceTag :: Word16
+localOnlySurfaceTag = 101
+operationalTeardownSurfaceTag = 102
+explicitLongLivedSurfaceTag = 103
 
 decodeIdentitySurface
   :: Word16
@@ -568,8 +573,12 @@ decodeIdentitySurface tag = case tag of
 encodeIdentityLifecycleOperation :: LifecycleOperation -> Word16
 encodeIdentityLifecycleOperation operation = case operation of
   ReconcileDesiredAbsent -> 1
-  ReconcileDesiredPresent -> 101
-  RunTerminalEscapeAudit -> 102
+  ReconcileDesiredPresent -> reconcileDesiredPresentOperationTag
+  RunTerminalEscapeAudit -> runTerminalEscapeAuditOperationTag
+
+reconcileDesiredPresentOperationTag, runTerminalEscapeAuditOperationTag :: Word16
+reconcileDesiredPresentOperationTag = 101
+runTerminalEscapeAuditOperationTag = 102
 
 decodeIdentityLifecycleOperation
   :: Word16

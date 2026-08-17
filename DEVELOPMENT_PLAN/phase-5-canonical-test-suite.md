@@ -18,10 +18,11 @@ discarded), and AWS audit returned one `ResourceTagMapping` for a retained bucke
 two-tag set. Prodbox's decoder emitted two internal rows and copied the global answer to three stack
 identities whose exact observations remained `Unobservable`. No drain request reached Kubernetes and no destroy reached a provider
 effect. This phase owns the substrate-agnostic reproducer and fault matrix,
-not the lifecycle kernel or AWS adapters. At the paused 2026-08-16 checkpoint, `5.35`'s standalone
-oracle/artifacts/matrices are code-locally green, and `5.36`'s descriptor-bound client is landed;
-both remain Active because the current aggregate/docs gate and the `TestRunner`/legacy-executor
-cutover are unfinished. Live substrate evidence remains deployment qualification.
+not the lifecycle kernel or AWS adapters. Sprint `5.35` is now Done on the code-owned frozen-oracle
+surface. Sprint `5.36` remains Active because the `TestRunner`/legacy-executor cutover is
+unfinished, but its next execution is parked behind earlier rows in
+[README.md → Resume Here](README.md#resume-here). Live substrate evidence remains deployment
+qualification.
 
 ✅ **Reclosed 2026-08-09 on Sprint `5.31`.** Integration went **20 of 55 failing → 8 → 4 →
 0**, and the installed `cli`/`env` suite now passes **55/55**. The canonical `prodbox test unit`
@@ -176,7 +177,7 @@ real over-limit pod stress proof remains a non-blocking `Live-proof: pending` ax
 ✅ **Live-proven 2026-06-26 — the then-current canonical suite ran fully green on the home substrate.** A full home
 `prodbox test all` (2026-06-26) passed 18/18 named validations end-to-end — including `sealed-vault`
 (Sprint `5.8`) and the destructive `lifecycle` ordering — with `prodbox-unit` 1062/1062 and
-`prodbox-integration` 39/39 (see [00-overview.md](00-overview.md) Alignment Status). Sprint `5.10`
+`prodbox-integration` 39/39 (see [00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)). Sprint `5.10`
 (harness-generated run config from `test-secrets.dhall`) is exercised by the run: the harness
 regenerates the binary-sibling `prodbox.dhall` through the shared `configFromSetupInput` builder,
 populating `route53.zone_id` / `ses.*` / `pulumi_state_backend.*` from `test-secrets.dhall` and
@@ -199,7 +200,7 @@ and no daemon `/v1/secret/*` RPC to fall back to, so the sealed stack cannot rec
 from any non-Vault source — and the cluster-federation auto-unseal cascade, where a sealed or
 unreachable parent Vault bricks its children (the fail-closed brick cascades down the transit-seal
 trust tree from the root). The 2026-06-15 refinement (Model B + whole-system zero-child-info; see the
-2026-06-15 Closure Status in [README.md](README.md) and
+2026-06-15 entry in the [Historical Closure Record](README.md#historical-closure-record) and
 [vault_doctrine.md §9/§10](../documents/engineering/vault_doctrine.md)) adds the
 **cross-surface sealed-Vault red-team** to `5.8`: with the parent Vault sealed, a combined
 bucket-level `aws s3api ls` + `list-objects` against the one generically-named bucket, a host-disk
@@ -222,8 +223,8 @@ interposition that the AWS-substrate proof composes against is owned by Sprint `
 build dependency, and AWS-substrate coverage of the same validation is tracked in
 [substrates.md](substrates.md) (Standard M) — neither gates `5.8`'s code-owned closure or this phase.
 See the 2026-06-14 and
-2026-06-16 Closure Status entries in
-[README.md](README.md).
+2026-06-16 entries in the
+[Historical Closure Record](README.md#historical-closure-record).
 
 ✅ **Prior closure preserved — reclosed 2026-06-09** — Sprints `5.1`–`5.5` remain closed on the
 canonical-suite content that proves public-host behavior (the public-edge diagnostic, named external
@@ -274,10 +275,11 @@ environment. Live multi-variant cluster proof remains a non-blocking live-infra 
 
 ## Phase Summary
 
-Current Sprint `5.35` owns the independent, mutation-sensitive `TEARDOWN-2026-08-15` reference
-oracle and fault matrix; it does not execute unfinished Phase-4 production code. Sprint `5.36` is
-blocked by Sprints `4.85` and `5.35` and will replace the validation-owned cleanup executor
-projection with a typed `TestRunner` client of the lifecycle kernel.
+Sprint `5.35` is Done on the independent, mutation-sensitive `TEARDOWN-2026-08-15` reference
+oracle and fault matrix; it remains a required gate and does not execute unfinished Phase-4
+production code. Current Sprint `5.36` is implemented in part and Parked by the numerical resume
+queue until Sprint `4.85` closes; it will replace the validation-owned cleanup executor projection
+with a typed `TestRunner` client of the lifecycle kernel.
 
 This phase owns the canonical test suite as substrate-agnostic content. Each validation in
 `src/Prodbox/TestValidation.hs` is a member of one suite, planned by `src/Prodbox/TestPlan.hs`
@@ -344,9 +346,10 @@ prerequisite node (see the inventory note above; Sprint `5.6` promoted this from
 to a declared, AWS-credential-free node).
 
 **"Substrate-agnostic" does not mean substrates share defaults.** Each per-substrate run is
-locked to one substrate, consumes only that substrate's required config and provisioned
-infrastructure, and fails fast when any required field is missing — there is no silent
-fallback to the other substrate's values. A complete canonical-suite proof requires both
+locked to one workload target, consumes only that target's required config and
+application/platform infrastructure, and fails fast when a required field is missing — there is
+no silent fallback to the other target's values. Every AWS run additionally depends on the
+retained-home Lifecycle Authority and its home-only workers/adapters. A complete canonical-suite proof requires both
 substrate runs to land independently; running on a single substrate covers only that
 substrate's parity row. See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
@@ -3351,11 +3354,12 @@ which is Sprint `5.30`'s own reasoning, now with three worked examples behind it
 fixture the row objects to still decodes; that half of the row is closed by **argument** — it is the
 schema's own default and cannot be refused — rather than by code.
 
-## Sprint 5.35: Teardown Recovery Counterexample and Fault Matrix [🔄 Active]
+## Sprint 5.35: Teardown Recovery Counterexample and Fault Matrix [✅ Done]
 
-**Status**: Active (opened 2026-08-15; updated 2026-08-16). The stable artifacts, standalone oracle,
-and complete code-local matrices are implemented and focused-green; current-tree canonical quality
-validation remains after the paused drafts settle.
+**Status**: Done (opened 2026-08-15; code-owned surface closed 2026-08-16). The stable artifacts,
+standalone oracle, and complete code-local matrices are implemented and locally validated. The
+repository-level aggregate quality gate remains mandatory for any release but is not open
+Sprint-`5.35` implementation work.
 **Blocked by**: none.
 **Deployment qualification**: pending; live home/AWS campaigns are separate Standards O/P evidence.
 **Doctrine**: [Integration Fixture Doctrine, “Required fixture fault
@@ -3408,7 +3412,7 @@ failure, and the expected replacement pass. A distinct
 `test/qualification/TEARDOWN-2026-08-15.production-profile.dhall` records independently justified
 rendered production envelopes and authored load; it is not substituted for the causal profile.
 
-### Current Implementation Checkpoint (2026-08-16, paused)
+### Closure Checkpoint (2026-08-16)
 
 - The repository carries canonical `.trace`, `.dispositions`, mutation, causal-profile, and distinct
   production-profile artifacts, all bounded and digest-locked.
@@ -3465,19 +3469,19 @@ rendered production envelopes and authored load; it is not substituted for the c
 
 ### Remaining Work
 
-Rerun the canonical current-tree quality/docs gate after the paused Provider/Cascade drafts are
-settled, then mark the code-owned oracle surface Done if no sprint-owned drift remains. Do not fold
-production integration, `TestRunner` cutover, or live destructive campaigns into this sprint; those
-remain owned by `5.36`, the lifecycle phases, and Standard P respectively. The legacy environment
-value may remain only as an explicitly ignored negative fixture, never as observation evidence.
+None on the code-owned oracle surface. Do not fold production integration, `TestRunner` cutover,
+or live destructive campaigns into this sprint; those remain owned by `5.36`, the lifecycle
+phases, and Standard P respectively. The frozen oracle may carry the legacy environment value only
+as an explicitly ignored negative fixture, never as observation evidence; removal from the old
+integration/`TestRunner` composition is owned by Sprint `5.36`.
 
 ## Sprint 5.36: TestRunner Lifecycle Cleanup Client [🔄 Active]
 
 **Status**: Active (opened 2026-08-15; updated 2026-08-16). The descriptor-bound client seam is
-landed and focused-green; `TestRunner` still uses the old graph/executor.
-**Closure dependencies**: the remaining Sprint-`4.85` operation/proof coverage and the final
-current-tree Sprint-`5.35` oracle gate. Both are earlier/same-phase dependencies permitted by
-Standard N.
+landed and focused-green; `TestRunner` still uses the old graph/executor. Execution is parked by
+[README.md → Resume Here](README.md#resume-here) until the earlier queue entries close.
+**Closure dependency**: the remaining Sprint-`4.85` operation/proof coverage. Sprint `5.35`'s
+frozen oracle is complete and remains the acceptance oracle rather than an open dependency.
 **Deployment qualification**: pending; this changes suite cleanup composition, while live
 home/AWS campaigns remain separate Standards O/P evidence.
 **Doctrine**: [Integration Fixture Doctrine § 4, “Validation as a Cleanup
@@ -3529,6 +3533,8 @@ executor, operation-ID allocator, or success interpretation in the validation la
   validation-specific oracle and narration code in Phase 5.
 - Route `TEARDOWN-2026-08-15` through the client while every external fact remains supplied by a
   typed fake at this phase boundary.
+- Remove the old integration-harness `PRODBOX_TEST_RESIDUE_ABSENT` injection and assertions as the
+  client cutover supplies exact fake observations; an ambient value must not select absence.
 
 ### Validation
 
@@ -3549,7 +3555,8 @@ Register the lifecycle descriptor before config regeneration or any other mutati
 descriptor-bound runner through the closed total dispatcher; preserve the structured primary and
 every cleanup result; and delete `ManagedCleanupPlan`/`DurableCleanupComposition` from the supported
 composition. Then run the prefix interruption/restart matrix and the installed frozen oracle. Do
-not treat the landed client library as the `TestRunner` cutover.
+not treat the landed client library as the `TestRunner` cutover. Remove the ambient residue-absence
+fixture only through the same typed-observer cutover, not as an isolated test edit.
 
 ## Documentation Requirements
 

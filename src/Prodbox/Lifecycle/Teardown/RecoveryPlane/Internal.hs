@@ -1522,17 +1522,7 @@ fixedRecoveryPlaneFixtureRegression = do
           )
       allFailureSets = [missingSet "missing", partialSet, unavailableSet, unobservableSet]
       everyFailureRefused =
-        all
-          ( \set -> case normalizeRecoveryPlaneComponentFactsInternal readBackBinding set of
-              Left _ -> False
-              Right facts -> case mkRecoveryPlaneInitialReadBackInternal
-                establishBinding
-                readBackBinding
-                facts of
-                Right initial -> maybe True (const False) (recoveryPlaneInitialReady initial)
-                Left _ -> False
-          )
-          allFailureSets
+        all (failureSetRefused establishBinding readBackBinding) allFailureSets
       crossIdentitySet =
         observationSet
           otherIdentity
@@ -1640,6 +1630,21 @@ fixedRecoveryPlaneFixtureRegression = do
       , recoveryPlaneFixtureCrossBindingRefused = crossBindingRefused
       , recoveryPlaneFixtureDynamicProfileRestored = dynamicProfileRestored
       }
+
+failureSetRefused
+  :: RecoveryPlaneAttemptBinding surface
+  -> RecoveryPlaneAttemptBinding surface
+  -> RecoveryPlaneComponentObservationSet surface
+  -> Bool
+failureSetRefused establishBinding readBackBinding set =
+  case normalizeRecoveryPlaneComponentFactsInternal readBackBinding set of
+    Left _ -> False
+    Right facts -> case mkRecoveryPlaneInitialReadBackInternal
+      establishBinding
+      readBackBinding
+      facts of
+      Right initial -> maybe True (const False) (recoveryPlaneInitialReady initial)
+      Left _ -> False
 
 dynamicProfileRestoreRegression
   :: RecoveryPlaneProfile

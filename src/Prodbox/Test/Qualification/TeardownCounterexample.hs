@@ -786,7 +786,7 @@ recoveryReferenceDispositionText disposition = case disposition of
 -- than being reduced to a generic checksum failure.
 canonicalArtifactDigest :: TeardownArtifactDigest
 canonicalArtifactDigest =
-  TeardownArtifactDigest "ee72b06f35ecc6cddae9e318bfc1084f9c5f64736e0e927da904d738efe413f0"
+  TeardownArtifactDigest "7338a7228fb7c79929d23f64af285d5daa0b180918c7bea694897972a255b76d"
 
 canonicalCausalProfileDigest :: TeardownArtifactDigest
 canonicalCausalProfileDigest =

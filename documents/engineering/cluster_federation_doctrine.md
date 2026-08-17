@@ -422,5 +422,5 @@ Plan owns both.
   boundaries used to interpret federation safely
 - [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) — the retained per-cluster Vault
   PV and the init-once / unseal-on-rebuild durability that federation depends on
-- [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) — Closure Status and the
+- [../../DEVELOPMENT_PLAN/README.md → Historical Closure Record](../../DEVELOPMENT_PLAN/README.md#historical-closure-record) — the archived closure record and
   per-surface federation sprints (`1.38`, `2.26`, `3.20`, `4.32`)

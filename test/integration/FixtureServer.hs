@@ -69,7 +69,10 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunCommand (..)
+  , CleanupRunDescriptorRefusal (CleanupRunDescriptorUnavailable)
+  , CleanupRunDescriptorResponse (CleanupRunDescriptorRefused)
   , cleanupRunMaximumBytes
+  , encodeCleanupRunDescriptorResponse
   )
 import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
@@ -117,7 +120,6 @@ import Prodbox.Lifecycle.Authority.Migration
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( TlsRetentionState (TlsRetentionEmpty)
   )
-import Prodbox.Settings (loadConfigFileAtPath, renderConfigDhall)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupRun
   , beginCleanupNode
@@ -130,6 +132,7 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupOwnerId
   , recordPrimaryOutcome
   )
+import Prodbox.Settings (loadConfigFileAtPath, renderConfigDhall)
 import System.Environment (lookupEnv)
 import System.IO qualified as IO
 
@@ -414,6 +417,13 @@ cleanupRunBody state request =
         attempt <- fixtureEither (mkCleanupAttemptId rawAttempt)
         fixtureEither (completeCleanupNode owner fence node attempt outcome run)
     CleanupRunCompact {} -> readFixtureCleanupRun state
+    CleanupRunDescriptorBound _ ->
+      case encodeCleanupRunDescriptorResponse
+        ( CleanupRunDescriptorRefused
+            (CleanupRunDescriptorUnavailable "integration fixture does not implement descriptor-bound cleanup")
+        ) of
+        Left detail -> ioError (userError (Text.unpack detail))
+        Right encoded -> pure encoded
 
 transitionFixtureCleanupRun
   :: IORef (Maybe CleanupRun)

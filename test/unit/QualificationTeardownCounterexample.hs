@@ -34,7 +34,7 @@ qualificationTeardownCounterexampleSuite =
       frozenTeardownFixtureId fixture `shouldBe` canonicalTeardownFixtureId
       frozenTeardownEvidenceScope fixture `shouldBe` canonicalTeardownEvidenceScope
       teardownArtifactDigestText (frozenTeardownArtifactDigest fixture)
-        `shouldBe` "ee72b06f35ecc6cddae9e318bfc1084f9c5f64736e0e927da904d738efe413f0"
+        `shouldBe` "7338a7228fb7c79929d23f64af285d5daa0b180918c7bea694897972a255b76d"
       frozenTeardownRequests fixture
         `shouldBe` [ExactAwsEks, ExactAwsEksSubzone, ExactAwsTest]
       frozenTeardownAuditResources fixture

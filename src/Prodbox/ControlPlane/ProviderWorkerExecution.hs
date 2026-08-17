@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Signed, two-stage production Provider Worker execution.
 --
@@ -74,6 +75,10 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , providerIntentCredentialBindingRegressionExactAccepted
   , providerIntentCredentialBindingRegressionMissingRefused
   , providerIntentCredentialBindingRegressionMismatchRefused
+  , providerIntentCredentialBindingRegressionGenerationRotationRefused
+  , providerIntentCredentialBindingRegressionVersionRotationRefused
+  , providerIntentCredentialBindingRegressionReceiptRotationRefused
+  , providerIntentCredentialBindingRegressionRotationSkipsCapability
   , executeVerifiedProviderIntentBound
   , executeVerifiedProviderIntent
   )
@@ -89,6 +94,7 @@ import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
+import Data.Functor.Identity (Identity (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -97,15 +103,6 @@ import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
-import Prodbox.ControlPlane.ProviderNarrowSession
-  ( ProviderEffectObservation (..)
-  , ProviderIntentCapabilities
-  , ProviderIntentOperation (..)
-  , ProviderMutation (..)
-  , ProviderNarrowSessionRunner (..)
-  , ProviderReadOnly (..)
-  , operationForProviderIntent
-  )
 import Prodbox.ControlPlane.ProviderCredentialSession
   ( ProviderAcceptedAuthorityDigest
   , ProviderCredentialSessionBinding
@@ -118,6 +115,15 @@ import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   ( providerAcceptedAuthorityDigestFromCanonicalInternal
   , providerAcceptedAuthorityDigestFromTextInternal
   , providerCredentialSessionBindingFromWireInternal
+  )
+import Prodbox.ControlPlane.ProviderNarrowSession
+  ( ProviderEffectObservation (..)
+  , ProviderIntentCapabilities
+  , ProviderIntentOperation (..)
+  , ProviderMutation (..)
+  , ProviderNarrowSessionRunner (..)
+  , ProviderReadOnly (..)
+  , operationForProviderIntent
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( CallerPrincipal (..)
@@ -827,13 +833,11 @@ providerIntentUnsignedEnvelopeVersion
   :: UnsignedProviderCommittedIntent -> ProviderIntentEnvelopeVersion
 providerIntentUnsignedEnvelopeVersion unsigned =
   let spec = internalProviderCommittedIntentSpec unsigned
-   in case
-        ( providerIntentExpectedCredentialSession spec
-        , providerIntentExpectedAcceptedAuthority spec
-        )
-        of
-          (Nothing, Nothing) -> ProviderIntentEnvelopeV2
-          _ -> ProviderIntentEnvelopeV3
+   in case ( providerIntentExpectedCredentialSession spec
+           , providerIntentExpectedAcceptedAuthority spec
+           ) of
+        (Nothing, Nothing) -> ProviderIntentEnvelopeV2
+        _ -> ProviderIntentEnvelopeV3
 
 decodeWireSignedProviderIntentV2
   :: ByteString -> Maybe WireSignedProviderCommittedIntentV2
@@ -911,7 +915,8 @@ validateProviderIntentActionDigest
   -> Either ProviderCommittedIntentCodecError ()
 validateProviderIntentActionDigest unsigned wireDigest
   | targetValueDigestText (internalProviderCommittedActionDigest unsigned)
-      == wireDigest = Right ()
+      == wireDigest =
+      Right ()
   | otherwise = Left ProviderCommittedIntentActionDigestInvalid
 
 validateCanonicalSignedProviderIntent
@@ -1061,7 +1066,8 @@ unsignedProviderIntentFromWireV3 wire = do
   revision <- mapIntentValue (mkProviderRevision (wireProviderV3Revision wire))
   action <- providerIntentFromWire (wireProviderV3Action wire)
   expectedCredential <-
-    traverse providerCredentialSessionBindingFromWire
+    traverse
+      providerCredentialSessionBindingFromWire
       (wireProviderV3ExpectedCredentialSession wire)
   expectedAuthority <-
     traverse
@@ -1518,19 +1524,27 @@ data ProviderIntentExecutionError
 
 -- | Fixed, non-authorizing diagnostics for the opaque credential-binding
 -- join.  No binding or constructor escapes through this value.
-data ProviderIntentCredentialBindingRegression =
-  ProviderIntentCredentialBindingRegression
+data ProviderIntentCredentialBindingRegression
+  = ProviderIntentCredentialBindingRegression
   { providerIntentCredentialBindingRegressionUnboundAccepted :: !Bool
   , providerIntentCredentialBindingRegressionExactAccepted :: !Bool
   , providerIntentCredentialBindingRegressionMissingRefused :: !Bool
   , providerIntentCredentialBindingRegressionMismatchRefused :: !Bool
+  , providerIntentCredentialBindingRegressionGenerationRotationRefused :: !Bool
+  , providerIntentCredentialBindingRegressionVersionRotationRefused :: !Bool
+  , providerIntentCredentialBindingRegressionReceiptRotationRefused :: !Bool
+  , providerIntentCredentialBindingRegressionRotationSkipsCapability :: !Bool
   }
 
 fixedProviderIntentCredentialBindingRegression
   :: ProviderIntentCredentialBindingRegression
 fixedProviderIntentCredentialBindingRegression =
-  case (fixedCredentialBinding 11 "a", fixedCredentialBinding 12 "b") of
-    (Right exact, Right other) ->
+  case ( fixedCredentialBinding 7 11 "a"
+       , fixedCredentialBinding 8 11 "a"
+       , fixedCredentialBinding 7 12 "a"
+       , fixedCredentialBinding 7 11 "b"
+       ) of
+    (Right exact, Right generationRotated, Right versionRotated, Right receiptRotated) ->
       ProviderIntentCredentialBindingRegression
         { providerIntentCredentialBindingRegressionUnboundAccepted =
             credentialSessionExpectation Nothing Nothing == Right ()
@@ -1540,15 +1554,42 @@ fixedProviderIntentCredentialBindingRegression =
             credentialSessionExpectation (Just exact) Nothing
               == Left ProviderIntentExecutionCredentialSessionBindingMissing
         , providerIntentCredentialBindingRegressionMismatchRefused =
-            credentialSessionExpectation (Just exact) (Just other)
+            credentialSessionExpectation (Just exact) (Just versionRotated)
               == Left ProviderIntentExecutionCredentialSessionBindingMismatch
+        , providerIntentCredentialBindingRegressionGenerationRotationRefused =
+            credentialSessionExpectation (Just exact) (Just generationRotated)
+              == Left ProviderIntentExecutionCredentialSessionBindingMismatch
+        , providerIntentCredentialBindingRegressionVersionRotationRefused =
+            credentialSessionExpectation (Just exact) (Just versionRotated)
+              == Left ProviderIntentExecutionCredentialSessionBindingMismatch
+        , providerIntentCredentialBindingRegressionReceiptRotationRefused =
+            credentialSessionExpectation (Just exact) (Just receiptRotated)
+              == Left ProviderIntentExecutionCredentialSessionBindingMismatch
+        , providerIntentCredentialBindingRegressionRotationSkipsCapability =
+            runIdentity
+              ( runWithCredentialSessionExpectation
+                  (Just exact)
+                  (Just versionRotated)
+                  (Identity (Right ()))
+              )
+              == ( Left ProviderIntentExecutionCredentialSessionBindingMismatch
+                     :: Either ProviderIntentExecutionError ()
+                 )
         }
     _ ->
-      ProviderIntentCredentialBindingRegression False False False False
+      ProviderIntentCredentialBindingRegression
+        False
+        False
+        False
+        False
+        False
+        False
+        False
+        False
  where
-  fixedCredentialBinding version digit =
+  fixedCredentialBinding generation version digit =
     providerCredentialSessionBindingFromWireInternal
-      7
+      generation
       version
       (Text.replicate 64 digit)
 
@@ -1563,6 +1604,17 @@ credentialSessionExpectation expected actual = case expected of
     Just observed
       | observed == exact -> Right ()
       | otherwise -> Left ProviderIntentExecutionCredentialSessionBindingMismatch
+
+runWithCredentialSessionExpectation
+  :: (Monad m)
+  => Maybe ProviderCredentialSessionBinding
+  -> Maybe ProviderCredentialSessionBinding
+  -> m (Either ProviderIntentExecutionError result)
+  -> m (Either ProviderIntentExecutionError result)
+runWithCredentialSessionExpectation expected actual action =
+  case credentialSessionExpectation expected actual of
+    Left err -> pure (Left err)
+    Right () -> action
 
 -- | Compatibility projection for callers that consume only the terminal wire
 -- result.  It cannot be fed to capability-sensitive adapters; those require
@@ -1642,15 +1694,13 @@ executeVerifiedProviderIntentBound boundary verified = do
             }
 
   executeWithCredentialBinding actualBinding session =
-    case
-        credentialSessionExpectation
+    do
+      result <-
+        runWithCredentialSessionExpectation
           (providerIntentExpectedCredentialSession spec)
           actualBinding
-      of
-      Left err -> pure (Right (Left err))
-      Right () -> do
-        result <- executeUnderSession session
-        pure (Right (fmap (\terminal -> (terminal, actualBinding)) result))
+          (executeUnderSession session)
+      pure (Right (fmap (,actualBinding) result))
 
   executeUnderSession session =
     case operationForProviderIntent (providerExecutionCapabilities boundary) intent of

@@ -189,13 +189,22 @@ surfaces, and stale tooling residue that still need removal.
 
 The plan and governed documents must agree.
 
-- [README.md](README.md), [00-overview.md](00-overview.md), all phase files, and
-  [system-components.md](system-components.md) must use the same phase names, sprint statuses, and
-  dependency model.
-- Governed docs under `documents/engineering/` must match the current architecture described by
-  the plan.
+- [README.md → Resume Here](README.md#resume-here) is the sole current-status and resumption
+  ledger. `00-overview.md`, phase files, and `system-components.md` may preserve dated history or
+  describe owned surfaces, but must not publish a competing current queue.
+- `Resume Here` contains exactly one simple queue table. Every open sprint appears exactly once,
+  in numerical order; exactly the first runnable row is `Next`; later partial foundations are
+  `Parked`; and `Blocked` dependencies name only earlier rows. Sprint IDs are unique across phase
+  sprint headings, and every `Pending Removal` row names an existing owning sprint or is explicitly
+  `Unowned`.
+- Governed docs under `documents/engineering/` own stable target architecture. The execution plan
+  schedules its adoption and must not contradict or duplicate that doctrine.
 - Root guidance docs such as `README.md`, `AGENTS.md`, and `CLAUDE.md` must point to the canonical
   development-plan entrypoint.
+- `prodbox dev lint docs` mechanically validates the unique `Resume Here` section, exact open-row
+  coverage and numerical order, dependency direction, unique phase sprint IDs, and valid or
+  explicit-`Unowned` Pending Removal ownership. A documentation change is not aligned when this
+  gate fails.
 
 ### K. Mermaid Rendering Contract
 
@@ -256,11 +265,13 @@ infrastructure (DNS, TLS via cert-manager, ingress, charts, public-edge proofs).
 exercises only one substrate is not a complete canonical-suite proof; the missing substrate
 stays suite-incomplete until its run lands.
 
-Each per-substrate run is independent. It targets exactly one substrate, consumes only that
-substrate's operator-supplied config and provisioned infrastructure, and fails fast if any of
-its required substrate config (FQDN, hosted zone, kubeconfig, credentials, prerequisites) is
-missing. There is no silent substitution of home-substrate values for missing AWS-substrate
-config, and no silent substitution of AWS values for missing home config. The substrate-aware
+Each per-substrate run is independent. It targets exactly one workload substrate, consumes only
+that target's operator-supplied config and application/platform infrastructure, and fails fast if
+required target config (FQDN, hosted zone, kubeconfig, credentials, prerequisites) is missing.
+There is no silent substitution of home-workload values for missing AWS-target config, and no
+silent substitution of AWS values for missing home-workload config. Every AWS run additionally
+depends on the mandatory retained-home Lifecycle Authority and its home-only workers/adapters;
+that control-plane dependency is outside the target-config no-fallback rule. The substrate-aware
 helpers (`substratePublicFqdn`, `substrateHostedZoneId` in `src/Prodbox/PublicEdge.hs`,
 alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig` for substrate-aware kubeconfig
 materialization), the prerequisite DAG, and the lifecycle gates all enforce this
@@ -274,11 +285,13 @@ covers only that substrate's row in the parity table in [substrates.md](substrat
 
 #### Substrates
 
-A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
-DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress (Envoy Gateway plus
-MetalLB or the substrate-equivalent), services, and workload charts; provides the prerequisites
-declared in `src/Prodbox/Prerequisite.hs`; and registers/schedules desired absence for every per-run
-artifact on suite exit. A suite result may report cleanup complete only after exact absence is
+A substrate is an environment that, for the lifetime of a suite run, stands up the same target
+application/platform set: DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress
+(Envoy Gateway plus MetalLB or the substrate-equivalent), services, and workload charts. It
+provides the prerequisites declared in `src/Prodbox/Prerequisite.hs` and registers/schedules desired
+absence for every per-run artifact on suite exit. The mandatory retained local lifecycle plane is
+a cross-substrate dependency outside this duplicated set. A suite result may report cleanup
+complete only after exact absence is
 observed; a failed, partial, or unobservable cleanup remains explicitly incomplete.
 
 The authoritative substrate inventory is [substrates.md](substrates.md). Today's substrates are:
@@ -388,7 +401,7 @@ into an unexercised claim about the aggregate deployment.
   remains non-blocking; escape-path drift is not. Sprint `1.63` landed the initial registry and its
   declared-entry↔source-marker bijection; that historical mechanism does not prove comprehensive
   coverage of an unmarked surviving seam. Current corrective ownership and closure evidence live in
-  [README.md](README.md#current-plan-status) and the
+  [README.md](README.md#resume-here) and the
   [deletion ledger](legacy-tracking-for-deletion.md#pending-removal).
 - **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
   a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,

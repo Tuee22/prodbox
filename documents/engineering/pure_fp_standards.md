@@ -184,7 +184,7 @@ error rather than a runtime review finding. The concrete instance indexes the Mo
 coordinates and CAS adapters; the retained-custody topology is owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md), and
 source correspondence, migration, and qualification status are owned by the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 > **Current source correspondence.** The real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types
 > (`ModelBObjectCoordinate l`,
@@ -195,7 +195,7 @@ source correspondence, migration, and qualification status are owned by the
 > monomorphically `'ClusterRetained'`, which lets a `'ChartLifetime'` object be guarded by a retained
 > lease under the request's single `l`. The target requires every concrete adapter to expose only
 > the lifetime it honestly provides. Source-to-target migration and qualification status live only
-> in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+> in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 3. State, Decisions, and Evolution
 

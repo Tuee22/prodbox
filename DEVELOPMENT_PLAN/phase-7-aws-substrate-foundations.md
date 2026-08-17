@@ -11,15 +11,15 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-08-15 on Sprint `7.36` (Standards A/L/P); Active at the paused 2026-08-16
-checkpoint.** The AWS substrate needs independent exact observers for each per-run stack,
+🔄 **Reopened 2026-08-15 on Sprint `7.36` (Standards A/L/P); partially implemented and parked for
+execution by [README.md → Resume Here](README.md#resume-here).** The AWS substrate needs independent exact observers for each per-run stack,
 receipt-backed ownership manifests, exact controller-family cleanup, and a provider-issued expiring
 EKS drain session. Known pre-manifest stacks with unusable checkpoints additionally need a bounded,
 admin-confirmed adoption plan before native cleanup. A global tag audit and Pulumi checkpoint cannot provide those facts. The phase
 owns these AWS adapters and their non-blocking live all-three-stack proof; deployment qualification remains
-pending. Exact checkpoint/drain/stack-reader/ownership foundations have landed, while Provider
-credential-session v3, stable create generation, terminal audit, legacy adoption completion, and
-live proof remain. This proof is adapter-prerequisite evidence only; Sprint `8.12` remains the sole
+pending. Exact checkpoint/drain/stack-reader/ownership foundations have landed, while an exact
+credential-session-bound Provider operation, stable create generation, terminal audit, legacy
+adoption completion, and live proof remain. This proof is adapter-prerequisite evidence only; Sprint `8.12` remains the sole
 final composed deployment-qualification owner.
 
 ✅ **Reclosed 2026-08-03 on Sprint `7.35`** — own-surface reopen (Standard A/N) on this phase's own
@@ -41,7 +41,7 @@ harness-postflight surface: the postflight residue bypass narrows from
 `BypassAllResidueForHarnessRefresh` to `BypassPerRunResidueForHarnessRefresh`, restoring the
 long-lived `aws-ses`/public-edge-tls protection of the lifecycle preconditions and reversing the
 Sprint `7.9` all-residue decision (see the Sprint `7.34` block below). The Foundation Epoch is an
-execution-priority decision narrated in [README.md → Closure Status](README.md); it adds no
+execution-priority decision narrated in [README.md → Historical Closure Record](README.md#historical-closure-record); it adds no
 `Blocked by` edge onto Sprint `7.33` or the existing `1.61` → `8.12` chain.
 
 ✅ **Reclosed 2026-07-10 after AWS-substrate reconcile parity** — Sprint `7.32` is Done on Phase
@@ -83,7 +83,7 @@ Live AWS/EKS parity remains a non-blocking Standard O proof axis tracked in
 
 🧾 **Historical live evidence from 2026-06-26 (the AWS per-run resource cycles the home suite
 exercised); the `--substrate aws` aggregate stays open.** The then-current home `prodbox test all`
-(2026-06-26, 18/18; see [00-overview.md](00-overview.md) Alignment Status) provisioned real AWS
+(2026-06-26, 18/18; see [00-overview.md → Historical Alignment Record](00-overview.md#historical-alignment-record)) provisioned real AWS
 per-run resources and reported successful provider destroy plus its contemporaneous residue checks:
 the `aws-eks` stack (a real EKS cluster + NAT/EBS, with the command reporting
 `destroyed and residue check passed`) and `aws-test` stack; the decrypt-to-scratch Pulumi interposition
@@ -93,7 +93,7 @@ and first-touch checkpoint hooks (Sprint `7.14`); the read-only per-run-destroy 
 `aws-iam`); and Route 53 writes (`dns-aws`). Those results are command/provider/residue-check evidence
 for the then-current topology; they did not independently observe every exact registered stack and
 resource family and therefore do not prove current exact absence. This run also fixed the `plaintext`→`passphrase`
-secrets-provider on the three per-run stacks (see [README.md](README.md) Closure Status). Note the run
+secrets-provider on the three per-run stacks (see [README.md → Historical Closure Record](README.md#historical-closure-record)). Note the run
 was a **home-substrate aggregate** that provisions these AWS *stacks* as suite content; the full
 **`--substrate aws` aggregate parity** (Sprint `7.5`) remains a distinct, non-blocking live-infra axis
 tracked only in [substrates.md](substrates.md) — it is not closed by this home run (Standards N/O).
@@ -112,7 +112,7 @@ it never gates this phase or an earlier one.
 
 ✅ **Reclosed after the 2026-06-17 Phase 7 owned-surface expansion** — two new sprints expanded the
 AWS/Vault credential + substrate surface this phase owns (narrated in
-[README.md → Closure Status](README.md) per rule A). Sprint `7.19` staged Tier 1 — the
+[README.md → Historical Closure Record](README.md#historical-closure-record) per rule A). Sprint `7.19` staged Tier 1 — the
 password-gated Vault unlock bundle relocated off host disk into the durable MinIO bucket — and was
 closed by Sprint `7.25`'s disk-free MinIO unseal cutover. Sprint `7.20` closed the test-harness IAM
 credential lifecycle doctrine and teardown-completeness guard on its code-owned surface. Both adopt
@@ -125,7 +125,7 @@ took the unlock bundle fully into MinIO (host disk holds no unseal material): Mi
 cluster-only (its chart's Vault init container removed, static root cred injected directly), is
 reordered ahead of Vault, and the host-disk bundle write + fallback are dropped. This **closes Sprint
 `7.19`'s deferred 🧪 disk-free axis**, unblocked by the 2026-06-22 static MinIO credential. See the
-Sprint `7.25` block below + [README.md → Closure Status](README.md).
+Sprint `7.25` block below + [README.md → Historical Closure Record](README.md#historical-closure-record).
 
 ✅ **Reclosed 2026-06-23 for an operator-reported teardown-UX bug** — Sprint `7.26` (✅ Done)
 fixes the `cluster delete --cascade` postflight tag sweep falsely flagging the intentionally-retained
@@ -135,7 +135,7 @@ per-run/cluster escapees. See the Sprint `7.26` block below.
 
 ✅ **Reclosed 2026-07-03 for unified block storage on the AWS substrate** — Phase 7's own
 AWS-substrate storage + networking surface is expanded here (narrated in
-[README.md → Closure Status](README.md) per rule A). Sprint `7.28` is ✅ Done on its code-owned
+[README.md → Historical Closure Record](README.md#historical-closure-record) per rule A). Sprint `7.28` is ✅ Done on its code-owned
 surface: it replaces and removes the dynamic `gp2` EKS storage path (Sprint `7.5.c.i`) with
 **pre-created EBS volumes lifted in as static `Retain` PVs** (CSI `volumeHandle`, AZ-pinned),
 mirroring the home `manual`/no-provisioner model per
@@ -186,7 +186,7 @@ removed after live proof. See
 
 ✅ **Reclosed after the 2026-06-14 Vault-root Phase 7 owned-surface expansion** — the Vault-root finalization
 (narrated in
-[README.md → Closure Status](README.md) per rule A) makes Vault the sole, finalized
+[README.md → Historical Closure Record](README.md#historical-closure-record) per rule A) makes Vault the sole, finalized
 secrets / KMS / PKI root for the AWS substrate. Sprints `7.14` and `7.15` are reframed to own
 that finalized end state on Phase 7's own surface: the master-seed HMAC-derivation model is
 **retired** (not extended),
@@ -214,7 +214,7 @@ object). All earlier Phase 7 sprints
 [legacy ledger](legacy-tracking-for-deletion.md).
 
 ✅ **Reclosed 2026-06-09** — Phase 7 was reopened for Sprints `7.12`–`7.13` (design-intention review;
-narrated in [README.md → Closure Status](README.md) per rule A); both have now landed. Sprint `7.12`
+narrated in [README.md → Historical Closure Record](README.md#historical-closure-record) per rule A); both have now landed. Sprint `7.12`
 ✅ made **substrate equivalence a structural invariant**: one `Prodbox.ContainerImage` Envoy release
 value pins the Envoy Gateway chart + control plane + data plane together (killing the EG-`1.4.4` /
 Envoy-`1.37` skew, audit C79); `checkSubstrateImagePinning` forbids per-substrate chart-version /
@@ -1223,7 +1223,7 @@ post-teardown residue, and flip the substrate parity rows in
 - The aggregate runner (`prodbox test all`) succeeds against both substrates when run with
   the AWS substrate selection.
 - The substrate parity row in [substrates.md](substrates.md) flips from 🔄 to ✅.
-- `DEVELOPMENT_PLAN/README.md` Phase Overview row for Phase 7 flips to ✅ Done.
+- `DEVELOPMENT_PLAN/README.md` historical phase record captured Phase 7's ✅ Done transition.
 
 ### Validation
 
@@ -3023,8 +3023,8 @@ re-pin lint), `test/unit/Main.hs`
 
 ### Why Phase 7 reopened
 
-The substrate-equivalence contract ("the home local substrate and the AWS substrate stand up the
-same set of services") is stated operationally in
+The substrate-equivalence contract ("the home local substrate and AWS target stand up the same
+application/platform service set") is stated operationally in
 [AGENTS.md](../AGENTS.md#substrate-equivalence) and structurally in
 [substrates.md](substrates.md). At this historical reopen point nothing structural enforced it, so the worktree drifted: the home
 substrate and the AWS substrate independently pin Envoy Gateway / Envoy versions (the
@@ -5000,6 +5000,8 @@ None.
 
 **Status**: Active (opened 2026-08-15; updated 2026-08-16). Exact adapter/repository foundations are
 landed; the causal desired-present/session/generation and terminal-audit boundaries remain.
+Execution is parked behind the earlier queue entries in
+[README.md → Resume Here](README.md#resume-here); this is not a later-phase `Blocked` status.
 **Closure dependency**: remaining Sprint-`4.85` stable generation, audit, and terminal proof inputs.
 No later-phase blocker.
 **Deployment qualification**: pending — AWS inventory, EKS authentication/drain, provider cleanup,
@@ -5043,12 +5045,10 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
 - Creation/ownership positive authority remains deliberately unavailable: route `55` is
   observation-only, and a later cleanup cannot yet select a stable lifecycle generation for a stack
   created under another run/surface.
-- The required causal join exposed a deeper session gap. A paused, unregistered draft introduces an
-  opaque Provider credential-session binding (Target credential generation + exact Vault KV
-  version + canonical Target-worker receipt digest), strict metadata with
-  `prodbox_vault_version`, exact-version Vault reads, and v2/v3 committed-intent envelopes. It is
-  not source-stable: no Cabal registration or compile/style/test gate has run, one focused test uses
-  an undefined `shouldSatisfyM`, and the frozen pre-change v2 byte fixture is missing.
+- The required causal join still needs an opaque Provider credential-session binding (Target
+  credential generation + exact Vault KV version + canonical Target-worker receipt digest), strict
+  metadata, exact-version Vault reads, and a backward-compatible committed-intent envelope. That
+  complete source-stable protocol and its frozen compatibility fixture do not yet exist.
 - No exact terminal escape-audit intent, atomic freeze-and-reserve transition, complete retained
   matcher/query catalog, independently read-back audit receipt, or IAM revoke/read-back protocol
   exists. The live all-three-stack campaign has not run.
@@ -5115,7 +5115,7 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
 
 ### Remaining Work
 
-First finish and freeze the Provider credential-session v3 protocol, then bind a Pending parent
+First finish and freeze the Provider credential-session binding protocol, then bind a Pending parent
 create to its deterministic scope-observation child and independently read-back stable lifecycle
 generation before dispatch. Complete the retained audit catalog, atomic audit reservation,
 paginated Provider audit/result receipt, credential revoke/read-backs, and bounded confirmed-legacy

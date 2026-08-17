@@ -258,9 +258,11 @@ mkEksDrainClientBoundary
   -> EksDrainClientBoundary m
 mkEksDrainClientBoundary factory =
   EksDrainClientBoundary $ \session consume ->
-    factory session $ \created -> case created of
-      Left failure -> consume (Left failure)
-      Right effects -> consume (Right (EksDrainEphemeralClient effects))
+    factory session (consumeCreatedClient consume)
+ where
+  consumeCreatedClient consume created = case created of
+    Left failure -> consume (Left failure)
+    Right effects -> consume (Right (EksDrainEphemeralClient effects))
 
 -- | Safe coordinates needed by the Provider auth issuer.  The request never
 -- contains a bearer, endpoint, certificate authority, or caller-made
@@ -311,16 +313,18 @@ mkEksDrainCommitSelectionBoundary
   -> EksDrainCommitSelectionBoundary m
 mkEksDrainCommitSelectionBoundary factory =
   EksDrainCommitSelectionBoundary $ \execution request consume ->
-    factory execution request $ \created -> case created of
-      Left failure -> consume (Left failure)
-      Right (projection, effects) ->
-        consume
-          ( Right
-              EksDrainCommitSelectionClient
-                { internalEksDrainCommitSelectionProjection = projection
-                , internalEksDrainCommitSelectionEffects = effects
-                }
-          )
+    factory execution request (consumeCreatedClient consume)
+ where
+  consumeCreatedClient consume created = case created of
+    Left failure -> consume (Left failure)
+    Right (projection, effects) ->
+      consume
+        ( Right
+            EksDrainCommitSelectionClient
+              { internalEksDrainCommitSelectionProjection = projection
+              , internalEksDrainCommitSelectionEffects = effects
+              }
+        )
 
 -- | Attempt-aware projection boundary for the mutation and mandatory
 -- read-back nodes.  It has the same continuation-only credential lifetime as
@@ -354,16 +358,18 @@ mkEksDrainAttemptBoundary
   -> EksDrainAttemptBoundary m
 mkEksDrainAttemptBoundary factory =
   EksDrainAttemptBoundary $ \execution request consume ->
-    factory execution request $ \created -> case created of
-      Left failure -> consume (Left failure)
-      Right (projection, effects) ->
-        consume
-          ( Right
-              EksDrainCommitSelectionClient
-                { internalEksDrainCommitSelectionProjection = projection
-                , internalEksDrainCommitSelectionEffects = effects
-                }
-          )
+    factory execution request (consumeCreatedClient consume)
+ where
+  consumeCreatedClient consume created = case created of
+    Left failure -> consume (Left failure)
+    Right (projection, effects) ->
+      consume
+        ( Right
+            EksDrainCommitSelectionClient
+              { internalEksDrainCommitSelectionProjection = projection
+              , internalEksDrainCommitSelectionEffects = effects
+              }
+        )
 
 data EksDrainCommitSelectionError
   = EksDrainCommitSelectionRegistryIdentityMissing
@@ -505,15 +511,16 @@ observeVerifiedEksDrainSelection interpreter binding revision session = do
       internalWithEksDrainClient
         (internalEksDrainClientBoundary interpreter)
         session
-        ( \created -> case created of
-            Left failure -> pure (incomplete (clientAccessFailures failure))
-            Right client -> selectWithClient client
-        )
+        selectWithCreatedClient
  where
   expectedScope = eksDrainBindingScope binding
   expectedOperation = eksDrainBindingEffectOperationId binding
   observation result = eksDrainTargetSelectionObservationFor session revision result
   incomplete failures = Left (observation (EksDrainTargetSelectionUnobservable failures))
+
+  selectWithCreatedClient created = case created of
+    Left failure -> pure (incomplete (clientAccessFailures failure))
+    Right client -> selectWithClient client
 
   selectWithClient client = do
     let effects = internalEksDrainClientEffects client
@@ -581,17 +588,18 @@ acquireVerifiedEksDrainSelection
           boundary
           (teardownExecutionIdentity context)
           request
-          ( \created -> case created of
-              Left (EksDrainClientAccessRefused failure) ->
-                pure (Left (EksDrainCommitSelectionAccessRefused failure))
-              Left (EksDrainClientAccessUnobservable failure) ->
-                pure (Left (EksDrainCommitSelectionAccessUnobservable failure))
-              Right client ->
-                selectWithProjectionClient now providerArn client
-          )
+          (selectWithCreatedProjectionClient now providerArn)
    where
     scope = eksDrainBindingScope binding
     effectOperation = eksDrainBindingEffectOperationId binding
+
+    selectWithCreatedProjectionClient now providerArn created = case created of
+      Left (EksDrainClientAccessRefused failure) ->
+        pure (Left (EksDrainCommitSelectionAccessRefused failure))
+      Left (EksDrainClientAccessUnobservable failure) ->
+        pure (Left (EksDrainCommitSelectionAccessUnobservable failure))
+      Right client ->
+        selectWithProjectionClient now providerArn client
 
     selectWithProjectionClient now providerArn client = do
       let effects = internalEksDrainCommitSelectionEffects client
@@ -694,17 +702,18 @@ acquireAwsEksDestroyAuthorization
           boundary
           (teardownExecutionIdentity context)
           request
-          ( \created -> case created of
-              Left (EksDrainClientAccessRefused failure) ->
-                pure (Left (EksDrainDestroyAdmissionAccessRefused failure))
-              Left (EksDrainClientAccessUnobservable failure) ->
-                pure (Left (EksDrainDestroyAdmissionAccessUnobservable failure))
-              Right client ->
-                authorizeWithProjectionClient now providerArn client
-          )
+          (authorizeWithCreatedProjectionClient now providerArn)
    where
     scope = eksDrainBindingScope binding
     destroyOperation = teardownExecutionOperationId context
+
+    authorizeWithCreatedProjectionClient now providerArn created = case created of
+      Left (EksDrainClientAccessRefused failure) ->
+        pure (Left (EksDrainDestroyAdmissionAccessRefused failure))
+      Left (EksDrainClientAccessUnobservable failure) ->
+        pure (Left (EksDrainDestroyAdmissionAccessUnobservable failure))
+      Right client ->
+        authorizeWithProjectionClient now providerArn client
 
     authorizeWithProjectionClient now providerArn client = do
       let effects = internalEksDrainCommitSelectionEffects client
@@ -922,30 +931,45 @@ executeCommittedEksDrainIntentWithContext
                       boundary
                       (teardownExecutionIdentity context)
                       request
-                      ( \created -> case created of
-                          Left (EksDrainClientAccessRefused failure) ->
-                            pure
-                              ( recordOutcome
-                                  attempt
-                                  (EksDrainMutationFailed failure)
-                              )
-                          Left (EksDrainClientAccessUnobservable failure) ->
-                            pure
-                              ( recordOutcome
-                                  attempt
-                                  (EksDrainMutationUnobservable failure)
-                              )
-                          Right client ->
-                            executeWithProjectionClient
-                              now
-                              providerArn
-                              invocation
-                              attempt
-                              exactVerified
-                              exactTarget
-                              client
+                      ( executeWithCreatedProjectionClient
+                          now
+                          providerArn
+                          invocation
+                          attempt
+                          exactVerified
+                          exactTarget
                       )
    where
+    executeWithCreatedProjectionClient
+      now
+      providerArn
+      invocation
+      attempt
+      exactVerified
+      target
+      created = case created of
+        Left (EksDrainClientAccessRefused failure) ->
+          pure
+            ( recordOutcome
+                attempt
+                (EksDrainMutationFailed failure)
+            )
+        Left (EksDrainClientAccessUnobservable failure) ->
+          pure
+            ( recordOutcome
+                attempt
+                (EksDrainMutationUnobservable failure)
+            )
+        Right client ->
+          executeWithProjectionClient
+            now
+            providerArn
+            invocation
+            attempt
+            exactVerified
+            target
+            client
+
     executeWithProjectionClient now providerArn invocation attempt exactVerified target client = do
       let effects = internalEksDrainCommitSelectionEffects client
           projection = internalEksDrainCommitSelectionProjection client
@@ -1100,24 +1124,39 @@ observeEksDrainTargetsReadBackWithContext
                         boundary
                         (teardownExecutionIdentity context)
                         request
-                        ( \created -> case created of
-                            Left failure ->
-                              pure
-                                ( unobservableReadBack
-                                    attempt
-                                    (clientAccessFailures failure)
-                                )
-                            Right client ->
-                              readBackWithProjectionClient
-                                now
-                                providerArn
-                                invocation
-                                attempt
-                                exactVerified
-                                exactTarget
-                                client
+                        ( readBackWithCreatedProjectionClient
+                            now
+                            providerArn
+                            invocation
+                            attempt
+                            exactVerified
+                            exactTarget
                         )
    where
+    readBackWithCreatedProjectionClient
+      now
+      providerArn
+      invocation
+      attempted
+      exactVerified
+      target
+      created = case created of
+        Left failure ->
+          pure
+            ( unobservableReadBack
+                attempted
+                (clientAccessFailures failure)
+            )
+        Right client ->
+          readBackWithProjectionClient
+            now
+            providerArn
+            invocation
+            attempted
+            exactVerified
+            target
+            client
+
     readBackWithProjectionClient now providerArn invocation attempted exactVerified target client = do
       let effects = internalEksDrainCommitSelectionEffects client
           projection = internalEksDrainCommitSelectionProjection client
@@ -1167,17 +1206,18 @@ mutateWithSession interpreter target session =
   internalWithEksDrainClient
     (internalEksDrainClientBoundary interpreter)
     session
-    ( \created -> case created of
-        Left (EksDrainClientAccessRefused failure) ->
-          pure (EksDrainMutationFailed failure)
-        Left (EksDrainClientAccessUnobservable failure) ->
-          pure (EksDrainMutationUnobservable failure)
-        Right client ->
-          mutateWithClient
-            target
-            session
-            (internalEksDrainClientEffects client)
-    )
+    mutateWithCreatedClient
+ where
+  mutateWithCreatedClient created = case created of
+    Left (EksDrainClientAccessRefused failure) ->
+      pure (EksDrainMutationFailed failure)
+    Left (EksDrainClientAccessUnobservable failure) ->
+      pure (EksDrainMutationUnobservable failure)
+    Right client ->
+      mutateWithClient
+        target
+        session
+        (internalEksDrainClientEffects client)
 
 mutateWithClient
   :: (Monad m)
@@ -1216,15 +1256,16 @@ readBackWithSession interpreter attempt target session =
   internalWithEksDrainClient
     (internalEksDrainClientBoundary interpreter)
     session
-    ( \created -> case created of
-        Left failure -> pure (unobservableReadBack attempt (clientAccessFailures failure))
-        Right client ->
-          readBackWithClient
-            attempt
-            target
-            session
-            (internalEksDrainClientEffects client)
-    )
+    readBackWithCreatedClient
+ where
+  readBackWithCreatedClient created = case created of
+    Left failure -> pure (unobservableReadBack attempt (clientAccessFailures failure))
+    Right client ->
+      readBackWithClient
+        attempt
+        target
+        session
+        (internalEksDrainClientEffects client)
 
 readBackWithClient
   :: (Monad m)

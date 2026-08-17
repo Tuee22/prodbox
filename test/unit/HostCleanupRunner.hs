@@ -10,16 +10,17 @@ hostCleanupRunnerSuite :: SuiteBuilder ()
 hostCleanupRunnerSuite =
   describe "lifecycle-owned terminal host runner" $ do
     it
-      "keeps exact success, response-loss replay, no-repeat, and lease fencing behind a fixed regression" $ do
-      regression <- expectIoRight fixedHostCleanupRunnerRegression
-      hostCleanupRunnerRegressionUnboundRefused regression `shouldBe` True
-      hostCleanupRunnerRegressionFullTopology regression `shouldBe` True
-      hostCleanupRunnerRegressionResponseLossRecovered regression `shouldBe` True
-      hostCleanupRunnerRegressionConfirmedAbsenceNotRepeated regression
-        `shouldBe` True
-      hostCleanupRunnerRegressionWrongReadyRefused regression `shouldBe` True
-      hostCleanupRunnerRegressionMissingCompletionRefused regression `shouldBe` True
-      hostCleanupRunnerRegressionConcurrentLeaseFenced regression `shouldBe` True
+      "keeps exact success, response-loss replay, no-repeat, and lease fencing behind a fixed regression"
+      $ do
+        regression <- expectIoRight fixedHostCleanupRunnerRegression
+        hostCleanupRunnerRegressionUnboundRefused regression `shouldBe` True
+        hostCleanupRunnerRegressionFullTopology regression `shouldBe` True
+        hostCleanupRunnerRegressionResponseLossRecovered regression `shouldBe` True
+        hostCleanupRunnerRegressionConfirmedAbsenceNotRepeated regression
+          `shouldBe` True
+        hostCleanupRunnerRegressionWrongReadyRefused regression `shouldBe` True
+        hostCleanupRunnerRegressionMissingCompletionRefused regression `shouldBe` True
+        hostCleanupRunnerRegressionConcurrentLeaseFenced regression `shouldBe` True
 
     it "exports no completion-readback constructor or raw evidence remint input" $ do
       source <- readFile "src/Prodbox/Lifecycle/HostCleanupRunner.hs"

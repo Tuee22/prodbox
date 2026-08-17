@@ -205,17 +205,18 @@ cleanupRunSuite =
           Left err -> expectationFailure (show err)
           Right _ -> pure ()
         observedAttemptedReceipt <- readIORef attemptedReceipt
-        observedAttemptedReceipt `shouldSatisfy` \observed -> case observed of
-          Just
-            [ ( observedNode
-                , observedOperation
-                , CleanupTerminalDependencyCompleted observedAttempt (CleanupNodeFailed "drain")
-                )
-              ] ->
-              observedNode == nodeAId
-                && observedOperation == cleanupNodeOperationId nodeA
-                && validAttemptIdentity (cleanupAttemptIdText observedAttempt)
-          _ -> False
+        let matchesAttemptedReceipt observed = case observed of
+              Just
+                [ ( observedNode
+                    , observedOperation
+                    , CleanupTerminalDependencyCompleted observedAttempt (CleanupNodeFailed "drain")
+                    )
+                  ] ->
+                  observedNode == nodeAId
+                    && observedOperation == cleanupNodeOperationId nodeA
+                    && validAttemptIdentity (cleanupAttemptIdText observedAttempt)
+              _ -> False
+        observedAttemptedReceipt `shouldSatisfy` matchesAttemptedReceipt
 
         blockedState <- newIORef Nothing
         blockedIndex <- newIORef Nothing
@@ -757,17 +758,17 @@ cleanupRunSuite =
         Right _ -> pure ()
       observedAttempts <- readIORef attempts
       map fst observedAttempts `shouldBe` ["drain", "destroy"]
-      map snd observedAttempts `shouldSatisfy` \identities ->
-        case identities of
-          [drainAttempt, destroyAttempt] ->
-            all
-              ( \identity ->
-                  "cleanup-attempt/" `Text.isPrefixOf` identity
-                    && Text.length identity == 80
-              )
-              identities
-              && drainAttempt /= destroyAttempt
-          _ -> False
+      let areDistinctAttemptIdentities identities = case identities of
+            [drainAttempt, destroyAttempt] ->
+              all
+                ( \identity ->
+                    "cleanup-attempt/" `Text.isPrefixOf` identity
+                      && Text.length identity == 80
+                )
+                identities
+                && drainAttempt /= destroyAttempt
+            _ -> False
+      map snd observedAttempts `shouldSatisfy` areDistinctAttemptIdentities
 
     it "admits success-gated effects only from authoritative dependency receipts" $ do
       state <- newIORef Nothing
@@ -808,22 +809,23 @@ cleanupRunSuite =
         Left err -> expectationFailure (show err)
         Right _ -> pure ()
       observedContexts <- readIORef observed
-      observedContexts `shouldSatisfy` \contexts -> case contexts of
-        [ ("drain", "run-1", [])
-          , ( "destroy"
-              , "run-1"
-              , [ ( "drain"
-                    , drainOperation
-                    , drainAttempt
-                    , CleanupRequiresAttempt
-                    , CleanupNodeSucceeded
-                    )
-                  ]
-              )
-          ] ->
-            drainOperation == cleanupOperationIdText (cleanupNodeOperationId nodeA)
-              && validAttemptIdentity drainAttempt
-        _ -> False
+      let matchesObservedContexts contexts = case contexts of
+            [ ("drain", "run-1", [])
+              , ( "destroy"
+                  , "run-1"
+                  , [ ( "drain"
+                        , drainOperation
+                        , drainAttempt
+                        , CleanupRequiresAttempt
+                        , CleanupNodeSucceeded
+                        )
+                      ]
+                  )
+              ] ->
+                drainOperation == cleanupOperationIdText (cleanupNodeOperationId nodeA)
+                  && validAttemptIdentity drainAttempt
+            _ -> False
+      observedContexts `shouldSatisfy` matchesObservedContexts
 
     it "separates attempt identity across cleanup runs at the same fence" $ do
       first <- runAttempts "run-1"

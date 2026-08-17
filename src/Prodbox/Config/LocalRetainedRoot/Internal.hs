@@ -15,10 +15,8 @@ module Prodbox.Config.LocalRetainedRoot.Internal
   , LocalRetainedRootError (..)
   , RetainedRootMarkerReconcileOutcome (..)
   , bootstrapRetainedRootLocatorPath
-  , bootstrapRetainedRootLocatorIdentityDigestInternal
   , authorityBoundRetainedRootPath
   , authorityBoundRetainedRootInForceConfig
-  , authorityBoundRetainedRootIdentityDigestInternal
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
   , locateBootstrapRetainedRoot
@@ -203,36 +201,12 @@ data AuthorityBoundRetainedRoot = AuthorityBoundRetainedRoot
 bootstrapRetainedRootLocatorPath :: BootstrapRetainedRootLocator -> FilePath
 bootstrapRetainedRootLocatorPath = bootstrapLocatorRoot
 
--- | Package-private digest of the exact canonical marker accepted by the
--- bootstrap locator.  This remains non-authorizing: it is only useful for
--- matching an already-prepared retained-root record after the Authority is
--- locally absent.
-bootstrapRetainedRootLocatorIdentityDigestInternal
-  :: BootstrapRetainedRootLocator -> Text
-bootstrapRetainedRootLocatorIdentityDigestInternal =
-  TextEncoding.decodeUtf8
-    . hexSha256
-    . encodeMarker
-    . bootstrapLocatorMarker
-
 authorityBoundRetainedRootPath :: AuthorityBoundRetainedRoot -> FilePath
 authorityBoundRetainedRootPath = authorityRootPath
 
 authorityBoundRetainedRootInForceConfig
   :: AuthorityBoundRetainedRoot -> InForceConfig
 authorityBoundRetainedRootInForceConfig = authorityRootInForceConfig
-
--- | Package-private digest of the exact authenticated in-force config retained
--- by the Authority-bound root.  Persisted host bindings can name this identity
--- without exposing the config or a raw-field constructor.
-authorityBoundRetainedRootIdentityDigestInternal
-  :: AuthorityBoundRetainedRoot -> Text
-authorityBoundRetainedRootIdentityDigestInternal =
-  TextEncoding.decodeUtf8
-    . hexSha256
-    . LazyByteString.toStrict
-    . serialise
-    . authorityRootInForceConfig
 
 renderLocalRetainedRootError :: LocalRetainedRootError -> Text
 renderLocalRetainedRootError err = case err of

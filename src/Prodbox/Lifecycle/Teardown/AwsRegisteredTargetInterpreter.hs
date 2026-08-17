@@ -220,10 +220,10 @@ newtype AwsEksPresentDestroyBoundary m = AwsEksPresentDestroyBoundary
       -> RegisteredTargetBinding
       -> VerifiedAwsEksObservation 'ObserveEksForDecision
       -> m
-          ( Either
-              AwsRegisteredTargetInterpreterError
-              RegisteredTargetReconcileResult
-          )
+           ( Either
+               AwsRegisteredTargetInterpreterError
+               RegisteredTargetReconcileResult
+           )
   }
 
 -- | Install the production EKS-present destroy continuation.  The callback
@@ -238,10 +238,10 @@ mkAwsEksPresentDestroyBoundary
        -> RegisteredTargetBinding
        -> VerifiedAwsEksObservation 'ObserveEksForDecision
        -> m
-           ( Either
-               AwsRegisteredTargetInterpreterError
-               RegisteredTargetReconcileResult
-           )
+            ( Either
+                AwsRegisteredTargetInterpreterError
+                RegisteredTargetReconcileResult
+            )
      )
   -> AwsEksPresentDestroyBoundary m
 mkAwsEksPresentDestroyBoundary = AwsEksPresentDestroyBoundary

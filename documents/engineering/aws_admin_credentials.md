@@ -401,25 +401,27 @@ distinguish *who answers the prompt*, not separate credential stores:
 
 | Workflow shape | How elevated/admin power is supplied | Entrypoints |
 |----------------|-----------------|-------------|
-| Standalone substrate provisioning | **Public prompt path**: submit mode-indexed permits to the attested Credential Provisioner, seal/read back ordinary keys at their exact consumer and SMTP `SesSmtpSource` at retained-home custody, then discard admin material. Ordinary teardown removes only Operational identities. | `prodbox aws setup` at start; `prodbox aws teardown` at end |
+| Standalone substrate provisioning | **Public prompt path**: with retained local RKE2 and Lifecycle Authority already serving, submit mode-indexed permits to the attested Credential Provisioner, seal/read back ordinary keys at their exact consumer and SMTP `SesSmtpSource` at retained-home custody, then discard admin material. Ordinary teardown removes only Operational identities. | `prodbox cluster reconcile` first; `prodbox aws setup` starts the AWS window; `prodbox aws teardown` ends it |
 | Suite-driven runs | **Test-harness simulation path**: feed `aws_admin_for_test_simulation.*` from `test-secrets.dhall` to the same permit-bound Jobs, register cleanup before mutation, revoke Operational identities only after their dependants are absent, and retain the LongLived set. | `prodbox test integration aws-iam`, `prodbox test integration keycloak-invite`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
 | Canonical retained desired-present operation | **Split provider/material path**: submit one durable operation ID; Provider Worker assumes only `prodbox-ses-lease-session` for non-credential SES/S3/DNS, while Credential Provisioner receives separate `OperatorMaterialPermit`s for the deterministic SMTP IAM family and commits only after retained-home source custody. One absolute deadline bounds queue and effect work; propagation and attested Agent-to-Agent target materialization hold no AWS session and expose no generic export. | `prodbox aws stack aws-ses reconcile` |
 | Long-lived destructive/compatibility operations | **Admin Action Runner prompt path**: after consumers quiesce, `DestroyAwsSes` deletes/read-backs the exact registered SMTP IAM family and composes it with non-credential stack absence; while Agents remain live, every owned target/retained-home custody KV-v2 version is then physically destroyed and its metadata deleted/read back. `migrate-backend`, retained-store compatibility, and quota request/status read-back use their own exact `AdminActionPermit`. `prodbox nuke` uses the same external-first/Agent-physical-deletion ordering through its standalone Decommission Runner only after signed external-receipt export; neither path is a generic secret export. | `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox aws quotas request`, `prodbox nuke` |
 
-These paths remain distinct even when one suite uses all of them. A standalone substrate run uses
-`prodbox aws setup` and `prodbox aws teardown` symmetrically. A suite-driven run owns setup,
+These paths remain distinct even when one suite uses all of them. A standalone substrate run first
+reconciles the mandatory local RKE2 control plane, then uses `prodbox aws setup` and
+`prodbox aws teardown` symmetrically. A suite-driven run owns setup,
 per-run cleanup, identity revocation, and physical Vault version/metadata deletion end-to-end. The invite-capable
 preparation uses its Lifecycle-provider generation only for the fixed non-credential role; SMTP
 install/repair uses Credential Provisioner, while converged target restore uses retained
-`SesSmtpSource` custody without re-prompt. A standalone workflow's intermediate steps (`cluster reconcile`,
-`aws stack <stack> reconcile`, `charts reconcile --substrate aws`) must all run between the operator's
-`prodbox aws setup` and the operator's `prodbox aws teardown`. A targeted AWS-substrate test is
+`SesSmtpSource` custody without re-prompt. Once setup succeeds, a standalone workflow's AWS
+intermediate steps (`aws stack <stack> reconcile`, `charts reconcile --substrate aws`) run between
+the operator's `prodbox aws setup` and `prodbox aws teardown`; `cluster reconcile` is not inside
+that window because it establishes the Authority that admits setup. A targeted AWS-substrate test is
 not part of that manual window; `prodbox test integration <name> --substrate aws` owns the
 temporary operational credential lifecycle itself.
 
-The standalone substrate-provisioning step list is owned by
-[DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md → Sprint 7.5.c Sprint Workflow](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
-this section is the credentials-side contract that workflow cites.
+This retained-control-plane-first order is the stable credentials-side contract. The old
+[Sprint 7.5.c workflow](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md) is historical
+closure evidence and cannot override it.
 
 ## AWS credentials under Vault
 

@@ -173,15 +173,14 @@ verifiedFor
   -> VerifiedAwsEksObservation 'ObserveEksForDecision
 verifiedFor prefix evidence =
   let request = mustRight (mkAwsEksDecisionObservationRequest (ObservationRevision 7) fixtureScope)
-   in case
-        decodeAwsEksObservation
-          request
-          ( Right
-              ( ProviderIntentExecutionObserved
-                  (providerIntentCoordinate (awsEksObservationRequestProviderIntent request))
-                  (prefix <> evidence)
-              )
-          ) of
+   in case decodeAwsEksObservation
+        request
+        ( Right
+            ( ProviderIntentExecutionObserved
+                (providerIntentCoordinate (awsEksObservationRequestProviderIntent request))
+                (prefix <> evidence)
+            )
+        ) of
         AwsEksObservationDecoded verified -> verified
         AwsEksObservationRejected err _ -> error (show err)
 

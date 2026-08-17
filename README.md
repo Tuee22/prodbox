@@ -17,8 +17,10 @@ public edge, and Pulumi-backed AWS validation stacks.
 Prodbox is a Haskell-first repository for managing a home Kubernetes cluster and its AWS-backed
 validation environments.
 
-- Sprint status, blockers, validation closure, and cleanup/removal ownership live only in
-  [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md); stable target architecture is indexed
+- Current sprint status and resume order live only in
+  [DEVELOPMENT_PLAN/README.md → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here);
+  per-sprint validation closure and cleanup/removal ownership remain in the plan suite, while stable
+  target architecture is indexed
   by [documents/engineering/README.md](./documents/engineering/README.md).
 - The authoritative CLI doctrine is distributed across per-surface engineering docs under
   [documents/engineering/](./documents/engineering/README.md): command topology,
@@ -158,10 +160,10 @@ validation environments.
   cascade: it may short-circuit when local RKE2 is absent and may uninstall RKE2 after unresolved
   phases. A non-zero cascade is therefore unresolved, not a clean result; preserve `.data/` and the
   complete output for recovery. Rollout status lives only in
-  [Development Plan → Current Plan Status](./DEVELOPMENT_PLAN/README.md#current-plan-status).
+  [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 - This target edge doctrine has substrate-specific lower layers: the home substrate uses MetalLB,
   while the AWS substrate uses the AWS Load Balancer Controller/NLB path. Both substrates provision
-  Envoy Gateway, Gateway API, cert-manager, and the same shared service set through their
+  Envoy Gateway, Gateway API, cert-manager, and the same shared application/platform service set through their
   substrate-aware installers.
 - The current shipped edge workloads share the single public hostname
   `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
@@ -231,7 +233,8 @@ The current codebase baseline still deploys and manages:
   `redis` and `keycloak-postgres` dependency releases
 
 Implementation status, phase closure, and legacy-path removal are tracked in
-[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under
+[DEVELOPMENT_PLAN/README.md → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here) and its linked
+phase/ledger records. Engineering docs under
 `documents/engineering/` define doctrine and command contracts.
 
 ## Target Architecture
@@ -280,6 +283,10 @@ topology diagram and dependency order live only in
   operation IDs, authority epochs, fencing, checkpoints, provider revisions, credential
   generations, and target-delivery intents; the ephemeral AWS substrate receives a client
   reference, never a second writer.
+- The retained local RKE2 control plane is mandatory for supported operation and remains the
+  authority even when AWS is selected. AWS is an optional target substrate. If the local Authority
+  or its exact worker/adapter path is unavailable, AWS-targeted commands fail closed; they never
+  fall back to host-direct provider or Pulumi mutation.
 - Physically separate Authority Backup and TLS Retention Adapters, the fenced Provider Worker,
   mode-indexed Credential Provisioner, and explicit Admin Action Runner each interpret only their
   closed capability program. The post-export Decommission Runner is outside the live control plane.
@@ -291,11 +298,12 @@ topology diagram and dependency order live only in
 - The Gateway Runtime owns mesh, ownership projection, its encrypted identity-bound local emitter
   journal and, on home only, the registered Gateway-DNS effect. One actor holds the whole
   stage/fsync/publish/commit/fsync transition; EKS Gateway DNS mutation is disabled.
-- On EKS, Broker, Gateway diagnostics, Target Secret Agent, and Provider Worker have distinct
-  Service transports; Lifecycle Authority remains on retained home. AWS public A records flow only
-  through registered Authority/Provider intents, while cert-manager receives only its run-scoped
-  target Vault generation through a memory-only one-shot materializer. Deterministic EKS IAM names
-  bind both run/stack and cluster identity for exact recovery and cleanup.
+- On EKS, Broker, Gateway diagnostics, and Target Secret Agent have distinct Service transports;
+  Lifecycle Authority and the fenced Provider Worker remain in retained home RKE2. AWS provider
+  work reaches that home-only worker only through registered Authority/Provider intents; no
+  Provider Worker Service is deployed in EKS. Cert-manager receives only its run-scoped target
+  Vault generation through a memory-only one-shot materializer. Deterministic EKS IAM names bind
+  both run/stack and cluster identity for exact recovery and cleanup.
 - Capability observation, admission, and execution use one operation-indexed `CapabilityRef` and one
   propagated absolute deadline.
 
@@ -319,7 +327,7 @@ SES lease/release timeouts, mismatched authority observation/execution endpoints
 restoration that can remain incomplete after retained-resource failure. These current facts do not
 constitute deployment qualification. The authoritative status, counterexample evidence, and
 remaining-work ownership live in the
-[Development Plan](./DEVELOPMENT_PLAN/README.md#current-plan-status); the stable replacement
+[Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here); the stable replacement
 boundaries live in
 [Lifecycle Control-Plane Architecture](./documents/engineering/lifecycle_control_plane_architecture.md).
 
@@ -432,7 +440,7 @@ What this does:
 - The current `cluster reconcile` installs and reconciles the current RKE2 platform. The frozen,
   role-isolated Broker/Agent/Authority/Backup-Adapter genesis sequence is the target control-plane
   topology, not current behavior; its implementation and cutover are tracked in the
-  [Development Plan](./DEVELOPMENT_PLAN/README.md#current-plan-status). The current command also
+  [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here). The current command also
   installs the registry, MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL operator.
 - `charts reconcile vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
@@ -463,7 +471,7 @@ schema/digest/reference/generation in the Lifecycle Authority aggregate, with th
 only as a seed/propose input, is the target authority model and is not yet the active production
 path. The complete current/target sourcing and decryption contract lives in
 [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md); rollout
-status lives only in the [Development Plan](./DEVELOPMENT_PLAN/README.md#current-plan-status).
+status lives only in the [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here).
 
 Configuration has three tiers: non-secret binary bootstrap context, password-gated Vault recovery
 material, and Vault-gated operational secrets/encrypted state. Their exact contents, paths,
@@ -692,7 +700,7 @@ receives the stable `CleanupRunId`; a retry resumes rather than reconstructing i
 tag scans. This behavior is not yet the current binary behavior; see the warning in the Overview. See
 [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
 for both, and
-[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md#current-plan-status) for their owning
+[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md#resume-here) for their owning
 sprints; this guide does not maintain a competing status ledger.
 
 ### Chart Stacks
@@ -961,7 +969,8 @@ Run the aggregate suites only when you want the full repository proof:
 The target moves generic cleanup into the lifecycle-owned durable graph and makes `TestRunner` its
 client: independent/`RequiresAttempt` work continues and all failures aggregate instead of
 disappearing behind a fail-fast fold. This is not current-binary behavior; implementation and
-cutover status live in [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+cutover status live in
+[DEVELOPMENT_PLAN/README.md → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 
 These suites require the real tools, credentials, cluster state, DNS state, or AWS resources named
 by their prerequisite contracts. A green current-revision aggregate is necessary but insufficient:
@@ -974,13 +983,15 @@ and digest-bound evidence artifact; see
 
 The canonical test suite is composed of per-substrate runs against both supported substrates —
 the home local substrate and the AWS substrate. A complete canonical-suite proof requires both
-runs to land independently against their own real infrastructure (DNS, TLS via cert-manager,
-ingress, charts, public-edge proofs). Each per-substrate run is substrate-locked: it targets
-exactly one substrate, consumes only that substrate's operator-supplied config, and fails fast
-if any required substrate config is missing. There is no silent fallback from the AWS substrate
-to home values or vice versa. The two substrates stand up the same service set and the same
+runs to land independently against their own target application/platform infrastructure (DNS,
+TLS via cert-manager, ingress, charts, public-edge proofs). Each run is substrate-locked: it
+targets exactly one workload substrate, consumes only that target's operator-supplied config, and
+fails fast if required target config is missing. There is no silent fallback from AWS target
+values to home workload values or vice versa. Every AWS run additionally consumes the mandatory
+retained-home Lifecycle Authority and Provider Worker; those are control-plane dependencies, not
+target-config fallback. The two targets stand up the same application/platform service set and
 block-storage discipline (static `Retain` no-provisioner PVs, deterministic rebinding), differing
-only in their lower layer — ingress load-balancer, Route 53 hosting, and the PV volume source
+within that projection only in ingress load-balancer, Route 53 hosting, and PV volume source
 (`hostPath` under `.data/` on home, pre-created EBS on EKS). Select the substrate with
 `--substrate {home-local|aws}` on `prodbox test integration ...` and `prodbox test all`; the
 default is `home-local`. The authoritative doctrine lives in

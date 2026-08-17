@@ -76,6 +76,7 @@ import Prodbox.ControlPlane.Coordinate
   ( AuthorityScope
   , mkAuthorityScope
   )
+import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.RecoveryPlaneRepository.Internal
   ( RecoveryPlaneCommitResult (..)
   , RecoveryPlaneObservationBinding
@@ -98,7 +99,10 @@ import Prodbox.ControlPlane.RequestAuthentication
   , mkRequestSigner
   , mkSigningKeyGeneration
   )
-import Prodbox.Http.ReplyStatus (replyStatusCode)
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (ReplyInternalError)
+  , replyStatusCode
+  )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupNodeOutcome (..)
@@ -963,7 +967,7 @@ regressionDescriptorClient
   :: IORef [CleanupRunDescriptorResponse]
   -> Either Text (DescriptorBoundCleanupRunClient IO)
 regressionDescriptorClient queuedResponses = do
-  endpoint <- firstShow (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+  endpoint <- firstShow (mkLifecycleAuthorityEndpoint regressionAuthorityEndpoint)
   rawClient <-
     firstShow
       ( controlPlaneClientWithTransport
@@ -971,11 +975,13 @@ regressionDescriptorClient queuedResponses = do
           endpoint
           ( \_ _ _ _ -> do
               next <-
-                atomicModifyIORef' queuedResponses $ \queued -> case queued of
-                  [] -> ([], Nothing)
-                  response : remaining -> (remaining, Just response)
+                atomicModifyIORef' queuedResponses dequeueQueuedResponse
               pure $ case next of
-                Nothing -> Right (500, ByteString.empty)
+                Nothing ->
+                  Right
+                    ( replyStatusCode ReplyInternalError
+                    , ByteString.empty
+                    )
                 Just response ->
                   let result = CleanupRunEndpointDescriptorBound response
                    in Right
@@ -995,6 +1001,15 @@ regressionDescriptorClient queuedResponses = do
     ( descriptorBoundCleanupRunClient
         (mkAuthenticatedClientTransport bounds regressionClientProviders rawClient)
     )
+
+regressionAuthorityEndpoint :: Text
+regressionAuthorityEndpoint =
+  "http://lifecycle-authority:" <> Text.pack (show controlPlaneListenPort)
+
+dequeueQueuedResponse :: [value] -> ([value], Maybe value)
+dequeueQueuedResponse queued = case queued of
+  [] -> ([], Nothing)
+  response : remaining -> (remaining, Just response)
 
 regressionClientProviders :: AuthenticatedClientProviders IO
 regressionClientProviders =

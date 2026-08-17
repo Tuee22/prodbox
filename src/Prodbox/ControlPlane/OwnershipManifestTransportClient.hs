@@ -51,19 +51,7 @@ lifecycleAuthorityOwnershipManifestAuthenticatedClient
   -> OwnershipManifestClient IO
 lifecycleAuthorityOwnershipManifestAuthenticatedClient transport =
   OwnershipManifestClient
-    { attemptOwnershipManifestWriteAheadCommit = \write ->
-        case prepareAuthorityOwnershipManifestWrite write of
-          Left err -> pure (Left err)
-          Right prepared -> do
-            attempted <- callWire (ownershipManifestCommitWireRequest prepared)
-            pure $ do
-              response <- attempted
-              first
-                endpointResponseError
-                ( confirmOwnershipManifestCommitResponse
-                    (authorityOwnershipManifestWriteIdentity prepared)
-                    response
-                )
+    { attemptOwnershipManifestWriteAheadCommit = attemptWriteAheadCommit
     , readBackOwnershipManifestDecisionByIdentity = \target identity -> do
         attempted <- callWire (ownershipManifestReadBackWireRequest identity)
         pure $ do
@@ -75,6 +63,20 @@ lifecycleAuthorityOwnershipManifestAuthenticatedClient transport =
           confirmOwnershipManifestDecisionReadBack target identity observed
     }
  where
+  attemptWriteAheadCommit write =
+    case prepareAuthorityOwnershipManifestWrite write of
+      Left err -> pure (Left err)
+      Right prepared -> do
+        attempted <- callWire (ownershipManifestCommitWireRequest prepared)
+        pure $ do
+          response <- attempted
+          first
+            endpointResponseError
+            ( confirmOwnershipManifestCommitResponse
+                (authorityOwnershipManifestWriteIdentity prepared)
+                response
+            )
+
   callWire request = do
     attempted <-
       callAuthenticatedClientTransport

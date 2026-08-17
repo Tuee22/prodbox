@@ -927,34 +927,35 @@ newDurableModelB loseFirstResponse = do
   valuesRef <- newIORef Map.empty
   writesRef <- newIORef 0
   loseResponseRef <- newIORef loseFirstResponse
-  let adapter =
+  let compareAndSwap request = case request of
+        ModelBInitialize coordinate bytes -> do
+          let logicalName = modelBObjectLogicalName coordinate
+          existing <- readIORef valuesRef
+          case Map.lookup logicalName existing of
+            Just (version, current) ->
+              pure (ModelBCasConflict (ModelBObserved version current))
+            Nothing -> do
+              modifyIORef'
+                valuesRef
+                (Map.insert logicalName (fixtureModelBVersion, bytes))
+              atomicModifyIORef' writesRef (\count -> (count + 1, ()))
+              lose <-
+                atomicModifyIORef' loseResponseRef clearResponseLoss
+              pure $
+                if lose
+                  then ModelBCasUnobservable "CAS response lost"
+                  else ModelBCasApplied fixtureModelBVersion bytes
+        ModelBReplace {} -> unexpected
+        ModelBInitializeGuarded {} -> unexpected
+        ModelBReplaceGuarded {} -> unexpected
+      adapter =
         ModelBCasAdapter
           { modelBObserve = \coordinate -> do
               values <- readIORef valuesRef
               pure $ case Map.lookup (modelBObjectLogicalName coordinate) values of
                 Nothing -> ModelBMissing
                 Just (version, bytes) -> ModelBObserved version bytes
-          , modelBCompareAndSwap = \request -> case request of
-              ModelBInitialize coordinate bytes -> do
-                let logicalName = modelBObjectLogicalName coordinate
-                existing <- readIORef valuesRef
-                case Map.lookup logicalName existing of
-                  Just (version, current) ->
-                    pure (ModelBCasConflict (ModelBObserved version current))
-                  Nothing -> do
-                    modifyIORef'
-                      valuesRef
-                      (Map.insert logicalName (fixtureModelBVersion, bytes))
-                    atomicModifyIORef' writesRef (\count -> (count + 1, ()))
-                    lose <-
-                      atomicModifyIORef' loseResponseRef clearResponseLoss
-                    pure $
-                      if lose
-                        then ModelBCasUnobservable "CAS response lost"
-                        else ModelBCasApplied fixtureModelBVersion bytes
-              ModelBReplace {} -> unexpected
-              ModelBInitializeGuarded {} -> unexpected
-              ModelBReplaceGuarded {} -> unexpected
+          , modelBCompareAndSwap = compareAndSwap
           }
       unexpected =
         pure (ModelBCasUnobservable "unexpected non-create CAS request")
@@ -1063,19 +1064,33 @@ isLeftProof result = case result of
 operationMismatchPredicates
   :: [Either EksDrainReadBackReceiptError value -> Bool]
 operationMismatchPredicates =
-  [ \result -> case result of
-      Left EksDrainReadBackReceiptCommitOperationMismatch {} -> True
-      _ -> False
-  , \result -> case result of
-      Left EksDrainReadBackReceiptIntentReadBackOperationMismatch {} -> True
-      _ -> False
-  , \result -> case result of
-      Left EksDrainReadBackReceiptEffectOperationMismatch {} -> True
-      _ -> False
-  , \result -> case result of
-      Left EksDrainReadBackReceiptDrainReadBackOperationMismatch {} -> True
-      _ -> False
+  [ isCommitOperationMismatch
+  , isIntentReadBackOperationMismatch
+  , isEffectOperationMismatch
+  , isDrainReadBackOperationMismatch
   ]
+
+isCommitOperationMismatch :: Either EksDrainReadBackReceiptError value -> Bool
+isCommitOperationMismatch result = case result of
+  Left EksDrainReadBackReceiptCommitOperationMismatch {} -> True
+  _ -> False
+
+isIntentReadBackOperationMismatch
+  :: Either EksDrainReadBackReceiptError value -> Bool
+isIntentReadBackOperationMismatch result = case result of
+  Left EksDrainReadBackReceiptIntentReadBackOperationMismatch {} -> True
+  _ -> False
+
+isEffectOperationMismatch :: Either EksDrainReadBackReceiptError value -> Bool
+isEffectOperationMismatch result = case result of
+  Left EksDrainReadBackReceiptEffectOperationMismatch {} -> True
+  _ -> False
+
+isDrainReadBackOperationMismatch
+  :: Either EksDrainReadBackReceiptError value -> Bool
+isDrainReadBackOperationMismatch result = case result of
+  Left EksDrainReadBackReceiptDrainReadBackOperationMismatch {} -> True
+  _ -> False
 
 shouldReturnSatisfying :: IO value -> (value -> Bool) -> IO ()
 shouldReturnSatisfying action predicate = action >>= (`shouldSatisfy` predicate)

@@ -7,6 +7,7 @@ where
 
 import Data.Bits (xor)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.Either (isLeft)
 import Data.IORef
   ( IORef
@@ -20,8 +21,8 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
-import Prodbox.ControlPlane.ProviderNarrowSession
 import Prodbox.ControlPlane.ProviderCredentialSession
+import Prodbox.ControlPlane.ProviderNarrowSession
 import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -127,6 +128,16 @@ controlPlaneProviderWorkerExecutionSuite =
         (ByteString.replicate (providerCommittedIntentMaximumEncodedBytes + 1) 0)
         `shouldSatisfy` isIntentTooLarge
 
+    it "preserves the frozen pre-v3 envelope and every historical action ordinal" $ do
+      let signed = signedIntentFor signingKey (defaultSpec defaultIntent)
+          encoded = encodeSignedProviderCommittedIntent signed
+          frozen = mustRight (Base64.decode frozenProviderIntentV2Base64)
+      encoded `shouldBe` frozen
+      decodeSignedProviderCommittedIntent providerCommittedIntentMaximumEncodedBytes frozen
+        `shouldBe` Right signed
+      legacyV2EnvelopeSetDigest
+        `shouldBe` frozenLegacyV2EnvelopeSetDigest
+
     it "strictly joins the Target receipt version while preserving exact legacy rollout readiness" $ do
       let regression = fixedProviderCredentialSessionRegression
       providerCredentialSessionRegressionExactJoinAccepted regression `shouldBe` True
@@ -137,6 +148,8 @@ controlPlaneProviderWorkerExecutionSuite =
       providerCredentialSessionRegressionDestroyedVersionRefused regression `shouldBe` True
       providerCredentialSessionRegressionMissingDataRefused regression `shouldBe` True
       providerCredentialSessionRegressionExtraSecretFieldRefused regression `shouldBe` True
+      providerCredentialSessionRegressionBindingSecretOpaque regression `shouldBe` True
+      providerCredentialSessionRegressionErrorSecretOpaque regression `shouldBe` True
 
     it "fails closed on missing or rotated opaque Provider credential bindings" $ do
       let regression = fixedProviderIntentCredentialBindingRegression
@@ -144,6 +157,10 @@ controlPlaneProviderWorkerExecutionSuite =
       providerIntentCredentialBindingRegressionExactAccepted regression `shouldBe` True
       providerIntentCredentialBindingRegressionMissingRefused regression `shouldBe` True
       providerIntentCredentialBindingRegressionMismatchRefused regression `shouldBe` True
+      providerIntentCredentialBindingRegressionGenerationRotationRefused regression `shouldBe` True
+      providerIntentCredentialBindingRegressionVersionRotationRefused regression `shouldBe` True
+      providerIntentCredentialBindingRegressionReceiptRotationRefused regression `shouldBe` True
+      providerIntentCredentialBindingRegressionRotationSkipsCapability regression `shouldBe` True
 
     it "rejects invalid intent identities, resource values, revision binding, and action bounds" $ do
       mkProviderIssuerKeyGeneration 0
@@ -363,85 +380,84 @@ controlPlaneProviderWorkerExecutionSuite =
           (ProviderIntentExecutionDeadlineReached intentDeadline intentDeadline)
       assertBoundaryCounts deadlineFixture (2, 2, 0)
 
-    it "round-trips v3 authority binding and refuses a rotated accepted record before session acquisition" $ do
-      sourceFixture <- freshFixture
-      sourceVerified <- mustAdmitDefault sourceFixture defaultIntent
-      sourceResult <-
-        executeVerifiedProviderIntentBound (fixtureBoundary sourceFixture) sourceVerified
-      sourceExecuted <- case sourceResult of
-        Left err -> expectationFailure (show err)
-        Right executed -> pure executed
-      let acceptedDigest = executedProviderIntentAcceptedAuthorityDigest sourceExecuted
-          boundSigned =
-            signedIntentFor
-              signingKey
-              (defaultSpec defaultIntent)
-                { providerIntentExpectedAcceptedAuthority = Just acceptedDigest
-                }
-          boundBytes = encodeSignedProviderCommittedIntent boundSigned
-      decodeSignedProviderCommittedIntent providerCommittedIntentMaximumEncodedBytes boundBytes
-        `shouldBe` Right boundSigned
-      exactFixture <- freshFixture
-      exactAdmission <-
-        admitProviderCommittedIntent
-          providerCommittedIntentMaximumEncodedBytes
-          (fixtureBoundary exactFixture)
-          boundBytes
-      exactVerified <- case exactAdmission of
-        Left err -> expectationFailure (show err)
-        Right verified -> pure verified
-      executeVerifiedProviderIntentBound (fixtureBoundary exactFixture) exactVerified
-        `shouldSatisfyM` isRightValue
+    it
+      "round-trips v3 authority binding and refuses a rotated accepted record before session acquisition"
+      $ do
+        sourceFixture <- freshFixture
+        sourceVerified <- mustAdmitDefault sourceFixture defaultIntent
+        sourceResult <-
+          executeVerifiedProviderIntentBound (fixtureBoundary sourceFixture) sourceVerified
+        sourceExecuted <- mustExecution sourceResult
+        let acceptedDigest = executedProviderIntentAcceptedAuthorityDigest sourceExecuted
+            boundSigned =
+              signedIntentFor
+                signingKey
+                (defaultSpec defaultIntent)
+                  { providerIntentExpectedAcceptedAuthority = Just acceptedDigest
+                  }
+            boundBytes = encodeSignedProviderCommittedIntent boundSigned
+        decodeSignedProviderCommittedIntent providerCommittedIntentMaximumEncodedBytes boundBytes
+          `shouldBe` Right boundSigned
+        exactFixture <- freshFixture
+        exactAdmission <-
+          admitProviderCommittedIntent
+            providerCommittedIntentMaximumEncodedBytes
+            (fixtureBoundary exactFixture)
+            boundBytes
+        exactVerified <- mustAdmission exactAdmission
+        exactResult <-
+          executeVerifiedProviderIntentBound (fixtureBoundary exactFixture) exactVerified
+        _ <- mustExecution exactResult
 
-      alternateFixture <- freshFixture
-      let alternateAuthority =
-            mustRight
-              ( mkAcceptedProviderAuthority
-                  issuerGenerationOne
-                  issuerIdentity
-                  (providerIntentSigningPublicKey alternateSigningKey)
-                  (AuthorityEpoch 4)
-                  fenceFive
-                  providerRevision
-                  registeredResources
-              )
-      writeIORef (fixtureTrust alternateFixture) (Right alternateAuthority)
-      alternateAdmission <-
-        admitProviderCommittedIntent
-          providerCommittedIntentMaximumEncodedBytes
-          (fixtureBoundary alternateFixture)
-          ( encodeSignedProviderCommittedIntent
-              (signedIntentFor alternateSigningKey (defaultSpec defaultIntent))
-          )
-      alternateVerified <- case alternateAdmission of
-        Left err -> expectationFailure (show err)
-        Right verified -> pure verified
-      alternateResult <-
-        executeVerifiedProviderIntentBound
-          (fixtureBoundary alternateFixture)
-          alternateVerified
-      alternateExecuted <- case alternateResult of
-        Left err -> expectationFailure (show err)
-        Right executed -> pure executed
-      mismatchFixture <- freshFixture
-      let mismatched =
-            signedIntentFor
-              signingKey
-              (defaultSpec defaultIntent)
-                { providerIntentExpectedAcceptedAuthority =
-                    Just (executedProviderIntentAcceptedAuthorityDigest alternateExecuted)
-                }
-      mismatchAdmission <-
-        admitProviderCommittedIntent
-          providerCommittedIntentMaximumEncodedBytes
-          (fixtureBoundary mismatchFixture)
-          (encodeSignedProviderCommittedIntent mismatched)
-      mismatchVerified <- case mismatchAdmission of
-        Left err -> expectationFailure (show err)
-        Right verified -> pure verified
-      executeVerifiedProviderIntentBound (fixtureBoundary mismatchFixture) mismatchVerified
-        `shouldReturn` Left ProviderIntentExecutionAcceptedAuthorityBindingMismatch
-      assertBoundaryCounts mismatchFixture (2, 1, 0)
+        alternateFixture <- freshFixture
+        let alternateAuthority =
+              mustRight
+                ( mkAcceptedProviderAuthority
+                    issuerGenerationOne
+                    issuerIdentity
+                    (providerIntentSigningPublicKey alternateSigningKey)
+                    (AuthorityEpoch 4)
+                    fenceFive
+                    providerRevision
+                    registeredResources
+                )
+        writeIORef (fixtureTrust alternateFixture) (Right alternateAuthority)
+        alternateAdmission <-
+          admitProviderCommittedIntent
+            providerCommittedIntentMaximumEncodedBytes
+            (fixtureBoundary alternateFixture)
+            ( encodeSignedProviderCommittedIntent
+                (signedIntentFor alternateSigningKey (defaultSpec defaultIntent))
+            )
+        alternateVerified <- mustAdmission alternateAdmission
+        alternateResult <-
+          executeVerifiedProviderIntentBound
+            (fixtureBoundary alternateFixture)
+            alternateVerified
+        alternateExecuted <- mustExecution alternateResult
+        mismatchFixture <- freshFixture
+        let mismatched =
+              signedIntentFor
+                signingKey
+                (defaultSpec defaultIntent)
+                  { providerIntentExpectedAcceptedAuthority =
+                      Just (executedProviderIntentAcceptedAuthorityDigest alternateExecuted)
+                  }
+        mismatchAdmission <-
+          admitProviderCommittedIntent
+            providerCommittedIntentMaximumEncodedBytes
+            (fixtureBoundary mismatchFixture)
+            (encodeSignedProviderCommittedIntent mismatched)
+        mismatchVerified <- mustAdmission mismatchAdmission
+        mismatchResult <-
+          executeVerifiedProviderIntentBound
+            (fixtureBoundary mismatchFixture)
+            mismatchVerified
+        case mismatchResult of
+          Left err ->
+            err `shouldBe` ProviderIntentExecutionAcceptedAuthorityBindingMismatch
+          Right _ -> expectationFailure "expected rotated Provider authority to be refused"
+        assertBoundaryCounts mismatchFixture (2, 1, 0)
 
     it "dispatches every closed action through only its exact rank-2 capability" $ do
       fixture <- freshFixture
@@ -792,6 +808,13 @@ mustAdmission result = case result of
   Left err -> error ("expected admitted provider intent, got " <> show err)
   Right verified -> pure verified
 
+mustExecution
+  :: Either ProviderIntentExecutionError ExecutedProviderIntent
+  -> IO ExecutedProviderIntent
+mustExecution result = case result of
+  Left err -> error ("expected executed provider intent, got " <> show err)
+  Right executed -> pure executed
+
 expectAdmissionRefusal
   :: Fixture
   -> SignedProviderCommittedIntent
@@ -918,6 +941,69 @@ allIntents =
           )
       )
   ]
+
+-- The v2 action vocabulary in wire-ordinal order. New actions append to the
+-- wire vocabulary; this frozen digest makes reordering an existing tag fail.
+legacyProviderIntentsByOrdinal :: [ProviderIntent]
+legacyProviderIntentsByOrdinal =
+  [ ReconcileRegisteredStack (stackRef "aws-eks") providerRevision awsEksConfig
+  , ObserveRegisteredStack (stackRef "aws-eks")
+  , ReadBackRegisteredStack (stackRef "aws-eks")
+  , BoundedScratchCheckpoint (checkpointRef "scratch")
+  , ReconcileSesSendingIdentity (identityRef "mail")
+  , ReconcileSesDkim (identityRef "mail")
+  , ReconcileSesReceiptRules (ruleSetRef "inbound")
+  , ReconcileSesCaptureBucket (bucketRef "capture")
+  , DestroyRegisteredStack (stackRef "aws-eks") providerRevision awsEksConfig
+  , ReapTestEbsVolumes "prodbox-test"
+  , ObserveSpotPrice spotPriceQuery
+  , ObserveOperationalIdentity
+  , ObserveProviderReadiness ProviderReadinessStsIdentity
+  , ObserveProviderReadiness (ProviderReadinessRoute53Zone "Z123EXAMPLE")
+  , ReconcileSesDns dnsRef
+  , IssueEksClientAuth
+      ( mustRight
+          ( mkEksClientAuthRequest
+              "123456789012"
+              "ca-central-1"
+              "aws-eks-test-cluster"
+              (ByteString.replicate 32 7)
+          )
+      )
+  , ObservePublicARecord publicARef
+  , ReconcilePublicARecord publicARef
+  , ObserveTestEbsVolumes "prodbox-test"
+  , ObserveEksClusterIdentity
+      ( mustRight
+          ( mkEksClusterIdentityRequest
+              (stackRef "aws-eks")
+              "123456789012"
+              "ca-central-1"
+              "aws-eks-test-cluster"
+          )
+      )
+  , ObserveProviderAwsScope
+  ]
+
+legacyV2EnvelopeSetDigest :: Text
+legacyV2EnvelopeSetDigest =
+  targetValueDigestText
+    ( sha256TargetValueDigest
+        ( ByteString.concat
+            [ encodeSignedProviderCommittedIntent
+                (signedIntentFor signingKey (defaultSpec intent))
+            | intent <- legacyProviderIntentsByOrdinal
+            ]
+        )
+    )
+
+frozenProviderIntentV2Base64 :: ByteString.ByteString
+frozenProviderIntentV2Base64 =
+  "gwCPAAIBc2xpZmVjeWNsZS1hdXRob3JpdHkEdHByb3ZpZGVyLW9wZXJhdGlvbi0xAHhAM2JkMjNkMTg2NzBkNDU2OWQ4YzFiMjc4YjU3OTA3NDIzZjFlYzNmMjZjNmE3ODJjOGJmYjQwNzk4NjU0MmFiY25wcm92aWRlci1vd25lcgYDhwAEZG1haWyAgICAeEBmNWZhNTkyNTRiNzZjZWY5YTMwNTc4MmU1ODczMjlkODk5N2MzMzA5NjBiZDljOWM0ZmI1NTZkYWJjNmNhYjdmGQPodnByb3ZpZGVyLWlkZW1wb3RlbmN5LTFYQNSP+sx24hDBvuPrUsf3pRp0zdGoDV0KrT6vlYf/6+aDGSWRSGA3s1UVKJHAwxKQpMZspyj6hD8qoARbtcAojww="
+
+frozenLegacyV2EnvelopeSetDigest :: Text
+frozenLegacyV2EnvelopeSetDigest =
+  "eb237dee7e0a45c935a847428633c60bcaae82b180dd4c4dd2b56dbf000c5b9a"
 
 publicARef :: PublicARecordRef
 publicARef = mustRight (mkPublicARecordRef "ZAWS" "edge.example.test" 60 ["192.0.2.10"])

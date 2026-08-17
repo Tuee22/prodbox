@@ -54,6 +54,10 @@ import Prodbox.Lifecycle.CleanupRunRunner
   , cleanupNodeExecutionNodeId
   , cleanupNodeExecutionRunId
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (IssueEksClientAuth, ObserveOperationalIdentity)
+  , mkEksClientAuthRequest
+  )
 import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   ( TeardownExecutionIdentity
   , teardownExecutionIdentityAttemptId
@@ -61,10 +65,6 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   , teardownExecutionIdentityNodeId
   , teardownExecutionIdentityOperationId
   , teardownExecutionIdentityRunId
-  )
-import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (IssueEksClientAuth, ObserveOperationalIdentity)
-  , mkEksClientAuthRequest
   )
 
 data EksClientAuthClientError

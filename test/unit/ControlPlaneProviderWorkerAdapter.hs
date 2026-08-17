@@ -3,9 +3,6 @@
 
 module ControlPlaneProviderWorkerAdapter (controlPlaneProviderWorkerAdapterSuite) where
 
-import ControlPlaneProviderWorkerExecution
-  ( controlPlaneProviderWorkerExecutionSuite
-  )
 import Data.Either (isLeft)
 import Data.IORef
 import Data.Text (Text)
@@ -154,8 +151,6 @@ controlPlaneProviderWorkerAdapterSuite =
       providerWorkerAdapterReady (fixtureAdapter fixture) `shouldReturn` True
       let externallyDown = (fixtureAdapter fixture) {providerWorkerExternalReady = pure False}
       providerWorkerAdapterReady externallyDown `shouldReturn` False
-
-    controlPlaneProviderWorkerExecutionSuite
 
 data Fixture = Fixture
   { fixtureAdapter :: !(ProviderWorkerAdapter IO Text)

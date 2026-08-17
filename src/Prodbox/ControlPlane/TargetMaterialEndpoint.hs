@@ -31,10 +31,10 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint
 where
 
 import Codec.Serialise (Serialise)
-import Control.Monad (void)
 import Data.Bifunctor qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Foldable (traverse_)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
@@ -53,12 +53,6 @@ import Prodbox.ControlPlane.RoleReadiness
   )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (TargetMaterialObserve)
-  )
-import Prodbox.ControlPlane.TargetMaterialRegistry
-  ( TargetSecretId
-  , allTargetMaterialIds
-  , compiledTargetSecretSink
-  , targetSecretIdToken
   )
 import Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
   ( targetMaterialMetadataActionDigestField
@@ -81,6 +75,12 @@ import Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
   , validatedTargetMaterialPodUid
   , validatedTargetMaterialRequestDigest
   , validatedTargetMaterialVaultVersion
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( TargetSecretId
+  , allTargetMaterialIds
+  , compiledTargetSecretSink
+  , targetSecretIdToken
   )
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
@@ -184,16 +184,16 @@ observeVaultTargetMaterialDependencies session =
     pure
       ( "target-material:" <> targetSecretIdToken target
       , roleDependencyFromOutcome
-          ( observed >>= traverse validateTargetMaterialMetadataReadinessInternal >> pure ()
-          )
+          (observed >>= traverse_ validateTargetMaterialMetadataReadinessInternal)
       )
 
 observeVaultTargetMaterialMetadata
   :: VaultSession
   -> TargetSecretId
   -> IO (Either Text (Maybe TargetMaterialObservation))
-observeVaultTargetMaterialMetadata session target =
-  fmap (traverse observationFromMetadata) <$> readVaultTargetMaterialMetadata session target
+observeVaultTargetMaterialMetadata session target = do
+  observed <- readVaultTargetMaterialMetadata session target
+  pure (observed >>= traverse observationFromMetadata)
 
 readVaultTargetMaterialMetadata
   :: VaultSession
@@ -212,7 +212,7 @@ readVaultTargetMaterialMetadata session target = case compiledTargetSecretSink t
     pure $ case result of
       Left (HttpStatus 404 _) -> Right Nothing
       Left err -> Left (Text.pack (renderHttpError err))
-      Right metadata -> Just <$> observationFromMetadata metadata
+      Right metadata -> Right (Just metadata)
 
 observationFromMetadata
   :: KvV2SecretMetadata

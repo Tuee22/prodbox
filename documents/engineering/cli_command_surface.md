@@ -361,6 +361,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration gateway-daemon` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration gateway-pods` | none | `--coverage`, `--cov-fail-under`, `--substrate`, `--record-profile` |
 | `prodbox test integration control-plane-counterexample` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration teardown-recovery` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration certificate-scope` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -415,7 +416,7 @@ The generated matrix above is the sole command inventory. The current leaves are
 command registry and have native handlers. Combined-gateway and direct-host transports are
 pre-cutover history, not the target authority boundary; the authoritative target routing is defined
 in the later [`prodbox vault`](#prodbox-vault) section. Implementation and migration status live
-only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Per-command intent (authoritative model in
 [vault_doctrine.md § 7](./vault_doctrine.md#7-vault-lifecycle-commands)):
@@ -641,7 +642,7 @@ receipt runner returns success and outside that resumable graph. The current rec
 durable record of the limited graph, not yet the terminal evidence chain for total decommission.
 The target adds those four closed programs and their read-backs before
 `TotalDecommissionCompleteEvidence` is constructible. Implementation and removal status live only
-in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and its
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here) and its
 [Pending Removal ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Like every admin-credentialed flow, it acquires elevated AWS power through the one unified
 runtime path — the interactive `SecretRef.Prompt` arm: after the typed confirmation gate the
@@ -751,10 +752,14 @@ It neither reconciles nor destroys SES resources and is not an automation alias 
 
 This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
 The `prodbox` surface is the exclusive AWS mutation boundary. In the target composition the CLI,
-validation, recovery, and explicit stack commands are peer clients of the lifecycle core. The
+validation, recovery, and explicit stack commands are authenticated clients of the retained local
+Lifecycle Authority. AWS is an optional target substrate; the local RKE2 control plane remains
+mandatory and effects execute only through the exact fenced worker or permit-indexed
+adapter/runner. Unavailable Authority/admission fails closed and never selects a host-direct
+Pulumi/provider fallback. The
 current stack commands, validation wrapper, and bespoke cascade remain separate pre-cutover
 compositions; status and migration ownership live in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status). Agent/operator
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). Agent/operator
 authorization is not defined here; it is owned by
 [AGENTS.md, “AWS Mutation Is Prodbox-Surface-Owned”](../../AGENTS.md#aws-mutation-is-prodbox-surface-owned).
 Per-resource
@@ -1044,7 +1049,7 @@ violation and should be flagged.
 The generated [§3 Command Matrix](#3-command-matrix) is the sole command inventory. This section
 explains the architecture and ownership behind selected current leaves; implementation and
 migration status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### `prodbox dev lint`
 
@@ -1090,7 +1095,7 @@ currently exposes liveness and refuses readiness and all non-health operations. 
 foundations exist, but the physical adapters are not the active production path. The command row
 therefore records a code-local runtime surface, not deployment qualification or operational
 cutover; status lives only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status). The combined gateway
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). The combined gateway
 bootstrap routes remain only in the
 registered `LegacyModelBEmitter` rollback adapter under
 [Development Plan Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure).
@@ -1106,7 +1111,7 @@ rotation requests it owns; observation, admission, and execution use that same r
 absolute deadline. They never fall back to Gateway Runtime or a host-direct Vault/MinIO route.
 Post-unseal policy reconciliation remains a typed Vault interpreter rather than a generic broker or
 gateway proxy. Current pre-cutover transport and migration status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status) and
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here) and
 [deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Startup-config sourcing, the typed
 `SecretRef` contract, and the sealed-state fail-closed invariant are not owned here; they are

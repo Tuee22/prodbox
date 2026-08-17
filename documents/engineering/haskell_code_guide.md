@@ -248,22 +248,23 @@ not merge with the parent's. So a `Just []` (or any list that simply omits `PATH
 the child process an environment with *no* `PATH`: the vendor CLI cannot resolve its own helper
 binaries, find a credentials file under `$HOME`, or locate anything off the search path.
 
-Any subprocess that needs auth or path-sensitive state — every `aws` invocation in particular —
-must therefore build its environment by *overlaying* the desired keys onto the inherited parent
-environment, never by handing the child a from-scratch list. This is the job of one canonical
+Any subprocess that needs auth or path-sensitive state must therefore build its environment by
+*overlaying* the desired keys onto the inherited parent environment, never by handing the child a
+from-scratch list. For the pre-cutover AWS CLI adapters, this is the job of the one canonical
 `awsCliSubprocessEnvironment :: Credentials -> IO [(String, String)]` helper: read the parent
-environment with `getEnvironment`, strip ambient AWS auth keys, then overlay the repo-root
-credentials. There must be exactly one such builder; the divergence Sprint 1.30 closes is that
-`Dns.hs` currently overlays onto an **empty** base (`overlayAwsCredentials []`), dropping `PATH`,
-while `AwsEksSubzoneStack.hs` correctly overlays onto `getEnvironment`. Both must route through
-the single PATH-preserving builder.
+environment with `getEnvironment`, strip ambient AWS auth keys, then overlay only the exact
+credentials supplied to the adapter. Those adapters are compatibility code, not authority to read
+repo-root/ambient credentials or introduce a host-direct AWS mutation path. In the target runtime,
+only the retained-home Provider Worker or a permit-indexed runner may supply an admitted Vault
+generation to such an adapter.
 
 **Forbidden patterns:**
 
 - Constructing an `aws`/`kubectl`/`redis-cli` subprocess environment from an empty or
   literal-only list that omits `PATH` and `HOME`.
-- A second, parallel "AWS CLI environment" builder. There is one
-  `awsCliSubprocessEnvironment`; everything else calls it.
+- A second, parallel "AWS CLI environment" builder. Compatibility adapters that still spawn the
+  AWS CLI call `awsCliSubprocessEnvironment`; new effects stay behind the admitted Provider/permit
+  boundary rather than adding another host builder.
 
 ## Smart Constructors for Paired Resources
 

@@ -582,20 +582,22 @@ lifecycleAuthorityEksDrainIntentAuthenticatedHandler
 lifecycleAuthorityEksDrainIntentAuthenticatedHandler client inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleEksDrainIntent -> do
-          result <-
-            serveEksDrainIntentEndpointRequest
-              client
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( eksDrainIntentEndpointStatus result
-                , eksDrainIntentEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleEksDrainIntent -> do
+      result <-
+        serveEksDrainIntentEndpointRequest
+          client
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( eksDrainIntentEndpointStatus result
+            , eksDrainIntentEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the authenticated EKS drain read-back receipt endpoint around the
 -- standing Authority handler.  The endpoint itself recovers the retained
@@ -609,20 +611,22 @@ lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
 lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler client inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleEksDrainReadBackReceipt -> do
-          result <-
-            serveEksDrainReadBackReceiptEndpointRequest
-              client
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( eksDrainReadBackReceiptEndpointStatus result
-                , eksDrainReadBackReceiptEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleEksDrainReadBackReceipt -> do
+      result <-
+        serveEksDrainReadBackReceiptEndpointRequest
+          client
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( eksDrainReadBackReceiptEndpointStatus result
+            , eksDrainReadBackReceiptEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the independently read-back AWS stack-reader bundle endpoint. Commit
 -- responses retain only their write disposition; proof-bearing bytes are
@@ -635,20 +639,22 @@ lifecycleAuthorityAwsStackReaderAuthenticatedHandler
 lifecycleAuthorityAwsStackReaderAuthenticatedHandler clientFor inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleAwsStackReader -> do
-          result <-
-            serveAwsStackReaderEndpointRequest
-              clientFor
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( awsStackReaderEndpointStatus result
-                , awsStackReaderEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleAwsStackReader -> do
+      result <-
+        serveAwsStackReaderEndpointRequest
+          clientFor
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( awsStackReaderEndpointStatus result
+            , awsStackReaderEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the Authority-reobserved AWS stack-creation binding protocol.  The
 -- endpoint receives no caller-minted observation; it combines the exact
@@ -662,21 +668,23 @@ lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
 lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler client repository inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleAwsStackCreationBinding -> do
-          result <-
-            serveAwsStackCreationEndpointRequest
-              client
-              repository
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( awsStackCreationEndpointStatus result
-                , awsStackCreationEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleAwsStackCreationBinding -> do
+      result <-
+        serveAwsStackCreationEndpointRequest
+          client
+          repository
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( awsStackCreationEndpointStatus result
+            , awsStackCreationEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the raw Authority ownership-manifest observation protocol.  Its
 -- authenticated transport client alone maps an exact Missing observation to
@@ -689,20 +697,22 @@ lifecycleAuthorityOwnershipManifestAuthenticatedHandler
 lifecycleAuthorityOwnershipManifestAuthenticatedHandler repository inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleOwnershipManifest -> do
-          result <-
-            serveOwnershipManifestEndpointRequest
-              repository
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( ownershipManifestEndpointStatus result
-                , ownershipManifestEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleOwnershipManifest -> do
+      result <-
+        serveOwnershipManifestEndpointRequest
+          repository
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( ownershipManifestEndpointStatus result
+            , ownershipManifestEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the Authority-executed recovery-plane read-back protocol.  The
 -- abstract handler is constructed only inside the package-private Authority
@@ -716,20 +726,22 @@ lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
 lifecycleAuthorityRecoveryPlaneAuthenticatedHandler handler inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleRecoveryPlane -> do
-          result <-
-            serveRecoveryPlaneEndpointRequest
-              handler
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( recoveryPlaneEndpointStatus result
-                , recoveryPlaneEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleRecoveryPlane -> do
+      result <-
+        serveRecoveryPlaneEndpointRequest
+          handler
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( recoveryPlaneEndpointStatus result
+            , recoveryPlaneEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the host-only commit endpoint.  The abstract handler reloads the
 -- descriptor-bound Establish attempt and commits canonical Healthy bytes;
@@ -742,20 +754,22 @@ lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
 lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler handler inner =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = \callerSlot route body -> case route of
-        LifecycleLocalRke2HostObservation -> do
-          result <-
-            serveLocalRke2HostObservationEndpointRequest
-              handler
-              (LazyByteString.fromStrict body)
-          pure
-            ( Just
-                ( localRke2HostObservationEndpointStatus result
-                , localRke2HostObservationEndpointBody result
-                )
-            )
-        _ -> authenticatedHandlerHandle inner callerSlot route body
+    , authenticatedHandlerHandle = handle
     }
+ where
+  handle callerSlot route body = case route of
+    LifecycleLocalRke2HostObservation -> do
+      result <-
+        serveLocalRke2HostObservationEndpointRequest
+          handler
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( localRke2HostObservationEndpointStatus result
+            , localRke2HostObservationEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Production inputs for Authority-owned decommission export.  The
 -- unprovisioned constructor is an explicit deployment state, rather than a

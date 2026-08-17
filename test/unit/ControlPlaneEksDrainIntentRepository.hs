@@ -358,20 +358,25 @@ controlPlaneEksDrainIntentRepositorySuite =
     it "keeps recovery missing, unobservable, unbounded, corrupt, and wrong identity distinct" $ do
       let expectedIdentity = eksDrainIntentAuthorityIdentity fixtureIntent
           cases =
-            [ ( EksDrainIntentAuthorityReadBackMissing
+            [
+              ( EksDrainIntentAuthorityReadBackMissing
               , EksDrainIntentClientRecoveryMissing
               )
-            , ( EksDrainIntentAuthorityReadBackUnobservable (ObservationFailure "read failed")
+            ,
+              ( EksDrainIntentAuthorityReadBackUnobservable (ObservationFailure "read failed")
               , EksDrainIntentClientRecoveryUnobservable
                   (ObservationFailure "read failed")
               )
-            , ( EksDrainIntentAuthorityReadBackUnbounded 8 4
+            ,
+              ( EksDrainIntentAuthorityReadBackUnbounded 8 4
               , EksDrainIntentClientRecoveryUnbounded 8 4
               )
-            , ( EksDrainIntentAuthorityReadBackPresent ByteString.empty
+            ,
+              ( EksDrainIntentAuthorityReadBackPresent ByteString.empty
               , EksDrainIntentClientRecoveryCorrupt EksDrainIntentCodecEmpty
               )
-            , ( EksDrainIntentAuthorityReadBackCorrupt "retained codec rejected bytes"
+            ,
+              ( EksDrainIntentAuthorityReadBackCorrupt "retained codec rejected bytes"
               , EksDrainIntentClientRecoveryStoreCorrupt
                   "retained codec rejected bytes"
               )
@@ -581,53 +586,47 @@ newDurableModelB loseFirstResponse = do
   valuesRef <- newIORef Map.empty
   writesRef <- newIORef 0
   loseResponseRef <- newIORef loseFirstResponse
-  let adapter =
+  let compareAndSwap request = case request of
+        ModelBInitialize coordinate bytes -> do
+          let logicalName = modelBObjectLogicalName coordinate
+          existing <- readIORef valuesRef
+          case Map.lookup logicalName existing of
+            Just (version, current) ->
+              pure
+                ( ModelBCasConflict
+                    (ModelBObserved version current)
+                )
+            Nothing -> do
+              atomicModifyIORef'
+                valuesRef
+                (\values -> (Map.insert logicalName (fixtureModelBVersion, bytes) values, ()))
+              atomicModifyIORef' writesRef (\count -> (count + 1, ()))
+              lose <-
+                atomicModifyIORef'
+                  loseResponseRef
+                  ( \shouldLose ->
+                      if shouldLose
+                        then (False, True)
+                        else (False, False)
+                  )
+              pure $
+                if lose
+                  then ModelBCasUnobservable "CAS response lost"
+                  else ModelBCasApplied fixtureModelBVersion bytes
+        ModelBReplace {} ->
+          pure (ModelBCasUnobservable "unexpected replace in create-only repository")
+        ModelBInitializeGuarded {} ->
+          pure (ModelBCasUnobservable "unexpected guarded initialize")
+        ModelBReplaceGuarded {} ->
+          pure (ModelBCasUnobservable "unexpected guarded replace")
+      adapter =
         ModelBCasAdapter
           { modelBObserve = \coordinate -> do
               values <- readIORef valuesRef
               pure $ case Map.lookup (modelBObjectLogicalName coordinate) values of
                 Nothing -> ModelBMissing
                 Just (version, bytes) -> ModelBObserved version bytes
-          , modelBCompareAndSwap = \request -> case request of
-              ModelBInitialize coordinate bytes -> do
-                let logicalName = modelBObjectLogicalName coordinate
-                existing <- readIORef valuesRef
-                case Map.lookup logicalName existing of
-                  Just (version, current) ->
-                    pure
-                      ( ModelBCasConflict
-                          (ModelBObserved version current)
-                      )
-                  Nothing -> do
-                    atomicModifyIORef'
-                      valuesRef
-                      ( \values ->
-                          ( Map.insert
-                              logicalName
-                              (fixtureModelBVersion, bytes)
-                              values
-                          , ()
-                          )
-                      )
-                    atomicModifyIORef' writesRef (\count -> (count + 1, ()))
-                    lose <-
-                      atomicModifyIORef'
-                        loseResponseRef
-                        ( \shouldLose ->
-                            if shouldLose
-                              then (False, True)
-                              else (False, False)
-                        )
-                    pure $
-                      if lose
-                        then ModelBCasUnobservable "CAS response lost"
-                        else ModelBCasApplied fixtureModelBVersion bytes
-              ModelBReplace {} ->
-                pure (ModelBCasUnobservable "unexpected replace in create-only repository")
-              ModelBInitializeGuarded {} ->
-                pure (ModelBCasUnobservable "unexpected guarded initialize")
-              ModelBReplaceGuarded {} ->
-                pure (ModelBCasUnobservable "unexpected guarded replace")
+          , modelBCompareAndSwap = compareAndSwap
           }
   pure
     DurableModelB

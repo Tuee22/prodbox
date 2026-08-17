@@ -27,24 +27,26 @@ import Prodbox.ControlPlane.EksClientAuthProjection
 import Prodbox.Crypto.Aead (aeadNonceBytes, sealAead)
 import System.IO.Unsafe (unsafePerformIO)
 
-data RawEksClientAuthProjection = RawEksClientAuthProjection
-  !Text
-  !Text
-  !Text
-  !Text
-  !Text
-  !Text
-  !Text
-  !Integer
+data RawEksClientAuthProjection
+  = RawEksClientAuthProjection
+      !Text
+      !Text
+      !Text
+      !Text
+      !Text
+      !Text
+      !Text
+      !Integer
   deriving stock (Generic)
   deriving anyclass (Serialise)
 
-data RawEksClientAuthEnvelope = RawEksClientAuthEnvelope
-  !Word16
-  !ByteString
-  !ByteString
-  !ByteString
-  !ByteString
+data RawEksClientAuthEnvelope
+  = RawEksClientAuthEnvelope
+      !Word16
+      !ByteString
+      !ByteString
+      !ByteString
+      !ByteString
   deriving stock (Generic)
   deriving anyclass (Serialise)
 
@@ -110,7 +112,8 @@ testEksClientAuthProjectionFixture account region cluster clusterArn endpoint ca
       CryptoFailed _ -> Left EksClientAuthPublicKeyInvalid
       CryptoPassed key -> Right key
     let key = deriveKey (X25519.dh destinationKey senderSecret) aad
-    ciphertext <- either (const (Left EksClientAuthCipherFailed)) Right (sealAead key nonce aad plaintext)
+    ciphertext <-
+      either (const (Left EksClientAuthCipherFailed)) Right (sealAead key nonce aad plaintext)
     envelope <-
       decodeEksClientAuthEnvelope
         ( LazyByteString.toStrict

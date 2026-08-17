@@ -925,7 +925,7 @@ Sprint `2.32` supplies the typed claim-side persistence inputs in
 claim, the static retained EKS `ReadWriteOncePod` claim, and exact Lease RBAC. Completed Sprint
 `3.26` supplied their chart/render consumption, while the production default remains the
 pre-cutover emitter. Activation and deployment-qualification status remain owned only by the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#current-plan-status).
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Gateway Runtime has no pre-Vault mode in the target topology. Bootstrap Broker is a distinct
 Deployment, Service, ServiceAccount, Vault/MinIO policy, queue, resource envelope, and readiness

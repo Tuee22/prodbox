@@ -63,6 +63,7 @@ import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
   , compiledDesiredAbsenceOperations
   )
+import Prodbox.Lifecycle.Teardown.Model (CleanupSurfaceWitness)
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness (CascadeRecoverySurface)
   , TeardownOperation (..)
@@ -101,35 +102,45 @@ recoveryPlaneHostDescriptorBoundNodeActionInternal
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> DescriptorBoundCleanupNodeExecutionAction
 recoveryPlaneHostDescriptorBoundNodeActionInternal transport =
-  descriptorBoundCleanupNodeAction $ \running _ compiled context plan ->
-    case validateContext running context plan of
+  descriptorBoundCleanupNodeAction (dispatchRecoveryPlaneHostNode transport)
+
+dispatchRecoveryPlaneHostNode
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupRun
+  -> CleanupSurfaceWitness surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> CleanupNodeExecutionContext
+  -> CleanupNodePlan
+  -> IO CleanupNodeOutcome
+dispatchRecoveryPlaneHostNode transport running _ compiled context plan =
+  case validateContext running context plan of
+    Left err -> pure (refusalOutcome err)
+    Right () -> case operationForPlan compiled plan of
       Left err -> pure (refusalOutcome err)
-      Right () -> case operationForPlan compiled plan of
+      Right operation -> case classifyOperation operation of
         Left err -> pure (refusalOutcome err)
-        Right operation -> case classifyOperation operation of
-          Left err -> pure (refusalOutcome err)
-          Right RecoveryPlaneHostEstablish ->
-            recoveryPlaneDescriptorBoundNodeAction
-              establishInterpreter
-              running
-              context
-              plan
-          Right RecoveryPlaneHostInitialReadBack -> do
-            result <-
-              executeRecoveryPlaneInitialReadBackRemote
-                authorityClient
-                (cleanupNodeExecutionRunId context)
-                (cleanupNodeOperationId plan)
-                (cleanupNodeExecutionAttemptId context)
-            pure (remoteOutcome result)
-          Right RecoveryPlaneHostFinalDisposition -> do
-            result <-
-              executeRecoveryPlaneFinalDispositionRemote
-                authorityClient
-                (cleanupNodeExecutionRunId context)
-                (cleanupNodeOperationId plan)
-                (cleanupNodeExecutionAttemptId context)
-            pure (remoteOutcome result)
+        Right RecoveryPlaneHostEstablish ->
+          recoveryPlaneDescriptorBoundNodeAction
+            establishInterpreter
+            running
+            context
+            plan
+        Right RecoveryPlaneHostInitialReadBack -> do
+          result <-
+            executeRecoveryPlaneInitialReadBackRemote
+              authorityClient
+              (cleanupNodeExecutionRunId context)
+              (cleanupNodeOperationId plan)
+              (cleanupNodeExecutionAttemptId context)
+          pure (remoteOutcome result)
+        Right RecoveryPlaneHostFinalDisposition -> do
+          result <-
+            executeRecoveryPlaneFinalDispositionRemote
+              authorityClient
+              (cleanupNodeExecutionRunId context)
+              (cleanupNodeOperationId plan)
+              (cleanupNodeExecutionAttemptId context)
+          pure (remoteOutcome result)
  where
   authorityClient = lifecycleAuthorityRecoveryPlaneAuthenticatedClient transport
   establishInterpreter =

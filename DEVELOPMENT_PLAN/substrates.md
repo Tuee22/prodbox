@@ -17,11 +17,12 @@ The canonical test suite is the named-validation set in `src/Prodbox/TestValidat
 planned by `src/Prodbox/TestPlan.hs`, orchestrated by `src/Prodbox/TestRunner.hs`, and gated by
 the prerequisite DAG in `src/Prodbox/Prerequisite.hs`. The suite is substrate-agnostic.
 
-A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
-DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress (Envoy Gateway plus
-MetalLB or the substrate-equivalent), services, and workload charts; provides the prerequisites
-declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit. Substrate lifecycle is
-provision → run canonical suite → teardown.
+A substrate is an environment that, for the lifetime of a suite run, stands up the same target
+application/platform set: DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress
+(Envoy Gateway plus MetalLB or the substrate-equivalent), services, and workload charts. It
+provides the prerequisites declared in `src/Prodbox/Prerequisite.hs` and is torn down on suite exit.
+The mandatory retained local lifecycle plane is a cross-substrate dependency outside this
+duplicated set. Substrate lifecycle is provision → run canonical suite → teardown.
 
 The target lifecycle-control-plane topology is
 [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md):
@@ -29,6 +30,10 @@ a minimal Bootstrap Broker owns pre-Vault recovery, one retained Lifecycle Autho
 operations and Model-B authority state, each substrate owns a Target Secret Agent, and the Gateway
 Runtime owns mesh/ownership/DNS only. Those are distinct service identities and resource domains;
 component labels or a successful call through a different endpoint are not readiness evidence.
+The local RKE2 deployment is the mandatory retained control plane. AWS is an optional target
+substrate and never a host-side or EKS-side authority; its supported mutations are authenticated
+CLI submissions to the local Authority and exact role-specific workers/adapters, with no
+host-direct fallback.
 
 ## Substrate Independence (No Fallback)
 
@@ -37,11 +42,13 @@ substrates listed below. A canonical-suite proof is complete only when both per-
 have been exercised. A run that exercises only one substrate covers only that substrate's row
 in the parity table; the other substrate remains suite-incomplete until its own run lands.
 
-Each per-substrate run is independent and substrate-locked: it targets exactly one substrate,
-consumes only that substrate's operator-supplied config (`Required Config` row in each
-substrate's table) and provisioned infrastructure, and fails fast if any required field is
-missing. There is no silent substitution of home-substrate values for missing AWS-substrate
-config, and no silent substitution of AWS values for missing home config. The substrate-aware
+Each per-substrate run is independent and substrate-locked: it targets exactly one workload
+substrate, consumes only that target's operator-supplied config (`Required Config` row in each
+substrate's table) and application/platform infrastructure, and fails fast if a required field is
+missing. There is no silent substitution of home-workload values for missing AWS-target config,
+and no silent substitution of AWS values for missing home-workload config. Every AWS run
+additionally consumes the mandatory retained-home Lifecycle Authority and its home-only
+workers/adapters; that control-plane dependency is not target fallback. The substrate-aware
 helpers `substratePublicFqdn` and `substrateHostedZoneId` in `src/Prodbox/PublicEdge.hs` enforce the
 configured public-edge half today. The durable run descriptor, exact AWS observers, and typed
 provider-issued EKS drain session are the Sprint-`7.36` teardown target. The current pre-cutover
@@ -91,8 +98,10 @@ runs remain evidence only for the topology and revision they exercised.
 
 ## Substrate Equivalence (Structural Invariant)
 
-The home local substrate and the AWS substrate stand up the **same set of services**. As of
-Sprint `7.12` this is a *structural* invariant, not prose, enforced by three mechanisms in code:
+The home local substrate and AWS target stand up the **same application/platform service set**.
+Lifecycle Authority and Provider Worker remain retained-home dependencies outside this equivalence
+claim. As of Sprint `7.12` the application/platform set is a *structural* invariant, not prose,
+enforced by three mechanisms in code:
 
 1. **One pinned Envoy Gateway release.** `Prodbox.ContainerImage.envoyGatewayRelease` pins the
    Envoy Gateway Helm chart version, the control-plane (gateway controller) image, and the
@@ -187,7 +196,8 @@ Vault transit-seal trust tree, parent custody of encrypted child recovery materi
 attestations, and downstream-cluster inventory as secret data — is governed by
 [../documents/engineering/cluster_federation_doctrine.md](../documents/engineering/cluster_federation_doctrine.md);
 it is a cross-cluster trust relationship, not a substrate distinction, so it does not change the
-substrate-equivalence invariant above (both substrates still stand up the identical service set).
+substrate-equivalence invariant above (both targets still stand up the identical
+application/platform service set while sharing the retained-home lifecycle plane).
 See [../documents/engineering/vault_doctrine.md → §2 The fail-closed invariant](../documents/engineering/vault_doctrine.md#2-the-fail-closed-invariant)
 and [§5 Vault deployment model](../documents/engineering/vault_doctrine.md#5-vault-deployment-model-and-durability).
 
@@ -208,13 +218,13 @@ independently and none overloads the others.
 
 ## Substrate Inventory
 
-**Paused implementation checkpoint (2026-08-16).** The home recovery topology, exact component
+**Historical implementation checkpoint (2026-08-16; not a resume ledger).** The home recovery topology, exact component
 observer, retained-root/RKE2 observation boundaries, descriptor-bound cleanup kernel, and
 RecoveryPlane routes are implemented but are not the public cascade writer. The recovery-only
 absent-cluster render still lacks an immutable RKE2/OCI artifact inventory, and descriptor-bound
 Cascade pre-uninstall/local-completion remains incomplete. On AWS, exact checkpoint/drain/
-stack-reader/ownership observation foundations are present, but Provider credential-session v3 is
-an uncompiled draft and stable create generation, terminal audit, credential disposition, legacy
+stack-reader/ownership observation foundations are present, but an exact credential-session-bound
+Provider operation, stable create generation, terminal audit, credential disposition, legacy
 adoption completion, and the live all-three-stack proof remain. This checkpoint changes neither
 substrate's qualification status nor the sole-writer/cutover ownership below.
 
@@ -223,12 +233,12 @@ substrate's qualification status nor the sole-writer/cutover ownership below.
 | Field | Value |
 |-------|-------|
 | Provision | `prodbox cluster reconcile` followed by `prodbox charts reconcile <chart>` for the canonical chart set |
-| Teardown | Current `prodbox cluster delete --yes` is local-only. Target `prodbox cluster delete --cascade --yes` (pending Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`) starts/resumes recover-to-clean. Private `ReadyToUninstallEvidence` admits uninstall only from exact clean evidence, a backed-up/read-back pre-uninstall report, and its one-shot permit; it is not completion. `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` plus the matching read-back `LocalCompletionReceipt`. Incomplete runs return `CleanupRunId` plus `RecoveryPlaneDisposition` and claim a live plane only when the disposition is `Established`, never when `NotEstablished` or `Lost`. |
+| Teardown | Current `prodbox cluster delete --yes` is local-only. Target `prodbox cluster delete --cascade --yes` (pending Sprints `3.41`, `4.84`–`4.86`, `5.36`, and `6.5`, with the Sprint-`5.35` oracle complete) starts/resumes recover-to-clean. Private `ReadyToUninstallEvidence` admits uninstall only from exact clean evidence, a backed-up/read-back pre-uninstall report, and its one-shot permit; it is not completion. `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` plus the matching read-back `LocalCompletionReceipt`. Incomplete runs return `CleanupRunId` plus `RecoveryPlaneDisposition` and claim a live plane only when the disposition is `Established`, never when `NotEstablished` or `Lost`. |
 | Target inventory | Local RKE2 cluster on the operator host; MetalLB L2/BGP; Envoy Gateway; cert-manager with real ZeroSSL; registry + MinIO + Vault + Percona; the supported application charts; a physically separate pre-Vault Bootstrap Broker; the retained Lifecycle Authority; a home Target Secret Agent with closed SES-SMTP/ACME-EAB custody; private Backup/TLS Adapters and Provider Worker; permit-created Credential Provisioner, External Material Ingress, and Admin Action Runner Jobs; and mesh/DNS-only Gateway Runtime replicas, each with its own encrypted identity-bound retained journal. The authority stores one bounded CAS aggregate/outbox plus immutable encrypted checkpoint blobs in retained home `prodbox-state`; the target agent alone mutates allowlisted home Vault KV. |
 | Required Config | `route53.zone_id`, `domain.demo_fqdn`, non-secret `acme.*` coordinates (ZeroSSL `server`, account email, and the typed requirement for an EAB generation), `deployment.*`, and non-secret `ses.*` coordinates (sender_domain, receive_subdomain, capture_bucket — required for `keycloak-invite` validation). `config setup` remains Tier-0-only. ACME EAB material enters through its distinct schema-indexed external-material permit/ingress; it never reuses the AWS-admin session. Elevated/admin AWS power enters prodbox only through the interactive `SecretRef.Prompt`; under the harness the test-only `aws_admin_for_test_simulation.*` fixture in `test-secrets.dhall` (TestPlaintext, never imported by production config, never in Vault) simulates that prompt for the bounded identity plan and explicit admin actions. Missing any required coordinate or required material receipt fails fast; the home substrate does not fall back to AWS-substrate values. |
 | Target capability prerequisites | Existing host/config/Kubernetes/AWS prerequisites plus exact operation-indexed `CapabilityRef` admission for Bootstrap Broker Vault recovery, retained Lifecycle Authority observe/CAS/submit, the home Target Secret Agent observe/CAS/read-back, and Gateway mesh/DNS. Each reference binds the service identity, authority/substrate scope, endpoint, epoch or generation, and one absolute latency budget; none may substitute for another. |
 | Phase ownership (provision/teardown) | Phase 3 Sprint `3.41` renders recovery topology; Phase 4 Sprints `4.84`–`4.86` own the generic kernel/candidate; Phase 6 Sprint `6.5` owns the qualification-gated public generic/home activation and legacy deletion. |
-| Suite parity | Required teardown prerequisites: Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`. Sprint `8.12` then reruns `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`, consecutive home aggregates, exact identities/envelopes/load, fault isolation, canonical restoration, invite flow, and residue re-observation as the sole final owner. Earlier runs remain revision-scoped historical evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
+| Suite parity | Required teardown prerequisites: Sprints `3.41`, `4.84`–`4.86`, `5.36`, and `6.5`, consuming the completed Sprint-`5.35` oracle. Sprint `8.12` then reruns `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`, consecutive home aggregates, exact identities/envelopes/load, fault isolation, canonical restoration, invite flow, and residue re-observation as the sole final owner. Earlier runs remain revision-scoped historical evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
 | Resource isolation | Bootstrap Broker, Lifecycle Authority, Target Secret Agent, and Gateway Runtime have distinct workloads, Services, ServiceAccounts, Vault policies, NetworkPolicies, resource envelopes, queues, and readiness identities. Gateway CPU pressure cannot consume retained-authority admission or target delivery. |
 | Target cleanup | Every mutating client receipt-registers exact obligations before mutation. The lifecycle kernel resumes nonterminal runs, restores only required cleanup capabilities, reconciles exact desired absence, retains long-lived resources, audits escapes separately, and returns distinct scoped `ReadyToUninstallEvidence` and `CascadeCompleteEvidence` or a stable incomplete `CleanupRunId` with `RecoveryPlaneDisposition`. This target is not the current public cascade until current-revision qualification permits Sprint `6.5` to activate it. |
 | Notes | The home cluster hosts the retained Lifecycle Authority and is also a canonical-suite substrate. Gateway charts no longer carry bootstrap, generic object-store, Pulumi, lifecycle, SES, or target-secret proxy authority. |
@@ -318,7 +328,7 @@ The generated registry and command tables below describe the current source exac
 hand-maintained lifecycle tables describe the canonical target contract unless a row is explicitly
 labelled **Current** or **Historical**; they do not assert that the corresponding interpreter or
 production wiring has landed. Implementation status and correction ownership live in the
-[Development Plan status](README.md#current-plan-status) and
+[Development Plan status](README.md#resume-here) and
 [deletion ledger](legacy-tracking-for-deletion.md).
 
 > **Scope note — the Vault durable PV is not an AWS resource.** The in-cluster Vault's durable
@@ -589,7 +599,7 @@ above and [development_plan_standards.md → N / O](development_plan_standards.m
 | Gateway journal and temporal resource isolation | **Code-local foundation Done; physical/live proof pending.** The bounded actor, encrypted journal, journal-first admission, current Lease/incarnation fence, exact recovery, and typed substrate persistence coordinates are locally validated. | **Sprint `7.33` code-local Done; live proof pending.** Independently resourced EKS broker/agent/gateway roles and the EKS-replacement disposition are modeled without granting Gateway authority admission. |
 | Durable Lifecycle Authority crash/response-loss recovery | **Code-local foundation Done; live proof pending.** Restart, response loss, cancellation, stale fences, and operation replay converge under one authority epoch. | **Sprint `7.33` code-local Done; live proof pending.** The retained-home Authority has a distinct transport and no AWS target component can become a second writer. |
 | Target Secret Agent outage and resume | **Code-local foundation Done; live proof pending.** Home outbox delivery is generation/opaque-commitment checked and resumes without Gateway participation. | **Sprint `7.33` code-local Done; live proof pending.** AWS target delivery uses the AWS Agent's distinct transport and fault dispositions cover Pod/EKS replacement. |
-| Recover-to-clean teardown and exact residue re-observation | **Reopened under Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, and `6.5`.** Requires bootstrap-owned recovery, exact keyed observations, durable same-run resume, honest `RecoveryPlaneDisposition`, private pre-uninstall readiness, distinct exact post-uninstall completion, and uninstall-last. | **Reopened under Sprints `3.41`, `4.84`–`4.86`, `5.35`/`5.36`, `6.5`, and `7.36`.** Requires the common recovery/cutover chain plus independent stack observers, write-ahead and confirmed-legacy adoption manifests, typed EKS drain sessions, exact family absence, retained-bucket isolation, and non-blocking live all-three-stack prerequisite proof for `8.12`. |
+| Recover-to-clean teardown and exact residue re-observation | **Open under Sprints `3.41`, `4.84`–`4.86`, `5.36`, and `6.5`, consuming the completed Sprint-`5.35` oracle.** Requires bootstrap-owned recovery, exact keyed observations, durable same-run resume, honest `RecoveryPlaneDisposition`, private pre-uninstall readiness, distinct exact post-uninstall completion, and uninstall-last. | **Open under Sprints `3.41`, `4.84`–`4.86`, `5.36`, `6.5`, and `7.36`, consuming the completed Sprint-`5.35` oracle.** Requires the common recovery/cutover chain plus independent stack observers, write-ahead and confirmed-legacy adoption manifests, typed EKS drain sessions, exact family absence, retained-bucket isolation, and non-blocking live all-three-stack prerequisite proof for `8.12`. |
 | Durable `keycloak-invite` workflow | **Sprints `8.11`/`8.12` code-local Done; live proof pending.** Revision-bound SES semantics, narrow provider mutation fence, committed credential generation, home target outbox/read-back, and the eight-assertion/23-fault invite artifact are locally validated. | **Sprints `7.33`/`8.11`/`8.12` code-local Done; live proof pending.** The workflow has exact cross-substrate Authority/Target binding, registered AWS DNS intent, SES specialization, and the same non-partial qualification schema; the live aggregate/fault record remains pending. |
 | Historical gateway runtime stability (bounded-memory/restart/OOM/high-water proof) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) Sprint `5.16` — Done for the prior topology: `gateway-pods` folds run-wide absorbing unhealthy evidence plus a separately restartable three-sample healthy window. It did not cover CPU throttling, queue wait, deadline misses, or separated authority services. | The historical typed validation targeted EKS. Its live soak remains evidence for that revision only and cannot satisfy Standard P for the target topology. |
 | Historical `keycloak-invite` retained-SES preparation and semantic readiness | Sprint `5.17` remains Done over Sprint `4.47` for the gateway-backed bracket, and Sprint `8.10` remains Done for exact semantic classification. These are preserved inputs to, not qualification of, the durable workflow. | Historical cross-substrate authority/target types and semantic checks remain evidence for their revision. Sprints `7.33`/`8.11`/`8.12` replace the transport, workflow, and qualification boundary. |

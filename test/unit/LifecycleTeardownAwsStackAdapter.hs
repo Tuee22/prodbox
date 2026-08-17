@@ -99,15 +99,15 @@ lifecycleTeardownAwsStackAdapterSuite =
 
     it "turns every malformed or other evidence value into typed unobservable truth" $ do
       let request = observeRequest AwsEksKey
-      forM_ malformedEvidence $ \evidence ->
-        case decodeEvidence request evidence of
-          AwsStackObservationRejected refusal observation -> do
-            refusal `shouldBe` AwsStackObservationEvidenceNotRecognized evidence
-            assertExactBinding request observation
-            exactObservationResult observation `shouldSatisfy` isUnobservable
-            exactObservationResult observation `shouldSatisfy` isNotAbsent
-          AwsStackObservationDecoded _ ->
-            expectationFailure ("malformed evidence decoded: " <> Text.unpack evidence)
+          checkMalformedEvidence evidence = case decodeEvidence request evidence of
+            AwsStackObservationRejected refusal observation -> do
+              refusal `shouldBe` AwsStackObservationEvidenceNotRecognized evidence
+              assertExactBinding request observation
+              exactObservationResult observation `shouldSatisfy` isUnobservable
+              exactObservationResult observation `shouldSatisfy` isNotAbsent
+            AwsStackObservationDecoded _ ->
+              expectationFailure ("malformed evidence decoded: " <> Text.unpack evidence)
+      forM_ malformedEvidence checkMalformedEvidence
 
     it "refuses wrong-key, cross-purpose, Applied, and AlreadySatisfied results" $ do
       let request = observeRequest AwsEksKey

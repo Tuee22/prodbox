@@ -139,11 +139,9 @@ lifecycleAuthorityEksDrainIntentClient repository =
                         expectedIdentity
                         observedIdentity
                     )
-                else case
-                  confirmEksDrainIntentCommitted
-                    observedIntent
-                    (EksDrainIntentReadBackPresent bytes)
-                of
+                else case confirmEksDrainIntentCommitted
+                  observedIntent
+                  (EksDrainIntentReadBackPresent bytes) of
                   Left err ->
                     Left (EksDrainIntentClientRecoveryProofInvalid err)
                   Right committed -> Right committed

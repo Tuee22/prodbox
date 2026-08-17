@@ -10,10 +10,6 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
-import Prodbox.Lifecycle.Dns01Challenge
-import Prodbox.Lifecycle.DnsRecord
-import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
-import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependency (..)
   , CleanupDependencyKind (..)
@@ -24,6 +20,10 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupNodeId
   , mkCleanupRunId
   )
+import Prodbox.Lifecycle.Dns01Challenge
+import Prodbox.Lifecycle.DnsRecord
+import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
 import Prodbox.Test.ManagedCleanupPlan
   ( ManagedCleanupEdge (..)
   , compileManagedCleanupPlan

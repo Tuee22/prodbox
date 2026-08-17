@@ -612,33 +612,34 @@ newDurableModelB loseFirstResponse = do
   valuesRef <- newIORef Map.empty
   writesRef <- newIORef 0
   loseRef <- newIORef loseFirstResponse
-  let adapter =
+  let compareAndSwap request = case request of
+        ModelBInitialize coordinate bytes -> do
+          let key = modelBObjectLogicalName coordinate
+          values <- readIORef valuesRef
+          case Map.lookup key values of
+            Just (version, existing) ->
+              pure (ModelBCasConflict (ModelBObserved version existing))
+            Nothing -> do
+              modifyIORef'
+                valuesRef
+                (Map.insert key (fixtureModelBVersion, bytes))
+              modifyIORef' writesRef (+ 1)
+              lose <- atomicModifyIORef' loseRef (False,)
+              pure $
+                if lose
+                  then ModelBCasUnobservable "response lost after apply"
+                  else ModelBCasApplied fixtureModelBVersion bytes
+        ModelBReplace {} -> unexpected "replace"
+        ModelBInitializeGuarded {} -> unexpected "guarded initialize"
+        ModelBReplaceGuarded {} -> unexpected "guarded replace"
+      adapter =
         ModelBCasAdapter
           { modelBObserve = \coordinate -> do
               values <- readIORef valuesRef
               pure $ case Map.lookup (modelBObjectLogicalName coordinate) values of
                 Nothing -> ModelBMissing
                 Just (version, bytes) -> ModelBObserved version bytes
-          , modelBCompareAndSwap = \request -> case request of
-              ModelBInitialize coordinate bytes -> do
-                let key = modelBObjectLogicalName coordinate
-                values <- readIORef valuesRef
-                case Map.lookup key values of
-                  Just (version, existing) ->
-                    pure (ModelBCasConflict (ModelBObserved version existing))
-                  Nothing -> do
-                    modifyIORef'
-                      valuesRef
-                      (Map.insert key (fixtureModelBVersion, bytes))
-                    modifyIORef' writesRef (+ 1)
-                    lose <- atomicModifyIORef' loseRef (False,)
-                    pure $
-                      if lose
-                        then ModelBCasUnobservable "response lost after apply"
-                        else ModelBCasApplied fixtureModelBVersion bytes
-              ModelBReplace {} -> unexpected "replace"
-              ModelBInitializeGuarded {} -> unexpected "guarded initialize"
-              ModelBReplaceGuarded {} -> unexpected "guarded replace"
+          , modelBCompareAndSwap = compareAndSwap
           }
   pure (DurableModelB adapter writesRef)
  where

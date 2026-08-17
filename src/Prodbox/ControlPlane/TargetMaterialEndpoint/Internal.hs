@@ -29,6 +29,7 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
   )
 where
 
+import Control.Monad (void)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -100,15 +101,16 @@ validateTargetMaterialMetadataReadinessInternal metadata =
     Right _ -> Right ()
     Left strictError
       | Map.keysSet fields == legacyMetadataFields ->
-          ()
-            <$ validateTargetMaterialMetadataInternal
-              metadata
-                { kvV2SecretMetadataCustom =
-                    Map.insert
-                      targetMaterialMetadataVaultVersionField
-                      (Text.pack (show (kvV2SecretMetadataCurrentVersion metadata)))
-                      fields
-                }
+          void
+            ( validateTargetMaterialMetadataInternal
+                metadata
+                  { kvV2SecretMetadataCustom =
+                      Map.insert
+                        targetMaterialMetadataVaultVersionField
+                        (Text.pack (show (kvV2SecretMetadataCurrentVersion metadata)))
+                        fields
+                  }
+            )
       | otherwise -> Left strictError
  where
   fields = kvV2SecretMetadataCustom metadata
@@ -150,9 +152,9 @@ boundedField :: Text -> Text -> Int -> Map Text Text -> Either Text Text
 boundedField label field maximumLength fields = do
   value <- requiredField label field fields
   if Text.null value
-      || Text.length value > maximumLength
-      || Text.strip value /= value
-      || Text.any invalidCharacter value
+    || Text.length value > maximumLength
+    || Text.strip value /= value
+    || Text.any invalidCharacter value
     then Left ("target metadata " <> label <> " is invalid")
     else Right value
  where

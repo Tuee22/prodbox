@@ -45,6 +45,9 @@ import Prodbox.ControlPlane.ServiceSessionJournal
 import Prodbox.ControlPlane.TargetIntentAuthorityClient
   ( TargetIntentAuthorityClient
   )
+import Prodbox.ControlPlane.TargetMaterialEndpoint
+  ( targetMaterialMetadataVaultVersionField
+  )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( AwsCredentialIdentity (AwsLifecycleProvider)
   , TargetSecretId (TargetAwsCredential, TargetPublicEdgeTls)
@@ -53,9 +56,6 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , targetSecretIdToken
   , targetSecretPayloadId
   , targetSecretPayloadToVaultFields
-  )
-import Prodbox.ControlPlane.TargetMaterialEndpoint
-  ( targetMaterialMetadataVaultVersionField
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
 import Prodbox.ControlPlane.TargetSecretWorker

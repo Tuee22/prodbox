@@ -223,6 +223,7 @@ library
         Prodbox.ControlPlane.MigrationEndpoint
         Prodbox.ControlPlane.OperationEndpoint
         Prodbox.ControlPlane.ProviderAwsScopeReceipt
+        Prodbox.ControlPlane.ProviderCredentialSession
         Prodbox.ControlPlane.ProviderWorkEndpoint
         Prodbox.ControlPlane.ProviderNarrowSession
         Prodbox.ControlPlane.ProviderProduction
@@ -610,6 +611,8 @@ library
         Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
         Prodbox.ControlPlane.EksClientAuthProjection.Internal
         Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+        Prodbox.ControlPlane.ProviderCredentialSession.Internal
+        Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
         Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
         Prodbox.Lifecycle.HostCleanupIntent.Internal
         Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal

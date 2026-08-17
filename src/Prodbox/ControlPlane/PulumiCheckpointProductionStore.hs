@@ -120,7 +120,10 @@ productionPulumiCheckpointBlobStore primaryStore backupClient =
 
   observeBackupCopy _registered reference =
     fmap
-      (either (const (PulumiCheckpointCopyUnobservable "backup checkpoint request failed")) (backupCopyObservation reference))
+      ( either
+          (const (PulumiCheckpointCopyUnobservable "backup checkpoint request failed"))
+          (backupCopyObservation reference)
+      )
       (observeBackup reference)
 
   restorePrimary registered reference = do

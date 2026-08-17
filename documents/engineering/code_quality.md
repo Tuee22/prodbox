@@ -80,6 +80,11 @@ Current enforced quality surfaces:
 - repository-owned workflow and hook policy surfaces forbidden by
   [Section 2A](#2a-development-tooling-policy)
 - thin-`app/prodbox/Main.hs` and tracked generated-path drift
+- development-plan resume integrity: `prodbox dev lint docs` requires exactly one
+  `DEVELOPMENT_PLAN/README.md` `Resume Here` table; proves its open-sprint coverage, numerical
+  order, and earlier-row-only dependencies; rejects duplicate phase sprint IDs; and requires every
+  Pending Removal owner to resolve to a unique sprint or be explicitly `Unowned`. It also rejects
+  the superseded competing current-ledger headings in `README.md` and `00-overview.md`
 - inline retry-substring classifiers (Sprint `1.57`): `checkInlineRetrySubstringLists` rejects a new
   top-level `isRetryable*` definition that carries its own `any`/`isInfixOf` string table instead of
   delegating to `Prodbox.Service.isRetryableTransientFailure`

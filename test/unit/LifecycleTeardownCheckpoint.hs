@@ -641,7 +641,9 @@ instance Monad FixedEffects where
 
 instance LifecycleTeardownEffects FixedEffects where
   executeLifecycleTeardownOperation _ _ =
-    FixedEffects $ \fixed -> case fixed of
+    FixedEffects fixedTeardownResult
+   where
+    fixedTeardownResult fixed = case fixed of
       FixedCheckpointRestore outcome -> TeardownCheckpointRestore outcome
       FixedCheckpointRecovery evidence ->
         TeardownCheckpointRecoveryReadBack evidence

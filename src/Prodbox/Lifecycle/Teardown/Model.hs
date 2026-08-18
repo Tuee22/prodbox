@@ -15,6 +15,7 @@ module Prodbox.Lifecycle.Teardown.Model
   , CleanupSurface (..)
   , CleanupSurfaceWitness (..)
   , cleanupSurfaceFromWitness
+  , cleanupSurfaceMintsCompletionEvidence
   , RegisteredResourceKey (..)
   , registeredResourceKeyText
   , registeredResourceKeyFromText
@@ -22,6 +23,11 @@ module Prodbox.Lifecycle.Teardown.Model
   , ObservationAuthority (..)
   , ManagedResourceCoordinate (..)
   , coordinateIsAws
+  , clusterOwnershipTagPrefix
+  , clusterOwnedTagValue
+  , pulumiEksClusterNameSuffix
+  , coordinateControllerOwnerCluster
+  , coordinateProvisionedClusterName
   , ManagedResourceCoordinateDigest
   , managedResourceCoordinateDigest
   , managedResourceCoordinateDigestText
@@ -115,6 +121,31 @@ cleanupSurfaceFromWitness witness = case witness of
   ExplicitLongLivedSurface -> ExplicitLongLived
   TotalDecommissionSurface -> TotalDecommission
 
+-- | Whether a run on this surface can mint completion evidence today.
+--
+-- This lives beside 'CleanupSurface' rather than beside the minters because it
+-- has to be readable from a leaf module — 'Prodbox.CheckCode' joins it to the
+-- registry to decide whether a registered target with no production executor
+-- is admissible. @Prodbox.Lifecycle.Teardown.Report@ owns the minters
+-- themselves, and its fixed regression exercises each surface marked 'True'
+-- here, so a surface claimed complete-able but unable to mint is a failing
+-- case rather than a silent disagreement.
+--
+-- The distinction is load-bearing rather than descriptive. A compiled program
+-- ends in mandatory read-backs, and a surface that mints completion is
+-- asserting every one of them succeeded. Registering a target whose read-back
+-- no production interpreter can execute therefore makes that surface's
+-- completion unreachable — while a surface with no minter makes no claim at
+-- all, so the same gap is merely unfinished work there.
+cleanupSurfaceMintsCompletionEvidence :: CleanupSurface -> Bool
+cleanupSurfaceMintsCompletionEvidence surface = case surface of
+  LocalOnly -> False
+  Cascade -> True
+  ExplicitPerRun -> True
+  OperationalTeardown -> False
+  ExplicitLongLived -> False
+  TotalDecommission -> False
+
 -- | Closed initial keys.  The two EBS families are different identities; no
 -- catch-all key exists whose provider tags could later choose a lifecycle
 -- class.
@@ -125,13 +156,6 @@ data RegisteredResourceKey
   | AwsTestKey
   | AwsEbsPerRunTestKey
   | AwsEbsProductionRetainedKey
-  | -- | Sprint 4.85: the throwaway Route 53 hosted zone the @dns-aws@
-    -- validation creates.  It is billable, per-run, and discovered by name
-    -- prefix rather than by a remembered id, and until now it was registered
-    -- in the flat lifecycle inventory and nowhere in the typed registry — so
-    -- @compileDesiredAbsenceProgram@ emitted no node for it and only the
-    -- harness's own cleanup graph swept it.
-    AwsDnsValidationZoneKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -142,9 +166,6 @@ registeredResourceKeyText key = case key of
   AwsTestKey -> "aws-test"
   AwsEbsPerRunTestKey -> "aws-ebs-volumes-per-run-test"
   AwsEbsProductionRetainedKey -> "aws-ebs-volumes-production-retained"
-  -- Matches the flat inventory row exactly; the join is machine-enforced by
-  -- @prodbox dev check@.
-  AwsDnsValidationZoneKey -> "dns-aws-validation-hosted-zone"
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --
@@ -188,14 +209,6 @@ data ManagedResourceCoordinate
       { awsEbsOwnershipTagKey :: !Text
       , awsEbsOwnershipTagValue :: !Text
       }
-  | -- | Sprint 4.85: a Route 53 hosted zone discovered by the prefix that is
-    -- both its name and its caller reference.  The id is only known at run
-    -- time, so the coordinate names the /identity a sweep can rediscover/
-    -- rather than a value a process had to remember — which is what makes a
-    -- zone leaked by an exception or a cancelled run still addressable.
-    AwsRoute53ValidationZoneCoordinate
-      { awsRoute53ZoneNamePrefix :: !Text
-      }
   deriving (Eq, Ord, Show)
 
 coordinateIsAws :: ManagedResourceCoordinate -> Bool
@@ -204,7 +217,63 @@ coordinateIsAws coordinate = case coordinate of
   AwsPulumiStackCoordinate {} -> True
   AwsEbsPerRunFamilyCoordinate {} -> True
   AwsEbsRetainedFamilyCoordinate {} -> True
-  AwsRoute53ValidationZoneCoordinate {} -> True
+
+-- | The AWS convention for "a Kubernetes cluster owns or shares this
+-- resource": @kubernetes.io\/cluster\/\<cluster-name\>@.  The cluster name is
+-- part of the key, which is why key equality is the wrong relation for this
+-- family and prefix membership is the right one.
+clusterOwnershipTagPrefix :: Text
+clusterOwnershipTagPrefix = "kubernetes.io/cluster/"
+
+-- | The ownership tag value that makes the named cluster the __owner__.  The
+-- other legal value, @shared@, does not: a shared resource outlives the
+-- cluster by design, so it has no controller owner to order a teardown
+-- against.
+clusterOwnedTagValue :: Text
+clusterOwnedTagValue = "owned"
+
+-- | How the EKS provisioning program names the cluster it declares.
+--
+-- @pulumi\/aws-eks\/Main.yaml@ sets @clusterName: ${stackName}-cluster@, so a
+-- registered stack's Pulumi stack name determines the cluster name any
+-- controller-owned family will carry.  This constant is the one place that
+-- external fact is written down; deriving the ownership relation from it is
+-- what keeps a controller-owned family's owning stack from being an
+-- independently authored third statement.
+pulumiEksClusterNameSuffix :: Text
+pulumiEksClusterNameSuffix = "-cluster"
+
+-- | The Kubernetes cluster whose controllers own this resource family, if any.
+--
+-- Total over the coordinate universe, so a new coordinate shape is an
+-- exhaustiveness failure until someone states whether it has a controller
+-- owner.  A @shared@ ownership value deliberately answers 'Nothing': the tag
+-- names a cluster that uses the resource, not one that owns its lifetime.
+coordinateControllerOwnerCluster :: ManagedResourceCoordinate -> Maybe Text
+coordinateControllerOwnerCluster coordinate = case coordinate of
+  LocalRke2Coordinate {} -> Nothing
+  AwsPulumiStackCoordinate {} -> Nothing
+  AwsEbsPerRunFamilyCoordinate _ _ clusterTagKey clusterTagValue
+    | clusterTagValue == clusterOwnedTagValue ->
+        Text.stripPrefix clusterOwnershipTagPrefix clusterTagKey
+    | otherwise -> Nothing
+  -- The retained family is keyed only by its retention marker and carries no
+  -- cluster ownership tag, which is exactly what lets it outlive any cluster.
+  AwsEbsRetainedFamilyCoordinate {} -> Nothing
+
+-- | The cluster name a registered stack's provisioning program would give an
+-- EKS cluster, if that program declares one.
+--
+-- This is a __candidate__ rather than a claim: a stack that declares no
+-- cluster simply matches no controller-owned family, so the join stays sound
+-- without this function having to know which programs declare clusters.
+coordinateProvisionedClusterName :: ManagedResourceCoordinate -> Maybe Text
+coordinateProvisionedClusterName coordinate = case coordinate of
+  LocalRke2Coordinate {} -> Nothing
+  AwsPulumiStackCoordinate _ stackName ->
+    Just (stackName <> pulumiEksClusterNameSuffix)
+  AwsEbsPerRunFamilyCoordinate {} -> Nothing
+  AwsEbsRetainedFamilyCoordinate {} -> Nothing
 
 newtype ManagedResourceCoordinateDigest
   = ManagedResourceCoordinateDigest Text
@@ -238,8 +307,6 @@ managedResourceCoordinateDigest coordinate =
         ]
     AwsEbsRetainedFamilyCoordinate tagKey tagValue ->
       Text.intercalate "\NUL" ["aws-ebs-retained-family/v1", tagKey, tagValue]
-    AwsRoute53ValidationZoneCoordinate namePrefix ->
-      Text.intercalate "\NUL" ["aws-route53-validation-zone/v1", namePrefix]
 
   renderHexByte byte = case showHex byte "" of
     [digit] -> ['0', digit]

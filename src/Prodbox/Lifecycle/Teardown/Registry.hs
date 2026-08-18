@@ -36,13 +36,18 @@ module Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityObservationAuthority
   , registeredIdentityRecoveryCapabilities
   , lifecycleRegistryRevision
+  , awsEksPulumiStackName
+  , awsEksSubzonePulumiStackName
+  , awsTestPulumiStackName
+  , pulumiProjectNamePrefix
+  , pulumiProjectNameFor
+  , awsEksProvisionedClusterName
   , localLinuxRke2Resource
   , awsEksResource
   , awsEksSubzoneResource
   , awsTestResource
   , awsEbsPerRunTestResource
   , awsEbsProductionRetainedResource
-  , awsDnsValidationZoneResource
   , managedResourceRegistry
   , lifecycleRegistry
   , lookupRegisteredIdentity
@@ -64,6 +69,7 @@ module Prodbox.Lifecycle.Teardown.Registry
 where
 
 import Data.List (group, sort)
+import Data.Text (Text)
 import Prodbox.Lifecycle.Teardown.Model hiding (managedResourceCoordinateDigest)
 import Prodbox.Lifecycle.Teardown.Model qualified as Model
 import Prodbox.Lifecycle.Teardown.RecoveryCapability
@@ -231,13 +237,47 @@ localLinuxRke2Resource =
     LocalLinuxRke2Key
     (LocalRke2Coordinate "linux-rke2-foundation")
 
+-- | The Pulumi stack names of the registered per-run stacks.
+--
+-- Sprint 4.85: named here because they were also written down in
+-- 'Prodbox.Lifecycle.LiveResidue' and 'Prodbox.Infra.AwsEksTestStack', so the
+-- same fact had three independent statements and a stack rename could split
+-- them silently. This is the compiled source; the other two are projections of
+-- it.
+awsEksPulumiStackName, awsEksSubzonePulumiStackName, awsTestPulumiStackName :: Text
+awsEksPulumiStackName = "aws-eks-test"
+awsEksSubzonePulumiStackName = "aws-eks-subzone"
+awsTestPulumiStackName = "aws-test"
+
+-- | Every provisioning program's Pulumi project is @prodbox-\<stack name\>@;
+-- see the @name:@ field of each @pulumi\/*\/Pulumi.yaml@, which
+-- @prodbox dev check@ joins these coordinates to.
+pulumiProjectNamePrefix :: Text
+pulumiProjectNamePrefix = "prodbox-"
+
+pulumiProjectNameFor :: Text -> Text
+pulumiProjectNameFor stackName = pulumiProjectNamePrefix <> stackName
+
+-- | The EKS cluster the @aws-eks@ program declares.
+--
+-- @pulumi\/aws-eks\/Main.yaml@ sets @clusterName: ${stackName}-cluster@, and
+-- 'pulumiEksClusterNameSuffix' is where that rule is written down. Deriving the
+-- name here is what makes the per-run EBS family's controller owner a fact
+-- about the registry rather than a fourth independently authored string.
+awsEksProvisionedClusterName :: Text
+awsEksProvisionedClusterName =
+  awsEksPulumiStackName <> pulumiEksClusterNameSuffix
+
 awsEksResource :: ManagedResourceDescriptor 'PerRun 'Stack
 awsEksResource =
   mkManagedResource
     AwsEksKey
     PerRunLifecycle
     StackKind
-    (AwsPulumiStackCoordinate "prodbox-aws-eks-test" "aws-eks-test")
+    ( AwsPulumiStackCoordinate
+        (pulumiProjectNameFor awsEksPulumiStackName)
+        awsEksPulumiStackName
+    )
     AwsResourceApiAuthority
 
 awsEksSubzoneResource :: ManagedResourceDescriptor 'PerRun 'Stack
@@ -246,7 +286,10 @@ awsEksSubzoneResource =
     AwsEksSubzoneKey
     PerRunLifecycle
     StackKind
-    (AwsPulumiStackCoordinate "prodbox-aws-eks-subzone" "aws-eks-subzone")
+    ( AwsPulumiStackCoordinate
+        (pulumiProjectNameFor awsEksSubzonePulumiStackName)
+        awsEksSubzonePulumiStackName
+    )
     AwsResourceApiAuthority
 
 awsTestResource :: ManagedResourceDescriptor 'PerRun 'Stack
@@ -255,9 +298,20 @@ awsTestResource =
     AwsTestKey
     PerRunLifecycle
     StackKind
-    (AwsPulumiStackCoordinate "prodbox-aws-test" "aws-test")
+    ( AwsPulumiStackCoordinate
+        (pulumiProjectNameFor awsTestPulumiStackName)
+        awsTestPulumiStackName
+    )
     AwsResourceApiAuthority
 
+-- | The volumes the EKS cluster's EBS CSI driver provisions for one validation
+-- run.
+--
+-- The cluster ownership tag is built from the EKS stack's own name rather than
+-- written out, so "the EKS stack owns this family" is true by construction
+-- instead of being a claim the ownership derivation has to discover. The
+-- rendered coordinate is byte-identical to the string it replaced, so the
+-- coordinate digest is unchanged.
 awsEbsPerRunTestResource :: ManagedResourceDescriptor 'PerRun 'VolumeFamily
 awsEbsPerRunTestResource =
   mkManagedResource
@@ -267,29 +321,9 @@ awsEbsPerRunTestResource =
     ( AwsEbsPerRunFamilyCoordinate
         "prodbox.io/lifecycle"
         "per-run-test"
-        "kubernetes.io/cluster/aws-eks-test-cluster"
-        "owned"
+        (clusterOwnershipTagPrefix <> awsEksProvisionedClusterName)
+        clusterOwnedTagValue
     )
-    AwsResourceApiAuthority
-
--- | Sprint 4.85: the throwaway Route 53 hosted zone the @dns-aws@ validation
--- creates.
---
--- It was registered in the flat lifecycle inventory and nowhere in the typed
--- registry, so @compileDesiredAbsenceProgram@ emitted no node for it and the
--- only thing sweeping a billable zone was the harness's own cleanup graph — the
--- graph Sprint @5.36@ deletes.  Registering it is what lets the lifecycle-owned
--- per-run program express the obligation the harness currently carries.
---
--- 'SingletonKind' rather than a family: one validation run creates one zone, and
--- the prefix is its identity rather than a membership predicate over many.
-awsDnsValidationZoneResource :: ManagedResourceDescriptor 'PerRun 'Singleton
-awsDnsValidationZoneResource =
-  mkManagedResource
-    AwsDnsValidationZoneKey
-    PerRunLifecycle
-    SingletonKind
-    (AwsRoute53ValidationZoneCoordinate "prodbox-dns-aws-")
     AwsResourceApiAuthority
 
 awsEbsProductionRetainedResource
@@ -308,7 +342,6 @@ managedResourceRegistry =
   , SomeManagedResourceDescriptor awsEksSubzoneResource
   , SomeManagedResourceDescriptor awsTestResource
   , SomeManagedResourceDescriptor awsEbsPerRunTestResource
-  , SomeManagedResourceDescriptor awsDnsValidationZoneResource
   , SomeManagedResourceDescriptor awsEbsProductionRetainedResource
   ]
 

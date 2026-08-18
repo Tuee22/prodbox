@@ -34,6 +34,7 @@ module Prodbox.Lifecycle.Decommission.Receipt
   , BoundReceiptReopen (..)
   , initializeBoundReceipt
   , reopenBoundReceipt
+  , readBoundReceiptFramesReadOnly
   , ExternalReceiptPrepareRefusal (..)
   , PendingExternalReceipt
   , pendingExternalReceiptPath
@@ -234,6 +235,9 @@ data BoundReceiptRefusal
   | BoundReceiptHeaderCodecRefused !ReceiptHeaderCodecError
   | BoundReceiptHeaderDrift !ReceiptHeaderMismatch
   | BoundReceiptJournalRefused !JournalRecoveryError
+  | -- | Sprint 4.85: a torn final record observed by a read-only reader, which
+    -- may not repair it. The runner's own reopen path truncates instead.
+    BoundReceiptTornTail
   | BoundReceiptOversized
   | BoundReceiptNotRegular
   | BoundReceiptIoFailure !String
@@ -441,6 +445,36 @@ reopenBoundReceipt maximumFrameBytes verified path = do
                             , boundReopenTruncatedTo = Nothing
                             }
                       )
+
+-- | Sprint 4.85: read the bound receipt without ever writing to it.
+--
+-- 'reopenBoundReceipt' repairs a torn final record, which is correct for the
+-- runner that is about to append and wrong for anything that only wants to
+-- read. The terminal-receipt node reads the receipt it is a node of, so a
+-- reader that could truncate would be a node that mutates the record it is
+-- proving something about. Here a torn tail is a refusal, not a repair.
+readBoundReceiptFramesReadOnly
+  :: (Serialise payload)
+  => Int
+  -> VerifiedDecommissionManifest
+  -> FilePath
+  -> IO (Either BoundReceiptRefusal [DecommissionFrame payload])
+readBoundReceiptFramesReadOnly maximumFrameBytes verified path = do
+  exists <- doesFileExist path
+  if not exists
+    then pure (Left BoundReceiptAbsent)
+    else do
+      bytesResult <- readBoundReceiptBytes path
+      pure $ do
+        bytes <- bytesResult
+        (header, _, journalBytes) <- splitBoundReceipt bytes
+        validateExpectedHeader (mkReceiptHeader verified) header
+        let recovery =
+              recoverReceipt maximumFrameBytes (verifiedManifestDigest verified) journalBytes
+        case recoveryOutcome recovery of
+          RecoveryRefused err -> Left (BoundReceiptJournalRefused err)
+          RecoveryTruncatableTorn -> Left BoundReceiptTornTail
+          RecoveryComplete -> Right (recoveredFrames recovery)
 
 -- | Append only after reopening and validating the header plus complete chain;
 -- then reopen again and require the appended terminal digest.  This is the

@@ -453,6 +453,12 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
   uninstall/read-back completion receipt. Incomplete results carry `RecoveryPlaneDisposition` as
   `Established`, `NotEstablished`, or `Lost` and claim a preserved live plane only for
   `Established`.
+- **Received from Sprint `4.84` on its closure (2026-08-17).** Convert the bespoke
+  `runNativeDeleteCascade` onto the exact-keyed selection Sprint `4.84` landed: it still reaches its
+  targets through the surface- and run-keyed creation slot and visible residue, and must reach them
+  through `selectRegisteredStackGenerationForCleanup` instead. This lands with the single-writer
+  activation rather than in front of it, because converting the legacy caller first would build the
+  new selection on top of the very route this sprint deletes.
 - Extend installed-binary and repository/chart scans for every legacy symbol, callback, Gateway-owned
   caller identity, no-RKE2 cascade shortcut, and uninstall-on-incomplete generic/home route
   registered in the deletion ledger. Before activation the scanner requires the exact bounded
@@ -498,7 +504,8 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
 Blocked until the replacement cascade and lifecycle cleanup client exist. Once they land, code-local
 closure requires the qualification-only runner, type-indexed activation machinery, scoped
 proof-carrying local completion, staged artifact/schema support, mutation-sensitive ordering tests,
-and the bounded pre/post-activation scanner; it does not require live infrastructure. Public
+the bounded pre/post-activation scanner, and the `runNativeDeleteCascade` conversion received from
+Sprint `4.84`; it does not require live infrastructure. Public
 activation and legacy generic/home deletion remain prohibited while the home qualification row is
 pending. After that row is proven, Sprint `6.5` consumes its exact witness, activates one replacement
 writer, deletes the legacy route, and requalifies the changed identity before moving ledger rows to

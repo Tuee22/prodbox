@@ -341,7 +341,7 @@ The per-group command matrix (generated; do not edit by hand):
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox nuke` | none | `--dry-run`, `--plan-file`, `--receipt` |
+| `prodbox nuke` | none | `--dry-run`, `--plan-file`, `--receipt`, `--local-data` |
 
 ### `prodbox test`
 
@@ -624,8 +624,13 @@ registry-generated concrete assignments.
 stack, the long-lived `pulumi_state_backend` bucket). For per-stack teardown of `aws-ses` alone,
 use `prodbox aws stack aws-ses destroy --yes`.
 
-The current parser exposes `--receipt <path>`; dry-run may omit it, while apply refuses before
-mutation when it is absent. The production composition binds the authenticated decommission
+The current parser exposes `--receipt <path>` and `--local-data <retain|delete>`; dry-run may omit
+either, while apply refuses before mutation when either is absent. `--local-data` is the operator's
+explicit disposition of the retained local data root (the configured manual PV host root). It has no
+default because both candidate answers silently decide the fate of retained data and one of them is
+irreversible; the decision is a parameter of the signed `LocalDataDisposition` manifest node, so it
+enters the manifest digest and the frame node identity and a receipt opened for a `retain` run
+cannot be resumed as a `delete` run. The production composition binds the authenticated decommission
 manifest to that external receipt and runs the standalone Decommission Runner. A new path is
 fsynced and acknowledged before the point of no return. The external receipt sink must durably
 contain and reopen the signed manifest plus the
@@ -635,13 +640,17 @@ and read back. An existing matching path resumes the same manifest with the same
 different runner bytes, verifier, or schema reject before prompt or mutation. The receipt is
 non-secret and remains operator/harness-owned after managed storage is destroyed.
 
-**Current-versus-target bound.** The shipped manifest/receipt graph ends at its registered shared-
-bucket node. It has no home-substrate uninstall/read-back, explicit `.data` disposition, final
-no-retention audit, or terminal-receipt node; `runNukeTerminalTagSweep` currently runs after the
-receipt runner returns success and outside that resumable graph. The current receipt is therefore a
-durable record of the limited graph, not yet the terminal evidence chain for total decommission.
-The target adds those four closed programs and their read-backs before
-`TotalDecommissionCompleteEvidence` is constructible. Implementation and removal status live only
+**Current-versus-target bound.** The shipped manifest/receipt graph no longer ends at its registered
+shared-bucket node. An ordered terminal phase follows the last resource deletion: the final
+no-retention escape audit, the home-substrate uninstall and its marker read-back, the operator's
+explicit `.data` retain-or-delete disposition and its read-back, and the terminal receipt — a node
+that refuses unless the receipt's own committed frames already record every other plan node as
+durably terminal, so its success frame is the record's declaration that the run converged. The
+out-of-band `runNukeTerminalTagSweep` tail that used to run after the receipt runner returned success
+— outside the resumable graph, where a crash or a lost response could not resume through the manifest
+— is gone. The remaining gap is bidirectional program-tag parity: seventeen of the twenty-one
+semantic total-decommission operations are still implemented by exactly one of the two sides, so
+`TotalDecommissionCompleteEvidence` is not yet constructible. Implementation and removal status live only
 in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here) and its
 [Pending Removal ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Like every admin-credentialed flow, it acquires elevated AWS power through the one unified
@@ -671,11 +680,12 @@ Authority; then lets the standalone runner delete/read back the external SMTP an
 SES/S3 families. Only after external credential absence does it physically destroy target SMTP/EAB
 and retained-home custody KV-v2 versions/metadata and read back absence through the still-live
 Agents. TLS prefix/identity,
-per-run stacks, Operational IAM, home control plane, and optional `.data` follow only after their
-registered dependants are absent. The final Authority-backup objects, identity, and shared bucket
-are then deleted and read back through the external receipt protocol. Only after those exact
-obligations does the runner perform the **terminal escape audit** and append its result to the
-external receipt. An escaped resource or unobservable audit makes the terminal result incomplete and
+per-run stacks, Operational IAM, home control plane, and the explicit `.data` disposition follow only
+after their registered dependants are absent. The final Authority-backup objects, identity, and
+shared bucket are then deleted and read back through the external receipt protocol. Only after those
+exact obligations does the runner perform the **terminal escape audit**, then uninstall the home
+substrate, then apply the operator's signed `.data` disposition, then take the **terminal receipt**,
+appending each result to the external receipt. An escaped resource or unobservable audit makes the terminal result incomplete and
 non-zero, but the audit never selects an earlier deletion or substitutes for its exact evidence. See
 [Lifecycle Reconciliation Doctrine §6b](lifecycle_reconciliation_doctrine.md#6b-nuke-transfers-authority-to-an-external-decommission-receipt)
 for the canonical order and receipt boundary.

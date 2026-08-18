@@ -381,6 +381,7 @@ library
         Prodbox.Lifecycle.Decommission.Manifest
         Prodbox.Lifecycle.Decommission.NodeEffect
         Prodbox.Lifecycle.Decommission.Permit
+        Prodbox.Lifecycle.Decommission.ProgramTag
         Prodbox.Lifecycle.Decommission.Receipt
         Prodbox.Lifecycle.Decommission.RetainedCustodyTombstone
         Prodbox.Lifecycle.Decommission.Runner
@@ -426,6 +427,7 @@ library
         Prodbox.Lifecycle.HostCleanupIntent
         Prodbox.Lifecycle.HostCleanupRunner
         Prodbox.Lifecycle.HostCleanupRke2
+        Prodbox.Lifecycle.HostCleanupLocalData
         Prodbox.Lifecycle.StoreLifetime
         Prodbox.Lifecycle.TestArtifactCleanup
         Prodbox.Lifecycle.TestArtifactIntentJournal
@@ -504,6 +506,7 @@ library
         Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter
         Prodbox.Lifecycle.Teardown.RecoveryRequirement
         Prodbox.Lifecycle.Teardown.Program
+        Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
         Prodbox.Lifecycle.Teardown.RegisteredTargetResult
         Prodbox.Lifecycle.Teardown.Report
         Prodbox.Lifecycle.Teardown.Registry
@@ -814,6 +817,7 @@ test-suite prodbox-unit
         DecommissionFrame
         DecommissionGraph
         DecommissionJournal
+        DecommissionLocalDataDisposition
         DecommissionManifest
         DecommissionNodeEffect
         DecommissionPermit

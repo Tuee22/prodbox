@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.50: the deterministic decommission inventory that the receipt is
 -- bound to.
@@ -24,12 +25,23 @@ module Prodbox.Lifecycle.Decommission.Manifest
   , DecommissionTargetGenerationError (..)
   , mkDecommissionTargetGeneration
   , decommissionTargetGenerationValue
+  , DecommissionLocalDataDisposition (..)
+  , decommissionLocalDataDispositionText
   , DecommissionNode (..)
   , DecommissionSingletonNode (..)
+  , DecommissionChoiceFamily (..)
+  , DecommissionNodeFamily (..)
+  , decommissionNodeFamily
   , decommissionNodeSingleton
   , singletonDecommissionNode
   , requiredSingletonDecommissionNodes
+  , mandatoryDecommissionChoiceNodes
+  , decommissionChoiceFamilyRepresentative
   , decommissionSingletonNodeBijection
+  , decommissionChoiceFamilyBijection
+  , DecommissionPlanCardinalityError (..)
+  , renderDecommissionPlanCardinalityError
+  , validateDecommissionPlanCardinality
   , DecommissionManifest
   , ManifestError (..)
   , currentManifestVersion
@@ -121,6 +133,34 @@ mkDecommissionTargetGeneration generation
 decommissionTargetGenerationValue :: DecommissionTargetGeneration -> Natural
 decommissionTargetGenerationValue (DecommissionTargetGeneration generation) = generation
 
+-- | Sprint 4.85: the operator's explicit retain-or-delete decision for the
+-- retained local data root, as a type.
+--
+-- The decision has no default and no third value. A total decommission that
+-- destroyed every AWS resource class and uninstalled the home substrate still
+-- leaves the manual PV host root on disk -- the root @nuke@ already names as
+-- the first entry of its own deletion-root inventory, which is why the
+-- external receipt and pinned runner are required to live outside it. Nothing
+-- disposed of it, and nothing recorded what the operator wanted done with it.
+--
+-- Making it a value rather than a flag read at the effect boundary is what
+-- lets it be signed: it is a parameter of the 'LocalDataDisposition' node, so
+-- it enters the manifest digest, the frame node identity, and the plan the
+-- operator approves. A receipt opened for a @retain@ run therefore cannot be
+-- resumed as a @delete@ run -- the node IDs differ.
+data DecommissionLocalDataDisposition
+  = -- | Leave the retained local data root exactly as it is.
+    RetainLocalData
+  | -- | Delete the retained local data root and read back its absence.
+    DeleteLocalData
+  deriving stock (Bounded, Enum, Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+decommissionLocalDataDispositionText :: DecommissionLocalDataDisposition -> Text
+decommissionLocalDataDispositionText disposition = case disposition of
+  RetainLocalData -> "retain"
+  DeleteLocalData -> "delete"
+
 -- | A typed unit of decommission work. Singleton nodes name a unique resource
 -- class; 'TargetGeneration' authenticates both the registered target reference
 -- and its exact positive credential generation. A run may name several Agents,
@@ -144,8 +184,46 @@ data DecommissionNode
     BackupPrefixAbsenceProof
   | -- | Delete the backup objects and identity.
     BackupObjects
-  | -- | Delete the shared object bucket — always last.
+  | -- | Delete the shared object bucket — the last resource deletion.
     SharedObjectBucket
+  | -- | Sprint 4.85: the final no-retention escape audit, which admits no
+    -- retained carve-out and is the terminal node of the receipt graph.
+    --
+    -- It is appended rather than inserted: 'DecommissionNode' derives
+    -- 'Serialise', and its constructor index feeds both
+    -- 'decommissionNodeFrameId' and the signed manifest digest, so every
+    -- existing node keeps its historical identity.
+    FinalNoRetentionAudit
+  | -- | Sprint 4.85: uninstall the home substrate and read back its absence.
+    --
+    -- It runs after the final audit, which is the order the compiled
+    -- @TotalDecommission@ program emits, and after every other node in the
+    -- plan -- a stronger condition than the \"every home-plane-dependent node
+    -- is terminal\" readiness the doctrine requires, since the local plane is
+    -- what the SES quiescence, target-generation, and retained-custody nodes
+    -- are answered through.
+    HomeSubstrateUninstall
+  | -- | Sprint 4.85: apply the operator's explicit @.data@ retain-or-delete
+    -- disposition and read back that it was honoured.
+    --
+    -- Unlike 'TargetGeneration' this node is mandatory and unique: exactly one
+    -- disposition node belongs in a production plan, because there is exactly
+    -- one retained local data root and a run that names none has silently
+    -- decided to retain it. That cardinality is stated once, by
+    -- 'decommissionNodeFamily', and checked by
+    -- 'validateDecommissionPlanCardinality'.
+    LocalDataDisposition !DecommissionLocalDataDisposition
+  | -- | Sprint 4.85: prove, from the external receipt's own committed frames,
+    -- that every other node of the plan is durably terminal.
+    --
+    -- The receipt records each node's intent, observation, and result. What it
+    -- never recorded is that the __run__ converged: a receipt ending at the
+    -- last node's result frame is byte-identical to one whose run crashed
+    -- immediately after that frame, and @reportConverged@ exists only inside
+    -- the process that produced it. This node is last in the derived order, so
+    -- its own success frame is that missing declaration -- and it can only be
+    -- written once the durable record already carries every other node's.
+    DecommissionTerminalReceipt
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -180,25 +258,68 @@ data DecommissionSingletonNode
   | SingletonBackupPrefixAbsenceProof
   | SingletonBackupObjects
   | SingletonSharedObjectBucket
+  | SingletonFinalNoRetentionAudit
+  | SingletonHomeSubstrateUninstall
+  | SingletonDecommissionTerminalReceipt
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
--- | The singleton node one 'DecommissionNode' is, if it is one.
+-- | Sprint 4.85: the closed enumeration of the mandatory __parameterized__
+-- node families.
 --
--- Total over the closed node universe, so adding a 'DecommissionNode'
--- constructor is an exhaustiveness failure until it is deliberately classified
--- as a mandatory singleton or as parameterized work.
+-- A family here is mandatory and unique like a singleton, but its node carries
+-- a decision drawn from a closed universe, so the node itself cannot be listed
+-- among the required constructors. Without this classification the only
+-- cardinality the plan verifier could express was \"every singleton is
+-- present\", and a mandatory node with a parameter would have been silently
+-- optional -- exactly the defect the singleton enumeration was introduced to
+-- close, one constructor shape further along.
+data DecommissionChoiceFamily
+  = -- | The operator's explicit @.data@ retain-or-delete disposition.
+    LocalDataDispositionFamily
+  deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+-- | How many nodes of its kind a valid production plan contains, and why.
+--
+-- This is the single node-cardinality classifier. 'decommissionNodeSingleton'
+-- is a projection of it rather than a second @case@, so the required-singleton
+-- list and the mandatory-choice list cannot disagree about one node.
+data DecommissionNodeFamily
+  = -- | Exactly one node, carrying no parameters.
+    MandatorySingletonFamily !DecommissionSingletonNode
+  | -- | Exactly one node, carrying a decision from a closed universe.
+    MandatoryChoiceFamily !DecommissionChoiceFamily
+  | -- | Zero or more nodes, one per live Target Secret Agent reference.
+    PerAgentTargetFamily
+  deriving stock (Eq, Ord, Show)
+
+-- | Total over the closed node universe, so adding a 'DecommissionNode'
+-- constructor is an exhaustiveness failure until its cardinality is
+-- deliberately stated.
+decommissionNodeFamily :: DecommissionNode -> DecommissionNodeFamily
+decommissionNodeFamily node = case node of
+  SesConsumerQuiescence -> MandatorySingletonFamily SingletonSesConsumerQuiescence
+  SesProviderStack -> MandatorySingletonFamily SingletonSesProviderStack
+  SesSmtpIam -> MandatorySingletonFamily SingletonSesSmtpIam
+  TargetGeneration _ _ -> PerAgentTargetFamily
+  RetainedCustody -> MandatorySingletonFamily SingletonRetainedCustody
+  TlsRetainedObjects -> MandatorySingletonFamily SingletonTlsRetainedObjects
+  TlsRetentionIdentity -> MandatorySingletonFamily SingletonTlsRetentionIdentity
+  BackupPrefixAbsenceProof -> MandatorySingletonFamily SingletonBackupPrefixAbsenceProof
+  BackupObjects -> MandatorySingletonFamily SingletonBackupObjects
+  SharedObjectBucket -> MandatorySingletonFamily SingletonSharedObjectBucket
+  FinalNoRetentionAudit -> MandatorySingletonFamily SingletonFinalNoRetentionAudit
+  HomeSubstrateUninstall -> MandatorySingletonFamily SingletonHomeSubstrateUninstall
+  LocalDataDisposition _ -> MandatoryChoiceFamily LocalDataDispositionFamily
+  DecommissionTerminalReceipt ->
+    MandatorySingletonFamily SingletonDecommissionTerminalReceipt
+
+-- | The singleton node one 'DecommissionNode' is, if it is one. A projection
+-- of 'decommissionNodeFamily'.
 decommissionNodeSingleton :: DecommissionNode -> Maybe DecommissionSingletonNode
-decommissionNodeSingleton node = case node of
-  SesConsumerQuiescence -> Just SingletonSesConsumerQuiescence
-  SesProviderStack -> Just SingletonSesProviderStack
-  SesSmtpIam -> Just SingletonSesSmtpIam
-  TargetGeneration _ _ -> Nothing
-  RetainedCustody -> Just SingletonRetainedCustody
-  TlsRetainedObjects -> Just SingletonTlsRetainedObjects
-  TlsRetentionIdentity -> Just SingletonTlsRetentionIdentity
-  BackupPrefixAbsenceProof -> Just SingletonBackupPrefixAbsenceProof
-  BackupObjects -> Just SingletonBackupObjects
-  SharedObjectBucket -> Just SingletonSharedObjectBucket
+decommissionNodeSingleton node = case decommissionNodeFamily node of
+  MandatorySingletonFamily singleton -> Just singleton
+  MandatoryChoiceFamily _ -> Nothing
+  PerAgentTargetFamily -> Nothing
 
 -- | The 'DecommissionNode' one singleton is. The inverse of
 -- 'decommissionNodeSingleton' on its singleton domain; their round trip is
@@ -214,6 +335,9 @@ singletonDecommissionNode singleton = case singleton of
   SingletonBackupPrefixAbsenceProof -> BackupPrefixAbsenceProof
   SingletonBackupObjects -> BackupObjects
   SingletonSharedObjectBucket -> SharedObjectBucket
+  SingletonFinalNoRetentionAudit -> FinalNoRetentionAudit
+  SingletonHomeSubstrateUninstall -> HomeSubstrateUninstall
+  SingletonDecommissionTerminalReceipt -> DecommissionTerminalReceipt
 
 -- | Every mandatory singleton node, derived from the closed enumeration rather
 -- than authored beside it.
@@ -235,6 +359,106 @@ decommissionSingletonNodeBijection =
           == Just singleton
     )
     [minBound .. maxBound]
+
+-- | Sprint 4.85: every mandatory choice node for one operator decision,
+-- derived from the closed family enumeration.
+--
+-- The inner @case@ is what carries the exhaustiveness pressure: a second
+-- mandatory choice family cannot be added without saying which node it
+-- contributes for a given decision, and the decision universe it draws from.
+mandatoryDecommissionChoiceNodes
+  :: DecommissionLocalDataDisposition -> [DecommissionNode]
+mandatoryDecommissionChoiceNodes disposition =
+  [nodeFor family | family <- [minBound .. maxBound]]
+ where
+  nodeFor family = case family of
+    LocalDataDispositionFamily -> LocalDataDisposition disposition
+
+-- | One node standing for a mandatory choice family, for layout and
+-- measurement only.
+--
+-- A representative is never signed and never executed: it names the family's
+-- position in a rendered plan and its semantic tag in the parity measurement,
+-- both of which are the same for every decision in the family. Every signed
+-- plan node comes from 'mandatoryDecommissionChoiceNodes' under the operator's
+-- actual decision instead.
+decommissionChoiceFamilyRepresentative
+  :: DecommissionChoiceFamily -> DecommissionNode
+decommissionChoiceFamilyRepresentative family = case family of
+  LocalDataDispositionFamily -> LocalDataDisposition RetainLocalData
+
+-- | Both directions of the choice-family join, as a value.
+decommissionChoiceFamilyBijection :: Bool
+decommissionChoiceFamilyBijection =
+  all
+    ( \family ->
+        decommissionNodeFamily (decommissionChoiceFamilyRepresentative family)
+          == MandatoryChoiceFamily family
+    )
+    [minBound .. maxBound]
+
+-- | Sprint 4.85: a production plan's node cardinality is wrong in one of three
+-- ways.
+data DecommissionPlanCardinalityError
+  = -- | A mandatory singleton node the plan never names.
+    DecommissionPlanSingletonMissing !DecommissionSingletonNode
+  | -- | A mandatory choice family the plan never names, so the decision it
+    -- carries was never made or never signed.
+    DecommissionPlanChoiceMissing !DecommissionChoiceFamily
+  | -- | More than one node of a mandatory choice family, so the plan carries
+    -- two competing decisions for one operation.
+    DecommissionPlanChoiceAmbiguous
+      !DecommissionChoiceFamily
+      ![DecommissionNode]
+  deriving stock (Eq, Show)
+
+renderDecommissionPlanCardinalityError
+  :: DecommissionPlanCardinalityError -> Text
+renderDecommissionPlanCardinalityError err = case err of
+  DecommissionPlanSingletonMissing singleton ->
+    "the plan omits mandatory decommission node "
+      <> Text.pack (show (singletonDecommissionNode singleton))
+  DecommissionPlanChoiceMissing family ->
+    "the plan omits the mandatory decommission decision "
+      <> Text.pack (show family)
+  DecommissionPlanChoiceAmbiguous family nodes ->
+    "the plan carries competing decommission decisions for "
+      <> Text.pack (show family)
+      <> ": "
+      <> Text.pack (show nodes)
+
+-- | Check a node inventory against every cardinality 'decommissionNodeFamily'
+-- states.
+--
+-- The per-Agent family is deliberately unconstrained here: a run names as many
+-- target generations as it has Agents, and the production-specific \"exactly
+-- one Agent for this cluster identity\" rule belongs to the caller that knows
+-- the cluster identity.
+validateDecommissionPlanCardinality
+  :: [DecommissionNode] -> Either [DecommissionPlanCardinalityError] ()
+validateDecommissionPlanCardinality nodes =
+  case missingSingletons ++ choiceViolations of
+    [] -> Right ()
+    errors -> Left errors
+ where
+  missingSingletons =
+    [ DecommissionPlanSingletonMissing singleton
+    | singleton <- [minBound .. maxBound]
+    , singletonDecommissionNode singleton `notElem` nodes
+    ]
+  choiceViolations =
+    [ violation
+    | family <- [minBound .. maxBound] :: [DecommissionChoiceFamily]
+    , let present =
+            [ node
+            | node <- nodes
+            , decommissionNodeFamily node == MandatoryChoiceFamily family
+            ]
+    , violation <- case present of
+        [] -> [DecommissionPlanChoiceMissing family]
+        [_] -> []
+        several -> [DecommissionPlanChoiceAmbiguous family several]
+    ]
 
 -- | The deterministic signed inventory. Opaque: build it through
 -- 'mkDecommissionManifest'.

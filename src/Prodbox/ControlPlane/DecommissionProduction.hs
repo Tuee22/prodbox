@@ -44,7 +44,8 @@ import Prodbox.Lifecycle.Decommission.Commit
   )
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionManifest
+  ( DecommissionLocalDataDisposition
+  , DecommissionManifest
   , VerifiedDecommissionManifest
   , verifiedManifestPlan
   )
@@ -53,7 +54,7 @@ authorityDecommissionRepositories
   :: Natural
   -> AuthorityAdmissionRepository IO revision
   -> DecommissionCommitRepository IO commitRevision
-  -> IO (Either Text DecommissionManifest)
+  -> (DecommissionLocalDataDisposition -> IO (Either Text DecommissionManifest))
   -> ( AuthorityDecommissionExportRepository IO
      , AuthorityDecommissionStopRepository IO
      )
@@ -79,16 +80,24 @@ authorityDecommissionRepositories maximumAttempts admission committedManifest di
 -- not rediscover inventory after an earlier attempt has tombstoned a target
 -- generation, because doing so would synthesize a different plan and strand
 -- the authenticated receipt.  Discovery is used only before the first commit.
+--
+-- Sprint 4.85: the operator's retained-local-data disposition therefore binds
+-- on the first export and never again. A resume that supplies a different
+-- @--local-data@ value does not silently inherit the committed one: the runner
+-- compares the signed disposition against the requested one and refuses, so
+-- the operator learns that the decision was already made rather than believing
+-- this run made it.
 readCommittedPlanOrDiscover
   :: DecommissionCommitRepository IO revision
+  -> (DecommissionLocalDataDisposition -> IO (Either Text DecommissionManifest))
+  -> DecommissionLocalDataDisposition
   -> IO (Either Text DecommissionManifest)
-  -> IO (Either Text DecommissionManifest)
-readCommittedPlanOrDiscover repository discover = do
+readCommittedPlanOrDiscover repository discover localDataDisposition = do
   observed <- readCommittedManifest repository
   case observed of
     Left detail -> pure (Left detail)
     Right (Just (_, committed)) -> pure (Right (verifiedManifestPlan committed))
-    Right Nothing -> discover
+    Right Nothing -> discover localDataDisposition
 
 freezeAuthorityAdmissionWithReadBack
   :: Natural

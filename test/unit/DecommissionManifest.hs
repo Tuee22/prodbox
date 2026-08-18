@@ -45,7 +45,11 @@ decommissionManifestSuite =
       -- The verifier's required set was a hand-authored list of nine joined to
       -- nothing, so a newly added singleton constructor would have been
       -- silently optional: a manifest that never names it would verify, and
-      -- the run would report success having never executed it.
+      -- the run would report success having never executed it. Sprint 4.85's
+      -- 'FinalNoRetentionAudit' is the first node added since, and it reached
+      -- the required set, the Authority's production plan, the signed
+      -- interpreter registry, and the operator's dry-run plan without any of
+      -- them being edited.
       requiredSingletonDecommissionNodes
         `shouldBe` [ SesConsumerQuiescence
                    , SesProviderStack
@@ -56,6 +60,9 @@ decommissionManifestSuite =
                    , BackupPrefixAbsenceProof
                    , BackupObjects
                    , SharedObjectBucket
+                   , FinalNoRetentionAudit
+                   , HomeSubstrateUninstall
+                   , DecommissionTerminalReceipt
                    ]
       -- Parameterized work is deliberately not mandatory: a run names as many
       -- target generations as it has Agents, and none is individually

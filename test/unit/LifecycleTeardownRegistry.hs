@@ -27,17 +27,10 @@ lifecycleTeardownRegistrySuite = do
                    , (AwsEksSubzoneKey, Just PerRun, Stack)
                    , (AwsTestKey, Just PerRun, Stack)
                    , (AwsEbsPerRunTestKey, Just PerRun, VolumeFamily)
-                   , -- Sprint 4.85: the throwaway Route 53 zone the dns-aws
-                     -- validation creates. It was in the flat inventory and
-                     -- nowhere here, so the compiled per-run program emitted
-                     -- no node for a billable resource. It is registered with
-                     -- the other per-run identities so the class grouping in
-                     -- this table is contiguous.
-                     (AwsDnsValidationZoneKey, Just PerRun, Singleton)
                    , (AwsEbsProductionRetainedKey, Just LongLived, VolumeFamily)
                    ]
       map registeredIdentityAuthority lifecycleRegistry
-        `shouldBe` replicate 7 LinuxRke2LifecycleAuthority
+        `shouldBe` replicate 6 LinuxRke2LifecycleAuthority
       lifecycleRegistryValidation `shouldBe` Right ()
 
     it "keeps the two EBS families on distinct exact coordinates and fixed classes" $ do
@@ -55,25 +48,6 @@ lifecycleTeardownRegistrySuite = do
         `shouldBe` AwsEbsRetainedFamilyCoordinate "prodbox.io/lifecycle" "retained-ebs"
       registeredIdentityCoordinateDigest perRun
         `shouldNotBe` registeredIdentityCoordinateDigest retained
-
-    -- Sprint 4.85: the zone is billable, created per validation run, and
-    -- discovered by the prefix that is both its name and its caller reference
-    -- — an identity a sweep can rediscover rather than one a process had to
-    -- remember, which is what makes a zone leaked by an exception or a
-    -- cancelled run still addressable.
-    it "Sprint 4.85 registers the dns-aws validation zone by rediscoverable identity" $ do
-      let zone = mustIdentity AwsDnsValidationZoneKey
-      registeredIdentityLifecycleClass zone `shouldBe` Just PerRun
-      registeredIdentityKind zone `shouldBe` Singleton
-      registeredIdentityCoordinate zone
-        `shouldBe` AwsRoute53ValidationZoneCoordinate "prodbox-dns-aws-"
-      -- The name matches the flat inventory row exactly, which is what the
-      -- dev-check parity join between the two tables enforces.
-      registeredResourceKeyText AwsDnsValidationZoneKey
-        `shouldBe` ("dns-aws-validation-hosted-zone" :: Text)
-      -- It is per-run, so it may never inhabit a long-lived projection.
-      projectCleanupTarget ExplicitLongLivedSurface zone `shouldSatisfy` isLeft
-      projectCleanupTarget ExplicitPerRunSurface zone `shouldSatisfy` isRight
 
     it "projects the complete class/surface table without tag-based reclassification" $ do
       forM_ surfaceTable $ \(key, allowedSurfaces) -> do
@@ -95,12 +69,10 @@ lifecycleTeardownRegistrySuite = do
                    , AwsEksSubzoneKey
                    , AwsTestKey
                    , AwsEbsPerRunTestKey
-                   , AwsDnsValidationZoneKey
                    , LocalLinuxRke2Key
                    ]
       map cleanupTargetLifecycleClass (cleanupTargetsForSurface CascadeSurface)
         `shouldBe` [ Just PerRun
-                   , Just PerRun
                    , Just PerRun
                    , Just PerRun
                    , Just PerRun
@@ -362,7 +334,6 @@ surfaceTable =
   , (AwsTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsPerRunTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsProductionRetainedKey, [ExplicitLongLived, TotalDecommission])
-  , (AwsDnsValidationZoneKey, [Cascade, ExplicitPerRun, TotalDecommission])
   ]
 
 stackKeys :: [RegisteredResourceKey]

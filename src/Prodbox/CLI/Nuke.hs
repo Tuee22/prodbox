@@ -20,10 +20,13 @@ module Prodbox.CLI.Nuke
   , PreparedNukeDecommission (..)
   , productionDecommissionAvailability
   , productionNukeDecommissionComposition
+  , nukeInterpreterRegistryIdentity
+  , nukePlanNodeLines
   , nukeRunnerDependencyMetadata
   , nukeVerifierMetadata
   , renderNukePlan
   , runNukeCommand
+  , validateProductionManifest
   , runNukeCommandWithComposition
   )
 where
@@ -31,15 +34,18 @@ where
 import Control.Exception (IOException, try)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
-import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as Char8
+import Data.Either (fromLeft)
 import Data.List (nub)
+import Data.List.NonEmpty qualified as NonEmpty
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Version (showVersion)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.CLI.Command
-  ( NukeOptions (..)
+  ( NukeLocalDataDisposition (NukeDeleteLocalData, NukeRetainLocalData)
+  , NukeOptions (..)
   , PlanOptions (..)
   , buildPlan
   , runPlanWithOptions
@@ -96,29 +102,44 @@ import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Infra.SesConsumerQuiescence
   ( loadProductionSesConsumerQuiescenceCapability
   )
+import Prodbox.Lifecycle.CleanupRun
+  ( mkCleanupOperationId
+  )
 import Prodbox.Lifecycle.Decommission.Frame
   ( FrameAttemptId
   , contentDigest
   , frameAttemptIdForNode
+  , frameAttemptIdText
   )
 import Prodbox.Lifecycle.Decommission.Graph
-  ( reportBlocked
+  ( productionDecommissionPlanNodes
+  , reportBlocked
   , reportConverged
   , reportFailed
   )
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionNode (..)
+  ( DecommissionLocalDataDisposition (..)
+  , DecommissionNode (..)
+  , DecommissionNodeFamily (..)
   , VerifiedDecommissionManifest
   , currentManifestVersion
+  , decommissionLocalDataDispositionText
+  , decommissionNodeFamily
   , decommissionNodeFrameId
   , manifestClusterId
   , manifestNodes
-  , requiredSingletonDecommissionNodes
+  , mkDecommissionTargetGeneration
+  , renderDecommissionPlanCardinalityError
+  , validateDecommissionPlanCardinality
   , verifiedManifestPlan
   , verifiedVerifierBinding
   )
 import Prodbox.Lifecycle.Decommission.NodeEffect
-  ( NodeOperation (..)
+  ( DecommissionTerminalReceiptCapability (..)
+  , FinalNoRetentionAuditCapability (..)
+  , HomeSubstrateUninstallCapability (..)
+  , LocalDataDispositionCapability (..)
+  , NodeOperation (..)
   , ProductionDecommissionCapabilities (..)
   , RetainedCustodyTombstoneCapability (..)
   , SesConsumerQuiescenceCapability
@@ -126,15 +147,26 @@ import Prodbox.Lifecycle.Decommission.NodeEffect
   , decommissionInterpreterFromRegistry
   , decommissionRegistryFromProductionCapabilities
   )
+import Prodbox.Lifecycle.Decommission.ProgramTag
+  ( decommissionNodeProgramTag
+  , decommissionProgramTagText
+  , decommissionRunnerInterpreterIdentity
+  , decommissionRunnerInterpreterRegistry
+  )
 import Prodbox.Lifecycle.Decommission.Receipt
   ( AcknowledgedExternalReceipt
   , PendingExternalReceipt
   , acknowledgeExternalReceipt
   , pendingExternalReceiptPath
   , prepareExternalReceiptAcknowledgement
+  , readBoundReceiptFramesReadOnly
   , receiptAcknowledgementLiteral
   )
-import Prodbox.Lifecycle.Decommission.Runner (runBoundDecommission)
+import Prodbox.Lifecycle.Decommission.Runner
+  ( decommissionRunTerminalEvidence
+  , renderDecommissionRunTerminalError
+  , runBoundDecommission
+  )
 import Prodbox.Lifecycle.Decommission.Verifier
   ( DeletionRootPath
   , ExternalArtifactPath
@@ -161,8 +193,30 @@ import Prodbox.Lifecycle.Decommission.Verifier
   , verifierDependencyPath
   , verifierMetadataPath
   )
+import Prodbox.Lifecycle.HostCleanupLocalData
+  ( LocalDataRootPath
+  , LocalDataTerminalAdapter
+  , attemptLocalDataDisposition
+  , classifyLocalDataDisposition
+  , localDataDispositionResidue
+  , mkLocalDataRootPath
+  , observeLocalDataRoot
+  , productionLocalDataTerminalAdapter
+  )
+import Prodbox.Lifecycle.HostCleanupRke2
+  ( LocalRke2InstallObservation (..)
+  , LocalRke2TerminalAdapter
+  , attemptLocalRke2Uninstall
+  , localRke2UninstallResultToHostEffect
+  , observeLocalRke2Install
+  , productionLocalRke2TerminalAdapter
+  )
+import Prodbox.Lifecycle.HostCleanupRunner
+  ( HostCleanupEffectOutcome (..)
+  )
 import Prodbox.Lifecycle.ResidueStatus
-  ( ResidueStatus (ResidueUnreachable)
+  ( ResidueDetails (..)
+  , ResidueStatus (ResidueAbsent, ResiduePresent, ResidueUnreachable)
   , ResidueUnreachableReason (ResidueQueryFailed)
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
@@ -188,6 +242,7 @@ defaultNukeOptions =
     { nukeDryRun = False
     , nukePlanFile = Nothing
     , nukeReceiptPath = Nothing
+    , nukeLocalDataDisposition = Nothing
     }
 
 confirmationLiteral :: String
@@ -205,6 +260,7 @@ newtype NukeDecommissionComposition = NukeDecommissionComposition
   { prepareNukeDecommission
       :: ExternalReceiptPath
       -> FilePath
+      -> DecommissionLocalDataDisposition
       -> Credentials
       -> IO (Either Text PreparedNukeDecommission)
   }
@@ -216,6 +272,7 @@ newtype NukeDecommissionComposition = NukeDecommissionComposition
 data ProductionNukeRemoteCapabilities = ProductionNukeRemoteCapabilities
   { productionRequestDecommissionManifest
       :: VerifierBinding
+      -> DecommissionLocalDataDisposition
       -> IO (Either Text VerifiedDecommissionManifest)
   , productionEnterNukePointOfNoReturn
       :: VerifiedDecommissionManifest
@@ -255,7 +312,7 @@ productionDecommissionAvailability =
 
 productionAuthenticatedNukeComposition :: NukeDecommissionComposition
 productionAuthenticatedNukeComposition =
-  NukeDecommissionComposition $ \receiptPath repoRoot credentials -> do
+  NukeDecommissionComposition $ \receiptPath repoRoot localDataDisposition credentials -> do
     quiescenceResult <- loadProductionSesConsumerQuiescenceCapability repoRoot
     case quiescenceResult of
       Left detail -> pure (Left detail)
@@ -271,6 +328,7 @@ productionAuthenticatedNukeComposition =
                   )
                   receiptPath
                   repoRoot
+                  localDataDisposition
                   credentials
             )
         pure $ case authenticated of
@@ -287,13 +345,14 @@ productionRemoteCapabilities
   -> ProductionNukeRemoteCapabilities
 productionRemoteCapabilities authentication quiescence =
   ProductionNukeRemoteCapabilities
-    { productionRequestDecommissionManifest = \verifier -> do
+    { productionRequestDecommissionManifest = \verifier localDataDisposition -> do
         result <-
           withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
             requestAuthorityDecommissionManifestViaTransport
               transport
               (lifecycleAuthorityManifestSignerDigest authentication)
               verifier
+              localDataDisposition
         pure (flattenAuthenticatedResult result)
     , productionEnterNukePointOfNoReturn = \verified acknowledged -> do
         result <-
@@ -390,9 +449,10 @@ prepareProductionNukeDecommission
   :: ProductionNukeRemoteCapabilities
   -> ExternalReceiptPath
   -> FilePath
+  -> DecommissionLocalDataDisposition
   -> Credentials
   -> IO (Either Text PreparedNukeDecommission)
-prepareProductionNukeDecommission remote receiptPath repoRoot credentials =
+prepareProductionNukeDecommission remote receiptPath repoRoot localDataDisposition credentials =
   case nukeVerifierMetadata of
     Left detail -> pure (Left detail)
     Right metadata -> do
@@ -405,6 +465,7 @@ prepareProductionNukeDecommission remote receiptPath repoRoot credentials =
             remote
             receiptPath
             repoRoot
+            localDataDisposition
             credentials
             runningPath
             artifact
@@ -413,27 +474,30 @@ prepareWithRunningArtifact
   :: ProductionNukeRemoteCapabilities
   -> ExternalReceiptPath
   -> FilePath
+  -> DecommissionLocalDataDisposition
   -> Credentials
   -> ExternalArtifactPath
   -> VerifierArtifact
   -> IO (Either Text PreparedNukeDecommission)
-prepareWithRunningArtifact remote receiptPath repoRoot credentials runningPath artifact = do
+prepareWithRunningArtifact remote receiptPath repoRoot localDataDisposition credentials runningPath artifact = do
   coordinateResult <- prepareProductionVerifierCoordinate receiptPath repoRoot artifact
   case coordinateResult of
     Left detail -> pure (Left detail)
     Right (hostPaths, exportedBinding) -> do
+      localDataRootResult <- resolveNukeLocalDataRoot repoRoot
       longLivedResult <- loadProductionLongLivedDecommissionCapabilities repoRoot credentials
-      case longLivedResult of
+      case (,) <$> localDataRootResult <*> longLivedResult of
         Left detail -> pure (Left detail)
-        Right longLived -> do
+        Right (localDataRoot, longLived) -> do
           smtpPrimitive <- awsSesSmtpIamDestroyPrimitive repoRoot credentials
           let providerPrimitive =
                 awsSesProviderStackDestroyPrimitive repoRoot credentials
-          manifestResult <- productionRequestDecommissionManifest remote exportedBinding
+          manifestResult <-
+            productionRequestDecommissionManifest remote exportedBinding localDataDisposition
           case manifestResult of
             Left detail -> pure (Left ("Authority decommission export refused: " <> detail))
             Right verified ->
-              case validateProductionManifest exportedBinding verified of
+              case validateProductionManifest exportedBinding localDataDisposition verified of
                 Left detail -> pure (Left detail)
                 Right () -> do
                   receiptResult <- prepareExternalReceiptAcknowledgement hostPaths verified
@@ -458,6 +522,19 @@ prepareWithRunningArtifact remote receiptPath repoRoot credentials runningPath a
                                 smtpPrimitive
                                 longLived
                                 providerPrimitive
+                                ( productionFinalNoRetentionAuditCapability
+                                    repoRoot
+                                    credentials
+                                )
+                                (productionHomeSubstrateUninstallCapability repoRoot)
+                                ( productionLocalDataDispositionCapability
+                                    localDataRoot
+                                    repoRoot
+                                )
+                                ( productionDecommissionTerminalReceiptCapability
+                                    verified
+                                    receiptPath
+                                )
                           , preparedMaximumFrameBytes = nukeMaximumFrameBytes
                           , preparedEnterPointOfNoReturn =
                               productionEnterNukePointOfNoReturn remote verified
@@ -503,8 +580,16 @@ deriveVerifierArtifactPath receiptPath =
     (\err -> "invalid receipt-derived verifier artifact path: " <> Text.pack (show err))
     (mkExternalArtifactPath (externalReceiptPath receiptPath ++ ".runner"))
 
-loadNukeDeletionRoots :: FilePath -> IO (Either Text [DeletionRootPath])
-loadNukeDeletionRoots repoRoot = do
+-- | The configured manual PV host root, resolved against the repository root.
+--
+-- Sprint 4.85: one resolution serves two consumers that must not disagree.
+-- @nuke@ has always treated this root as the first entry of its deletion-root
+-- inventory — which is why the external receipt and pinned runner are refused
+-- inside it — and it is now also the exact target of the operator's
+-- retained-local-data disposition. Resolving it twice would let @nuke@ refuse
+-- a receipt path under one root while disposing of another.
+resolveNukeManualPvRoot :: FilePath -> IO (Either Text FilePath)
+resolveNukeManualPvRoot repoRoot = do
   canonicalRepoResult <- try (canonicalizePath repoRoot)
   case canonicalRepoResult of
     Left err ->
@@ -517,27 +602,50 @@ loadNukeDeletionRoots repoRoot = do
     Right canonicalRepo -> do
       configResult <- loadConfigFile repoRoot
       pure $ case configResult of
-        Left detail -> Left ("cannot load Config for decommission path validation: " <> Text.pack detail)
+        Left detail ->
+          Left ("cannot load Config for decommission path validation: " <> Text.pack detail)
         Right config ->
           let configuredManualRoot = Text.unpack (manual_pv_host_root (storage config))
-              manualRoot =
-                normalise
-                  ( if isAbsolute configuredManualRoot
-                      then configuredManualRoot
-                      else canonicalRepo </> configuredManualRoot
-                  )
-              rawRoots =
-                [ manualRoot
-                , "/var/lib/rancher/rke2"
-                , "/var/lib/rancher"
-                , "/etc/rancher/rke2"
-                , "/usr/local/bin/rke2"
-                , "/usr/local/bin/rke2-killall.sh"
-                , "/usr/local/bin/rke2-uninstall.sh"
-                ]
-           in first
-                (\err -> "invalid compiled decommission deletion root: " <> Text.pack (show err))
-                (traverse mkDeletionRootPath (nub rawRoots))
+           in Right
+                ( normalise
+                    ( if isAbsolute configuredManualRoot
+                        then configuredManualRoot
+                        else canonicalRepo </> configuredManualRoot
+                    )
+                )
+
+loadNukeDeletionRoots :: FilePath -> IO (Either Text [DeletionRootPath])
+loadNukeDeletionRoots repoRoot = do
+  manualRootResult <- resolveNukeManualPvRoot repoRoot
+  pure $ do
+    manualRoot <- manualRootResult
+    let rawRoots =
+          [ manualRoot
+          , "/var/lib/rancher/rke2"
+          , "/var/lib/rancher"
+          , "/etc/rancher/rke2"
+          , "/usr/local/bin/rke2"
+          , "/usr/local/bin/rke2-killall.sh"
+          , "/usr/local/bin/rke2-uninstall.sh"
+          ]
+    first
+      (\err -> "invalid compiled decommission deletion root: " <> Text.pack (show err))
+      (traverse mkDeletionRootPath (nub rawRoots))
+
+-- | The same root, admitted through the stricter guard the removal argument
+-- needs.
+resolveNukeLocalDataRoot :: FilePath -> IO (Either Text LocalDataRootPath)
+resolveNukeLocalDataRoot repoRoot = do
+  manualRootResult <- resolveNukeManualPvRoot repoRoot
+  pure $ do
+    manualRoot <- manualRootResult
+    first
+      ( \err ->
+          "the configured manual PV host root cannot be a decommission disposition"
+            <> " target: "
+            <> Text.pack (show err)
+      )
+      (mkLocalDataRootPath manualRoot)
 
 prepareExternalDirectories
   :: ExternalArtifactPath
@@ -595,44 +703,70 @@ ensureVerifierExport artifactPath artifact = do
 
 validateProductionManifest
   :: VerifierBinding
+  -> DecommissionLocalDataDisposition
   -> VerifiedDecommissionManifest
   -> Either Text ()
-validateProductionManifest expectedBinding verified
+validateProductionManifest expectedBinding requestedDisposition verified
   | verifiedVerifierBinding verified /= expectedBinding =
       Left "Authority signed a different verifier binding than the exported pinned runner"
-  | not (null missingSingletons) =
+  | not (null cardinalityErrors) =
       Left
-        ( "Authority signed an incomplete production decommission manifest; missing nodes: "
-            <> Text.pack (show missingSingletons)
+        ( "Authority signed an incomplete production decommission manifest: "
+            <> Text.intercalate
+              "; "
+              (map renderDecommissionPlanCardinalityError cardinalityErrors)
+        )
+  | signedDispositions /= [requestedDisposition] =
+      Left
+        ( "Authority signed a retained-local-data disposition the operator did not"
+            <> " request; requested="
+            <> decommissionLocalDataDispositionText requestedDisposition
+            <> ", signed="
+            <> Text.intercalate
+              ","
+              (map decommissionLocalDataDispositionText signedDispositions)
         )
   | length targetReferences > 1 =
       Left "Authority signed more than one production Target Agent generation"
   | any (/= manifestClusterId plan) targetReferences =
       Left "Authority signed a Target Agent reference outside the production cluster identity"
-  | not (all (not . ByteString.null . nukeNodeProgramTag) nodes) =
-      Left "Authority signed a node without a compiled decommission interpreter tag"
+  | not (null nodesWithoutInterpreter) =
+      Left
+        ( "Authority signed nodes with no compiled decommission interpreter"
+            <> " identity in the signed registry: "
+            <> Text.pack (show nodesWithoutInterpreter)
+        )
   | otherwise = Right ()
  where
   plan = verifiedManifestPlan verified
   nodes = manifestNodes plan
   targetReferences = [reference | TargetGeneration reference _ <- nodes]
-  -- Sprint 4.85: derived from the closed singleton enumeration rather than
-  -- authored here. A newly added singleton node was previously silently
-  -- optional -- the verifier would accept a manifest that never names it.
-  missingSingletons = filter (`notElem` nodes) requiredSingletonDecommissionNodes
+  -- Sprint 4.85: every mandatory-node refusal is derived from the closed
+  -- family classification rather than authored here. A newly added mandatory
+  -- node -- singleton or parameterized choice -- was otherwise silently
+  -- optional: the verifier would accept a manifest that never names it.
+  cardinalityErrors =
+    fromLeft [] (validateDecommissionPlanCardinality nodes)
+  -- The cardinality check proves exactly one disposition node is present; this
+  -- proves it carries the decision the operator actually typed. Without it a
+  -- compromised or defective Authority could sign `retain` over an operator's
+  -- `delete` and the run would converge reporting success.
+  signedDispositions = [disposition | LocalDataDisposition disposition <- nodes]
+  nodesWithoutInterpreter =
+    [node | node <- nodes, nukeNodeInterpreterIdentity node == Nothing]
 
-nukeNodeProgramTag :: DecommissionNode -> ByteString
-nukeNodeProgramTag node = case node of
-  SesConsumerQuiescence -> "ses-consumer-quiescence-v1"
-  SesProviderStack -> "ses-provider-stack-v1"
-  SesSmtpIam -> "ses-smtp-iam-v1"
-  TargetGeneration _ _ -> "target-generation-v1"
-  RetainedCustody -> "retained-custody-v1"
-  TlsRetainedObjects -> "tls-retained-objects-v1"
-  TlsRetentionIdentity -> "tls-retention-identity-v1"
-  BackupPrefixAbsenceProof -> "backup-prefix-absence-proof-v1"
-  BackupObjects -> "backup-objects-identity-v1"
-  SharedObjectBucket -> "shared-object-bucket-v1"
+-- | The compiled interpreter identity for a node, taken from the closed
+-- semantic tag universe rather than authored here.
+--
+-- Sprint 4.85: this was a second authored copy of
+-- 'decommissionRunnerInterpreterIdentity', joined to neither the tag universe
+-- nor 'nukeInterpreterRegistryIdentity' — the list whose digest is actually
+-- signed. 'Nothing' is now reachable (a node whose tag the runner does not
+-- interpret), which is what makes the production-manifest check above a real
+-- refusal instead of a non-empty-literal test no arm could fail.
+nukeNodeInterpreterIdentity :: DecommissionNode -> Maybe Text
+nukeNodeInterpreterIdentity =
+  decommissionRunnerInterpreterIdentity . decommissionNodeProgramTag
 
 productionCapabilities
   :: ProductionNukeRemoteCapabilities
@@ -640,13 +774,21 @@ productionCapabilities
   -> AwsSesDecommissionPrimitive 'AwsSesSmtpIamOnly IO
   -> ProductionLongLivedDecommissionCapabilities IO
   -> AwsSesDecommissionPrimitive 'AwsSesProviderOnly IO
+  -> FinalNoRetentionAuditCapability IO
+  -> HomeSubstrateUninstallCapability IO
+  -> LocalDataDispositionCapability IO
+  -> DecommissionTerminalReceiptCapability IO
   -> ProductionDecommissionCapabilities IO
 productionCapabilities
   remote
   verified
   smtpPrimitive
   longLived
-  providerPrimitive =
+  providerPrimitive
+  finalAudit
+  homeUninstall
+  localData
+  terminalReceipt =
     ProductionDecommissionCapabilities
       { productionSesConsumerQuiescence = productionSesConsumersQuiescence remote
       , productionSesProviderStack = awsSesProviderStackCapability providerPrimitive
@@ -665,6 +807,10 @@ productionCapabilities
           productionBackupAllPrefixesAbsentCapability longLived
       , productionSharedObjectBucket =
           productionSharedObjectBucketCapability longLived
+      , productionFinalNoRetentionAudit = finalAudit
+      , productionHomeSubstrateUninstall = homeUninstall
+      , productionLocalDataDisposition = localData
+      , productionDecommissionTerminalReceipt = terminalReceipt
       }
 
 nukeMaximumFrameBytes :: Int
@@ -741,8 +887,16 @@ nukeVerifierMetadata =
         (contentDigest nukeInterpreterRegistryIdentity)
     )
 
+-- | Sprint 4.85: bumped to @2@ when 'FinalNoRetentionAudit' gave the runner its
+-- first interpreter for the total-decommission escape audit, to @3@ when
+-- 'HomeSubstrateUninstall' gave it the local-foundation uninstaller, and to @4@
+-- when 'LocalDataDisposition' gave it the retained-local-data disposition, and
+-- to @5@ when 'DecommissionTerminalReceipt' gave it the terminal-convergence
+-- read-back. The registry identity the Authority signs genuinely changed each
+-- time, so a receipt signed under an earlier version must not verify against
+-- this runner.
 nukeInterpreterRegistryVersion :: Word
-nukeInterpreterRegistryVersion = 1
+nukeInterpreterRegistryVersion = 5
 
 nukeManifestSchemaIdentity :: ByteString
 nukeManifestSchemaIdentity =
@@ -754,21 +908,22 @@ nukeManifestSchemaIdentity =
     , "verifier-binding:(absolute-path,artifact-digest,dependency/schema/registry-metadata)"
     ]
 
+-- | The interpreter inventory whose digest the Authority signs into
+-- 'VerifierMetadata'.
+--
+-- Sprint 4.85: derived from the closed decommission tag universe. It was a
+-- hand-authored list of ten strings sitting beside a @case@ of the same ten,
+-- with nothing joining either to the node universe — so a node implemented with
+-- a new interpreter would have been absent from the identity the operator
+-- signs, while a manifest naming that node still verified. The derived bytes
+-- are identical to the authored ones, so this is a cannot-drift guard rather
+-- than a signed-identity change.
 nukeInterpreterRegistryIdentity :: ByteString
 nukeInterpreterRegistryIdentity =
   Char8.unlines
-    [ "prodbox-decommission-interpreter-registry-v1"
-    , "ses-consumer-quiescence-v1"
-    , "ses-provider-stack-v1"
-    , "ses-smtp-iam-v1"
-    , "target-generation-v1"
-    , "retained-custody-v1"
-    , "tls-retained-objects-v1"
-    , "tls-retention-identity-v1"
-    , "backup-prefix-absence-proof-v1"
-    , "backup-objects-identity-v1"
-    , "shared-object-bucket-v1"
-    ]
+    ( "prodbox-decommission-interpreter-registry-v1"
+        : map (Char8.pack . Text.unpack) decommissionRunnerInterpreterRegistry
+    )
 
 nukeInteractiveGuard :: InteractiveGuard
 nukeInteractiveGuard =
@@ -794,20 +949,61 @@ runNukeCommandWithComposition
 runNukeCommandWithComposition availability repoRoot options =
   runPlanWithOptions
     PlanOptions {dryRun = nukeDryRun options, planFile = nukePlanFile options}
-    (buildPlan (const (renderNukePlanWithReceipt repoRoot (nukeReceiptPath options))) ())
-    (\() -> runNukeInteractive availability repoRoot (nukeReceiptPath options))
+    ( buildPlan
+        ( const
+            ( renderNukePlanWithReceipt
+                repoRoot
+                (nukeReceiptPath options)
+                requestedDisposition
+            )
+        )
+        ()
+    )
+    ( \() ->
+        runNukeInteractive
+          availability
+          repoRoot
+          (nukeReceiptPath options)
+          requestedDisposition
+    )
+ where
+  requestedDisposition =
+    fmap localDataDispositionOf (nukeLocalDataDisposition options)
+
+-- | The one place the CLI's parsed argument becomes the lifecycle-owned
+-- decision the manifest carries.
+localDataDispositionOf
+  :: NukeLocalDataDisposition -> DecommissionLocalDataDisposition
+localDataDispositionOf parsed = case parsed of
+  NukeRetainLocalData -> RetainLocalData
+  NukeDeleteLocalData -> DeleteLocalData
+
+-- | Apply refuses without an explicit disposition. There is no default: both
+-- candidates silently decide the fate of the retained data root, and one of
+-- them is irreversible.
+requireLocalDataDisposition
+  :: Maybe DecommissionLocalDataDisposition
+  -> Either Text DecommissionLocalDataDisposition
+requireLocalDataDisposition supplied = case supplied of
+  Nothing ->
+    Left
+      "prodbox nuke apply requires --local-data <retain|delete>; --dry-run may omit it"
+  Just disposition -> Right disposition
 
 runNukeInteractive
   :: ProductionDecommissionAvailability
   -> FilePath
   -> Maybe FilePath
+  -> Maybe DecommissionLocalDataDisposition
   -> IO ExitCode
-runNukeInteractive availability repoRoot suppliedReceipt =
+runNukeInteractive availability repoRoot suppliedReceipt suppliedDisposition =
   case availability of
     ProductionDecommissionReady composition ->
-      case requireExternalReceiptPath suppliedReceipt of
+      case (,)
+        <$> requireExternalReceiptPath suppliedReceipt
+        <*> requireLocalDataDisposition suppliedDisposition of
         Left detail -> refuse detail
-        Right receiptPath -> do
+        Right (receiptPath, localDataDisposition) -> do
           requireInteractiveTty nukeInteractiveGuard
           writeOutputLine "prodbox nuke — authenticated total decommission."
           writeOutputLine ""
@@ -817,6 +1013,11 @@ runNukeInteractive availability repoRoot suppliedReceipt =
           writeOutputLine "  - TLS objects and TLS identity before Authority-backup objects"
           writeOutputLine "  - all-prefix absence proof before the shared bucket is destroyed last"
           writeOutputLine ("  - external receipt: " ++ externalReceiptPath receiptPath)
+          writeOutputLine
+            ( "  - retained local data root: "
+                ++ Text.unpack
+                  (decommissionLocalDataDispositionText localDataDisposition)
+            )
           writeOutputLine ""
           writeOutputLine ("Type `" ++ confirmationLiteral ++ "` to begin preparation (case-sensitive).")
           writeOutputLine "Anything else aborts without creating the external receipt."
@@ -825,7 +1026,12 @@ runNukeInteractive availability repoRoot suppliedReceipt =
           hFlush stdout
           typed <- getLine
           if normalizeConfirmation typed == confirmationLiteral
-            then runNukeOrchestration composition receiptPath repoRoot
+            then
+              runNukeOrchestration
+                composition
+                receiptPath
+                repoRoot
+                localDataDisposition
             else do
               writeDiagnosticLine "prodbox nuke: confirmation rejected; nothing destroyed."
               pure (ExitFailure 1)
@@ -834,8 +1040,9 @@ runNukeOrchestration
   :: NukeDecommissionComposition
   -> ExternalReceiptPath
   -> FilePath
+  -> DecommissionLocalDataDisposition
   -> IO ExitCode
-runNukeOrchestration composition receiptPath repoRoot = do
+runNukeOrchestration composition receiptPath repoRoot localDataDisposition = do
   writeOutputLine ""
   writeOutputLine "prodbox nuke: acquiring one ephemeral admin AWS credential."
   adminResult <- loadAdminAwsCredentials repoRoot
@@ -844,56 +1051,245 @@ runNukeOrchestration composition receiptPath repoRoot = do
       writeError (fatalError (Text.pack ("nuke aborted while loading admin credentials: " ++ err)))
       pure (ExitFailure 1)
     Right adminCredentials -> do
-      preparedResult <- prepareNukeDecommission composition receiptPath repoRoot adminCredentials
+      preparedResult <-
+        prepareNukeDecommission
+          composition
+          receiptPath
+          repoRoot
+          localDataDisposition
+          adminCredentials
       case preparedResult of
         Left detail -> refuse ("decommission preparation refused: " <> detail)
         Right prepared -> do
-          runExit <- runPreparedNuke prepared
-          case runExit of
-            ExitFailure _ -> pure runExit
-            ExitSuccess -> runNukeTerminalTagSweep repoRoot adminCredentials
+          runPreparedNuke prepared
 
--- | Sprint 4.76: the terminal scoped tag sweep that
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 5@ (the
--- nuke row) and § 6b ("appends terminal absence and the required scoped
--- tag sweep") have assigned to this command all along, and that had **no
--- call site**: before this sprint 'TagSweep.discoverClusterTaggedAwsResources'
--- had exactly one caller, on the @cluster delete --cascade@ path.
+-- | Sprint 4.85: the terminal scoped tag sweep, as the read-back half of the
+-- receipt graph's 'FinalNoRetentionAudit' node.
 --
--- It is fail-closed with no skip arm. @nuke@ has already refused without
--- an ephemeral admin credential by the time this runs, so "the API could
--- not be read" is the only unconfirmed case and it fails. Unlike the
--- cascade's sweep it applies **no** retained-long-lived carve-out
--- ('TagSweep.TagSweepNuke'), because destroying that class transitively
--- is what @nuke@ is for — a surviving @pulumi_state_backend@ bucket or
--- @aws-ses@ resource is an escapee here, not a resource retained by
--- design.
-runNukeTerminalTagSweep :: FilePath -> Credentials -> IO ExitCode
-runNukeTerminalTagSweep repoRoot adminCredentials = do
-  environment <- awsCliSubprocessEnvironment adminCredentials
-  verdict <-
-    TagSweep.decideTagSweep TagSweep.TagSweepNuke
-      <$> TagSweep.discoverClusterTaggedAwsResources
-        TagSweep.TagSweepInput
-          { TagSweep.tagSweepEnvironment = environment
-          , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
-          , TagSweep.tagSweepWorkingDirectory = Just repoRoot
-          }
-  let exit = TagSweep.tagSweepVerdictExit verdict
-      narration = TagSweep.renderTagSweepVerdict TagSweep.TagSweepNuke verdict
-  case exit of
-    ExitSuccess -> do
-      writeOutputLine narration
-      writeOutputLine
-        "prodbox nuke: total decommission converged and the terminal tag sweep confirmed absence."
-      pure ExitSuccess
-    ExitFailure _ -> do
-      writeDiagnosticLine narration
-      writeDiagnosticLine
-        ( "prodbox nuke: the decommission runner converged but the terminal tag "
-            ++ "sweep did not confirm absence, so this teardown is NOT complete."
+-- Sprint 4.76 gave this sweep its first call site — the doctrine had assigned
+-- it to @nuke@ all along and nothing ran it — but it ran **outside** the
+-- receipt graph, after 'runPreparedNuke' had already returned success. A crash
+-- or a lost response there could not resume through the manifest: the run had
+-- converged on paper while the only proof that nothing escaped had never been
+-- taken, and re-running @nuke@ would start from a plan whose every node was
+-- already terminal.
+--
+-- As a node it is read-only by construction — 'FinalNoRetentionAuditCapability'
+-- has no destructive half — and it inherits the graph's durable intent, stable
+-- attempt identity, and authoritative re-observation on resume.
+--
+-- It remains fail-closed with no skip arm. @nuke@ has already refused without
+-- an ephemeral admin credential by the time this runs, so "the API could not be
+-- read" is the only unconfirmed case and it is 'ResidueUnreachable', which
+-- 'classifyNodeObservation' refuses. Unlike the cascade's sweep it applies
+-- **no** retained-long-lived carve-out ('TagSweep.TagSweepNuke'), because
+-- destroying that class transitively is what @nuke@ is for — a surviving
+-- @pulumi_state_backend@ bucket or @aws-ses@ resource is an escapee here, not a
+-- resource retained by design.
+productionFinalNoRetentionAuditCapability
+  :: FilePath -> Credentials -> FinalNoRetentionAuditCapability IO
+productionFinalNoRetentionAuditCapability repoRoot adminCredentials =
+  FinalNoRetentionAuditCapability $ \_nodeId _attemptId -> do
+    environment <- awsCliSubprocessEnvironment adminCredentials
+    verdict <-
+      TagSweep.decideTagSweep TagSweep.TagSweepNuke
+        <$> TagSweep.discoverClusterTaggedAwsResources
+          TagSweep.TagSweepInput
+            { TagSweep.tagSweepEnvironment = environment
+            , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+            , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+            }
+    let narration = TagSweep.renderTagSweepVerdict TagSweep.TagSweepNuke verdict
+    -- The three verdicts stay three. Collapsing "escapees found" and "the
+    -- Tagging API could not be read" into one failure would record the wrong
+    -- fact in the receipt: an escapee is a resource that survived, while an
+    -- unreadable API is an absence nobody observed. Both refuse the node, and
+    -- the receipt says which happened.
+    pure $ case verdict of
+      TagSweep.TagSweepConfirmedClean _ -> ResidueAbsent
+      TagSweep.TagSweepEscaped _ _ ->
+        ResiduePresent
+          ResidueDetails
+            { residueEvidence = narration
+            , residueStackName = "total-decommission-escape-audit"
+            }
+      TagSweep.TagSweepUnconfirmed detail ->
+        ResidueUnreachable (ResidueQueryFailed detail)
+
+-- | Sprint 4.85: the home-substrate uninstall as the last node of the signed
+-- receipt graph.
+--
+-- The compiled @TotalDecommission@ program has emitted
+-- @decommission/uninstall-local@ and its read-back since the program algebra
+-- landed, and no runner executed either: a total decommission destroyed every
+-- AWS resource class and left the local RKE2 substrate installed.
+--
+-- The stable 'CleanupOperationId' is __derived from the receipt attempt__ rather
+-- than freshly generated. That is the property the whole graph rests on: the
+-- uninstaller is invoked under an identity the durable intent already recorded,
+-- so a lost response resumes by re-observing markers under the same operation
+-- instead of running a second uninstall.
+--
+-- The destroy half is deliberately not the read-back.
+-- 'attemptLocalRke2Uninstall' distinguishes applied, already-absent, refused,
+-- and response-lost, and only a fresh all-markers-absent observation closes the
+-- node — so an uninstaller that exits zero without removing the install cannot
+-- report success.
+productionHomeSubstrateUninstallCapability
+  :: FilePath -> HomeSubstrateUninstallCapability IO
+productionHomeSubstrateUninstallCapability repoRoot =
+  HomeSubstrateUninstallCapability
+    NodeOperation
+      { nodeDestroy = \_nodeId attemptId -> uninstallHomeSubstrate adapter attemptId
+      , nodeReadBack = \_nodeId _attemptId ->
+          homeSubstrateInstallResidue <$> observeLocalRke2Install adapter
+      }
+ where
+  adapter = productionLocalRke2TerminalAdapter repoRoot
+
+-- | Run the uninstaller under the identity the durable intent recorded.
+uninstallHomeSubstrate
+  :: LocalRke2TerminalAdapter IO -> FrameAttemptId -> IO (Either Text ())
+uninstallHomeSubstrate adapter attemptId =
+  case mkCleanupOperationId (frameAttemptIdText attemptId) of
+    Left detail ->
+      pure (Left ("home substrate uninstall has no stable operation identity: " <> detail))
+    Right operationId ->
+      homeSubstrateUninstallOutcome
+        . localRke2UninstallResultToHostEffect
+        <$> attemptLocalRke2Uninstall adapter operationId
+
+-- | A response loss is not a refusal: the runner re-observes markers under the
+-- same attempt rather than mutating again, so both arms stay distinct here.
+homeSubstrateUninstallOutcome :: HostCleanupEffectOutcome -> Either Text ()
+homeSubstrateUninstallOutcome outcome = case outcome of
+  HostCleanupEffectApplied -> Right ()
+  HostCleanupEffectResponseLost detail ->
+    Left ("home substrate uninstall response lost: " <> detail)
+  HostCleanupEffectRefused detail ->
+    Left ("home substrate uninstall refused: " <> detail)
+
+-- | Only an all-markers-absent observation closes the node. Surviving markers
+-- and unobservable markers are different facts and neither is absence.
+homeSubstrateInstallResidue :: LocalRke2InstallObservation -> ResidueStatus
+homeSubstrateInstallResidue observed = case observed of
+  LocalRke2InstallAbsent _ -> ResidueAbsent
+  LocalRke2InstallPresent markers _ ->
+    ResiduePresent
+      ResidueDetails
+        { residueEvidence =
+            "surviving local RKE2 install markers: " ++ show (NonEmpty.toList markers)
+        , residueStackName = "home-substrate-uninstall"
+        }
+  LocalRke2InstallUnconfirmed failures ->
+    ResidueUnreachable
+      ( ResidueQueryFailed
+          ( "local RKE2 install markers could not be observed: "
+              ++ show (NonEmpty.toList failures)
+          )
+      )
+
+-- | Sprint 4.85: the operator's retained-local-data disposition as the last
+-- node of the signed receipt graph.
+--
+-- @nuke@ named the manual PV host root as a deletion root from the day the
+-- external-path guard landed, and nothing ever disposed of it: a total
+-- decommission destroyed every AWS resource class, uninstalled the home
+-- substrate, and left the retained data tree on disk with no record of whether
+-- that was intended.
+--
+-- The decision is taken from the __signed manifest node__ rather than from the
+-- composition, so a capability built on a host cannot delete under a plan that
+-- said retain. The stable 'Prodbox.Lifecycle.CleanupRun.CleanupOperationId' is
+-- derived from the receipt attempt, exactly as the home uninstall derives its
+-- own: a lost removal response resumes by re-observing the root under the same
+-- operation instead of issuing a second removal.
+--
+-- The read-back is disposition-indexed and refuses in both directions. A
+-- surviving root under @delete@ and a missing root under @retain@ are both
+-- residue; an unobservable root is neither, and closes nothing.
+productionLocalDataDispositionCapability
+  :: LocalDataRootPath -> FilePath -> LocalDataDispositionCapability IO
+productionLocalDataDispositionCapability root repoRoot =
+  LocalDataDispositionCapability $ \disposition ->
+    NodeOperation
+      { nodeDestroy = \_nodeId attemptId ->
+          applyLocalDataDisposition adapter disposition attemptId
+      , nodeReadBack = \_nodeId _attemptId ->
+          localDataDispositionResidue root disposition
+            <$> observeLocalDataRoot adapter
+      }
+ where
+  adapter = productionLocalDataTerminalAdapter root repoRoot
+
+applyLocalDataDisposition
+  :: LocalDataTerminalAdapter IO
+  -> DecommissionLocalDataDisposition
+  -> FrameAttemptId
+  -> IO (Either Text ())
+applyLocalDataDisposition adapter disposition attemptId =
+  case mkCleanupOperationId (frameAttemptIdText attemptId) of
+    Left detail ->
+      pure
+        ( Left
+            ( "retained local data disposition has no stable operation identity: "
+                <> detail
+            )
         )
-      pure (ExitFailure 1)
+    Right operationId ->
+      classifyLocalDataDisposition
+        <$> attemptLocalDataDisposition adapter disposition operationId
+
+-- | Sprint 4.85: the terminal-receipt node's read-back.
+--
+-- The receipt records each node's intent, observation, and result, and never
+-- recorded that the __run__ converged. A receipt ending at the last node's
+-- result frame is byte-identical to one whose run crashed immediately after
+-- that frame; @reportConverged@ is the only place that fact existed, and it
+-- lives in the process that produced it.
+--
+-- The node closes that gap by being last in the derived order and refusing
+-- unless the durable record already carries a terminal success for every other
+-- node of the signed plan. Its own success frame is then the declaration, and
+-- it is written through the same fsync/reopen/validate append primitive as
+-- every other frame — so a crash before it leaves a receipt that visibly does
+-- not claim convergence, and a resume re-observes rather than assuming.
+--
+-- The read is deliberately read-only: 'readBoundReceiptFramesReadOnly' refuses
+-- a torn tail instead of repairing it, because this node reads the very record
+-- it is a node of and must not mutate the history it is proving something
+-- about. The three verdicts stay three — outstanding nodes are residue, an
+-- unreadable or semantically refused receipt is an absence nobody observed.
+productionDecommissionTerminalReceiptCapability
+  :: VerifiedDecommissionManifest
+  -> ExternalReceiptPath
+  -> DecommissionTerminalReceiptCapability IO
+productionDecommissionTerminalReceiptCapability verified receiptPath =
+  DecommissionTerminalReceiptCapability $ \_nodeId _attemptId -> do
+    framesResult <-
+      readBoundReceiptFramesReadOnly
+        nukeMaximumFrameBytes
+        verified
+        (externalReceiptPath receiptPath)
+    pure $ case framesResult of
+      Left refusal ->
+        ResidueUnreachable
+          ( ResidueQueryFailed
+              ("the external decommission receipt could not be read: " ++ show refusal)
+          )
+      Right frames ->
+        case decommissionRunTerminalEvidence
+          (manifestNodes (verifiedManifestPlan verified))
+          DecommissionTerminalReceipt
+          frames of
+          Right () -> ResidueAbsent
+          Left err ->
+            ResiduePresent
+              ResidueDetails
+                { residueEvidence =
+                    Text.unpack (renderDecommissionRunTerminalError err)
+                , residueStackName = "decommission-terminal-receipt"
+                }
 
 requireExternalReceiptPath :: Maybe FilePath -> Either Text ExternalReceiptPath
 requireExternalReceiptPath supplied = case supplied of
@@ -980,38 +1376,97 @@ executeAcknowledgedRun prepared acknowledged = do
           pure (ExitFailure 1)
 
 renderNukePlan :: FilePath -> String
-renderNukePlan repoRoot = renderNukePlanWithReceipt repoRoot Nothing
+renderNukePlan repoRoot = renderNukePlanWithReceipt repoRoot Nothing Nothing
 
-renderNukePlanWithReceipt :: FilePath -> Maybe FilePath -> String
-renderNukePlanWithReceipt _repoRoot suppliedReceipt =
+renderNukePlanWithReceipt
+  :: FilePath
+  -> Maybe FilePath
+  -> Maybe DecommissionLocalDataDisposition
+  -> String
+renderNukePlanWithReceipt _repoRoot suppliedReceipt localDataDisposition =
   unlines
-    [ "PRODBOX_NUKE_PLAN"
-    , "PROTOCOL=signed-external-decommission-v1"
-    , "EXTERNAL_RECEIPT=" ++ renderedReceipt
-    , "PINNED_RUNNER=" ++ renderedRunner
-    , "GATE=freeze admission; commit and authenticate complete manifest"
-    , "GATE=export/fsync/read-back exact runner, dependency closure, schema and registry metadata outside every deletion root"
-    , "GATE=create/fsync/read-back external receipt and require its exact acknowledgement"
-    , "GATE=execute only the pinned artifact; a new/missing/drifted build refuses"
-    , "NODE=ses-consumer-quiescence"
-    , "NODE=ses-provider-stack"
-    , "NODE=ses-smtp-iam"
-    , "NODE=target-generation (one per signed manifest target)"
-    , "NODE=retained-custody"
-    , "NODE=tls-retained-objects"
-    , "NODE=tls-retention-identity"
-    , "NODE=backup-objects-and-identity"
-    , "NODE=backup-prefix-absence-proof"
-    , "NODE=shared-object-bucket (unique terminal)"
-    , "RECEIPT=durable intent before every effect; authoritative read-back; stable attempt on resume"
-    , "ADMIN_CREDENTIAL_SOURCE=one ephemeral admin AWS credential from the interactive prompt; never persisted"
-    , "STATUS=plan-only"
-    , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
-    , "APPLY_READINESS=fail closed unless the complete production node registry and Authority export composition are supplied"
-    ]
+    ( [ "PRODBOX_NUKE_PLAN"
+      , "PROTOCOL=signed-external-decommission-v1"
+      , "EXTERNAL_RECEIPT=" ++ renderedReceipt
+      , "PINNED_RUNNER=" ++ renderedRunner
+      , "GATE=freeze admission; commit and authenticate complete manifest"
+      , "GATE=export/fsync/read-back exact runner, dependency closure, schema and registry metadata outside every deletion root"
+      , "GATE=create/fsync/read-back external receipt and require its exact acknowledgement"
+      , "GATE=execute only the pinned artifact; a new/missing/drifted build refuses"
+      , "LOCAL_DATA=" ++ renderedLocalData
+      ]
+        ++ nukePlanNodeLines localDataDisposition
+        ++ [ "RECEIPT=durable intent before every effect; authoritative read-back; stable attempt on resume"
+           , "ADMIN_CREDENTIAL_SOURCE=one ephemeral admin AWS credential from the interactive prompt; never persisted"
+           , "STATUS=plan-only"
+           , "CONFIRMATION_LITERAL=" ++ confirmationLiteral
+           , "APPLY_READINESS=fail closed unless the complete production node registry and Authority export composition are supplied"
+           ]
+    )
  where
   renderedReceipt = maybe "<required-for-apply>" id suppliedReceipt
   renderedRunner = maybe "<derived-from-external-receipt>.runner" (++ ".runner") suppliedReceipt
+  renderedLocalData =
+    maybe
+      "<required-for-apply>"
+      (Text.unpack . decommissionLocalDataDispositionText)
+      localDataDisposition
+
+-- | The @NODE=@ lines of the @--dry-run@ plan, derived from the inventory the
+-- Authority will actually sign.
+--
+-- Sprint 4.85: these were a sixth hand-authored copy of the node universe, with
+-- their own third set of names, joined to nothing. This is the artifact an
+-- operator reads and approves before running the real command, so a node added
+-- to the signed plan would have been destroyed without ever appearing in the
+-- plan that authorized it.
+--
+-- Both annotations are derived rather than asserted: the parameterized note is
+-- attached to the node the plan carries a representative of, and the terminal
+-- note only to whatever the derived order actually ends with.
+nukePlanNodeLines :: Maybe DecommissionLocalDataDisposition -> [String]
+nukePlanNodeLines suppliedDisposition =
+  [ "NODE="
+      ++ Text.unpack (decommissionProgramTagText (decommissionNodeProgramTag node))
+      ++ annotation node
+  | node <- plannedNodes
+  ]
+ where
+  -- The layout disposition is only ever a placeholder for the /position/ of
+  -- the mandatory choice node, which every decision in the family shares. The
+  -- decision the plan reports is the operator's, and `--dry-run` says so
+  -- rather than inventing one.
+  plannedNodes =
+    productionDecommissionPlanNodes
+      (fromMaybe layoutDisposition suppliedDisposition)
+      representativeTargetGeneration
+  layoutDisposition = RetainLocalData
+  representativeTargetGeneration =
+    [ TargetGeneration "target/plan-representative" generation
+    | Right generation <- [mkDecommissionTargetGeneration 1]
+    ]
+  terminalNode = case reverse plannedNodes of
+    (final : _) -> Just final
+    [] -> Nothing
+  -- Both notes are derived rather than asserted: the family note comes from
+  -- the node's own cardinality classification, and the terminal note attaches
+  -- only to whatever the derived order actually ends with. Sprint 4.85 moved
+  -- that terminal from the home uninstall to the disposition node, and the
+  -- rendered plan followed without being edited.
+  annotation node = familyNote node ++ terminalNote node
+  familyNote node = case decommissionNodeFamily node of
+    PerAgentTargetFamily -> " (one per signed manifest target)"
+    MandatoryChoiceFamily _ ->
+      " ("
+        ++ maybe
+          "<required-for-apply>"
+          (Text.unpack . decommissionLocalDataDispositionText)
+          suppliedDisposition
+        ++ ")"
+    MandatorySingletonFamily _ -> ""
+  terminalNote node
+    | Just node == terminalNode = " (unique terminal)"
+    | otherwise = ""
 
 abortOrContinue :: ExitCode -> IO ExitCode -> IO ExitCode
 abortOrContinue ExitSuccess continuation = continuation

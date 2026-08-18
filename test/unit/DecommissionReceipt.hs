@@ -198,6 +198,32 @@ decommissionReceiptSuite =
             boundReopenTruncatedTo ready `shouldSatisfy` isJust
         appendBoundReceiptFrame 8192 verified path boundFrame1
           `shouldReturn` Right (frameDigest boundFrame1)
+    it "Sprint 4.85 reads the bound chain without ever repairing it" $
+      withSystemTempDirectory "prodbox-bound-receipt-read-only" $ \dir -> do
+        let path = dir </> "receipt.log"
+        _ <- initializeBoundReceipt path verified
+        _ <- appendBoundReceiptFrame 8192 verified path boundFrame0
+        ( readBoundReceiptFramesReadOnly 8192 verified path
+            :: IO (Either BoundReceiptRefusal [DecommissionFrame TestEntry])
+          )
+          `shouldReturn` Right [boundFrame0]
+        -- The terminal-receipt node reads the very record it is a node of, so
+        -- a reader that could truncate would be a node that mutates the
+        -- history it is proving something about. A torn tail is a refusal
+        -- here, and the bytes are left exactly as they were.
+        ByteString.appendFile path (ByteString.take 5 (encodeRecord boundFrame1))
+        before <- ByteString.readFile path
+        ( readBoundReceiptFramesReadOnly 8192 verified path
+            :: IO (Either BoundReceiptRefusal [DecommissionFrame TestEntry])
+          )
+          `shouldReturn` Left BoundReceiptTornTail
+        ByteString.readFile path `shouldReturn` before
+        -- The runner's own reopen path still repairs it, so the two readers
+        -- are deliberately different rather than accidentally so.
+        reopened <-
+          reopenBoundReceipt 8192 verified path
+            :: IO (Either BoundReceiptRefusal (BoundReceiptReopen TestEntry))
+        fmap boundReopenOutcome reopened `shouldBe` Right RecoveryTruncatableTorn
     it "refuses artifact/schema/new-manifest header drift before reading frames" $
       withSystemTempDirectory "prodbox-bound-receipt-drift" $ \dir -> do
         let path = dir </> "receipt.log"

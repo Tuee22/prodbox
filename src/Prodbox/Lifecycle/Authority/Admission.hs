@@ -165,9 +165,14 @@ import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   ( ProviderAdmissionEpochView
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
-  ( ProviderAdmissionEpoch
+  ( CascadeAuditFreezeBinding
+  , ProviderAdmissionEpoch
   , ProviderAdmissionEpochError
+  , ProviderAdmissionFreezeRefusal
   , ProviderAdmissionFreshSubmissionRefusal (..)
+  , ProviderPendingWork (NoPendingProviderWork, PendingProviderWork)
+  , bindProviderAdmissionServingGenerationInternal
+  , freezeProviderAdmissionForCascadeAuditInternal
   , initialLegacyProviderAdmissionEpochInternal
   , providerAdmissionEpochView
   , providerAdmissionFreshSubmissionRefusalInternal
@@ -711,11 +716,22 @@ data AuthorityAdmissionCommand
   | ApplyAuthorityMigration !MigrationCommand
   | ApplyAuthorityMigrationImport !MigrationImportCommand
   | ApplyAuthorityForwardMigration !MigrationForwardCommand
+  | -- | Sprint 4.85: bind the serving Lifecycle-provider credential
+    -- generation. Appended so every earlier constructor keeps its @Serialise@
+    -- index and no historical command re-decodes as a different one.
+    BindProviderAdmissionGeneration !Natural
+  | -- | Sprint 4.85: atomically fence fresh Provider submissions and reserve
+    -- the terminal-audit submission. The pending-work proof is read from this
+    -- same aggregate in this same step, so no submission can be accepted
+    -- between the proof and the fence.
+    FreezeProviderAdmissionForCascadeAudit !CascadeAuditFreezeBinding
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
 data AuthorityAdmissionCommandRefusal
-  = AuthorityMigrationAlreadyStarted
+  = AuthorityProviderGenerationBindingRefused !ProviderAdmissionEpochError
+  | AuthorityProviderAdmissionFreezeRefused !ProviderAdmissionFreezeRefusal
+  | AuthorityMigrationAlreadyStarted
   | AuthorityMigrationNotStarted
   | AuthorityMigrationBeforeGenesis
   | AuthorityMigrationDuringBackupRepair
@@ -723,7 +739,9 @@ data AuthorityAdmissionCommandRefusal
   deriving stock (Eq, Show)
 
 data AuthorityAdmissionDecision
-  = AuthorityGenesisDecided !GenesisDecision
+  = AuthorityProviderGenerationBound !Natural
+  | AuthorityProviderAdmissionFrozenForCascadeAudit
+  | AuthorityGenesisDecided !GenesisDecision
   | AuthorityBackupRepairDecided !BackupRepairDecision
   | AuthorityMigrationStarted
   | AuthorityMigrationDecided !MigrationDecision
@@ -787,8 +805,50 @@ stepAuthorityAdmission aggregate command = case command of
           let (next, decision) = stepForwardMigration state migrationCommand
            in (AuthorityForwardMigrationDecided decision, next)
       )
+  BindProviderAdmissionGeneration generation ->
+    case bindProviderAdmissionServingGenerationInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      generation of
+      Left err -> refuse (AuthorityProviderGenerationBindingRefused err)
+      Right nextEpoch ->
+        ( AuthorityProviderGenerationBound generation
+        , aggregate
+            { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
+            }
+        )
+  FreezeProviderAdmissionForCascadeAudit binding ->
+    case freezeProviderAdmissionForCascadeAuditInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      binding
+      (aggregatePendingProviderWork aggregate) of
+      Left refusal -> refuse (AuthorityProviderAdmissionFreezeRefused refusal)
+      Right nextEpoch ->
+        ( AuthorityProviderAdmissionFrozenForCascadeAudit
+        , aggregate
+            { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
+            }
+        )
  where
   refuse refusal = (AuthorityAdmissionCommandRefused refusal, aggregate)
+
+-- | Pending Provider work in this aggregate, projected in the same read the
+-- freeze decides from.
+--
+-- Completed operations do not count: they are terminal records kept so a
+-- response-loss retry returns the durable outcome. Only work that could still
+-- settle is a reason to refuse the fence, because freezing over it would fence
+-- the retries that would settle it.
+aggregatePendingProviderWork :: AuthorityAdmissionAggregate -> ProviderPendingWork
+aggregatePendingProviderWork aggregate =
+  case length pendingOperations of
+    0 -> NoPendingProviderWork
+    count -> PendingProviderWork count
+ where
+  pendingOperations =
+    [ ()
+    | AuthorityProviderPending _ _ <-
+        Map.elems (authorityAggregateProviderOperations aggregate)
+    ]
 
 applyMigrationTransition
   :: AuthorityAdmissionAggregate
@@ -1044,7 +1104,8 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
     RegisteredSubmissionFresh
       | Just refusal <-
           providerAdmissionFreshSubmissionRefusalInternal
-            (internalAuthorityAggregateProviderAdmissionEpoch aggregate) ->
+            (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+            submissionKey ->
           pure
             ( AuthorityProviderSubmissionRefused
                 ( AuthorityRegisteredSubmissionRefusedByGate

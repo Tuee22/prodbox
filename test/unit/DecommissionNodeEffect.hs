@@ -18,8 +18,10 @@ import Prodbox.Lifecycle.Decommission.Graph
   , runDecommissionGraph
   )
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionNode (..)
+  ( DecommissionLocalDataDisposition (DeleteLocalData, RetainLocalData)
+  , DecommissionNode (..)
   , DecommissionTargetGeneration
+  , decommissionLocalDataDispositionText
   , decommissionNodeFrameId
   , decommissionTargetGenerationValue
   , mkDecommissionTargetGeneration
@@ -127,6 +129,10 @@ decommissionNodeEffectSuite =
               , backupPrefixAbsenceProofOperation = named "backup-prefix-proof"
               , backupObjectsOperation = named "backup-objects"
               , sharedObjectBucketOperation = named "shared-bucket"
+              , finalNoRetentionAuditOperation = named "final-no-retention-audit"
+              , homeSubstrateUninstallOperation = named "home-substrate-uninstall"
+              , localDataDispositionOperation = named . localDataLabel
+              , decommissionTerminalReceiptOperation = named "terminal-receipt"
               }
           registeredInterpreter = decommissionInterpreterFromRegistry registry
       mapM_
@@ -157,6 +163,13 @@ decommissionNodeEffectSuite =
             BackupAllPrefixesAbsentCapability $ \seenNode seenAttempt -> do
               modifyIORef' seen (("observe:all-prefixes", seenNode, seenAttempt) :)
               pure ResidueAbsent
+          -- Sprint 4.85: read-only by construction, like the all-prefix proof.
+          -- The terminal audit records no destroy call because the capability
+          -- has no destructive half to record one with.
+          finalAudit =
+            FinalNoRetentionAuditCapability $ \seenNode seenAttempt -> do
+              modifyIORef' seen (("observe:final-no-retention-audit", seenNode, seenAttempt) :)
+              pure ResidueAbsent
           capabilities =
             ProductionDecommissionCapabilities
               { productionSesConsumerQuiescence =
@@ -179,6 +192,22 @@ decommissionNodeEffectSuite =
               , productionBackupAllPrefixesAbsent = allPrefixes
               , productionSharedObjectBucket =
                   SharedObjectBucketCapability (named "shared-bucket")
+              , productionFinalNoRetentionAudit = finalAudit
+              , productionHomeSubstrateUninstall =
+                  HomeSubstrateUninstallCapability (named "home-substrate-uninstall")
+              , -- Sprint 4.85: the decision is an argument, so the capability
+                -- records which one the signed node carried. A capability that
+                -- closed over its own disposition could delete under a plan
+                -- that said retain.
+                productionLocalDataDisposition =
+                  LocalDataDispositionCapability (named . localDataLabel)
+              , -- Sprint 4.85: read-only by construction, like the all-prefix
+                -- proof and the terminal audit. This node reads the very
+                -- record it is a node of, so it records no destroy call.
+                productionDecommissionTerminalReceipt =
+                  DecommissionTerminalReceiptCapability $ \seenNode seenAttempt -> do
+                    modifyIORef' seen (("observe:terminal-receipt", seenNode, seenAttempt) :)
+                    pure ResidueAbsent
               }
           productionInterpreter =
             decommissionInterpreterFromRegistry
@@ -220,6 +249,11 @@ decommissionNodeEffectSuite =
     , BackupPrefixAbsenceProof
     , BackupObjects
     , SharedObjectBucket
+    , FinalNoRetentionAudit
+    , HomeSubstrateUninstall
+    , LocalDataDisposition DeleteLocalData
+    , LocalDataDisposition RetainLocalData
+    , DecommissionTerminalReceipt
     ]
 
   expectedCalls node =
@@ -234,6 +268,10 @@ decommissionNodeEffectSuite =
           BackupPrefixAbsenceProof -> "backup-prefix-proof"
           BackupObjects -> "backup-objects"
           SharedObjectBucket -> "shared-bucket"
+          FinalNoRetentionAudit -> "final-no-retention-audit"
+          HomeSubstrateUninstall -> "home-substrate-uninstall"
+          LocalDataDisposition disposition -> localDataLabel disposition
+          DecommissionTerminalReceipt -> "terminal-receipt"
      in ["destroy:" <> label, "observe:" <> label]
 
   expectedProductionCalls node =
@@ -242,6 +280,8 @@ decommissionNodeEffectSuite =
         call label = (label, stableNode, stableAttempt)
      in case node of
           BackupPrefixAbsenceProof -> [call "observe:all-prefixes"]
+          FinalNoRetentionAudit -> [call "observe:final-no-retention-audit"]
+          DecommissionTerminalReceipt -> [call "observe:terminal-receipt"]
           _ ->
             let label = case node of
                   SesConsumerQuiescence -> "ses-consumers"
@@ -253,9 +293,14 @@ decommissionNodeEffectSuite =
                   TlsRetentionIdentity -> "tls-identity"
                   BackupObjects -> "backup-objects-identity"
                   SharedObjectBucket -> "shared-bucket"
+                  HomeSubstrateUninstall -> "home-substrate-uninstall"
+                  LocalDataDisposition disposition -> localDataLabel disposition
              in [call ("destroy:" <> label), call ("observe:" <> label)]
 
   targetNode = TargetGeneration "vscode" targetGeneration
+
+  localDataLabel disposition =
+    "local-data:" <> decommissionLocalDataDispositionText disposition
 
   targetLabel target generation =
     "target:"

@@ -2636,14 +2636,30 @@ The protocol is total:
    `DecommissionSesSmtpCustody` and `DecommissionAcmeEabCustody` nodes and reads both retained-home
    source receipts back absent. Home Agent, Vault, Gateway, cert-manager, Bootstrap Broker, and the
    remaining control-plane Pods stay available through those tombstone read-backs.
-6. Only after retained-generation tombstones are externally receipted does the runner stop and
-   uninstall the home control plane and, when selected, delete/read-back `.data`. Using its fresh
-   admin session and no target-cluster dependency, it deletes/read-backs every version under the
-   TLS-retention prefixes plus the TLS identity/key/policy, but does not delete their shared bucket.
+6. Only after retained-generation tombstones are externally receipted, and using its fresh admin
+   session with no target-cluster dependency, does the runner delete/read-back every version under
+   the TLS-retention prefixes plus the TLS identity/key/policy, without deleting their shared bucket.
    The final Authority-backup node deletes/read-backs its objects/versions, access key, IAM
    identity/policy, and prefix, proves every other registered prefix in the shared
-   `pulumi_state_backend` bucket absent, and only then deletes/read-backs that bucket last. It
-   appends terminal absence evidence and the final scoped tag-sweep result to the external receipt.
+   `pulumi_state_backend` bucket absent, and only then deletes/read-backs that bucket last.
+7. An **ordered terminal phase** follows the last resource deletion, and every node of it is a node
+   of the signed graph rather than a tail run after the runner returns. The final scoped tag sweep
+   is first: it admits no retained carve-out, so it can only report the whole plan converged once
+   the shared bucket it would otherwise name as an escapee is gone. The home control-plane stop and
+   uninstall follows it, because the sweep — like the SMTP consumer, target-generation, and
+   retained-custody nodes before it — is answered through the plane the uninstall dismantles; each
+   node's stable operation ID is derived from its receipt attempt, so a lost uninstall response
+   resumes by re-observing install markers rather than issuing a second uninstall. The operator's
+   explicit `.data` retain-or-delete disposition is last, after the uninstall that stopped writing to
+   the root. That decision is a *parameter* of its signed manifest node, so it enters the manifest
+   digest and the node identity: it cannot arrive as a runtime flag, and a receipt opened under one
+   decision cannot be resumed under the other. Its read-back is disposition-indexed and refuses in
+   both directions — a surviving root under `delete` and a missing root under `retain` are both
+   residue — while an unobservable root closes neither. The terminal-receipt node closes the phase: it
+   refuses unless the receipt's own committed frames already record every other plan node as durably
+   terminal, so its success frame is the record's declaration that the run converged rather than an
+   in-memory fold that dies with the runner. Its read is read-only by construction and refuses a torn
+   tail rather than repairing it, because it reads the very record it is a node of.
 
 The receipt sink must survive the target cluster, `.data`, Vault, primary MinIO, and backup S3
 deletion; validation refuses a path inside any registered target. After `DecommissionExported`, loss

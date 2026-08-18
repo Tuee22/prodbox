@@ -22,18 +22,22 @@ the same queue.
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `4.84` | 4 | Next | — |
-| 2 | `4.85` | 4 | Parked | `4.84` |
-| 3 | `4.86` | 4 | Parked | `4.85` |
-| 4 | `5.36` | 5 | Parked | `4.85` |
-| 5 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
-| 6 | `7.36` | 7 | Parked | `4.85` |
+| 1 | `4.85` | 4 | Next | — |
+| 2 | `4.86` | 4 | Parked | `4.85` |
+| 3 | `5.36` | 5 | Parked | `4.85` |
+| 4 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
+| 5 | `7.36` | 7 | Parked | `4.85` |
 
-Sprints `3.41` and `5.35` are Done on their code-owned surfaces and are not open queue rows.
+Sprints `3.41`, `4.84`, and `5.35` are Done on their code-owned surfaces and are not open queue rows.
 Sprint `3.41` closed on 2026-08-17 with the recovery-only repair renderer, the versioned retained
 artifact authority, the stopped/absent/healthy repair matrix, and the pure deletion-survivor
 projection; its stopped/absent host exercise remains a non-blocking Live-proof, and acquiring and
 retaining the artifact bytes its plans name is lifecycle execution owned by Sprint `4.86`. Sprint
+`4.84` closed on 2026-08-17 with the exact-keyed observation algebra, the run-invariant
+registered-stack lifecycle generation and its durable join, the terminal retained matcher/query
+catalog, the region-bounded audit verdict, and both directions of the generation reachable from a
+host run; converting the *existing* callers onto that selection is owned by Sprints `5.36` and `6.5`,
+which delete the compositions those callers live in. Sprint
 `5.35`'s oracle remains a required gate for `5.36` and for the repository-level release checks. The
 partially implemented Phase 4, 5, and 7 foundations stay preserved while parked; their presence
 does not authorize skipping the numerical queue.
@@ -52,7 +56,388 @@ is durable and the retained-root host record has made its exact locked `Prepared
 transition with independent read-back. Deployment qualification remains pending and cannot be
 substituted for by partially landed code or an old live run.
 
-**Session checkpoint (2026-08-17, current).** Seven Sprint-`4.84` increments and one
+**Plan-compliance correction (2026-08-17, current).** A Standard-compliance audit of this plan found
+a defect in the plan itself rather than in the code: **Sprint `4.84` declared `Blocked by: none`
+while its Remaining Work said its consumer conversion "cannot land independently of the caller
+restructuring in Sprints `4.85`/`5.36`/`6.5` … it is sequenced with them, not reassigned to them",
+and Sprint `4.85` held a deletion it said was "doable" only inside Sprint `5.36`.**
+
+Both are dependencies on later phases, which
+[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) forbids and
+directs to be *re-scoped* rather than recorded. Because they lived in prose rather than in a
+`**Blocked by**` field, `prodbox dev lint docs` could not see them and reported the queue clean.
+
+The consequence was not cosmetic. This plan's own Definition of Done requires that "no sprint-owned
+blocker or remaining work survives", so `4.84` could never close; `4.85` was `Parked` behind it,
+`5.36` behind `4.85`, and `6.5` `Blocked` on both — **no row in the queue could reach `Done`.** Two
+attempts to work the queue confirmed it from opposite ends: work on `4.84` ran out of closable
+surface, and the `4.85`/`5.36` restructuring hit the same wall from the other side.
+
+The correction follows Standard N's prescribed remedy and the pattern Sprints `4.86` and `6.5`
+already use correctly — *disclaim* later work instead of holding it. Each deferred item moves to the
+sprint that already owns the composition it deletes: the `TestRunner`/`DurableCleanupComposition`
+conversion and the `CapabilityBoundCleanupAction` deletion to Sprint `5.36`, and the
+`runNativeDeleteCascade` conversion to Sprint `6.5`. Sprint `4.84` then has no surviving sprint-owned
+work and closes; `4.85` becomes `Next`. The six `Pending Removal` rows `4.84` owned are re-owned to
+the sprint that performs each deletion, so no `Done` sprint owns undone removal work.
+
+**No code changed and no landed surface was re-evaluated.** What changed is which sprint owns work
+that was already known to be undoable where it sat.
+
+**Session checkpoint (2026-08-18, current — Sprint `4.85`).** Seven increments landed on top of the
+2026-08-17 set. The queue is unchanged and `4.85` stays `Next`.
+
+**The receipt says the run converged.** The external receipt records every node's intent,
+observation, and result, and never recorded that the *run* converged: a receipt whose last frame is
+the final node's result is byte-identical to one whose run crashed immediately after writing it, and
+the only place the convergence fact existed was an in-memory fold that dies with the process that
+produced it.
+
+`DecommissionTerminalReceipt` is the fourth and last scheduled node. It is last in the derived order
+and refuses unless the durable record already carries a terminal success for every other node of the
+signed plan, so its own success frame is the declaration — written through the same
+fsync/reopen/validate append primitive as every other frame. **The append is the runner's frame; the
+node supplies the read-back and the ordering that makes it terminal**, which is worth stating plainly
+rather than letting the name imply a second writer. The capability is read-only by construction, and
+here that discipline is at its strongest: the node reads the very record it is a node of, so one that
+could write would mutate the history it is proving something about.
+
+`decommissionRunTerminalEvidence` reuses `validateReceiptSemantics` — the same fold the runner
+resumes from — rather than traversing the frames again, because a second notion of "terminal" could
+accept a history the runner would refuse to resume. `readBoundReceiptFramesReadOnly` is the read-only
+sibling of the runner's reopen: a torn tail is a refusal rather than a repair, pinned by a regression
+that the bytes are unchanged after it.
+
+`TerminalReceiptTag` is the fourth of twenty-one tags to measure `CompiledProgramAndRunner` and
+`nukeInterpreterRegistryVersion` is `5`. **All four scheduled decommission nodes have now landed**,
+and the terminal phase is a four-rank ordered enumeration whose order is measured against the
+compiled program in both directions.
+
+**The operator's `.data` disposition is a signed node.** `nuke` has named the manual PV host root as
+the **first entry of its own deletion-root inventory** since the external-path guard landed — that
+inventory is exactly why the external receipt and pinned runner are refused inside it — and nothing
+ever disposed of it. A total decommission destroyed every AWS resource class, uninstalled the home
+substrate, and left the retained data tree on disk with no record of whether that was intended.
+
+`LocalDataDisposition` is that operation as the last node of the signed receipt graph, and the
+decision it carries is a closed two-valued type with no default. Making it a value rather than a flag
+read at the effect boundary is what lets it be signed: it is a *parameter* of the node, so it enters
+the manifest digest and the frame node identity, and a receipt opened for a `retain` run cannot be
+resumed as a `delete` run. `prodbox nuke --local-data <retain|delete>` is required for apply.
+
+A mandatory node with a parameter was previously unrepresentable. The required-node set had been
+derived from the closed singleton enumeration so a new singleton could not be silently optional, but
+that derivation could only say "every singleton is present" — and this node is mandatory *and*
+parameterized, so it would have fallen through the same hole one constructor shape further along.
+`DecommissionNodeFamily` is now the single cardinality classifier, `decommissionNodeSingleton` is its
+projection rather than a second `case`, and all three refusals — missing singleton, missing decision,
+competing decisions — are derived from it.
+
+The Authority still owns the plan and a caller still cannot supply one; what the inventory cannot
+supply is the *disposition*, since it knows the root exists and not what should become of it. So the
+export request carries the two-valued decision, the Authority places it into the plan, and the runner
+refuses a signed manifest whose disposition is not the one the operator requested — without which a
+defective Authority could sign `retain` over an operator's `delete` and the run would converge
+reporting success. The resume path makes that check load-bearing: the decision binds on the first
+export and is never rediscovered, so a resume supplying the other value is refused rather than
+silently inheriting the committed one.
+
+The adapter's arms are deliberately asymmetric. `retain` issues no effect at all, so a capability
+built on a host cannot delete under a plan that said retain; `delete` refuses an unobservable root
+before removing anything and keeps already-absent, applied, refused, and response-lost distinct under
+a stable operation derived from the receipt attempt. The read-back refuses in **both** directions — a
+surviving root under `delete` and a missing root under `retain` are both residue — and an
+unobservable root closes neither.
+
+`LocalDataDispositionTag` is the third of twenty-one tags to measure `CompiledProgramAndRunner`, and
+`nukeInterpreterRegistryVersion` was taken to `4`. One scheduled decommission node remained at that
+point; it closed later the same day (above).
+
+**The home substrate is uninstalled by the signed graph.** `compileDesiredAbsenceProgram` has emitted
+`decommission/uninstall-local` and its read-back since the program algebra landed, and no runner
+executed either — a total decommission destroyed every AWS resource class and left the local RKE2
+substrate installed. `HomeSubstrateUninstall` is that operation as the last node of the receipt graph.
+Its stable `CleanupOperationId` is derived from the receipt attempt rather than freshly generated, so
+a lost uninstall response resumes by re-observing markers under the same operation instead of running
+a second uninstall; and only a fresh all-markers-absent observation closes the node, so an uninstaller
+that exits zero without removing the install cannot report success.
+
+**The terminal phase is now ordered, and its order is measured rather than asserted.** Two nodes
+follow the last resource deletion, and both the runner graph and the compiled program state an order
+over them. `DecommissionTerminalPhaseNode` is the closed ordered enumeration the graph derives
+predecessors from, and `compiledDecommissionTagPrecedes` measures the compiled program's own order by
+transitive dependency reachability; `decommissionTerminalPhaseOrderViolations` joins them in `dev
+check`. The relation is two-sided on purpose — every node of the later tag must reach some node of the
+earlier one, *and* no node of the earlier may reach the later — so an unordered pair does not read as
+ordered. The order itself follows from what each node claims: the audit admits no retained carve-out,
+so it must follow every deletion, and the uninstall dismantles the plane through which the SES
+quiescence, target-generation, and retained-custody nodes were answered, so it must follow the audit.
+
+`HomeSubstrateUninstallTag` is the second of twenty-one tags to measure `CompiledProgramAndRunner`,
+and `nukeInterpreterRegistryVersion` was taken to `3`. Two of the four scheduled decommission nodes
+remained at that point; the `.data` disposition closed later the same day (above), leaving
+terminal-receipt append/read-back.
+
+**The final no-retention audit is a node, not a tail.** Sprint `4.76` gave the terminal scoped tag
+sweep its first call site — the doctrine had assigned it to `nuke` all along and nothing ran it — but
+it ran *outside* the receipt graph, after `runPreparedNuke` had already returned success. The deletion
+ledger records the consequence exactly: a crash or a lost response there cannot resume through the
+manifest. The run has converged on paper, every node in the signed plan is terminal, and the only
+proof that nothing escaped was never taken — so re-running `nuke` restarts from a plan with nothing
+left to do.
+
+`FinalNoRetentionAudit` is that sweep as the terminal node of the signed graph, and four properties
+come from where it sits rather than from new code: a durable intent frame before the effect, a stable
+attempt identity, authoritative re-observation on resume, and a receipt entry saying what was
+observed. The capability is read-only by construction, like the all-prefix absence proof, so
+production composition cannot smuggle a deletion into the terminal proof. The sweep's three verdicts
+stay three — an escapee is a resource that survived, an unreadable Tagging API is an absence nobody
+observed — and both still refuse the node.
+
+The shared object bucket stops being the unique terminal. It remains the last *resource deletion*,
+and the audit follows it, because an audit that admits no retained carve-out would otherwise report
+the bucket it is waiting on as an escapee. That order is the one the compiled `TotalDecommission`
+program already emits, so the runner graph and the compiled program agree rather than each asserting
+it — and `TotalDecommissionEscapeAuditTag` becomes the **first tag of twenty-one** measuring
+`CompiledProgramAndRunner`, which the parity gate required to be declared in the same change.
+
+The three derivations from earlier in the session carried the new node without being touched: it
+reached the mandatory set, the Authority's plan, the operator's dry-run plan, and the signed
+interpreter registry through the closed enumerations alone. That last one is a real identity change
+rather than a cannot-drift guard — the runner gained its first escape-audit interpreter — so
+`nukeInterpreterRegistryVersion` is bumped to `2` and a receipt signed under version `1` will not
+verify against this runner. Crash/response-loss coverage arrived the same way: the runner suite's
+recovery case iterates its node inventory, which was two identical literals in two scopes and is now
+one value. Seven pinned inventories failed on the addition and were updated deliberately — the
+behaviour the mandatory-singleton derivation exists to produce.
+
+Three scheduled nodes remained at that point: home-substrate uninstall/read-back, the explicit
+`.data` retain/delete disposition, and terminal-receipt append/read-back. Each needed a production
+boundary that did not exist yet, unlike this one, which had a working boundary in the wrong place.
+The first two closed later the same day (above).
+
+**The signed decommission node universe was stated six times and joined nowhere.** The previous
+session derived the verifier's mandatory-singleton set from a closed enumeration and recorded that
+adding a node would become "a change the verifier cannot ignore". Re-reading the surfaces that
+statement rests on found that only one of them had been closed. The same node universe was also
+written down as the Authority's production plan, as the signed interpreter-registry identity, as a
+`case` selecting an interpreter tag per node, and as the `NODE=` lines of the `--dry-run` plan an
+operator reads and approves — four more copies, in three different naming schemes, joined to nothing.
+
+Each has a different failure. **The signed interpreter registry** is digested into `VerifierMetadata`,
+so the operator's signature covers which interpreters the runner was built with; a node implemented
+with a new interpreter would have been absent from what was signed while a manifest naming it still
+verified. The only check standing between the two was that the per-node `case` returned a non-empty
+literal — a test no arm could fail. `decommissionRunnerInterpreterIdentity` is now the single source,
+the per-node lookup is its projection, the registry list is derived in tag order, and
+`decommissionInterpreterIdentityViolations` gates `dev check` in both directions: a runner-implemented
+tag with no identity, and an identity for a tag no manifest node reaches, are both violations. The
+production-manifest check is now a real refusal over that lookup rather than a non-empty test.
+
+**The Authority's production plan** was a three-element prefix and a six-element suffix around the
+optional Target Agent generation, authored in `Prodbox.ControlPlane.Runtime` — the *producer* — while
+the *verifier* required the derived set. A newly added singleton would have been demanded by one and
+never signed by the other, and the resulting fail-closed refusal lands at the worst possible moment:
+inside the interactive run, after the point-of-no-return confirmation literal and the ephemeral admin
+credential. `productionDecommissionPlanNodes` derives both halves from the two values that already
+state them — the closed singleton enumeration for membership, `decommissionTopologicalOrder` (the
+order the runner itself executes) for placement.
+
+**The `--dry-run` plan** is the artifact that authorizes the run, and its ten `NODE=` lines were the
+sixth copy. A node added to the signed inventory would have been destroyed without ever appearing in
+the plan the operator approved. Those lines are now a projection of the same derived inventory
+through the semantic tag names, and both annotations are derived rather than asserted: the
+parameterized note attaches to the node the plan carries a representative of, and the terminal note
+only to whatever the derived order actually ends with.
+
+**All three derivations are byte-identical to what they replaced**, so this is a cannot-drift guard
+rather than a change to anything the Authority signs — a historical receipt stays verifiable. The one
+visible change is operator-facing: three node labels in the dry-run plan now use the semantic tag
+name (`target-generation-tombstone`, `retained-custody-tombstone`, `authority-backup-objects`) instead
+of their own third spelling, and the golden is regenerated accordingly.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev lint docs` exit 0, `prodbox dev docs
+check` exit 0, and the full unit binary at **4115/4115** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation). No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged — and the two new decommission nodes are exactly the kind of surface a live proof would
+exercise: neither the terminal audit's new position nor the home uninstall has run against real
+infrastructure. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, prior — Sprint `4.85`).** Seven increments landed. The queue was
+unchanged and `4.85` stayed `Next`.
+
+**The terminal-audit freeze has a transition.** The deletion ledger's terminal-audit row names a
+deadlock — audit-pending-before-freeze refuses the freeze, freeze-before-audit refuses the fresh audit
+submission, audit-before-freeze races new consumers — and `ProviderAdmissionEpoch` retained the frozen
+shape with no transition into it, so the state was unreachable and the deadlock unexercised.
+
+Everything the freeze needs was already in one place: the aggregate the Provider submission path reads
+holds both the admission epoch and the pending provider operations, and that path already refuses
+fresh submissions once frozen. The freeze is therefore an `AuthorityAdmissionCommand` over that same
+aggregate, which is what makes it atomic with its own pending-work proof — projected from the
+aggregate rather than supplied by the caller, so a caller cannot understate what is in flight.
+
+Four decisions carry the weight, each a fixed regression: a freeze must name the generation it fenced
+(with a companion binding command making `Serving` reachable); freezing over pending work is refused
+because the fence would block the retries that settle it; an identical freeze is idempotent while a
+different binding is refused; and **the fence honours its own reservation** — the gate previously
+refused *every* fresh submission when frozen, which would have fenced the terminal audit the freeze
+exists to run, making the frozen state a dead end.
+
+No authenticated route issues either command, so no production caller can reach the frozen state — and
+that is now what the disposition blocker says. `AbsentDispositionCapability` was refined from "exports
+no transition into its Cascade-audit frozen state", which this increment made false, to "no
+authenticated route issues the Cascade-audit freeze command". The increment before this one is what
+made that correction unavoidable.
+
+**The disposition-blocker list now recomputes itself.**
+`operationalCredentialInventoryDispositionBlockers` is the stated reason `OperationalTeardown` has no
+registered descriptors — and therefore why its completion minter is one of this sprint's named
+remaining items. It was eight hand-authored constructors whose only consumer was a unit case asserting
+the list equalled itself, so a blocker that stopped being true would have gone on justifying the same
+omission.
+
+`dispositionBlockerEvidence` is total over the closed blocker universe and says how each is
+established: four are recomputed from sources (two from the compiled teardown programs, one from the
+credential-consumer classifier, one from `legacyOperationalIdentityStatus`), and four rest on a
+type-level absence that no value can witness, with `AbsentDispositionCapability` naming the missing
+capability rather than letting them read as measured. Stating the two program-derived ones precisely
+enough to check sharpened them: the compiled `OperationalTeardown` program has **no terminal audit node
+at all**, and **no `TeardownOperation` constructor disposes of the credential**, so neither revoke
+order is expressible on a surface that has both halves.
+`validateOperationalCredentialCoverage` now compares published against measured in both directions.
+
+**The third creation surface was outside the terminal audit's field of view.** Sprint `4.84` closed
+two of the three surfaces that create prodbox-owned AWS resources — the provisioning programs under
+`pulumi/`, read from disk by the field-of-view gate, and the Provider Worker's SES capture bucket. A
+resource created by a direct AWS call in `src/` is covered by neither, because no provisioning program
+declares it.
+
+The `dns-aws` validation hosted zone is exactly that: billable, created with `--name` and
+`--caller-reference` and **no tag at all**, so a leaked zone was returned by no audit query while a
+clean verdict read like a statement that it was gone. Nothing but the missing call stood in the way —
+hosted zones are taggable, `TaggingApiReach` already classifies them, and the registered IAM policy
+already grants `route53:ChangeTagsForResource`.
+
+`CodeCreatedAwsResource` is the closed enumeration of that surface; the writer takes its tag set from
+it, and `codeCreatedResourceFieldOfViewViolations` gates that at least one authored family is covered
+by the audit's query catalog. Both sides are values, so the join is exact. The tags carry none of the
+retention markers, so a surviving zone classifies as an escapee; the create fails on a tagging or
+read-back failure and deliberately leaves the zone, because the prefix sweep still removes it. This
+changes live audit behaviour — a leaked validation zone now surfaces as an escape, and only from the
+global-service region, which is the bound `4.84` recorded rather than closed.
+
+**One compiled source for the stack and cluster names.** Correcting the ownership relation surfaced
+what it rested on: the per-run Pulumi stack names were written down in the typed registry, again in
+`Prodbox.Lifecycle.LiveResidue`, and a third time in `Prodbox.Infra.AwsEksTestStack`, and the EKS
+cluster name was derived independently in `AwsEksTestStack` **and** spelled out inside the per-run EBS
+family's ownership tag. They agreed, so this is a cannot-drift correction rather than a repaired
+disagreement — but the cluster name is the tag the EBS reaper filters on and the coordinate
+controller ownership is derived from, so a rename that split them would have silently unaddressed a
+billable family. The registry is now the source, the family's ownership tag is **built from** the
+derived cluster name so its owning stack is true by construction, every rendered coordinate is
+byte-identical, and the other two modules are projections GHC keeps equal without a gate.
+
+The remaining half is a fact about disk, so it is a gate:
+`checkRegisteredStackProvisioningPrograms` reads the `name:` field of every `pulumi/*/Pulumi.yaml` and
+fails when a registered stack names a project no program declares. A registered stack with no
+provisioning program can never be reconciled or destroyed, and its nodes fail for a reason no report
+distinguishes from live infrastructure. A mutation exercise over an empty `pulumi/` tree pins that the
+gate reports one violation per registered stack rather than passing vacuously.
+
+**The write-ahead ownership manifest named the wrong owning stack.** This sprint's deliverable is to
+*derive* every cleanup edge from registry ownership facts rather than author them, and reading the
+ownership fact found it stated three times and wrong once. `registeredOwnershipEdges` was a
+one-element literal naming `aws-test` as the owner of the per-run test EBS family — a family whose
+registered coordinate is keyed on `kubernetes.io/cluster/aws-eks-test-cluster=owned`, which
+`pulumi/aws-test/Main.yaml` cannot produce because it declares no cluster, and which
+`pulumi/aws-eks/Main.yaml` does produce along with the EBS CSI driver that creates the volumes. The
+compiled program already ordered the family against the **EKS** stack on both sides.
+
+The consequence is operational: `initialManifestEntries` seeds a stack's write-ahead manifest from
+that relation and `projectRegisteredOwnershipEdge` admits discovered resources into it, so the
+`aws-eks` manifest could not record the volumes its own cluster created — the recovery evidence the
+manifest exists to carry when both checkpoint copies are unusable — while the `aws-test` manifest
+could adopt volumes that stack never creates.
+
+The relation is now computed from the two registry coordinates that already contain the answer, both
+classifiers total over the coordinate universe, with `owned` and `shared` deliberately distinguished.
+The program reads the same relation instead of testing keys inline, so the manifest a stack may seed
+and the order its destroy waits on cannot disagree; the compiled programs are byte-identical. A family
+whose ownership tag names a cluster no registered stack provisions produces no edge, which is
+indistinguishable at the edge list from having no owner — so `ownershipEdgeDerivationViolations` fails
+`dev check` on it.
+
+**Total-decommission parity is measured, and the two universes are disjoint.** Validation item 10
+asks for bidirectional parity across the complete total-decommission universe, and nothing measured
+it — because "total decommission" is described in two places that had never been compared. The
+compiled `TotalDecommission` program covers the typed registry, the home uninstall, the final audit,
+the external receipt, the `.data` disposition, and the terminal receipt; the signed
+`DecommissionNode` manifest and its runner cover SES, the SMTP IAM family, target-generation
+tombstones, retained custody, the retained TLS material, the Authority backup, and the shared object
+bucket.
+
+`Prodbox.Lifecycle.Decommission.ProgramTag` names the semantic operation universe and joins both
+sides. Its two classifiers are total and their result type *is* the tag enumeration, so adding a node
+or an operation without saying which semantic operation it is is a compile error. The reverse
+direction is a measurement rather than a declaration: `validateDecommissionProgramTagParity` compiles
+the program, takes the manifest universe from the closed singleton enumeration, and checks the
+authored claim against both images — so a claim cannot survive the side it names not producing the
+tag.
+
+**The measurement is the finding: twenty-one tags, zero overlap.** The compiled program would destroy
+the registered AWS targets and uninstall the home foundation while never touching SES, the retained
+TLS material, the Authority backup, or the shared object bucket; the runner does the converse while
+never proving the final no-retention audit or appending a terminal receipt. Neither alone is a total
+decommission. Implementing any of the four scheduled nodes now flips its tag and fails `dev check`
+until the claim is updated in the same change — which is the point: the gap was previously a
+sentence in a ledger row, and a sentence cannot notice a node being added.
+
+It found and closed a defect the previous increment introduced, and a wider one behind it.
+Registering a descriptor in the typed teardown registry is not neutral: `compileDesiredAbsenceProgram`
+emits a **mandatory** absence read-back for each one, and a surface that mints completion evidence is
+asserting every mandatory read-back succeeded. `Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter`
+dispatched its three entry points on ad-hoc `(kind, key)` guards with a fall-through refusal, and
+nothing joined the keys those guards cover to the keys the registry contains — so a descriptor could
+be registered with no executor behind it, and the only symptom was a node that always failed. In a
+teardown report that reads exactly like infrastructure that refused to go away.
+
+Measured against the registry, **two of six registered descriptors had no executor.** The retained EBS
+family has had none since it was split out, and that was harmless only because it projects onto
+`ExplicitLongLived` and `TotalDecommission`, neither of which can mint completion. The `dns-aws`
+validation zone registered earlier the same day is `PerRun`, so it projects onto `Cascade` and
+`ExplicitPerRun` — where `cascade/audit-escapes` requires `success` on every target's completion node.
+**The cascade could therefore no longer reach its terminal audit, and the `ExplicitPerRun` completion
+minter landed in the same sprint could never fire.** The registration swept nothing either way: no
+adapter to sweep a Route 53 hosted zone exists, and no `ProviderIntent` lists or deletes one.
+
+`Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor` is the join, keyed on the registry key rather
+than the resource kind — the kind says what shape a resource has, the executor is a fact about which
+adapter was actually built, and dispatching on kind is what let a newly registered `Singleton` reach a
+fall-through unnoticed. It is total over the closed key enumeration, the interpreter's three entry
+points dispatch on it, and `registeredTargetExecutorViolations` gates `dev check`. That gate is a
+derivation rather than an exemption list: a gap is reported only when the key projects onto a surface
+for which `cleanupSurfaceMintsCompletionEvidence` is `True`, so a stale exemption is not representable
+and the retained EBS family stops being admissible the moment either of its surfaces gains a minter.
+
+The `dns-aws` registration is withdrawn and its flat-inventory exemption restored, naming Sprint
+`7.36` — the owner of the exact AWS desired-absence adapters — for both the Route 53 adapter and the
+registration that depends on it. This is
+[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) rather than
+tidying: a Phase-4 registration whose program cannot complete until a Phase-7 adapter lands would have
+made Sprint `6.5`'s cutover depend on a later phase. The precondition the original measurement found
+survives as a Sprint-`5.36` note — the harness sweep is still the only thing removing that billable
+zone, so the harness graph cannot be deleted before `7.36`.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev lint docs` exit 0, `prodbox dev docs
+check` exit 0, and the full unit binary at **4112/4112** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation),
+plus the admission (27), authentication (33), and authenticated-transport (29) unit suites. No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, prior — the work `4.84` closed on).** Seven Sprint-`4.84` increments and one
 Sprint-`4.85` increment landed. The queue is
 unchanged; `4.84` stays `Next` because its named remaining item — the production consumer cutover,
 sequenced with `4.85`/`5.36`/`6.5` — is untouched.
@@ -2035,9 +2420,9 @@ dated table are retained for audit history; neither is a current-status ledger. 
 
 ### Prior phase closure record
 
-**Every code-owned phase surface is closed (2026-08-14).** Sprints `2.48` ✅ and `2.50` ✅ closed;
-Sprint `2.51` 🔄 is the single open sprint, registered from `2.50`'s live proof with its cause already
-taken. Prior state (2026-08-13): Phase `4` recloses on Sprints `4.78`,
+**Every code-owned phase surface was closed (2026-08-14).** Sprints `2.48` ✅ and `2.50` ✅ closed;
+Sprint `2.51` 🔄 was the single open sprint at that date, registered from `2.50`'s live proof with its
+cause already taken. It has since closed ✅. Prior state (2026-08-13): Phase `4` recloses on Sprints `4.78`,
 `4.79`, and `4.80` ✅ and Phase `5` on Sprint `5.34` ✅, taking the unowned `Pending Removal` count
 to **1**. Phase `3` recloses on Sprint `3.35` ✅ —
 the control-plane listen port and the in-cluster role-URL shape each have one compiled owner, and

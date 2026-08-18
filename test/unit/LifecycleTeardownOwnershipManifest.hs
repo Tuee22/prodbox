@@ -35,6 +35,77 @@ lifecycleTeardownOwnershipManifestSuite =
       ByteString.length bytes
         `shouldSatisfy` (<= maximumDurableWriteAheadOwnershipManifestBytes)
 
+    -- Sprint 4.85: the ownership relation is derived from two registry
+    -- coordinates instead of authored beside them. It was authored, and it was
+    -- wrong: `aws-test` was named the owner of a family whose coordinate is
+    -- keyed on the EKS cluster's ownership tag, and `pulumi/aws-test/Main.yaml`
+    -- declares no cluster at all.
+    it "Sprint 4.85 derives controller ownership from the registry coordinates" $ do
+      map
+        (\edge -> (ownershipEdgeStackKey edge, ownershipEdgeResourceKey edge))
+        registeredOwnershipEdges
+        `shouldBe` [(AwsEksKey, AwsEbsPerRunTestKey)]
+
+      -- The join is by cluster name, not by position or by which stack happens
+      -- to be listed first: `aws-test` yields a candidate cluster name too, and
+      -- the family names the EKS one.
+      controllerOwnedFamilies
+        `shouldBe` [(AwsEbsPerRunTestKey, "aws-eks-test-cluster")]
+      lookup AwsEksKey registeredStackClusters `shouldBe` Just "aws-eks-test-cluster"
+      lookup AwsTestKey registeredStackClusters `shouldBe` Just "aws-test-cluster"
+
+      -- Every controller-owned family has an owning registered stack.
+      controllerOwnedFamiliesWithoutRegisteredStack `shouldBe` []
+
+      -- The observable behaviour change: the EKS stack's write-ahead manifest
+      -- may now record the volumes its own cluster created, and the `aws-test`
+      -- manifest may no longer adopt volumes that stack never creates.
+      projectRegisteredOwnershipEdge AwsEksKey AwsEbsPerRunTestKey
+        `shouldSatisfy` isRightEdge
+      projectRegisteredOwnershipEdge AwsTestKey AwsEbsPerRunTestKey
+        `shouldBe` Left (OwnershipEdgeNotRegistered AwsTestKey AwsEbsPerRunTestKey)
+
+      -- And the EKS manifest is seeded with it, which is the recovery evidence
+      -- the manifest exists to carry when both checkpoint copies are unusable.
+      let eksIntent =
+            mustRight
+              (mkWriteAheadManifestIntent CascadeSurface AwsEksKey creationScope)
+          eksEntries =
+            map
+              ownershipManifestEntryKey
+              (ownershipManifestWriteEntries (initialWriteAheadManifestWrite eksIntent))
+      sort eksEntries `shouldBe` sort [AwsEksKey, AwsEbsPerRunTestKey]
+
+    it "Sprint 4.85 distinguishes an owning cluster from a merely sharing one" $ do
+      -- `owned` makes the named cluster the owner; `shared` does not, because a
+      -- shared resource outlives the cluster by design and has no controller
+      -- owner to order a teardown against.
+      coordinateControllerOwnerCluster
+        ( AwsEbsPerRunFamilyCoordinate
+            "prodbox.io/lifecycle"
+            "per-run-test"
+            "kubernetes.io/cluster/aws-eks-test-cluster"
+            "owned"
+        )
+        `shouldBe` Just "aws-eks-test-cluster"
+      coordinateControllerOwnerCluster
+        ( AwsEbsPerRunFamilyCoordinate
+            "prodbox.io/lifecycle"
+            "per-run-test"
+            "kubernetes.io/cluster/aws-eks-test-cluster"
+            "shared"
+        )
+        `shouldBe` Nothing
+      -- A retained family carries no cluster ownership tag at all, which is
+      -- exactly what lets it outlive every cluster.
+      coordinateControllerOwnerCluster
+        (AwsEbsRetainedFamilyCoordinate "prodbox.io/lifecycle" "retained-ebs")
+        `shouldBe` Nothing
+      -- A stack coordinate is not itself controller-owned.
+      coordinateControllerOwnerCluster
+        (AwsPulumiStackCoordinate "prodbox-aws-eks-test" "aws-eks-test")
+        `shouldBe` Nothing
+
     it "exposes a caller-constructible observation only as non-authorizing evidence" $ do
       let observation =
             OwnershipManifestObservation
@@ -99,6 +170,11 @@ isOperationMismatch :: Either OwnershipManifestError value -> Bool
 isOperationMismatch result = case result of
   Left OwnershipManifestScopeOperationMismatch {} -> True
   _ -> False
+
+isRightEdge :: Either OwnershipManifestError RegisteredOwnershipEdge -> Bool
+isRightEdge result = case result of
+  Right _ -> True
+  Left _ -> False
 
 creationScope :: ObservationEvidenceScope
 creationScope = scopeFor ReconcileDesiredPresent

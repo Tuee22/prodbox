@@ -14,6 +14,14 @@ module Prodbox.CheckCode
   , managedResourceRegistryParityViolations
   , untypedLifecycleInventoryExemptions
   , untypedLifecycleInventoryViolations
+  , registeredTargetExecutorViolations
+  , ownershipEdgeDerivationViolations
+  , codeCreatedResourceFieldOfViewViolations
+  , checkRegisteredStackProvisioningPrograms
+  , pulumiProjectNameIn
+  , decommissionProgramTagParityViolations
+  , decommissionInterpreterIdentityViolations
+  , decommissionTerminalPhaseOrderViolations
   , effectRegistryLifecycleClassViolations
   , checkTestNamespaceBoundary
   , testNamespaceImportViolations
@@ -173,6 +181,14 @@ import Prodbox.Legacy.EscapeRegistry
 import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
+import Prodbox.Lifecycle.Decommission.ProgramTag
+  ( decommissionInterpreterIdentityViolations
+  , decommissionProgramTagParityViolations
+  , decommissionTerminalPhaseOrderViolations
+  )
+import Prodbox.Lifecycle.OwnedResourceTags
+  ( codeCreatedAwsResourceTags
+  )
 import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
@@ -188,20 +204,40 @@ import Prodbox.Lifecycle.Teardown.AuditFieldOfView
   , renderProvisioningProgramParseError
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( registeredResourceKeyText
+  ( CleanupSurface
+  , ManagedResourceCoordinate (AwsPulumiStackCoordinate)
+  , ResourceKind (Stack)
+  , cleanupSurfaceMintsCompletionEvidence
+  , registeredResourceKeyText
   )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( operationalCredentialCoverageViolations
   )
+import Prodbox.Lifecycle.Teardown.OwnershipManifest
+  ( controllerOwnedFamiliesWithoutRegisteredStack
+  , ownershipEdgeResourceKey
+  , ownershipEdgeStackKey
+  , registeredOwnershipEdges
+  )
+import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
+  ( registeredTargetExecutorFor
+  , unexecutableRegisteredTargetDetail
+  )
 import Prodbox.Lifecycle.Teardown.Registry
-  ( SomeManagedResourceDescriptor (..)
+  ( RegisteredIdentity (..)
+  , SomeManagedResourceDescriptor (..)
+  , cleanupSurfaceAllows
+  , managedResourceCoordinate
   , managedResourceKey
+  , managedResourceKind
   , managedResourceLifecycleClass
   , managedResourceRegistry
+  , pulumiProjectNameFor
   )
 import Prodbox.Lifecycle.Teardown.RetainedInventory
   ( RetainedBindingError
   , RetainedNameBinding
+  , auditQueryCoversTag
   , mkRetainedNameBinding
   , terminalAuditQueryCatalog
   )
@@ -1348,7 +1384,8 @@ bootstrapBrokerIsolationViolations sources =
 runTerminalAuditFieldOfViewCheck :: FilePath -> IO ExitCode
 runTerminalAuditFieldOfViewCheck repoRoot = do
   fieldOfViewViolations <- checkTerminalAuditFieldOfView repoRoot
-  case fieldOfViewViolations of
+  provisioningViolations <- checkRegisteredStackProvisioningPrograms repoRoot
+  case fieldOfViewViolations ++ provisioningViolations of
     [] -> pure ExitSuccess
     _ ->
       failWith
@@ -1359,9 +1396,12 @@ runTerminalAuditFieldOfViewCheck repoRoot = do
                   ++ "and a clean verdict says nothing about it "
                   ++ "(lifecycle_reconciliation_doctrine.md § 3.1, Sprint 4.84):"
               )
-                : map ("- " ++) fieldOfViewViolations
+                : map ("- " ++) (fieldOfViewViolations ++ provisioningViolations)
                 ++ [ "Author a queried tag onto the resource, or classify a genuinely "
-                       ++ "untaggable type in Prodbox.Lifecycle.Teardown.AuditFieldOfView."
+                       ++ "untaggable type in Prodbox.Lifecycle.Teardown.AuditFieldOfView. "
+                       ++ "A registered stack with no provisioning program is a "
+                       ++ "separate defect: register the program, or remove the "
+                       ++ "descriptor."
                    ]
             )
         )
@@ -1421,6 +1461,139 @@ checkTerminalAuditFieldOfView repoRoot = do
                   (terminalAuditQueryCatalog binding)
                   declared
             )
+
+-- | Sprint 4.85: join the __third creation surface__ to the terminal audit's
+-- field of view.
+--
+-- Sprint @4.84@ closed two of the three surfaces that create AWS resources: the
+-- field-of-view gate reads every @pulumi\/*\/Main.yaml@ and fails on a taggable
+-- declared resource authoring no queried tag, and the Provider Worker's SES
+-- capture-bucket intent was given the tags its retained catalog already
+-- assumed. A resource created by a direct AWS call in @src\/@ is covered by
+-- neither — no provisioning program declares it, so the disk-reading gate
+-- cannot see it.
+--
+-- The @dns-aws@ validation hosted zone was exactly that: billable, created by
+-- @Prodbox.Infra.Route53ValidationZone@, and carrying no tag at all, so a
+-- leaked zone was returned by no audit query while a clean verdict read like a
+-- statement that it was gone.
+--
+-- 'CodeCreatedAwsResource' is the closed enumeration of that surface and the
+-- writers take their tag set from it, so this check covers every member. Both
+-- sides are values, so the join is exact: at least one authored family must be
+-- covered by the audit's query catalog.
+codeCreatedResourceFieldOfViewViolations :: [String]
+codeCreatedResourceFieldOfViewViolations =
+  case fieldOfViewQueryBinding of
+    Left bindingError ->
+      [ "the terminal-audit query catalog could not be built for the "
+          ++ "code-created resource join: "
+          ++ show bindingError
+      ]
+    Right binding ->
+      concatMap (resourceViolations (terminalAuditQueryCatalog binding)) [minBound .. maxBound]
+ where
+  resourceViolations queries resource
+    | null authored =
+        [ show resource
+            ++ " is a code-created AWS resource with no authored tags, so the "
+            ++ "terminal escape audit returns it from no query and a clean "
+            ++ "verdict says nothing about it."
+        ]
+    | any (auditQueryCoversTag queries) authored = []
+    | otherwise =
+        [ show resource
+            ++ " authors tag families the terminal-audit query catalog does not "
+            ++ "cover, so the audit returns it from no query. Author a queried "
+            ++ "family in Prodbox.Lifecycle.OwnedResourceTags, or add the family "
+            ++ "to the catalog in Prodbox.Lifecycle.Teardown.RetainedInventory."
+        ]
+   where
+    authored = codeCreatedAwsResourceTags resource
+
+-- | Sprint 4.85: join every registered stack coordinate to a provisioning
+-- program that exists on disk.
+--
+-- A registered stack coordinate carries a Pulumi project name and a stack name.
+-- Both are only meaningful if a program under @pulumi\/@ actually declares that
+-- project: a registered stack whose project does not exist can never be
+-- reconciled or destroyed, and its compiled desired-absence nodes would fail
+-- for a reason no report distinguishes from infrastructure that refused to go
+-- away.
+--
+-- The project-name rule (@prodbox-\<stack name\>@) is checked as well as the
+-- existence, because the registry derives one from the other. Reading the
+-- @name:@ field is deliberate: it is the field Pulumi itself resolves, so the
+-- join's input is the source rather than the directory layout, which does not
+-- match the stack names (@pulumi\/aws-eks@ provisions stack @aws-eks-test@).
+checkRegisteredStackProvisioningPrograms :: FilePath -> IO [String]
+checkRegisteredStackProvisioningPrograms repoRoot = do
+  let programRoot = repoRoot </> "pulumi"
+  rootExists <- doesDirectoryExist programRoot
+  if not rootExists
+    then
+      pure
+        [ "pulumi/ is missing, so no registered stack coordinate can be joined "
+            ++ "to a provisioning program."
+        ]
+    else do
+      entries <- listDirectory programRoot
+      programs <-
+        filterM
+          (\entry -> doesFileExist (programRoot </> entry </> "Pulumi.yaml"))
+          (sort entries)
+      declaredProjects <-
+        forM programs $ \program -> do
+          contents <- readFileStrict (programRoot </> program </> "Pulumi.yaml")
+          pure (pulumiProjectNameIn contents)
+      let onDisk = [project | Just project <- declaredProjects]
+      pure (concatMap (stackViolations onDisk) registeredStackCoordinates)
+ where
+  registeredStackCoordinates =
+    [ (managedResourceKey descriptor, managedResourceCoordinate descriptor)
+    | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+    , managedResourceKind descriptor == Stack
+    ]
+
+  stackViolations onDisk (key, coordinate) = case coordinate of
+    AwsPulumiStackCoordinate projectName stackName ->
+      [ "registered stack `"
+          ++ Text.unpack (registeredResourceKeyText key)
+          ++ "` names Pulumi project `"
+          ++ Text.unpack projectName
+          ++ "`, but no pulumi/*/Pulumi.yaml declares it. A registered stack "
+          ++ "with no provisioning program can never be reconciled or "
+          ++ "destroyed, and its compiled desired-absence nodes fail for a "
+          ++ "reason no teardown report distinguishes from live infrastructure."
+      | projectName `notElem` onDisk
+      ]
+        ++ [ "registered stack `"
+               ++ Text.unpack (registeredResourceKeyText key)
+               ++ "` names Pulumi project `"
+               ++ Text.unpack projectName
+               ++ "`, which is not `"
+               ++ Text.unpack (pulumiProjectNameFor stackName)
+               ++ "`; Prodbox.Lifecycle.Teardown.Registry derives the project "
+               ++ "name from the stack name, so the two cannot differ."
+           | projectName /= pulumiProjectNameFor stackName
+           ]
+    _ ->
+      [ "registered stack `"
+          ++ Text.unpack (registeredResourceKeyText key)
+          ++ "` has Stack kind but does not carry an AwsPulumiStackCoordinate, "
+          ++ "so it names no provisioning program."
+      ]
+
+-- | The @name:@ field of a @Pulumi.yaml@, which is the project name Pulumi
+-- resolves. Read rather than inferred from the directory, because the two do
+-- not match.
+pulumiProjectNameIn :: String -> Maybe Text.Text
+pulumiProjectNameIn contents =
+  case [Text.strip rest | line <- lines contents, Just rest <- [stripName line]] of
+    project : _ | not (Text.null project) -> Just project
+    _ -> Nothing
+ where
+  stripName line = Text.stripPrefix (Text.pack "name:") (Text.pack line)
 
 -- | The binding the field-of-view join evaluates the query catalog at.
 --
@@ -1641,6 +1814,12 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) createCallSiteViolations
     ++ map ("- " ++) managedResourceRegistryParityViolations
     ++ map ("- " ++) untypedLifecycleInventoryViolations
+    ++ map ("- " ++) registeredTargetExecutorViolations
+    ++ map ("- " ++) ownershipEdgeDerivationViolations
+    ++ map ("- " ++) codeCreatedResourceFieldOfViewViolations
+    ++ map ("- " ++) decommissionProgramTagParityViolations
+    ++ map ("- " ++) decommissionInterpreterIdentityViolations
+    ++ map ("- " ++) decommissionTerminalPhaseOrderViolations
     ++ map ("- " ++) effectRegistryLifecycleClassViolations
     ++ map ("- " ++) operationalCredentialCoverageViolations
     ++ map ("- " ++) productionEnvVarViolations
@@ -1655,7 +1834,14 @@ runDoctrineAlignmentCheck repoRoot = do
                   ++ "destructive dispatch arms that discard their --dry-run / --plan-file "
                   ++ "options, AWS/Pulumi create call sites with no registered managed "
                   ++ "resource, lifecycle-class disagreements between the typed "
-                  ++ "registry and resourceLifecycleClasses, and operational-credential "
+                  ++ "registry and resourceLifecycleClasses, registered teardown "
+                  ++ "targets with no production executor on a completing surface, "
+                  ++ "controller-owned families with no owning registered stack, "
+                  ++ "code-created AWS resources outside the terminal audit's "
+                  ++ "field of view, "
+                  ++ "decommission program tags whose declared implementation "
+                  ++ "disagrees with the compiled program or the manifest node "
+                  ++ "universe, and operational-credential "
                   ++ "consumers the compiled cascade program does not order before its "
                   ++ "terminal audit:"
               )
@@ -5913,6 +6099,14 @@ untypedLifecycleInventoryExemptions =
         ++ "transitively by the long-lived bucket destroy"
     )
   ,
+    ( "dns-aws-validation-hosted-zone"
+    , "a billable Route 53 hosted zone with no Provider intent that can list "
+        ++ "or delete one, so a typed descriptor would compile a mandatory "
+        ++ "absence read-back no production executor can discharge; Sprint "
+        ++ "7.36 registers it with its adapter, and the harness sweep stays "
+        ++ "until then"
+    )
+  ,
     ( "operational-aws-ses-lease-role"
     , "operational credential surface; registering the Operational descriptors "
         ++ "is constrained by OperationalCredentialDispositionBlocker"
@@ -5961,6 +6155,93 @@ untypedLifecycleInventoryViolations =
             ++ "why it cannot be in "
             ++ "Prodbox.CheckCode.untypedLifecycleInventoryExemptions."
         ]
+
+-- | Join the typed teardown registry to the production registered-target
+-- interpreter.
+--
+-- Registering a managed descriptor makes @compileDesiredAbsenceProgram@ emit a
+-- mandatory absence read-back for it, and a surface that mints completion
+-- evidence is asserting every mandatory read-back succeeded. A descriptor with
+-- no production executor therefore does not merely fail to be swept: it makes
+-- that surface's completion structurally unreachable, and the failing node
+-- reads like infrastructure that refused to go away.
+--
+-- The gap itself is not a violation — 'registeredTargetExecutorFor' records it
+-- as a typed value with a named owner. What is a violation is a gap on a
+-- surface that can claim completion, which is why this joins the executor
+-- answer to 'cleanupSurfaceAllows' and
+-- 'cleanupSurfaceMintsCompletionEvidence' rather than reading an authored
+-- exemption list. A stale exemption is not possible here: there is one total
+-- function, so a key that gains an executor stops being reported by
+-- construction.
+registeredTargetExecutorViolations :: [String]
+registeredTargetExecutorViolations =
+  concatMap descriptorViolations managedResourceRegistry
+ where
+  descriptorViolations someDescriptor@(SomeManagedResourceDescriptor descriptor) =
+    case registeredTargetExecutorFor (managedResourceKey descriptor) of
+      Right _ -> []
+      Left unexecutable ->
+        [ violation someDescriptor unexecutable surface
+        | surface <- [minBound .. maxBound] :: [CleanupSurface]
+        , cleanupSurfaceMintsCompletionEvidence surface
+        , cleanupSurfaceAllows surface (RegisteredManagedResource someDescriptor)
+        ]
+  violation (SomeManagedResourceDescriptor descriptor) unexecutable surface =
+    "`"
+      ++ Text.unpack (registeredResourceKeyText (managedResourceKey descriptor))
+      ++ "` is registered in Prodbox.Lifecycle.Teardown.Registry and projects "
+      ++ "onto the "
+      ++ show surface
+      ++ " cleanup surface, which mints completion evidence — but "
+      ++ Text.unpack
+        ( unexecutableRegisteredTargetDetail
+            (managedResourceKey descriptor)
+            unexecutable
+        )
+      ++ ". The compiled program's mandatory absence read-back for this target "
+      ++ "can never succeed, so that surface can never report completion. "
+      ++ "Build the adapter, or do not register the descriptor until the "
+      ++ "sprint that owns the adapter lands it."
+
+-- | Every controller-owned registered family must have exactly one owning
+-- registered stack, and every derived ownership edge must name a registered
+-- @Stack@.
+--
+-- The relation is derived from two registry coordinates rather than authored
+-- (see 'registeredOwnershipEdges'), so a wrong owner is no longer
+-- representable. What remains representable is a family whose ownership tag
+-- names a cluster no registered stack provisions — which produces no edge at
+-- all, and an absent edge is indistinguishable at the edge list from a family
+-- that genuinely has no controller owner. That is the case this reports.
+ownershipEdgeDerivationViolations :: [String]
+ownershipEdgeDerivationViolations =
+  [ "`"
+      ++ Text.unpack (registeredResourceKeyText resourceKey)
+      ++ "` declares controller owner cluster `"
+      ++ Text.unpack ownerCluster
+      ++ "` but no registered stack's provisioning program yields that cluster "
+      ++ "name, so it has no owning stack: no write-ahead ownership manifest "
+      ++ "may contain it and no destroy order can be derived for it. Register "
+      ++ "the owning stack in Prodbox.Lifecycle.Teardown.Registry, or correct "
+      ++ "the family's cluster ownership tag."
+  | (resourceKey, ownerCluster) <- controllerOwnedFamiliesWithoutRegisteredStack
+  ]
+    ++ [ "the derived ownership edge `"
+           ++ Text.unpack (registeredResourceKeyText (ownershipEdgeStackKey edge))
+           ++ "` -> `"
+           ++ Text.unpack (registeredResourceKeyText (ownershipEdgeResourceKey edge))
+           ++ "` names an owner that is not a registered Stack descriptor; a "
+           ++ "controller owner is a stack whose program declares the cluster."
+       | edge <- registeredOwnershipEdges
+       , ownershipEdgeStackKey edge `notElem` registeredStackKeys
+       ]
+ where
+  registeredStackKeys =
+    [ managedResourceKey descriptor
+    | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+    , managedResourceKind descriptor == Stack
+    ]
 
 managedResourceRegistryParityViolations :: [String]
 managedResourceRegistryParityViolations =

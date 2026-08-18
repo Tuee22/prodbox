@@ -62,6 +62,7 @@ import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
+import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
 import Prodbox.Lifecycle.Teardown.Registry
 
@@ -276,6 +277,16 @@ data AwsRegisteredTargetInterpreterError
       !ManagedResourceCoordinateDigest
       !ManagedResourceCoordinateDigest
   | AwsRegisteredTargetKindUnsupported !RegisteredResourceKey !ResourceKind
+  | -- | The key is registered but is not an AWS registered target at all.
+    -- The local foundation is projected as a separately typed local target and
+    -- has no business reaching this interpreter.
+    AwsRegisteredTargetNotAnAwsTarget !RegisteredResourceKey
+  | -- | The key is a registered AWS target with no production executor. The
+    -- gap names the missing adapter rather than the resource kind, because the
+    -- kind is not what is missing.
+    AwsRegisteredTargetAdapterUnbuilt
+      !RegisteredResourceKey
+      !RegisteredTargetAdapterGap
   | AwsRegisteredTargetProviderRefInvalid
       !RegisteredResourceKey
       !ProviderRefError
@@ -329,42 +340,42 @@ observeAwsRegisteredTarget
 observeAwsRegisteredTarget interpreter context target =
   case validateInvocation context target of
     Left err -> pure (Left err)
-    Right identity -> case registeredTargetKind target of
-      Stack
-        | registeredTargetKey target == AwsEksKey ->
-            fmap verifiedAwsEksExactObservation
-              <$> observeVerifiedAwsEksForDecision interpreter context target
-      Stack -> do
-        observed <-
-          observeStackForDecision
-            interpreter
-            (teardownExecutionOperationId context)
-            (registeredTargetKey target)
-            (teardownExecutionObservationScope context)
-        pure (stackDecisionObservationExact <$> observed)
-      VolumeFamily
-        | registeredTargetKey target == AwsEbsPerRunTestKey ->
-            observeEbs
+    Right identity ->
+      case registeredTargetExecutorFor (registeredTargetKey target) of
+        Right EksStackExecutor ->
+          fmap verifiedAwsEksExactObservation
+            <$> observeVerifiedAwsEksForDecision interpreter context target
+        Right GenericStackExecutor -> do
+          observed <-
+            observeStackForDecision
               interpreter
-              ProviderDecisionObservation
-              context
-      kind ->
-        pure
-          ( Right
-              ( exactResourceObservationFor
-                  identity
-                  (observationRevision context ProviderDecisionObservation)
-                  (teardownExecutionObservationScope context)
-                  ( ExactResourceUnobservable
-                      ( ObservationFailure
-                          ( "no exact AWS observer is registered for resource kind "
-                              <> Text.pack (show kind)
-                          )
-                          :| []
-                      )
-                  )
-              )
-          )
+              (teardownExecutionOperationId context)
+              (registeredTargetKey target)
+              (teardownExecutionObservationScope context)
+          pure (stackDecisionObservationExact <$> observed)
+        Right PerRunTestEbsFamilyExecutor ->
+          observeEbs
+            interpreter
+            ProviderDecisionObservation
+            context
+        Left unexecutable ->
+          pure
+            ( Right
+                ( exactResourceObservationFor
+                    identity
+                    (observationRevision context ProviderDecisionObservation)
+                    (teardownExecutionObservationScope context)
+                    ( ExactResourceUnobservable
+                        ( ObservationFailure
+                            ( unexecutableRegisteredTargetDetail
+                                (registeredTargetKey target)
+                                unexecutable
+                            )
+                            :| []
+                        )
+                    )
+                )
+            )
 
 -- | Re-observe immediately before deciding, then admit mutation only through
 -- a closed adapter authorization.  A present EKS stack delegates to the
@@ -379,20 +390,17 @@ reconcileAwsRegisteredTargetAbsent
 reconcileAwsRegisteredTargetAbsent interpreter context target =
   case validateInvocation context target of
     Left err -> pure (Left err)
-    Right _ -> case registeredTargetKind target of
-      Stack
-        | registeredTargetKey target == AwsEksKey ->
-            reconcileEks interpreter context target
-      Stack -> reconcileStack interpreter context target
-      VolumeFamily
-        | registeredTargetKey target == AwsEbsPerRunTestKey ->
-            reconcileEbs interpreter context target
-      kind ->
+    Right _ -> case registeredTargetExecutorFor (registeredTargetKey target) of
+      Right EksStackExecutor -> reconcileEks interpreter context target
+      Right GenericStackExecutor -> reconcileStack interpreter context target
+      Right PerRunTestEbsFamilyExecutor ->
+        reconcileEbs interpreter context target
+      Left unexecutable ->
         pure
           ( refusedResult
               context
               target
-              (AwsRegisteredTargetKindUnsupported (registeredTargetKey target) kind)
+              (unexecutableTargetError (registeredTargetKey target) unexecutable)
           )
 
 -- | Independently observe final absence under the read-back node's own stable
@@ -406,26 +414,23 @@ readBackAwsRegisteredTargetAbsent
 readBackAwsRegisteredTargetAbsent interpreter context target =
   case validateInvocation context target of
     Left err -> pure (Left err)
-    Right _ -> case registeredTargetKind target of
-      Stack
-        | registeredTargetKey target == AwsEksKey ->
-            observeEksDesiredAbsence interpreter context
-      Stack ->
+    Right _ -> case registeredTargetExecutorFor (registeredTargetKey target) of
+      Right EksStackExecutor -> observeEksDesiredAbsence interpreter context
+      Right GenericStackExecutor ->
         readBackStackDesiredAbsence
           interpreter
           (teardownExecutionOperationId context)
           (registeredTargetKey target)
           (teardownExecutionObservationScope context)
-      VolumeFamily
-        | registeredTargetKey target == AwsEbsPerRunTestKey ->
-            observeEbs
-              interpreter
-              ProviderAbsenceReadBack
-              context
-      kind ->
+      Right PerRunTestEbsFamilyExecutor ->
+        observeEbs
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Left unexecutable ->
         pure
           ( Left
-              (AwsRegisteredTargetKindUnsupported (registeredTargetKey target) kind)
+              (unexecutableTargetError (registeredTargetKey target) unexecutable)
           )
 
 data StackDecisionObservation
@@ -916,6 +921,17 @@ reconcileEbs interpreter context target = do
                   authorization
                   mutation
               )
+
+-- | Carry the executor gap into this interpreter's own error algebra.  The two
+-- arms stay distinct: a key that should never reach this interpreter and a key
+-- whose adapter is unbuilt are different defects with different owners.
+unexecutableTargetError
+  :: RegisteredResourceKey
+  -> UnexecutableRegisteredTarget
+  -> AwsRegisteredTargetInterpreterError
+unexecutableTargetError key unexecutable = case unexecutable of
+  NotAnAwsRegisteredTarget -> AwsRegisteredTargetNotAnAwsTarget key
+  NoProductionExecutor gap -> AwsRegisteredTargetAdapterUnbuilt key gap
 
 validateInvocation
   :: TeardownExecutionContext surface

@@ -105,6 +105,7 @@ import Prodbox.Lifecycle.ResidueStatus
   , observeResidueAt
   , renderResidueUnreachableReason
   )
+import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
   , reportsAbsence
@@ -158,10 +159,22 @@ isTestResidueUnreachableSet = isJust <$> lookupEnv testResidueUnreachableEnvVar
 
 -- | Canonical Pulumi stack names. Centralised here so callers do not
 -- import them transitively from each per-stack module.
-awsEksTestStackName, awsEksSubzoneStackName, awsTestStackName, awsSesStackName :: String
-awsEksTestStackName = "aws-eks-test"
-awsEksSubzoneStackName = "aws-eks-subzone"
-awsTestStackName = "aws-test"
+--
+-- Sprint 4.85: the three registered per-run names are __projections of the
+-- typed lifecycle registry__, not independent constants. They were authored
+-- here as well as in the registry coordinates and in
+-- 'Prodbox.Infra.AwsEksTestStack', so a stack rename could split three
+-- statements of one fact; GHC now keeps them equal by construction.
+awsEksTestStackName, awsEksSubzoneStackName, awsTestStackName :: String
+awsEksTestStackName = Text.unpack Registry.awsEksPulumiStackName
+awsEksSubzoneStackName = Text.unpack Registry.awsEksSubzonePulumiStackName
+awsTestStackName = Text.unpack Registry.awsTestPulumiStackName
+
+-- | @aws-ses@ has no typed registry descriptor — it is a long-lived stack whose
+-- descriptor lands with the Sprint @7.36@ AWS adapters (see
+-- @Prodbox.CheckCode.untypedLifecycleInventoryExemptions@) — so its name stays
+-- authored here until there is a coordinate to project it from.
+awsSesStackName :: String
 awsSesStackName = "aws-ses"
 
 -- | The three per-run AWS-substrate Pulumi stacks (per

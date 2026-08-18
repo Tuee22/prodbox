@@ -15,10 +15,13 @@ Write the rendered plan to a file
 .TP
 \fB--receipt\fR <ABSOLUTE_PATH>
 External durable receipt path (required for apply; optional for --dry-run)
+.TP
+\fB--local-data\fR <retain|delete>
+Explicit disposition of the retained local data root (required for apply; optional for --dry-run)
 .SH EXAMPLES
 .TP
 \fBprodbox nuke --dry-run\fR
 Render the total-teardown plan.
 .TP
-\fBprodbox nuke --receipt /operator/decommission/prodbox.receipt\fR
+\fBprodbox nuke --receipt /operator/decommission/prodbox.receipt --local-data delete\fR
 Run with an operator-owned receipt outside every deletion root.

@@ -45,7 +45,8 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.Http.Client (HttpError (HttpDecode), renderHttpError)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionManifest
+  ( DecommissionLocalDataDisposition
+  , DecommissionManifest
   , ManifestPublicKey
   , SignedDecommissionManifest
   , VerifiedDecommissionManifest
@@ -124,14 +125,28 @@ vaultAuthorityManifestSigner session =
 -- supplied; it is read from the Authority's deterministic registered inventory.
 data AuthorityDecommissionExportRepository m = AuthorityDecommissionExportRepository
   { freezeAuthorityAdmission :: m (Either Text ())
-  , readAuthorityDecommissionPlan :: m (Either Text DecommissionManifest)
+  , readAuthorityDecommissionPlan
+      :: DecommissionLocalDataDisposition
+      -> m (Either Text DecommissionManifest)
   , commitAuthorityDecommissionManifest
       :: VerifiedDecommissionManifest
       -> m (Either Text ())
   }
 
-newtype AuthorityDecommissionExportRequest = AuthorityDecommissionExportRequest
+-- | Sprint 4.85: the request carries the public runner binding and one closed
+-- operator decision.
+--
+-- The plan itself is still not caller-supplied — the node set and its order
+-- come from the Authority's registered inventory. What the inventory cannot
+-- supply is the /disposition/ of the retained local data root: it knows the
+-- root exists, not what should become of it, and both candidate answers are
+-- decisions somebody must make on the record. So the decision arrives as a
+-- two-valued choice, is placed into the plan by the Authority, and is signed
+-- like every other node — which is what lets the runner refuse a manifest whose
+-- disposition is not the one the operator typed.
+data AuthorityDecommissionExportRequest = AuthorityDecommissionExportRequest
   { authorityExportVerifierBinding :: VerifierBinding
+  , authorityExportLocalDataDisposition :: DecommissionLocalDataDisposition
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -170,7 +185,10 @@ runAuthorityDecommissionExport repository signer request =
       case frozen of
         Left detail -> refuse (AuthorityExportFreezeFailed detail)
         Right () -> do
-          planResult <- readAuthorityDecommissionPlan repository
+          planResult <-
+            readAuthorityDecommissionPlan
+              repository
+              (authorityExportLocalDataDisposition request)
           case planResult of
             Left detail -> refuse (AuthorityExportPlanUnavailable detail)
             Right plan -> signAndCommit verifier plan

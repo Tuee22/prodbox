@@ -679,6 +679,9 @@ import Prodbox.Lifecycle.Decommission.Commit
   ( decommissionManifestCodec
   , modelBDecommissionCommitRepository
   )
+import Prodbox.Lifecycle.Decommission.Graph
+  ( productionDecommissionPlanNodes
+  )
 import Prodbox.Lifecycle.Decommission.Manifest
   ( DecommissionNode (..)
   , manifestPublicKeyDigest
@@ -1662,7 +1665,11 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   lifecycleAuthorityDecommissionCasAttempts
                   admissionRepository
                   manifestRepository
-                  (discoverProductionDecommissionPlan targetTransport)
+                  ( \localDataDisposition ->
+                      discoverProductionDecommissionPlan
+                        localDataDisposition
+                        targetTransport
+                  )
               externalMaterialHandler =
                 externalMaterialIngressAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
@@ -1864,7 +1871,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     )
  where
   authority = lifecycleCheckpointAuthority coordinates
-  discoverProductionDecommissionPlan targetTransport = do
+  discoverProductionDecommissionPlan localDataDisposition targetTransport = do
     inventoryResult <- requestTargetDecommissionInventory targetTransport
     pure $ do
       inventory <- inventoryResult
@@ -1883,12 +1890,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             (Text.pack . show)
             ( mkDecommissionManifest
                 authorityIdentity
-                ( productionDecommissionSingletonPrefix
-                    ++ maybe
-                      []
-                      (\generation -> [TargetGeneration targetIdentity generation])
-                      (targetDecommissionInventoryGeneration inventory)
-                    ++ productionDecommissionSingletonSuffix
+                ( productionDecommissionPlanNodes
+                    localDataDisposition
+                    ( maybe
+                        []
+                        (\generation -> [TargetGeneration targetIdentity generation])
+                        (targetDecommissionInventoryGeneration inventory)
+                    )
                 )
             )
   resolveInitialAdmission registeredClients =
@@ -2304,23 +2312,6 @@ backupAdminActionCore client core = do
               digest
               (authorityBackupReceiptObjectVersion receipt)
           )
-
-productionDecommissionSingletonPrefix :: [DecommissionNode]
-productionDecommissionSingletonPrefix =
-  [ SesConsumerQuiescence
-  , SesProviderStack
-  , SesSmtpIam
-  ]
-
-productionDecommissionSingletonSuffix :: [DecommissionNode]
-productionDecommissionSingletonSuffix =
-  [ RetainedCustody
-  , TlsRetainedObjects
-  , TlsRetentionIdentity
-  , BackupObjects
-  , BackupPrefixAbsenceProof
-  , SharedObjectBucket
-  ]
 
 -- | The pre-aggregate projection namespace lives in the same retained MinIO
 -- store as the replacement aggregate.  Migration therefore changes only the

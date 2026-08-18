@@ -201,6 +201,10 @@ applyCommand state command = case command of
   ApplyAuthorityMigration _ -> state
   ApplyAuthorityMigrationImport _ -> state
   ApplyAuthorityForwardMigration _ -> state
+  -- Sprint 4.85: the provider-admission commands change the aggregate's
+  -- provider epoch, not this fixture's admission state.
+  BindProviderAdmissionGeneration _ -> state
+  FreezeProviderAdmissionForCascadeAudit _ -> state
 
 openedState :: AuthorityAdmissionState
 openedState =

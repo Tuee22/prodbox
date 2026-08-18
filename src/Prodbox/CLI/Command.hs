@@ -28,6 +28,8 @@ module Prodbox.CLI.Command
   , LintCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
+  , NukeLocalDataDisposition (..)
+  , parseNukeLocalDataDisposition
   , Plan (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -124,8 +126,34 @@ data NukeOptions = NukeOptions
   { nukeDryRun :: Bool
   , nukePlanFile :: Maybe FilePath
   , nukeReceiptPath :: Maybe FilePath
+  , nukeLocalDataDisposition :: Maybe NukeLocalDataDisposition
+  -- ^ Sprint 4.85: the operator's explicit retain-or-delete decision for the
+  -- retained local data root. It is 'Nothing' only so @--dry-run@ can render
+  -- the plan without one; apply refuses without it rather than defaulting,
+  -- because either default silently decides the fate of the retained data.
   }
   deriving (Eq, Show)
+
+-- | The parsed @--local-data@ argument. It is a distinct type from the
+-- lifecycle-owned decision so the CLI surface does not import decommission
+-- internals; 'Prodbox.CLI.Nuke' maps it across exactly once.
+data NukeLocalDataDisposition
+  = NukeRetainLocalData
+  | NukeDeleteLocalData
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Parse the operator-typed value. Total over the closed argument universe,
+-- so an unrecognized value is a refusal rather than a silent default.
+parseNukeLocalDataDisposition :: String -> Either String NukeLocalDataDisposition
+parseNukeLocalDataDisposition value = case value of
+  "retain" -> Right NukeRetainLocalData
+  "delete" -> Right NukeDeleteLocalData
+  _ ->
+    Left
+      ( "invalid --local-data value `"
+          ++ value
+          ++ "`; expected exactly `retain` or `delete`"
+      )
 
 data ChartsCommand
   = ChartsList

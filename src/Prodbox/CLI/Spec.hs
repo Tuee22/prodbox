@@ -86,6 +86,7 @@ import Prodbox.CLI.Command
   , VaultCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
+  , parseNukeLocalDataDisposition
   )
 import Prodbox.CLI.Output
   ( ColorMode (..)
@@ -639,6 +640,15 @@ parserForPath path =
                           <> metavar "ABSOLUTE_PATH"
                           <> help
                             "External durable receipt path (required for apply; optional for --dry-run)"
+                      )
+                  )
+                <*> optional
+                  ( option
+                      (eitherReader parseNukeLocalDataDisposition)
+                      ( long "local-data"
+                          <> metavar "retain|delete"
+                          <> help
+                            "Explicit disposition of the retained local data root (required for apply; optional for --dry-run)"
                       )
                   )
             )
@@ -2636,10 +2646,20 @@ nukeLeaf =
         Nothing
         "ABSOLUTE_PATH"
         "External durable receipt path (required for apply; optional for --dry-run)"
+    , optionalOption
+        "local-data"
+        Nothing
+        "retain|delete"
+        "Explicit disposition of the retained local data root (required for apply; optional for --dry-run)"
     ]
     [ example ["nuke", "--dry-run"] "Render the total-teardown plan."
     , example
-        ["nuke", "--receipt", "/operator/decommission/prodbox.receipt"]
+        [ "nuke"
+        , "--receipt"
+        , "/operator/decommission/prodbox.receipt"
+        , "--local-data"
+        , "delete"
+        ]
         "Run with an operator-owned receipt outside every deletion root."
     ]
 

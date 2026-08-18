@@ -1909,13 +1909,28 @@ accepts the exported manifest only for named decommission tombstones. The runner
 SMTP consumers and deletes/read-backs the external SMTP key/identity/policy plus non-credential
 SES/S3 family before Vault tombstones. Home Agent/Vault/Gateway/cert-manager and required
 control-plane Pods remain live through home record/Certificate/Challenge absence, every target
-SMTP/EAB generation tombstone, and the distinct retained-home SMTP/EAB custody tombstones; then the
-runner stops/uninstalls home control plane and optional `.data`. It deletes every TLS prefix object version and TLS identity/key without deleting
-the shared bucket. The final Authority-backup node deletes its objects/versions,
-`secret/aws/authority-backup-store` generation, key, identity/policy, proves every registered shared
-bucket prefix absent, and deletes the `pulumi_state_backend` bucket last. It then appends terminal
-absence and the required scoped tag sweep to the external receipt. It never requires or claims a
-backup receipt after backup deletion.
+SMTP/EAB generation tombstone, and the distinct retained-home SMTP/EAB custody tombstones. It
+deletes every TLS prefix object version and TLS identity/key without deleting the shared bucket. The
+final Authority-backup node deletes its objects/versions, `secret/aws/authority-backup-store`
+generation, key, identity/policy, proves every registered shared bucket prefix absent, and deletes
+the `pulumi_state_backend` bucket last.
+
+An **ordered terminal phase** then follows the last resource deletion, and every node of it is a
+node of the signed graph rather than a tail that runs after the runner returns. The required scoped
+tag sweep is first: it admits no retained carve-out, so it can only report the whole plan as
+converged once the shared bucket it would otherwise name as an escapee is gone. The home substrate
+uninstall follows the sweep, because the sweep — like the SMTP quiescence, target-generation, and
+retained-custody nodes before it — is answered through the plane the uninstall dismantles. Waiting on
+every other node is strictly stronger than requiring only that the home-plane-dependent nodes are
+terminal. The operator's explicit `.data` retain-or-delete disposition is last, after the uninstall
+that stopped writing to the root; the decision is a parameter of its signed manifest node, so it
+enters the manifest digest rather than arriving as a runtime flag, and a receipt opened for one
+decision cannot be resumed under the other. The terminal-receipt node closes the phase: it refuses
+unless the receipt's own committed frames already record every other plan node as durably terminal,
+so its success frame — appended through the same fsync/reopen/validate primitive as every other frame
+— is the record's own declaration that the run converged. Its read-back is read-only by construction
+and refuses a torn tail rather than repairing it, because it reads the very record it is a node of.
+The runner never requires or claims a backup receipt after backup deletion.
 The complete state boundary is canonical in
 [Lifecycle Control-Plane Architecture §11.1](./lifecycle_control_plane_architecture.md#111-total-decommission-and-the-final-backup-deletion).
 

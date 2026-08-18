@@ -6,6 +6,7 @@ module LifecycleTeardownOperationalCredentialInventory
 where
 
 import Data.ByteString qualified as ByteString
+import Data.List (sort)
 import Data.List.NonEmpty qualified as NonEmpty
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
@@ -48,7 +49,14 @@ import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   , coverageRegressionCheckpointTailCounted
   , coverageRegressionConsumersPrecedeAudit
   , coverageRegressionEveryConsumerReached
+  , dispositionRegressionAuditPredicateDiscriminates
+  , dispositionRegressionCascadeHasAudit
+  , dispositionRegressionMeasuredEqualsPublished
+  , dispositionRegressionOperationalSurfaceHasNoAudit
+  , dispositionRegressionSomeBlockersAreDerived
   , fixedOperationalCredentialCoverageRegression
+  , fixedOperationalCredentialDispositionRegression
+  , measuredOperationalCredentialDispositionBlockers
   , operationalCredentialCoverageViolations
   , validateOperationalCredentialCoverage
   )
@@ -141,6 +149,46 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                    , CanonicalTargetRevocationReadBackUnavailable
                    , LegacyOperationalIdentityReplacementUndefined
                    ]
+
+    -- Sprint 4.85: the list above is the stated reason OperationalTeardown has
+    -- no registered descriptors, and until now its only consumer was the case
+    -- above asserting it equals itself. A blocker that stopped being true would
+    -- have gone on justifying the same omission.
+    it "Sprint 4.85 recomputes the derivable blockers from their sources" $ do
+      measured <-
+        either
+          (\err -> expectationFailure (show err) >> pure [])
+          pure
+          measuredOperationalCredentialDispositionBlockers
+      sort measured
+        `shouldBe` sort
+          (NonEmpty.toList (operationalCredentialInventoryDispositionBlockers inventory))
+
+      -- Half the list is genuinely measured; the other half rests on a missing
+      -- constructor, which no value can witness, and says so.
+      [ blocker
+        | blocker <- [minBound .. maxBound]
+        , DerivedFromCompiledTeardownPrograms <- [dispositionBlockerEvidence blocker]
+        ]
+        `shouldBe` [ DispositionBeforeAuditConflictsWithLiveAuditCredential
+                   , AuditBeforeDispositionConflictsWithCurrentCascadeGraph
+                   ]
+      [ capability
+        | blocker <- [minBound .. maxBound]
+        , TypeLevelAbsence capability <- [dispositionBlockerEvidence blocker]
+        ]
+        `shouldBe` [minBound .. maxBound]
+
+    it "Sprint 4.85 the disposition join is discriminating, not vacuous" $ do
+      let regression = fixedOperationalCredentialDispositionRegression
+      dispositionRegressionMeasuredEqualsPublished regression `shouldBe` True
+      dispositionRegressionSomeBlockersAreDerived regression `shouldBe` True
+      -- The audit predicate finds the cascade audit, so "the operational
+      -- surface has no audit" is a measurement rather than a predicate that
+      -- never matches anything.
+      dispositionRegressionCascadeHasAudit regression `shouldBe` True
+      dispositionRegressionOperationalSurfaceHasNoAudit regression `shouldBe` True
+      dispositionRegressionAuditPredicateDiscriminates regression `shouldBe` True
 
     it "keeps the pre-cutover identity migration-required and distinct" $ do
       legacyOperationalIdentityPrincipal legacyOperationalIdentity

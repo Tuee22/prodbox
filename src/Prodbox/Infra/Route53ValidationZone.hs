@@ -27,6 +27,9 @@ module Prodbox.Infra.Route53ValidationZone
   ( validationHostedZoneNamePrefix
   , validationHostedZoneName
   , validationHostedZoneCallerReference
+  , validationHostedZoneTagPairs
+  , validationHostedZoneTagCommand
+  , bareHostedZoneId
   , createValidationHostedZone
   , deleteValidationHostedZone
   , discoverValidationHostedZones
@@ -43,6 +46,7 @@ import Data.ByteString.Lazy.Char8 qualified as LazyChar8
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.Lifecycle.OwnedResourceTags qualified as OwnedResourceTags
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -63,7 +67,29 @@ validationHostedZoneName nonce baseZoneName =
 validationHostedZoneCallerReference :: String -> String
 validationHostedZoneCallerReference nonce = validationHostedZoneNamePrefix ++ nonce
 
--- | Create the throwaway zone and return its hosted-zone id.
+-- | Create the throwaway zone, author its owned tags, and return its
+-- hosted-zone id.
+--
+-- Sprint 4.85: the zone was created carrying __no tag at all__. The terminal
+-- escape audit decides over what its tag queries return, so an untagged zone is
+-- returned by no query — a leaked billable hosted zone was structurally
+-- invisible to the audit that exists to find it, while a clean verdict read
+-- like a statement that it was gone. Route 53 hosted zones are taggable, the
+-- Resource Groups Tagging API returns them from the global-service region, and
+-- the registered IAM policy already grants @route53:ChangeTagsForResource@, so
+-- nothing but the missing call stood in the way.
+--
+-- The tag set comes from 'OwnedResourceTags.codeCreatedAwsResourceTags' rather
+-- than being written out here, so the writer and the audit's query catalog hold
+-- one value; @prodbox dev check@ fails if a family here is outside that
+-- catalog.
+--
+-- A tagging failure fails the create. The zone still exists at that point and
+-- is deliberately __not__ deleted here: discovery is by the
+-- 'validationHostedZoneNamePrefix' that is also its caller reference, so the
+-- always-run sweep still removes it. Reporting the failure and leaving a
+-- prefix-discoverable zone is strictly safer than reporting success with a zone
+-- the audit cannot see.
 createValidationHostedZone
   :: FilePath
   -> [(String, String)]
@@ -86,7 +112,108 @@ createValidationHostedZone repoRoot awsEnvironment zoneName callerReference = do
       , "--output"
       , "text"
       ]
-  pure (trim <$> createResult)
+  case trim <$> createResult of
+    Left err -> pure (Left err)
+    Right hostedZoneId -> do
+      tagged <- tagValidationHostedZone repoRoot awsEnvironment hostedZoneId
+      pure (hostedZoneId <$ tagged)
+
+-- | Author and read back the owned tags on one validation hosted zone.
+--
+-- The read-back is the point, for the same reason the delete has one: a
+-- @change-tags-for-resource@ that returns success while the tags are absent
+-- would leave the zone outside the audit's field of view while this function
+-- reported it inside.
+tagValidationHostedZone
+  :: FilePath
+  -> [(String, String)]
+  -> String
+  -> IO (Either String ())
+tagValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
+  tagResult <-
+    captureText
+      repoRoot
+      awsEnvironment
+      (validationHostedZoneTagCommand hostedZoneId)
+  case tagResult of
+    Left err ->
+      pure
+        ( Left
+            ( "Route 53 hosted zone "
+                ++ hostedZoneId
+                ++ " could not be tagged, so the terminal escape audit would "
+                ++ "never return it: "
+                ++ err
+            )
+        )
+    Right _ -> do
+      listed <-
+        captureText
+          repoRoot
+          awsEnvironment
+          [ "route53"
+          , "list-tags-for-resource"
+          , "--resource-type"
+          , "hostedzone"
+          , "--resource-id"
+          , bareHostedZoneId hostedZoneId
+          , "--output"
+          , "json"
+          ]
+      pure $ case listed of
+        Left err ->
+          Left
+            ( "Route 53 hosted zone "
+                ++ hostedZoneId
+                ++ " tags could not be read back: "
+                ++ err
+            )
+        Right rendered
+          | all (tagPresentIn rendered) validationHostedZoneTagPairs -> Right ()
+          | otherwise ->
+              Left
+                ( "Route 53 hosted zone "
+                    ++ hostedZoneId
+                    ++ " does not read back every owned tag after "
+                    ++ "change-tags-for-resource reported success."
+                )
+ where
+  tagPresentIn rendered (key, value) =
+    key `isInfixOf` rendered && value `isInfixOf` rendered
+
+-- | The exact @change-tags-for-resource@ invocation, as data, so a unit case
+-- can pin its shape without an AWS call.
+validationHostedZoneTagCommand :: String -> [String]
+validationHostedZoneTagCommand hostedZoneId =
+  [ "route53"
+  , "change-tags-for-resource"
+  , "--resource-type"
+  , "hostedzone"
+  , "--resource-id"
+  , bareHostedZoneId hostedZoneId
+  , "--add-tags"
+  ]
+    ++ [ "Key=" ++ key ++ ",Value=" ++ value
+       | (key, value) <- validationHostedZoneTagPairs
+       ]
+
+-- | The owned tag families this zone carries, as @String@ pairs.
+validationHostedZoneTagPairs :: [(String, String)]
+validationHostedZoneTagPairs =
+  [ (Text.unpack key, Text.unpack value)
+  | (key, value) <-
+      OwnedResourceTags.codeCreatedAwsResourceTags
+        OwnedResourceTags.DnsValidationHostedZone
+  ]
+
+-- | @create-hosted-zone@ returns @\/hostedzone\/ZONEID@, while the tagging
+-- API takes the bare id. Stripping the prefix here keeps every caller free to
+-- pass whichever form it holds.
+bareHostedZoneId :: String -> String
+bareHostedZoneId hostedZoneId =
+  case reverse (takeWhile (/= '/') (reverse hostedZoneId)) of
+    "" -> hostedZoneId
+    bare -> bare
 
 -- | Delete a zone and prove it absent. The read-back is the point: a
 -- @delete-hosted-zone@ that returns success while the zone survives (a retried

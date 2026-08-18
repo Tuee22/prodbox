@@ -3535,6 +3535,16 @@ executor, operation-ID allocator, or success interpretation in the validation la
   typed fake at this phase boundary.
 - Remove the old integration-harness `PRODBOX_TEST_RESIDUE_ABSENT` injection and assertions as the
   client cutover supplies exact fake observations; an ambient value must not select absence.
+- **Received from Sprint `4.84` on its closure (2026-08-17).** Convert the harness's cleanup callers
+  onto the exact-keyed selection Sprint `4.84` landed: `TestRunner` and
+  `Prodbox.Test.DurableCleanupComposition` still reach their targets through the surface- and
+  run-keyed creation slot and visible residue, and must reach them through
+  `selectRegisteredStackGenerationForCleanup` instead. This lands with the migration above rather
+  than in front of it, because converting these callers first would build the new selection on top of
+  the very composition this sprint deletes.
+- **Received from Sprint `4.85` on the same re-scope.** Delete `CapabilityBoundCleanupAction` and the
+  `TestRunner` composition around it. They are the validation harness's live cleanup path, so their
+  removal is this sprint's client migration and belongs nowhere earlier.
 
 ### Validation
 
@@ -3553,10 +3563,31 @@ executor, operation-ID allocator, or success interpretation in the validation la
 
 Register the lifecycle descriptor before config regeneration or any other mutating prefix; drive the
 descriptor-bound runner through the closed total dispatcher; preserve the structured primary and
-every cleanup result; and delete `ManagedCleanupPlan`/`DurableCleanupComposition` from the supported
-composition. Then run the prefix interruption/restart matrix and the installed frozen oracle. Do
-not treat the landed client library as the `TestRunner` cutover. Remove the ambient residue-absence
-fixture only through the same typed-observer cutover, not as an isolated test edit.
+every cleanup result; convert `TestRunner` and `DurableCleanupComposition` onto Sprint `4.84`'s
+exact-keyed selection; and delete `ManagedCleanupPlan`/`DurableCleanupComposition` and
+`CapabilityBoundCleanupAction` from the supported composition. Then run the prefix
+interruption/restart matrix and the installed frozen oracle. Do not treat the landed client library
+as the `TestRunner` cutover. Remove the ambient residue-absence fixture only through the same
+typed-observer cutover, not as an isolated test edit.
+
+A precondition measured on 2026-08-17 is worth carrying: the harness's cleanup graph sweeps nodes the
+compiled per-run program must be able to express before that graph is deleted. Two are still
+unexpressible, and both are gated mechanically rather than only recorded here.
+
+- **The `dns-aws` validation hosted zone.** Sprint `4.85` registered it, measured the consequence, and
+  withdrew the registration. A typed descriptor compiles a mandatory absence read-back, and no
+  production executor can discharge one for a Route 53 hosted zone — there is no
+  `ProviderIntent` that lists or deletes one — so registering it made the `Cascade` and
+  `ExplicitPerRun` programs unsatisfiable rather than making the zone swept.
+  `Prodbox.CheckCode.registeredTargetExecutorViolations` now fails the build on that shape. The
+  registration lands with its adapter in Sprint `7.36`; until then the only thing removing a billable
+  zone is the harness's own always-run node over
+  `src/Prodbox/Infra/Route53ValidationZone.hs`, so this sprint must not delete it.
+- **The `aws-operational-teardown` node.** Its `CleanupRequiresSuccess` edges implement Sprint
+  `7.10`'s credential-preservation rule, and `OperationalTeardown` projects zero registered targets
+  until Sprint `4.85` can register the `Operational` descriptors that
+  `OperationalCredentialDispositionBlocker` currently constrains. Deleting the harness graph before
+  then would drop that edge.
 
 ## Documentation Requirements
 

@@ -20,6 +20,9 @@ module Prodbox.Lifecycle.Decommission.Runner
   , validateReceiptSemantics
   , completedNodes
   , pendingAttempt
+  , DecommissionRunTerminalError (..)
+  , renderDecommissionRunTerminalError
+  , decommissionRunTerminalEvidence
   , DecommissionRunError (..)
   , BoundDecommissionRunError (..)
   , runDecommission
@@ -329,6 +332,70 @@ pendingAttempt :: DecommissionResume -> DecommissionNode -> Maybe DecommissionAt
 pendingAttempt resume node = case Map.lookup node (resumeNodeStates resume) of
   Just (ResumePending attempt) -> Just attempt
   _ -> Nothing
+
+-- | Sprint 4.85: why the durable record does not yet say the run converged.
+data DecommissionRunTerminalError
+  = -- | The receipt's committed history contradicts the runner state machine,
+    -- so nothing can be concluded from it.
+    TerminalReceiptSemanticsRefused !ReceiptSemanticError
+  | -- | These plan nodes have no durable terminal success frame.
+    TerminalReceiptNodesNotTerminal ![DecommissionNode]
+  | -- | The node asking the question is not in the plan it is asking about.
+    TerminalReceiptNodeOutsidePlan !DecommissionNode
+  deriving stock (Eq, Show)
+
+renderDecommissionRunTerminalError :: DecommissionRunTerminalError -> Text
+renderDecommissionRunTerminalError err = case err of
+  TerminalReceiptSemanticsRefused refusal ->
+    "the external receipt's committed history is semantically invalid: "
+      <> Text.pack (show refusal)
+  TerminalReceiptNodesNotTerminal nodes ->
+    "the external receipt records no terminal success for: "
+      <> Text.pack (show nodes)
+  TerminalReceiptNodeOutsidePlan node ->
+    "the terminal node "
+      <> Text.pack (show node)
+      <> " is not a member of the plan it reads"
+
+-- | Sprint 4.85: decide, from the receipt's committed frames alone, whether
+-- every node of the plan other than the asking node is durably terminal.
+--
+-- This is the whole content of the terminal-receipt node, and it is a function
+-- of the __durable record__ rather than of the runner's in-memory verdicts. The
+-- distinction is the point: @reportConverged@ exists only inside the process
+-- that produced it and dies with it, so a receipt that ends at the last node's
+-- result frame is byte-identical to one whose run crashed immediately after
+-- that frame. Nothing in the durable record said which happened.
+--
+-- The asking node is excluded because it cannot be terminal while it is
+-- deciding: at observation time the receipt holds its intent frame and no
+-- result. It is required to be a plan member so that a caller cannot obtain a
+-- vacuous verdict by asking about a node the plan never contained.
+--
+-- The same fold the runner resumes from is reused deliberately. A second
+-- traversal with its own notion of "terminal" could accept a history the
+-- runner would refuse to resume.
+decommissionRunTerminalEvidence
+  :: [DecommissionNode]
+  -> DecommissionNode
+  -> [DecommissionFrame DecommissionEntry]
+  -> Either DecommissionRunTerminalError ()
+decommissionRunTerminalEvidence planNodes terminalNode frames
+  | terminalNode `notElem` planNodes =
+      Left (TerminalReceiptNodeOutsidePlan terminalNode)
+  | otherwise = case validateReceiptSemantics frames of
+      Left refusal -> Left (TerminalReceiptSemanticsRefused refusal)
+      Right resume ->
+        let terminal = completedNodes resume
+            outstanding =
+              [ node
+              | node <- planNodes
+              , node /= terminalNode
+              , node `notElem` terminal
+              ]
+         in if null outstanding
+              then Right ()
+              else Left (TerminalReceiptNodesNotTerminal outstanding)
 
 -- | Run-plan failures are detected before the first new intent/effect.  A fresh
 -- attempt ID may not collide with any prior receipt attempt or another planned

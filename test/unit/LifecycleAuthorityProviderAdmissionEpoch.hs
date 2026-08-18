@@ -156,6 +156,28 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       providerAdmissionEpochRegressionInvalidGenerationRefused regression `shouldBe` True
       providerAdmissionEpochRegressionNonCanonicalBindingRefused regression `shouldBe` True
 
+    -- Sprint 4.85: the two transitions this module previously described as
+    -- absent. Every arm is a decision a caller could otherwise get wrong in a
+    -- way no type would catch.
+    it "Sprint 4.85 decides the freeze and generation-binding transition matrix" $ do
+      regression <- expectRightIO fixedProviderAdmissionFreezeRegression
+      -- A freeze must name the generation it fenced, or a later revoke cannot
+      -- prove which one it revoked.
+      freezeRegressionUnboundGenerationRefused regression `shouldBe` True
+      -- Freezing over pending work would fence the retries that settle it.
+      freezeRegressionPendingWorkRefused regression `shouldBe` True
+      freezeRegressionServingFreezes regression `shouldBe` True
+      -- A lost response must not burn a second reservation; a different
+      -- reservation must not silently replace the committed one.
+      freezeRegressionIdenticalFreezeIdempotent regression `shouldBe` True
+      freezeRegressionDifferentBindingRefused regression `shouldBe` True
+      freezeRegressionRevokedRefused regression `shouldBe` True
+      freezeRegressionGenerationBindIdempotent regression `shouldBe` True
+      freezeRegressionRebindDifferentGenerationRefused regression `shouldBe` True
+      -- The freeze fences every fresh submission except the one it reserved.
+      -- Fencing that one too would fence the audit the freeze exists to run.
+      freezeRegressionFrozenAdmitsOnlyReservation regression `shouldBe` True
+
     it "exports no generation, reservation, freeze transition, or receipt minter" $ do
       facade <-
         readFile

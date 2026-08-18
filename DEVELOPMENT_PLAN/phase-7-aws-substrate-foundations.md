@@ -5082,6 +5082,22 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
   kubeconfig materialization.
 - Implement exact provider backstops for registered controller families and mandatory post-destroy
   absence read-back.
+- **Received from Sprint `4.85` on 2026-08-17.** Supply the two registered-target executors the
+  production interpreter is missing, and only then register what depends on them.
+  `Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor.registeredTargetExecutorFor` is total over the
+  closed registry key enumeration and returns `NoProductionExecutor RetainedEbsFamilyAdapterUnbuilt`
+  for `aws-ebs-volumes-production-retained`: the interpreter's `VolumeFamily` arm is guarded on the
+  per-run EBS key, so the retained family has no exact observe, destroy, or absence read-back. The
+  `dns-aws` validation hosted zone has the same gap one step earlier — no `ProviderIntent` lists or
+  deletes a Route 53 hosted zone at all — so it is exempted from the typed registry rather than
+  registered, and its only sweep is the host-direct `aws` CLI owner
+  `src/Prodbox/Infra/Route53ValidationZone.hs`. Build both adapters as exact Provider intents,
+  register `dns-aws-validation-hosted-zone` in `Prodbox.Lifecycle.Teardown.Registry`, delete its
+  `Prodbox.CheckCode.untypedLifecycleInventoryExemptions` row, and delete the host-direct owner once
+  the compiled program sweeps the zone. Sprint `4.85`'s
+  `registeredTargetExecutorViolations` gate keeps the ordering mandatory: registering either target
+  before its adapter exists compiles a mandatory absence read-back that cannot succeed, which makes
+  the projecting surface's completion unreachable rather than making the resource swept.
 
 ### Validation
 

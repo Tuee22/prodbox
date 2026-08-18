@@ -163,6 +163,7 @@ import DecommissionControlPlaneClient (decommissionControlPlaneClientSuite)
 import DecommissionFrame (decommissionFrameSuite)
 import DecommissionGraph (decommissionGraphSuite)
 import DecommissionJournal (decommissionJournalSuite)
+import DecommissionLocalDataDisposition (decommissionLocalDataDispositionSuite)
 import DecommissionManifest (decommissionManifestSuite)
 import DecommissionNodeEffect (decommissionNodeEffectSuite)
 import DecommissionPermit (decommissionPermitSuite)
@@ -425,6 +426,7 @@ import Prodbox.CLI.Command
   , IntegrationSuite (..)
   , K8sCommand (..)
   , NativeCommand (..)
+  , NukeLocalDataDisposition (..)
   , NukeOptions (..)
   , PerRunPruneTarget (..)
   , PlanOptions (..)
@@ -439,6 +441,7 @@ import Prodbox.CLI.Command
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , buildPlan
+  , parseNukeLocalDataDisposition
   , runPlanWithOptions
   )
 import Prodbox.CLI.Docs
@@ -945,6 +948,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( consumeExternalAcmeEabIngressFrame
   , withExternalAcmeEabIngressFrame
   )
+import Prodbox.Lifecycle.Decommission.Manifest qualified as Manifest
+import Prodbox.Lifecycle.Decommission.ProgramTag qualified as DecommissionProgramTag
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.FederatedVault
   ( FederatedVaultLifecycle (..)
@@ -969,6 +974,7 @@ import Prodbox.Lifecycle.K8sDrain
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
+import Prodbox.Lifecycle.OwnedResourceTags qualified as OwnedResourceTags
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
@@ -989,6 +995,9 @@ import Prodbox.Lifecycle.TargetSinkVersion (targetSinkVersionValue)
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
   )
+import Prodbox.Lifecycle.Teardown.Model qualified as TeardownModel
+import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor qualified as TeardownExecutor
+import Prodbox.Lifecycle.Teardown.Registry qualified as TeardownRegistry
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
   , LogicalObject (..)
@@ -1887,6 +1896,7 @@ unitSuite = do
   decommissionGraphSuite
   decommissionJournalSuite
   decommissionManifestSuite
+  decommissionLocalDataDispositionSuite
   decommissionNodeEffectSuite
   decommissionPermitSuite
   decommissionProductionBoundariesSuite
@@ -5322,6 +5332,7 @@ unitSuite = do
                           { nukeDryRun = True
                           , nukePlanFile = Nothing
                           , nukeReceiptPath = Nothing
+                          , nukeLocalDataDisposition = Nothing
                           }
                       )
                   )
@@ -5339,6 +5350,7 @@ unitSuite = do
                           { nukeDryRun = False
                           , nukePlanFile = Nothing
                           , nukeReceiptPath = Nothing
+                          , nukeLocalDataDisposition = Nothing
                           }
                       )
                   )
@@ -5356,11 +5368,53 @@ unitSuite = do
                           { nukeDryRun = False
                           , nukePlanFile = Nothing
                           , nukeReceiptPath = Just "/operator/decommission/prodbox.receipt"
+                          , nukeLocalDataDisposition = Nothing
                           }
                       )
                   )
               )
           )
+
+    it "Sprint 4.85 routes nuke's required-on-apply retained-local-data decision" $ do
+      parseArgs ["nuke", "--local-data", "delete"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeNuke
+                      ( NukeOptions
+                          { nukeDryRun = False
+                          , nukePlanFile = Nothing
+                          , nukeReceiptPath = Nothing
+                          , nukeLocalDataDisposition = Just NukeDeleteLocalData
+                          }
+                      )
+                  )
+              )
+          )
+      parseArgs ["nuke", "--local-data", "retain"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeNuke
+                      ( NukeOptions
+                          { nukeDryRun = False
+                          , nukePlanFile = Nothing
+                          , nukeReceiptPath = Nothing
+                          , nukeLocalDataDisposition = Just NukeRetainLocalData
+                          }
+                      )
+                  )
+              )
+          )
+      -- The argument universe is closed: a near-miss is a refusal, never a
+      -- silent default over an irreversible decision.
+      parseArgs ["nuke", "--local-data", "Delete"] `shouldSatisfy` isLeft
+      parseArgs ["nuke", "--local-data", ""] `shouldSatisfy` isLeft
+      parseNukeLocalDataDisposition "retain" `shouldBe` Right NukeRetainLocalData
+      parseNukeLocalDataDisposition "delete" `shouldBe` Right NukeDeleteLocalData
+      parseNukeLocalDataDisposition "keep" `shouldSatisfy` isLeft
 
     it "routes cluster commands through the native Haskell runtime" $ do
       parseArgs ["cluster", "delete", "--yes"]
@@ -11126,8 +11180,296 @@ unitSuite = do
         `shouldSatisfy` (not . null)
       map snd Prodbox.CheckCode.untypedLifecycleInventoryExemptions
         `shouldSatisfy` all (not . null)
+      -- The exemption list and the typed registry are disjoint. Asserting the
+      -- property rather than one row is what survives a row moving between
+      -- them: `dns-aws-validation-hosted-zone` was briefly registered and is
+      -- exempt again until Sprint 7.36 supplies its Route 53 adapter.
       map fst Prodbox.CheckCode.untypedLifecycleInventoryExemptions
-        `shouldSatisfy` notElem "dns-aws-validation-hosted-zone"
+        `shouldSatisfy` all
+          ( \name ->
+              name
+                `notElem` [ Text.unpack
+                              ( TeardownModel.registeredResourceKeyText
+                                  (TeardownRegistry.managedResourceKey descriptor)
+                              )
+                          | TeardownRegistry.SomeManagedResourceDescriptor descriptor <-
+                              TeardownRegistry.managedResourceRegistry
+                          ]
+          )
+
+    -- Sprint 4.85: registering a descriptor adds a mandatory absence read-back
+    -- to every surface that projects it, so a descriptor with no production
+    -- executor makes that surface's completion structurally unreachable. The
+    -- gate is the join between the registry and the interpreter's dispatch.
+    it "Sprint 4.85 no registered target lacks an executor on a completing surface" $ do
+      Prodbox.CheckCode.registeredTargetExecutorViolations `shouldBe` []
+
+      -- Not vacuous in either direction. One registered descriptor genuinely
+      -- has no executor today, so the gate is being asked a real question.
+      let unexecutableKeys =
+            [ TeardownRegistry.managedResourceKey descriptor
+            | TeardownRegistry.SomeManagedResourceDescriptor descriptor <-
+                TeardownRegistry.managedResourceRegistry
+            , Left _ <-
+                [ TeardownExecutor.registeredTargetExecutorFor
+                    (TeardownRegistry.managedResourceKey descriptor)
+                ]
+            ]
+      unexecutableKeys `shouldBe` [TeardownModel.AwsEbsProductionRetainedKey]
+
+      -- And it passes for a reason rather than by accident: the retained EBS
+      -- family projects onto exactly the two surfaces that mint no completion
+      -- evidence, so no run can claim clean completion over its unreachable
+      -- read-back.
+      let retainedSurfaces =
+            [ surface
+            | surface <- [minBound .. maxBound]
+            , retained <-
+                [ TeardownRegistry.RegisteredManagedResource someDescriptor
+                | someDescriptor@(TeardownRegistry.SomeManagedResourceDescriptor descriptor) <-
+                    TeardownRegistry.managedResourceRegistry
+                , TeardownRegistry.managedResourceKey descriptor
+                    == TeardownModel.AwsEbsProductionRetainedKey
+                ]
+            , TeardownRegistry.cleanupSurfaceAllows surface retained
+            ]
+      retainedSurfaces
+        `shouldBe` [ TeardownModel.ExplicitLongLived
+                   , TeardownModel.TotalDecommission
+                   ]
+      map TeardownModel.cleanupSurfaceMintsCompletionEvidence retainedSurfaces
+        `shouldBe` [False, False]
+
+      -- The predicate is discriminating: the per-run surfaces do mint, which
+      -- is why the same gap would be a violation there.
+      map
+        TeardownModel.cleanupSurfaceMintsCompletionEvidence
+        [TeardownModel.Cascade, TeardownModel.ExplicitPerRun]
+        `shouldBe` [True, True]
+
+    -- Sprint 4.85 validation item 10: bidirectional parity across the complete
+    -- total-decommission universe. The two implementations of "total
+    -- decommission" had never been compared, and the comparison is the finding.
+    -- Sprint 4.85: a registered stack coordinate is only meaningful if a
+    -- provisioning program declares its Pulumi project. A registered stack with
+    -- no program can never be reconciled or destroyed, and its compiled
+    -- desired-absence nodes fail for a reason no report distinguishes from live
+    -- infrastructure.
+    it "Sprint 4.85 every registered stack has a provisioning program on disk" $ do
+      repoViolations <-
+        Prodbox.CheckCode.checkRegisteredStackProvisioningPrograms "."
+      repoViolations `shouldBe` []
+
+      -- The gate reads the `name:` Pulumi itself resolves rather than inferring
+      -- from the directory, because the two do not match: pulumi/aws-eks
+      -- provisions stack aws-eks-test.
+      Prodbox.CheckCode.pulumiProjectNameIn
+        "name: prodbox-aws-eks-test\nruntime: yaml\n"
+        `shouldBe` Just "prodbox-aws-eks-test"
+      Prodbox.CheckCode.pulumiProjectNameIn "runtime: yaml\n" `shouldBe` Nothing
+
+      -- Mutation exercise: the gate is discriminating, not vacuously empty. An
+      -- empty pulumi/ tree reports one violation per registered stack.
+      withSystemTempDirectory "prodbox-registered-stack-programs" $ \root -> do
+        createDirectoryIfMissing True (root </> "pulumi")
+        violations <-
+          Prodbox.CheckCode.checkRegisteredStackProvisioningPrograms root
+        length violations `shouldBe` 3
+        violations `shouldSatisfy` any ("prodbox-aws-eks-test" `isInfixOf`)
+
+    -- Sprint 4.85: the per-run stack names and the EKS cluster name are
+    -- projections of the typed registry, not independent constants. They were
+    -- authored in three modules, and the cluster name is the tag the EBS reaper
+    -- filters on and the coordinate controller ownership is derived from.
+    it "Sprint 4.85 stack and cluster names project from the typed registry" $ do
+      TeardownRegistry.awsEksPulumiStackName `shouldBe` "aws-eks-test"
+      TeardownRegistry.awsEksProvisionedClusterName `shouldBe` "aws-eks-test-cluster"
+      LiveResidue.awsEksTestStackName `shouldBe` "aws-eks-test"
+      LiveResidue.awsEksSubzoneStackName `shouldBe` "aws-eks-subzone"
+      LiveResidue.awsTestStackName `shouldBe` "aws-test"
+      AwsEks.awsEksCanonicalClusterName `shouldBe` "aws-eks-test-cluster"
+      -- The family's ownership tag is built from the EKS stack name, so "the
+      -- EKS stack owns this family" is true by construction rather than a claim
+      -- the ownership derivation has to discover.
+      TeardownRegistry.managedResourceCoordinate TeardownRegistry.awsEbsPerRunTestResource
+        `shouldBe` TeardownModel.AwsEbsPerRunFamilyCoordinate
+          "prodbox.io/lifecycle"
+          "per-run-test"
+          ( TeardownModel.clusterOwnershipTagPrefix
+              <> TeardownRegistry.awsEksProvisionedClusterName
+          )
+          TeardownModel.clusterOwnedTagValue
+
+    it "Sprint 4.85 total-decommission program tags agree with both implementations" $ do
+      DecommissionProgramTag.decommissionProgramTagParityViolations `shouldBe` []
+
+      -- Not vacuous: both images are measured from real sources and both are
+      -- non-empty, so the parity is being asked a real question.
+      compiledTags <-
+        either
+          (\err -> expectationFailure (show err) >> pure [])
+          pure
+          DecommissionProgramTag.measuredCompiledDecommissionTags
+      compiledTags `shouldSatisfy` (not . null)
+      DecommissionProgramTag.measuredRunnerDecommissionTags
+        `shouldSatisfy` (not . null)
+
+      -- The two universes were disjoint across all twenty-one tags. Sprint
+      -- 4.85 has closed four overlaps, each by moving an operation the
+      -- compiled program already emitted into the signed receipt graph: the
+      -- final no-retention audit (previously an out-of-band tail that ran
+      -- after the runner returned), the home-substrate uninstall (previously
+      -- run by nothing at all), the operator's retained-local-data disposition
+      -- (previously decided by nobody), and the terminal receipt (previously a
+      -- convergence fact that existed only in process memory).
+      filter
+        (`elem` DecommissionProgramTag.measuredRunnerDecommissionTags)
+        compiledTags
+        `shouldBe` [ DecommissionProgramTag.TotalDecommissionEscapeAuditTag
+                   , DecommissionProgramTag.HomeSubstrateUninstallTag
+                   , DecommissionProgramTag.LocalDataDispositionTag
+                   , DecommissionProgramTag.TerminalReceiptTag
+                   ]
+
+      -- Every compiled node carries an operation the semantic universe names;
+      -- the unmapped constructors are exactly the ones this surface never
+      -- emits, so an untagged compiled node would be a violation above. All
+      -- four terminal operations are now two-sided; the remaining one-sided
+      -- tags are the registered-target work (compiled-only) and the SES / TLS /
+      -- backup / shared-bucket families (runner-only).
+      map
+        DecommissionProgramTag.decommissionProgramTagImplementation
+        compiledTags
+        `shouldSatisfy` all
+          ( `elem`
+              [ DecommissionProgramTag.CompiledProgramOnly
+              , DecommissionProgramTag.CompiledProgramAndRunner
+              ]
+          )
+      filter
+        ( (== DecommissionProgramTag.CompiledProgramAndRunner)
+            . DecommissionProgramTag.decommissionProgramTagImplementation
+        )
+        [minBound .. maxBound]
+        `shouldBe` [ DecommissionProgramTag.TotalDecommissionEscapeAuditTag
+                   , DecommissionProgramTag.HomeSubstrateUninstallTag
+                   , DecommissionProgramTag.LocalDataDispositionTag
+                   , DecommissionProgramTag.TerminalReceiptTag
+                   ]
+
+      -- Together the two images cover the whole declared universe, so no tag
+      -- is declared that neither side produces. The shared tag appears in
+      -- both, so the union rather than the concatenation is the universe.
+      sort (nub (compiledTags ++ DecommissionProgramTag.measuredRunnerDecommissionTags))
+        `shouldBe` sort [minBound .. maxBound]
+
+    it "Sprint 4.85 the runner's terminal-phase order is the compiled program's" $ do
+      -- The signed graph and the compiled TotalDecommission program both state
+      -- an order over the same semantic operations, and each simply asserted
+      -- one. This is the join: the audit proves what the deletions achieved,
+      -- the home uninstall dismantles the plane the earlier nodes were
+      -- answered through, and the operator's retained-local-data disposition
+      -- follows the uninstall that stopped writing to the root.
+      DecommissionProgramTag.decommissionTerminalPhaseOrderViolations
+        `shouldBe` []
+
+      -- Not vacuous, and two-sided: the compiled program orders the audit
+      -- before the uninstall and does not order the reverse, so an unordered
+      -- pair cannot read as ordered.
+      DecommissionProgramTag.compiledDecommissionTagPrecedes
+        DecommissionProgramTag.TotalDecommissionEscapeAuditTag
+        DecommissionProgramTag.HomeSubstrateUninstallTag
+        `shouldBe` True
+      DecommissionProgramTag.compiledDecommissionTagPrecedes
+        DecommissionProgramTag.HomeSubstrateUninstallTag
+        DecommissionProgramTag.TotalDecommissionEscapeAuditTag
+        `shouldBe` False
+      DecommissionProgramTag.compiledDecommissionTagPrecedes
+        DecommissionProgramTag.HomeSubstrateUninstallTag
+        DecommissionProgramTag.LocalDataDispositionTag
+        `shouldBe` True
+      DecommissionProgramTag.compiledDecommissionTagPrecedes
+        DecommissionProgramTag.LocalDataDispositionTag
+        DecommissionProgramTag.HomeSubstrateUninstallTag
+        `shouldBe` False
+      -- A tag the compiled program never emits precedes nothing, rather than
+      -- vacuously preceding everything.
+      DecommissionProgramTag.compiledDecommissionTagPrecedes
+        DecommissionProgramTag.SharedObjectBucketTag
+        DecommissionProgramTag.HomeSubstrateUninstallTag
+        `shouldBe` False
+
+    it "Sprint 4.85 the signed interpreter registry is derived from the tag universe" $ do
+      -- The interpreter registry identity is digested into VerifierMetadata and
+      -- signed into the manifest, so the operator's signature covers which
+      -- interpreters the runner was built with. It was a hand-authored list of
+      -- ten strings beside a `case` of the same ten, joined to neither each
+      -- other nor the node universe: a node implemented with a new interpreter
+      -- would have been absent from the signed identity while a manifest naming
+      -- it still verified.
+      DecommissionProgramTag.decommissionInterpreterIdentityViolations
+        `shouldBe` []
+
+      -- Not vacuous: the join is discriminating in both directions. Every tag
+      -- the runner implements names an interpreter, and every tag it does not
+      -- names none -- so the registry cannot advertise an interpreter no
+      -- manifest node reaches.
+      [ tag
+        | tag <- [minBound .. maxBound]
+        , DecommissionProgramTag.decommissionRunnerInterpretsTag tag
+        ]
+        `shouldBe` DecommissionProgramTag.measuredRunnerDecommissionTags
+      map
+        DecommissionProgramTag.decommissionRunnerInterpreterIdentity
+        DecommissionProgramTag.measuredRunnerDecommissionTags
+        `shouldSatisfy` all isJust
+      [ DecommissionProgramTag.decommissionRunnerInterpreterIdentity tag
+        | tag <- [minBound .. maxBound]
+        , not (DecommissionProgramTag.decommissionRunnerInterpretsTag tag)
+        ]
+        `shouldSatisfy` all isNothing
+
+      -- The derivation is what carried the Sprint-4.85 terminal audit into the
+      -- signed identity: the runner gained its first escape-audit interpreter,
+      -- so this list and the digest over it genuinely changed, and
+      -- 'nukeInterpreterRegistryVersion' was bumped in the same change. It has
+      -- since carried the home uninstall and the retained-local-data
+      -- disposition the same way, taking the version to 4. A receipt signed
+      -- under an earlier version must not verify against this runner.
+      DecommissionProgramTag.decommissionRunnerInterpreterRegistry
+        `shouldBe` [ "total-decommission-escape-audit-v1"
+                   , "home-substrate-uninstall-v1"
+                   , "local-data-disposition-v1"
+                   , "terminal-receipt-v1"
+                   , "ses-consumer-quiescence-v1"
+                   , "ses-provider-stack-v1"
+                   , "ses-smtp-iam-v1"
+                   , "target-generation-v1"
+                   , "retained-custody-v1"
+                   , "tls-retained-objects-v1"
+                   , "tls-retention-identity-v1"
+                   , "backup-prefix-absence-proof-v1"
+                   , "backup-objects-identity-v1"
+                   , "shared-object-bucket-v1"
+                   ]
+      Nuke.nukeInterpreterRegistryIdentity
+        `shouldBe` BS8.unlines
+          [ "prodbox-decommission-interpreter-registry-v1"
+          , "total-decommission-escape-audit-v1"
+          , "home-substrate-uninstall-v1"
+          , "local-data-disposition-v1"
+          , "terminal-receipt-v1"
+          , "ses-consumer-quiescence-v1"
+          , "ses-provider-stack-v1"
+          , "ses-smtp-iam-v1"
+          , "target-generation-v1"
+          , "retained-custody-v1"
+          , "tls-retained-objects-v1"
+          , "tls-retention-identity-v1"
+          , "backup-prefix-absence-proof-v1"
+          , "backup-objects-identity-v1"
+          , "shared-object-bucket-v1"
+          ]
 
     it "Sprint 4.84 the effect-bearing registry agrees with the flat inventory" $ do
       ResourceRegistry.effectRegistryLifecycleClassViolations `shouldBe` []
@@ -11361,7 +11703,10 @@ unitSuite = do
       let plan = Nuke.renderNukePlan "/repo"
       plan `shouldContain` "PROTOCOL=signed-external-decommission-v1"
       plan `shouldContain` "RECEIPT=durable intent before every effect"
-      plan `shouldContain` "NODE=shared-object-bucket (unique terminal)"
+      plan `shouldContain` "NODE=total-decommission-escape-audit"
+      plan `shouldContain` "NODE=home-substrate-uninstall"
+      plan `shouldContain` "NODE=local-data-disposition (<required-for-apply>)"
+      plan `shouldContain` "NODE=terminal-receipt (unique terminal)"
 
   -- Sprint 5.6: the three destructive `--dry-run` goldens (audit V80 found
   -- them missing). Each golden pins the exact planned step list a
@@ -11421,9 +11766,34 @@ unitSuite = do
       nukeGolden <- readFile "test/golden/destructive/nuke.txt"
       nukeGolden `shouldContain` "PROTOCOL=signed-external-decommission-v1"
       nukeGolden `shouldContain` "NODE=ses-consumer-quiescence"
-      nukeGolden `shouldContain` "NODE=target-generation (one per signed manifest target)"
-      nukeGolden `shouldContain` "NODE=shared-object-bucket (unique terminal)"
+      nukeGolden
+        `shouldContain` "NODE=target-generation-tombstone (one per signed manifest target)"
+      nukeGolden `shouldContain` "NODE=total-decommission-escape-audit"
+      -- Sprint 4.85: the home uninstall is no longer the terminal node -- the
+      -- operator's retained-local-data disposition follows it -- and the
+      -- terminal note moved with the derived order rather than being edited.
+      nukeGolden `shouldContain` "NODE=home-substrate-uninstall\n"
       nukeGolden `shouldNotContain` "STEP=1 prodbox aws stack aws-ses destroy"
+      -- Sprint 4.85: `--dry-run` renders the plan with no operator decision
+      -- supplied, and the disposition node says so rather than showing a
+      -- default. A default would make the artifact that authorizes the run
+      -- assert a decision nobody made.
+      nukeGolden `shouldContain` "LOCAL_DATA=<required-for-apply>"
+      nukeGolden `shouldContain` "NODE=local-data-disposition (<required-for-apply>)\n"
+      -- The terminal note moved again, to the node the derived order now ends
+      -- with. It is derived, so the plan followed without being edited.
+      nukeGolden `shouldContain` "NODE=terminal-receipt (unique terminal)"
+      -- Sprint 4.85: the plan's node lines are derived from the inventory the
+      -- Authority signs, so a node added to that inventory reaches the artifact
+      -- the operator approves. Previously they were a sixth authored copy of
+      -- the node universe and a node could be destroyed without appearing here.
+      mapM_ (shouldContain nukeGolden) (Nuke.nukePlanNodeLines Nothing)
+      length (Nuke.nukePlanNodeLines Nothing) `shouldBe` 14
+      -- The rendered decision is the operator's, not a constant.
+      Nuke.nukePlanNodeLines (Just Manifest.DeleteLocalData)
+        `shouldContain` ["NODE=local-data-disposition (delete)"]
+      Nuke.nukePlanNodeLines (Just Manifest.RetainLocalData)
+        `shouldContain` ["NODE=local-data-disposition (retain)"]
 
   describe "Sprint 4.26 checkPlanOptionsHonored lint" $ do
     it "fires when Rke2Delete binds its PlanOptions to a _ wildcard" $ do
@@ -16487,6 +16857,43 @@ unitSuite = do
       Route53ValidationZone.parseHostedZoneListing "not json"
         `shouldSatisfy` either (const True) (const False)
 
+    -- Sprint 4.85: the zone is billable and was created carrying no tag at
+    -- all, so the terminal escape audit returned it from no query — a leaked
+    -- zone was structurally invisible to the audit that exists to find it.
+    it "Sprint 4.85 authors owned tags the terminal audit actually queries" $ do
+      Prodbox.CheckCode.codeCreatedResourceFieldOfViewViolations `shouldBe` []
+
+      -- Not vacuous: the zone authors a real family, and it is the one the
+      -- catalog matches as an exact pair.
+      OwnedResourceTags.dnsValidationHostedZoneTags
+        `shouldSatisfy` elem OwnedResourceTags.prodboxManagedByTag
+      OwnedResourceTags.codeCreatedAwsResourceTags
+        OwnedResourceTags.DnsValidationHostedZone
+        `shouldBe` OwnedResourceTags.dnsValidationHostedZoneTags
+
+      -- It must classify as an escapee if it leaks, so it carries none of the
+      -- retention markers the audit's carve-out keys on.
+      map fst OwnedResourceTags.dnsValidationHostedZoneTags
+        `shouldSatisfy` all (`notElem` ["prodbox.io/role", "prodbox.io/substrate"])
+
+    it "Sprint 4.85 tags the zone through the bare id the tagging API takes" $ do
+      -- create-hosted-zone returns /hostedzone/ZONEID; the tagging API takes
+      -- the bare id, and passing the returned form would fail at the boundary.
+      Route53ValidationZone.bareHostedZoneId "/hostedzone/Z123ABC" `shouldBe` "Z123ABC"
+      Route53ValidationZone.bareHostedZoneId "Z123ABC" `shouldBe` "Z123ABC"
+      Route53ValidationZone.validationHostedZoneTagCommand "/hostedzone/Z123ABC"
+        `shouldBe` [ "route53"
+                   , "change-tags-for-resource"
+                   , "--resource-type"
+                   , "hostedzone"
+                   , "--resource-id"
+                   , "Z123ABC"
+                   , "--add-tags"
+                   , "Key=prodbox.io/managed-by,Value=prodbox"
+                   , "Key=prodbox.io/lifecycle,Value=per-run"
+                   , "Key=prodbox.io/purpose,Value=dns-validation-zone"
+                   ]
+
     it "derives the zone name and caller reference from one prefix" $ do
       Route53ValidationZone.validationHostedZoneName "abc" "example.invalid"
         `shouldBe` "prodbox-dns-aws-abc.example.invalid"
@@ -17775,7 +18182,13 @@ unitSuite = do
       plan `shouldContain` "GATE=create/fsync/read-back external receipt"
       plan `shouldContain` "NODE=ses-consumer-quiescence"
       plan `shouldContain` "NODE=tls-retained-objects"
-      plan `shouldContain` "NODE=shared-object-bucket (unique terminal)"
+      plan `shouldContain` "NODE=total-decommission-escape-audit"
+      plan `shouldContain` "NODE=home-substrate-uninstall"
+      -- Sprint 4.85: apply requires an explicit retain-or-delete decision, and
+      -- `--dry-run` renders the requirement rather than a default.
+      plan `shouldContain` "LOCAL_DATA=<required-for-apply>"
+      plan `shouldContain` "NODE=local-data-disposition (<required-for-apply>)"
+      plan `shouldContain` "NODE=terminal-receipt (unique terminal)"
       plan
         `shouldContain` "ADMIN_CREDENTIAL_SOURCE=one ephemeral admin AWS credential from the interactive prompt; never persisted"
       plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
@@ -17810,6 +18223,13 @@ unitSuite = do
       source <- readFile "src/Prodbox/CLI/Nuke.hs"
       source `shouldContain` "discoverClusterTaggedAwsResources"
       source `shouldContain` "TagSweepNuke"
+      -- Sprint 4.85: the sweep is no longer an out-of-band tail that ran after
+      -- the runner returned success. It is the read-back half of the receipt
+      -- graph's terminal node, so a crash or a lost response resumes through
+      -- the manifest instead of leaving a converged-on-paper run whose only
+      -- no-escape proof was never taken.
+      source `shouldNotContain` "runNukeTerminalTagSweep"
+      source `shouldContain` "productionFinalNoRetentionAuditCapability"
 
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches the Pulumi stack descriptor SSoT" $

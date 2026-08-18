@@ -25,7 +25,8 @@ import Prodbox.Lifecycle.Decommission.Graph
   , reportConverged
   )
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionNode (..)
+  ( DecommissionLocalDataDisposition (DeleteLocalData)
+  , DecommissionNode (..)
   , DecommissionTargetGeneration
   , VerifiedDecommissionManifest
   , decommissionManifestDigest
@@ -465,19 +466,79 @@ decommissionRunnerSuite =
             )
         )
         `shouldBe` Left (ReceiptAttemptAfterSuccess 3 SesProviderStack)
+
+    it "Sprint 4.85 decides run convergence from the durable record alone" $ do
+      -- The receipt records each node's intent, observation, and result and
+      -- never recorded that the RUN converged: a receipt ending at the last
+      -- node's result frame is byte-identical to one whose run crashed
+      -- immediately after that frame, and `reportConverged` dies with the
+      -- process that produced it. This is the missing fact, decided from the
+      -- committed frames.
+      let others = filter (/= DecommissionTerminalReceipt) fullInventory
+          terminalIntent =
+            [
+              ( mkAttempt DecommissionTerminalReceipt "terminal-attempt"
+              , DecommissionIntent DecommissionTerminalReceipt
+              )
+            ]
+          framesFor nodes =
+            receiptFrames (concatMap successfulEvents nodes ++ terminalIntent)
+      -- At observation time the receipt holds this node's intent and no
+      -- result, so the asking node is excluded rather than demanded.
+      decommissionRunTerminalEvidence
+        fullInventory
+        DecommissionTerminalReceipt
+        (framesFor others)
+        `shouldBe` Right ()
+      -- One node short of terminal and the verdict names exactly that node.
+      decommissionRunTerminalEvidence
+        fullInventory
+        DecommissionTerminalReceipt
+        (framesFor (filter (/= SharedObjectBucket) others))
+        `shouldBe` Left (TerminalReceiptNodesNotTerminal [SharedObjectBucket])
+      -- A node whose only frames are an intent and a failed result is not
+      -- terminal, so a failed run cannot mint convergence.
+      let failedBucket =
+            let attempt = mkAttempt SharedObjectBucket "failed-bucket"
+             in [ (attempt, DecommissionIntent SharedObjectBucket)
+                , (attempt, DecommissionNodeResult SharedObjectBucket (NodeDestroyFailed "boom"))
+                ]
+      decommissionRunTerminalEvidence
+        fullInventory
+        DecommissionTerminalReceipt
+        ( receiptFrames
+            ( concatMap successfulEvents (filter (/= SharedObjectBucket) others)
+                ++ failedBucket
+                ++ terminalIntent
+            )
+        )
+        `shouldBe` Left (TerminalReceiptNodesNotTerminal [SharedObjectBucket])
+      -- A caller cannot obtain a vacuous verdict by asking about a node the
+      -- plan never contained.
+      decommissionRunTerminalEvidence
+        others
+        DecommissionTerminalReceipt
+        (framesFor others)
+        `shouldBe` Left (TerminalReceiptNodeOutsidePlan DecommissionTerminalReceipt)
+      -- A history the runner would refuse to resume cannot support a terminal
+      -- verdict either: the same fold decides both.
+      decommissionRunTerminalEvidence
+        fullInventory
+        DecommissionTerminalReceipt
+        ( receiptFrames
+            [
+              ( mkAttempt SesProviderStack "reused"
+              , DecommissionNodeResult SesProviderStack NodeDestroyed
+              )
+            ]
+        )
+        `shouldSatisfy` isSemanticsRefusal
  where
-  fullInventory =
-    [ SesConsumerQuiescence
-    , SesProviderStack
-    , SesSmtpIam
-    , targetNode
-    , RetainedCustody
-    , TlsRetainedObjects
-    , TlsRetentionIdentity
-    , BackupPrefixAbsenceProof
-    , BackupObjects
-    , SharedObjectBucket
-    ]
+  fullInventory = runnerFullInventory
+
+  isSemanticsRefusal result = case result of
+    Left (TerminalReceiptSemanticsRefused _) -> True
+    _ -> False
 
   freshAttemptId node =
     mustFrameAttemptId ("attempt-" <> Text.pack (show (fromJust (elemIndex node fullInventory))))
@@ -604,20 +665,33 @@ assertStableIdentity (attempt, entry) = do
  where
   freshAttemptIdForEntry current =
     let node = entryNode current
-        inventory =
-          [ SesConsumerQuiescence
-          , SesProviderStack
-          , SesSmtpIam
-          , targetNode
-          , RetainedCustody
-          , TlsRetainedObjects
-          , TlsRetentionIdentity
-          , BackupPrefixAbsenceProof
-          , BackupObjects
-          , SharedObjectBucket
-          ]
      in mustFrameAttemptId
-          ("attempt-" <> Text.pack (show (fromJust (elemIndex node inventory))))
+          ("attempt-" <> Text.pack (show (fromJust (elemIndex node runnerFullInventory))))
+
+-- | The closed node inventory every runner fixture indexes attempts against.
+--
+-- Sprint 4.85: one value rather than two identical literals in two scopes. The
+-- crash/response-loss case iterates it, so a node added to the manifest
+-- universe is covered by the resume proofs by construction -- which is the
+-- precondition the deletion ledger sets for moving an out-of-band terminal
+-- effect into this graph.
+runnerFullInventory :: [DecommissionNode]
+runnerFullInventory =
+  [ SesConsumerQuiescence
+  , SesProviderStack
+  , SesSmtpIam
+  , targetNode
+  , RetainedCustody
+  , TlsRetainedObjects
+  , TlsRetentionIdentity
+  , BackupPrefixAbsenceProof
+  , BackupObjects
+  , SharedObjectBucket
+  , FinalNoRetentionAudit
+  , HomeSubstrateUninstall
+  , LocalDataDisposition DeleteLocalData
+  , DecommissionTerminalReceipt
+  ]
 
 targetNode :: DecommissionNode
 targetNode = TargetGeneration "vscode" targetGeneration

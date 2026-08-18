@@ -133,6 +133,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , RegisteredResourceKey
   , RegistryRevision (..)
   , cleanupSurfaceFromWitness
+  , clusterOwnershipTagPrefix
   , registeredResourceKeyText
   )
 import Prodbox.Lifecycle.Teardown.Observation
@@ -690,16 +691,8 @@ terminalAuditQueryCatalog binding =
     , AuditQueryTagKey "prodbox.io/role"
     , AuditQueryTagKey "prodbox.io/substrate"
     , AuditQueryTagKey "prodbox.io/lifecycle"
-    , AuditQueryTagKey ("kubernetes.io/cluster/" <> internalClusterTagName binding)
+    , AuditQueryTagKey (clusterOwnershipTagPrefix <> internalClusterTagName binding)
     ]
-
--- | The per-run Kubernetes cluster-ownership tag family.
---
--- Its full key embeds the cluster name, which the query catalog binds at run
--- time and a provisioning program templates, so key equality is the wrong
--- relation for this one family and prefix membership is the right one.
-clusterOwnershipTagPrefix :: Text
-clusterOwnershipTagPrefix = "kubernetes.io/cluster/"
 
 -- | Would the audit\'s query catalog return a resource carrying this tag?
 --

@@ -128,6 +128,7 @@ decommissionControlPlaneClientSuite =
           client
           manifestSignerDigest
           verifier
+          DeleteLocalData
       result `shouldBe` Right verifiedManifest
       readIORef observedUrl
         `shouldReturn` Just
@@ -259,6 +260,7 @@ decommissionControlPlaneClientSuite =
           authorityClient
           manifestSignerDigest
           verifier
+          DeleteLocalData
       authorityResult
         `shouldBe` Left
           ( AuthorityDecommissionHttpStatus
@@ -398,7 +400,7 @@ authorityRepository :: AuthorityDecommissionExportRepository IO
 authorityRepository =
   AuthorityDecommissionExportRepository
     { freezeAuthorityAdmission = pure (Right ())
-    , readAuthorityDecommissionPlan = pure (Right manifest)
+    , readAuthorityDecommissionPlan = \_localDataDisposition -> pure (Right manifest)
     , commitAuthorityDecommissionManifest = const (pure (Right ()))
     }
 

@@ -129,3 +129,7 @@ documents/engineering/tla/states/
 # Chart platform retained storage (host-path data; never committed)
 .data/
 .prodbox-state/
+
+# hie-bios/HLS generates these repl wrapper scripts at runtime; one was
+# accidentally committed. They are never repository inputs.
+repl-wrapper-*

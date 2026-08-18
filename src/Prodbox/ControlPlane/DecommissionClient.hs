@@ -61,7 +61,8 @@ import Prodbox.Lifecycle.Decommission.AuthorityStop
   )
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( SignedManifestVerificationError
+  ( DecommissionLocalDataDisposition
+  , SignedManifestVerificationError
   , VerifiedDecommissionManifest
   , decommissionTargetGenerationValue
   , verifiedSignedManifest
@@ -133,12 +134,13 @@ requestAuthorityDecommissionManifest
   -> ControlPlaneClient 'LifecycleAuthorityRuntime
   -> FrameDigest
   -> VerifierBinding
+  -> DecommissionLocalDataDisposition
   -> IO
        ( Either
            AuthorityDecommissionClientError
            VerifiedDecommissionManifest
        )
-requestAuthorityDecommissionManifest bounds providers client expectedSigner verifier = do
+requestAuthorityDecommissionManifest bounds providers client expectedSigner verifier localData = do
   attempted <-
     callAuthenticatedControlPlane
       bounds
@@ -146,7 +148,9 @@ requestAuthorityDecommissionManifest bounds providers client expectedSigner veri
       client
       LifecycleAuthorityDecommissionExportRoute
       ( LazyByteString.toStrict
-          (encodeControlPlaneRequest (AuthorityDecommissionExportRequest verifier))
+          ( encodeControlPlaneRequest
+              (AuthorityDecommissionExportRequest verifier localData)
+          )
       )
   pure (decodeManifestResponse expectedSigner attempted)
 
@@ -154,18 +158,21 @@ requestAuthorityDecommissionManifestViaTransport
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> FrameDigest
   -> VerifierBinding
+  -> DecommissionLocalDataDisposition
   -> IO
        ( Either
            AuthorityDecommissionClientError
            VerifiedDecommissionManifest
        )
-requestAuthorityDecommissionManifestViaTransport transport expectedSigner verifier = do
+requestAuthorityDecommissionManifestViaTransport transport expectedSigner verifier localData = do
   attempted <-
     callAuthenticatedClientTransport
       transport
       LifecycleAuthorityDecommissionExportRoute
       ( LazyByteString.toStrict
-          (encodeControlPlaneRequest (AuthorityDecommissionExportRequest verifier))
+          ( encodeControlPlaneRequest
+              (AuthorityDecommissionExportRequest verifier localData)
+          )
       )
   pure (decodeManifestResponse expectedSigner attempted)
 

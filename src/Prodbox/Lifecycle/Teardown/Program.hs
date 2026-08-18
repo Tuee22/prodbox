@@ -37,6 +37,11 @@ import Data.List (partition)
 import Data.Text (Text)
 import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Lifecycle.Teardown.Model
+import Prodbox.Lifecycle.Teardown.OwnershipManifest
+  ( ownershipEdgeResourceKey
+  , ownershipEdgeStackKey
+  , registeredOwnershipEdges
+  )
 import Prodbox.Lifecycle.Teardown.RecoveryCapability
   ( RecoveryCapabilitySet
   , mergeRecoveryCapabilitySets
@@ -595,7 +600,7 @@ eksStackFinalNodes allTargets target =
         , success (awsStackReaderReadBackName target)
         , success (eksDrainReadBackName target)
         ]
-          ++ eksBackstopSuccessDependencies allTargets
+          ++ eksBackstopSuccessDependencies allTargets target
       )
   , programNode
       (targetReadBackName target)
@@ -611,30 +616,50 @@ eksStackFinalNodes allTargets target =
       [attempt (checkpointRetirementName target)]
   ]
 
--- | Controller-family backstops run after the EKS drain node was attempted,
--- including when that node refused or lost its response.  They are not
--- suppressed by an EKS observation or drain failure.
+-- | Controller-family backstops run after their owning stack's drain node was
+-- attempted, including when that node refused or lost its response.  They are
+-- not suppressed by an observation or drain failure.
+--
+-- The pair of keys was hand-authored on both sides of this relation until
+-- Sprint @4.85@ derived it: which stack's controllers own a family is a
+-- registry fact, recorded once as 'registeredOwnershipEdges' and read here
+-- rather than restated.  The write-ahead ownership manifest reads the same
+-- relation, so the manifest a stack may seed and the order its destroy waits
+-- on cannot disagree.
 controllerBackstopDependencies
   :: [RegisteredTargetBinding]
   -> RegisteredTargetBinding
   -> [ProgramDependency]
-controllerBackstopDependencies allTargets target
-  | registeredTargetKey target /= AwsEbsPerRunTestKey = []
-  | otherwise =
-      [ attempt (eksDrainName eksTarget)
-      | eksTarget <- allTargets
-      , registeredTargetKey eksTarget == AwsEksKey
-      ]
+controllerBackstopDependencies allTargets target =
+  [ attempt (eksDrainName ownerTarget)
+  | ownerTarget <- allTargets
+  , registeredTargetKey ownerTarget `elem` owningStackKeys (registeredTargetKey target)
+  ]
 
--- | The EKS stack itself cannot be destroyed until every registered
--- controller-owned family that can outlive it has independently converged.
+-- | A registered stack cannot be destroyed until every controller-owned family
+-- it owns — each of which can outlive it — has independently converged.
 eksBackstopSuccessDependencies
   :: [RegisteredTargetBinding]
+  -> RegisteredTargetBinding
   -> [ProgramDependency]
-eksBackstopSuccessDependencies allTargets =
+eksBackstopSuccessDependencies allTargets owner =
   [ success (targetReadBackName backstop)
   | backstop <- allTargets
-  , registeredTargetKey backstop == AwsEbsPerRunTestKey
+  , registeredTargetKey backstop `elem` ownedFamilyKeys (registeredTargetKey owner)
+  ]
+
+owningStackKeys :: RegisteredResourceKey -> [RegisteredResourceKey]
+owningStackKeys resourceKey =
+  [ ownershipEdgeStackKey edge
+  | edge <- registeredOwnershipEdges
+  , ownershipEdgeResourceKey edge == resourceKey
+  ]
+
+ownedFamilyKeys :: RegisteredResourceKey -> [RegisteredResourceKey]
+ownedFamilyKeys stackKey =
+  [ ownershipEdgeResourceKey edge
+  | edge <- registeredOwnershipEdges
+  , ownershipEdgeStackKey edge == stackKey
   ]
 
 eksDrainIntentCommitName :: RegisteredTargetBinding -> Text

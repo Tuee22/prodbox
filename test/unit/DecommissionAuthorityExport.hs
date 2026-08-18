@@ -48,7 +48,7 @@ decommissionAuthorityExportSuite =
           request
       result `shouldBe` AuthorityDecommissionExported verifiedManifest
       readIORef events
-        `shouldReturn` ["freeze", "plan", "public-key", "sign", "commit"]
+        `shouldReturn` ["freeze", "plan:delete", "public-key", "sign", "commit"]
       readIORef committed `shouldReturn` Just verifiedManifest
 
     it "refuses a Transit key rotation between public-key read and signing" $ do
@@ -98,10 +98,15 @@ decommissionAuthorityExportSuite =
               { readCommittedManifest = pure (Right (Just (1 :: Int, verifiedManifest)))
               , initializeCommittedManifest = \_ -> pure (Left "resume must not initialize")
               }
-          rediscover = do
+          rediscover _localDataDisposition = do
             modifyIORef' discoveries (+ 1)
             pure (Left "Target generation has already been tombstoned")
-      readCommittedPlanOrDiscover committedRepository rediscover
+      -- Sprint 4.85: the resume supplies the /other/ disposition and still
+      -- gets the committed plan back, which is exactly why the runner
+      -- separately refuses a signed disposition that is not the requested one:
+      -- the operator must learn the decision was already made rather than
+      -- believe this run made it.
+      readCommittedPlanOrDiscover committedRepository rediscover RetainLocalData
         `shouldReturn` Right plan
       readIORef discoveries `shouldReturn` 0
 
@@ -167,7 +172,9 @@ repository
 repository events committed freezeResult =
   AuthorityDecommissionExportRepository
     { freezeAuthorityAdmission = record "freeze" >> pure freezeResult
-    , readAuthorityDecommissionPlan = record "plan" >> pure (Right plan)
+    , readAuthorityDecommissionPlan = \localDataDisposition -> do
+        record ("plan:" <> decommissionLocalDataDispositionText localDataDisposition)
+        pure (Right plan)
     , commitAuthorityDecommissionManifest = \verified -> do
         record "commit"
         writeIORef committed (Just verified)
@@ -196,8 +203,10 @@ signer events publicGeneration signatureGeneration signature =
  where
   record event = modifyIORef' events (<> [event])
 
+-- Sprint 4.85: the request carries the operator's closed retain-or-delete
+-- decision, and the repository records which one it was asked to plan for.
 request :: AuthorityDecommissionExportRequest
-request = AuthorityDecommissionExportRequest verifier
+request = AuthorityDecommissionExportRequest verifier DeleteLocalData
 
 plan :: DecommissionManifest
 plan = mustRight (mkDecommissionManifest "home" [SesConsumerQuiescence, SesProviderStack])

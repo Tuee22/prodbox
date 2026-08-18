@@ -40,6 +40,9 @@
 -- only surface on which the liveness-through-audit claim is even expressible.
 module Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( teardownOperationCredentialConsumer
+  , teardownOperationIsTerminalAudit
+  , teardownOperationIsCredentialDisposition
+  , measuredOperationalCredentialDispositionBlockers
   , OperationalCredentialCoverageError (..)
   , renderOperationalCredentialCoverageError
   , cascadeTerminalAuditNodeName
@@ -52,21 +55,38 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   , coverageRegressionCheckpointTailCounted
   , coverageRegressionAncestryIsDiscriminating
   , coverageRegressionAuditIsNotItsOwnConsumer
+  , OperationalCredentialDispositionRegression
+  , fixedOperationalCredentialDispositionRegression
+  , dispositionRegressionMeasuredEqualsPublished
+  , dispositionRegressionSomeBlockersAreDerived
+  , dispositionRegressionCascadeHasAudit
+  , dispositionRegressionOperationalSurfaceHasNoAudit
+  , dispositionRegressionAuditPredicateDiscriminates
   )
 where
 
 import Data.List (nub, sort)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Maybe (mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface (Cascade)
-  , CleanupSurfaceWitness (CascadeSurface)
+  , CleanupSurfaceWitness (CascadeSurface, OperationalTeardownSurface)
   )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
-  ( OperationalCredentialGraphConsumer (..)
+  ( DispositionBlockerEvidence (..)
+  , LegacyOperationalIdentityStatus (LegacyOperationalIdentityMigrationRequired)
+  , OperationalCredentialDispositionBlocker (..)
+  , OperationalCredentialGraphConsumer (..)
+  , absentDispositionCapabilityDetail
+  , dispositionBlockerEvidence
+  , legacyOperationalIdentity
+  , legacyOperationalIdentityStatus
   , operationalCredentialGraphConsumerTag
+  , operationalCredentialInventory
+  , operationalCredentialInventoryDispositionBlockers
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( DesiredAbsenceProgram
@@ -152,6 +172,14 @@ teardownOperationCredentialConsumer operation = case operation of
 data OperationalCredentialCoverageError
   = -- | The cascade program did not compile, so nothing can be proved about it.
     OperationalCredentialProgramUncompilable !DesiredAbsenceProgramError
+  | -- | A published disposition blocker the sources no longer establish. A
+    -- stale blocker keeps justifying an omission after the reason for it is
+    -- gone, which is precisely what this list is used for.
+    OperationalCredentialDispositionBlockerStale
+      !OperationalCredentialDispositionBlocker
+  | -- | A blocker the sources establish that the published list omits.
+    OperationalCredentialDispositionBlockerUnpublished
+      !OperationalCredentialDispositionBlocker
   | -- | An inventoried consumer that no node in the compiled program reaches.
     -- A stale entry overstates how long the credential must stay live, which
     -- is the safe direction, but it also means the inventory is describing a
@@ -191,6 +219,21 @@ renderOperationalCredentialCoverageError err = case err of
       ++ Text.unpack cascadeTerminalAuditNodeName
       ++ "`; the terminal audit must run while the credential is still live \
          \(lifecycle_reconciliation_doctrine.md § 3.3)."
+  OperationalCredentialDispositionBlockerStale blocker ->
+    "operational credential disposition blocker `"
+      ++ show blocker
+      ++ "` is published by operationalCredentialInventoryDispositionBlockers "
+      ++ "but the sources no longer establish it ("
+      ++ evidenceDetail blocker
+      ++ "); remove it, because a stale blocker keeps justifying the omission "
+      ++ "of the Operational registry descriptors after its reason is gone."
+  OperationalCredentialDispositionBlockerUnpublished blocker ->
+    "operational credential disposition blocker `"
+      ++ show blocker
+      ++ "` is established by the sources ("
+      ++ evidenceDetail blocker
+      ++ ") but operationalCredentialInventoryDispositionBlockers does not "
+      ++ "publish it."
   OperationalCredentialTerminalAuditMissing nodeName ->
     "the compiled cascade program has no `"
       ++ Text.unpack nodeName
@@ -202,6 +245,105 @@ renderOperationalCredentialCoverageError err = case err of
 -- fails this check loudly instead of silently satisfying it.
 cascadeTerminalAuditNodeName :: Text
 cascadeTerminalAuditNodeName = "cascade/audit-escapes"
+
+evidenceDetail :: OperationalCredentialDispositionBlocker -> String
+evidenceDetail blocker = case dispositionBlockerEvidence blocker of
+  DerivedFromCompiledTeardownPrograms ->
+    "derived from the compiled teardown programs"
+  DerivedFromCredentialConsumerClassifier ->
+    "derived from teardownOperationCredentialConsumer"
+  DerivedFromLegacyIdentityStatus ->
+    "derived from legacyOperationalIdentityStatus"
+  TypeLevelAbsence capability ->
+    "rests on a type-level absence: "
+      ++ Text.unpack (absentDispositionCapabilityDetail capability)
+
+-- | Is this operation a terminal escape audit?
+--
+-- Total, so a new audit operation cannot be added without deciding whether the
+-- \"the surface that disposes has no audit\" blocker still holds.
+teardownOperationIsTerminalAudit :: TeardownOperation surface -> Bool
+teardownOperationIsTerminalAudit operation = case operation of
+  AuditCascadeEscapes -> True
+  AuditTotalDecommissionEscapes -> True
+  _ -> False
+
+-- | Does this operation dispose of the operational credential?
+--
+-- Nothing does today: no @TeardownOperation@ constructor revokes, tombstones,
+-- or otherwise disposes of the Lifecycle-provider credential. That is the whole
+-- content of @AuditBeforeDispositionConflictsWithCurrentCascadeGraph@ — the
+-- audit-then-dispose order cannot be expressed on the surface that owns the
+-- audit, because the disposition half has no operation. Adding one is what
+-- should retire that blocker, and this predicate is where the decision lands.
+teardownOperationIsCredentialDisposition :: TeardownOperation surface -> Bool
+teardownOperationIsCredentialDisposition _ = False
+
+-- | Recompute the disposition blockers the sources establish.
+--
+-- The four derivable ones are measured; the four that rest on a missing
+-- constructor are carried through unchanged, because no value in this
+-- repository can witness their absence.
+measuredOperationalCredentialDispositionBlockers
+  :: Either DesiredAbsenceProgramError [OperationalCredentialDispositionBlocker]
+measuredOperationalCredentialDispositionBlockers = do
+  cascade <- compileDesiredAbsenceProgram CascadeSurface
+  operational <- compileDesiredAbsenceProgram OperationalTeardownSurface
+  let operations program = map programNodeOperation (desiredAbsenceProgramNodes program)
+      operationalHasAudit = any teardownOperationIsTerminalAudit (operations operational)
+      cascadeHasDisposition =
+        any teardownOperationIsCredentialDisposition (operations cascade)
+      cascadeAuditConsumesCredential =
+        or
+          [ True
+          | operation <- operations cascade
+          , teardownOperationIsTerminalAudit operation
+          , Just _ <- [teardownOperationCredentialConsumer operation]
+          ]
+      legacyMigrationRequired =
+        legacyOperationalIdentityStatus legacyOperationalIdentity
+          == LegacyOperationalIdentityMigrationRequired
+  pure
+    ( [ DispositionBeforeAuditConflictsWithLiveAuditCredential
+      | not operationalHasAudit
+      ]
+        ++ [ AuditBeforeDispositionConflictsWithCurrentCascadeGraph
+           | not cascadeHasDisposition
+           ]
+        ++ [ TerminalAuditProviderCapabilityUnassigned
+           | not cascadeAuditConsumesCredential
+           ]
+        ++ typeLevelAbsenceBlockers
+        ++ [LegacyOperationalIdentityReplacementUndefined | legacyMigrationRequired]
+    )
+
+-- | The blockers whose evidence kind is a type-level absence, derived from the
+-- evidence classifier rather than listed again.
+typeLevelAbsenceBlockers :: [OperationalCredentialDispositionBlocker]
+typeLevelAbsenceBlockers =
+  [ blocker
+  | blocker <- [minBound .. maxBound]
+  , TypeLevelAbsence _ <- [dispositionBlockerEvidence blocker]
+  ]
+
+dispositionBlockerViolations
+  :: [OperationalCredentialCoverageError]
+dispositionBlockerViolations =
+  case measuredOperationalCredentialDispositionBlockers of
+    Left err -> [OperationalCredentialProgramUncompilable err]
+    Right measured ->
+      [ OperationalCredentialDispositionBlockerStale blocker
+      | blocker <- published
+      , blocker `notElem` measured
+      ]
+        ++ [ OperationalCredentialDispositionBlockerUnpublished blocker
+           | blocker <- measured
+           , blocker `notElem` published
+           ]
+ where
+  published =
+    NonEmpty.toList
+      (operationalCredentialInventoryDispositionBlockers operationalCredentialInventory)
 
 -- | Prove the inventory and the compiled cascade program agree, and that every
 -- credential-consuming node precedes the terminal audit.
@@ -215,9 +357,10 @@ validateOperationalCredentialCoverage
 validateOperationalCredentialCoverage =
   case compileDesiredAbsenceProgram CascadeSurface of
     Left err -> Left [OperationalCredentialProgramUncompilable err]
-    Right program -> case unreached program ++ misordered program of
-      [] -> Right ()
-      errors -> Left errors
+    Right program ->
+      case unreached program ++ misordered program ++ dispositionBlockerViolations of
+        [] -> Right ()
+        errors -> Left errors
 
 operationalCredentialCoverageViolations :: [String]
 operationalCredentialCoverageViolations =
@@ -355,3 +498,67 @@ ancestorsOf nodes start = go (Set.singleton start) (directPredecessors start)
           , dependency <- programNodeDependencies node
           ]
       )
+
+-- | Fixed regression for the disposition-blocker join.
+--
+-- A join that passes because its predicates never fire proves nothing, so this
+-- records the discriminating facts beside the agreement: the audit predicate
+-- finds the cascade audit (so "the operational surface has no audit" is a
+-- measurement rather than a predicate that never matches), it does not match a
+-- non-audit operation, and not every blocker is a type-level absence carried
+-- through unchanged.
+data OperationalCredentialDispositionRegression = OperationalCredentialDispositionRegression
+  { dispositionRegressionMeasuredEqualsPublished :: !Bool
+  , dispositionRegressionSomeBlockersAreDerived :: !Bool
+  , dispositionRegressionCascadeHasAudit :: !Bool
+  , dispositionRegressionOperationalSurfaceHasNoAudit :: !Bool
+  , dispositionRegressionAuditPredicateDiscriminates :: !Bool
+  }
+  deriving (Eq, Show)
+
+fixedOperationalCredentialDispositionRegression
+  :: OperationalCredentialDispositionRegression
+fixedOperationalCredentialDispositionRegression =
+  case ( compileDesiredAbsenceProgram CascadeSurface
+       , compileDesiredAbsenceProgram OperationalTeardownSurface
+       , measuredOperationalCredentialDispositionBlockers
+       ) of
+    (Right cascade, Right operational, Right measured) ->
+      let cascadeOperations =
+            map programNodeOperation (desiredAbsenceProgramNodes cascade)
+          operationalOperations =
+            map programNodeOperation (desiredAbsenceProgramNodes operational)
+          published =
+            NonEmpty.toList
+              ( operationalCredentialInventoryDispositionBlockers
+                  operationalCredentialInventory
+              )
+       in OperationalCredentialDispositionRegression
+            { dispositionRegressionMeasuredEqualsPublished =
+                sort measured == sort published
+            , dispositionRegressionSomeBlockersAreDerived =
+                length typeLevelAbsenceBlockers < length published
+            , dispositionRegressionCascadeHasAudit =
+                any teardownOperationIsTerminalAudit cascadeOperations
+            , dispositionRegressionOperationalSurfaceHasNoAudit =
+                not (any teardownOperationIsTerminalAudit operationalOperations)
+            , dispositionRegressionAuditPredicateDiscriminates =
+                not
+                  ( any
+                      teardownOperationIsTerminalAudit
+                      [ operation
+                      | operation <- cascadeOperations
+                      , operation /= AuditCascadeEscapes
+                      ]
+                  )
+            }
+    _ -> allDispositionFalse
+ where
+  allDispositionFalse =
+    OperationalCredentialDispositionRegression
+      { dispositionRegressionMeasuredEqualsPublished = False
+      , dispositionRegressionSomeBlockersAreDerived = False
+      , dispositionRegressionCascadeHasAudit = False
+      , dispositionRegressionOperationalSurfaceHasNoAudit = False
+      , dispositionRegressionAuditPredicateDiscriminates = False
+      }

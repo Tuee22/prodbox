@@ -30,6 +30,10 @@ module Prodbox.Lifecycle.Decommission.NodeEffect
   , BackupObjectsIdentityCapability (..)
   , BackupAllPrefixesAbsentCapability (..)
   , SharedObjectBucketCapability (..)
+  , FinalNoRetentionAuditCapability (..)
+  , HomeSubstrateUninstallCapability (..)
+  , LocalDataDispositionCapability (..)
+  , DecommissionTerminalReceiptCapability (..)
   , ProductionDecommissionCapabilities (..)
   , decommissionRegistryFromProductionCapabilities
   , decommissionInterpreterFromRegistry
@@ -45,18 +49,23 @@ import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Prodbox.Lifecycle.Decommission.Frame (FrameAttemptId, FrameNodeId)
 import Prodbox.Lifecycle.Decommission.Manifest
-  ( DecommissionNode
-      ( BackupObjects
-      , BackupPrefixAbsenceProof
-      , RetainedCustody
-      , SesConsumerQuiescence
-      , SesProviderStack
-      , SesSmtpIam
-      , SharedObjectBucket
-      , TargetGeneration
-      , TlsRetainedObjects
-      , TlsRetentionIdentity
-      )
+  ( DecommissionLocalDataDisposition
+  , DecommissionNode
+    ( BackupObjects
+    , BackupPrefixAbsenceProof
+    , DecommissionTerminalReceipt
+    , FinalNoRetentionAudit
+    , HomeSubstrateUninstall
+    , LocalDataDisposition
+    , RetainedCustody
+    , SesConsumerQuiescence
+    , SesProviderStack
+    , SesSmtpIam
+    , SharedObjectBucket
+    , TargetGeneration
+    , TlsRetainedObjects
+    , TlsRetentionIdentity
+    )
   , DecommissionTargetGeneration
   )
 import Prodbox.Lifecycle.ResidueStatus
@@ -153,6 +162,11 @@ data DecommissionOperationRegistry m = DecommissionOperationRegistry
   , backupPrefixAbsenceProofOperation :: !(NodeOperation m)
   , backupObjectsOperation :: !(NodeOperation m)
   , sharedObjectBucketOperation :: !(NodeOperation m)
+  , finalNoRetentionAuditOperation :: !(NodeOperation m)
+  , homeSubstrateUninstallOperation :: !(NodeOperation m)
+  , localDataDispositionOperation
+      :: !(DecommissionLocalDataDisposition -> NodeOperation m)
+  , decommissionTerminalReceiptOperation :: !(NodeOperation m)
   }
 
 -- The production composition uses distinct capability wrappers rather than a
@@ -223,6 +237,66 @@ newtype SharedObjectBucketCapability m = SharedObjectBucketCapability
   { runSharedObjectBucketCapability :: NodeOperation m
   }
 
+-- | Sprint 4.85: authoritatively observe that no prodbox-owned resource
+-- survives anywhere in the audited scope, admitting no retained carve-out.
+--
+-- Read-only by construction, like 'BackupAllPrefixesAbsentCapability': this is
+-- the terminal proof of a total decommission, and production composition
+-- cannot smuggle a deletion into it. It replaces an out-of-band sweep that ran
+-- after the runner returned, outside the receipt graph -- where a crash or a
+-- lost response could not resume through the manifest.
+newtype FinalNoRetentionAuditCapability m = FinalNoRetentionAuditCapability
+  { observeFinalNoRetentionAudit
+      :: FrameNodeId
+      -> FrameAttemptId
+      -> m ResidueStatus
+  }
+
+-- | Sprint 4.85: uninstall the home substrate and read back the absence of
+-- every canonical install marker.
+--
+-- Unlike the two read-only proofs this one destroys, so it keeps the full
+-- destroy/read-back shape: a lost uninstall response is not evidence the
+-- uninstaller did not run, and only a fresh marker observation may close it.
+newtype HomeSubstrateUninstallCapability m = HomeSubstrateUninstallCapability
+  { runHomeSubstrateUninstallCapability :: NodeOperation m
+  }
+
+-- | Sprint 4.85: apply the operator's explicit retained-local-data decision
+-- and read back that it was honoured.
+--
+-- The decision is an argument rather than a field, exactly as
+-- 'TargetGenerationTombstoneCapability' takes the reference and generation the
+-- manifest authenticated: the effect must be driven by what the signed plan
+-- says, never by a value the composition happened to be built with. A capability
+-- that closed over its own disposition could delete under a plan that said
+-- retain.
+newtype LocalDataDispositionCapability m = LocalDataDispositionCapability
+  { runLocalDataDispositionCapability
+      :: DecommissionLocalDataDisposition -> NodeOperation m
+  }
+
+-- | Sprint 4.85: observe that the external receipt's own committed frames
+-- already record every other node of the plan as durably terminal.
+--
+-- Read-only by construction, like 'BackupAllPrefixesAbsentCapability' and
+-- 'FinalNoRetentionAuditCapability'. It is the strongest form of that
+-- discipline here: this node reads the very record it is a node of, so a
+-- capability that could write would be one that mutates the history it is
+-- proving something about.
+--
+-- The __append__ half of \"terminal receipt append and read-back\" is the
+-- runner's own durable result frame for this node, written through the same
+-- fsync/reopen/validate append primitive as every other frame. This capability
+-- supplies the read-back, and the graph supplies the ordering that makes that
+-- frame terminal.
+newtype DecommissionTerminalReceiptCapability m = DecommissionTerminalReceiptCapability
+  { observeDecommissionTerminalReceipt
+      :: FrameNodeId
+      -> FrameAttemptId
+      -> m ResidueStatus
+  }
+
 -- | Exact capability inventory required by the production standalone runner.
 -- There is no optional or fallback field and no generic provider operation.
 data ProductionDecommissionCapabilities m = ProductionDecommissionCapabilities
@@ -236,6 +310,11 @@ data ProductionDecommissionCapabilities m = ProductionDecommissionCapabilities
   , productionBackupObjectsIdentity :: !(BackupObjectsIdentityCapability m)
   , productionBackupAllPrefixesAbsent :: !(BackupAllPrefixesAbsentCapability m)
   , productionSharedObjectBucket :: !(SharedObjectBucketCapability m)
+  , productionFinalNoRetentionAudit :: !(FinalNoRetentionAuditCapability m)
+  , productionHomeSubstrateUninstall :: !(HomeSubstrateUninstallCapability m)
+  , productionLocalDataDisposition :: !(LocalDataDispositionCapability m)
+  , productionDecommissionTerminalReceipt
+      :: !(DecommissionTerminalReceiptCapability m)
   }
 
 -- | Lower the role-separated production capability inventory into the closed
@@ -267,12 +346,30 @@ decommissionRegistryFromProductionCapabilities capabilities =
         runBackupObjectsIdentityCapability (productionBackupObjectsIdentity capabilities)
     , sharedObjectBucketOperation =
         runSharedObjectBucketCapability (productionSharedObjectBucket capabilities)
+    , finalNoRetentionAuditOperation =
+        readOnlyObservation
+          ( observeFinalNoRetentionAudit
+              (productionFinalNoRetentionAudit capabilities)
+          )
+    , homeSubstrateUninstallOperation =
+        runHomeSubstrateUninstallCapability
+          (productionHomeSubstrateUninstall capabilities)
+    , localDataDispositionOperation =
+        runLocalDataDispositionCapability
+          (productionLocalDataDisposition capabilities)
+    , decommissionTerminalReceiptOperation =
+        readOnlyObservation
+          ( observeDecommissionTerminalReceipt
+              (productionDecommissionTerminalReceipt capabilities)
+          )
     }
  where
   readOnlyAbsenceProof proof =
+    readOnlyObservation (observeBackupAllPrefixesAbsent proof)
+  readOnlyObservation observe =
     NodeOperation
       { nodeDestroy = \_ _ -> pure (Right ())
-      , nodeReadBack = observeBackupAllPrefixesAbsent proof
+      , nodeReadBack = observe
       }
 
 -- | Build the only production-shaped interpreter from the total registry.
@@ -297,6 +394,10 @@ operationForNode registry node = case node of
   BackupPrefixAbsenceProof -> backupPrefixAbsenceProofOperation registry
   BackupObjects -> backupObjectsOperation registry
   SharedObjectBucket -> sharedObjectBucketOperation registry
+  FinalNoRetentionAudit -> finalNoRetentionAuditOperation registry
+  HomeSubstrateUninstall -> homeSubstrateUninstallOperation registry
+  LocalDataDisposition disposition -> localDataDispositionOperation registry disposition
+  DecommissionTerminalReceipt -> decommissionTerminalReceiptOperation registry
 
 destroyDecommissionNode
   :: DecommissionNodeInterpreter m

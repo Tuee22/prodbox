@@ -181,7 +181,6 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresTerminal)
-        , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -191,7 +190,6 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
-        , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -603,26 +601,22 @@ assertTopologicallyOrdered nodes =
 surfaceCases :: [SurfaceCase]
 surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
-  , SurfaceCase CascadeSurface 50 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 45 perRunTargetKeys
+  , SurfaceCase CascadeSurface 47 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 42 perRunTargetKeys
   , SurfaceCase OperationalTeardownSurface 5 []
   , SurfaceCase ExplicitLongLivedSurface 8 [AwsEbsProductionRetainedKey]
-  , SurfaceCase TotalDecommissionSurface 51 allManagedTargetKeys
+  , SurfaceCase TotalDecommissionSurface 48 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
 nonLocalSurfaceCases = drop 1 surfaceCases
 
--- | Sprint 4.85 added the dns-aws validation hosted zone, so every per-run
--- surface now compiles one more registered target — three more nodes: the
--- desired-absence effect, its mandatory read-back, and its completion.
 perRunTargetKeys :: [RegisteredResourceKey]
 perRunTargetKeys =
   [ AwsEksKey
   , AwsEksSubzoneKey
   , AwsTestKey
   , AwsEbsPerRunTestKey
-  , AwsDnsValidationZoneKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]

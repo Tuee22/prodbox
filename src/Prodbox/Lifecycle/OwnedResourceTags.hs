@@ -18,6 +18,9 @@ module Prodbox.Lifecycle.OwnedResourceTags
   , prodboxManagedByTag
   , longLivedPulumiStateBucketTags
   , sesCaptureBucketTags
+  , CodeCreatedAwsResource (..)
+  , codeCreatedAwsResourceTags
+  , dnsValidationHostedZoneTags
   )
 where
 
@@ -55,4 +58,49 @@ sesCaptureBucketTags =
   [ prodboxManagedByTag
   , ("prodbox.io/substrate", "shared")
   , ("prodbox.io/purpose", "ses-capture")
+  ]
+
+-- | AWS resources this repository creates from __its own code__ rather than
+-- from a provisioning program under @pulumi\/@ or a Provider Worker intent.
+--
+-- This is the third creation surface, and it was the one nobody had joined to
+-- the audit.  Sprint @4.84@ closed the first two: the field-of-view gate reads
+-- every @pulumi\/*\/Main.yaml@ and fails on a taggable declared resource that
+-- authors no queried tag, and 'sesCaptureBucketTags' gave the Provider Worker's
+-- capture-bucket intent the tags its retained catalog already assumed.  A
+-- resource created by a direct AWS call in @src\/@ is covered by neither: the
+-- field-of-view gate cannot see it because no provisioning program declares it.
+--
+-- The enumeration is closed and the writers take their tag set from it, so
+-- adding a code-created AWS resource means adding a constructor here, which is
+-- what puts it inside the gate that checks these families against the terminal
+-- audit's query catalog.
+data CodeCreatedAwsResource
+  = -- | The throwaway Route 53 hosted zone the @dns-aws@ canonical-suite
+    -- validation creates, owned by @Prodbox.Infra.Route53ValidationZone@.
+    DnsValidationHostedZone
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+codeCreatedAwsResourceTags :: CodeCreatedAwsResource -> [OwnedResourceTag]
+codeCreatedAwsResourceTags resource = case resource of
+  DnsValidationHostedZone -> dnsValidationHostedZoneTags
+
+-- | The @dns-aws@ validation hosted zone.
+--
+-- It was created carrying no tag at all.  Route 53 hosted zones are taggable
+-- and the Resource Groups Tagging API returns them (from the global-service
+-- region — see @Prodbox.Lifecycle.Teardown.TaggingApiReach@), and the
+-- registered IAM policy already grants @route53:ChangeTagsForResource@ and
+-- @route53:ListTagsForResource@ — so a leaked billable zone was invisible to
+-- the terminal escape audit for no reason but the missing tags.
+--
+-- The set deliberately carries none of the retention markers
+-- (@prodbox.io\/role=long-lived-pulumi-state@, @prodbox.io\/substrate=shared@,
+-- the retained-EBS marker), so a surviving zone classifies as an escapee rather
+-- than as intentionally retained.
+dnsValidationHostedZoneTags :: [OwnedResourceTag]
+dnsValidationHostedZoneTags =
+  [ prodboxManagedByTag
+  , ("prodbox.io/lifecycle", "per-run")
+  , ("prodbox.io/purpose", "dns-validation-zone")
   ]

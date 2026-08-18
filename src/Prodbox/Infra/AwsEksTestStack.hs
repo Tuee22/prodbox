@@ -69,6 +69,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderStackRef
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 import Prodbox.Settings
   ( Credentials (..)
   , requireOperationalAwsRegion
@@ -80,11 +81,19 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files (createNamedPipe, ownerModes)
 
+-- | Sprint 4.85: both names are projections of the typed lifecycle registry.
+--
+-- They were authored here, again in 'Prodbox.Lifecycle.LiveResidue', and a
+-- third time inside the per-run EBS family's cluster ownership tag — four
+-- statements of two facts, joined to nothing. The cluster name in particular is
+-- load-bearing beyond narration: it is the tag the EBS reaper filters on and
+-- the coordinate the controller-ownership relation is derived from, so a
+-- rename that split these would have silently unaddressed a billable family.
 awsEksTestStackName :: String
-awsEksTestStackName = "aws-eks-test"
+awsEksTestStackName = Text.unpack Registry.awsEksPulumiStackName
 
 awsEksCanonicalClusterName :: String
-awsEksCanonicalClusterName = awsEksTestStackName ++ "-cluster"
+awsEksCanonicalClusterName = Text.unpack Registry.awsEksProvisionedClusterName
 
 awsEksTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsEksTestStackResidueStatus repoRoot =

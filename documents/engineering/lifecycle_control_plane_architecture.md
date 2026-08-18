@@ -2486,6 +2486,70 @@ still-needed credential; when establishment failed, it records the exact unavail
 must not claim the profile is live. The next cascade resumes the same run. Total loss of the retained
 trust root refuses and does not widen ordinary teardown into decommission.
 
+#### 11.0.1 Retained artifact authority
+
+A repair of this profile may read bytes only from a validated, versioned, architecture-specific
+retained artifact inventory. The recovery closure deliberately excludes the steady-state image
+Registry, and the ordinary install path resolves its substrate installer over the network at install
+time; neither an ambient network fetch nor a host container cache is an authority for a recovery
+that has to work while the platform is down.
+
+The inventory is a closed kind universe — substrate installer, substrate system images, object-store
+image, secret-store image, and the prodbox runtime image — declared for exactly one architecture.
+Each entry carries a pinned version, a canonical `sha256:` digest, and a normalized location relative
+to the retained root bound by `Prodbox.Config.LocalRetainedRoot`. Construction refuses a duplicate
+kind, a foreign architecture, an unpinned version, a non-canonical digest, and any location that is
+absolute or contains an empty, current-, or parent-directory segment, so an entry can neither name a
+second storage root nor depend on execution-time path normalization. An empty declaration is a valid
+inventory: it states that the repository retains nothing.
+
+Which artifacts a repair needs is derived from the recovery closure, not authored beside it. Every
+closure member declares its retained-artifact policy; a member with no declared policy refuses
+rather than defaulting to needing nothing, so admitting a component without saying where its bytes
+come from cannot render a plan. The substrate obligation is the only state-dependent arm.
+
+#### 11.0.2 The stopped, absent, and healthy repair matrix
+
+A rendered repair is a pure plan over one observed `LocalRke2RecoveryStateView`. It differs across
+states only in its substrate arm:
+
+| Observed state | Substrate arm | Common arm |
+|---|---|---|
+| Healthy | none | load retained images, then reconcile the recovery charts in derived dependency order |
+| Stopped | start the substrate service, await its API | as above |
+| Absent | reinstall from the retained installer and system images, start the service, await its API | as above |
+
+Retained image loads and chart reconciliation are common to all three states because the closure has
+no Registry in any of them, and the observation surface says nothing about what the node's content
+store already holds; a retained load by digest is idempotent, so declaring it unconditionally is
+sound rather than merely convenient.
+
+When the inventory does not cover what the observed state requires, no plan is rendered. The refusal
+names the complete missing set rather than the first hole, so an operator learns the whole retention
+obligation at once. Against a repository that retains nothing, an absent substrate therefore refuses
+by construction — that is the honest current answer, and it is why no repair path may fall back to
+fetching an installer at run time.
+
+Every byte-touching step of a rendered plan carries a reference obtained from a validated inventory.
+There is no constructor by which a step can name an artifact whose version, digest, and retained
+location were never checked.
+
+#### 11.0.3 Deletion-survivor projection
+
+The teardown caller identity's independence from the workloads teardown removes is a derived
+property, not an operator convention. Each recovery-plane resource resolves to the Helm release and
+namespace that own its lifetime, sourced from the one chart-name registry, and the deletion scope is
+the complement of the recovery closure over that same registry — every chart component the normal
+registry knows that the closure does not admit. A new application chart is therefore covered without
+editing the projection, and a chart rename cannot leave a stale survival claim behind.
+
+Projecting that scope leaves the bootstrap-core external CLI ServiceAccount, its self-only
+TokenRequest Role and RoleBinding, and every recovery chart release present, with no casualties. A
+resource whose owner cannot be derived projects as a casualty, because an unattributable lifetime is
+exactly the defect the projection exists to catch. The Vault Kubernetes role registry independently
+agrees: the operator control-plane role binds only the bootstrap-core namespace, while the
+Gateway-owned test-harness caller remains inside the deletion scope by design.
+
 ### 11.1 Total decommission and the final backup deletion
 
 `prodbox nuke` is the sole exception to retaining Authority backup forever. It cannot require a

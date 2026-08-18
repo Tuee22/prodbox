@@ -13,9 +13,11 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , ProviderDispatchResponse (..)
   , AuthorityProviderDispatchBoundary (..)
   , providerDispatchResponseMaximumBytes
+  , providerDispatchFormatVersion
   , authorityProviderDispatchAuthenticatedHandler
   , AuthorityProviderClientError (..)
   , dispatchAuthorityProviderIntent
+  , dispatchAuthorityProviderIntentWithOperation
   )
 where
 
@@ -27,6 +29,7 @@ import Data.Either (fromLeft)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
@@ -109,15 +112,36 @@ import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data ProviderDispatchPayload = ProviderDispatchPayload
-  { providerDispatchSubmissionKey :: !Text
+  { providerDispatchVersion :: !Word16
+  , providerDispatchSubmissionKey :: !Text
   , providerDispatchIntent :: !ProviderIntent
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Sprint 4.84: bumped to @2@ when the settled response began naming the
+-- admitted 'OperationId'.
+--
+-- The route previously carried no version at all, so a change to either side of
+-- its wire shape would have been decided by a decode failure rather than by a
+-- refusal that says what happened. A caller at another version is refused
+-- explicitly, in the same idiom as
+-- 'Prodbox.ControlPlane.AwsStackCreationBindingEndpoint.awsStackCreationEndpointFormatVersion'.
+providerDispatchFormatVersion :: Word16
+providerDispatchFormatVersion = 2
+
+-- | Sprint 4.84: a settled dispatch names the operation the Authority admitted.
+--
+-- The identity was already in hand at both settlement sites and was discarded
+-- at both — the duplicate-completed arm literally pattern-matched it to @_@ —
+-- so a caller could prove it had submitted an intent but could not name the
+-- operation that carried it. That is the whole reason no production submitter
+-- could reach the generation-committing route: 'OperationId' is
+-- @(epoch, client, sequence, digest)@, and the epoch and sequence are assigned
+-- at admission, so a caller cannot derive one. It has to be told.
 data ProviderDispatchResponse
-  = ProviderDispatchCompleted !Text
-  | ProviderDispatchAlreadyCompleted !Text
+  = ProviderDispatchCompleted !OperationId !Text
+  | ProviderDispatchAlreadyCompleted !OperationId !Text
   | ProviderDispatchRefused !Text
   | ProviderDispatchUnavailable !Text
   deriving stock (Eq, Show, Generic)
@@ -181,6 +205,16 @@ runProviderDispatch
   -> VerifiedCallerSlot
   -> ProviderDispatchPayload
   -> m ProviderDispatchResponse
+runProviderDispatch _boundary _caller payload
+  | providerDispatchVersion payload /= providerDispatchFormatVersion =
+      pure
+        ( ProviderDispatchRefused
+            ( "provider dispatch format version "
+                <> Text.pack (show (providerDispatchVersion payload))
+                <> " is not supported; this Authority serves version "
+                <> Text.pack (show providerDispatchFormatVersion)
+            )
+        )
 runProviderDispatch boundary caller payload =
   case mkClientSubmissionKey (providerDispatchSubmissionKey payload) of
     Left err -> pure (ProviderDispatchRefused (Text.pack (show err)))
@@ -193,8 +227,11 @@ runProviderDispatch boundary caller payload =
             Left detail -> pure (ProviderDispatchUnavailable detail)
             Right (AuthorityProviderSubmissionRefused refusal) ->
               pure (ProviderDispatchRefused (Text.pack (show refusal)))
-            Right (AuthorityProviderSubmissionDuplicateCompleted _ evidence) ->
-              pure (ProviderDispatchAlreadyCompleted evidence)
+            -- The operation was already in hand here and was discarded; a
+            -- replay names the same operation the first attempt admitted,
+            -- which is exactly what makes the submitting lane idempotent.
+            Right (AuthorityProviderSubmissionDuplicateCompleted operation evidence) ->
+              pure (ProviderDispatchAlreadyCompleted operation evidence)
             Right submission -> do
               nowResult <- authorityProviderNow boundary
               revisionResult <- authorityProviderRevision boundary
@@ -224,16 +261,16 @@ runProviderDispatch boundary caller payload =
                           pure $ case settled of
                             Left detail -> ProviderDispatchUnavailable detail
                             Right AuthorityProviderSettlementCompleted ->
-                              ProviderDispatchCompleted evidence
+                              ProviderDispatchCompleted operation evidence
                             Right (AuthorityProviderSettlementAlreadyCompleted retained) ->
-                              ProviderDispatchAlreadyCompleted retained
+                              ProviderDispatchAlreadyCompleted operation retained
                             Right (AuthorityProviderSettlementRefused detail) ->
                               ProviderDispatchRefused detail
 
 providerResponseStatus :: ProviderDispatchResponse -> ReplyStatus
 providerResponseStatus response = case response of
-  ProviderDispatchCompleted _ -> ReplyOk
-  ProviderDispatchAlreadyCompleted _ -> ReplyOk
+  ProviderDispatchCompleted _ _ -> ReplyOk
+  ProviderDispatchAlreadyCompleted _ _ -> ReplyOk
   ProviderDispatchRefused _ -> ReplyConflict
   ProviderDispatchUnavailable _ -> ReplyServiceUnavailable
 
@@ -411,12 +448,25 @@ data AuthorityProviderClientError
   | AuthorityProviderRemoteRefused !Int !Text
   deriving stock (Eq, Show)
 
+-- | Dispatch and keep only the bounded evidence.
+--
+-- Retained for the many callers that narrate a receipt and decide nothing from
+-- the operation; 'dispatchAuthorityProviderIntentWithOperation' is the form a
+-- caller uses when it must later name what it submitted.
 dispatchAuthorityProviderIntent
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> ClientSubmissionKey
   -> ProviderIntent
   -> IO (Either AuthorityProviderClientError Text)
-dispatchAuthorityProviderIntent transport submissionKey intent = do
+dispatchAuthorityProviderIntent transport submissionKey intent =
+  fmap snd <$> dispatchAuthorityProviderIntentWithOperation transport submissionKey intent
+
+dispatchAuthorityProviderIntentWithOperation
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ClientSubmissionKey
+  -> ProviderIntent
+  -> IO (Either AuthorityProviderClientError (OperationId, Text))
+dispatchAuthorityProviderIntentWithOperation transport submissionKey intent = do
   response <-
     callAuthenticatedClientTransport
       transport
@@ -424,7 +474,8 @@ dispatchAuthorityProviderIntent transport submissionKey intent = do
       ( LazyByteString.toStrict
           ( encodeControlPlaneRequest
               ProviderDispatchPayload
-                { providerDispatchSubmissionKey = clientSubmissionKeyText submissionKey
+                { providerDispatchVersion = providerDispatchFormatVersion
+                , providerDispatchSubmissionKey = clientSubmissionKeyText submissionKey
                 , providerDispatchIntent = intent
                 }
           )
@@ -439,11 +490,11 @@ dispatchAuthorityProviderIntent transport submissionKey intent = do
             (LazyByteString.fromStrict bytes)
         )
     case decoded of
-      ProviderDispatchCompleted evidence
-        | status == 200 -> Right evidence
+      ProviderDispatchCompleted operation evidence
+        | status == 200 -> Right (operation, evidence)
         | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
-      ProviderDispatchAlreadyCompleted evidence
-        | status == 200 -> Right evidence
+      ProviderDispatchAlreadyCompleted operation evidence
+        | status == 200 -> Right (operation, evidence)
         | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
       ProviderDispatchRefused detail ->
         Left (AuthorityProviderRemoteRefused status detail)

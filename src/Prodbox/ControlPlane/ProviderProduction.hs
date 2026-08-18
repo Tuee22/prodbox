@@ -115,6 +115,7 @@ import Prodbox.Lifecycle.DnsRecord
   )
 import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordType)
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.OwnedResourceTags (sesCaptureBucketTags)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
@@ -2041,24 +2042,37 @@ observeSesCaptureBucket session ref = do
           Left detail -> pure (ProviderEffectUnobservable detail)
           Right False -> pure (ProviderEffectNeedsApply "SES capture bucket policy differs")
           Right True -> do
-            readiness <-
-              runAws
-                environment
-                [ "s3api"
-                , "head-object"
-                , "--bucket"
-                , bucket
-                , "--key"
-                , sesCaptureReadinessKey
-                ]
-            pure $ case commandSuccess readiness of
-              Left _
-                | knownAwsAbsent readiness ->
-                    ProviderEffectNeedsApply "SES capture readiness object is absent"
-                | otherwise -> ProviderEffectUnobservable (Text.pack (commandDetail readiness))
-              Right _ ->
-                ProviderEffectSatisfied
-                  (providerAwsEvidence "ses-capture-bucket" [headBucket, policy, readiness])
+            tagging <-
+              runAws environment ["s3api", "get-bucket-tagging", "--bucket", bucket, "--output", "json"]
+            case observedSesCaptureBucketTagging tagging of
+              Left detail -> pure (ProviderEffectUnobservable detail)
+              Right False ->
+                pure
+                  ( ProviderEffectNeedsApply
+                      "SES capture bucket does not carry its prodbox-owned tag families"
+                  )
+              Right True -> do
+                readiness <-
+                  runAws
+                    environment
+                    [ "s3api"
+                    , "head-object"
+                    , "--bucket"
+                    , bucket
+                    , "--key"
+                    , sesCaptureReadinessKey
+                    ]
+                pure $ case commandSuccess readiness of
+                  Left _
+                    | knownAwsAbsent readiness ->
+                        ProviderEffectNeedsApply "SES capture readiness object is absent"
+                    | otherwise -> ProviderEffectUnobservable (Text.pack (commandDetail readiness))
+                  Right _ ->
+                    ProviderEffectSatisfied
+                      ( providerAwsEvidence
+                          "ses-capture-bucket"
+                          [headBucket, policy, tagging, readiness]
+                      )
 
 applySesCaptureBucket
   :: ProviderProductionSession
@@ -2092,21 +2106,38 @@ applySesCaptureBucket session ref = do
       case commandSuccess policy of
         Left detail -> pure (Left (Text.pack detail))
         Right _ -> do
-          readiness <-
+          -- Sprint 4.84: without these families the bucket is returned by no
+          -- terminal-audit query, so the audit can neither confirm the retained
+          -- bucket present nor find it escaped, while the retained catalog
+          -- declares the family discoverable.
+          tagging <-
             runAws
               environment
               [ "s3api"
-              , "put-object"
+              , "put-bucket-tagging"
               , "--bucket"
               , bucket
-              , "--key"
-              , sesCaptureReadinessKey
-              , "--body"
-              , "/dev/null"
-              , "--content-type"
-              , "text/plain"
+              , "--tagging"
+              , jsonArgument desiredSesCaptureBucketTagging
               ]
-          pure (Control.Monad.void (firstText (commandSuccess readiness)))
+          case commandSuccess tagging of
+            Left detail -> pure (Left (Text.pack detail))
+            Right _ -> do
+              readiness <-
+                runAws
+                  environment
+                  [ "s3api"
+                  , "put-object"
+                  , "--bucket"
+                  , bucket
+                  , "--key"
+                  , sesCaptureReadinessKey
+                  , "--body"
+                  , "/dev/null"
+                  , "--content-type"
+                  , "text/plain"
+                  ]
+              pure (Control.Monad.void (firstText (commandSuccess readiness)))
 
 applySingleAwsCommand
   :: ProviderProductionSession
@@ -2198,6 +2229,55 @@ desiredSesBucketPolicy ref =
                ]
            ]
     ]
+
+-- | Sprint 4.84: the tag document the SES capture-bucket writer authors.
+--
+-- The families come from 'sesCaptureBucketTags', which the retained catalog
+-- reads to decide whether this family is discoverable by the terminal audit at
+-- all — so the writer and the audit's field-of-view claim are one value rather
+-- than two agreeing statements.
+desiredSesCaptureBucketTagging :: Value
+desiredSesCaptureBucketTagging =
+  object
+    [ "TagSet"
+        .= [ object ["Key" .= key, "Value" .= value]
+           | (key, value) <- sesCaptureBucketTags
+           ]
+    ]
+
+-- | Whether the observed bucket carries every prodbox-owned tag family.
+--
+-- Containment, not equality: the frozen @aws-ses@ provisioning program is still
+-- a writer during migration and authors a @Name@ tag of its own, and an extra
+-- tag is not drift in the families the audit queries. An absent tag set is a
+-- definite @False@ rather than an unobservable, because S3 reports a bucket
+-- with no tags that way.
+observedSesCaptureBucketTagging :: ProcessOutput -> Either Text Bool
+observedSesCaptureBucketTagging observed = case commandSuccess observed of
+  Left _
+    | knownAwsAbsentTagSet observed -> Right False
+    | otherwise -> Left (Text.pack (commandDetail observed))
+  Right _ -> sesCaptureBucketTagsPresent (processStdout observed)
+
+knownAwsAbsentTagSet :: ProcessOutput -> Bool
+knownAwsAbsentTagSet =
+  containsAny ["nosuchtagset", "no such tagset", "notagset"] . commandDetail
+
+sesCaptureBucketTagsPresent :: String -> Either Text Bool
+sesCaptureBucketTagsPresent payload = do
+  root <- decodeObject payload
+  entries <- case KeyMap.lookup "TagSet" root of
+    Just (Array items) -> Right (Vector.toList items)
+    _ -> Left "SES capture bucket tagging response has no TagSet array"
+  observed <- traverse tagPair entries
+  Right (all (`elem` observed) sesCaptureBucketTags)
+ where
+  tagPair value = case value of
+    Object entry -> do
+      key <- requireTextField "Key" entry
+      tagValue <- requireTextField "Value" entry
+      Right (key, tagValue)
+    _ -> Left "SES capture bucket tagging entry is not an object"
 
 exactSesBucketPolicy :: SesBucketRef -> String -> Either Text Bool
 exactSesBucketPolicy ref payload = do

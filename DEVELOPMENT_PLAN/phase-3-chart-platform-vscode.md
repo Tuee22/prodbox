@@ -4184,10 +4184,11 @@ cannot be required to satisfy its post-Vault readiness contract before that tran
 None on the code-owned surface. Current-revision aggregate qualification remains pending under
 Standard P.
 
-## Sprint 3.41: Bootstrap-Owned Teardown Control Plane [🔄 Active]
+## Sprint 3.41: Bootstrap-Owned Teardown Control Plane [✅ Done]
 
-**Status**: Active (opened 2026-08-15; updated 2026-08-16). The recovery topology, identity, and
-observation boundary are implemented; recovery-only render/reinstall work remains.
+**Status**: Done on its code-owned surface (opened 2026-08-15; closed 2026-08-17). The recovery
+topology, identity, observation boundary, retained artifact authority, stopped/absent/healthy repair
+matrix, and deletion-survivor projection are implemented and validated.
 **Blocked by**: none.
 **Deployment qualification**: pending — process topology, identity ownership, capability wiring,
 and teardown lifetime change.
@@ -4195,10 +4196,10 @@ and teardown lifetime change.
 profile”](../documents/engineering/lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile)
 and [Helm Chart Platform Doctrine § 1C, “Lifecycle Control-Plane Workload
 Rendering”](../documents/engineering/helm_chart_platform_doctrine.md#1c-lifecycle-control-plane-workload-rendering).
-**Implementation**: `Prodbox.Config.OrdinaryTeardownRecovery`, `LocalRke2RecoveryState`,
-`LocalRetainedRoot`, `Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver`,
-`src/Prodbox/Lib/ChartPlatform.hs`, the bootstrap-owned caller renderers, and the seven exact-name
-observer RBAC chart projections. The remaining target is the recovery-only repair renderer.
+**Implementation**: `Prodbox.Config.OrdinaryTeardownRecovery`,
+`Prodbox.Config.OrdinaryTeardownRepair`, `LocalRke2RecoveryState`, `LocalRetainedRoot`,
+`Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver`, `src/Prodbox/Lib/ChartPlatform.hs`, the
+bootstrap-owned caller renderers, and the seven exact-name observer RBAC chart projections.
 **Live-proof**: pending and non-blocking for code-local closure; Standard P requires stopped/absent
 RKE2 recovery on the operator host before public activation.
 **Independent Validation**: pure component-closure and chart-render tests, Helm/chart lint,
@@ -4228,7 +4229,7 @@ source inspection independently proves Prodbox lacks a bootstrap-owned caller id
 to repair the lifecycle roles. This sprint corrects that topology defect without attributing the
 observation failure to Kubernetes.
 
-### Current Implementation Checkpoint (2026-08-16, paused)
+### Closure Record (2026-08-17)
 
 - `OrdinaryTeardownRecovery` derives the exact component closure and optional Target-Agent arm;
   duplicate, missing, and cyclic projections refuse.
@@ -4239,14 +4240,15 @@ observation failure to Kubernetes.
 - The production `RecoveryPlaneComponentObserver` uses the exact current Establish-attempt host
   receipt, exact-name Kubernetes `GET`s, and Vault seal status. Seven charts carry narrow RBAC, and
   Lifecycle Authority has only the observed Kubernetes API egress coordinate.
-- The last owned gates were green: 606 library modules and 192 unit modules under `-Werror`, the
-  focused observer/ChartStatics/ChartPlatform checks, actual chart lint, Fourmolu, HLint, and
-  `git diff --check`.
-- No sound recovery-only render exists for an absent cluster. The repository does not retain
-  immutable architecture-specific RKE2 installer/system images, registry/MinIO/Vault/runtime OCI
-  archives, or their update/GC provenance, and the recovery profile deliberately excludes the
-  steady-state Registry component. Ambient network or host Docker cache cannot be promoted to
-  authority.
+- `OrdinaryTeardownRepair` adds the versioned, architecture-specific retained artifact inventory,
+  the closure-derived artifact obligation, the stopped/absent/healthy repair matrix, and the pure
+  deletion-survivor projection. Every byte-touching repair step carries a reference obtained from a
+  validated inventory; there is no constructor for an unvalidated one.
+- The absent-cluster artifact gap is now an explicit typed refusal rather than a silent network
+  fetch. The repository still retains no immutable architecture-specific substrate installer, system
+  images, or runtime OCI archives, so rendering a repair for an absent substrate refuses by
+  construction and names the complete missing set. Acquiring, retaining, and GC-ing those bytes is
+  lifecycle execution and is owned by Sprint `4.86`, not by this rendering sprint.
 
 ### Deliverables
 
@@ -4276,14 +4278,26 @@ observation failure to Kubernetes.
    port, ServiceAccount, storage path, or role URL is accepted.
 5. `prodbox dev lint chart`, unit tests, and `prodbox dev check` pass.
 
+### Validation Result (2026-08-17)
+
+- 28 focused cases across `test/unit/OrdinaryTeardownRecovery.hs` and
+  `test/unit/OrdinaryTeardownRepair.hs` cover the exact component table, the inventory's duplicate /
+  foreign-architecture / unpinned-version / non-canonical-digest / escaping-location refusals, the
+  closure-derived obligation in all three observed states, the complete missing-set refusal, and the
+  deletion-survivor projection.
+- The deletion-survivor proof is joined independently to the Vault Kubernetes role registry: the
+  operator control-plane role's bound namespace is outside the derived deletion scope, while the
+  Gateway-owned test-harness caller's namespace is inside it by design.
+- The full library and unit surface builds warning-clean under `--enable-tests
+  --ghc-options=-Werror`, and `prodbox dev check` passes.
+
 ### Remaining Work
 
-Implement the recovery-only render/reinstall plan after a versioned retained artifact inventory is
-defined; add the pure deletion-survivor projection and stopped/absent/healthy repair matrix; and
-exercise the rendered profile on the operator host. The caller identity move itself has landed, but
-Sprint `3.41` remains Active because an absent cluster still has no authoritative image/bootstrap
-source. Hand only the opaque, fully derived repair plan to Sprint `4.86`; do not substitute ambient
-network/cache facts or the ordinary whole-platform renderer.
+None on the code-owned rendering surface. Exercising the rendered profile against a stopped or
+absent local substrate on the operator host is the outstanding Live-proof; Standard O keeps it
+non-blocking. Sprint `4.86` consumes only the opaque, fully derived repair plan and owns acquiring,
+retaining, and GC-ing the artifact bytes that plan names; it may not substitute ambient network or
+host cache facts, or the ordinary whole-platform renderer.
 
 
 ## Documentation Requirements

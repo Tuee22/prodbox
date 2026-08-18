@@ -183,6 +183,10 @@ data HostDirectEndpointProven = HostDirectEndpointProven !Int
 hostDirectEndpointPort :: HostDirectEndpointProven -> Int
 hostDirectEndpointPort (HostDirectEndpointProven port) = port
 
+-- | LEGACY-ESCAPE[host-minio-port-forward-transport]: host-direct MinIO
+-- transport retained as an operational recovery path beside the retained
+-- Authority's own object-store seam.  Registered in
+-- "Prodbox.Legacy.EscapeRegistry"; owned by Sprint @4.50@.
 withMinioPortForward :: (HostDirectEndpointProven -> IO a) -> IO (Either String a)
 withMinioPortForward action = do
   envResult <- kubectlEnv

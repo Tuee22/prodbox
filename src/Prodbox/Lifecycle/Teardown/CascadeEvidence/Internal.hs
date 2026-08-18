@@ -30,7 +30,6 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , CascadeCredentialDispositionEvidence
   , mkCascadeCredentialDispositionEvidence
   , CascadeTerminalAuditEvidence
-  , cascadeIntentionallyRetainedProjectionDigest
   , mkCascadeTerminalAuditEvidence
   , CascadePreUninstallReportEvidence
   , mkCascadePreUninstallReportEvidence
@@ -94,10 +93,8 @@ import Data.List (find, nub, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
-import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.AwsInventory
   ( AwsInventory
   , AwsResource
@@ -129,6 +126,16 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.RetainedInventory
+  ( RetainedCatalog
+  , RetainedNameBinding
+  , mkRetainedNameBinding
+  , retainedCatalogAwsScope
+  , retainedCatalogFor
+  , retainedSetDigestFor
+  , terminalAuditQueryCatalog
+  , terminalAuditQueryDigestFor
+  )
 
 newtype CascadeReportDigest = CascadeReportDigest Text
   deriving (Eq, Ord, Show)
@@ -254,6 +261,7 @@ data CascadeEvidenceError
   | CascadeTerminalAuditRetainedProjectionMismatch
       !TerminalAuditRetainedSetDigest
       !TerminalAuditRetainedSetDigest
+  | CascadeTerminalAuditRetainedScopeMismatch !AwsScope !AwsScope
   | CascadeTerminalAuditFoundEscapes !(NonEmpty AwsResource)
   | CascadeTerminalAuditUnobservable !(NonEmpty ObservationFailure)
   | CascadeTerminalAuditInventoryScopeMismatch !AwsScope !AwsScope
@@ -389,33 +397,18 @@ data CascadeTerminalAuditEvidence
   = CascadeTerminalAuditEvidence !CascadeProofBinding
   deriving (Eq, Show)
 
-cascadeIntentionallyRetainedProjectionDigest
-  :: TerminalAuditRetainedSetDigest
-cascadeIntentionallyRetainedProjectionDigest =
-  TerminalAuditRetainedSetDigest
-    ( TextEncoding.decodeUtf8
-        (hexSha256 (TextEncoding.encodeUtf8 canonicalProjection))
-    )
- where
-  retainedTargets = cleanupTargetsForSurface ExplicitLongLivedSurface
-  canonicalProjection =
-    Text.intercalate
-      "\NUL"
-      ( "cascade-intentionally-retained/v1"
-          : registryRevisionText lifecycleRegistryRevision
-          : [ registeredResourceKeyText (cleanupTargetKey target)
-                <> ":"
-                <> managedResourceCoordinateDigestText
-                  (cleanupTargetCoordinateDigest target)
-            | target <- retainedTargets
-            ]
-      )
-
+-- | Sprint 4.84: the retained set the cascade audit is entitled to leave
+-- behind is now the terminal matcher catalog in
+-- "Prodbox.Lifecycle.Teardown.RetainedInventory", not a projection of the
+-- registry's explicit-long-lived cleanup targets.  The registry projection
+-- named only registered targets, so an audit built on it could not tell an
+-- intentionally retained S3, SES, or shared IAM resource from an escapee.
 mkCascadeTerminalAuditEvidence
-  :: CompiledDesiredAbsenceProgram 'Cascade
+  :: RetainedCatalog 'Cascade
+  -> CompiledDesiredAbsenceProgram 'Cascade
   -> TerminalAuditObservation 'Cascade
   -> Either CascadeEvidenceError CascadeTerminalAuditEvidence
-mkCascadeTerminalAuditEvidence compiled observation = do
+mkCascadeTerminalAuditEvidence catalog compiled observation = do
   binding <- cascadeProofBinding compiled
   let observedAuditScope = terminalAuditScope observation
       expectedScope = cascadeAuditScope (internalCascadeBindingScope binding)
@@ -423,20 +416,32 @@ mkCascadeTerminalAuditEvidence compiled observation = do
   if actualScope == expectedScope
     then Right ()
     else Left (CascadeTerminalAuditScopeMismatch expectedScope actualScope)
-  let actualRetainedDigest = terminalAuditRetainedSetDigest observedAuditScope
-  if actualRetainedDigest == cascadeIntentionallyRetainedProjectionDigest
+  expectedAwsScope <- case evidenceAwsScope (internalCascadeBindingScope binding) of
+    Nothing -> Left CascadeCompiledAwsScopeMissing
+    Just scope -> Right scope
+  -- The catalog composed its exact ARNs for one account and region.  Joining
+  -- that to the compiled program's own AWS scope keeps a caller from supplying
+  -- a foreign-account retained set whose digest happens to match the claim.
+  if retainedCatalogAwsScope catalog == expectedAwsScope
+    then Right ()
+    else
+      Left
+        ( CascadeTerminalAuditRetainedScopeMismatch
+            expectedAwsScope
+            (retainedCatalogAwsScope catalog)
+        )
+  let expectedRetainedDigest = retainedSetDigestFor catalog
+      actualRetainedDigest = terminalAuditRetainedSetDigest observedAuditScope
+  if actualRetainedDigest == expectedRetainedDigest
     then Right ()
     else
       Left
         ( CascadeTerminalAuditRetainedProjectionMismatch
-            cascadeIntentionallyRetainedProjectionDigest
+            expectedRetainedDigest
             actualRetainedDigest
         )
   case terminalAuditResult observation of
-    TerminalAuditConfirmedClean inventory -> do
-      expectedAwsScope <- case evidenceAwsScope (internalCascadeBindingScope binding) of
-        Nothing -> Left CascadeCompiledAwsScopeMissing
-        Just scope -> Right scope
+    TerminalAuditConfirmedClean inventory ->
       case find
         ((/= expectedAwsScope) . awsResourceScope)
         (awsInventoryResources inventory) of
@@ -1438,7 +1443,7 @@ fixedCascadeEvidenceRegression = do
       , cascadeEvidenceRegressionAuditRefused =
           isLeftMatching
             isAuditUnobservable
-            (mkCascadeTerminalAuditEvidence compiled badAudit)
+            (mkCascadeTerminalAuditEvidence fixedCascadeRetainedCatalog compiled badAudit)
       , cascadeEvidenceRegressionPreUninstallRefused =
           isLeftMatching
             isReceiptMissing
@@ -1582,6 +1587,7 @@ fixedCascadeAuditFor
 fixedCascadeAuditFor compiled =
   mustRightInternal
     ( mkCascadeTerminalAuditEvidence
+        fixedCascadeRetainedCatalog
         compiled
         TerminalAuditObservation
           { terminalAuditScope = fixedAuditScope compiled
@@ -1679,8 +1685,31 @@ fixedAuditScope compiled =
     ( mkTerminalAuditScope
         CascadeSurface
         (cascadeAuditScope (compiledDesiredAbsenceObservationScope compiled))
-        (TerminalAuditQueryDigest "fixed-terminal-audit/v1")
-        cascadeIntentionallyRetainedProjectionDigest
+        (terminalAuditQueryDigestFor (terminalAuditQueryCatalog fixedRetainedNameBinding))
+        (retainedSetDigestFor fixedCascadeRetainedCatalog)
+    )
+
+-- | The frozen retained catalog the regression audits against.  Its names are
+-- the fixture's, not the operator's: the fixture proves the join between the
+-- catalog and the audit, and a live run composes its own catalog from
+-- configuration.
+fixedCascadeRetainedCatalog :: RetainedCatalog 'Cascade
+fixedCascadeRetainedCatalog =
+  mustRightInternal
+    ( retainedCatalogFor
+        CascadeSurface
+        fixedCascadeAwsScope
+        fixedRetainedNameBinding
+    )
+
+fixedRetainedNameBinding :: RetainedNameBinding
+fixedRetainedNameBinding =
+  mustRightInternal
+    ( mkRetainedNameBinding
+        "prodbox-fixed-state"
+        "prodbox-fixed-ses-capture"
+        "fixed.example.test"
+        "aws-eks-test-cluster"
     )
 
 fixedReceipt

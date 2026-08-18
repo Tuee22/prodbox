@@ -41,12 +41,18 @@ import Prodbox.ControlPlane.ProviderCaller
   ( dispatchAuthenticatedProviderIntentFresh
   , renderProviderCallerError
   )
+import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
+  ( RegisteredStackCreationSubmission (submittedCreateEvidence)
+  , renderRegisteredStackCreationSubmitError
+  , submitRegisteredStackCreation
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Http.Client (defaultHttpConfig, httpGetText, renderHttpError)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
+  , ProviderRevision
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
@@ -96,7 +102,7 @@ ensureAwsTestStackResourcesWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> IO ExitCode
-ensureAwsTestStackResourcesWithAuthentication authentication _repoRoot = do
+ensureAwsTestStackResourcesWithAuthentication authentication repoRoot = do
   publicIp <- fetchPublicIpv4
   case ( mkProviderStackRef "aws-test"
        , mkProviderRevision 1
@@ -108,10 +114,14 @@ ensureAwsTestStackResourcesWithAuthentication authentication _repoRoot = do
                Right config -> Right config
        ) of
     (Right ref, Right revision, Right config) ->
-      dispatchStack
+      -- Sprint 4.84: creation commits this cycle's run-invariant lifecycle
+      -- generation, so a later cleanup run can name the stack it created.
+      submitStackCreation
         authentication
+        repoRoot
         "operator-reconcile-aws-test"
         "AWS test Provider receipt: "
+        revision
         (ReconcileRegisteredStack ref revision config)
     (refResult, revisionResult, configResult) ->
       failWith
@@ -145,6 +155,26 @@ destroyAwsTestStackWithAuthentication authentication _repoRoot _quietOutput =
         ( "build typed AWS test destroy intent: "
             ++ show (refResult, revisionResult, configResult)
         )
+
+-- | Sprint 4.84: create a registered stack and commit its lifecycle generation
+-- in one admitted lane.
+submitStackCreation
+  :: LifecycleAuthorityAuthentication
+  -> FilePath
+  -> Text.Text
+  -> String
+  -> ProviderRevision
+  -> ProviderIntent
+  -> IO ExitCode
+submitStackCreation authentication repoRoot prefix label revision intent = do
+  submitted <-
+    submitRegisteredStackCreation authentication repoRoot prefix revision intent
+  case submitted of
+    Left err -> failWith (renderRegisteredStackCreationSubmitError err)
+    Right submission -> do
+      writeOutputLine
+        (label ++ Text.unpack (submittedCreateEvidence submission))
+      pure ExitSuccess
 
 dispatchStack
   :: LifecycleAuthorityAuthentication

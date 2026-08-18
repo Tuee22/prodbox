@@ -697,7 +697,14 @@ only the minimal teardown profile against the preserved roots, resumes the durab
 and records whether that profile was established, failed to establish, or was later lost. When it
 was established, the profile remains live if exact cleanup cannot yet complete. The operator
 receives the stable `CleanupRunId`; a retry resumes rather than reconstructing intent from prose or
-tag scans. This behavior is not yet the current binary behavior; see the warning in the Overview. See
+tag scans.
+
+That repair reads bytes only from a versioned, architecture-specific retained artifact inventory. A
+recovery has no in-cluster image Registry to pull from and may not fetch an installer over the
+network, so a repair whose inventory does not cover the observed state refuses and names every
+missing artifact rather than falling back. Ordinary `cluster reconcile` is unaffected: it still
+installs RKE2 the usual way. The distinction is that a recovery running while the platform is down
+gets no ambient authority. This behavior is not yet the current binary behavior; see the warning in the Overview. See
 [DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
 for both, and
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md#resume-here) for their owning

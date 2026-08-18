@@ -56,6 +56,8 @@ module Prodbox.Lifecycle.ResidueStatus
   , isResidueAbsent
   , isResidueUnreachable
   , residueBlocksTeardownGate
+  , residueLayerAnswersResourceExistence
+  , residueObservationProvesAwsAbsence
   )
 where
 
@@ -388,3 +390,41 @@ isResidueUnreachable _ = False
 -- enumerating.
 residueBlocksTeardownGate :: ResidueStatus -> Bool
 residueBlocksTeardownGate = not . isResidueAbsent
+
+-- | Sprint 4.84: which authority is entitled to answer \"the AWS resource is
+-- gone\".
+--
+-- Sprint 4.81 made the answering layer a carried field so that a
+-- 'ResidueAbsent' minted from a retained checkpoint could not be mistaken for
+-- one minted from AWS. It did not say which layers may answer /which/
+-- question, so every consumer stripped the field with
+-- 'residueObservationStatus' and decided over the bare status — the layer was
+-- expressible and consulted by nothing.
+--
+-- This is the classifier. Only AWS is authoritative for resource existence.
+-- The retained checkpoint store is authoritative for what checkpoints this
+-- cluster holds and for nothing else; the Vault gate is never an answer about
+-- resources at all; and a harness bypass answered no question.
+residueLayerAnswersResourceExistence :: ResidueObservationLayer -> Bool
+residueLayerAnswersResourceExistence layer = case layer of
+  ResidueLayerAwsResource -> True
+  ResidueLayerRetainedCheckpoint -> False
+  ResidueLayerVaultGate -> False
+  ResidueLayerHarnessBypass -> False
+
+-- | Whether this observation is a positive statement of AWS absence /made by
+-- an authority entitled to make it/.
+--
+-- Strictly stronger than @isResidueAbsent . residueObservationStatus@: an
+-- absence answered at a non-authoritative layer is not an absence for this
+-- purpose. Deliberately __not__ yet wired into
+-- 'residueBlocksTeardownGate': doing so would refuse every long-lived teardown
+-- today, because the @aws-ses@ stack has no AWS-side observer (Sprint `7.36`
+-- owns it) and the integration fixtures still supply absence through the
+-- harness bypass (Sprint `5.36` owns that cutover). The predicate exists so
+-- the two are one decision when those land, rather than two rules discovered
+-- separately.
+residueObservationProvesAwsAbsence :: ResidueObservation -> Bool
+residueObservationProvesAwsAbsence observation =
+  residueLayerAnswersResourceExistence (residueObservationLayer observation)
+    && isResidueAbsent (residueObservationStatus observation)

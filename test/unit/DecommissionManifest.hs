@@ -40,6 +40,39 @@ decommissionManifestSuite =
       manifestVersion validManifest `shouldBe` currentManifestVersion
       manifestClusterId validManifest `shouldBe` "home"
       manifestNodes validManifest `shouldBe` nodes
+
+    it "Sprint 4.85 derives the mandatory singleton set from the closed enumeration" $ do
+      -- The verifier's required set was a hand-authored list of nine joined to
+      -- nothing, so a newly added singleton constructor would have been
+      -- silently optional: a manifest that never names it would verify, and
+      -- the run would report success having never executed it.
+      requiredSingletonDecommissionNodes
+        `shouldBe` [ SesConsumerQuiescence
+                   , SesProviderStack
+                   , SesSmtpIam
+                   , RetainedCustody
+                   , TlsRetainedObjects
+                   , TlsRetentionIdentity
+                   , BackupPrefixAbsenceProof
+                   , BackupObjects
+                   , SharedObjectBucket
+                   ]
+      -- Parameterized work is deliberately not mandatory: a run names as many
+      -- target generations as it has Agents, and none is individually
+      -- required.
+      decommissionNodeSingleton (TargetGeneration "agent" targetGenerationOne)
+        `shouldBe` Nothing
+      (TargetGeneration "agent" targetGenerationOne `notElem` requiredSingletonDecommissionNodes)
+        `shouldBe` True
+
+    it "Sprint 4.85 the singleton join holds in both directions" $ do
+      -- A one-directional map would let the two drift: a singleton whose node
+      -- image classified back as a different singleton would still yield a
+      -- nine-element required list, and the verifier would demand the wrong
+      -- nodes.
+      decommissionSingletonNodeBijection `shouldBe` True
+      map decommissionNodeSingleton requiredSingletonDecommissionNodes
+        `shouldBe` map Just [minBound .. maxBound]
     it "rejects an empty, duplicated, or malformed inventory" $ do
       mkDecommissionManifest "home" [] `shouldBe` Left ManifestNodesEmpty
       mkDecommissionManifest "home" [SharedObjectBucket, SharedObjectBucket]

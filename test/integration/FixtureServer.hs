@@ -117,6 +117,12 @@ import Prodbox.Lifecycle.Authority.Migration
   , MigrationEpoch
   , mkMigrationEpoch
   )
+import Prodbox.Lifecycle.Authority.Submission
+  ( ClientId (ClientId)
+  , ClientSequence (ClientSequence)
+  , OperationId (..)
+  , RequestDigest (RequestDigest)
+  )
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( TlsRetentionState (TlsRetentionEmpty)
   )
@@ -495,6 +501,16 @@ fixtureBackupReceipt =
     , authorityBackupReceiptObjectVersion = "fixture-version-1"
     }
 
+-- | The operation id the fixture Authority reports for a settled dispatch.
+fixtureAdmittedOperation :: OperationId
+fixtureAdmittedOperation =
+  OperationId
+    { operationIdEpoch = authorityEpochGenesis
+    , operationIdClient = ClientId "fixture-client"
+    , operationIdSequence = ClientSequence 1
+    , operationIdDigest = RequestDigest "fixture-request-digest"
+    }
+
 fixtureMigrationEpoch :: MigrationEpoch
 fixtureMigrationEpoch =
   case mkMigrationEpoch 1 of
@@ -508,7 +524,11 @@ providerDispatchBody = do
         Just "identity-failed" ->
           ProviderDispatchRefused
             "ses_sending_identity_verified: VerifiedForSendingStatus=False"
-        _ -> ProviderDispatchCompleted "fixture-ready"
+        -- Sprint 4.84: a settled dispatch names the operation the Authority
+        -- admitted, so the fixture must name one too. It is a fixed value: the
+        -- fixture admits nothing, and a caller that decides from it would be
+        -- deciding from a fixture rather than from an admission.
+        _ -> ProviderDispatchCompleted fixtureAdmittedOperation "fixture-ready"
   pure (LazyByteString.toStrict (encodeControlPlaneResponse response))
 
 fixtureConfigBytes :: IO ByteString.ByteString

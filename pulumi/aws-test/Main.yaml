@@ -66,6 +66,7 @@ resources:
       cidrBlock: "10.90.0.0/16"
       tags:
         Name: ${stackName}-vpc
+        prodbox.io/managed-by: prodbox
 
   igw:
     type: aws:ec2:InternetGateway
@@ -73,6 +74,7 @@ resources:
       vpcId: ${vpc.id}
       tags:
         Name: ${stackName}-igw
+        prodbox.io/managed-by: prodbox
 
   publicRouteTable:
     type: aws:ec2:RouteTable
@@ -83,6 +85,7 @@ resources:
           gatewayId: ${igw.id}
       tags:
         Name: ${stackName}-public-rt
+        prodbox.io/managed-by: prodbox
 
   publicSubnet0:
     type: aws:ec2:Subnet
@@ -93,6 +96,7 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-0
+        prodbox.io/managed-by: prodbox
 
   publicSubnet1:
     type: aws:ec2:Subnet
@@ -103,6 +107,7 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-1
+        prodbox.io/managed-by: prodbox
 
   publicSubnet2:
     type: aws:ec2:Subnet
@@ -113,6 +118,7 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-2
+        prodbox.io/managed-by: prodbox
 
   rta0:
     type: aws:ec2:RouteTableAssociation
@@ -160,6 +166,7 @@ resources:
             - "0.0.0.0/0"
       tags:
         Name: ${stackName}-sg
+        prodbox.io/managed-by: prodbox
 
   node0:
     type: aws:ec2:Instance
@@ -177,6 +184,7 @@ resources:
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-0
+        prodbox.io/managed-by: prodbox
 
   node1:
     type: aws:ec2:Instance
@@ -194,6 +202,7 @@ resources:
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-1
+        prodbox.io/managed-by: prodbox
 
   node2:
     type: aws:ec2:Instance
@@ -211,6 +220,7 @@ resources:
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-2
+        prodbox.io/managed-by: prodbox
 
 outputs:
   backend_bucket: prodbox-state

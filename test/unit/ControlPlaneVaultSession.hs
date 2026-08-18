@@ -19,11 +19,20 @@ import Prodbox.ControlPlane.AuthenticationRegistry
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (CallerService))
 import Prodbox.ControlPlane.InClusterAuthorityStore
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
-  ( ExternalLifecycleAuthorityCaller (..)
+  ( ExternalCallerTokenError (..)
+  , ExternalLifecycleAuthorityCaller (..)
+  , ServiceAccountObservationFailure (..)
+  , classifyServiceAccountObservation
   , externalCallerServiceAccount
   , externalCallerServiceAccountReadArguments
+  , externalCallerTokenAuthorityReached
+  , externalCallerTokenAuthorityRefusedAuthorization
   , externalCallerTokenEligibilityArguments
   , externalCallerTokenRequestArguments
+  , externalCallerTokenSessionError
+  , renderExternalCallerTokenError
+  , renderServiceAccountObservationFailure
+  , serviceAccountObservationAuthorityReached
   , validateExternalCallerServiceAccountReadBack
   )
 import Prodbox.ControlPlane.RetainedAuthentication
@@ -46,6 +55,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   )
 import Prodbox.Runtime.Role
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
+import Prodbox.Subprocess (ProcessOutput (..))
 import Prodbox.Vault.Client (VaultAddress (..))
 import Prodbox.Vault.Reconcile
   ( VaultKubernetesRoleSpec (..)
@@ -55,6 +65,8 @@ import Prodbox.Vault.Reconcile
   , defaultVaultReconcilePlan
   )
 import Prodbox.Vault.RoleId
+import Prodbox.Vault.Session (VaultSessionError (..))
+import System.Exit (ExitCode (..))
 import TestSupport
 
 controlPlaneVaultSessionSuite :: SuiteBuilder ()
@@ -250,6 +262,166 @@ controlPlaneVaultSessionSuite =
       assertCaller operator "bootstrap-broker" "prodbox-control-plane-operator" "5m"
       assertCaller harness "gateway" "prodbox-control-plane-test-harness" "15m"
 
+    it "Sprint 4.84 classifies each distinguishable ServiceAccount observation cause" $ do
+      -- kubectl exits 1 for every one of these, so the exit code alone
+      -- carries none of the distinction; the captured stderr does, and it
+      -- used to be discarded.
+      let caller = LifecycleAuthorityOperator
+          failed diagnostic =
+            classifyServiceAccountObservation
+              caller
+              ( Right
+                  ProcessOutput
+                    { processExitCode = ExitFailure 1
+                    , processStdout = ""
+                    , processStderr = diagnostic
+                    }
+              )
+          expect diagnostic expected = failed diagnostic `shouldBe` Left expected
+      expect
+        "Error from server (NotFound): serviceaccounts \"x\" not found"
+        ServiceAccountObservationAbsent
+      expect
+        "Error from server (Forbidden): serviceaccounts \"x\" is forbidden: User \"y\" cannot get resource"
+        ( ServiceAccountObservationForbidden
+            "Error from server (Forbidden): serviceaccounts \"x\" is forbidden: User \"y\" cannot get resource"
+        )
+      expect
+        "error: You must be logged in to the server (Unauthorized)"
+        ( ServiceAccountObservationUnauthenticated
+            "error: You must be logged in to the server (Unauthorized)"
+        )
+      expect
+        "error: current-context is not set"
+        (ServiceAccountObservationContextUnavailable "error: current-context is not set")
+      expect
+        "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?"
+        ( ServiceAccountObservationApiUnreachable
+            "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?"
+        )
+      -- An unrecognized diagnostic is preserved verbatim with its exit code
+      -- rather than rounded to the nearest known cause.
+      failed "something nobody has seen before"
+        `shouldBe` Left
+          (ServiceAccountObservationUnclassified 1 "something nobody has seen before")
+      -- A subprocess that never started reached no authority at all.
+      classifyServiceAccountObservation caller (Left ("boom" :: String))
+        `shouldBe` Left ServiceAccountObservationSubprocessUnavailable
+
+    it "Sprint 4.84 only a reached Kubernetes API may report ServiceAccount absence" $ do
+      -- Absence is a fact about cluster contents; the unreached arms are facts
+      -- about whether the cluster was observed at all, and must never be
+      -- promoted into an absence decision.
+      map
+        serviceAccountObservationAuthorityReached
+        [ ServiceAccountObservationSubprocessUnavailable
+        , ServiceAccountObservationApiUnreachable "x"
+        , ServiceAccountObservationContextUnavailable "x"
+        , ServiceAccountObservationUnclassified 1 "x"
+        ]
+        `shouldBe` [False, False, False, False]
+      map
+        serviceAccountObservationAuthorityReached
+        [ ServiceAccountObservationUnauthenticated "x"
+        , ServiceAccountObservationForbidden "x"
+        , ServiceAccountObservationAbsent
+        , ServiceAccountObservationIdentityMismatch "x"
+        ]
+        `shouldBe` [True, True, True, True]
+
+    it "Sprint 4.84 the token failure carries the classification to its caller" $ do
+      -- The classifier produced a typed cause and a rendering adapter flattened
+      -- it immediately, so the caller received one sentence for every arm. The
+      -- typed value now reaches the login path, which decides with it.
+      let reached =
+            map
+              externalCallerTokenAuthorityReached
+              [ ExternalCallerServiceAccountUnobservable
+                  (ServiceAccountObservationForbidden "x")
+              , ExternalCallerTokenEligibilityRefused
+              , ExternalCallerTokenRequestRefused
+              , ExternalCallerTokenMalformed
+              ]
+          unreached =
+            map
+              externalCallerTokenAuthorityReached
+              [ ExternalCallerServiceAccountUnobservable
+                  (ServiceAccountObservationApiUnreachable "x")
+              , ExternalCallerTokenEligibilitySubprocessUnavailable
+              , ExternalCallerTokenRequestSubprocessUnavailable
+              ]
+      reached `shouldBe` [True, True, True, True]
+      unreached `shouldBe` [False, False, False]
+      -- Refused authorization is strictly narrower than "the API answered": an
+      -- absent ServiceAccount and a mismatched read-back are answers, and
+      -- neither is a denial.
+      map
+        externalCallerTokenAuthorityRefusedAuthorization
+        [ ExternalCallerServiceAccountUnobservable ServiceAccountObservationAbsent
+        , ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationIdentityMismatch "x")
+        , ExternalCallerTokenMalformed
+        ]
+        `shouldBe` [False, False, False]
+      map
+        externalCallerTokenAuthorityRefusedAuthorization
+        [ ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationForbidden "x")
+        , ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationUnauthenticated "x")
+        , ExternalCallerTokenEligibilityRefused
+        , ExternalCallerTokenRequestRefused
+        ]
+        `shouldBe` [True, True, True, True]
+
+    it "Sprint 4.84 an RBAC denial is not reported as a transient unavailability" $ do
+      -- Every arm previously became VaultSessionUnavailable, so a permanent
+      -- denial for the presented identity was indistinguishable from a
+      -- transport failure and read as "retry later".
+      let caller = LifecycleAuthorityOperator
+          classOf = sessionErrorClass . externalCallerTokenSessionError caller
+      classOf ExternalCallerTokenEligibilityRefused `shouldBe` "forbidden"
+      classOf ExternalCallerTokenRequestRefused `shouldBe` "forbidden"
+      classOf
+        ( ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationForbidden "x")
+        )
+        `shouldBe` "forbidden"
+      classOf
+        ( ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationApiUnreachable "x")
+        )
+        `shouldBe` "unavailable"
+      classOf
+        (ExternalCallerServiceAccountUnobservable ServiceAccountObservationAbsent)
+        `shouldBe` "unavailable"
+      -- The operator sentence each arm carried is preserved, not replaced.
+      renderExternalCallerTokenError
+        caller
+        ( ExternalCallerServiceAccountUnobservable
+            (ServiceAccountObservationForbidden "denied")
+        )
+        `shouldBe` renderServiceAccountObservationFailure
+          caller
+          (ServiceAccountObservationForbidden "denied")
+
+    it "Sprint 4.84 a successful exit still requires the exact identity read-back" $ do
+      let caller = LifecycleAuthorityOperator
+          succeeded stdoutText =
+            classifyServiceAccountObservation
+              caller
+              ( Right
+                  ProcessOutput
+                    { processExitCode = ExitSuccess
+                    , processStdout = stdoutText
+                    , processStderr = ""
+                    }
+              )
+      succeeded "bootstrap-broker\nprodbox-control-plane-operator\nfalse\n"
+        `shouldBe` Right ()
+      succeeded "bootstrap-broker\nprodbox-control-plane-operator\ntrue\n"
+        `shouldSatisfy` isLeft
+
     it "keeps shared Gateway AWS and MinIO-root credentials out of standing-role policies" $ do
       let documents =
             Text.unlines
@@ -373,3 +545,11 @@ shouldHaveLeft result expected = case result of
 
 mustRight :: (Show err) => Either err value -> value
 mustRight = either (error . show) id
+
+-- | The session-error class, as a name rather than a constructor, so a case
+-- reads as the distinction it is testing.
+sessionErrorClass :: VaultSessionError -> String
+sessionErrorClass err = case err of
+  VaultSessionSealed _ -> "sealed"
+  VaultSessionForbidden _ -> "forbidden"
+  VaultSessionUnavailable _ -> "unavailable"

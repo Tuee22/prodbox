@@ -171,7 +171,6 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( awsStackCreationBindingModelBCodec
-  , lifecycleAuthorityAwsStackCreationBindingClient
   , modelBAwsStackCreationBindingRepository
   )
 import Prodbox.ControlPlane.AwsStackReaderRepository.Internal
@@ -323,6 +322,9 @@ import Prodbox.ControlPlane.ProjectionImportRegistration
   , projectionImportRegistrationLeaseKey
   , projectionImportRegistrationModelBCodec
   )
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+  ( lifecycleAuthorityProviderAwsScopeReaderInternal
+  )
 import Prodbox.ControlPlane.ProviderProduction
   ( providerProductionCapabilities
   , providerProductionNarrowSession
@@ -360,6 +362,18 @@ import Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
 import Prodbox.ControlPlane.RecoveryPlaneRepository.Internal
   ( modelBRecoveryPlaneRepository
   , recoveryPlaneModelBCodecInternal
+  )
+import Prodbox.ControlPlane.RegisteredStackCleanupSelection
+  ( lifecycleAuthorityRegisteredStackCleanupBoundary
+  )
+import Prodbox.ControlPlane.RegisteredStackCreationProducer
+  ( lifecycleAuthorityRegisteredStackCreationBoundary
+  )
+import Prodbox.ControlPlane.RegisteredStackGenerationRepository
+  ( modelBRegisteredStackGenerationRepository
+  , modelBStackGenerationCursorRepository
+  , registeredStackGenerationModelBCodec
+  , stackGenerationCursorModelBCodec
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( RequestSigningCapability
@@ -1321,10 +1335,47 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     authority
                     awsStackCreationBindingModelBCodec
                 )
-            awsStackCreationBindingClient =
-              lifecycleAuthorityAwsStackCreationBindingClient
+            -- Sprint 4.84: the admitted-create path is the generation
+            -- producer.  It reads the Provider AWS-scope proof back from this
+            -- Authority's own admission aggregate, reserves the cycle, and
+            -- commits the run-invariant generation before the run-scoped
+            -- creation binding, so a later cleanup run has an addressable
+            -- record rather than only a surface-and-run-keyed one.
+            registeredStackGenerationRepository =
+              modelBRegisteredStackGenerationRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    registeredStackGenerationModelBCodec
+                )
+            stackGenerationCursorRepository =
+              modelBStackGenerationCursorRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    stackGenerationCursorModelBCodec
+                )
+            registeredStackCreationBoundary =
+              lifecycleAuthorityRegisteredStackCreationBoundary
                 admissionRepository
+                ( lifecycleAuthorityProviderAwsScopeReaderInternal
+                    admissionRepository
+                )
+                stackGenerationCursorRepository
+                registeredStackGenerationRepository
                 awsStackCreationBindingRepository
+            -- Sprint 4.84: the consumer half of the same generation, built
+            -- from the same retained repositories the producer writes through,
+            -- so a cleanup run reads exactly what a creating run committed.
+            registeredStackCleanupBoundary =
+              lifecycleAuthorityRegisteredStackCleanupBoundary
+                ( lifecycleAuthorityProviderAwsScopeReaderInternal
+                    admissionRepository
+                )
+                stackGenerationCursorRepository
+                registeredStackGenerationRepository
             ownershipManifestRepository =
               modelBOwnershipManifestRepository
                 authority
@@ -1627,7 +1678,8 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                           ( lifecycleAuthorityAwsStackReaderAuthenticatedHandler
                               awsStackReaderClientFor
                               ( lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
-                                  awsStackCreationBindingClient
+                                  registeredStackCreationBoundary
+                                  registeredStackCleanupBoundary
                                   awsStackCreationBindingRepository
                                   ( lifecycleAuthorityOwnershipManifestAuthenticatedHandler
                                       ownershipManifestRepository

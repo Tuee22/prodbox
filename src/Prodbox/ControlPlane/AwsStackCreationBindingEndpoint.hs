@@ -29,6 +29,8 @@ module Prodbox.ControlPlane.AwsStackCreationBindingEndpoint
   , AwsStackCreationEndpointResponseError (..)
   , confirmAwsStackCreationCommitResponse
   , confirmAwsStackCreationReadBackResponse
+  , awsStackCreationSelectWireRequest
+  , confirmAwsStackCreationSelectResponse
   )
 where
 
@@ -50,7 +52,6 @@ import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( AwsStackCreationAuthorityIdentity
-  , AwsStackCreationBindingClient (..)
   , AwsStackCreationBindingError (..)
   , AwsStackCreationBindingRepository (..)
   , AwsStackCreationCommitResult (..)
@@ -69,6 +70,18 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneResponse
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RegisteredStackCleanupSelection
+  ( RegisteredStackCleanupBoundary
+  , renderRegisteredStackCleanupError
+  , selectRegisteredStackForCleanup
+  )
+import Prodbox.ControlPlane.RegisteredStackCreationProducer
+  ( RegisteredStackCreationBoundary
+  , RegisteredStackCreationError (..)
+  , commitRegisteredStackCreation
+  , registeredStackCreationBinding
+  , renderRegisteredStackCreationError
+  )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderRevision)
@@ -82,6 +95,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
   , ObservationFailure (..)
+  , RegisteredResourceKey
   , RegistryRevision (..)
   , evidenceAwsScope
   , evidenceCleanupSurface
@@ -89,11 +103,26 @@ import Prodbox.Lifecycle.Teardown.Model
   , evidenceLinuxRke2Foundation
   , evidenceRegistryRevision
   , mkObservationEvidenceScope
+  , registeredResourceKeyFromText
+  , registeredResourceKeyText
+  )
+import Prodbox.Lifecycle.Teardown.StackGeneration
+  ( RegisteredStackGeneration
+  , decodeRegisteredStackGeneration
+  , encodeRegisteredStackGeneration
+  , renderStackGenerationError
+  , selectedStackGeneration
   )
 
 data AwsStackCreationWireAction
   = AwsStackCreationWireCommitAttempt
   | AwsStackCreationWireIndependentReadBack
+  | -- | Sprint 4.84: select the current lifecycle generation of one registered
+    -- stack for cleanup.  This is the consumer half of the same route the
+    -- creating run commits through; putting it here rather than on a route of
+    -- its own keeps one wire version governing both directions of the
+    -- generation, so a caller cannot be current for one and stale for the other.
+    AwsStackCreationWireSelectForCleanup
   deriving stock (Eq, Show)
 
 instance Serialise AwsStackCreationWireAction where
@@ -103,6 +132,7 @@ instance Serialise AwsStackCreationWireAction where
         ( case action of
             AwsStackCreationWireCommitAttempt -> 0
             AwsStackCreationWireIndependentReadBack -> 1
+            AwsStackCreationWireSelectForCleanup -> 2
         )
   decode = do
     requireListLength "AwsStackCreationWireAction" 1
@@ -110,6 +140,7 @@ instance Serialise AwsStackCreationWireAction where
     case tag of
       0 -> pure AwsStackCreationWireCommitAttempt
       1 -> pure AwsStackCreationWireIndependentReadBack
+      2 -> pure AwsStackCreationWireSelectForCleanup
       _ -> fail "AwsStackCreationWireAction: unknown tag"
 
 data AwsStackCreationWireRequest = AwsStackCreationWireRequest
@@ -145,6 +176,11 @@ data AwsStackCreationScopeWire = AwsStackCreationScopeWire
 
 data AwsStackCreationCommitPayload = AwsStackCreationCommitPayload
   { creationCommitPayloadOperationId :: !OperationId
+  , creationCommitPayloadProviderScopeOperationId :: !OperationId
+  -- ^ Sprint 4.84: the admitted @ObserveProviderAwsScope@ operation whose
+  -- retained receipt carries the account and region.  The caller names the
+  -- operation; it cannot state its content, because the Authority reads the
+  -- receipt back from its own aggregate and verifies it there.
   , creationCommitPayloadProviderRevision :: !ProviderRevision
   , creationCommitPayloadScope :: !AwsStackCreationScopeWire
   }
@@ -153,19 +189,62 @@ data AwsStackCreationCommitPayload = AwsStackCreationCommitPayload
 
 awsStackCreationCommitWireRequest
   :: OperationId
+  -> OperationId
   -> ProviderRevision
   -> ObservationEvidenceScope
   -> AwsStackCreationWireRequest
-awsStackCreationCommitWireRequest operationId revision scope =
+awsStackCreationCommitWireRequest
+  operationId
+  providerScopeOperationId
+  revision
+  scope =
+    AwsStackCreationWireRequest
+      { awsStackCreationWireRequestVersion = awsStackCreationEndpointFormatVersion
+      , awsStackCreationWireRequestAction = AwsStackCreationWireCommitAttempt
+      , awsStackCreationWireRequestPayload =
+          canonicalBytes
+            AwsStackCreationCommitPayload
+              { creationCommitPayloadOperationId = operationId
+              , creationCommitPayloadProviderScopeOperationId =
+                  providerScopeOperationId
+              , creationCommitPayloadProviderRevision = revision
+              , creationCommitPayloadScope = scopeToWire scope
+              }
+      }
+
+-- | Sprint 4.84: what a cleanup run presents when it goes looking for the
+-- stack an earlier run created.
+--
+-- Note what is /not/ here: no ordinal, no creating run scope, no creating
+-- surface, and no account or region.  The cycle is reached through the series
+-- cursor, and the account and region come only from the Provider proof the
+-- named observation operation retained, so a caller has no field through which
+-- to assert its way to a generation.
+data AwsStackCreationSelectPayload = AwsStackCreationSelectPayload
+  { creationSelectPayloadResourceKey :: !Text
+  , creationSelectPayloadProviderScopeOperationId :: !OperationId
+  , creationSelectPayloadScope :: !AwsStackCreationScopeWire
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+awsStackCreationSelectWireRequest
+  :: RegisteredResourceKey
+  -> OperationId
+  -> ObservationEvidenceScope
+  -> AwsStackCreationWireRequest
+awsStackCreationSelectWireRequest resourceKey providerScopeOperationId scope =
   AwsStackCreationWireRequest
     { awsStackCreationWireRequestVersion = awsStackCreationEndpointFormatVersion
-    , awsStackCreationWireRequestAction = AwsStackCreationWireCommitAttempt
+    , awsStackCreationWireRequestAction = AwsStackCreationWireSelectForCleanup
     , awsStackCreationWireRequestPayload =
         canonicalBytes
-          AwsStackCreationCommitPayload
-            { creationCommitPayloadOperationId = operationId
-            , creationCommitPayloadProviderRevision = revision
-            , creationCommitPayloadScope = scopeToWire scope
+          AwsStackCreationSelectPayload
+            { creationSelectPayloadResourceKey =
+                registeredResourceKeyText resourceKey
+            , creationSelectPayloadProviderScopeOperationId =
+                providerScopeOperationId
+            , creationSelectPayloadScope = scopeToWire scope
             }
     }
 
@@ -221,6 +300,20 @@ data AwsStackCreationWireRefusal
   | AwsStackCreationWireReadBackUnbounded !Int !Int
   | AwsStackCreationWireReadBackIdentityMismatch !ByteString
   | AwsStackCreationWireReadBackInvalid !Text
+  | -- | Sprint 4.84: the create was admitted, but no Provider AWS-scope proof
+    -- was retained for the named observation operation, so no run-invariant
+    -- generation could be minted.
+    AwsStackCreationWireScopeUnproven !Text
+  | -- | Sprint 4.84: cycle reservation or the generation commit refused.
+    AwsStackCreationWireGenerationRefused !Text
+  | -- | Sprint 4.84: the selection payload named a resource key the compiled
+    -- registry does not register, so there is no series to address.
+    AwsStackCreationWireSelectKeyUnregistered !Text
+  | -- | Sprint 4.84: the series cursor or the generation the ordinal addresses
+    -- refused.  An unopened series, an unobservable store, a slot collision,
+    -- and a surface that may not select this identity are all distinct here and
+    -- none of them degrades into \"nothing is there\".
+    AwsStackCreationWireSelectRefused !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -240,6 +333,16 @@ data AwsStackCreationWireResponse
       !Word16
       !ByteString
       !ByteString
+  | -- | Sprint 4.84: the selected generation's canonical record bytes.  The
+    -- response carries the record, not a proof: the caller decodes it with
+    -- 'decodeRegisteredStackGeneration', which re-derives the coordinate digest
+    -- and registry revision from its own compiled registry and refuses a stored
+    -- disagreement, so a selection is validated independently rather than
+    -- trusted because the Authority sent it.
+    AwsStackCreationWireSelected
+      !Word16
+      !ByteString
+      !ByteString
   | AwsStackCreationWireRefused
       !Word16
       !AwsStackCreationWireRefusal
@@ -253,8 +356,11 @@ newtype AwsStackCreationEndpointResult
   = AwsStackCreationEndpointResult AwsStackCreationWireResponse
   deriving stock (Eq, Show)
 
+-- | Bumped to @2@ by Sprint 4.84: the commit payload now names the admitted
+-- Provider AWS-scope observation, so a version-1 caller cannot reach the
+-- generation-committing path with an unproven scope.
 awsStackCreationEndpointFormatVersion :: Word16
-awsStackCreationEndpointFormatVersion = 1
+awsStackCreationEndpointFormatVersion = 2
 
 awsStackCreationEndpointMaximumBytes :: Int
 awsStackCreationEndpointMaximumBytes =
@@ -268,11 +374,12 @@ awsStackCreationEndpointResponseMaximumBytes =
 
 serveAwsStackCreationEndpointRequest
   :: (Monad m)
-  => AwsStackCreationBindingClient m
+  => RegisteredStackCreationBoundary m
+  -> RegisteredStackCleanupBoundary m
   -> AwsStackCreationBindingRepository m
   -> LazyByteString.ByteString
   -> m AwsStackCreationEndpointResult
-serveAwsStackCreationEndpointRequest client repository requestBytes =
+serveAwsStackCreationEndpointRequest producer cleanupBoundary repository requestBytes =
   case decodeControlPlaneRequest awsStackCreationEndpointMaximumBytes requestBytes of
     Left err -> pure (endpointResult (requestCodecRefusal err))
     Right request
@@ -287,16 +394,54 @@ serveAwsStackCreationEndpointRequest client repository requestBytes =
         Left detail -> pure (refused (AwsStackCreationWireCommitPayloadInvalid detail))
         Right payload -> do
           attempted <-
-            attemptAwsStackCreationBindingCommit
-              client
+            commitRegisteredStackCreation
+              producer
               (creationCommitPayloadOperationId payload)
+              (creationCommitPayloadProviderScopeOperationId payload)
               (creationCommitPayloadProviderRevision payload)
               (scopeFromWire (creationCommitPayloadScope payload))
           pure $
             either
-              clientErrorResult
-              (commitResult (awsStackCreationWireRequestPayload request))
+              creationErrorResult
+              ( commitResult (awsStackCreationWireRequestPayload request)
+                  . registeredStackCreationBinding
+              )
               attempted
+    AwsStackCreationWireSelectForCleanup ->
+      case decodeSelectPayload (awsStackCreationWireRequestPayload request) of
+        Left detail -> pure (refused (AwsStackCreationWireCommitPayloadInvalid detail))
+        Right payload ->
+          case registeredResourceKeyFromText
+            (creationSelectPayloadResourceKey payload) of
+            Nothing ->
+              pure
+                ( refused
+                    ( AwsStackCreationWireSelectKeyUnregistered
+                        (creationSelectPayloadResourceKey payload)
+                    )
+                )
+            Just resourceKey -> do
+              selected <-
+                selectRegisteredStackForCleanup
+                  cleanupBoundary
+                  resourceKey
+                  (creationSelectPayloadProviderScopeOperationId payload)
+                  (scopeFromWire (creationSelectPayloadScope payload))
+              pure $ case selected of
+                Left err ->
+                  refused
+                    ( AwsStackCreationWireSelectRefused
+                        (renderRegisteredStackCleanupError err)
+                    )
+                Right selection ->
+                  endpointResult
+                    ( AwsStackCreationWireSelected
+                        awsStackCreationEndpointFormatVersion
+                        (awsStackCreationWireRequestPayload request)
+                        ( encodeRegisteredStackGeneration
+                            (selectedStackGeneration selection)
+                        )
+                    )
     AwsStackCreationWireIndependentReadBack ->
       case decodeAwsStackCreationAuthorityIdentity
         (awsStackCreationWireRequestPayload request) of
@@ -338,6 +483,27 @@ readBackResult identity observation = case observation of
     refused (AwsStackCreationWireReadBackUnbounded actual maximumBytes)
  where
   identityBytes = encodeAwsStackCreationAuthorityIdentity identity
+
+-- | Lower the producer's typed refusal to the wire.  The scope and generation
+-- failures are distinct constructors on purpose: "the create was admitted but
+-- its AWS scope was never proven" and "the cycle could not be reserved" are
+-- different operator actions, and neither is a malformed payload.
+creationErrorResult
+  :: RegisteredStackCreationError -> AwsStackCreationEndpointResult
+creationErrorResult err = case err of
+  RegisteredStackCreationOperationUnobservable detail -> clientErrorResult detail
+  RegisteredStackCreationScopeUnproven _ ->
+    refused
+      ( AwsStackCreationWireScopeUnproven
+          (bounded (renderRegisteredStackCreationError err))
+      )
+  RegisteredStackCreationGenerationRefused _ ->
+    refused
+      ( AwsStackCreationWireGenerationRefused
+          (bounded (renderRegisteredStackCreationError err))
+      )
+  RegisteredStackCreationBindingIncomplete disposition ->
+    commitResult mempty disposition
 
 clientErrorResult
   :: AwsStackCreationBindingError -> AwsStackCreationEndpointResult
@@ -402,6 +568,7 @@ awsStackCreationWireResponseStatus
 awsStackCreationWireResponseStatus response = case response of
   AwsStackCreationWireCommitResult {} -> ReplyOk
   AwsStackCreationWireReadBackPresent {} -> ReplyOk
+  AwsStackCreationWireSelected {} -> ReplyOk
   AwsStackCreationWireUnavailable {} -> ReplyServiceUnavailable
   AwsStackCreationWireRefused _ refusal -> case refusal of
     AwsStackCreationWireReadBackMissing -> ReplyNotFound
@@ -409,6 +576,10 @@ awsStackCreationWireResponseStatus response = case response of
     AwsStackCreationWireReadBackUnbounded {} -> ReplyConflict
     AwsStackCreationWireReadBackIdentityMismatch {} -> ReplyConflict
     AwsStackCreationWireReadBackInvalid {} -> ReplyConflict
+    -- A cleanup run that finds no generation is looking at a stack no admitted
+    -- create ever committed a cycle for; that is a missing record, not a
+    -- malformed request.
+    AwsStackCreationWireSelectRefused {} -> ReplyNotFound
     _ -> ReplyBadRequest
 
 awsStackCreationEndpointBody :: AwsStackCreationEndpointResult -> ByteString
@@ -431,6 +602,10 @@ data AwsStackCreationEndpointResponseError
       !AwsStackCreationAuthorityIdentity
       !AwsStackCreationAuthorityIdentity
   | AwsStackCreationEndpointResponseReadBackInvalid !AwsStackCreationBindingError
+  | -- | Sprint 4.84: the selected generation record did not decode against the
+    -- caller's own compiled registry.  A separate arm from the read-back one
+    -- because it is a disagreement about the /registry/, not about a binding.
+    AwsStackCreationEndpointResponseSelectionInvalid !Text
   | AwsStackCreationEndpointResponseRefused !AwsStackCreationWireRefusal
   | AwsStackCreationEndpointResponseUnavailable !AwsStackCreationWireUnavailable
   deriving stock (Eq, Show)
@@ -462,6 +637,9 @@ confirmAwsStackCreationCommitResponse expectedPayload response = case response o
   AwsStackCreationWireReadBackPresent version _ _ -> do
     validateVersion version
     Left AwsStackCreationEndpointResponseKindMismatch
+  AwsStackCreationWireSelected version _ _ -> do
+    validateVersion version
+    Left AwsStackCreationEndpointResponseKindMismatch
 
 confirmAwsStackCreationReadBackResponse
   :: AwsStackCreationAuthorityIdentity
@@ -483,6 +661,50 @@ confirmAwsStackCreationReadBackResponse expected response = case response of
     validateVersion version
     Left (AwsStackCreationEndpointResponseUnavailable reason)
   AwsStackCreationWireCommitResult version _ _ -> do
+    validateVersion version
+    Left AwsStackCreationEndpointResponseKindMismatch
+  AwsStackCreationWireSelected version _ _ -> do
+    validateVersion version
+    Left AwsStackCreationEndpointResponseKindMismatch
+
+-- | Sprint 4.84: confirm a cleanup selection.
+--
+-- The response is validated rather than trusted: the echoed request payload
+-- must be this caller\'s own, and the record bytes are decoded with
+-- 'decodeRegisteredStackGeneration', which re-derives the coordinate digest and
+-- registry revision from the /caller\'s/ compiled registry and refuses a stored
+-- disagreement. A response therefore cannot hand a caller a generation its own
+-- binary does not agree is well formed.
+confirmAwsStackCreationSelectResponse
+  :: ByteString
+  -> AwsStackCreationWireResponse
+  -> Either
+       AwsStackCreationEndpointResponseError
+       RegisteredStackGeneration
+confirmAwsStackCreationSelectResponse expectedPayload response = case response of
+  AwsStackCreationWireSelected version actualPayload recordBytes -> do
+    validateVersion version
+    unless
+      (actualPayload == expectedPayload)
+      ( Left
+          ( AwsStackCreationEndpointResponseRequestMismatch
+              expectedPayload
+              actualPayload
+          )
+      )
+    first
+      (AwsStackCreationEndpointResponseSelectionInvalid . renderStackGenerationError)
+      (decodeRegisteredStackGeneration recordBytes)
+  AwsStackCreationWireRefused version refusal -> do
+    validateVersion version
+    Left (AwsStackCreationEndpointResponseRefused refusal)
+  AwsStackCreationWireUnavailable version reason -> do
+    validateVersion version
+    Left (AwsStackCreationEndpointResponseUnavailable reason)
+  AwsStackCreationWireCommitResult version _ _ -> do
+    validateVersion version
+    Left AwsStackCreationEndpointResponseKindMismatch
+  AwsStackCreationWireReadBackPresent version _ _ -> do
     validateVersion version
     Left AwsStackCreationEndpointResponseKindMismatch
 
@@ -530,6 +752,23 @@ decodeCommitPayload bytes = do
     (canonicalBytes payload == bytes)
     (Left "commit payload was non-canonical")
   validateScopeWire (creationCommitPayloadScope payload)
+  Right payload
+
+decodeSelectPayload
+  :: ByteString -> Either Text AwsStackCreationSelectPayload
+decodeSelectPayload bytes = do
+  when (ByteString.null bytes) (Left "selection payload was empty")
+  when
+    (ByteString.length bytes > maximumAwsStackCreationBindingBytes)
+    (Left "selection payload exceeded the route-local bound")
+  payload <-
+    first
+      (bounded . Text.pack . show)
+      (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  unless
+    (canonicalBytes payload == bytes)
+    (Left "selection payload was non-canonical")
+  validateScopeWire (creationSelectPayloadScope payload)
   Right payload
 
 scopeToWire :: ObservationEvidenceScope -> AwsStackCreationScopeWire

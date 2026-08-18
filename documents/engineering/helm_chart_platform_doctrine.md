@@ -256,6 +256,16 @@ application namespace, or any release teardown may delete. Repair of a stopped o
 consumes that canonical profile; the chart platform neither invents a second MinIO/Vault writer nor
 provides a host-direct provider fallback.
 
+That exclusion is a derived property rather than an authoring convention. The deletion-survivor
+projection resolves each recovery-plane resource to the release and namespace that own its lifetime
+using this document's root-chart namespace rule and the one chart-name registry, and it scopes
+deletion to the complement of the recovery closure over that same registry. Adding an application
+chart therefore extends the deletion scope automatically, and a chart rename cannot leave a stale
+survival claim behind. Repair steps that load images consume only the retained artifact inventory in
+[§11.0.1](./lifecycle_control_plane_architecture.md#1101-retained-artifact-authority); the chart
+platform's in-cluster image Registry is not in the recovery closure and is never a recovery pull
+source.
+
 ## 2. Singleton Chart Identity Rule
 
 One Helm release per chart name exists cluster-wide at any time.

@@ -40,15 +40,20 @@ module Prodbox.Lifecycle.Dns01Challenge
   , dns01ChallengeAbsenceFrom
   , dns01ChallengeAbsenceIsProven
   , renderDns01ChallengeAbsence
-  , dns01ChallengeManagedResource
-  , dns01ChallengeCleanupNodeName
-  , dns01ChallengeCleanupEdge
+  , Dns01ChallengeDesiredAbsence (..)
+  , mkDns01ChallengeDesiredAbsence
+  , dns01ChallengeDesiredAbsenceOutcome
   )
 where
 
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (CleanupRequiresAttempt))
+import Prodbox.Lifecycle.CleanupRun
+  ( CleanupDependency (..)
+  , CleanupDependencyKind (CleanupRequiresAttempt)
+  , CleanupNodeId
+  , mkCleanupNodeId
+  )
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
   , DnsCoordinateError
@@ -66,9 +71,6 @@ import Prodbox.Lifecycle.DnsRecord
   , mkDns01ChallengeRegistration
   )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass)
-import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..), managedDestroyCapability)
-import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
-import System.Exit (ExitCode (..))
 
 -- | A DNS01 challenge coordinate registered before issuance begins.
 --
@@ -156,53 +158,60 @@ renderDns01ChallengeAbsence absence = case absence of
   Dns01ChallengeStillPresent _ -> "still-present"
   Dns01ChallengeUnobservable detail -> "unobservable: " <> detail
 
--- | The registry entry.
+-- | Sprint 4.85: the desired-absence obligation, as data.
 --
--- @destroy@ deletes the Kubernetes object that owns the record and then reads
--- the TXT back. It succeeds only on an observed absence; a still-present record
--- and an unobservable one both fail, with the reason named.
-dns01ChallengeManagedResource
-  :: Dns01ChallengeIntent
-  -> (FilePath -> IO (Either Text ()))
-  -- ^ Delete the Kubernetes owner (Certificate / Order / Challenge).
-  -> (FilePath -> IO DnsRecordObservation)
-  -- ^ Read the @_acme-challenge@ TXT back at its exact coordinate.
-  -> ManagedResource
-dns01ChallengeManagedResource intent deleteOwner observeRecord =
-  ManagedResource
-    { resourceName = name
-    , resourceClass = dns01ChallengeLifecycleClass intent
-    , resourceEnsureCommand = Nothing
-    , resourceEnsurePresent = Nothing
-    , resourceDestroyCommand = "prodbox edge status"
-    , resourceDestroyCapability = managedDestroyCapability name
-    , resourceDestroy = destroy
-    }
- where
-  name = dns01ChallengeResourceName intent
+-- This replaces the Sprint-@5.29@ registry entry, which was a 'ManagedResource'
+-- built from two caller-supplied @FilePath -> IO@ closures. That shape had two
+-- defects independent of whether it worked. It let a caller substitute the
+-- effect *after* the registry entry was projected, so registry membership did
+-- not determine one legal program; and it made this production module import
+-- @Prodbox.Test.ManagedCleanupPlan@ for its dependency edge. Neither closure
+-- was ever wired to a production caller, so nothing was lost by removing them.
+--
+-- What survives unchanged is everything Sprint @5.29@ actually established:
+-- the exact pre-issuance coordinate, the three-valued absence classification,
+-- and the always-run edge.
+data Dns01ChallengeDesiredAbsence = Dns01ChallengeDesiredAbsence
+  { dns01ChallengeAbsenceIntent :: !Dns01ChallengeIntent
+  , dns01ChallengeAbsenceNode :: !CleanupNodeId
+  , dns01ChallengeAbsenceDependency :: !CleanupDependency
+  }
+  deriving stock (Eq, Show)
 
-  destroy repoRoot = do
-    deleted <- deleteOwner repoRoot
-    -- The read-back runs whether or not the delete reported success: a delete
-    -- that lost its response and a delete that worked are indistinguishable
-    -- from the call, and only the read-back separates them.
-    observed <- observeRecord repoRoot
-    pure $ case (dns01ChallengeAbsenceFrom observed, deleted) of
-      (Dns01ChallengeAbsent, _) -> ExitSuccess
-      _ -> ExitFailure 1
+-- | Build the obligation. The node id is the record name itself, so a node and
+-- the TXT it removes cannot drift apart, and the edge is always-run:
+-- 'CleanupRequiresAttempt' on the issuance node, so an issuance that /failed/
+-- still has its record removed. A 'CleanupRequiresSuccess' edge here would be
+-- precisely wrong — the failure case is the one that leaves residue.
+mkDns01ChallengeDesiredAbsence
+  :: CleanupNodeId
+  -- ^ the issuance node this cleanup follows
+  -> Dns01ChallengeIntent
+  -> Either Text Dns01ChallengeDesiredAbsence
+mkDns01ChallengeDesiredAbsence issuanceNode intent = do
+  node <- mkCleanupNodeId (dnsCoordinateName (dns01ChallengeCoordinate intent))
+  pure
+    Dns01ChallengeDesiredAbsence
+      { dns01ChallengeAbsenceIntent = intent
+      , dns01ChallengeAbsenceNode = node
+      , dns01ChallengeAbsenceDependency =
+          CleanupDependency
+            { cleanupDependencyNode = issuanceNode
+            , cleanupDependencyKind = CleanupRequiresAttempt
+            }
+      }
 
--- | The cleanup node name for a challenge coordinate.
-dns01ChallengeCleanupNodeName :: Dns01ChallengeIntent -> String
-dns01ChallengeCleanupNodeName = dns01ChallengeResourceName
-
--- | The always-run edge: the challenge deletion follows the issuance node on
--- 'CleanupRequiresAttempt', so an issuance that /failed/ still has its record
--- removed. A 'CleanupRequiresSuccess' edge here would be precisely wrong — the
--- failure case is the one that leaves residue.
-dns01ChallengeCleanupEdge :: String -> Dns01ChallengeIntent -> ManagedCleanupEdge
-dns01ChallengeCleanupEdge issuanceNode intent =
-  ManagedCleanupEdge
-    { managedCleanupPredecessor = issuanceNode
-    , managedCleanupDependencyKind = CleanupRequiresAttempt
-    , managedCleanupSuccessor = dns01ChallengeCleanupNodeName intent
-    }
+-- | The desired-absence decision, as a total pure function of both results.
+--
+-- The interpreter deletes the Kubernetes object that owns the record and then
+-- reads the TXT back. The read-back runs whether or not the delete reported
+-- success — a delete that worked and a delete that lost its response are
+-- indistinguishable from the call, and only the read-back separates them — and
+-- the delete result is therefore deliberately not a parameter of the verdict.
+-- It is retained separately as evidence.
+--
+-- Only an observed absence closes the obligation. A still-present record and an
+-- unobservable one are different failures and stay different.
+dns01ChallengeDesiredAbsenceOutcome
+  :: DnsRecordObservation -> Dns01ChallengeAbsence
+dns01ChallengeDesiredAbsenceOutcome = dns01ChallengeAbsenceFrom

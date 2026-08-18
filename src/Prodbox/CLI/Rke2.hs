@@ -3211,6 +3211,10 @@ failedCascadePhases :: [CascadePhaseOutcome] -> [String]
 failedCascadePhases outcomes =
   [cascadePhaseName outcome | outcome <- outcomes, cascadePhaseExit outcome /= ExitSuccess]
 
+-- | LEGACY-ESCAPE[bespoke-cascade-executor]: the cascade is orchestrated here
+-- rather than by a lifecycle-owned desired-absence program.  Registered in
+-- "Prodbox.Legacy.EscapeRegistry"; deleted by Sprint @6.5@'s qualified
+-- single-writer cutover to the descriptor-bound cleanup runner.
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
   writeOutputLine cascadeOrderNarration
@@ -3242,12 +3246,26 @@ runNativeDeleteCascade repoRoot = do
       exactEks = ResidueStatus.residueObservationStatus eksObservation
       exactSubzone = ResidueStatus.residueObservationStatus subzoneObservation
       exactTest = ResidueStatus.residueObservationStatus testObservation
+      exactAnswers =
+        ResourceRegistry.PerRunResidueAnswers
+          { ResourceRegistry.perRunAnswerAwsEks = exactEks
+          , ResourceRegistry.perRunAnswerAwsEksSubzone = exactSubzone
+          , ResourceRegistry.perRunAnswerAwsTest = exactTest
+          }
+      -- Sprint 4.84: the narration names each stack from the registry entry the
+      -- identity selects, rather than from a separately written label list
+      -- zipped against the resolutions by position.
       liveSummary =
         intercalate
           ", "
           ( zipWith
-              (\name resolution -> name ++ "=" ++ ResidueStatus.renderResidueResolution resolution)
-              ["aws-eks", "aws-eks-subzone", "aws-test"]
+              ( \identity resolution ->
+                  ResourceRegistry.resourceName
+                    (ResourceRegistry.perRunManagedResourceFor identity)
+                    ++ "="
+                    ++ ResidueStatus.renderResidueResolution resolution
+              )
+              ResourceRegistry.perRunStackIdentities
               resolutions
           )
   writeOutputLine ("Per-run residue status: " ++ liveSummary)
@@ -3264,12 +3282,7 @@ runNativeDeleteCascade repoRoot = do
         )
       pure (ExitFailure 1)
     CascadeSubstrateKnown cascadeSubstrate ->
-      runAuthorizedDeleteCascade
-        repoRoot
-        cascadeSubstrate
-        exactEks
-        exactSubzone
-        exactTest
+      runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers
 
 -- | Run mutating cascade phases only after every exact per-stack observation
 -- is known. Keeping this boundary separate prevents global audit evidence from
@@ -3277,12 +3290,10 @@ runNativeDeleteCascade repoRoot = do
 runAuthorizedDeleteCascade
   :: FilePath
   -> Substrate
-  -> ResidueStatus.ResidueStatus
-  -> ResidueStatus.ResidueStatus
-  -> ResidueStatus.ResidueStatus
+  -> ResourceRegistry.PerRunResidueAnswers
   -> IO ExitCode
-runAuthorizedDeleteCascade repoRoot cascadeSubstrate eksStatus subzoneStatus testStatus = do
-  let perRunPairs = ResourceRegistry.pairPerRunResidue eksStatus subzoneStatus testStatus
+runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
+  let perRunPairs = ResourceRegistry.pairPerRunResidue exactAnswers
   -- Step 2: drain before per-run destroys so in-cluster controllers can
   -- release AWS-side resources while they are still serving.
   drainExit <- runCascadeDrainPhase repoRoot cascadeSubstrate

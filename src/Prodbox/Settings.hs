@@ -770,7 +770,12 @@ callerProjectionScope caller = case caller of
   LifecycleAuthorityTestHarness -> ConfigProjectionTestHarness
 
 -- | Resolve the root operational credential through the exact registered
--- Lifecycle-provider Target Agent object.  The Tier-0 SecretRefs remain a
+-- Lifecycle-provider Target Agent object.
+--
+-- LEGACY-ESCAPE[tier0-generic-aws-credential-aggregate]: the general-purpose
+-- Tier-0 @aws.*@ aggregate and this resolver still represent the registered
+-- Lifecycle-provider identity outside its fenced Provider-Worker ownership.
+-- Registered in "Prodbox.Legacy.EscapeRegistry"; owned by Sprint @4.50@.  The Tier-0 SecretRefs remain a
 -- non-secret schema assertion; no supported host path reads Vault KV fields.
 resolveLifecycleProviderCredentials
   :: FilePath -> String -> AwsCredentialsRef -> IO (Either String Credentials)

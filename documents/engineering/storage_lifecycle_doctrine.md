@@ -94,12 +94,13 @@ provenance, not a parallel status ledger.
 - The same retain-on-teardown policy governs the AWS/EKS pre-created EBS volumes: they are the
   EBS analog of `.data/`. `prodbox cluster delete`, `prodbox aws stack eks destroy`, and per-run
   Pulumi destroy never delete the retained EBS volumes (they are `Retain` and are not owned by
-  the per-run `aws-eks` Pulumi stack). **Current:** suite postflight, `cluster delete --cascade`, and
-  `prodbox aws ebs reap-test --yes` call the legacy tag/cluster-filtered reaper under the single
-  `aws-ebs-volumes :: LongLived` registry family; a successful provider delete exit is not exact
-  absence read-back. **Target:** test-scoped EBS has a distinct statically `PerRun` registry key, and
-  each cleanup surface requires exact identity plus absence read-back before success; partial or
-  unobservable cleanup remains incomplete rather than claiming that no volume leaked.
+  the per-run `aws-eks` Pulumi stack). Test-scoped EBS is the distinct statically `PerRun` registry
+  key `aws-ebs-volumes-per-run-test`; retained EBS is the statically `LongLived`
+  `aws-ebs-volumes-production-retained`. **Current:** suite postflight, `cluster delete --cascade`,
+  and `prodbox aws ebs reap-test --yes` still call the legacy tag/cluster-filtered reaper, and a
+  successful provider delete exit is not exact absence read-back. **Target:** each cleanup surface
+  requires exact identity plus absence read-back before success; partial or unobservable cleanup
+  remains incomplete rather than claiming that no volume leaked.
 - When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
   mount as deleted, the Haskell backend helper recreates the declared retained host path,
   reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before

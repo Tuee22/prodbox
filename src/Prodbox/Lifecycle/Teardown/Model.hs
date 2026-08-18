@@ -17,6 +17,7 @@ module Prodbox.Lifecycle.Teardown.Model
   , cleanupSurfaceFromWitness
   , RegisteredResourceKey (..)
   , registeredResourceKeyText
+  , registeredResourceKeyFromText
   , LifecycleAuthority (..)
   , ObservationAuthority (..)
   , ManagedResourceCoordinate (..)
@@ -124,6 +125,13 @@ data RegisteredResourceKey
   | AwsTestKey
   | AwsEbsPerRunTestKey
   | AwsEbsProductionRetainedKey
+  | -- | Sprint 4.85: the throwaway Route 53 hosted zone the @dns-aws@
+    -- validation creates.  It is billable, per-run, and discovered by name
+    -- prefix rather than by a remembered id, and until now it was registered
+    -- in the flat lifecycle inventory and nowhere in the typed registry — so
+    -- @compileDesiredAbsenceProgram@ emitted no node for it and only the
+    -- harness's own cleanup graph swept it.
+    AwsDnsValidationZoneKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -134,6 +142,18 @@ registeredResourceKeyText key = case key of
   AwsTestKey -> "aws-test"
   AwsEbsPerRunTestKey -> "aws-ebs-volumes-per-run-test"
   AwsEbsProductionRetainedKey -> "aws-ebs-volumes-production-retained"
+  -- Matches the flat inventory row exactly; the join is machine-enforced by
+  -- @prodbox dev check@.
+  AwsDnsValidationZoneKey -> "dns-aws-validation-hosted-zone"
+
+-- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
+--
+-- Total in the refusing direction: a name this binary does not register has no
+-- key, and a caller naming one is refused rather than matched approximately.
+-- Derived from the enumeration itself, so the two directions cannot disagree.
+registeredResourceKeyFromText :: Text -> Maybe RegisteredResourceKey
+registeredResourceKeyFromText name =
+  lookup name [(registeredResourceKeyText key, key) | key <- [minBound .. maxBound]]
 
 -- | The sole lifecycle authority in this architecture.  Remote AWS and EKS
 -- resources remain below this local authority.
@@ -168,6 +188,14 @@ data ManagedResourceCoordinate
       { awsEbsOwnershipTagKey :: !Text
       , awsEbsOwnershipTagValue :: !Text
       }
+  | -- | Sprint 4.85: a Route 53 hosted zone discovered by the prefix that is
+    -- both its name and its caller reference.  The id is only known at run
+    -- time, so the coordinate names the /identity a sweep can rediscover/
+    -- rather than a value a process had to remember — which is what makes a
+    -- zone leaked by an exception or a cancelled run still addressable.
+    AwsRoute53ValidationZoneCoordinate
+      { awsRoute53ZoneNamePrefix :: !Text
+      }
   deriving (Eq, Ord, Show)
 
 coordinateIsAws :: ManagedResourceCoordinate -> Bool
@@ -176,6 +204,7 @@ coordinateIsAws coordinate = case coordinate of
   AwsPulumiStackCoordinate {} -> True
   AwsEbsPerRunFamilyCoordinate {} -> True
   AwsEbsRetainedFamilyCoordinate {} -> True
+  AwsRoute53ValidationZoneCoordinate {} -> True
 
 newtype ManagedResourceCoordinateDigest
   = ManagedResourceCoordinateDigest Text
@@ -209,6 +238,8 @@ managedResourceCoordinateDigest coordinate =
         ]
     AwsEbsRetainedFamilyCoordinate tagKey tagValue ->
       Text.intercalate "\NUL" ["aws-ebs-retained-family/v1", tagKey, tagValue]
+    AwsRoute53ValidationZoneCoordinate namePrefix ->
+      Text.intercalate "\NUL" ["aws-route53-validation-zone/v1", namePrefix]
 
   renderHexByte byte = case showHex byte "" of
     [digit] -> ['0', digit]

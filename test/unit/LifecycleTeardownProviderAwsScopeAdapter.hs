@@ -357,10 +357,20 @@ providerAwsScopeAdapterSuite =
         sourceImportersFor
           "src"
           "import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal"
+      -- Sprint 4.84 admits the Authority composition root: `Runtime` binds the
+      -- package-private reader capability to the retained admission repository
+      -- so the registered-stack generation producer can read a Provider
+      -- AWS-scope receipt back.  It composes the reader and never decodes a
+      -- receipt itself, which is why the minting surface stays closed.
       receiptInternalUsers
         `shouldBe` [ "src/Prodbox/ControlPlane/ProviderAwsScopeReceipt.hs"
                    , "src/Prodbox/ControlPlane/ProviderWorkerClient.hs"
+                   , "src/Prodbox/ControlPlane/Runtime.hs"
                    ]
+      runtimeSource <- readFile "src/Prodbox/ControlPlane/Runtime.hs"
+      runtimeSource `shouldContain` "lifecycleAuthorityProviderAwsScopeReaderInternal"
+      runtimeSource `shouldNotContain` "verifyAuthorityProviderAwsScopeCompletion"
+      runtimeSource `shouldNotContain` "providerExecutionResultForAuthority"
       creationSource <-
         readFile "src/Prodbox/ControlPlane/AwsStackCreationBindingRepository.hs"
       creationSource `shouldNotContain` "VerifiedProviderAwsScope"

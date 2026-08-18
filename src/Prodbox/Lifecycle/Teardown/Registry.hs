@@ -42,6 +42,7 @@ module Prodbox.Lifecycle.Teardown.Registry
   , awsTestResource
   , awsEbsPerRunTestResource
   , awsEbsProductionRetainedResource
+  , awsDnsValidationZoneResource
   , managedResourceRegistry
   , lifecycleRegistry
   , lookupRegisteredIdentity
@@ -271,6 +272,26 @@ awsEbsPerRunTestResource =
     )
     AwsResourceApiAuthority
 
+-- | Sprint 4.85: the throwaway Route 53 hosted zone the @dns-aws@ validation
+-- creates.
+--
+-- It was registered in the flat lifecycle inventory and nowhere in the typed
+-- registry, so @compileDesiredAbsenceProgram@ emitted no node for it and the
+-- only thing sweeping a billable zone was the harness's own cleanup graph — the
+-- graph Sprint @5.36@ deletes.  Registering it is what lets the lifecycle-owned
+-- per-run program express the obligation the harness currently carries.
+--
+-- 'SingletonKind' rather than a family: one validation run creates one zone, and
+-- the prefix is its identity rather than a membership predicate over many.
+awsDnsValidationZoneResource :: ManagedResourceDescriptor 'PerRun 'Singleton
+awsDnsValidationZoneResource =
+  mkManagedResource
+    AwsDnsValidationZoneKey
+    PerRunLifecycle
+    SingletonKind
+    (AwsRoute53ValidationZoneCoordinate "prodbox-dns-aws-")
+    AwsResourceApiAuthority
+
 awsEbsProductionRetainedResource
   :: ManagedResourceDescriptor 'LongLived 'VolumeFamily
 awsEbsProductionRetainedResource =
@@ -287,6 +308,7 @@ managedResourceRegistry =
   , SomeManagedResourceDescriptor awsEksSubzoneResource
   , SomeManagedResourceDescriptor awsTestResource
   , SomeManagedResourceDescriptor awsEbsPerRunTestResource
+  , SomeManagedResourceDescriptor awsDnsValidationZoneResource
   , SomeManagedResourceDescriptor awsEbsProductionRetainedResource
   ]
 

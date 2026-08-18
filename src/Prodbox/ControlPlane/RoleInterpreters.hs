@@ -110,8 +110,7 @@ import Prodbox.ControlPlane.AwsStackCreationBindingEndpoint
   , serveAwsStackCreationEndpointRequest
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
-  ( AwsStackCreationBindingClient
-  , AwsStackCreationBindingRepository
+  ( AwsStackCreationBindingRepository
   )
 import Prodbox.ControlPlane.AwsStackReaderEndpoint
   ( awsStackReaderEndpointBody
@@ -199,6 +198,12 @@ import Prodbox.ControlPlane.RecoveryPlaneEndpoint
   , recoveryPlaneEndpointBody
   , recoveryPlaneEndpointStatus
   , serveRecoveryPlaneEndpointRequest
+  )
+import Prodbox.ControlPlane.RegisteredStackCleanupSelection
+  ( RegisteredStackCleanupBoundary
+  )
+import Prodbox.ControlPlane.RegisteredStackCreationProducer
+  ( RegisteredStackCreationBoundary
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot (verifiedCallerSlotPrincipal)
@@ -661,30 +666,36 @@ lifecycleAuthorityAwsStackReaderAuthenticatedHandler clientFor inner =
 -- operation/revision/scope request with the retained admission repository.
 lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
   :: (Monad m)
-  => AwsStackCreationBindingClient m
+  => RegisteredStackCreationBoundary m
+  -> RegisteredStackCleanupBoundary m
   -> AwsStackCreationBindingRepository m
   -> AuthenticatedRoleHandler m
   -> AuthenticatedRoleHandler m
-lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler client repository inner =
-  AuthenticatedRoleHandler
-    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
-    , authenticatedHandlerHandle = handle
-    }
- where
-  handle callerSlot route body = case route of
-    LifecycleAwsStackCreationBinding -> do
-      result <-
-        serveAwsStackCreationEndpointRequest
-          client
-          repository
-          (LazyByteString.fromStrict body)
-      pure
-        ( Just
-            ( awsStackCreationEndpointStatus result
-            , awsStackCreationEndpointBody result
-            )
-        )
-    _ -> authenticatedHandlerHandle inner callerSlot route body
+lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
+  producer
+  cleanupBoundary
+  repository
+  inner =
+    AuthenticatedRoleHandler
+      { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+      , authenticatedHandlerHandle = handle
+      }
+   where
+    handle callerSlot route body = case route of
+      LifecycleAwsStackCreationBinding -> do
+        result <-
+          serveAwsStackCreationEndpointRequest
+            producer
+            cleanupBoundary
+            repository
+            (LazyByteString.fromStrict body)
+        pure
+          ( Just
+              ( awsStackCreationEndpointStatus result
+              , awsStackCreationEndpointBody result
+              )
+          )
+      _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the raw Authority ownership-manifest observation protocol.  Its
 -- authenticated transport client alone maps an exact Missing observation to

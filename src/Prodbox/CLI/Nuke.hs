@@ -113,6 +113,7 @@ import Prodbox.Lifecycle.Decommission.Manifest
   , decommissionNodeFrameId
   , manifestClusterId
   , manifestNodes
+  , requiredSingletonDecommissionNodes
   , verifiedManifestPlan
   , verifiedVerifierBinding
   )
@@ -615,20 +616,10 @@ validateProductionManifest expectedBinding verified
   plan = verifiedManifestPlan verified
   nodes = manifestNodes plan
   targetReferences = [reference | TargetGeneration reference _ <- nodes]
-  missingSingletons = filter (`notElem` nodes) requiredSingletonNodes
-
-requiredSingletonNodes :: [DecommissionNode]
-requiredSingletonNodes =
-  [ SesConsumerQuiescence
-  , SesProviderStack
-  , SesSmtpIam
-  , RetainedCustody
-  , TlsRetainedObjects
-  , TlsRetentionIdentity
-  , BackupObjects
-  , BackupPrefixAbsenceProof
-  , SharedObjectBucket
-  ]
+  -- Sprint 4.85: derived from the closed singleton enumeration rather than
+  -- authored here. A newly added singleton node was previously silently
+  -- optional -- the verifier would accept a manifest that never names it.
+  missingSingletons = filter (`notElem` nodes) requiredSingletonDecommissionNodes
 
 nukeNodeProgramTag :: DecommissionNode -> ByteString
 nukeNodeProgramTag node = case node of

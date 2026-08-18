@@ -22,16 +22,19 @@ the same queue.
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `3.41` | 3 | Next | — |
-| 2 | `4.84` | 4 | Parked | — |
-| 3 | `4.85` | 4 | Parked | `4.84` |
-| 4 | `4.86` | 4 | Parked | `3.41`, `4.85` |
-| 5 | `5.36` | 5 | Parked | `4.85` |
-| 6 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
-| 7 | `7.36` | 7 | Parked | `4.85` |
+| 1 | `4.84` | 4 | Next | — |
+| 2 | `4.85` | 4 | Parked | `4.84` |
+| 3 | `4.86` | 4 | Parked | `4.85` |
+| 4 | `5.36` | 5 | Parked | `4.85` |
+| 5 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
+| 6 | `7.36` | 7 | Parked | `4.85` |
 
-Sprint `5.35` is Done on its code-owned frozen-oracle surface and is not an open queue row. Its
-oracle remains a required gate for `5.36` and for the repository-level release checks. The
+Sprints `3.41` and `5.35` are Done on their code-owned surfaces and are not open queue rows.
+Sprint `3.41` closed on 2026-08-17 with the recovery-only repair renderer, the versioned retained
+artifact authority, the stopped/absent/healthy repair matrix, and the pure deletion-survivor
+projection; its stopped/absent host exercise remains a non-blocking Live-proof, and acquiring and
+retaining the artifact bytes its plans name is lifecycle execution owned by Sprint `4.86`. Sprint
+`5.35`'s oracle remains a required gate for `5.36` and for the repository-level release checks. The
 partially implemented Phase 4, 5, and 7 foundations stay preserved while parked; their presence
 does not authorize skipping the numerical queue.
 
@@ -48,6 +51,402 @@ single-writer cutover. The replacement cannot construct completion until the pre
 is durable and the retained-root host record has made its exact locked `Prepared -> Absent`
 transition with independent read-back. Deployment qualification remains pending and cannot be
 substituted for by partially landed code or an old live run.
+
+**Session checkpoint (2026-08-17, current).** Seven Sprint-`4.84` increments and one
+Sprint-`4.85` increment landed. The queue is
+unchanged; `4.84` stays `Next` because its named remaining item — the production consumer cutover,
+sequenced with `4.85`/`5.36`/`6.5` — is untouched.
+
+**The audited region now bounds what a clean terminal audit may claim.** It closes the bound the
+previous increment recorded rather than fixed. The field-of-view join measured
+*which tags the audit asks for* and corrected nineteen resources; it explicitly stopped at the second
+half of reach, because the Resource Groups Tagging API is **regional** and returns global-service
+resources (IAM, Route 53) only from the global-service region, while the audit composes its queries
+from the audited scope and issues them in that scope's own region. Nothing joined the two. Whether a
+tagged IAM role was inside or outside the audit's field of view was therefore a fact about the
+configured region that no type recorded — and every observation to date was taken from
+`defaultAwsRegion`, which *is* that region, which is precisely what kept the dependency invisible.
+
+`Prodbox.Lifecycle.Teardown.TaggingApiReach` is the binding, and it is a leaf module so the
+provisioning-time join and the audit-time verdict decide reach from one table instead of two agreeing
+statements. `taggingApiReachTable` became a table rather than a `case` so that
+`globalServicesRequiringGlobalRegion` is **derived from it** — a hand-authored list of global services
+beside the classifier would be the same defect one layer down. `mkRetainedMatcher` now derives
+discoverability from three facts, none sufficient alone: the writer authors a queried tag, the catalog
+asks for it, and the audited region answers for the family's service. And `terminalAuditResultFor`
+keeps its escaped arm unchanged — a discovered escapee is still an escapee, because a blind spot
+cannot launder one — while lowering the would-be-clean arm outside the global-service region to
+`TerminalAuditUnobservable`, carrying one failure per unqueried service that names the service, the
+region that answered, and why absence there is not evidence.
+
+The IAM families author no queried tag today, so the discoverability change alters no current value;
+it makes the failure non-constructible. That is the point. The moment a writer starts tagging the
+operational principal, an out-of-region audit would otherwise report it permanently absent-declared —
+the retention defect with no defect behind it that the SES capture bucket already demonstrated once.
+The counterexample is visible in the fixtures: the retained-inventory suite audited from
+`ca-central-1` and asserted `TerminalAuditConfirmedClean`, having asked about no IAM resource at all.
+
+The ledger row is narrowed rather than closed. What survives is the superseded executing sweep in
+`Prodbox.Lifecycle.TagSweep`, which carries no region at all — it neither selects the region it queries
+nor reports which one answered. It is deleted rather than fixed by the consumer conversion this sprint
+still owns.
+
+**The external-caller token failure now reaches its caller as a value.** The previous session made the
+ServiceAccount observation cause a typed ADT and then left `validateServiceAccountProcess` flattening
+it to one `String` at the call site, so the distinction died where it was created. That adapter is
+deleted. `mintExternalCallerToken` returns `ExternalCallerTokenError`, carrying the classification
+whole and separating the two later `kubectl` boundaries into a subprocess that never started and an
+API that answered and refused.
+
+The consequence is a behavior change with one reason behind it. Every arm previously became
+`VaultSessionUnavailable`, so an RBAC denial — permanent for the presented identity — was
+indistinguishable from a transport failure and read to an operator as *retry later*.
+`externalCallerTokenSessionError` derives its class from
+`externalCallerTokenAuthorityRefusedAuthorization` rather than restating the mapping, so a new arm
+cannot classify one way in the predicate and the other way at the boundary. Refused authorization is
+deliberately narrower than "the API answered": an absent ServiceAccount and a mismatched read-back are
+answers, and neither is a denial. That row stays Pending for its last half — these are still
+authentication-preflight observations rather than nodes in the keyed observation algebra.
+
+**The residue answer's layer is complete and consultable.** Sprint `4.81` made a residue answer carry
+the authority that produced it. Re-reading it found two gaps, both measurable. The per-run triple
+minted its harness bypass at `ResidueLayerHarnessBypass`, but the two **long-lived** queries —
+`aws-ses` and the retained public-edge TLS material — returned a bare `ResidueStatus` with no layer at
+all, so on exactly the classes where "absent" authorizes the most, a bypass absence, a checkpoint
+absence, and an AWS absence were one indistinguishable value. That is the pre-`4.81` position
+surviving in the paths the distinction was never applied to. Both now name their authority, and the
+two differ for a reason: `aws-ses` is answered by listing an encrypted *checkpoint*, while the
+retained TLS material is answered by listing *S3*.
+
+The second gap is that the layer was consulted by nothing — every consumer stripped it with
+`residueObservationStatus` and decided over the bare status. `residueLayerAnswersResourceExistence`
+and `residueObservationProvesAwsAbsence` are the classifier: only AWS may answer whether an AWS
+resource exists. It is deliberately **not** wired into `residueBlocksTeardownGate` yet, and the reason
+is evidence rather than typing — doing so today would refuse every long-lived teardown, because
+`aws-ses` has no AWS-side observer (`7.36`) and the fixtures still supply absence through the bypass
+(`5.36`). The predicate exists so those land as one decision rather than two rules discovered
+separately.
+
+**The per-run join is keyed rather than positional.** This sprint's counterexample is a global answer
+copied onto three per-stack observations; one layer under it sat the same shape in miniature.
+`pairPerRunResidue` was `zip perRunManagedResources [eksStatus, subzoneStatus, testStatus]`, so the
+join between a stack's registry entry — carrying its *destroy command* — and the observation about
+that stack held only while two independently written orders happened to agree, and nothing enforced
+the agreement. Every argument had type `ResidueStatus`, so swapping two at a call site was invisible;
+`runAuthorizedDeleteCascade`, the destructive boundary, took the three positionally.
+
+`PerRunStackIdentity` is the closed enumeration that now addresses both sides:
+`perRunManagedResourceFor` and `perRunResidueAnswerFor` are total functions of it,
+`perRunManagedResources` is derived from it, the answers travel as a named record, and the cascade's
+per-run narration names each stack from the registry entry the identity selects rather than from a
+label list zipped by position. Adding a per-run stack is an exhaustiveness failure in three places
+instead of a silent misalignment. That row stays Pending for its larger half — `queryAwsLayerForPerRun`
+and the global-answer fan-out are unchanged, and the consumer conversion deletes them.
+
+**The effect-bearing registry owns its own identities.** `operationalManagedResources` was authored in
+`Prodbox.Aws`, so the module supplying the credentials-bearing *effect* also authored the identity,
+the lifecycle class, and the operator-facing command text — a caller outside the registry could
+register a name the registry never declared. `OperationalResourceIdentity` is now the closed
+enumeration and `Prodbox.Aws` maps a total function over it supplying only `resourceDestroy`.
+
+Alongside that, `resourceClass` was a **third** independent statement of a resource's lifecycle class,
+after the typed teardown registry and `resourceLifecycleClasses`, joined to neither — and not
+decorative: it selects the operator-facing scope label for a *destructive* reconcile batch, beside the
+table `guardTestDelete` refuses against. `effectRegistryLifecycleClassViolations` joins it in `dev
+check`, reading name and class off the constructed entries rather than restating them. The two tables
+were measured **in agreement** today, so this one is a cannot-drift guard rather than a corrected
+disagreement — worth saying plainly, because the same join between the typed registry and the flat
+inventory did find one.
+
+**The submitting lane exists, and one discarded value was why it did not.** Every part of the
+generation was proven and none of it ran. Committing a generation needs the `OperationId` of the
+admitted create and of the admitted `ObserveProviderAwsScope`; an `OperationId` is
+`(epoch, client, sequence, digest)` and the epoch and sequence are assigned **at admission**, so a
+submitter cannot derive one — it has to be told. The Provider dispatch response returned only bounded
+evidence, and its duplicate-completed arm pattern-matched the operation to `_`. The identity was in
+hand at both settlement sites and thrown away at both.
+
+Both settled arms now carry it, `providerDispatchFormatVersion` is `2` so a caller at another wire
+version is refused explicitly rather than by decode failure, and
+`dispatchAuthorityProviderIntent` is defined as the projection of the operation-carrying form so the
+dozens of receipt-narrating callers cannot drift from it.
+`Prodbox.ControlPlane.RegisteredStackCreationSubmitter` composes the lane, and all three per-run
+stacks create through it; their destroy paths deliberately do not, because a destroy names a cycle
+that already exists and must not open one.
+
+The load-bearing choice is the **foundation**, which is part of the run-invariant generation *key*: it
+comes from the retained control plane's cluster id — stable across runs by construction — never from a
+per-invocation value. The creating run scope is the exact opposite, recorded as provenance and never
+matched on. A focused case pins both halves together, because getting them the wrong way round is the
+failure the identity exists to prevent.
+
+**Both directions of the generation are now reachable from a host run.** Committing a generation and
+selecting one are two halves of one identity, and only the Authority could perform either. The
+consumer half is now served on the **same route** the creating run commits through — a third action
+rather than a route of its own — so one wire version governs both directions and a caller cannot be
+current for one and stale for the other.
+
+The selection request names only what a cleanup run can prove: the registered key, its own admitted
+scope observation, and its own scope. No ordinal, no creating run scope, no account or region — the
+cycle is reached through the series cursor and nothing else. The response carries the generation's
+canonical record bytes and the caller decodes them against *its own* compiled registry, so a selection
+is validated rather than trusted because the Authority sent it. A missing generation maps to
+`ReplyNotFound`, because a cleanup run that finds nothing is looking at a stack no admitted create ever
+committed a cycle for.
+
+`selectRegisteredStackGenerationForCleanup` selects under the **same foundation** a creating run
+committed under, because both derive it from the retained cluster id — that shared derivation is what
+makes cross-run selection possible at all.
+
+**`4.84` still stays `Next`**, and the reason is now narrower than it was. Its remaining item is no
+longer "the selection is unreachable" but "the existing callers still reach their targets through the
+old composition": `TestRunner`, `DurableCleanupComposition`, and `runNativeDeleteCascade`. Converting
+them would build the new selection on top of the composition `4.85`/`5.36`/`6.5` delete, which is why
+the plan sequences that conversion with them rather than reassigning it.
+
+**Sprint `4.85`: the per-run projection now reaches what the harness actually sweeps.** Sprint `5.36`
+migrates `TestRunner` onto the lifecycle-owned cleanup run, which is only correct if the compiled
+program can express what the harness cleans. Measuring the two against each other found the per-run
+projection **short by one billable resource**: the `dns-aws` validation hosted zone was registered in
+the flat inventory, had a dedicated owner module with create/delete/read-back/sweep, and was swept by
+an always-run node in the harness's own graph — the graph `5.36` deletes — but had no typed descriptor,
+so `compileDesiredAbsenceProgram` emitted no node for it on any surface. Migrating the harness first
+would have deleted the only thing sweeping a billable Route 53 zone.
+
+It is now a registered `PerRun` `Singleton` whose coordinate names the prefix that is both the zone's
+name and its caller reference — an identity a sweep can *rediscover* rather than one a process had to
+remember. And the join that would have caught it is closed: the existing parity gate runs typed → flat
+and cannot see a flat row the typed registry never registered, so
+`untypedLifecycleInventoryViolations` now runs flat → typed, requiring every unregistered row to carry
+a stated reason and failing on a stale exemption.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint
+docs` exit 0, and the full unit binary at **4102/4102** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation). No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, one increment earlier).** One Sprint-`4.84` increment landed. The
+queue was unchanged.
+
+It is the same defect shape the last two sessions have been closing, one layer earlier than before.
+The previous increments made the audit's *answers* exact; this one measured what the audit can *ask
+about*. `terminalAuditQueryCatalog` named five tag families and asserted in a comment that they cover
+every prodbox-owned family, so nothing carrying none of them is ever returned — and
+`TerminalAuditConfirmedClean` over an inventory that never contained a resource reads exactly like a
+statement that the resource is gone. Whether the families cover what prodbox creates is a fact about
+the provisioning programs under `pulumi/`, and no code read them.
+
+Reading them falsified the claim by **nineteen resources**, and the largest hole was the whole of one
+substrate: every resource of the `aws-test` stack — VPC, internet gateway, route table, three
+subnets, the security group, and all three EC2 instances — carried only a `Name` tag, so three leaked
+instances would have been invisible to the audit that exists to find them. In `aws-eks` the same was
+true of the EKS cluster, node group, EBS-CSI addon, both cluster/node IAM roles, the OIDC provider,
+and both load-balancer-controller identities; its subnets were discoverable and the cluster itself was
+not.
+
+`Prodbox.Lifecycle.Teardown.AuditFieldOfView` is the join, and it is gated in `dev check`. The
+program set is enumerated from disk rather than declared, so a new provisioning program is covered by
+existing — the one inventory shape that cannot drift, chosen because a hand-authored inventory joined
+to nothing is precisely what failed here. An unrecognized provider type refuses instead of guessing,
+so adding a resource type is a build failure until someone states whether AWS tags it. All nineteen
+were corrected by authoring `prodbox.io/managed-by: prodbox`; the registered IAM policy already grants
+`iam:TagRole`, `iam:TagPolicy`, `iam:TagOpenIDConnectProvider`, `ec2:*`, and `eks:*`, so no permission
+change was needed.
+
+The second creation surface disproved the same claim from the other direction. `RetainedMatcher`
+carried a hand-authored discoverability flag that declared the SES capture bucket discoverable, while
+that family's supported writer — the Provider Worker's `ReconcileSesCaptureBucket` intent — created
+the bucket carrying no tag at all, so the audit could neither confirm it present nor find it escaped
+and the declared-but-absent report would have fired forever. Discoverability is now computed from the
+tags the writer authors and the queries the catalog issues, so a family whose writer stops tagging
+becomes not-discoverable by construction. `Prodbox.Lifecycle.OwnedResourceTags` gives the retained
+buckets one compiled tag value where there were three agreeing statements — the state bucket's writer
+and its read-back expectation were separately authored copies — and the SES intent now authors and
+observes its set, repairing an untagged bucket instead of reporting it clean.
+
+This changes live audit behavior deliberately: a cascade or `nuke` that leaves one of the newly
+tagged per-run resources behind now surfaces it as an escape where the sweep previously returned
+nothing. The retention carve-out is unaffected — it keys on `prodbox.io/role=long-lived-pulumi-state`,
+`prodbox.io/substrate=shared`, and the retained-EBS marker, none of which a per-run resource carries,
+and the capture bucket's writer authors `substrate=shared`.
+
+One bound is recorded rather than closed, as a new `Pending Removal` row: the Tagging API is regional
+and returns global-service resources (IAM, Route 53) only from the global-service region, while the
+audit issues its queries in the audited scope's own region and binds nothing about that. Today's
+`defaultAwsRegion` happens to be that region, which is what makes the dependency invisible.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint
+docs` exit 0, and the full unit binary at **4070/4070** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation). No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged; the newly authored tags are a code-owned change whose live effect on a real audit is
+itself an outstanding live-infra proof. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, prior).** Four more increments landed — one on Sprint `4.84`,
+three on Sprint `4.85`. The queue is unchanged; `4.84` stays `Next` because its named remaining item
+(the production consumer cutover, sequenced with `4.85`/`5.36`/`6.5`) is untouched.
+
+Three of the four close the same defect shape: an inventory that states a load-bearing fact and is
+joined to nothing that could contradict it.
+
+- **The operational-credential liveness edge is measured (`4.84`).**
+  `OperationalCredentialGraphConsumer` enumerates the teardown operations whose interpreters may open
+  a Lifecycle-provider session, and the disposition-blocker list rests on it. Re-reading the
+  interpreters against it found it **under-complete by three**: `AwsCheckpointInterpreter` reaches the
+  shared registered-target interpreter in checkpoint recovery read-back, retirement, and retirement
+  read-back as well. The omissions are the *late* ones — `targetCompletionName` makes the retirement
+  read-back every stack target's completion node — and an ordering claim about when a credential may
+  be disposed of turns on which consumer is last. `Teardown.OperationalCredentialCoverage` now makes
+  the forward direction hold by construction (a total classifier whose result type is the inventory)
+  and proves the reverse plus the ordering property — every consumer node is a transitive predecessor
+  of `cascade/audit-escapes` — in `dev check`. A fixed regression pins that the ancestry relation is
+  discriminating rather than trivially total.
+- **The mandatory decommission node set is derived (`4.85`).** Every singleton `DecommissionNode` is
+  mandatory, but the verifier enforced that against a hand-authored list of nine, so a newly added
+  singleton would have been silently optional — a signed manifest that never named it would verify
+  and the run would report success having never executed it. That is exactly the trap the four
+  scheduled nodes (home uninstall, `.data` disposition, final audit, terminal receipt) would have
+  walked into. `DecommissionSingletonNode` is now the closed enumeration, the required set is derived
+  from it, and both directions are pinned. It is a separate type rather than a restructuring, because
+  `DecommissionNode`'s `Serialise` instance feeds frame IDs and the signed manifest digest.
+- **Explicit per-run can report completion (`4.85`).** `SurfaceCompletionEvidence` had only its
+  `Cascade` constructor, so no ordinary surface's `Done` arm was reachable. Explicit per-run is the
+  one whose obligation is fully determined by the compiled program — it has no local-uninstall arm, so
+  its registered-target read-backs, checkpoint-retirement read-backs, and independently read-back
+  report *are* the completion evidence. Cross-surface conversion is prevented by the index; the
+  surface tag and an `Established` recovery plane are re-checked because classification cannot produce
+  either arm, so only a mis-minted value could carry one.
+
+`OperationalTeardown` and `ExplicitLongLived` deliberately still have no minter, and the reason is
+evidence rather than typing: the first projects **zero** registered targets (the typed registry has no
+`Operational` descriptor), the second needs an aggregate operator permit that has no type, and
+registering the operational descriptors is itself constrained — `OperationalCredentialDispositionBlocker`
+records that the current graph asks for disposition before the terminal audit while the audit doctrine
+requires the credential live through it.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint
+docs` exit 0, and the full unit binary at **4046/4046** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation). No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, earlier).** Two more Sprint-`4.84` increments landed. The sprint
+stays `Next` because its named remaining item is unchanged, but two of its deliverables closed:
+
+- **The two EBS registry identities.** The typed registry has carried `AwsEbsPerRunTestKey` and
+  `AwsEbsProductionRetainedKey` as separately classed descriptors for several increments, while the
+  flat inventory those descriptors are documented and *guarded* through still carried one
+  `aws-ebs-volumes :: LongLived` row — so `guardTestDelete` and the published `substrates.md` table
+  were both asserting the test-scoped family was retained. `resourceLifecycleClasses` now carries
+  both identities under exactly the names the typed keys render, `ebsManagedResourceName` is indexed
+  by the observing `EbsVolumeScope` rather than being one shared constant, the regenerated
+  `substrates.md` section carries the two target rows in place of the one, and
+  `managedResourceRegistryParityViolations` fails `prodbox dev check` on any class disagreement
+  between the two tables. A focused case runs the same discovered bytes — whose own tag list is
+  empty — through both scopes and pins two different registered identities.
+- **The ServiceAccount observation cause is a value.** The 2026-08-15 run's caller-ServiceAccount
+  observation reported unobservable with its stderr discarded, and `kubectl` exits `1` for an
+  unreachable API server, refused credentials, an RBAC denial, an unresolvable context, and a
+  genuinely absent object alike — so the exit code carried none of the distinction and the discarded
+  stderr carried all of it. `ServiceAccountObservationFailure` is now a closed ADT over those causes,
+  `classifyServiceAccountObservation` is the total pure classifier, and
+  `serviceAccountObservationAuthorityReached` separates the arms where the API answered from the arms
+  where it was never reached, so only a reached authority can report absence. An unrecognized
+  diagnostic keeps its exit code and exact stderr rather than being rounded to a known cause.
+
+Both ledger rows stay `Pending Removal` for their unclosed halves: the managed-resource registry is
+still effect-bearing (raw command text and `IO` destroy hooks), and `validateServiceAccountProcess`
+survives as a rendering adapter until its callers consume the typed failure instead of re-flattening
+it.
+
+Two Sprint-`4.85` increments landed in the same session. `Prodbox.Test.*` is the validation harness,
+and it lives under `src/` because the harness ships in the binary rather than because it is supported
+production composition — a distinction that was only a convention, and one that had already been
+crossed: `Prodbox.Lifecycle.Dns01Challenge` imported `Prodbox.Test.ManagedCleanupPlan` to express its
+cleanup edge, and built its registry entry from two caller-supplied `FilePath -> IO` closures, so a
+production teardown obligation was typed in a shape the harness owned and a caller could substitute
+the effect after the registry entry was projected. Neither closure was ever wired to a production
+caller. The obligation is now `Dns01ChallengeDesiredAbsence` — coordinate, `CleanupNodeId`, and an
+always-run `CleanupRequiresAttempt` dependency, as a value in lifecycle-owned types — with
+`dns01ChallengeDesiredAbsenceOutcome` making the delete result structurally incapable of entering the
+verdict, and everything Sprint `5.29` established (exact pre-issuance coordinate, three-valued
+absence in which *unobservable is not absence*, the always-run edge) preserved. `dev check` now fails
+on any module under `src/Prodbox/` outside the harness namespace importing `Prodbox.Test.*`, against
+an enumerated allowlist rather than a pattern, so widening it is a visible edit; Sprint `5.36` removes
+the `TestRunner` entry when it migrates the validation client. Its ledger row stays Pending because
+the challenge family has no `RegisteredResourceKey`, so the closed interpreter still compiles no node
+for it.
+
+Sprint `4.85`'s ordinary-surface completion evidence is deliberately **not** attempted yet, and the
+reason is evidence rather than typing: `OperationalTeardown` currently projects zero registered
+targets because the typed registry contains no `Operational` descriptor, and `ExplicitLongLived`
+requires an aggregate operator permit that has no type yet. Minting completion for either today would
+be a clean-completion claim over an empty projection.
+
+Gates on this tree: `prodbox dev check` exit 0, `prodbox dev docs check` exit 0, `prodbox dev lint
+docs` exit 0, and the full unit binary at **4039/4039** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation). No
+live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row is
+unchanged. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17, earlier still).** Four more Sprint-`4.84` increments landed and the sprint
+stays `Next`, with one named item left. What closed:
+
+- **The terminal retained matcher and query catalog.**
+  `Prodbox.Lifecycle.Teardown.RetainedInventory` supplies the four declared categories the sprint
+  named — S3, SES, shared identities, and the one dynamic registered family — as *exact* identities:
+  a fully-qualified ARN composed from the audited AWS scope plus a validated name binding, or a
+  registered family whose membership coordinate comes only from the compiled registry. The
+  superseded classifier retained anything wearing a retention tag; a focused case pins that the same
+  fixture row it retains, the catalog calls an escapee. Retention is surface-indexed, the retained-set
+  and query digests are derived rather than authored, and the cascade audit now joins the catalog's
+  AWS scope to the compiled program's own.
+- **The production producer.** The Authority's admitted-create path reserves the cycle and commits
+  the run-invariant generation before the run-scoped binding. Endpoint format version `2` names the
+  admitted Provider AWS-scope observation, and `ProvenProviderAwsSession` — private constructor, two
+  introductions, one per proof kind — is the only route into the generation derivation, so the
+  account and region can no longer be asserted. A commit whose scope no retained receipt proves is
+  refused rather than downgraded.
+- **The read-back-bound consumer.** `selectCurrentRegisteredStackGeneration` reaches the current
+  cycle through the series cursor and then the generation the ordinal addresses, and through nothing
+  else; an unopened series refuses instead of inferring a cycle from residue.
+- **Comprehensive escape-registry coverage.** `Prodbox.Legacy.EscapeRegistry` now carries a coverage
+  layer beside the marker bijection: an unmarked mention of a still-Pending seam's symbol fails the
+  build *while the bijection stays satisfied*, and a declared site whose symbol is gone fails too.
+  Its ledger row moved to `Completed`.
+
+What is left on `4.84` is the consumer conversion: `selectRegisteredStackForCleanup` is proven but
+`TestRunner`, `DurableCleanupComposition`, and the bespoke `runNativeDeleteCascade` still reach their
+targets through the surface/run-keyed slot and visible residue, and no production submitter calls the
+producer's route yet. Sprint `4.84` still owns that cutover; it is sequenced with the caller
+restructuring in `4.85`/`5.36`/`6.5` because converting today's callers would build the new selection
+on top of the composition those sprints delete. The unkeyed residue funnel therefore stays live and
+stays Pending Removal.
+
+The gates run on this tree were: `prodbox dev check` exit 0 (warning-clean under
+`--enable-tests --ghc-options=-Werror`), `prodbox dev lint docs` exit 0 against the `Resume Here`
+queue, and the full unit binary at **4034/4034** (the known-flaky `SSH validation until a node
+accepts` case excluded — it invokes real `ssh` under full-suite ordering and passes in isolation).
+No live-infrastructure proof was taken, so every `Live-proof: pending` and Standard-P `pending` row
+is unchanged. Working tree is uncommitted.
+
+**Session checkpoint (2026-08-17).** Sprint `3.41` closed on its code-owned surface and three
+Sprint-`4.84` increments landed: the stable registered-stack lifecycle generation; its durable
+run-invariant join — `Prodbox.ControlPlane.RegisteredStackGenerationRepository` commits a generation
+at `authority/registered-stack-generations/<digest>`, repairs a lost commit response by independent
+read-back, and binds cleanup selection to that read-back so an empty slot refuses instead of
+inferring a generation from residue; and the durable ordinal succession a producer needs to pick a
+cycle, where one retained cursor per series makes reservation idempotent in the admitted create
+operation so a lost response cannot burn a second cycle. Sprint `4.84` stays `Next`: no production
+producer reserves a cycle or writes the record and no production consumer reads it yet, and the
+terminal retained matcher catalog, the unkeyed-funnel deletion, and escape-registry coverage remain
+open. The gates run on this tree were: `prodbox dev check` exit 0 (618 library modules and 197 unit
+modules warning-clean under `--enable-tests --ghc-options=-Werror`), `prodbox dev lint docs` exit 0
+against the `Resume Here` queue, and the full unit binary at **4005/4005** (the known-flaky `SSH
+validation until a node accepts` case excluded — it invokes real `ssh` under full-suite ordering and
+passes in isolation). No live-infrastructure proof was taken, so every `Live-proof: pending` and
+every Standard-P `pending` row is unchanged. Working tree is uncommitted.
 
 **Repository reconciliation checkpoint (2026-08-16).** The reconciled current tree passes the
 code-owned release surface: the canonical `dev check` completed with **615 library modules** and
@@ -73,8 +472,9 @@ supported Linux RKE2 frame before claiming deployment closure.
 The dated records below preserve earlier checkpoints and counterexamples. They are not a resume
 ledger and cannot override [Resume Here](#resume-here).
 
-**Paused head-state record (2026-08-16, superseded as a resume instruction).** Phases `3`,
-`4`, `5`, and `7` are 🔄 Active. Sprints `3.41`, `4.84`, `4.85`, `4.86`, `5.35`, `5.36`, and
+**Paused head-state record (2026-08-16, superseded as a resume instruction; Phase `3` closed
+2026-08-17).** Phases `4`, `5`, and `7` are 🔄 Active. Sprints `3.41`, `4.84`, `4.85`, `4.86`,
+`5.35`, `5.36`, and
 `7.36` all have real implementation in the worktree; their final closure dependencies remain
 forward-only even where dependency-safe foundations were implemented in parallel. Phase `6`
 remains ⏸️ Blocked on Sprint `6.5` by the unfinished candidate and `TestRunner` cutover. Phases `0`,
@@ -85,8 +485,8 @@ The paused checkpoint distinguished validated foundations from incomplete protoc
 
 | Sprint | Recorded implementation checkpoint | Validation / remaining boundary |
 |--------|-----------------------------------|---------------------------------|
-| `3.41` | The exact recovery component projection, bootstrap-owned operator identity, opaque local-RKE2 and retained-root observations, RecoveryPlane component observer, exact-name RBAC, and Authority API egress are landed. | Code-local library/unit/chart gates passed. A recovery-only renderer and immutable absent-cluster RKE2/OCI artifact inventory do not exist; stopped/absent live proof remains pending. |
-| `4.84` | Pure lifecycle model/registry/observation/decision foundations, ARN normalization, exact Authority read-back seams, and public-proof opacity closures are landed. | The old unkeyed public composition and incomplete legacy-escape inventory remain. Stable registered-stack lifecycle generation and a complete terminal-audit catalog are not yet available. |
+| `3.41` | Closed 2026-08-17. The exact recovery component projection, bootstrap-owned operator identity, opaque local-RKE2 and retained-root observations, RecoveryPlane component observer, exact-name RBAC, Authority API egress, versioned retained artifact authority, stopped/absent/healthy repair matrix, and deletion-survivor projection are landed. | Code-local library/unit/chart gates pass. An absent substrate refuses by construction while nothing is retained; the byte-retention obligation moved to Sprint `4.86` and the stopped/absent host exercise remains a non-blocking Live-proof. |
+| `4.84` | Pure lifecycle model/registry/observation/decision foundations, ARN normalization, exact Authority read-back seams, public-proof opacity closures, and — since 2026-08-17 — the stable registered-stack lifecycle generation (`Prodbox.Lifecycle.Teardown.StackGeneration`) are landed. | The old unkeyed public composition and incomplete legacy-escape inventory remain. The generation is proven but not yet persisted or read back by any producer or consumer, and a complete terminal-audit catalog is not yet available. |
 | `4.85` | Lifecycle-owned `CleanupRun`/runner, result-indexed Program/Graph/Execution/Report, canonical program descriptors, descriptor-bound restart, RecoveryCapability/Requirement, ownership/checkpoint/read-back repositories, and opaque cleanup clients are landed. | Total-decommission parity, stable create-generation binding, terminal-audit reservation/read-back, and several final proof joins remain. |
 | `4.86` | RecoveryPlane identity/repository/interpreter, authenticated routes `56`/`57`, production component observation, host runtime, and a source-stable total descriptor-bound dispatcher foundation are present. | The dispatcher still needed the paused current-tree aggregate. Cascade pre-uninstall authority and the required locked `Prepared -> Absent` host-absence/completion protocol remained incomplete. |
 | `5.35` | The standalone `TEARDOWN-2026-08-15` oracle, canonical artifacts, 25-row external-state matrix, 80 interruption rows, mutation fixture, and installed command are code-locally green. | The current paused tree has not rerun the full canonical quality gate; replacement production integration and live qualification are outside this sprint. |
@@ -1626,7 +2026,7 @@ dated table are retained for audit history; neither is a current-status ledger. 
 | 0 | ✅ Closed | Existing MISU/Pure-FP governance is sufficient; no new general doctrine primitive |
 | 1 | ✅ Closed | Existing typed capability/config foundations are sufficient |
 | 2 | ✅ Closed | No Gateway or Bootstrap Broker runtime change is assigned here |
-| 3 | 🔄 Active | `3.41` recovery topology/observation foundation landed; recovery-only render and absent-cluster artifact authority remain |
+| 3 | ✅ Closed | `3.41` closed 2026-08-17: recovery topology/observation, the recovery-only repair renderer, the versioned retained artifact authority, and the deletion-survivor projection are landed; artifact byte retention moved to `4.86` |
 | 4 | 🔄 Active | `4.84` exact keyed algebra, `4.85` durable kernel, and `4.86` recovery candidate are all partially implemented; their closure dependencies and terminal proof gaps remain |
 | 5 | 🔄 Active | `5.35` code-local oracle is green; `5.36` has the descriptor-bound client but not the `TestRunner`/legacy-executor cutover |
 | 6 | ⏸️ Blocked | `6.5`, blocked by `4.86` + `5.36`, owns public generic/home sole-writer cutover |

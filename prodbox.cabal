@@ -99,6 +99,7 @@ library
         Prodbox.Config.LocalRetainedRoot
         Prodbox.Config.LocalRke2RecoveryState
         Prodbox.Config.OrdinaryTeardownRecovery
+        Prodbox.Config.OrdinaryTeardownRepair
         Prodbox.Config.SchemaDhall
         Prodbox.Config.Tier0
         Prodbox.Config.InForce
@@ -146,6 +147,10 @@ library
         Prodbox.ControlPlane.RecoveryPlaneRepository
         Prodbox.ControlPlane.RecoveryPlaneEndpoint
         Prodbox.ControlPlane.RecoveryPlaneTransportClient
+        Prodbox.ControlPlane.RegisteredStackCleanupSelection
+        Prodbox.ControlPlane.RegisteredStackCreationProducer
+        Prodbox.ControlPlane.RegisteredStackCreationSubmitter
+        Prodbox.ControlPlane.RegisteredStackGenerationRepository
         Prodbox.ControlPlane.OwnershipManifestEndpoint
         Prodbox.ControlPlane.OwnershipManifestRepository
         Prodbox.ControlPlane.OwnershipManifestTransportClient
@@ -450,6 +455,7 @@ library
         Prodbox.Lifecycle.RegistryBackendWitness
         Prodbox.Lifecycle.RestoreGraph
         Prodbox.Lifecycle.ResidueStatus
+        Prodbox.Lifecycle.OwnedResourceTags
         Prodbox.Lifecycle.ResourceClass
         Prodbox.Lifecycle.ResourceRegistry
         Prodbox.Lifecycle.SmtpKeyRepair
@@ -459,6 +465,7 @@ library
         Prodbox.Lifecycle.TargetCommitIntent
         Prodbox.Lifecycle.TargetSinkVersion
         Prodbox.Lifecycle.TargetSinkVersion.Internal
+        Prodbox.Lifecycle.Teardown.AuditFieldOfView
         Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
         Prodbox.Lifecycle.Teardown.AwsEbsAdapter
         Prodbox.Lifecycle.Teardown.AwsEksAdapter
@@ -485,6 +492,7 @@ library
         Prodbox.Lifecycle.Teardown.LocalRke2HostObservation
         Prodbox.Lifecycle.Teardown.Model
         Prodbox.Lifecycle.Teardown.Observation
+        Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
         Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
         Prodbox.Lifecycle.Teardown.OwnershipManifest
         Prodbox.Lifecycle.Teardown.ProviderDispatch
@@ -499,6 +507,9 @@ library
         Prodbox.Lifecycle.Teardown.RegisteredTargetResult
         Prodbox.Lifecycle.Teardown.Report
         Prodbox.Lifecycle.Teardown.Registry
+        Prodbox.Lifecycle.Teardown.RetainedInventory
+        Prodbox.Lifecycle.Teardown.StackGeneration
+        Prodbox.Lifecycle.Teardown.TaggingApiReach
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm
         Prodbox.Keycloak.Email
@@ -839,11 +850,15 @@ test-suite prodbox-unit
         LifecycleTeardownProviderDispatch
         LifecycleTeardownProgram
         LifecycleTeardownRecoveryCapability
+        ControlPlaneRegisteredStackCreationSubmitter
+        LifecycleTeardownStackGeneration
         LifecycleTeardownRecoveryPlane
         LifecycleTeardownRecoveryPlaneComponentObserver
         LifecycleTeardownRecoveryPlaneInterpreter
         LifecycleTeardownRegisteredTargetResult
         LifecycleTeardownRegistry
+        LifecycleTeardownRetainedInventory
+        LifecycleTeardownAuditFieldOfView
         LocalRetainedRoot
         LocalRke2RecoveryState
         LifecycleAuthorityState
@@ -863,6 +878,7 @@ test-suite prodbox-unit
         MeasuredProfile
         ObjectStoreNative
         OrdinaryTeardownRecovery
+        OrdinaryTeardownRepair
         Parser
         QualificationFrozenCounterexample
         QualificationEvidence

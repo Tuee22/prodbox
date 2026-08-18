@@ -21,6 +21,7 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , completionEvidenceRunId
   , completionEvidenceGraphDigest
   , completeCascadeDesiredAbsence
+  , completeExplicitPerRunDesiredAbsence
   , SurfaceIncompleteEvidence
   , incompleteEvidenceSurface
   , incompleteEvidenceRunId
@@ -44,6 +45,10 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , desiredAbsenceRegressionAttemptBindingRefused
   , desiredAbsenceRegressionReportBindingRefused
   , desiredAbsenceRegressionLocalAndTotalDistinct
+  , desiredAbsenceRegressionExplicitPerRunCompletes
+  , desiredAbsenceRegressionExplicitPerRunUnavailableRefused
+  , desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused
+  , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty
   )
 where
 
@@ -185,23 +190,89 @@ readBackEvidenceRecoveryPlane
   -> Maybe (RecoveryPlaneFinalEvidence surface)
 readBackEvidenceRecoveryPlane = internalReadBackEvidenceRecoveryPlane
 
+-- | Private, surface-indexed completion.
+--
+-- The index is what forbids cross-surface conversion: there is no function
+-- from @SurfaceCompletionEvidence 'ExplicitPerRun@ to any other surface's
+-- value, and each constructor fixes its own index, so a completion witness for
+-- one surface cannot inhabit another's result.
+--
+-- The two surfaces here need different evidence for a structural reason.
+-- Cascade completion is /not/ implied by its own read-backs: it additionally
+-- uninstalls the local foundation and must produce a read-back
+-- 'LocalCompletionReceipt', so it carries a separate 'CascadeCompleteEvidence'
+-- chain. Explicit per-run has no local-uninstall arm — its whole obligation is
+-- the registered per-run targets and its own report — and that obligation is
+-- exactly what a complete read-back set on this surface already proves.
 data SurfaceCompletionEvidence surface where
   CascadeCompletionEvidence
     :: !CascadeCompleteEvidence
     -> SurfaceCompletionEvidence 'Cascade
+  -- | Sprint 4.85. Minted only by 'completeExplicitPerRunDesiredAbsence'.
+  ExplicitPerRunCompletionEvidence
+    :: !(SurfaceReadBackEvidence 'ExplicitPerRun)
+    -> SurfaceCompletionEvidence 'ExplicitPerRun
 
 completionEvidenceSurface :: SurfaceCompletionEvidence surface -> CleanupSurface
 completionEvidenceSurface evidence = case evidence of
   CascadeCompletionEvidence {} -> Cascade
+  ExplicitPerRunCompletionEvidence {} -> ExplicitPerRun
 
 completionEvidenceRunId :: SurfaceCompletionEvidence surface -> CleanupRunId
 completionEvidenceRunId evidence = case evidence of
   CascadeCompletionEvidence complete -> cascadeCompleteRunId complete
+  ExplicitPerRunCompletionEvidence readBacks -> readBackEvidenceRunId readBacks
 
 completionEvidenceGraphDigest
   :: SurfaceCompletionEvidence surface -> CleanupDigest
 completionEvidenceGraphDigest evidence = case evidence of
   CascadeCompletionEvidence complete -> cascadeCompleteGraphDigest complete
+  ExplicitPerRunCompletionEvidence readBacks ->
+    readBackEvidenceGraphDigest readBacks
+
+-- | Sprint 4.85: complete an explicit per-run desired-absence run.
+--
+-- The deliverable requires explicit per-run completion to carry
+-- selected-stack\/child-family absence plus checkpoint disposition. On this
+-- surface those are not additional evidence to be gathered — they are already
+-- the content of a complete read-back set, because
+-- 'classifyDesiredAbsenceReportInternal' refuses to produce one unless every
+-- mandatory read-back succeeded, and 'operationIsMandatoryReadBack' includes
+-- @ReadBackRegisteredTargetAbsent@ (every per-run stack and the per-run EBS
+-- family), @ReadBackStackCheckpointRetirement@ (the checkpoint disposition),
+-- and @ReadBackOrdinarySurfaceReport@ (this surface's own committed report,
+-- independently read back).
+--
+-- Two facts are therefore re-checked here rather than assumed, so the minter
+-- is total on its own inputs and cannot be satisfied by a mis-minted value:
+-- the evidence's surface tag, and an @Established@ recovery plane. An ordinary
+-- surface without a live recovery plane has made no liveness claim, and a run
+-- that cannot say its recovery plane held cannot report clean completion.
+--
+-- The other two ordinary surfaces deliberately have no minter yet, and the
+-- reason is missing evidence rather than missing typing.
+-- @OperationalTeardown@ projects __zero__ registered targets, because
+-- 'cleanupSurfaceAllows' admits only @Operational@-class descriptors and the
+-- typed registry contains none; completing it would be a clean-completion
+-- claim over an empty projection. @ExplicitLongLived@ requires the aggregate
+-- operator permit its deliverable names, and that permit has no type.
+completeExplicitPerRunDesiredAbsence
+  :: SurfaceReadBackEvidence 'ExplicitPerRun
+  -> Either DesiredAbsenceReportError (SurfaceCompletionEvidence 'ExplicitPerRun)
+completeExplicitPerRunDesiredAbsence readBacks
+  | readBackEvidenceSurface readBacks /= ExplicitPerRun =
+      Left
+        ( DesiredAbsenceReportSurfaceMismatch
+            ExplicitPerRun
+            (readBackEvidenceSurface readBacks)
+        )
+  | otherwise = case recoveryPlaneFinalDisposition
+      <$> readBackEvidenceRecoveryPlane readBacks of
+      Nothing -> Left (DesiredAbsenceRecoveryEvidenceUnavailable ExplicitPerRun)
+      Just RecoveryPlaneEstablished ->
+        Right (ExplicitPerRunCompletionEvidence readBacks)
+      Just disposition ->
+        Left (DesiredAbsenceRecoveryDispositionConflict disposition)
 
 completeCascadeDesiredAbsence
   :: SurfaceReadBackEvidence 'Cascade
@@ -303,6 +374,22 @@ data DesiredAbsenceReportRegression = DesiredAbsenceReportRegression
   , desiredAbsenceRegressionAttemptBindingRefused :: !Bool
   , desiredAbsenceRegressionReportBindingRefused :: !Bool
   , desiredAbsenceRegressionLocalAndTotalDistinct :: !Bool
+  , desiredAbsenceRegressionExplicitPerRunCompletes :: !Bool
+  -- ^ Sprint 4.85: an explicit per-run run whose read-backs are complete and
+  -- whose recovery plane is @Established@ mints its own completion witness,
+  -- and that witness reports its own surface.
+  , desiredAbsenceRegressionExplicitPerRunUnavailableRefused :: !Bool
+  -- ^ The same run without a recovery plane cannot. An ordinary surface with
+  -- no live plane has made no liveness claim.
+  , desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused :: !Bool
+  -- ^ A per-run classification whose surface tag is not @ExplicitPerRun@ is
+  -- refused by the minter rather than trusted, so a mis-minted read-back
+  -- value cannot complete the surface it claims.
+  , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty :: !Bool
+  -- ^ The per-run program is not vacuous: it carries registered-target
+  -- read-backs and checkpoint-retirement read-backs, so its complete
+  -- read-back set really is selected-stack\/child-family absence plus
+  -- checkpoint disposition.
   }
   deriving stock (Eq, Show)
 
@@ -661,6 +748,137 @@ fixedDesiredAbsenceReportRegression = do
           totalCompiled
           (fixedReport totalCompiled (fixedUniformSuccessfulStates totalCompiled otherAttempt))
           Nothing
+  perRunCompiled <-
+    firstShow
+      ( compileDesiredAbsenceGraph
+          runId
+          (LinuxRke2FoundationId "report-foundation")
+          (Just fixedReportAwsScope)
+          ExplicitPerRunSurface
+      )
+  perRunRun <-
+    firstShow
+      ( newCleanupRun
+          runId
+          (compiledDesiredAbsenceGraph perRunCompiled)
+          owner
+          0
+          1000000
+      )
+  perRunRequirement <-
+    firstShow
+      (deriveOrdinaryTeardownRecoveryRequirementInternal perRunCompiled perRunRun)
+  perRunIdentity <-
+    firstShow
+      ( RecoveryPlaneInternal.deriveRecoveryPlaneIdentityFromCompiledInternal
+          descriptorDigest
+          ExplicitPerRunRecoverySurface
+          perRunCompiled
+          perRunRequirement
+      )
+  let perRunEstablishOperation =
+        recoveryPlaneIdentityEstablishOperationId perRunIdentity
+      perRunReadBackOperation =
+        recoveryPlaneIdentityReadBackOperationId perRunIdentity
+      perRunDispositionOperation =
+        recoveryPlaneIdentityDispositionOperationId perRunIdentity
+      perRunEstablishBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          perRunIdentity
+          perRunEstablishOperation
+          establishAttempt
+      perRunReadBackBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          perRunIdentity
+          perRunReadBackOperation
+          readBackAttempt
+      perRunDispositionBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          perRunIdentity
+          perRunDispositionOperation
+          dispositionAttempt
+  perRunInitialFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          perRunReadBackBinding
+          ( fixedComponentObservations
+              perRunIdentity
+              perRunReadBackOperation
+              readBackAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  perRunFinalFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          perRunDispositionBinding
+          ( fixedComponentObservations
+              perRunIdentity
+              perRunDispositionOperation
+              dispositionAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  perRunInitial <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneInitialReadBackInternal
+          perRunEstablishBinding
+          perRunReadBackBinding
+          perRunInitialFacts
+      )
+  perRunEstablished <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneFinalEvidenceInternal
+          perRunInitial
+          perRunDispositionBinding
+          perRunFinalFacts
+      )
+  let perRunGraph = compiledDesiredAbsenceGraph perRunCompiled
+      perRunStates =
+        fixedSuccessfulStates
+          perRunGraph
+          perRunEstablishOperation
+          establishAttempt
+          perRunReadBackOperation
+          readBackAttempt
+          perRunDispositionOperation
+          dispositionAttempt
+          otherAttempt
+      perRunClassification =
+        classifyDesiredAbsenceReportInternal
+          ExplicitPerRunSurface
+          perRunCompiled
+          (fixedReport perRunCompiled perRunStates)
+          (Just perRunEstablished)
+      perRunCompletion = case perRunClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just (completeExplicitPerRunDesiredAbsence readBacks)
+        _ -> Nothing
+      -- The same read-back value with no recovery plane. This is the arm the
+      -- minter owns rather than inherits: classification cannot produce it for
+      -- an ordinary surface, so only a mis-minted value could carry it.
+      perRunWithoutPlane = case perRunClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just
+            ( completeExplicitPerRunDesiredAbsence
+                readBacks {internalReadBackEvidenceRecoveryPlane = Nothing}
+            )
+        _ -> Nothing
+      perRunWrongSurface = case perRunClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just
+            ( completeExplicitPerRunDesiredAbsence
+                readBacks {internalReadBackEvidenceSurface = Cascade}
+            )
+        _ -> Nothing
+      perRunObligations =
+        [ operation
+        | (_, operation) <- compiledDesiredAbsenceOperations perRunCompiled
+        , operationIsMandatoryReadBack operation
+        ]
+      perRunHasTargetAbsence = any operationIsTargetAbsenceReadBack perRunObligations
+      perRunHasCheckpointDisposition =
+        any operationIsCheckpointRetirementReadBack perRunObligations
   pure
     DesiredAbsenceReportRegression
       { desiredAbsenceRegressionEstablishedCompletes =
@@ -690,6 +908,24 @@ fixedDesiredAbsenceReportRegression = do
       , desiredAbsenceRegressionLocalAndTotalDistinct =
           classificationSurface LocalOnly localClassification
             && classificationSurface TotalDecommission totalClassification
+      , desiredAbsenceRegressionExplicitPerRunCompletes =
+          case perRunCompletion of
+            Just (Right completion) ->
+              completionEvidenceSurface completion == ExplicitPerRun
+                && completionEvidenceRunId completion == runId
+                && completionEvidenceGraphDigest completion
+                  == cleanupGraphDigest perRunGraph
+            _ -> False
+      , desiredAbsenceRegressionExplicitPerRunUnavailableRefused =
+          case perRunWithoutPlane of
+            Just (Left (DesiredAbsenceRecoveryEvidenceUnavailable ExplicitPerRun)) -> True
+            _ -> False
+      , desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused =
+          case perRunWrongSurface of
+            Just (Left (DesiredAbsenceReportSurfaceMismatch ExplicitPerRun Cascade)) -> True
+            _ -> False
+      , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty =
+          perRunHasTargetAbsence && perRunHasCheckpointDisposition
       }
 
 fixedReportAwsScope :: AwsScope
@@ -1287,6 +1523,18 @@ confirmationOperation operation = case operation of
   ReadBackDecommissionLocalAbsence -> Nothing
   ReadBackDecommissionLocalDataDisposition -> Nothing
   ReadBackDecommissionTerminalReceipt -> Nothing
+
+-- | Sprint 4.85: the two obligations that make an explicit per-run completion
+-- claim non-empty -- registered-target absence and checkpoint disposition.
+operationIsTargetAbsenceReadBack :: TeardownOperation surface -> Bool
+operationIsTargetAbsenceReadBack operation = case operation of
+  ReadBackRegisteredTargetAbsent _ -> True
+  _ -> False
+
+operationIsCheckpointRetirementReadBack :: TeardownOperation surface -> Bool
+operationIsCheckpointRetirementReadBack operation = case operation of
+  ReadBackStackCheckpointRetirement _ -> True
+  _ -> False
 
 operationIsMandatoryReadBack :: TeardownOperation surface -> Bool
 operationIsMandatoryReadBack operation = case operation of

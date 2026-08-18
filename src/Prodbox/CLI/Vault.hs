@@ -662,6 +662,10 @@ failBrokerCommand label detail = do
 firstShow :: (Show err) => Either err value -> Either String value
 firstShow = either (Left . show) Right
 
+-- | LEGACY-ESCAPE[lifecycle-provider-vault-field-projection]: the
+-- operator-facing Vault surface still projects the Lifecycle-provider
+-- credential's fields by name.  Registered in "Prodbox.Legacy.EscapeRegistry";
+-- deleted with the Tier-0 aggregate it describes (Sprint @4.50@).
 lifecycleProviderAwsVaultFields :: Settings.AwsCredentialsRef -> Either String ()
 lifecycleProviderAwsVaultFields refs =
   case ( validateLifecycleProviderAwsVaultRef

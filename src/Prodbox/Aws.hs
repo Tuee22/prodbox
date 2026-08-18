@@ -189,13 +189,14 @@ import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
+  , PerRunResidueAnswers (..)
   , absentReconcileExitCode
-  , managedDestroyCapability
   , pairAwsSesResidue
   , pairPerRunResidue
   , reconcileAbsent
   , residueGateRefusalList
   )
+import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Repo
   ( resolveTier0ConfigPath
   , tier0ConfigFileName
@@ -1889,41 +1890,29 @@ operationalAwsConfigResidueFromKey accessKeyId
 -- * @operational-aws-config@: clear the operational @aws.*@ block in
 --   @prodbox.dhall@ (region preserved, falling back to the admin
 --   region).
+-- Sprint 4.84: this module supplies the /effect/ for each operational
+-- identity and nothing else. The identity, its lifecycle class, and the
+-- operator-facing command text are the registry\'s, so a name this module
+-- invents or a class it asserts is no longer expressible; the mapping is total
+-- over 'ResourceRegistry.OperationalResourceIdentity', so a new identity is an
+-- exhaustiveness failure here rather than a registry row with no action.
 operationalManagedResources :: Credentials -> [ManagedResource]
 operationalManagedResources adminCreds =
-  [ ManagedResource
-      { resourceName = "operational-aws-ses-lease-role"
-      , resourceClass = ResourceClass.Operational
-      , resourceEnsureCommand = Just "prodbox aws setup"
-      , resourceEnsurePresent = Nothing
-      , resourceDestroyCommand = "prodbox aws teardown"
-      , resourceDestroyCapability = managedDestroyCapability "operational-aws-ses-lease-role"
-      , resourceDestroy = \repoRoot ->
-          deleteAwsSesLeaseRoleForTeardown repoRoot adminCreds
-      }
-  , ManagedResource
-      { resourceName = "operational-iam-user"
-      , resourceClass = ResourceClass.Operational
-      , resourceEnsureCommand = Nothing
-      , resourceEnsurePresent = Nothing
-      , resourceDestroyCommand = "prodbox aws teardown"
-      , resourceDestroyCapability = managedDestroyCapability "operational-iam-user"
-      , resourceDestroy = \repoRoot -> do
-          _ <- deleteExistingOperationalKeys repoRoot adminCreds
-          deleteUserPolicyIfPresent repoRoot adminCreds
-          _ <- deleteOperationalUserIfPresent repoRoot adminCreds
-          pure ExitSuccess
-      }
-  , ManagedResource
-      { resourceName = "operational-aws-config"
-      , resourceClass = ResourceClass.Operational
-      , resourceEnsureCommand = Nothing
-      , resourceEnsurePresent = Nothing
-      , resourceDestroyCommand = "prodbox aws teardown"
-      , resourceDestroyCapability = managedDestroyCapability "operational-aws-config"
-      , resourceDestroy = \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
-      }
-  ]
+  map
+    (\identity -> ResourceRegistry.operationalManagedResourceFor identity (destroyFor identity))
+    ResourceRegistry.operationalResourceIdentities
+ where
+  destroyFor identity = case identity of
+    ResourceRegistry.OperationalAwsSesLeaseRole ->
+      \repoRoot -> deleteAwsSesLeaseRoleForTeardown repoRoot adminCreds
+    ResourceRegistry.OperationalIamUser ->
+      \repoRoot -> do
+        _ <- deleteExistingOperationalKeys repoRoot adminCreds
+        deleteUserPolicyIfPresent repoRoot adminCreds
+        _ <- deleteOperationalUserIfPresent repoRoot adminCreds
+        pure ExitSuccess
+    ResourceRegistry.OperationalAwsConfig ->
+      \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
 
 -- | Load the best authoritative policy scope available for observing or
 -- deleting the fixed role. The resource identity (account + fixed role name)
@@ -2327,13 +2316,19 @@ dispatchPulumiDestroysForResidue repoRoot plan = go plan
 checkPulumiResidueBeforeTeardown :: FilePath -> IO [(String, String)]
 checkPulumiResidueBeforeTeardown repoRoot = do
   perRun <- queryPerRunResidueStatuses repoRoot
-  ses <- queryAwsSesResidueStatus repoRoot
+  sesObservation <- queryAwsSesResidueStatus repoRoot
+  let ses = ResidueStatus.residueObservationStatus sesObservation
   pure
     ( residueGateRefusalList
         ( pairPerRunResidue
-            (ResidueStatus.residueObservationStatus (perRunAwsEksTest perRun))
-            (ResidueStatus.residueObservationStatus (perRunAwsEksSubzone perRun))
-            (ResidueStatus.residueObservationStatus (perRunAwsTest perRun))
+            PerRunResidueAnswers
+              { perRunAnswerAwsEks =
+                  ResidueStatus.residueObservationStatus (perRunAwsEksTest perRun)
+              , perRunAnswerAwsEksSubzone =
+                  ResidueStatus.residueObservationStatus (perRunAwsEksSubzone perRun)
+              , perRunAnswerAwsTest =
+                  ResidueStatus.residueObservationStatus (perRunAwsTest perRun)
+              }
             ++ pairAwsSesResidue ses
         )
     )
@@ -3402,6 +3397,9 @@ refineAwsConfigResidueAgainstIamUser iamUserStatus rawAwsConfigStatus =
       ResidueStatus.ResidueAbsent
     _ -> rawAwsConfigStatus
 
+-- | LEGACY-ESCAPE[host-lifecycle-provider-credential-reader]: legacy host AWS
+-- control flow still names this Lifecycle-provider target-credential reader.
+-- Registered in "Prodbox.Legacy.EscapeRegistry"; owned by Sprint @4.50@.
 readLifecycleProviderTargetCredentials :: FilePath -> IO (Either String Credentials)
 readLifecycleProviderTargetCredentials _repoRoot =
   pure

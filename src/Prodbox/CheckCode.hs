@@ -11,6 +11,13 @@ module Prodbox.CheckCode
   , controlPlaneChartStaticViolations
   , checkCommittedValueHygiene
   , checkCreateCallSiteCoverage
+  , managedResourceRegistryParityViolations
+  , untypedLifecycleInventoryExemptions
+  , untypedLifecycleInventoryViolations
+  , effectRegistryLifecycleClassViolations
+  , checkTestNamespaceBoundary
+  , testNamespaceImportViolations
+  , validationHarnessClientModules
   , checkWorkerImagePullReferenceOwner
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
@@ -104,6 +111,7 @@ import Control.Exception (evaluate)
 import Control.Monad (filterM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.Char (isAlpha, isAlphaNum, isAsciiUpper, isDigit, isSpace, toLower)
+import Data.Either (rights)
 import Data.List
   ( dropWhileEnd
   , find
@@ -172,7 +180,31 @@ import Prodbox.Lifecycle.ResourceClass
   , resourceLifecycleClasses
   , resourceNamesOfClass
   )
+import Prodbox.Lifecycle.ResourceRegistry (effectRegistryLifecycleClassViolations)
 import Prodbox.Lifecycle.TargetSecretAgent.ChartStatics qualified as TargetSecretAgentStatics
+import Prodbox.Lifecycle.Teardown.AuditFieldOfView
+  ( auditFieldOfViewViolations
+  , parseProvisioningProgram
+  , renderProvisioningProgramParseError
+  )
+import Prodbox.Lifecycle.Teardown.Model
+  ( registeredResourceKeyText
+  )
+import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
+  ( operationalCredentialCoverageViolations
+  )
+import Prodbox.Lifecycle.Teardown.Registry
+  ( SomeManagedResourceDescriptor (..)
+  , managedResourceKey
+  , managedResourceLifecycleClass
+  , managedResourceRegistry
+  )
+import Prodbox.Lifecycle.Teardown.RetainedInventory
+  ( RetainedBindingError
+  , RetainedNameBinding
+  , mkRetainedNameBinding
+  , terminalAuditQueryCatalog
+  )
 import Prodbox.Lifecycle.TlsRetention.ChartStatics qualified as TlsRetentionStatics
 import Prodbox.Lint
   ( ensureSandboxedStyleTools
@@ -939,7 +971,7 @@ runConformanceTierRegistryChecks repoRoot = do
                         [] -> do
                           qualificationViolations <- checkQualificationIsolation repoRoot
                           case qualificationViolations of
-                            [] -> pure ExitSuccess
+                            [] -> runTerminalAuditFieldOfViewCheck repoRoot
                             _ ->
                               failWith
                                 ( unlines
@@ -1313,6 +1345,98 @@ bootstrapBrokerIsolationViolations sources =
                     ]
          ]
 
+runTerminalAuditFieldOfViewCheck :: FilePath -> IO ExitCode
+runTerminalAuditFieldOfViewCheck repoRoot = do
+  fieldOfViewViolations <- checkTerminalAuditFieldOfView repoRoot
+  case fieldOfViewViolations of
+    [] -> pure ExitSuccess
+    _ ->
+      failWith
+        ( unlines
+            ( ( "Terminal-audit field-of-view join failed. Every taggable AWS resource "
+                  ++ "a provisioning program declares must carry a tag the escape audit "
+                  ++ "queries for; otherwise a leaked instance of it is never returned "
+                  ++ "and a clean verdict says nothing about it "
+                  ++ "(lifecycle_reconciliation_doctrine.md § 3.1, Sprint 4.84):"
+              )
+                : map ("- " ++) fieldOfViewViolations
+                ++ [ "Author a queried tag onto the resource, or classify a genuinely "
+                       ++ "untaggable type in Prodbox.Lifecycle.Teardown.AuditFieldOfView."
+                   ]
+            )
+        )
+
+-- | Sprint 4.84: certify that every AWS resource the repository provisions is
+-- inside the terminal escape audit's field of view.
+--
+-- The audit decides over what its tag queries return, so a resource carrying no
+-- queried tag is not merely unmatched — it is never returned, and a clean
+-- verdict reads as a statement about a resource the audit never saw. The query
+-- catalog's completeness was a claim about the provisioning programs that no
+-- code read; this reads them.
+--
+-- The program set is enumerated from disk rather than declared, so a new
+-- provisioning program is covered by existing, not by remembering to add it.
+checkTerminalAuditFieldOfView :: FilePath -> IO [String]
+checkTerminalAuditFieldOfView repoRoot = do
+  let programRoot = repoRoot </> "pulumi"
+  rootExists <- doesDirectoryExist programRoot
+  if not rootExists
+    then
+      pure
+        [ "pulumi/ is missing, so the terminal-audit field-of-view join has "
+            ++ "nothing to read and cannot certify the audit sees what is provisioned."
+        ]
+    else do
+      entries <- listDirectory programRoot
+      programs <-
+        filterM
+          (\entry -> doesFileExist (programRoot </> entry </> "Main.yaml"))
+          (sort entries)
+      case (programs, fieldOfViewQueryBinding) of
+        ([], _) ->
+          pure
+            [ "pulumi/ contains no Main.yaml provisioning program; an empty "
+                ++ "program set cannot be read as full terminal-audit coverage."
+            ]
+        (_, Left bindingError) ->
+          pure
+            [ "the terminal-audit query catalog could not be built for the "
+                ++ "field-of-view join: "
+                ++ show bindingError
+            ]
+        (_, Right binding) -> do
+          parsed <-
+            forM programs $ \program -> do
+              contents <- readFileStrict (programRoot </> program </> "Main.yaml")
+              pure (parseProvisioningProgram (Text.pack program) (Text.pack contents))
+          let parseErrors =
+                [ renderProvisioningProgramParseError err
+                | Left err <- parsed
+                ]
+              declared = concat (rights parsed)
+          pure
+            ( parseErrors
+                ++ auditFieldOfViewViolations
+                  (terminalAuditQueryCatalog binding)
+                  declared
+            )
+
+-- | The binding the field-of-view join evaluates the query catalog at.
+--
+-- The join decides over tag /families/, not names: four of the five queries are
+-- name-free, and the fifth — the per-run Kubernetes cluster-ownership tag — is
+-- matched by its family prefix, because a provisioning program templates the
+-- cluster name it embeds. The values here are therefore deliberately synthetic
+-- placeholders that no comparison consults.
+fieldOfViewQueryBinding :: Either RetainedBindingError RetainedNameBinding
+fieldOfViewQueryBinding =
+  mkRetainedNameBinding
+    (Text.pack "field-of-view-placeholder-state-bucket")
+    (Text.pack "field-of-view-placeholder-capture-bucket")
+    (Text.pack "field-of-view-placeholder.invalid")
+    (Text.pack "field-of-view-placeholder-cluster")
+
 -- | Certify that the committed @charts/gateway/values.yaml@ static defaults
 -- equal the compiled 'ChartStatics.gatewayChartStatics' projection. Reads the
 -- values file and delegates to the pure 'gatewayChartStaticsConformanceViolations'.
@@ -1515,6 +1639,10 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) inlineRetryListViolations
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
+    ++ map ("- " ++) managedResourceRegistryParityViolations
+    ++ map ("- " ++) untypedLifecycleInventoryViolations
+    ++ map ("- " ++) effectRegistryLifecycleClassViolations
+    ++ map ("- " ++) operationalCredentialCoverageViolations
     ++ map ("- " ++) productionEnvVarViolations
     ++ map ("- " ++) substrateImagePinningViolations' of
     [] -> pure ExitSuccess
@@ -1525,8 +1653,11 @@ runDoctrineAlignmentCheck repoRoot = do
                   ++ "hand-set ServiceError retryable literals, "
                   ++ "inline retry-substring lists, "
                   ++ "destructive dispatch arms that discard their --dry-run / --plan-file "
-                  ++ "options, and AWS/Pulumi create call sites with no registered managed "
-                  ++ "resource:"
+                  ++ "options, AWS/Pulumi create call sites with no registered managed "
+                  ++ "resource, lifecycle-class disagreements between the typed "
+                  ++ "registry and resourceLifecycleClasses, and operational-credential "
+                  ++ "consumers the compiled cascade program does not order before its "
+                  ++ "terminal audit:"
               )
                 : violations
                 ++ ["Rerun `./.build/prodbox dev check` after addressing the listed items."]
@@ -1568,6 +1699,7 @@ haskellStyleViolations repoRoot = do
   listenPortFindings <- checkControlPlaneListenPortOwner repoRoot
   residueMinterFindings <- checkResidueObservationMinter repoRoot
   workerImagePullFindings <- checkWorkerImagePullReferenceOwner repoRoot
+  testNamespaceFindings <- checkTestNamespaceBoundary repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1601,6 +1733,7 @@ haskellStyleViolations repoRoot = do
         ++ tier0CoordinateFindings
         ++ listenPortFindings
         ++ workerImagePullFindings
+        ++ testNamespaceFindings
         ++ residueMinterFindings
     )
 
@@ -3172,6 +3305,65 @@ isHaskellSourcePath :: FilePath -> Bool
 isHaskellSourcePath path =
   (".hs" `isSuffixOf` path)
     && any (`isPrefixOf` path) ["app/", "src/", "test/"]
+
+-- | Sprint 4.85 (pure). The validation-harness namespace boundary.
+--
+-- @Prodbox.Test.*@ is the validation harness: fixtures, fake interpreters, and
+-- the harness's own cleanup composition. It lives under @src\/@ because the
+-- harness ships in the binary, not because it is supported production
+-- composition — and the distinction was previously only a convention.
+--
+-- It stopped being one. @Prodbox.Lifecycle.Dns01Challenge@ — a lifecycle
+-- module, not a harness module — imported @Prodbox.Test.ManagedCleanupPlan@ to
+-- express its cleanup edge, so a production teardown obligation was typed in a
+-- shape the harness owned. This gate makes that direction non-constructible:
+-- only the harness itself, and the harness entrypoints that are its clients,
+-- may import the harness namespace.
+--
+-- 'validationHarnessClientModules' is the exact allowlist. It is deliberately
+-- small and enumerated rather than pattern-matched, so widening it is a visible
+-- edit rather than a naming accident. Sprint @5.36@ removes @TestRunner@'s
+-- entries when it migrates the validation client onto the lifecycle-owned
+-- kernel.
+validationHarnessClientModules :: [FilePath]
+validationHarnessClientModules =
+  [ "src/Prodbox/TestRunner.hs"
+  , "src/Prodbox/TestValidation.hs"
+  ]
+
+testNamespaceImportViolations :: FilePath -> String -> [String]
+testNamespaceImportViolations relativePath contents =
+  [ relativePath
+      ++ " imports the validation-harness namespace ("
+      ++ importedModule line
+      ++ "). Only the harness itself and its enumerated clients may; express "
+      ++ "the obligation in lifecycle-owned types instead "
+      ++ "(lifecycle_reconciliation_doctrine.md § 3.3)."
+  | line <- lines contents
+  , "import Prodbox.Test." `isPrefixOf` line
+  ]
+ where
+  importedModule line = case drop 1 (words line) of
+    moduleName : _ -> moduleName
+    [] -> "Prodbox.Test.*"
+
+checkTestNamespaceBoundary :: FilePath -> IO [String]
+checkTestNamespaceBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/Prodbox/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , not ("src/Prodbox/Test/" `isPrefixOf` path)
+      , path `notElem` validationHarnessClientModules
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \relativePath -> do
+          contents <- readFileStrict (repoRoot </> relativePath)
+          pure (testNamespaceImportViolations relativePath contents)
+      )
 
 checkDaemonRuntimeImports :: FilePath -> IO [String]
 checkDaemonRuntimeImports repoRoot = do
@@ -5659,6 +5851,144 @@ checkDoctrineSectionCitations repoRoot = do
 -- | Sprint 0.22 (pure). The final path component. Total.
 takeFileNameSimple :: FilePath -> String
 takeFileNameSimple = reverse . takeWhile (/= '/') . reverse
+
+-- | Sprint 4.84 (pure). Join the typed lifecycle registry
+-- ('managedResourceRegistry') to the flat name\/class inventory
+-- ('resourceLifecycleClasses') that the generated documentation and the
+-- per-run delete guard are both derived from.
+--
+-- The two tables are different shapes for a reason — the typed one carries
+-- keys, kinds, coordinates, and capability requirements; the flat one is the
+-- documentation SSoT and the name-keyed guard — but a resource's *lifecycle
+-- class* must be the same fact in both. Before this check they could
+-- disagree silently, which is exactly how the two EBS families came to share
+-- one @aws-ebs-volumes :: LongLived@ row in the flat table while the typed
+-- registry had already split them: the flat table then said the test-scoped
+-- family was retained, and the runtime tag set was left to disagree with it.
+--
+-- Both directions fail:
+--
+--   * a typed descriptor whose key names no row in the flat inventory, and
+--   * a typed descriptor whose flat row carries a different class.
+--
+-- The reverse direction (a flat row with no typed descriptor) is deliberately
+-- not a violation: the flat inventory also registers non-AWS-resource
+-- identities — Pulsar topic families, the superseded Harbor release, the
+-- retained public-edge certificate, the operational credentials — that the
+-- typed teardown registry does not own.
+-- | Sprint 4.85: which flat inventory rows deliberately have no typed
+-- teardown descriptor, and why.
+--
+-- 'managedResourceRegistryParityViolations' joins typed -> flat, which cannot
+-- see a flat row the typed registry never registered. That is exactly how the
+-- @dns-aws@ validation hosted zone stayed out of the compiled desired-absence
+-- program while being registered, swept by the harness, and billable: nothing
+-- asked which flat rows had no descriptor, so its omission read like a
+-- decision. Every row here is now a stated decision, and a new flat row is a
+-- build failure until someone makes one.
+untypedLifecycleInventoryExemptions :: [(String, String)]
+untypedLifecycleInventoryExemptions =
+  [
+    ( "pulsar-topics-per-run"
+    , "a dynamic broker-topic family whose concrete members are produced by "
+        ++ "the typed topic algebra at run time, not a registrable coordinate"
+    )
+  ,
+    ( "pulsar-topics-long-lived"
+    , "the long-lived half of the same dynamic topic family"
+    )
+  ,
+    ( "legacy-harbor-helm-release"
+    , "a superseded Helm release with no desired-present path; its removal "
+        ++ "owner is the chart platform, not the teardown registry"
+    )
+  ,
+    ( "aws-ses"
+    , "the long-lived SES stack, whose teardown is operator-explicit and whose "
+        ++ "typed descriptor lands with the Sprint 7.36 AWS adapters"
+    )
+  ,
+    ( "public-edge-tls"
+    , "retained S3 object material rather than a provider resource; destroyed "
+        ++ "transitively by the long-lived bucket destroy"
+    )
+  ,
+    ( "operational-aws-ses-lease-role"
+    , "operational credential surface; registering the Operational descriptors "
+        ++ "is constrained by OperationalCredentialDispositionBlocker"
+    )
+  ,
+    ( "operational-iam-user"
+    , "operational credential surface; see the disposition blockers"
+    )
+  ,
+    ( "operational-aws-config"
+    , "operational credential surface; see the disposition blockers"
+    )
+  ]
+
+-- | Join flat -> typed. The reverse direction of
+-- 'managedResourceRegistryParityViolations'.
+untypedLifecycleInventoryViolations :: [String]
+untypedLifecycleInventoryViolations =
+  [ violation
+  | (name, _) <- resourceLifecycleClasses
+  , name `notElem` typedNames
+  , violation <- missingExemption name
+  ]
+    ++ [ "`"
+           ++ name
+           ++ "` is exempted from the typed teardown registry in "
+           ++ "Prodbox.CheckCode.untypedLifecycleInventoryExemptions, but it is "
+           ++ "registered there now; delete the stale exemption."
+       | (name, _) <- untypedLifecycleInventoryExemptions
+       , name `elem` typedNames
+       ]
+ where
+  typedNames =
+    [ Text.unpack (registeredResourceKeyText (managedResourceKey descriptor))
+    | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+    ]
+  missingExemption name
+    | any ((== name) . fst) untypedLifecycleInventoryExemptions = []
+    | otherwise =
+        [ "`"
+            ++ name
+            ++ "` is registered in resourceLifecycleClasses but has no typed "
+            ++ "teardown descriptor, so compileDesiredAbsenceProgram emits no "
+            ++ "node for it and no compiled cleanup program can reach it. "
+            ++ "Register it in Prodbox.Lifecycle.Teardown.Registry, or state "
+            ++ "why it cannot be in "
+            ++ "Prodbox.CheckCode.untypedLifecycleInventoryExemptions."
+        ]
+
+managedResourceRegistryParityViolations :: [String]
+managedResourceRegistryParityViolations =
+  concatMap descriptorViolations managedResourceRegistry
+ where
+  descriptorViolations (SomeManagedResourceDescriptor descriptor) =
+    let name = Text.unpack (registeredResourceKeyText (managedResourceKey descriptor))
+        registered = managedResourceLifecycleClass descriptor
+     in case lookup name resourceLifecycleClasses of
+          Nothing ->
+            [ "the typed lifecycle registry registers `"
+                ++ name
+                ++ "` but resourceLifecycleClasses has no row for it; add it to "
+                ++ "src/Prodbox/Lifecycle/ResourceClass.hs "
+                ++ "(lifecycle_reconciliation_doctrine.md §3.1 totality)."
+            ]
+          Just flatClass
+            | flatClass == registered -> []
+            | otherwise ->
+                [ "`"
+                    ++ name
+                    ++ "` is "
+                    ++ show registered
+                    ++ " in the typed lifecycle registry but "
+                    ++ show flatClass
+                    ++ " in resourceLifecycleClasses; a resource has exactly one "
+                    ++ "static lifecycle class (lifecycle_reconciliation_doctrine.md §3.1)."
+                ]
 
 checkCreateCallSiteCoverage :: FilePath -> IO [String]
 checkCreateCallSiteCoverage repoRoot = do

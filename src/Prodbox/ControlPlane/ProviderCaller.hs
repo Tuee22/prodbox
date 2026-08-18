@@ -12,6 +12,7 @@ module Prodbox.ControlPlane.ProviderCaller
   , dispatchHostProviderIntentFresh
   , dispatchAuthenticatedProviderIntent
   , dispatchAuthenticatedProviderIntentFresh
+  , dispatchAuthenticatedProviderIntentFreshWithOperation
   )
 where
 
@@ -21,6 +22,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError
   , dispatchAuthorityProviderIntent
+  , dispatchAuthorityProviderIntentWithOperation
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
@@ -34,6 +36,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKeyError
   , mkClientSubmissionKey
   )
+import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent)
 
 data ProviderCallerError
@@ -108,9 +111,34 @@ dispatchAuthenticatedProviderIntentFresh
   -> Text
   -> ProviderIntent
   -> IO (Either ProviderCallerError Text)
-dispatchAuthenticatedProviderIntentFresh authentication prefix intent = do
+dispatchAuthenticatedProviderIntentFresh authentication prefix intent =
+  fmap
+    (fmap snd)
+    (dispatchAuthenticatedProviderIntentFreshWithOperation authentication prefix intent)
+
+-- | Sprint 4.84: dispatch and keep the operation the Authority admitted.
+--
+-- A caller that must later /name/ what it submitted — the registered-stack
+-- creation lane is the first — needs the 'OperationId', and it cannot derive
+-- one: the epoch and client sequence are assigned at admission. This is the
+-- form that carries it out.
+dispatchAuthenticatedProviderIntentFreshWithOperation
+  :: LifecycleAuthorityAuthentication
+  -> Text
+  -> ProviderIntent
+  -> IO (Either ProviderCallerError (OperationId, Text))
+dispatchAuthenticatedProviderIntentFreshWithOperation authentication prefix intent = do
   submissionKey <- freshProviderSubmissionKey prefix
-  dispatchAuthenticatedProviderIntent authentication submissionKey intent
+  case mkClientSubmissionKey submissionKey of
+    Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
+    Right validated -> do
+      dispatched <-
+        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+          dispatchAuthorityProviderIntentWithOperation transport validated intent
+      pure $ case dispatched of
+        Left err -> Left (ProviderCallerAuthenticationFailed err)
+        Right (Left err) -> Left (ProviderCallerDispatchFailed err)
+        Right (Right settled) -> Right settled
 
 freshProviderSubmissionKey :: Text -> IO Text
 freshProviderSubmissionKey prefix = do

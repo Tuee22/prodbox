@@ -454,6 +454,12 @@ confirmCommittedAwsStackCreationBindingReadBack expected observed =
 data AwsStackCreationBindingClient m = AwsStackCreationBindingClient
   { attemptAwsStackCreationBindingCommit
       :: OperationId
+      -- \^ the admitted create operation
+      -> OperationId
+      -- \^ Sprint 4.84: the admitted @ObserveProviderAwsScope@ operation whose
+      -- retained receipt proves the account and region.  The binding slot
+      -- itself does not consume it; the endpoint behind this client does,
+      -- because committing the run-invariant generation needs a proven scope.
       -> ProviderRevision
       -> ObservationEvidenceScope
       -> m (Either AwsStackCreationBindingError AwsStackCreationCommitResult)
@@ -597,6 +603,7 @@ independentlyReadBackCommittedAwsStackCreationBinding repository key cleanupScop
       observed <- independentlyReadBackAwsStackCreationBinding repository identity
       pure (confirmCommittedAwsStackCreationBindingReadBack identity observed)
 
+-- | A binding-only client.  See the note on 'attemptAwsStackCreationBindingCommit'.
 lifecycleAuthorityAwsStackCreationBindingClient
   :: (Monad m)
   => AuthorityAdmissionRepository m revision
@@ -608,7 +615,14 @@ lifecycleAuthorityAwsStackCreationBindingClient admissionRepository repository =
     , readBackAwsStackCreationBindingByIdentity = readBack
     }
  where
-  attemptCommit operationId currentRevision creationScope = do
+  -- The binding slot alone.  Production goes through
+  -- "Prodbox.ControlPlane.RegisteredStackCreationProducer", which proves the
+  -- AWS scope, reserves a cycle, and commits the run-invariant generation
+  -- before committing this binding; this constructor is retained so the
+  -- binding slot's own create/replay/read-back semantics stay independently
+  -- exercisable, and it therefore has no use for the scope-observation
+  -- operation.
+  attemptCommit operationId _providerScopeOperation currentRevision creationScope = do
     observed <-
       observeAuthorityAwsStackCreationOperation
         admissionRepository

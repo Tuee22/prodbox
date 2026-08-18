@@ -7,6 +7,7 @@ module Prodbox.ControlPlane.ProviderAwsScopeReceipt
   , verifiedAuthorityProviderAwsScopeRegion
   , verifiedAuthorityProviderAwsScopeRevision
   , verifiedAuthorityProviderAwsScopeOperationId
+  , verifiedAuthorityProviderAwsScopeOperationText
   , verifiedAuthorityProviderAwsScopeCoordinate
   , AuthorityProviderAwsScopeReader
   , readBackVerifiedAuthorityProviderAwsScope
@@ -22,6 +23,7 @@ import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   , verifiedAuthorityProviderAwsScopeAccountId
   , verifiedAuthorityProviderAwsScopeCoordinate
   , verifiedAuthorityProviderAwsScopeOperationId
+  , verifiedAuthorityProviderAwsScopeOperationText
   , verifiedAuthorityProviderAwsScopeRegion
   , verifiedAuthorityProviderAwsScopeRevision
   )

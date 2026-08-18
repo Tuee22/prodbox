@@ -181,6 +181,7 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresTerminal)
+        , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -190,6 +191,7 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -387,6 +389,32 @@ lifecycleTeardownProgramSuite = do
       regression <- expectReportRegression
       desiredAbsenceRegressionLocalAndTotalDistinct regression `shouldBe` True
 
+    it "Sprint 4.85 explicit per-run mints its own completion witness" $ do
+      -- `SurfaceCompletionEvidence` had only its Cascade constructor, so no
+      -- ordinary surface could report completion at all. Explicit per-run is
+      -- the one whose obligation is fully determined by the compiled program:
+      -- it has no local-uninstall arm, so its registered-target read-backs,
+      -- checkpoint retirement read-backs, and its own independently read-back
+      -- report ARE the completion evidence.
+      regression <- expectReportRegression
+      desiredAbsenceRegressionExplicitPerRunCompletes regression `shouldBe` True
+      -- And the obligation is not vacuous -- the per-run program really does
+      -- carry both target absence and checkpoint disposition as mandatory
+      -- read-backs, which is what makes the previous claim mean anything.
+      desiredAbsenceRegressionExplicitPerRunObligationNonEmpty regression
+        `shouldBe` True
+
+    it "Sprint 4.85 explicit per-run completion refuses a plane-less or wrong-surface value" $ do
+      -- These two arms belong to the minter rather than to classification: an
+      -- ordinary classification cannot produce either, so only a mis-minted
+      -- read-back value could carry one, and the minter refuses rather than
+      -- trusting the value's own claim about itself.
+      regression <- expectReportRegression
+      desiredAbsenceRegressionExplicitPerRunUnavailableRefused regression
+        `shouldBe` True
+      desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused regression
+        `shouldBe` True
+
     it "keeps raw report and evidence minters outside the public facade" $ do
       source <- readFile "src/Prodbox/Lifecycle/Teardown/Report.hs"
       let header = moduleHeader source
@@ -575,22 +603,26 @@ assertTopologicallyOrdered nodes =
 surfaceCases :: [SurfaceCase]
 surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
-  , SurfaceCase CascadeSurface 47 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 42 perRunTargetKeys
+  , SurfaceCase CascadeSurface 50 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 45 perRunTargetKeys
   , SurfaceCase OperationalTeardownSurface 5 []
   , SurfaceCase ExplicitLongLivedSurface 8 [AwsEbsProductionRetainedKey]
-  , SurfaceCase TotalDecommissionSurface 48 allManagedTargetKeys
+  , SurfaceCase TotalDecommissionSurface 51 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
 nonLocalSurfaceCases = drop 1 surfaceCases
 
+-- | Sprint 4.85 added the dns-aws validation hosted zone, so every per-run
+-- surface now compiles one more registered target — three more nodes: the
+-- desired-absence effect, its mandatory read-back, and its completion.
 perRunTargetKeys :: [RegisteredResourceKey]
 perRunTargetKeys =
   [ AwsEksKey
   , AwsEksSubzoneKey
   , AwsTestKey
   , AwsEbsPerRunTestKey
+  , AwsDnsValidationZoneKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]

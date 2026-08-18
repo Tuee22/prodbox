@@ -12,6 +12,7 @@ module Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   , verifiedAuthorityProviderAwsScopeRegion
   , verifiedAuthorityProviderAwsScopeRevision
   , verifiedAuthorityProviderAwsScopeOperationId
+  , verifiedAuthorityProviderAwsScopeOperationText
   , verifiedAuthorityProviderAwsScopeCoordinate
   , ProviderAwsScopeReceiptError (..)
   , providerAwsScopeReceiptMaximumLength
@@ -112,6 +113,14 @@ verifiedAuthorityProviderAwsScopeOperationId
   :: VerifiedAuthorityProviderAwsScope -> OperationId
 verifiedAuthorityProviderAwsScopeOperationId =
   internalAuthorityProviderAwsScopeOperationId
+
+-- | The operation identity exactly as the retained receipt renders it.  This
+-- is the same text the local Provider proof carried, so a consumer that needs
+-- the provenance string does not have to re-derive it from the raw identity.
+verifiedAuthorityProviderAwsScopeOperationText
+  :: VerifiedAuthorityProviderAwsScope -> Text
+verifiedAuthorityProviderAwsScopeOperationText =
+  operationIdentityText . internalAuthorityProviderAwsScopeOperationId
 
 verifiedAuthorityProviderAwsScopeCoordinate
   :: VerifiedAuthorityProviderAwsScope -> ProviderIntentCoordinate

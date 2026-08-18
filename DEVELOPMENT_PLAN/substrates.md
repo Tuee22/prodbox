@@ -183,10 +183,13 @@ Block storage is likewise identical in **discipline** across both substrates and
 deterministic rebinding — a `hostPath` under `.data/` on home, a pre-created EBS volume lifted in via
 the EBS CSI `volumeHandle` (AZ-pinned) on EKS. There is no dynamic provisioning on either substrate.
 Production retains the EBS volumes exactly as it retains `.data/`; suite cleanup selects only
-test-scoped EBS. **Current:** one `aws-ebs-volumes :: LongLived` registry identity is partitioned by
-provider tags and successful deletion is provider-exit evidence, not exact absence read-back.
-**Target:** the statically `PerRun` test family can close only after exact absence read-back; partial
-or unobservable cleanup remains incomplete. The volume source is one of the
+test-scoped EBS. The two families are separately registered identities — `aws-ebs-volumes-per-run-test`
+is statically `PerRun` and `aws-ebs-volumes-production-retained` is statically `LongLived` — so the
+lifecycle class is fixed before any provider row is read and runtime tags prove
+ownership/coordinate/spec agreement rather than choosing a cleanup policy. **Current:** successful
+deletion is still provider-exit evidence, not exact absence read-back. **Target:** the statically
+`PerRun` test family can close only after exact absence read-back; partial or unobservable cleanup
+remains incomplete. The volume source is one of the
 genuinely substrate-specific LOWER-layer differences (alongside the ingress load-balancer and
 Route 53 hosting), owned by
 [../documents/engineering/storage_lifecycle_doctrine.md § 1](../documents/engineering/storage_lifecycle_doctrine.md).
@@ -361,8 +364,9 @@ resource cannot be added to the registry without this inventory updating in lock
 | `pulsar-topics-per-run` | PerRun |
 | `legacy-harbor-helm-release` | PerRun |
 | `dns-aws-validation-hosted-zone` | PerRun |
+| `aws-ebs-volumes-per-run-test` | PerRun |
 | `aws-ses` | LongLived |
-| `aws-ebs-volumes` | LongLived |
+| `aws-ebs-volumes-production-retained` | LongLived |
 | `public-edge-tls` | LongLived |
 | `pulsar-topics-long-lived` | LongLived |
 | `operational-aws-ses-lease-role` | Operational |
@@ -370,16 +374,16 @@ resource cannot be added to the registry without this inventory updating in lock
 | `operational-aws-config` | Operational |
 <!-- prodbox:resource-lifecycle-classes:end -->
 
-**Current versus target EBS status.** The generated block above truthfully reflects the current
-source registry: it has one `aws-ebs-volumes :: LongLived` identity, while the current reaper
-partitions returned provider rows with runtime tags. That is not the accepted target because one
-identity straddles production-retained and test-scoped cleanup policy. Sprint `4.84` must replace
-it in code with two different registered keys: a test-scoped EBS family statically indexed
-`PerRun`, and a production-retained EBS family statically indexed `LongLived`. A creator, observer,
-or cleanup program selects one descriptor before provider observation; tags then prove
-ownership/coordinate/spec agreement and can report mismatch, but never infer or change
-`LifecycleClass`. This table changes only after that source registry lands and
-`prodbox dev docs generate` regenerates the marked section.
+**EBS registry identities.** The generated block above carries two EBS rows because the source
+registry carries two keys. Sprint `4.84` replaced the single `aws-ebs-volumes :: LongLived`
+identity — under which one identity straddled production-retained and test-scoped cleanup policy,
+and the runtime tag set decided which applied after selection — with a test-scoped family
+statically indexed `PerRun` and a production-retained family statically indexed `LongLived`. A
+creator, observer, or cleanup program selects one descriptor before provider observation; tags then
+prove ownership/coordinate/spec agreement and can report mismatch, but never infer or change
+`LifecycleClass`. The two names here are the same identities as the typed registry keys
+`AwsEbsPerRunTestKey` and `AwsEbsProductionRetainedKey`, and `prodbox dev check` fails the build if
+the two tables disagree about a class.
 
 The target encrypted gateway emitter journals are retained managed resources. Their implementing
 sprint must add the new resource identity/class to the typed registry and regenerate this section;

@@ -70,14 +70,20 @@ noLiveLongLivedPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLiveLongLivedPulumiStacks"
     , preconditionCheck = do
-        sesStatus <- queryAwsSesResidueStatus repoRoot
-        certStatus <- queryPublicEdgeTlsResidueStatus repoRoot
-        let live =
+        sesObservation <- queryAwsSesResidueStatus repoRoot
+        certObservation <- queryPublicEdgeTlsResidueStatus repoRoot
+        -- The gate decision is unchanged; what is new is that each answer now
+        -- names the authority that gave it, so a refusal says which layer
+        -- spoke rather than leaving the operator to infer it.
+        let blocks observation =
+              ResidueStatus.residueBlocksTeardownGate
+                (ResidueStatus.residueObservationStatus observation)
+            live =
               [ ("aws-ses", "prodbox aws stack aws-ses destroy --yes")
-              | ResidueStatus.residueBlocksTeardownGate sesStatus
+              | blocks sesObservation
               ]
                 ++ [ ("public-edge-tls", "prodbox nuke")
-                   | ResidueStatus.residueBlocksTeardownGate certStatus
+                   | blocks certObservation
                    ]
         pure $ case live of
           [] -> Right ()

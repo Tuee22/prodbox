@@ -32,6 +32,11 @@ import Prodbox.ControlPlane.ProviderCaller
   ( dispatchAuthenticatedProviderIntentFresh
   , renderProviderCallerError
   )
+import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
+  ( RegisteredStackCreationSubmission (submittedCreateEvidence)
+  , renderRegisteredStackCreationSubmitError
+  , submitRegisteredStackCreation
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
@@ -90,7 +95,7 @@ ensureAwsEksSubzoneStackResourcesWithAuthentication
   -> IO ExitCode
 ensureAwsEksSubzoneStackResourcesWithAuthentication authentication repoRoot = do
   config <- resolveAwsEksSubzoneStackConfig repoRoot
-  dispatchConfigured authentication "operator-reconcile-aws-eks-subzone" True config
+  dispatchConfigured authentication repoRoot "operator-reconcile-aws-eks-subzone" True config
 
 destroyAwsEksSubzoneStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsEksSubzoneStack repoRoot quietOutput =
@@ -104,15 +109,16 @@ destroyAwsEksSubzoneStackWithAuthentication
   -> IO ExitCode
 destroyAwsEksSubzoneStackWithAuthentication authentication repoRoot _quietOutput = do
   config <- resolveAwsEksSubzoneStackConfig repoRoot
-  dispatchConfigured authentication "operator-destroy-aws-eks-subzone" False config
+  dispatchConfigured authentication repoRoot "operator-destroy-aws-eks-subzone" False config
 
 dispatchConfigured
   :: LifecycleAuthorityAuthentication
+  -> FilePath
   -> Text.Text
   -> Bool
   -> Either String AwsEksSubzoneStackConfig
   -> IO ExitCode
-dispatchConfigured authentication prefix desiredPresent configResult =
+dispatchConfigured authentication repoRoot prefix desiredPresent configResult =
   case configResult of
     Left err -> failWith err
     Right stackConfig ->
@@ -122,23 +128,37 @@ dispatchConfigured authentication prefix desiredPresent configResult =
                (subzoneStackParentZoneId stackConfig)
                (subzoneStackSubzoneName stackConfig)
            ) of
-        (Right ref, Right revision, Right config) -> do
-          let intent =
-                if desiredPresent
-                  then ReconcileRegisteredStack ref revision config
-                  else DestroyRegisteredStack ref revision config
-          result <- dispatchAuthenticatedProviderIntentFresh authentication prefix intent
-          case result of
-            Left err -> failWith (renderProviderCallerError err)
-            Right evidence -> do
-              writeOutputLine
-                ( ( if desiredPresent
-                      then "AWS EKS subzone Provider receipt: "
-                      else "AWS EKS subzone Provider destroy receipt: "
-                  )
-                    ++ Text.unpack evidence
-                )
-              pure ExitSuccess
+        (Right ref, Right revision, Right config)
+          -- Sprint 4.84: only the create half commits a lifecycle generation.
+          -- A destroy names a cycle that already exists and must not open one.
+          | desiredPresent -> do
+              submitted <-
+                submitRegisteredStackCreation
+                  authentication
+                  repoRoot
+                  prefix
+                  revision
+                  (ReconcileRegisteredStack ref revision config)
+              case submitted of
+                Left err -> failWith (renderRegisteredStackCreationSubmitError err)
+                Right submission -> do
+                  writeOutputLine
+                    ( "AWS EKS subzone Provider receipt: "
+                        ++ Text.unpack (submittedCreateEvidence submission)
+                    )
+                  pure ExitSuccess
+          | otherwise -> do
+              result <-
+                dispatchAuthenticatedProviderIntentFresh
+                  authentication
+                  prefix
+                  (DestroyRegisteredStack ref revision config)
+              case result of
+                Left err -> failWith (renderProviderCallerError err)
+                Right evidence -> do
+                  writeOutputLine
+                    ("AWS EKS subzone Provider destroy receipt: " ++ Text.unpack evidence)
+                  pure ExitSuccess
         (refResult, revisionResult, providerConfig) ->
           failWith
             ( "build typed AWS EKS subzone Provider intent: "

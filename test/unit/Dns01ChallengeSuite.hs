@@ -5,32 +5,18 @@
 -- read-back.
 module Dns01ChallengeSuite (dns01ChallengeSuite) where
 
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.Either (isRight)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Text (Text)
-import Data.Text qualified as Text
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDependency (..)
   , CleanupDependencyKind (..)
-  , CleanupNodeOutcome (..)
-  , cleanupGraphNodes
-  , cleanupNodeDependencies
-  , cleanupNodeId
+  , CleanupNodeId
   , mkCleanupNodeId
-  , mkCleanupRunId
   )
 import Prodbox.Lifecycle.Dns01Challenge
 import Prodbox.Lifecycle.DnsRecord
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
-import Prodbox.Lifecycle.ResourceRegistry (ManagedResource (..))
-import Prodbox.Test.ManagedCleanupPlan
-  ( ManagedCleanupEdge (..)
-  , compileManagedCleanupPlan
-  , managedCleanupGraph
-  , runManagedCleanupNode
-  )
-import System.Exit (ExitCode (..))
 import TestSupport
 
 dns01ChallengeSuite :: SuiteBuilder ()
@@ -87,108 +73,59 @@ dns01ChallengeSuite =
         ]
         `shouldBe` [True, False, False]
 
-    it "registers the challenge as a managed resource whose destroy reads back" $ do
-      calls <- newIORef ([] :: [Text])
-      let resource =
-            dns01ChallengeManagedResource
-              homeIntent
-              (\_ -> modifyIORef' calls (++ ["delete-owner"]) >> pure (Right ()))
-              (\_ -> modifyIORef' calls (++ ["read-back"]) >> pure DnsRecordMissing)
-      resourceName resource `shouldBe` "_acme-challenge.prodbox.example.com"
-      resourceClass resource `shouldBe` LongLived
-      resourceDestroy resource "/tmp" `shouldReturn` ExitSuccess
-      -- The read-back runs after the delete, always: a delete that lost its
-      -- response and a delete that worked are indistinguishable from the call.
-      readIORef calls `shouldReturn` ["delete-owner", "read-back"]
-
-    it "fails the destroy when the record survives or cannot be observed" $ do
-      let destroyWith deleted observed =
-            resourceDestroy
-              ( dns01ChallengeManagedResource
-                  homeIntent
-                  (\_ -> pure deleted)
-                  (\_ -> pure observed)
-              )
-              "/tmp"
-      destroyWith (Right ()) (DnsRecordObserved challengeSet) `shouldReturn` ExitFailure 1
-      destroyWith (Right ()) (DnsRecordUnobservable "api down") `shouldReturn` ExitFailure 1
-      -- A delete that reported failure but whose read-back proves absence is a
-      -- success: absence is the postcondition, not the delete's exit code.
-      destroyWith (Left "delete rejected") DnsRecordMissing `shouldReturn` ExitSuccess
-      -- And a delete that reported success but cannot be read back is not.
-      destroyWith (Left "delete rejected") (DnsRecordUnobservable "api down")
-        `shouldReturn` ExitFailure 1
-
-    it "renders a cleanup node that follows issuance on attempt, not on success" $ do
-      let runId = accepted (mkCleanupRunId "dns01-run")
-          challengeResource =
-            dns01ChallengeManagedResource
-              homeIntent
-              (\_ -> pure (Right ()))
-              (\_ -> pure DnsRecordMissing)
-          issuance =
-            ManagedResource
-              { resourceName = issuanceNodeName
-              , resourceClass = PerRun
-              , resourceEnsureCommand = Nothing
-              , resourceEnsurePresent = Nothing
-              , resourceDestroyCommand = "fixture issuance destroy"
-              , resourceDestroyCapability =
-                  resourceDestroyCapability challengeResource
-              , resourceDestroy = \_ -> pure ExitSuccess
-              }
-          edge = dns01ChallengeCleanupEdge issuanceNodeName homeIntent
-          compiled =
-            accepted
-              ( compileManagedCleanupPlan
-                  runId
-                  [issuance, challengeResource]
-                  [edge]
-              )
-          nodes = cleanupGraphNodes (managedCleanupGraph compiled)
-      managedCleanupPredecessor edge `shouldBe` issuanceNodeName
+    it "Sprint 4.85 the desired-absence obligation is data, not a caller-supplied effect" $ do
+      -- Sprint 5.29 registered this as a `ManagedResource` built from two
+      -- `FilePath -> IO` closures, so a caller could substitute the effect
+      -- after the registry entry was projected and this production module had
+      -- to import `Prodbox.Test.ManagedCleanupPlan` for its edge. The
+      -- obligation is now a value in lifecycle-owned types.
+      let obligation =
+            accepted (mkDns01ChallengeDesiredAbsence issuanceNodeId homeIntent)
+      dns01ChallengeAbsenceIntent obligation `shouldBe` homeIntent
+      dns01ChallengeAbsenceNode obligation
+        `shouldBe` accepted (mkCleanupNodeId "_acme-challenge.prodbox.example.com")
       -- The always-run kind is the deliverable: `CleanupRequiresSuccess` would
       -- be precisely wrong, because the failure case is the one that leaves a
       -- challenge record behind.
-      managedCleanupDependencyKind edge `shouldBe` CleanupRequiresAttempt
+      dns01ChallengeAbsenceDependency obligation
+        `shouldBe` CleanupDependency
+          { cleanupDependencyNode = issuanceNodeId
+          , cleanupDependencyKind = CleanupRequiresAttempt
+          }
 
-      let challengeNodeId = accepted (mkCleanupNodeId "managed/_acme-challenge.prodbox.example.com")
-          issuanceNodeId = accepted (mkCleanupNodeId (Text.pack ("managed/" <> issuanceNodeName)))
-      map cleanupNodeId nodes `shouldBe` [issuanceNodeId, challengeNodeId]
-      -- The registration is present in the rendered plan BEFORE the node that
-      -- reaches issuance runs — asserted on the plan, not on a live run.
-      concatMap cleanupNodeDependencies (filter ((== challengeNodeId) . cleanupNodeId) nodes)
-        `shouldBe` [ CleanupDependency
-                       { cleanupDependencyNode = issuanceNodeId
-                       , cleanupDependencyKind = CleanupRequiresAttempt
-                       }
-                   ]
+    it "Sprint 4.85 only the read-back decides the desired-absence verdict" $ do
+      -- The delete result is not a parameter of `dns01ChallengeDesiredAbsenceOutcome`
+      -- at all, which is the point: a delete that worked and a delete that lost
+      -- its response are indistinguishable from the call, so a delete that
+      -- reported failure over a record that reads back absent still closes the
+      -- obligation, and a delete that reported success over an unobservable
+      -- zone still does not.
+      dns01ChallengeDesiredAbsenceOutcome DnsRecordMissing
+        `shouldBe` Dns01ChallengeAbsent
+      dns01ChallengeDesiredAbsenceOutcome (DnsRecordObserved challengeSet)
+        `shouldBe` Dns01ChallengeStillPresent challengeSet
+      dns01ChallengeDesiredAbsenceOutcome (DnsRecordUnobservable "zone unreachable")
+        `shouldBe` Dns01ChallengeUnobservable "challenge record unobservable: zone unreachable"
+      -- Still-present and unobservable are different failures and stay
+      -- different; neither is absence.
+      map
+        (dns01ChallengeAbsenceIsProven . dns01ChallengeDesiredAbsenceOutcome)
+        [ DnsRecordMissing
+        , DnsRecordObserved challengeSet
+        , DnsRecordUnobservable "zone unreachable"
+        , DnsRecordEndpointUnready "warming"
+        ]
+        `shouldBe` [True, False, False, False]
 
-    it "runs the deletion node after a failed issuance and surfaces its own failure" $ do
-      let runId = accepted (mkCleanupRunId "dns01-failure-run")
-          challengeResource =
-            dns01ChallengeManagedResource
-              homeIntent
-              (\_ -> pure (Right ()))
-              (\_ -> pure (DnsRecordUnobservable "zone unreachable"))
-          compiled = accepted (compileManagedCleanupPlan runId [challengeResource] [])
-      case cleanupGraphNodes (managedCleanupGraph compiled) of
-        [node] -> do
-          outcome <- runManagedCleanupNode "/tmp" compiled node
-          -- The node's own failure is reported rather than swallowed, so the
-          -- run accumulates it instead of reporting a clean teardown while a
-          -- challenge record survives in the operator's parent zone.
-          outcome `shouldSatisfy` isFailure
-        other -> expectationFailure ("unexpected cleanup nodes: " <> show other)
+    it "Sprint 4.85 the node id refuses a coordinate it cannot name" $
+      -- The node id is the record name itself, so a node and the TXT it removes
+      -- cannot drift apart; a name the cleanup-run identity bound rejects is a
+      -- refusal rather than a silently truncated node.
+      mkDns01ChallengeDesiredAbsence issuanceNodeId homeIntent
+        `shouldSatisfy` isRight
 
-issuanceNodeName :: String
-issuanceNodeName = "public-edge-issuance"
-
-isFailure :: CleanupNodeOutcome -> Bool
-isFailure outcome = case outcome of
-  CleanupNodeFailed _ -> True
-  CleanupNodeEffectUnconfirmed _ -> True
-  CleanupNodeSucceeded -> False
+issuanceNodeId :: CleanupNodeId
+issuanceNodeId = accepted (mkCleanupNodeId "public-edge-issuance")
 
 account :: AwsAccountId
 account = accepted (mkAwsAccountId "123456789012")

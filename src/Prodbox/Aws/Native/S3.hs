@@ -58,6 +58,10 @@ import Prodbox.Aws.Native.Wire
   , performAwsRequest
   )
 import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
+import Prodbox.Lifecycle.OwnedResourceTags
+  ( OwnedResourceTag
+  , longLivedPulumiStateBucketTags
+  )
 
 data S3BucketObservation
   = S3BucketAbsent
@@ -81,10 +85,7 @@ expectedLongLivedBucketHardening =
     { s3BucketVersioningEnabled = True
     , s3BucketAes256Encryption = True
     , s3BucketPublicAccessBlocked = True
-    , s3BucketManagedTags =
-        [ ("prodbox.io/managed-by", "prodbox")
-        , ("prodbox.io/role", "long-lived-pulumi-state")
-        ]
+    , s3BucketManagedTags = sort longLivedPulumiStateBucketTags
     , s3BucketNoncurrentExpiryDays = Just 90
     }
 
@@ -143,12 +144,22 @@ renderPublicAccessBlockXml =
     <> "<BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets>"
     <> "</PublicAccessBlockConfiguration>"
 
-renderBucketTaggingXml :: ByteString
-renderBucketTaggingXml =
+-- | Render a tag set.  The set is a parameter rather than a literal because
+-- the writer and the read-back expectation below are two statements of one
+-- fact, and they were separately authored; both now read
+-- 'longLivedPulumiStateBucketTags'.
+renderBucketTaggingXml :: [OwnedResourceTag] -> ByteString
+renderBucketTaggingXml tags =
   "<Tagging xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><TagSet>"
-    <> "<Tag><Key>prodbox.io/managed-by</Key><Value>prodbox</Value></Tag>"
-    <> "<Tag><Key>prodbox.io/role</Key><Value>long-lived-pulumi-state</Value></Tag>"
+    <> foldMap renderTag tags
     <> "</TagSet></Tagging>"
+ where
+  renderTag (key, value) =
+    "<Tag><Key>"
+      <> xmlEscape (encodeUtf8 key)
+      <> "</Key><Value>"
+      <> xmlEscape (encodeUtf8 value)
+      <> "</Value></Tag>"
 
 renderBucketLifecycleXml :: ByteString
 renderBucketLifecycleXml =
@@ -257,7 +268,10 @@ runPutBucketHardening handle sender bucket =
     [ put "s3:PutBucketVersioning" "versioning" renderBucketVersioningXml
     , put "s3:PutBucketEncryption" "encryption" renderBucketEncryptionXml
     , put "s3:PutPublicAccessBlock" "publicAccessBlock" renderPublicAccessBlockXml
-    , put "s3:PutBucketTagging" "tagging" renderBucketTaggingXml
+    , put
+        "s3:PutBucketTagging"
+        "tagging"
+        (renderBucketTaggingXml longLivedPulumiStateBucketTags)
     , put "s3:PutBucketLifecycleConfiguration" "lifecycle" renderBucketLifecycleXml
     ]
  where

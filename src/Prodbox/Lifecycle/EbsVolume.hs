@@ -22,6 +22,8 @@ module Prodbox.Lifecycle.EbsVolume
   , renderTestScopedEbsObservation
   , parseTestScopedEbsObservation
   , ebsManagedResourceName
+  , ebsPerRunTestResourceName
+  , ebsProductionRetainedResourceName
   , ebsPersistentVolumeTagKey
   , ebsDescribeVolumesArgs
   , ebsCreateVolumeArgs
@@ -208,8 +210,30 @@ testEbsObservationPrefix = "prodbox-test-ebs-observation/v1:"
 maximumTestEbsObservationVolumes :: Int
 maximumTestEbsObservationVolumes = 128
 
-ebsManagedResourceName :: String
-ebsManagedResourceName = "aws-ebs-volumes"
+-- | Sprint 4.84: the registered managed-resource identity of one EBS scope.
+--
+-- This was a single constant, @\"aws-ebs-volumes\"@, so a discovered volume
+-- was reported under the same identity whichever scope had discovered it, and
+-- the two families' different cleanup policies had to be recovered downstream
+-- from the runtime tag set. The scope is already the thing that chose the
+-- query, so it is the thing that names the answer: the two names here are the
+-- two statically-classed registry identities
+-- ('Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses'), and their
+-- agreement with the typed registry keys is enforced by @prodbox dev check@.
+ebsManagedResourceName :: EbsVolumeScope -> String
+ebsManagedResourceName scope = case scope of
+  EbsRetainedProduction -> ebsProductionRetainedResourceName
+  EbsPerRunTest _ -> ebsPerRunTestResourceName
+
+-- | The @LongLived@ registered identity. Matches
+-- 'Prodbox.Lifecycle.Teardown.Model.AwsEbsProductionRetainedKey'.
+ebsProductionRetainedResourceName :: String
+ebsProductionRetainedResourceName = "aws-ebs-volumes-production-retained"
+
+-- | The @PerRun@ registered identity. Matches
+-- 'Prodbox.Lifecycle.Teardown.Model.AwsEbsPerRunTestKey'.
+ebsPerRunTestResourceName :: String
+ebsPerRunTestResourceName = "aws-ebs-volumes-per-run-test"
 
 ebsPersistentVolumeTagKey :: String
 ebsPersistentVolumeTagKey = "prodbox.io/persistent-volume"
@@ -417,24 +441,26 @@ retainedEbsVolumeBindingsFromDiscovered required volumes =
           else
             Left ("retained EBS volume for " ++ pvName ++ " is not attachable: state=" ++ ebsVolumeState volume)
 
-ebsVolumesResidueStatus :: [EbsVolume] -> ResidueStatus
-ebsVolumesResidueStatus volumes =
+-- | Sprint 4.84: residue is reported under the identity the observing scope
+-- selected, not under one name shared by both EBS families.
+ebsVolumesResidueStatus :: EbsVolumeScope -> [EbsVolume] -> ResidueStatus
+ebsVolumesResidueStatus scope volumes =
   case volumes of
     [] -> ResidueAbsent
     _ ->
       ResiduePresent
         ResidueDetails
-          { residueStackName = ebsManagedResourceName
+          { residueStackName = ebsManagedResourceName scope
           , residueEvidence =
               "ec2:describe-volumes matched EBS volume(s): "
                 ++ intercalate ", " (map (unEbsVolumeId . ebsVolumeId) volumes)
           }
 
-ebsDiscoverResultToResidue :: Either String [EbsVolume] -> ResidueStatus
-ebsDiscoverResultToResidue result =
+ebsDiscoverResultToResidue :: EbsVolumeScope -> Either String [EbsVolume] -> ResidueStatus
+ebsDiscoverResultToResidue scope result =
   case result of
     Left err -> ResidueUnreachable (ResidueQueryFailed err)
-    Right volumes -> ebsVolumesResidueStatus volumes
+    Right volumes -> ebsVolumesResidueStatus scope volumes
 
 testScopedEbsVolumeIdsFromTagRows :: String -> [TagSweep.TaggedResource] -> [EbsVolumeId]
 testScopedEbsVolumeIdsFromTagRows clusterName resources =

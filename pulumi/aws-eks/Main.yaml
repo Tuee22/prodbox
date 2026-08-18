@@ -123,6 +123,7 @@ resources:
               Action: sts:AssumeRole
       tags:
         Name: ${stackName}-cluster-role
+        prodbox.io/managed-by: prodbox
 
   clusterPolicyAttachment:
     type: aws:iam:RolePolicyAttachment
@@ -144,6 +145,7 @@ resources:
               Action: sts:AssumeRole
       tags:
         Name: ${stackName}-node-role
+        prodbox.io/managed-by: prodbox
 
   nodeWorkerPolicyAttachment:
     type: aws:iam:RolePolicyAttachment
@@ -181,6 +183,7 @@ resources:
           - ${operatorCidr}
       tags:
         Name: ${clusterName}
+        prodbox.io/managed-by: prodbox
     options:
       dependsOn:
         - ${clusterPolicyAttachment}
@@ -202,6 +205,7 @@ resources:
         maxSize: 2
       tags:
         Name: ${nodeGroupName}
+        prodbox.io/managed-by: prodbox
     options:
       dependsOn:
         - ${cluster}
@@ -230,6 +234,7 @@ resources:
         - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
       tags:
         Name: ${stackName}-oidc-provider
+        prodbox.io/managed-by: prodbox
 
   # IAM policy for the AWS Load Balancer Controller. The policy document is the
   # canonical upstream IAM policy from
@@ -244,6 +249,9 @@ resources:
       description: "AWS Load Balancer Controller permissions for the AWS-substrate EKS cluster"
       policy:
         fn::readFile: ./aws-lb-controller-iam-policy.json
+      tags:
+        Name: ${stackName}-aws-lb-controller
+        prodbox.io/managed-by: prodbox
 
   # IAM role assumed by the AWS Load Balancer Controller's Kubernetes service
   # account via web identity federation through the cluster's OIDC provider.
@@ -267,6 +275,7 @@ resources:
                   ${oidcIssuerHostPath}:aud: sts.amazonaws.com
       tags:
         Name: ${stackName}-aws-lb-controller
+        prodbox.io/managed-by: prodbox
 
   awsLbControllerPolicyAttachment:
     type: aws:iam:RolePolicyAttachment
@@ -297,6 +306,7 @@ resources:
                   ${oidcIssuerHostPath}:aud: sts.amazonaws.com
       tags:
         Name: ${stackName}-ebs-csi-driver
+        prodbox.io/managed-by: prodbox
 
   ebsCsiDriverPolicyAttachment:
     type: aws:iam:RolePolicyAttachment
@@ -314,6 +324,7 @@ resources:
       resolveConflictsOnUpdate: OVERWRITE
       tags:
         Name: ${stackName}-ebs-csi-driver
+        prodbox.io/managed-by: prodbox
     options:
       dependsOn:
         - ${nodeGroup}

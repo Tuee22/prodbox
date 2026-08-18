@@ -70,15 +70,28 @@ resourceLifecycleClasses =
     -- rather than by a remembered id -- a zone leaked by an exception or
     -- a cancelled run is still swept.
     ("dns-aws-validation-hosted-zone", PerRun)
+  , -- Sprint 4.84: test-scoped EBS volumes that back EKS static
+    -- @Retain@ PersistentVolumes for the lifetime of one validation
+    -- run. They carry @prodbox.io/lifecycle=per-run-test@ plus the EKS
+    -- @kubernetes.io\/cluster\/\<name\>=owned@ tag, and are destroyed by
+    -- the typed EC2 discover\/destroy path instead of a Pulumi stack
+    -- destroy.
+    --
+    -- This is a *static* class, not a tag verdict. Until Sprint 4.84
+    -- the two EBS families shared one @aws-ebs-volumes :: LongLived@
+    -- identity and the runtime tag set decided, after selection, which
+    -- cleanup policy applied — which let tag evidence do the work
+    -- 'LifecycleClass' is for. The name matches
+    -- 'Prodbox.Lifecycle.Teardown.Model.AwsEbsPerRunTestKey'; the join
+    -- is machine-enforced by @prodbox dev check@.
+    ("aws-ebs-volumes-per-run-test", PerRun)
   , ("aws-ses", LongLived)
-  , -- Sprint 4.39: pre-created EBS volumes that back EKS static
-    -- @Retain@ PersistentVolumes. Production-retained volumes carry
-    -- @prodbox.io/lifecycle=retained-ebs@ and survive cluster teardown;
-    -- test-scoped volumes carry @prodbox.io/lifecycle=per-run-test@
-    -- plus the EKS @kubernetes.io/cluster/<name>=owned@ tag and are
-    -- destroyed by the typed EC2 discover/destroy path instead of a
-    -- Pulumi stack destroy.
-    ("aws-ebs-volumes", LongLived)
+  , -- Sprint 4.39 / 4.84: pre-created EBS volumes that back EKS static
+    -- @Retain@ PersistentVolumes and survive cluster teardown. They
+    -- carry @prodbox.io/lifecycle=retained-ebs@ and no per-run cluster
+    -- ownership tag. The name matches
+    -- 'Prodbox.Lifecycle.Teardown.Model.AwsEbsProductionRetainedKey'.
+    ("aws-ebs-volumes-production-retained", LongLived)
   , -- Sprint 4.24: the retained public-edge TLS certificate
     -- material, written to a substrate-scoped key
     -- (@public-edge-tls/\<substrate\>/\<canonical-scope-key\>@) in the long-lived

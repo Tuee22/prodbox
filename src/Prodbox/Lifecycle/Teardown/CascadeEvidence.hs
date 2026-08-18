@@ -14,7 +14,6 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence
   , cascadeLocalCompletionOperationId
   , CascadeEvidenceComponent (..)
   , CascadeEvidenceError (..)
-  , cascadeIntentionallyRetainedProjectionDigest
   , ReadyToUninstallEvidence
   , readyToUninstallRunId
   , readyToUninstallGraphDigest
@@ -85,7 +84,6 @@ import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , cascadeEvidenceRegressionMixedBindingRefused
   , cascadeEvidenceRegressionPermitRefused
   , cascadeEvidenceRegressionPreUninstallRefused
-  , cascadeIntentionallyRetainedProjectionDigest
   , cascadeLocalCompletionOperationId
   , cascadeLocalUninstallOperationId
   , cascadeReportDigestText

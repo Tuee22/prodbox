@@ -183,16 +183,34 @@ operationalCredentialInventoryConsumers _ = [minBound .. maxBound]
 
 -- | Teardown graph operations whose current production interpreters may open
 -- a Lifecycle-provider session.  These names are intentionally independent of
--- @Teardown.Program@: the future Program integration may consume this module
--- without creating an import cycle.  This list proves no node is terminal.
+-- @Teardown.Program@: the Program integration
+-- (@Teardown.OperationalCredentialCoverage@) consumes both without creating an
+-- import cycle.  This list proves no node is terminal.
+--
+-- Sprint @4.84@ added the three checkpoint-tail entries. The list previously
+-- stopped at 'ReconcileStackCheckpointRestoreCredentialConsumer', but
+-- 'Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter' calls
+-- @readBackAwsRegisteredTargetAbsent@ through the shared registered-target
+-- interpreter in three further arms — recovery read-back, retirement, and
+-- retirement read-back. Those are the *late* consumers, which is exactly what
+-- an under-complete list gets wrong: the argument this inventory exists to
+-- support is about when the credential may be disposed of, and that argument
+-- turns on which consumer is last, not on how many there are.
+--
+-- The list is now joined to the compiled program by
+-- 'Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage', so it cannot
+-- drift again silently.
 data OperationalCredentialGraphConsumer
   = ObserveRegisteredTargetCredentialConsumer
   | ReconcileStackCheckpointRestoreCredentialConsumer
+  | ReadBackStackCheckpointRecoveryCredentialConsumer
   | CommitEksDrainIntentCredentialConsumer
   | DrainEksKubernetesResourcesCredentialConsumer
   | ReadBackEksKubernetesDrainCredentialConsumer
   | ReconcileRegisteredTargetAbsentCredentialConsumer
   | ReadBackRegisteredTargetAbsentCredentialConsumer
+  | RetireStackCheckpointPairCredentialConsumer
+  | ReadBackStackCheckpointRetirementCredentialConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialGraphConsumerTag
@@ -201,6 +219,8 @@ operationalCredentialGraphConsumerTag consumer = case consumer of
   ObserveRegisteredTargetCredentialConsumer -> "observe-registered-target"
   ReconcileStackCheckpointRestoreCredentialConsumer ->
     "reconcile-stack-checkpoint-restore"
+  ReadBackStackCheckpointRecoveryCredentialConsumer ->
+    "read-back-stack-checkpoint-recovery"
   CommitEksDrainIntentCredentialConsumer -> "commit-eks-drain-intent"
   DrainEksKubernetesResourcesCredentialConsumer ->
     "drain-eks-kubernetes-resources"
@@ -210,6 +230,10 @@ operationalCredentialGraphConsumerTag consumer = case consumer of
     "reconcile-registered-target-absent"
   ReadBackRegisteredTargetAbsentCredentialConsumer ->
     "read-back-registered-target-absent"
+  RetireStackCheckpointPairCredentialConsumer ->
+    "retire-stack-checkpoint-pair"
+  ReadBackStackCheckpointRetirementCredentialConsumer ->
+    "read-back-stack-checkpoint-retirement"
 
 operationalCredentialInventoryGraphConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialGraphConsumer]

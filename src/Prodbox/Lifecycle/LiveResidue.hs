@@ -315,11 +315,11 @@ observePerRunCheckpoints authentication repoRoot =
 -- | Live encrypted-backend query for the long-lived @aws-ses@ stack.
 -- Long-lived callers still treat unreadable state as blocking because
 -- they cannot prove the resource is absent.
-queryAwsSesResidueStatus :: FilePath -> IO ResidueStatus
+queryAwsSesResidueStatus :: FilePath -> IO ResidueObservation
 queryAwsSesResidueStatus repoRoot = do
   bypass <- isTestResidueAbsentSet
   if bypass
-    then pure ResidueAbsent
+    then pure harnessBypassAbsence
     else do
       authenticated <-
         withHostLifecycleAuthorityAuthentication
@@ -328,37 +328,61 @@ queryAwsSesResidueStatus repoRoot = do
           (\authentication -> queryAwsSesResidueStatusWithAuthentication authentication repoRoot)
       pure $ case authenticated of
         Left err ->
-          ResidueUnreachable
-            ( ResidueBackendS3Unreachable
-                (renderLifecycleAuthorityAuthenticationError err)
+          observeResidueAt
+            ResidueLayerRetainedCheckpoint
+            ( ResidueUnreachable
+                ( ResidueBackendS3Unreachable
+                    (renderLifecycleAuthorityAuthenticationError err)
+                )
             )
-        Right status -> status
+        Right observation -> observation
 
 queryAwsSesResidueStatusWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
-  -> IO ResidueStatus
+  -> IO ResidueObservation
 queryAwsSesResidueStatusWithAuthentication authentication repoRoot = do
   bypass <- isTestResidueAbsentSet
   if bypass
-    then pure ResidueAbsent
+    then pure harnessBypassAbsence
     else do
       gate <- queryResidueVaultGate
       if vaultGateAllows gate
         then querySesLive authentication repoRoot
-        else pure (residueStatusBlockedByVaultGate gate)
+        else
+          pure
+            ( observeResidueAt
+                ResidueLayerVaultGate
+                (residueStatusBlockedByVaultGate gate)
+            )
 
+-- | The @aws-ses@ stack is observed by listing its /encrypted checkpoint/
+-- through the Authority, so the layer is the retained checkpoint store and
+-- never AWS. Sprint 4.81 introduced that distinction precisely because a
+-- checkpoint saying a stack is gone is not AWS saying its resources are gone;
+-- this path had no layer at all until now, which is strictly the position that
+-- predates the distinction.
 querySesLive
   :: LifecycleAuthorityAuthentication
   -> FilePath
-  -> IO ResidueStatus
+  -> IO ResidueObservation
 querySesLive authentication repoRoot = do
   result <-
     listEncryptedStackWithAuthentication
       authentication
       repoRoot
       (stackRefFor (StackName (Text.pack awsSesStackName)))
-  pure (residueStatusFromS3Listing awsSesStackName result)
+  pure
+    ( observeResidueAt
+        ResidueLayerRetainedCheckpoint
+        (residueStatusFromS3Listing awsSesStackName result)
+    )
+
+-- | The one absence the harness bypass mints. Named so every bypass arm mints
+-- the same value at the same layer, rather than each returning a bare
+-- 'ResidueAbsent' that no consumer can tell from an observed one.
+harnessBypassAbsence :: ResidueObservation
+harnessBypassAbsence = observeResidueAt ResidueLayerHarnessBypass ResidueAbsent
 
 -- | Sprint 4.24: the canonical managed-resource name and the
 -- substrate-scoped S3 key prefix of the retained public-edge production
@@ -382,27 +406,38 @@ publicEdgeTlsRetentionPrefix = "public-edge-tls/"
 -- present when any retained object exists, absent when none do (or the
 -- backend bucket is gone), and 'ResidueUnreachable' on any other
 -- credential / config / S3 failure so destructive gates fail closed.
-queryPublicEdgeTlsResidueStatus :: FilePath -> IO ResidueStatus
+-- The retained certificate material lives in the long-lived S3 bucket, so a
+-- live answer here is answered by AWS itself and carries
+-- 'ResidueLayerAwsResource' — unlike the @aws-ses@ path beside it, which reads
+-- a retained checkpoint. Naming both is what makes the two distinguishable to
+-- a consumer; they were both bare 'ResidueStatus' before.
+queryPublicEdgeTlsResidueStatus :: FilePath -> IO ResidueObservation
 queryPublicEdgeTlsResidueStatus repoRoot = do
   bypass <- isTestResidueAbsentSet
   if bypass
-    then pure ResidueAbsent
+    then pure harnessBypassAbsence
     else do
       gate <- queryResidueVaultGate
       if vaultGateAllows gate
         then
-          withLongLivedBucketEnv
-            repoRoot
-            ( \section environment ->
-                residueStatusFromObjectListing publicEdgeTlsResourceName
-                  <$> listLongLivedObjectKeysUnderPrefix
-                    repoRoot
-                    environment
-                    section
-                    publicEdgeTlsRetentionPrefix
+          observeResidueAt ResidueLayerAwsResource
+            <$> withLongLivedBucketEnv
+              repoRoot
+              ( \section environment ->
+                  residueStatusFromObjectListing publicEdgeTlsResourceName
+                    <$> listLongLivedObjectKeysUnderPrefix
+                      repoRoot
+                      environment
+                      section
+                      publicEdgeTlsRetentionPrefix
+              )
+              (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
+        else
+          pure
+            ( observeResidueAt
+                ResidueLayerVaultGate
+                (residueStatusBlockedByVaultGate gate)
             )
-            (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
-        else pure (residueStatusBlockedByVaultGate gate)
 
 -- | Sprint 4.24: the @destroy@ action for the retained public-edge
 -- production TLS certificate managed resource — purge every object

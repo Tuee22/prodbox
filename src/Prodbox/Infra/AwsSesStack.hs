@@ -175,8 +175,15 @@ sesSmtpUserName = "prodbox-ses-smtp"
 -- Long-lived semantics: an unreachable S3 backend is treated as
 -- still-present (refusal) because the operator cannot prove the
 -- stack is gone.
+--
+-- Sprint 4.84: the underlying query now names the authority that answered.
+-- This adapter keeps its 'ResidueStatus' shape for callers that only decide
+-- present\/absent\/unreachable; a caller that needs the layer calls
+-- 'LiveResidue.queryAwsSesResidueStatus' directly.
 awsSesStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
-awsSesStackResidueStatus = LiveResidue.queryAwsSesResidueStatus
+awsSesStackResidueStatus =
+  fmap ResidueStatus.residueObservationStatus
+    . LiveResidue.queryAwsSesResidueStatus
 
 data AwsSesStackSnapshot = AwsSesStackSnapshot
   { sesSnapshotStackName :: String

@@ -41,6 +41,17 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkSesIdentityRef
   , mkSesRuleSetRef
   )
+import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
+  ( cascadeTerminalAuditNodeName
+  , coverageRegressionAncestryIsDiscriminating
+  , coverageRegressionAuditIsNotItsOwnConsumer
+  , coverageRegressionCheckpointTailCounted
+  , coverageRegressionConsumersPrecedeAudit
+  , coverageRegressionEveryConsumerReached
+  , fixedOperationalCredentialCoverageRegression
+  , operationalCredentialCoverageViolations
+  , validateOperationalCredentialCoverage
+  )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
 import TestSupport
 
@@ -75,14 +86,49 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       map
         operationalCredentialGraphConsumerTag
         (operationalCredentialInventoryGraphConsumers inventory)
+        -- Sprint 4.84 added the three checkpoint-tail entries. The list
+        -- previously stopped at the restore, but AwsCheckpointInterpreter
+        -- reaches the shared registered-target interpreter in three further
+        -- arms, and the retirement read-back is every stack target's
+        -- completion node -- later than anything the old list named.
         `shouldBe` [ "observe-registered-target"
                    , "reconcile-stack-checkpoint-restore"
+                   , "read-back-stack-checkpoint-recovery"
                    , "commit-eks-drain-intent"
                    , "drain-eks-kubernetes-resources"
                    , "read-back-eks-kubernetes-drain"
                    , "reconcile-registered-target-absent"
                    , "read-back-registered-target-absent"
+                   , "retire-stack-checkpoint-pair"
+                   , "read-back-stack-checkpoint-retirement"
                    ]
+
+    it "Sprint 4.84 joins the inventory to the program that contains those nodes" $
+      -- The enumeration was authored by hand and joined to nothing, so it
+      -- silently under-reported its own last consumer. Both directions are
+      -- now closed: an unclassified operation is a compile error (the
+      -- classifier's result type IS the inventory), and a stale entry no
+      -- node reaches is a finding here.
+      operationalCredentialCoverageViolations `shouldBe` []
+
+    it "Sprint 4.84 every credential consumer precedes the terminal audit" $ do
+      -- `DispositionBeforeAuditConflictsWithLiveAuditCredential` is an
+      -- ordering claim, and it is only as good as the graph actually
+      -- enforcing it: the audit must run while the credential is still live,
+      -- so no consumer may sit outside the audit's ancestry.
+      validateOperationalCredentialCoverage `shouldBe` Right ()
+      cascadeTerminalAuditNodeName `shouldBe` "cascade/audit-escapes"
+
+    it "Sprint 4.84 the ordering check is discriminating, not vacuous" $ do
+      -- A coverage check whose ancestry relation is trivially total proves
+      -- nothing. `cascade/read-back-completion` runs strictly after the audit
+      -- and must not be an ancestor of it.
+      let regression = fixedOperationalCredentialCoverageRegression
+      coverageRegressionEveryConsumerReached regression `shouldBe` True
+      coverageRegressionConsumersPrecedeAudit regression `shouldBe` True
+      coverageRegressionCheckpointTailCounted regression `shouldBe` True
+      coverageRegressionAncestryIsDiscriminating regression `shouldBe` True
+      coverageRegressionAuditIsNotItsOwnConsumer regression `shouldBe` True
 
     it "keeps both revoke orders and missing global authority explicitly blocked" $ do
       NonEmpty.toList (operationalCredentialInventoryDispositionBlockers inventory)

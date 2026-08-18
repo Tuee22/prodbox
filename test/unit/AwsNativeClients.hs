@@ -127,6 +127,7 @@ import Prodbox.Aws.Native.Wire
   , readBoundedNativeAwsHttpOutcome
   , renderFormBody
   )
+import Prodbox.Lifecycle.OwnedResourceTags (longLivedPulumiStateBucketTags)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
@@ -659,13 +660,14 @@ awsNativeClientsSuite =
         renderBucketEncryptionXml `shouldSatisfy` BS8.isInfixOf "<SSEAlgorithm>AES256</SSEAlgorithm>"
         renderPublicAccessBlockXml
           `shouldSatisfy` BS8.isInfixOf "<RestrictPublicBuckets>true</RestrictPublicBuckets>"
-        renderBucketTaggingXml `shouldSatisfy` BS8.isInfixOf "<Key>prodbox.io/managed-by</Key>"
+        renderBucketTaggingXml longLivedPulumiStateBucketTags
+          `shouldSatisfy` BS8.isInfixOf "<Key>prodbox.io/managed-by</Key>"
         renderBucketLifecycleXml `shouldSatisfy` BS8.isInfixOf "<NoncurrentDays>90</NoncurrentDays>"
       it "parses each authoritative hardening projection" $ do
         parseBucketVersioning renderBucketVersioningXml `shouldBe` Right True
         parseBucketEncryption renderBucketEncryptionXml `shouldBe` Right True
         parsePublicAccessBlock renderPublicAccessBlockXml `shouldBe` Right True
-        parseBucketTagging renderBucketTaggingXml
+        parseBucketTagging (renderBucketTaggingXml longLivedPulumiStateBucketTags)
           `shouldBe` Right
             [ ("prodbox.io/managed-by", "prodbox")
             , ("prodbox.io/role", "long-lived-pulumi-state")
@@ -683,7 +685,14 @@ awsNativeClientsSuite =
               | "?publicAccessBlock=" `isSuffixOf` shrUrl request =
                   pure (Right (HttpOutcome 200 [] renderPublicAccessBlockXml))
               | "?tagging=" `isSuffixOf` shrUrl request =
-                  pure (Right (HttpOutcome 200 [] renderBucketTaggingXml))
+                  pure
+                    ( Right
+                        ( HttpOutcome
+                            200
+                            []
+                            (renderBucketTaggingXml longLivedPulumiStateBucketTags)
+                        )
+                    )
               | "?lifecycle=" `isSuffixOf` shrUrl request =
                   pure (Right (HttpOutcome 200 [] renderBucketLifecycleXml))
               | otherwise = pure (Left (TransportFailure "unexpected S3 request" DefinitelyNotSent))

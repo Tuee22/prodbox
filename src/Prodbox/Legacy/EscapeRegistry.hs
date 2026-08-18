@@ -18,6 +18,16 @@
 -- deleted together and the corresponding
 -- [legacy ledger](../../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
 -- row moves to @Completed@.
+--
+-- Sprint @4.84@ closes the gap that made the bijection alone insufficient. A
+-- marker↔entry bijection proves that every /marked/ escape is registered; it
+-- cannot prove that an unmarked surviving escape was ever inventoried. The
+-- registry therefore also carries a __coverage__ layer: each still-Pending
+-- compatibility seam named by the deletion ledger declares the exact source
+-- symbol that names it and the complete set of files allowed to mention that
+-- symbol. A mention anywhere else fails the build even though the bijection
+-- stays satisfied, and a declared site that no longer mentions its symbol fails
+-- too, so a deleted seam cannot leave a stale declaration behind.
 module Prodbox.Legacy.EscapeRegistry
   ( EscapeCategory (..)
   , LegacyEscapeSite (..)
@@ -29,6 +39,9 @@ module Prodbox.Legacy.EscapeRegistry
   , isLegacyEscapeScanFile
   , legacyEscapeRegistrySelfPath
   , parseEscapeMarkers
+  , EscapeCoverageRule (..)
+  , escapeCoverageRules
+  , tokenOccursIn
   , escapeRegistryViolations
   )
 where
@@ -47,6 +60,16 @@ data EscapeCategory
     -- remains the default config-selectable rollback until native live-MinIO
     -- parity is proven, then it is deleted through the ledger.
     AwsCliObjectStoreSubprocess
+  | -- | The general-purpose Tier-0 @aws.*@ aggregate and the legacy host reader
+    -- family that still represent the registered Lifecycle-provider identity
+    -- outside its fenced Provider-Worker ownership.
+    Tier0GenericAwsCredentialAggregate
+  | -- | Host-direct MinIO transport used as an operational recovery path
+    -- instead of the retained Authority's own object-store seam.
+    HostDirectMinioTransport
+  | -- | The bespoke cascade executor that orchestrates destruction outside the
+    -- lifecycle-owned desired-absence program.
+    BespokeCascadeExecutor
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | A single registered legacy-escape seam.
@@ -59,6 +82,9 @@ data LegacyEscapeSite = LegacyEscapeSite
   , escapeSiteDescription :: String
   , escapeSiteRemovalOwner :: String
   -- ^ Owning cutover sprint id(s).
+  , escapeSiteDeletionCondition :: String
+  -- ^ What must be true before the marked call site and this entry are deleted
+  -- together.
   }
   deriving (Eq, Show)
 
@@ -66,6 +92,10 @@ escapeCategoryLabel :: EscapeCategory -> String
 escapeCategoryLabel category =
   case category of
     AwsCliObjectStoreSubprocess -> "aws CLI subprocess object-store site"
+    Tier0GenericAwsCredentialAggregate ->
+      "generic Tier-0 aws.* Lifecycle-provider credential aggregate/reader"
+    HostDirectMinioTransport -> "host-direct MinIO transport"
+    BespokeCascadeExecutor -> "bespoke cascade executor"
 
 -- | The authoritative registry. Exactly one surviving marked call site per
 -- entry; the bijection check ('escapeRegistryViolations') enforces both
@@ -81,6 +111,165 @@ registeredLegacyEscapeSites =
             ++ "delete operations shell out to the aws CLI s3api verbs with "
             ++ "per-operation temp-file bodies."
       , escapeSiteRemovalOwner = "1.66"
+      , escapeSiteDeletionCondition =
+          "Native SigV4 object-store parity is proven against live MinIO and "
+            ++ "the config-selectable rollback is withdrawn."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "tier0-generic-aws-credential-aggregate"
+      , escapeSiteCategory = Tier0GenericAwsCredentialAggregate
+      , escapeSiteFile = "src/Prodbox/Settings.hs"
+      , escapeSiteDescription =
+          "The generic Tier-0 aws.* aggregate projects the registered "
+            ++ "Lifecycle-provider credential, and its resolver is reachable "
+            ++ "outside the fenced Provider Worker."
+      , escapeSiteRemovalOwner = "4.50"
+      , escapeSiteDeletionCondition =
+          "Every remaining operation selects its role-specific capability or "
+            ++ "session, so no caller outside the Provider Worker can select "
+            ++ "or materialize the Lifecycle-provider credential."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "lifecycle-provider-vault-field-projection"
+      , escapeSiteCategory = Tier0GenericAwsCredentialAggregate
+      , escapeSiteFile = "src/Prodbox/CLI/Vault.hs"
+      , escapeSiteDescription =
+          "The operator-facing Vault surface still projects the "
+            ++ "Lifecycle-provider credential's fields by name."
+      , escapeSiteRemovalOwner = "4.50"
+      , escapeSiteDeletionCondition =
+          "The same condition as the Tier-0 aggregate: the projection is "
+            ++ "deleted with the aggregate it describes."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "host-lifecycle-provider-credential-reader"
+      , escapeSiteCategory = Tier0GenericAwsCredentialAggregate
+      , escapeSiteFile = "src/Prodbox/Aws.hs"
+      , escapeSiteDescription =
+          "Legacy host AWS control flow still names the Lifecycle-provider "
+            ++ "target-credential reader."
+      , escapeSiteRemovalOwner = "4.50"
+      , escapeSiteDeletionCondition =
+          "Host AWS control flow routes every mutation through the Authority "
+            ++ "and the fenced Provider Worker."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "host-minio-port-forward-transport"
+      , escapeSiteCategory = HostDirectMinioTransport
+      , escapeSiteFile = "src/Prodbox/Infra/MinioBackend.hs"
+      , escapeSiteDescription =
+          "Host-direct MinIO transport retained as an operational recovery "
+            ++ "path beside the retained Authority's own object-store seam."
+      , escapeSiteRemovalOwner = "4.50"
+      , escapeSiteDeletionCondition =
+          "The dedicated config and object-store services own every read and "
+            ++ "write, and the host-direct recovery path is withdrawn."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "bespoke-cascade-executor"
+      , escapeSiteCategory = BespokeCascadeExecutor
+      , escapeSiteFile = "src/Prodbox/CLI/Rke2.hs"
+      , escapeSiteDescription =
+          "The cascade is orchestrated by a bespoke executor rather than by a "
+            ++ "lifecycle-owned desired-absence program."
+      , escapeSiteRemovalOwner = "6.5"
+      , escapeSiteDeletionCondition =
+          "Sprint 6.5 completes the qualified single-writer cutover to the "
+            ++ "descriptor-bound cleanup runner."
+      }
+  ]
+
+-- | One still-Pending compatibility seam, bound to the exact source symbol that
+-- names it and to every file allowed to mention that symbol.
+--
+-- This is the part the marker bijection cannot express. A marker proves that a
+-- call site the author chose to annotate is registered; a coverage rule proves
+-- that the seam has not grown a second, unannotated call site somewhere else,
+-- and that its declared sites still exist.
+data EscapeCoverageRule = EscapeCoverageRule
+  { coverageRuleCategory :: EscapeCategory
+  , coverageRuleSymbol :: String
+  -- ^ Matched as a whole identifier token, so a longer identifier that merely
+  -- contains this one is not an occurrence.
+  , coverageRuleSites :: [FilePath]
+  -- ^ Every repo-relative scanned file permitted to mention the symbol.  The
+  -- first entry is the anchor and must also be a registered marker site of the
+  -- same category.  A Haddock-quoted reference such as @\'Module.symbol\'@ is
+  -- not an occurrence, because the trailing quote is an identifier character in
+  -- Haskell; documentation-only mentions therefore need no site.
+  , coverageRuleLedgerRow :: String
+  }
+  deriving (Eq, Show)
+
+escapeCoverageRules :: [EscapeCoverageRule]
+escapeCoverageRules =
+  [ EscapeCoverageRule
+      { coverageRuleCategory = AwsCliObjectStoreSubprocess
+      , coverageRuleSymbol = "ObjectStoreSubprocess"
+      , coverageRuleSites =
+          [ "src/Prodbox/Minio/ObjectStore.hs"
+          , "src/Prodbox/Minio/ObjectStoreTypes.hs"
+          ]
+      , coverageRuleLedgerRow = "aws CLI object-store backend selection"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = Tier0GenericAwsCredentialAggregate
+      , coverageRuleSymbol = "operationalAwsCredentialsRef"
+      , coverageRuleSites = ["src/Prodbox/Settings.hs"]
+      , coverageRuleLedgerRow = "generic Tier-0 aws.* aggregate"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = Tier0GenericAwsCredentialAggregate
+      , coverageRuleSymbol = "resolveLifecycleProviderCredentials"
+      , coverageRuleSites =
+          [ "src/Prodbox/Settings.hs"
+          , "src/Prodbox/TestValidation.hs"
+          ]
+      , coverageRuleLedgerRow = "generic Tier-0 aws.* aggregate"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = Tier0GenericAwsCredentialAggregate
+      , coverageRuleSymbol = "lifecycleProviderAwsVaultFields"
+      , coverageRuleSites = ["src/Prodbox/CLI/Vault.hs"]
+      , coverageRuleLedgerRow = "legacy host Lifecycle-provider reader family"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = Tier0GenericAwsCredentialAggregate
+      , coverageRuleSymbol = "readLifecycleProviderTargetCredentials"
+      , coverageRuleSites = ["src/Prodbox/Aws.hs"]
+      , coverageRuleLedgerRow = "legacy host Lifecycle-provider reader family"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = HostDirectMinioTransport
+      , coverageRuleSymbol = "withMinioPortForward"
+      , coverageRuleSites =
+          [ "src/Prodbox/Infra/MinioBackend.hs"
+          , "src/Prodbox/EffectInterpreter.hs"
+          , "src/Prodbox/Vault/Host.hs"
+          ]
+      , coverageRuleLedgerRow = "host MinIO transport"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = HostDirectMinioTransport
+      , coverageRuleSymbol = "withCurrentMinioPortForward"
+      , coverageRuleSites = ["src/Prodbox/Infra/MinioBackend.hs"]
+      , coverageRuleLedgerRow = "host MinIO transport"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = BespokeCascadeExecutor
+      , coverageRuleSymbol = "runNativeDeleteCascade"
+      , coverageRuleSites =
+          ["src/Prodbox/CLI/Rke2.hs"]
+      , coverageRuleLedgerRow = "bespoke cascade executor"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = BespokeCascadeExecutor
+      , coverageRuleSymbol = "runCascadeDrainResult"
+      , coverageRuleSites =
+          [ "src/Prodbox/CLI/Rke2.hs"
+          , "src/Prodbox/TestRunner.hs"
+          ]
+      , coverageRuleLedgerRow = "bespoke cascade executor"
       }
   ]
 
@@ -136,6 +325,34 @@ parseEscapeMarkers path = go
   isMarkerChar c = c `elem` markerCharset
   markerCharset = ['a' .. 'z'] ++ ['0' .. '9'] ++ "-"
 
+-- | Whether @symbol@ occurs in @contents@ as a whole identifier token.  Token
+-- matching rather than substring matching matters: @AwsCliObjectStoreSubprocess@
+-- contains @ObjectStoreSubprocess@, and a substring rule would report the
+-- longer constructor as an occurrence of the shorter seam symbol.
+tokenOccursIn :: String -> String -> Bool
+tokenOccursIn symbol contents
+  | null symbol = False
+  | otherwise = go ' ' contents
+ where
+  go previous remaining = case remaining of
+    [] -> False
+    (character : rest)
+      | symbol `isPrefixOf` remaining
+      , not (isIdentifierCharacter previous)
+      , not (isIdentifierCharacter (charAfter remaining)) ->
+          True
+      | otherwise -> go character rest
+
+  charAfter remaining = case drop (length symbol) remaining of
+    (character : _) -> character
+    [] -> ' '
+
+  isIdentifierCharacter character =
+    character `elem` identifierCharset
+
+  identifierCharset =
+    ['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9'] ++ "_'"
+
 -- | Find the text immediately after the first occurrence of @needle@.
 breakOn :: String -> String -> Maybe String
 breakOn needle = go
@@ -151,8 +368,83 @@ breakOn needle = go
 escapeRegistryViolations :: [(FilePath, String)] -> [String]
 escapeRegistryViolations scannedFiles =
   sort
-    (registryDefects ++ unregisteredDefects ++ missingDefects ++ mismatchDefects ++ duplicateDefects)
+    ( registryDefects
+        ++ unregisteredDefects
+        ++ missingDefects
+        ++ mismatchDefects
+        ++ duplicateDefects
+        ++ coverageDriftDefects
+        ++ staleCoverageDefects
+        ++ unanchoredCoverageDefects
+    )
  where
+  -- Coverage: a mention of a seam's symbol outside its declared site set is an
+  -- escape nobody inventoried, whether or not it carries a marker.
+  coverageDriftDefects :: [String]
+  coverageDriftDefects =
+    [ "unregistered "
+        ++ escapeCategoryLabel (coverageRuleCategory rule)
+        ++ " call site: "
+        ++ coverageRuleSymbol rule
+        ++ " is mentioned at "
+        ++ path
+        ++ ", which is not a declared coverage site for the "
+        ++ coverageRuleLedgerRow rule
+        ++ " ledger row; add the site to escapeCoverageRules with its marker, "
+        ++ "or route the call through the replacement."
+    | rule <- escapeCoverageRules
+    , (path, contents) <- scannedFiles
+    , tokenOccursIn (coverageRuleSymbol rule) contents
+    , not (any (samePath path) (coverageRuleSites rule))
+    ]
+
+  -- The other direction: a declared site whose symbol is gone is a stale
+  -- declaration, so deleting the source without deleting the entry fails.
+  staleCoverageDefects :: [String]
+  staleCoverageDefects =
+    [ "stale coverage site "
+        ++ site
+        ++ " for "
+        ++ coverageRuleSymbol rule
+        ++ ": the declared file no longer mentions the symbol; delete the "
+        ++ "coverage site (and its registry entry when the seam is gone)."
+    | rule <- escapeCoverageRules
+    , site <- coverageRuleSites rule
+    , not (mentions site (coverageRuleSymbol rule))
+    ]
+
+  -- Every coverage rule anchors on a registered marker site of its own
+  -- category, so a seam cannot be inventoried by symbol alone with no marked,
+  -- owned, condition-bearing entry behind it.
+  unanchoredCoverageDefects :: [String]
+  unanchoredCoverageDefects =
+    [ "coverage rule for "
+        ++ coverageRuleSymbol rule
+        ++ " has no registered "
+        ++ escapeCategoryLabel (coverageRuleCategory rule)
+        ++ " marker entry at its anchor site "
+        ++ show (take 1 (coverageRuleSites rule))
+    | rule <- escapeCoverageRules
+    , anchor <- take 1 (coverageRuleSites rule)
+    , not
+        ( any
+            ( \site ->
+                escapeSiteCategory site == coverageRuleCategory rule
+                  && samePath anchor (escapeSiteFile site)
+            )
+            registeredLegacyEscapeSites
+        )
+    ]
+
+  mentions :: FilePath -> String -> Bool
+  mentions site symbol =
+    any
+      (\(path, contents) -> samePath path site && tokenOccursIn symbol contents)
+      scannedFiles
+
+  samePath :: FilePath -> FilePath -> Bool
+  samePath left right = normalise left == normalise right
+
   found :: [(String, FilePath)]
   found = concatMap (\(path, contents) -> parseEscapeMarkers path contents) scannedFiles
 

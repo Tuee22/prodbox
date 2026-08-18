@@ -581,6 +581,90 @@ One ARN is one resource regardless of tag count, query overlap, pagination, or r
 Conflicting facts for one ARN are a typed failure. Tags remain evidence attached to the normalized
 resource; a tag row is never itself counted as a resource.
 
+#### The run-invariant identity of a created resource
+
+A resource's durable identity must not contain a fact about the run that created it. If it does, the
+run that later cleans the resource up has no key with which to address it, and selection degrades
+into matching whatever residue happens to be visible — the exact composition the 2026-08-15
+counterexample exercised.
+
+The identity is therefore split in two:
+
+```haskell
+-- Example: hypothetical run-invariant generation identity
+data StackGenerationKey -- abstract
+  -- registered key, compiled coordinate digest, registry revision,
+  -- local foundation, AWS account/region, create/destroy cycle ordinal
+
+data RegisteredStackGeneration = RegisteredStackGeneration
+  { generationKey :: StackGenerationKey
+  , generationAdmittedOperation :: OperationId
+  , generationProviderSession :: ProviderCredentialSession
+  , generationCreatingRunScope :: DurableObservationRunScope
+  , generationCreatingSurface :: CleanupSurface
+  }
+```
+
+The key is run-invariant and is the only thing selection consults. Provenance — the admitted create
+operation, the exact Provider credential session, and the creating run scope and surface — is
+recorded and never consulted during selection. A cycle ordinal distinguishes successive
+create/destroy cycles of one registered resource, and the reserved zero ordinal keeps "never
+created" and "created once" from sharing a key.
+
+Three components of the key are deliberately not parameters of its constructor: the account and
+region come only from an opaque Provider AWS-scope proof, and the coordinate digest and registry
+revision come only from the compiled registry. A caller therefore cannot assert an account, a
+region, a coordinate the registry does not own, or a revision this binary was not built with — each
+of which would mint a key no later run could reproduce.
+
+Because the key is run-invariant, so is its durable address: the canonical NUL-framed key rendering
+hashes to one retained slot. The creating run and a later cleanup run compute the same slot without
+either knowing the other's scope, and that prefix is distinct from every per-run record's prefix so a
+generation-keyed record cannot be mistaken for a run-keyed one. Decoding a retained record
+re-derives the coordinate digest and registry revision from the compiled registry and refuses a
+stored disagreement, so a record cannot smuggle in a coordinate this binary does not own.
+
+Cleanup selection binds to that record's read-back and to nothing else. The cleanup run derives its
+addressing key from the compiled registry and its own exact Provider credential session, reads the
+record that key addresses, requires the stored key to equal the addressing key, and only then applies
+surface eligibility — so knowing a generation key still cannot widen a surface. An empty slot
+refuses; it never authorizes inferring a generation from residue. An unobservable store stays
+distinct from an absent record. A record found under a key that is not its own is a slot-collision
+refusal, never a successful selection of whatever was there.
+
+The commit obeys the same evidence rule as every other durable write: a lost compare-and-swap
+response is neither success nor failure, so the outcome is settled by an independent read-back of the
+slot. The exact record repairs the lost response to a commit; an absent slot reports that nothing was
+committed and names the lost response; a different record is a conflict.
+
+Which cycle a create owns is a separate durable question, because a generation slot is addressed *by*
+its ordinal and so cannot be enumerated without an unbounded probe. The key minus its ordinal is the
+resource's *series*, and one retained cursor per series names the current cycle. The cursor's slot
+prefix is distinct from every cycle's slot, so the pointer can never be mistaken for a record.
+Reserving a cycle is idempotent in the admitted create operation: a retried create whose operation
+already advanced the cursor is handed back the same cycle, so a lost response cannot burn a second
+ordinal and strand the record the first attempt may already have written. Opening a series requires
+no cursor and advancing one requires exactly the version it read; a settled cycle held by another
+admitted create refuses rather than proceeding on a cycle this run does not own.
+
+Both directions of that identity are Authority-owned, and neither may fall back. The **producer** is
+the admitted-create path: it observes the create operation from the Authority's own admission
+aggregate, reads the Provider AWS-scope receipt back from that same aggregate, reserves the cycle,
+commits the generation, and only then commits the run-scoped creation binding. That order is chosen
+for what a mid-flight failure leaves behind — the addressable record present and the run-scoped one
+absent is recoverable, while the reverse leaves a stack whose cycle no later run can name. The
+account and region reach the derivation only through an opaque proven-session type whose sole
+introductions are the two Provider proofs, so a create request can name the observation operation but
+can never state its content; a create whose scope no retained receipt proves is refused rather than
+falling back to the scope the request asserted.
+
+The **consumer** is the cleanup path. Because a generation slot is addressed by its ordinal, a run
+that knows only the registered key reaches the record through exactly two authoritative reads: the
+series cursor, then the generation the cursor's ordinal addresses. An unopened series refuses rather
+than inferring a cycle from visible residue, an unobservable store stays distinct from an absent one,
+the stored key must equal the key that addressed it, and surface eligibility is re-applied after the
+read-back.
+
 Five invariants define the registry boundary:
 
 1. **Coverage.** Every direct creator and every Kubernetes/controller owner maps to one singleton or
@@ -1676,9 +1760,77 @@ never before them as a destroy selector.
 
 Each provider response is normalized into `Map Arn AwsResource`. Multiple tags, filter-set overlap,
 pages, and retries merge into one resource per ARN. Conflicting account, region, type, or coordinate
-facts for the same ARN make the audit unobservable. The cascade partitions normalized resources by
-the registry's lifecycle class: intentionally retained `LongLived` resources are reported once and
-excluded from escapees; `nuke` retains no such carve-out.
+facts for the same ARN make the audit unobservable. The audit then partitions the normalized
+inventory against a declared retained catalog, described in §6.0.
+
+### 6.0 The retained catalog is exact identities, not a tag predicate
+
+An audit needs two catalogs, and they answer different questions.
+
+The **query catalog** says what the audit asked for. It is symbolic — tag keys and tag pairs — and
+is digested into the audit scope, so a clean verdict claims nothing about anything the queries did
+not cover. Naming the queries is what makes the audit's field of view auditable rather than implied.
+
+The query catalog's completeness is a **measured** property, not an authored one. Whether the tag
+families it names actually cover the resources this repository provisions is a fact about the
+provisioning programs, and an audit whose field of view excludes a resource reports a clean verdict
+that reads exactly like a statement that the resource is gone. `prodbox dev check` therefore joins
+the compiled query catalog to every resource the programs under `pulumi/` declare: each declared
+resource's provider type is classified for Tagging API reach, and every type that accepts tags must
+author at least one tag the catalog queries for. An unclassified provider type fails the build rather
+than being assumed either reachable or exempt, and the program set is enumerated from disk so a new
+provisioning program is covered by existing rather than by being remembered. A tag on a §6a
+registry-owned IAM identity is a backstop for this audit, never an ownership authority.
+
+Reach has a **second axis, and it is the audited region**. The Resource Groups Tagging API is
+regional: a regional resource is returned by a query issued in the region that holds it, and a
+global-service resource — IAM, Route 53 — is returned only from the global-service region. The audit
+composes its queries from the audited scope and issues them in that scope's own region, so an audit
+taken elsewhere asks about no global-service resource at all. The set of global services this
+repository provisions into is derived from the reach classification itself rather than authored
+beside it, so a newly classified global-service type widens the bound without a second list.
+
+Two consequences are structural. A declared retained family is discoverable only when its writer
+authors a queried tag **and** the audited region answers for its service, so a global-service family
+can never be reported permanently absent-declared by an audit that never asked about it. And a clean
+witness may not be minted over that blind spot: outside the global-service region a would-be-clean
+verdict lowers to `TerminalAuditUnobservable`, naming each unqueried service and the region that
+answered. A discovered escapee is unaffected — a blind spot cannot launder one into the retained set —
+so only the clean arm is bounded. The superseded executing tag sweep binds no region at all; the
+deletion ledger carries that residual until the consumer conversion deletes it.
+
+The **retained-matcher catalog** says which resources this surface intends to keep. Every matcher is
+an exact identity: a fully-qualified ARN composed from the audited `AwsScope` plus a validated
+operator-name binding, or a registered family whose membership coordinate comes only from the
+compiled registry. Four categories are declared — long-lived object storage, the retained SES
+sending and receiving configuration, shared IAM identities, and registered `LongLived` families of
+unbounded cardinality — and each matcher records its category, its cardinality, and whether the query
+catalog can return it at all.
+
+Whether a declared retained family is discoverable at all is **derived**, not authored. Each family
+states the tag set its production writer authors, and the matcher is discoverable exactly when the
+query catalog covers one of them; a family whose writer stops tagging becomes not-discoverable by
+construction rather than continuing to claim otherwise. Writer, read-back, and audit hold one
+compiled tag value, so a resource cannot be written with one set and certified against another.
+
+A tag predicate cannot do this job, and the reason is directional. A retained resource whose tag was
+removed is classified as an escapee, which is safe; an escapee that *acquires* a retention tag is
+classified as retained, which is not. Membership in a registered family is still witnessed by the
+family's declared coordinate, which may be a tag pair — but the family's `LifecycleClass` was fixed
+statically by the registry before any provider row was read, so the tag chooses nothing. No function
+converts tag evidence into a lifecycle class.
+
+Retention is surface-indexed and the catalog carries its index, so one surface's retained set cannot
+be presented as another's. Total decommission retains nothing, because destroying the retained set
+is what it is for. Operational teardown owns the operational credentials and therefore does not
+retain them. A run-scoped credential is retained on no surface, so finding one after a cleanup is an
+escape. The retained-set digest is derived from the catalog rather than authored, and a consumer
+joins the catalog's AWS scope to its own proof of scope, so a foreign-account retained set cannot be
+presented under a matching digest.
+
+The partition separates two failures a tag sweep conflated. An **escapee** is a resource no matcher
+names; it makes the surface dirty. A **declared retained resource the query should have returned and
+did not** is a retention defect; it is reported separately and does not make the surface dirty.
 
 The audit has three terminal outcomes:
 

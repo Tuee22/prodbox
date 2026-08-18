@@ -25,6 +25,11 @@ module Prodbox.Lifecycle.Decommission.Manifest
   , mkDecommissionTargetGeneration
   , decommissionTargetGenerationValue
   , DecommissionNode (..)
+  , DecommissionSingletonNode (..)
+  , decommissionNodeSingleton
+  , singletonDecommissionNode
+  , requiredSingletonDecommissionNodes
+  , decommissionSingletonNodeBijection
   , DecommissionManifest
   , ManifestError (..)
   , currentManifestVersion
@@ -143,6 +148,93 @@ data DecommissionNode
     SharedObjectBucket
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Sprint 4.85: the closed enumeration of the singleton half of
+-- 'DecommissionNode'.
+--
+-- Every singleton node is mandatory — a manifest that omits one authorizes a
+-- decommission that provably leaves that resource class behind — and the
+-- verifier enforces that by comparing the signed node list against a required
+-- set. That required set was a hand-authored list of nine, joined to nothing,
+-- so a newly added singleton constructor would have been silently optional:
+-- the verifier would accept a manifest that never names it, and the run would
+-- report success having never executed it.
+--
+-- This enumeration is the join. It is a separate type rather than a
+-- restructuring of 'DecommissionNode' on purpose: 'DecommissionNode' derives
+-- 'Serialise', and its serialization feeds both 'decommissionNodeFrameId' and
+-- the signed manifest digest, so changing its constructor shape would change
+-- every historical frame ID and manifest signature — a Standard-P identity
+-- change for a check that needs none.
+--
+-- 'TargetGeneration' is deliberately absent: it is parameterized by a target
+-- reference and generation, so a run names as many as it has Agents and none
+-- is individually mandatory.
+data DecommissionSingletonNode
+  = SingletonSesConsumerQuiescence
+  | SingletonSesProviderStack
+  | SingletonSesSmtpIam
+  | SingletonRetainedCustody
+  | SingletonTlsRetainedObjects
+  | SingletonTlsRetentionIdentity
+  | SingletonBackupPrefixAbsenceProof
+  | SingletonBackupObjects
+  | SingletonSharedObjectBucket
+  deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+-- | The singleton node one 'DecommissionNode' is, if it is one.
+--
+-- Total over the closed node universe, so adding a 'DecommissionNode'
+-- constructor is an exhaustiveness failure until it is deliberately classified
+-- as a mandatory singleton or as parameterized work.
+decommissionNodeSingleton :: DecommissionNode -> Maybe DecommissionSingletonNode
+decommissionNodeSingleton node = case node of
+  SesConsumerQuiescence -> Just SingletonSesConsumerQuiescence
+  SesProviderStack -> Just SingletonSesProviderStack
+  SesSmtpIam -> Just SingletonSesSmtpIam
+  TargetGeneration _ _ -> Nothing
+  RetainedCustody -> Just SingletonRetainedCustody
+  TlsRetainedObjects -> Just SingletonTlsRetainedObjects
+  TlsRetentionIdentity -> Just SingletonTlsRetentionIdentity
+  BackupPrefixAbsenceProof -> Just SingletonBackupPrefixAbsenceProof
+  BackupObjects -> Just SingletonBackupObjects
+  SharedObjectBucket -> Just SingletonSharedObjectBucket
+
+-- | The 'DecommissionNode' one singleton is. The inverse of
+-- 'decommissionNodeSingleton' on its singleton domain; their round trip is
+-- proved by 'decommissionSingletonNodeBijection'.
+singletonDecommissionNode :: DecommissionSingletonNode -> DecommissionNode
+singletonDecommissionNode singleton = case singleton of
+  SingletonSesConsumerQuiescence -> SesConsumerQuiescence
+  SingletonSesProviderStack -> SesProviderStack
+  SingletonSesSmtpIam -> SesSmtpIam
+  SingletonRetainedCustody -> RetainedCustody
+  SingletonTlsRetainedObjects -> TlsRetainedObjects
+  SingletonTlsRetentionIdentity -> TlsRetentionIdentity
+  SingletonBackupPrefixAbsenceProof -> BackupPrefixAbsenceProof
+  SingletonBackupObjects -> BackupObjects
+  SingletonSharedObjectBucket -> SharedObjectBucket
+
+-- | Every mandatory singleton node, derived from the closed enumeration rather
+-- than authored beside it.
+requiredSingletonDecommissionNodes :: [DecommissionNode]
+requiredSingletonDecommissionNodes =
+  map singletonDecommissionNode [minBound .. maxBound]
+
+-- | Both directions of the singleton join, as a value.
+--
+-- A one-directional map would let the two drift: a singleton whose
+-- 'singletonDecommissionNode' image classifies back as a /different/ singleton
+-- would still produce a nine-element required list, and the verifier would
+-- demand the wrong nodes.
+decommissionSingletonNodeBijection :: Bool
+decommissionSingletonNodeBijection =
+  all
+    ( \singleton ->
+        decommissionNodeSingleton (singletonDecommissionNode singleton)
+          == Just singleton
+    )
+    [minBound .. maxBound]
 
 -- | The deterministic signed inventory. Opaque: build it through
 -- 'mkDecommissionManifest'.

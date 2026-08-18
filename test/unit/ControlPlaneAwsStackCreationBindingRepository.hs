@@ -54,6 +54,19 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.Coordinate (AuthorityScope, mkAuthorityScope)
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt
+  ( ProviderAwsScopeReceiptError (ProviderAwsScopeRetainedOperationMissing)
+  )
+import Prodbox.ControlPlane.RegisteredStackCleanupSelection
+  ( RegisteredStackCleanupBoundary (..)
+  )
+import Prodbox.ControlPlane.RegisteredStackCreationProducer
+  ( RegisteredStackCreationBoundary (..)
+  )
+import Prodbox.ControlPlane.RegisteredStackGenerationRepository
+  ( RegisteredStackGenerationRepository (..)
+  , StackGenerationCursorRepository (..)
+  )
 import Prodbox.ControlPlane.RequestAuthentication
   ( RequestNonce
   , RequestSigner
@@ -232,14 +245,19 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
         (ByteString.replicate (maximumAwsStackCreationAuthorityIdentityBytes + 1) 0)
         `shouldSatisfy` isLeft
 
+      -- The binding-only client ignores the scope-observation operation; the
+      -- generation join that consumes it is exercised in
+      -- LifecycleTeardownStackGeneration and the producer's own cases.
       attemptAwsStackCreationBindingCommit
         client
+        (creationOperation fixture)
         (creationOperation fixture)
         fixtureRevision
         fixtureCreationScope
         `shouldReturn` Right AwsStackCreationCommitCreated
       attemptAwsStackCreationBindingCommit
         client
+        (creationOperation fixture)
         (creationOperation fixture)
         fixtureRevision
         fixtureCreationScope
@@ -248,6 +266,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
 
       attemptAwsStackCreationBindingCommit
         client
+        (creationOperation fixture)
         (creationOperation fixture)
         (mustRight (mkProviderRevision 2))
         fixtureCreationScope
@@ -362,35 +381,52 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
         (ByteString.snoc (awsStackCreationBindingBytes candidate) 0)
         `shouldSatisfy` isLeft
 
-    it "serves commit and independent readback while re-observing Authority admission" $ do
+    it "refuses a commit whose AWS scope no retained Provider receipt proves" $ do
+      -- Sprint 4.84: the endpoint no longer commits only the run-scoped
+      -- binding.  It first mints the run-invariant generation, whose account
+      -- and region may come only from a Provider AWS-scope receipt the
+      -- Authority read back itself.  This aggregate holds the admitted create
+      -- and no scope observation, so the commit refuses rather than falling
+      -- back to the account and region the request asserted.
       fixture <- creationFixture fixtureProviderConfig
       durable <- newDurableModelB False
       admissionReads <- newIORef 0
       let repository = durableRepository durable
-          client =
-            lifecycleAuthorityAwsStackCreationBindingClient
-              (countingAuthorityRepository admissionReads (creationAggregate fixture))
-              repository
+          producer =
+            creationBoundaryFor admissionReads fixture repository
           commitRequest =
             awsStackCreationCommitWireRequest
+              (creationOperation fixture)
               (creationOperation fixture)
               fixtureRevision
               fixtureCreationScope
       committed <-
         serveAwsStackCreationEndpointRequest
-          client
+          producer
+          unreachableCleanupBoundary
           repository
           (encodeControlPlaneRequest commitRequest)
-      awsStackCreationEndpointStatus committed `shouldBe` ReplyOk
+      awsStackCreationEndpointStatus committed `shouldBe` ReplyBadRequest
       decodeAwsStackCreationEndpointResponse
         (awsStackCreationEndpointBody committed)
-        `shouldBe` Right
-          ( AwsStackCreationWireCommitResult
-              awsStackCreationEndpointFormatVersion
-              (awsStackCreationWireRequestPayload commitRequest)
-              AwsStackCreationWireCommitCreated
+        `shouldSatisfy` isScopeUnprovenRefusal
+
+    it "serves independent readback without re-observing Authority admission" $ do
+      fixture <- creationFixture fixtureProviderConfig
+      durable <- newDurableModelB False
+      admissionReads <- newIORef 0
+      let repository = durableRepository durable
+          producer =
+            creationBoundaryFor admissionReads fixture repository
+      _ <-
+        createOrReplayAwsStackCreationBinding
+          repository
+          ( mustRight
+              ( prepareAwsStackCreationBinding
+                  (creationObserved fixture)
+                  fixtureCreationScope
+              )
           )
-      readIORef admissionReads `shouldReturn` 1
 
       let candidate =
             mustRight
@@ -398,7 +434,8 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
           identity = awsStackCreationBindingIdentity candidate
       readBack <-
         serveAwsStackCreationEndpointRequest
-          client
+          producer
+          unreachableCleanupBoundary
           repository
           ( encodeControlPlaneRequest
               (awsStackCreationReadBackWireRequest identity)
@@ -412,17 +449,15 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
             )
         )
         `shouldSatisfy` isRightCommitted
-      readIORef admissionReads `shouldReturn` 1
+      readIORef admissionReads `shouldReturn` 0
 
     it "refuses malformed, oversized, and wrong-version requests before admission or storage" $ do
       fixture <- creationFixture fixtureProviderConfig
       durable <- newDurableModelB False
       admissionReads <- newIORef 0
       let repository = durableRepository durable
-          client =
-            lifecycleAuthorityAwsStackCreationBindingClient
-              (countingAuthorityRepository admissionReads (creationAggregate fixture))
-              repository
+          producer =
+            creationBoundaryFor admissionReads fixture repository
           wrongVersion =
             ( awsStackCreationReadBackWireRequest
                 ( awsStackCreationBindingIdentity
@@ -452,7 +487,11 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
             ]
       forM_ attempts $ \(request, expectedRefusal) -> do
         result <-
-          serveAwsStackCreationEndpointRequest client repository request
+          serveAwsStackCreationEndpointRequest
+            producer
+            unreachableCleanupBoundary
+            repository
+            request
         awsStackCreationEndpointStatus result `shouldBe` ReplyBadRequest
         decodeAwsStackCreationEndpointResponse
           (awsStackCreationEndpointBody result)
@@ -473,6 +512,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
           commitRequest =
             awsStackCreationCommitWireRequest
               (creationOperation fixture)
+              (creationOperation fixture)
               fixtureRevision
               fixtureCreationScope
           commitResponse =
@@ -483,6 +523,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
       commitClient <- authenticatedCreationClientFor commitResponse
       attemptAwsStackCreationBindingCommit
         commitClient
+        (creationOperation fixture)
         (creationOperation fixture)
         fixtureRevision
         fixtureCreationScope
@@ -531,6 +572,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
           bindingBytes = awsStackCreationBindingBytes candidate
           commitRequest =
             awsStackCreationCommitWireRequest
+              (creationOperation fixture)
               (creationOperation fixture)
               fixtureRevision
               fixtureCreationScope
@@ -597,6 +639,66 @@ creationFixture :: ProviderStackConfig -> IO CreationFixture
 creationFixture config =
   creationFixtureWithIntent
     (ReconcileRegisteredStack fixtureStackRef fixtureRevision config)
+
+-- | The Sprint 4.84 producer boundary over this fixture's aggregate and durable
+-- store.  The aggregate carries the admitted create and no Provider AWS-scope
+-- observation, so the scope read-back refuses — which is the fail-closed
+-- property the endpoint cases assert.
+creationBoundaryFor
+  :: IORef Int
+  -> CreationFixture
+  -> AwsStackCreationBindingRepository IO
+  -> RegisteredStackCreationBoundary IO
+creationBoundaryFor admissionReads fixture repository =
+  RegisteredStackCreationBoundary
+    { registeredStackCreationObserveCreate =
+        observeAuthorityAwsStackCreationOperation admission
+    , registeredStackCreationProveScope =
+        \_ -> pure (Left ProviderAwsScopeRetainedOperationMissing)
+    , registeredStackCreationCursors = unreachableCursorRepository
+    , registeredStackCreationGenerations = unreachableGenerationRepository
+    , registeredStackCreationBindings = repository
+    }
+ where
+  admission = countingAuthorityRepository admissionReads (creationAggregate fixture)
+
+-- | Sprint 4.84: the route also serves cleanup selection now. These cases are
+-- about the creating direction, so a selection here would be the defect under
+-- test rather than a case that needs a fixture.
+unreachableCleanupBoundary :: RegisteredStackCleanupBoundary IO
+unreachableCleanupBoundary =
+  RegisteredStackCleanupBoundary
+    { registeredStackCleanupProveScope =
+        \_ -> fail "cleanup selection reached from a creation case"
+    , registeredStackCleanupCursors = unreachableCursorRepository
+    , registeredStackCleanupGenerations = unreachableGenerationRepository
+    }
+
+-- | Reached only if the scope read-back stopped refusing, which would itself be
+-- the defect under test.
+unreachableCursorRepository :: StackGenerationCursorRepository IO
+unreachableCursorRepository =
+  StackGenerationCursorRepository
+    { observeStackGenerationCursor = \_ -> fail "cursor reached without a proven scope"
+    , openStackGenerationCursorSlot = \_ -> fail "cursor reached without a proven scope"
+    , advanceStackGenerationCursorSlot = \_ _ -> fail "cursor reached without a proven scope"
+    }
+
+unreachableGenerationRepository :: RegisteredStackGenerationRepository IO
+unreachableGenerationRepository =
+  RegisteredStackGenerationRepository
+    { createOrReplayRegisteredStackGeneration =
+        \_ -> fail "generation reached without a proven scope"
+    , independentlyReadBackRegisteredStackGenerationBytes =
+        \_ -> fail "generation reached without a proven scope"
+    }
+
+isScopeUnprovenRefusal
+  :: Either err AwsStackCreationWireResponse -> Bool
+isScopeUnprovenRefusal response = case response of
+  Right (AwsStackCreationWireRefused _ (AwsStackCreationWireScopeUnproven _)) ->
+    True
+  _ -> False
 
 creationFixtureWithIntent :: ProviderIntent -> IO CreationFixture
 creationFixtureWithIntent intent = do

@@ -100,6 +100,9 @@ import ControlPlaneRecoveryPlaneEndpoint
 import ControlPlaneRecoveryPlaneRepository
   ( controlPlaneRecoveryPlaneRepositorySuite
   )
+import ControlPlaneRegisteredStackCreationSubmitter
+  ( controlPlaneRegisteredStackCreationSubmitterSuite
+  )
 import ControlPlaneRetainedMaterialWorker
   ( controlPlaneRetainedMaterialWorkerSuite
   )
@@ -227,6 +230,9 @@ import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
 import LifecycleCleanupClient (lifecycleCleanupClientSuite)
 import LifecycleLease (lifecycleLeaseSuite)
 import LifecycleProviderWork (lifecycleProviderWorkSuite)
+import LifecycleTeardownAuditFieldOfView
+  ( lifecycleTeardownAuditFieldOfViewSuite
+  )
 import LifecycleTeardownAwsCheckpointInterpreter
   ( lifecycleTeardownAwsCheckpointInterpreterSuite
   )
@@ -303,6 +309,12 @@ import LifecycleTeardownRegisteredTargetResult
   ( lifecycleTeardownRegisteredTargetResultSuite
   )
 import LifecycleTeardownRegistry (lifecycleTeardownRegistrySuite)
+import LifecycleTeardownRetainedInventory
+  ( lifecycleTeardownRetainedInventorySuite
+  )
+import LifecycleTeardownStackGeneration
+  ( lifecycleTeardownStackGenerationSuite
+  )
 import LifecycleTestArtifactCleanup (lifecycleTestArtifactCleanupSuite)
 import LifecycleTestArtifactIntentJournal
   ( lifecycleTestArtifactIntentJournalSuite
@@ -321,6 +333,7 @@ import Options.Applicative
   , renderFailure
   )
 import OrdinaryTeardownRecovery (ordinaryTeardownRecoverySuite)
+import OrdinaryTeardownRepair (ordinaryTeardownRepairSuite)
 import Parser (parserSuite)
 import Prodbox.App
   ( Env (..)
@@ -562,6 +575,7 @@ import Prodbox.CheckCode
   , isEnvironmentVariableName
   , isRelativeLinkTarget
   , listRepoOwnedPaths
+  , managedResourceRegistryParityViolations
   , matchesSprintToken
   , parseGeneratedSectionsField
   , parseGovernedDocStatusField
@@ -585,9 +599,11 @@ import Prodbox.CheckCode
   , substrateImagePinningViolations
   , targetSinkRecordMinterViolations
   , targetSinkVersionInternalSourceViolations
+  , testNamespaceImportViolations
   , tier0DriftFindings
   , tier0DriftLocation
   , tier0MalformedFinding
+  , validationHarnessClientModules
   )
 import Prodbox.CheckCode qualified
 import Prodbox.Cluster.Federation
@@ -1787,6 +1803,7 @@ unitSuite = do
   localRetainedRootSuite
   localRke2RecoveryStateSuite
   ordinaryTeardownRecoverySuite
+  ordinaryTeardownRepairSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
   awsControlPlaneIsolationSuite
@@ -1920,11 +1937,15 @@ unitSuite = do
   lifecycleTeardownAwsStackReaderInterpreterSuite
   lifecycleTeardownCloudRuntimeSuite
   lifecycleTeardownRegistrySuite
+  lifecycleTeardownRetainedInventorySuite
+  lifecycleTeardownAuditFieldOfViewSuite
   lifecycleTeardownProgramSuite
   lifecycleTeardownRecoveryCapabilitySuite
   lifecycleTeardownRecoveryPlaneSuite
   lifecycleTeardownRecoveryPlaneComponentObserverSuite
   lifecycleTeardownRecoveryPlaneInterpreterSuite
+  controlPlaneRegisteredStackCreationSubmitterSuite
+  lifecycleTeardownStackGenerationSuite
   lifecycleTeardownRegisteredTargetResultSuite
   lifecycleTeardownDecisionSuite
   lifecycleTeardownCascadeEvidenceSuite
@@ -11045,18 +11066,113 @@ unitSuite = do
       Residue.ResidueAbsent `shouldBe` (Residue.ResidueAbsent :: Residue.ResidueStatus)
 
   describe "Sprint 4.21 registry per-run reconcile (resourcesToDestroy / pairPerRunResidue)" $ do
-    let presentNames eks sub test =
+    let answers eks sub test =
+          ResourceRegistry.PerRunResidueAnswers
+            { ResourceRegistry.perRunAnswerAwsEks = eks
+            , ResourceRegistry.perRunAnswerAwsEksSubzone = sub
+            , ResourceRegistry.perRunAnswerAwsTest = test
+            }
+        presentNames eks sub test =
           map
             ResourceRegistry.resourceName
             ( ResourceRegistry.resourcesToDestroy
-                (ResourceRegistry.pairPerRunResidue eks sub test)
+                (ResourceRegistry.pairPerRunResidue (answers eks sub test))
             )
 
     it "pairPerRunResidue lists the per-run resources in canonical order" $
       map
         (ResourceRegistry.resourceName . fst)
-        (ResourceRegistry.pairPerRunResidue Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent)
+        ( ResourceRegistry.pairPerRunResidue
+            (answers Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent)
+        )
         `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+
+    -- Sprint 4.84: the join was `zip perRunManagedResources [eks, sub, test]`,
+    -- so it was correct only while two independently written orders agreed.
+    -- Both sides are now selected by the same identity, and these pin that the
+    -- identity really does address both.
+    it "Sprint 4.84 pairs each registry entry with its own stack's observation" $ do
+      let pairsFor eks sub test =
+            [ (ResourceRegistry.resourceName resource, status)
+            | (resource, status) <- ResourceRegistry.pairPerRunResidue (answers eks sub test)
+            ]
+      pairsFor residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent
+        `shouldBe` [ ("aws-eks", residueFixturePresent)
+                   , ("aws-eks-subzone", Residue.ResidueAbsent)
+                   , ("aws-test", Residue.ResidueAbsent)
+                   ]
+      pairsFor Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent
+        `shouldBe` [ ("aws-eks", Residue.ResidueAbsent)
+                   , ("aws-eks-subzone", Residue.ResidueAbsent)
+                   , ("aws-test", residueFixturePresent)
+                   ]
+
+    -- Sprint 4.84: `resourceClass` was a third independent statement of a
+    -- resource's lifecycle class, after the typed teardown registry and
+    -- `resourceLifecycleClasses`, with nothing joining it to either — and it
+    -- is not decorative: it selects the operator-facing scope label for a
+    -- destructive reconcile batch, while `resourceLifecycleClasses` is the
+    -- table `guardTestDelete` refuses against.
+    -- Sprint 4.85: the typed -> flat join cannot see a flat row the typed
+    -- registry never registered, which is exactly how the dns-aws validation
+    -- hosted zone stayed out of every compiled cleanup program while being
+    -- registered, swept by the harness, and billable. This is the other
+    -- direction.
+    it "Sprint 4.85 every flat inventory row is registered or explicitly exempt" $ do
+      Prodbox.CheckCode.untypedLifecycleInventoryViolations `shouldBe` []
+      -- Not vacuous: exemptions exist, each carries a stated reason, and none
+      -- names a resource the typed registry does register.
+      Prodbox.CheckCode.untypedLifecycleInventoryExemptions
+        `shouldSatisfy` (not . null)
+      map snd Prodbox.CheckCode.untypedLifecycleInventoryExemptions
+        `shouldSatisfy` all (not . null)
+      map fst Prodbox.CheckCode.untypedLifecycleInventoryExemptions
+        `shouldSatisfy` notElem "dns-aws-validation-hosted-zone"
+
+    it "Sprint 4.84 the effect-bearing registry agrees with the flat inventory" $ do
+      ResourceRegistry.effectRegistryLifecycleClassViolations `shouldBe` []
+      -- Not vacuous: the projection covers every statically named entry,
+      -- including the three operational identities the registry now owns.
+      map fst ResourceRegistry.effectRegistryStaticIdentities
+        `shouldBe` [ "aws-eks"
+                   , "aws-eks-subzone"
+                   , "aws-test"
+                   , "public-edge-tls"
+                   , "aws-ses"
+                   , "legacy-harbor-helm-release"
+                   , "operational-aws-ses-lease-role"
+                   , "operational-iam-user"
+                   , "operational-aws-config"
+                   ]
+
+    it "Sprint 4.84 the registry owns every operational field except the effect" $ do
+      -- The effect supplier can no longer invent a name or assert a class.
+      map ResourceRegistry.operationalResourceName ResourceRegistry.operationalResourceIdentities
+        `shouldBe` [ "operational-aws-ses-lease-role"
+                   , "operational-iam-user"
+                   , "operational-aws-config"
+                   ]
+      let entries =
+            map
+              (\identity -> ResourceRegistry.operationalManagedResourceFor identity (const (pure ExitSuccess)))
+              ResourceRegistry.operationalResourceIdentities
+      map ResourceRegistry.resourceClass entries
+        `shouldBe` replicate 3 ResourceClass.Operational
+      nub (map ResourceRegistry.resourceDestroyCommand entries)
+        `shouldBe` ["prodbox aws teardown"]
+
+    it "Sprint 4.84 enumerates the per-run stacks in documented teardown order" $ do
+      -- Dependent VPC/subnet residue must tear down before the broader network
+      -- substrate, and the enumeration order is what carries that.
+      ResourceRegistry.perRunStackIdentities
+        `shouldBe` [ ResourceRegistry.PerRunAwsEks
+                   , ResourceRegistry.PerRunAwsEksSubzone
+                   , ResourceRegistry.PerRunAwsTest
+                   ]
+      map
+        (ResourceRegistry.resourceName . ResourceRegistry.perRunManagedResourceFor)
+        ResourceRegistry.perRunStackIdentities
+        `shouldBe` map ResourceRegistry.resourceName ResourceRegistry.perRunManagedResources
 
     it "all-absent destroys nothing (cascade skips per-run destroys)" $
       presentNames Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent `shouldBe` []
@@ -11101,7 +11217,12 @@ unitSuite = do
 
     it "resourcesObservedAbsent and resourcesUnobserved partition the skipped set" $ do
       let pairs =
-            ResourceRegistry.pairPerRunResidue Residue.ResidueAbsent minioDown residueFixturePresent
+            ResourceRegistry.pairPerRunResidue
+              ResourceRegistry.PerRunResidueAnswers
+                { ResourceRegistry.perRunAnswerAwsEks = Residue.ResidueAbsent
+                , ResourceRegistry.perRunAnswerAwsEksSubzone = minioDown
+                , ResourceRegistry.perRunAnswerAwsTest = residueFixturePresent
+                }
       map ResourceRegistry.resourceName (ResourceRegistry.resourcesObservedAbsent pairs)
         `shouldBe` ["aws-eks"]
       map ResourceRegistry.resourceName (ResourceRegistry.resourcesUnobserved pairs)
@@ -12308,6 +12429,36 @@ unitSuite = do
         `shouldBe` length ([minBound .. maxBound] :: [Residue.ResidueObservationLayer])
       all (not . null) rendered `shouldBe` True
 
+    -- Sprint 4.84: the layer was carried and consulted by nothing — every
+    -- consumer stripped it with `residueObservationStatus` and decided over the
+    -- bare status. This is the classifier that says which layer may answer
+    -- which question.
+    it "Sprint 4.84 only AWS is authoritative for whether an AWS resource exists" $ do
+      map
+        Residue.residueLayerAnswersResourceExistence
+        [ Residue.ResidueLayerAwsResource
+        , Residue.ResidueLayerRetainedCheckpoint
+        , Residue.ResidueLayerVaultGate
+        , Residue.ResidueLayerHarnessBypass
+        ]
+        `shouldBe` [True, False, False, False]
+
+    it "Sprint 4.84 proving AWS absence is strictly stronger than observing absence" $ do
+      -- Both are `ResidueAbsent`; only one was answered by an authority
+      -- entitled to answer it, which is the distinction the bare status lost.
+      Residue.residueObservationProvesAwsAbsence awsAbsent `shouldBe` True
+      Residue.residueObservationProvesAwsAbsence checkpointAbsent `shouldBe` False
+      Residue.residueObservationProvesAwsAbsence
+        (Residue.observeResidueAt Residue.ResidueLayerHarnessBypass Residue.ResidueAbsent)
+        `shouldBe` False
+      -- An AWS-layer answer that is not absence still proves nothing.
+      Residue.residueObservationProvesAwsAbsence
+        ( Residue.observeResidueAt
+            Residue.ResidueLayerAwsResource
+            (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "down"))
+        )
+        `shouldBe` False
+
   describe "global AWS audit cannot resolve exact per-stack residue" $ do
     let unreachable =
           observedAtCheckpoint
@@ -13250,9 +13401,49 @@ unitSuite = do
       rendered `shouldContain` "subnet/subnet-xyz"
 
   describe "Sprint 4.39 pre-created EBS volume lifecycle resource" $ do
-    it "registers EBS volumes as a LongLived managed resource class" $
+    it "Sprint 4.84 registers the two EBS families as separately classed identities" $ do
+      -- The scope that chose the query names the answer, and the two names
+      -- are separately classed. A test-scoped volume can no longer be
+      -- reported under a `LongLived` identity and then rescued by its tags.
       ResourceClass.resourceNamesOfClass ResourceClass.LongLived
-        `shouldContain` [EbsVolume.ebsManagedResourceName]
+        `shouldContain` [EbsVolume.ebsManagedResourceName EbsVolume.EbsRetainedProduction]
+      ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+        `shouldContain` [ EbsVolume.ebsManagedResourceName
+                            (EbsVolume.EbsPerRunTest "aws-eks-test-cluster")
+                        ]
+      EbsVolume.ebsManagedResourceName EbsVolume.EbsRetainedProduction
+        `shouldNotBe` EbsVolume.ebsManagedResourceName
+          (EbsVolume.EbsPerRunTest "aws-eks-test-cluster")
+
+    it "Sprint 4.84 the flat inventory agrees with the typed lifecycle registry" $
+      -- The `dev check` gate over the same join; pinned here so a divergence
+      -- fails the unit suite as well as the build.
+      managedResourceRegistryParityViolations `shouldBe` []
+
+    it "Sprint 4.85 a lifecycle module importing the harness namespace is a violation" $ do
+      -- `Prodbox.Lifecycle.Dns01Challenge` imported `Prodbox.Test.ManagedCleanupPlan`
+      -- for its cleanup edge, so a production teardown obligation was typed in
+      -- a shape the validation harness owned. The gate makes that direction
+      -- non-constructible.
+      testNamespaceImportViolations
+        "src/Prodbox/Lifecycle/Dns01Challenge.hs"
+        "import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))\n"
+        `shouldSatisfy` (not . null)
+      -- Importing the lifecycle-owned equivalent is exactly what the gate is
+      -- steering toward, and is not a violation.
+      testNamespaceImportViolations
+        "src/Prodbox/Lifecycle/Dns01Challenge.hs"
+        "import Prodbox.Lifecycle.CleanupRun (CleanupDependency (..))\n"
+        `shouldBe` []
+
+    it "Sprint 4.85 the harness-client allowlist is enumerated, not pattern-matched" $
+      -- Widening it must be a visible edit rather than a naming accident.
+      -- Sprint 5.36 removes the TestRunner entry when it migrates the
+      -- validation client onto the lifecycle-owned kernel.
+      validationHarnessClientModules
+        `shouldBe` [ "src/Prodbox/TestRunner.hs"
+                   , "src/Prodbox/TestValidation.hs"
+                   ]
 
     it "projects deterministic retained PV/PVC inventory with substrate-specific MinIO capacity" $ do
       let expectedMinioHome =
@@ -13342,24 +13533,35 @@ unitSuite = do
         `shouldBe` Left "ec2 describe-volumes entry missing `VolumeId`"
 
     it "maps EBS discover results to the typed residue status gate" $ do
-      EbsVolume.ebsDiscoverResultToResidue (Right [])
+      let oneVolume =
+            Right
+              [ EbsVolume.EbsVolume
+                  { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
+                  , EbsVolume.ebsVolumeState = "available"
+                  , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+                  , EbsVolume.ebsVolumeTags = []
+                  }
+              ]
+          perRunScope = EbsVolume.EbsPerRunTest "aws-eks-test-cluster"
+      EbsVolume.ebsDiscoverResultToResidue EbsVolume.EbsRetainedProduction (Right [])
         `shouldBe` Residue.ResidueAbsent
-      EbsVolume.ebsDiscoverResultToResidue
-        ( Right
-            [ EbsVolume.EbsVolume
-                { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
-                , EbsVolume.ebsVolumeState = "available"
-                , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
-                , EbsVolume.ebsVolumeTags = []
-                }
-            ]
-        )
+      EbsVolume.ebsDiscoverResultToResidue EbsVolume.EbsRetainedProduction oneVolume
         `shouldBe` Residue.ResiduePresent
           Residue.ResidueDetails
             { Residue.residueEvidence = "ec2:describe-volumes matched EBS volume(s): vol-0123"
-            , Residue.residueStackName = EbsVolume.ebsManagedResourceName
+            , Residue.residueStackName = "aws-ebs-volumes-production-retained"
             }
-      EbsVolume.ebsDiscoverResultToResidue (Left "access denied")
+      -- Sprint 4.84: the same bytes discovered under the per-run scope are
+      -- reported under the per-run identity. The volume's own tags are empty
+      -- in this fixture, so nothing downstream could have recovered the
+      -- distinction from them.
+      EbsVolume.ebsDiscoverResultToResidue perRunScope oneVolume
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "ec2:describe-volumes matched EBS volume(s): vol-0123"
+            , Residue.residueStackName = "aws-ebs-volumes-per-run-test"
+            }
+      EbsVolume.ebsDiscoverResultToResidue EbsVolume.EbsRetainedProduction (Left "access denied")
         `shouldBe` Residue.ResidueUnreachable (Residue.ResidueQueryFailed "access denied")
 
     it "builds the typed delete-volume command for one EBS volume id" $
@@ -14590,12 +14792,20 @@ unitSuite = do
                    , "legacy-harbor-helm-release"
                    , -- Sprint 5.28: the dns-aws validation's throwaway hosted zone.
                      "dns-aws-validation-hosted-zone"
+                   , -- Sprint 4.84: test-scoped EBS is statically PerRun. It was
+                     -- `aws-ebs-volumes :: LongLived` until the two families were
+                     -- split into separate registered identities.
+                     "aws-ebs-volumes-per-run-test"
                    ]
 
     it
       "the long-lived class includes aws-ses, retained EBS volumes, public-edge cert, and dynamic Pulsar topics"
       $ ResourceClass.resourceNamesOfClass ResourceClass.LongLived
-        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
+        `shouldBe` [ "aws-ses"
+                   , "aws-ebs-volumes-production-retained"
+                   , "public-edge-tls"
+                   , "pulsar-topics-long-lived"
+                   ]
 
     it "the operational class registers the SES role, IAM user, and aws.* config block" $
       ResourceClass.resourceNamesOfClass ResourceClass.Operational
@@ -14609,7 +14819,11 @@ unitSuite = do
 
     it "longLivedResourceNames is derived from the registry" $
       longLivedResourceNames
-        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
+        `shouldBe` [ "aws-ses"
+                   , "aws-ebs-volumes-production-retained"
+                   , "public-edge-tls"
+                   , "pulsar-topics-long-lived"
+                   ]
 
     it "derived stack/resource-name lists match their owning SSoTs" $ do
       perRunStackNames `shouldBe` StackDescriptor.perRunStackDescriptorNames
@@ -14621,7 +14835,8 @@ unitSuite = do
       rendered `shouldContain` "| Resource | Lifecycle class |"
       rendered `shouldContain` "| `aws-eks` | PerRun |"
       rendered `shouldContain` "| `aws-ses` | LongLived |"
-      rendered `shouldContain` "| `aws-ebs-volumes` | LongLived |"
+      rendered `shouldContain` "| `aws-ebs-volumes-production-retained` | LongLived |"
+      rendered `shouldContain` "| `aws-ebs-volumes-per-run-test` | PerRun |"
       rendered `shouldContain` "| `public-edge-tls` | LongLived |"
       rendered `shouldContain` "| `pulsar-topics-per-run` | PerRun |"
       rendered `shouldContain` "| `pulsar-topics-long-lived` | LongLived |"
@@ -17601,7 +17816,11 @@ unitSuite = do
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
     it "longLivedResourceNames lists every long-lived managed resource" $
       longLivedResourceNames
-        `shouldBe` ["aws-ses", "aws-ebs-volumes", "public-edge-tls", "pulsar-topics-long-lived"]
+        `shouldBe` [ "aws-ses"
+                   , "aws-ebs-volumes-production-retained"
+                   , "public-edge-tls"
+                   , "pulsar-topics-long-lived"
+                   ]
     it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
       let allFour =
             [ ("aws-eks", "prodbox aws stack eks destroy --yes")
@@ -19167,9 +19386,14 @@ categorizePulumiResidue
 categorizePulumiResidue perRun sesStatus =
   ResourceRegistry.residueGateRefusalList
     ( ResourceRegistry.pairPerRunResidue
-        (Residue.residueObservationStatus (perRunAwsEksTest perRun))
-        (Residue.residueObservationStatus (perRunAwsEksSubzone perRun))
-        (Residue.residueObservationStatus (perRunAwsTest perRun))
+        ResourceRegistry.PerRunResidueAnswers
+          { ResourceRegistry.perRunAnswerAwsEks =
+              Residue.residueObservationStatus (perRunAwsEksTest perRun)
+          , ResourceRegistry.perRunAnswerAwsEksSubzone =
+              Residue.residueObservationStatus (perRunAwsEksSubzone perRun)
+          , ResourceRegistry.perRunAnswerAwsTest =
+              Residue.residueObservationStatus (perRunAwsTest perRun)
+          }
         ++ ResourceRegistry.pairAwsSesResidue sesStatus
     )
 

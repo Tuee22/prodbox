@@ -47,6 +47,7 @@ resources:
       bucket: ${captureBucket}
       tags:
         Name: ${stackName}
+        prodbox.io/managed-by: prodbox
         prodbox.io/substrate: shared
         prodbox.io/purpose: ses-capture
 

@@ -18,13 +18,24 @@ module Prodbox.Lifecycle.ResourceRegistry
   ( ManagedResource (..)
   , AbsentReconcileOutcome (..)
   , capacityScaledManagedResources
+  , PerRunStackIdentity (..)
+  , perRunStackIdentities
+  , perRunManagedResourceFor
   , perRunManagedResources
+  , PerRunResidueAnswers (..)
+  , perRunResidueAnswerFor
   , longLivedManagedResources
   , desiredPresentManagedResources
   , desiredAbsentManagedResources
   , legacyHarborHelmResource
   , awsSesPulumiResource
   , pulsarTopicManagedResource
+  , OperationalResourceIdentity (..)
+  , operationalResourceIdentities
+  , operationalResourceName
+  , operationalManagedResourceFor
+  , effectRegistryStaticIdentities
+  , effectRegistryLifecycleClassViolations
   , pairPerRunResidue
   , pairAwsSesResidue
   , resourcesToDestroy
@@ -68,7 +79,7 @@ import Prodbox.Lifecycle.ResidueStatus
   , isResidueUnreachable
   , residueBlocksTeardownGate
   )
-import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
+import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..), resourceLifecycleClasses)
 import Prodbox.Lifecycle.TargetCommitIntent (mkCredentialGeneration)
 import Prodbox.Pulsar.TopicResidue
   ( ManagedTopic (..)
@@ -122,9 +133,34 @@ capacityScaledManagedResources = Autoscaler.capacityScaledResourceNames
 -- substrate). The destroy actions are exactly the 'PulumiCommand's the
 -- cascade ran before Sprint 4.21, so wiring them in is behavior-
 -- preserving.
-perRunManagedResources :: [ManagedResource]
-perRunManagedResources =
-  [ ManagedResource
+-- | Sprint 4.84: the closed set of per-run AWS stacks the cascade owns.
+--
+-- It exists so the registry entry for a stack and the residue answer /about/
+-- that stack are selected by the same value. 'pairPerRunResidue' previously
+-- @zip@ped two independently written lists, so the pairing was correct only
+-- while their orders happened to agree: reordering the registry, or adding a
+-- fourth stack, would have attached one stack\'s observation to another
+-- stack\'s destroy command with nothing to catch it. Both directions are now
+-- total functions of this type, so adding a stack is an exhaustiveness failure
+-- rather than a silent misalignment.
+--
+-- Constructor order is the documented teardown order — @aws-eks →
+-- aws-eks-subzone → aws-test@, so dependent VPC\/subnet residue tears down
+-- before the broader network substrate — and a focused case pins it.
+data PerRunStackIdentity
+  = PerRunAwsEks
+  | PerRunAwsEksSubzone
+  | PerRunAwsTest
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Every per-run stack, in teardown order.
+perRunStackIdentities :: [PerRunStackIdentity]
+perRunStackIdentities = [minBound .. maxBound]
+
+perRunManagedResourceFor :: PerRunStackIdentity -> ManagedResource
+perRunManagedResourceFor identity = case identity of
+  PerRunAwsEks ->
+    ManagedResource
       { resourceName = "aws-eks"
       , resourceClass = PerRun
       , resourceEnsureCommand = Nothing
@@ -133,7 +169,8 @@ perRunManagedResources =
       , resourceDestroyCapability = managedDestroyCapability "aws-eks"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiEksDestroy True noPlan)
       }
-  , ManagedResource
+  PerRunAwsEksSubzone ->
+    ManagedResource
       { resourceName = "aws-eks-subzone"
       , resourceClass = PerRun
       , resourceEnsureCommand = Nothing
@@ -142,7 +179,8 @@ perRunManagedResources =
       , resourceDestroyCapability = managedDestroyCapability "aws-eks-subzone"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiAwsSubzoneDestroy True noPlan)
       }
-  , ManagedResource
+  PerRunAwsTest ->
+    ManagedResource
       { resourceName = "aws-test"
       , resourceClass = PerRun
       , resourceEnsureCommand = Nothing
@@ -151,9 +189,11 @@ perRunManagedResources =
       , resourceDestroyCapability = managedDestroyCapability "aws-test"
       , resourceDestroy = \repoRoot -> runPulumiCommand repoRoot (PulumiTestDestroy True noPlan)
       }
-  ]
  where
   noPlan = PlanOptions False Nothing
+
+perRunManagedResources :: [ManagedResource]
+perRunManagedResources = map perRunManagedResourceFor perRunStackIdentities
 
 -- | Sprint 4.24: the long-lived managed resources whose @destroy@ is
 -- an S3-object operation rather than a @pulumi destroy@. Today this is
@@ -176,6 +216,115 @@ longLivedManagedResources =
       , resourceDestroy = destroyPublicEdgeTlsCertificate
       }
   ]
+
+-- | Sprint 4.84: the closed set of operational resources @prodbox aws
+-- teardown@ owns.
+--
+-- Their entries were authored in "Prodbox.Aws", which meant the module that
+-- supplies the /effect/ also authored the identity, the lifecycle class, and
+-- the operator-facing command text — so a caller outside the registry could
+-- register a name the registry never declared, or classify one of them as
+-- anything at all. The registry now owns every field except the effect, and
+-- the effect arrives per identity through a total function, so membership
+-- determines the identity and its class even though the action still lives
+-- with its credentials.
+data OperationalResourceIdentity
+  = OperationalAwsSesLeaseRole
+  | OperationalIamUser
+  | OperationalAwsConfig
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+operationalResourceIdentities :: [OperationalResourceIdentity]
+operationalResourceIdentities = [minBound .. maxBound]
+
+operationalResourceName :: OperationalResourceIdentity -> String
+operationalResourceName identity = case identity of
+  OperationalAwsSesLeaseRole -> "operational-aws-ses-lease-role"
+  OperationalIamUser -> "operational-iam-user"
+  OperationalAwsConfig -> "operational-aws-config"
+
+-- | Build one operational registry entry from its identity and its effect.
+--
+-- Only 'resourceDestroy' is supplied by the caller. The name, class, and
+-- command text are the registry\'s.
+operationalManagedResourceFor
+  :: OperationalResourceIdentity -> (FilePath -> IO ExitCode) -> ManagedResource
+operationalManagedResourceFor identity destroy =
+  ManagedResource
+    { resourceName = name
+    , resourceClass = Operational
+    , resourceEnsureCommand = case identity of
+        OperationalAwsSesLeaseRole -> Just "prodbox aws setup"
+        OperationalIamUser -> Nothing
+        OperationalAwsConfig -> Nothing
+    , resourceEnsurePresent = Nothing
+    , resourceDestroyCommand = "prodbox aws teardown"
+    , resourceDestroyCapability = managedDestroyCapability name
+    , resourceDestroy = destroy
+    }
+ where
+  name = operationalResourceName identity
+
+-- | Sprint 4.84: every statically named identity the effect-bearing registry
+-- mints, paired with the lifecycle class that entry actually carries.
+--
+-- Read off the constructed entries rather than restated, so this cannot become
+-- a fourth independent statement of the same fact. Dynamic families — Pulsar
+-- topics and the run-time-named DNS validation zone — are deliberately absent:
+-- their concrete names are produced at run time and only their family rows are
+-- registrable.
+effectRegistryStaticIdentities :: [(String, LifecycleClass)]
+effectRegistryStaticIdentities =
+  map
+    identityOf
+    ( perRunManagedResources
+        ++ longLivedManagedResources
+        ++ [awsSesPulumiResource, legacyHarborHelmResource]
+        ++ map
+          (\identity -> operationalManagedResourceFor identity unusedDestroy)
+          operationalResourceIdentities
+    )
+ where
+  identityOf resource = (resourceName resource, resourceClass resource)
+  -- The projection reads name and class only; this effect is never run, and
+  -- reading the real constructed entry is what keeps the pair honest.
+  unusedDestroy _ = pure (ExitFailure 1)
+
+-- | Sprint 4.84: join the effect-bearing registry to the flat lifecycle
+-- inventory.
+--
+-- @resourceClass@ was a third independent statement of a resource\'s lifecycle
+-- class, after the typed teardown registry and @resourceLifecycleClasses@, and
+-- nothing joined it to either. It is not decorative: it selects the operator-
+-- facing scope label for a destructive reconcile batch, and
+-- @resourceLifecycleClasses@ is the table @guardTestDelete@ refuses against and
+-- @substrates.md@ publishes. Two tables disagreeing about one resource\'s class
+-- is what Sprint 4.84 already corrected between the typed registry and the flat
+-- inventory; this closes the same join for the third table.
+effectRegistryLifecycleClassViolations :: [String]
+effectRegistryLifecycleClassViolations =
+  concatMap violationFor effectRegistryStaticIdentities
+ where
+  violationFor (name, registered) = case lookup name resourceLifecycleClasses of
+    Nothing ->
+      [ "the effect-bearing managed-resource registry registers `"
+          ++ name
+          ++ "` but resourceLifecycleClasses has no row for it; add it to "
+          ++ "src/Prodbox/Lifecycle/ResourceClass.hs "
+          ++ "(lifecycle_reconciliation_doctrine.md \167\&3.1 totality)."
+      ]
+    Just flatClass
+      | flatClass == registered -> []
+      | otherwise ->
+          [ "`"
+              ++ name
+              ++ "` is "
+              ++ show registered
+              ++ " in the effect-bearing managed-resource registry but "
+              ++ show flatClass
+              ++ " in resourceLifecycleClasses; a resource has exactly one "
+              ++ "static lifecycle class (lifecycle_reconciliation_doctrine.md \167\&3.1)."
+          ]
 
 -- | Sprint 4.26: the @aws-ses@ long-lived Pulumi stack as a managed
 -- resource. Kept separate from 'longLivedManagedResources' (the S3-object
@@ -295,10 +444,35 @@ destroyPublicEdgeTlsCertificate repoRoot = do
 -- hands them here, so 'reconcileAbsent' does not re-discover per
 -- resource (preserving the single-port-forward batching). Pure; the
 -- argument order is @aws-eks@, @aws-eks-subzone@, @aws-test@.
-pairPerRunResidue
-  :: ResidueStatus -> ResidueStatus -> ResidueStatus -> [(ManagedResource, ResidueStatus)]
-pairPerRunResidue eksStatus subzoneStatus testStatus =
-  zip perRunManagedResources [eksStatus, subzoneStatus, testStatus]
+-- | Sprint 4.84: one residue answer per per-run stack, named by the stack it
+-- is an answer about.
+--
+-- The three fields replace three positional arguments. Swapping two at a call
+-- site was previously invisible — every argument had type 'ResidueStatus' —
+-- and would have reported the @aws-test@ stack\'s presence under the
+-- @aws-eks@ destroy command.
+data PerRunResidueAnswers = PerRunResidueAnswers
+  { perRunAnswerAwsEks :: !ResidueStatus
+  , perRunAnswerAwsEksSubzone :: !ResidueStatus
+  , perRunAnswerAwsTest :: !ResidueStatus
+  }
+  deriving (Eq, Show)
+
+perRunResidueAnswerFor :: PerRunStackIdentity -> PerRunResidueAnswers -> ResidueStatus
+perRunResidueAnswerFor identity answers = case identity of
+  PerRunAwsEks -> perRunAnswerAwsEks answers
+  PerRunAwsEksSubzone -> perRunAnswerAwsEksSubzone answers
+  PerRunAwsTest -> perRunAnswerAwsTest answers
+
+-- | Join each per-run registry entry to its own observation.
+--
+-- Both sides are selected by the same 'PerRunStackIdentity', so the join is
+-- correct by construction rather than by two list orders agreeing.
+pairPerRunResidue :: PerRunResidueAnswers -> [(ManagedResource, ResidueStatus)]
+pairPerRunResidue answers =
+  [ (perRunManagedResourceFor identity, perRunResidueAnswerFor identity answers)
+  | identity <- perRunStackIdentities
+  ]
 
 -- | Sprint 4.26: pair the @aws-ses@ long-lived Pulumi stack resource with
 -- its freshly-discovered 'ResidueStatus'. Pure; the singleton list shape

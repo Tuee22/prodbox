@@ -9,7 +9,9 @@ module Prodbox.Config.LocalRetainedRoot
   , LocalRetainedRootError (..)
   , RetainedRootMarkerReconcileOutcome (..)
   , bootstrapRetainedRootLocatorPath
+  , bootstrapRetainedRootControlDirectory
   , authorityBoundRetainedRootPath
+  , authorityBoundRetainedRootControlDirectory
   , authorityBoundRetainedRootInForceConfig
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome

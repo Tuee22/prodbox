@@ -393,6 +393,43 @@ Rules:
     `aws ebs reap-test --yes` recovery command — the EBS analog of the
     `.test-data/` isolation in rule 13 (Sprints `7.28`, `4.39`, `4.40`).
 
+16. The retained-artifact store is `.data/prodbox/artifacts`, a sibling of the
+    `.cluster-established` marker rather than of the MinIO and Vault data roots, because its bytes
+    are prodbox's own retained inputs rather than a component's state. It holds exactly the
+    artifacts the ordinary-teardown repair inventory
+    (`Prodbox.Config.OrdinaryTeardownRepair`) names: the pinned substrate installer and
+    system-images archives and the control-plane runtime images the recovery closure loads, because
+    that closure excludes the image Registry in every observed state. Custody of those bytes —
+    acquiring what is missing, verifying what is present, and collecting what no inventory entry
+    names — is `Prodbox.Lifecycle.Teardown.RetainedArtifactCustody`, under three rules:
+    the **inventory is the authority and a source is only a transport**, so delivered bytes are
+    admitted only when they hash to the digest the inventory already pinned; **membership is exact
+    in both directions**, so a member the inventory does not name is collected rather than quietly
+    kept; and **custody mutation is Authority-bound**, so the non-authorizing bootstrap locator can
+    locate retained bytes during recovery but can neither replace nor collect them. Deliveries land
+    in the `.data/prodbox/artifacts.staging` sibling and are admitted by rename, so a partial or
+    rejected delivery is never observable as a store member. Convergence is decided from a fresh
+    listing alone; a successful delivery response is not evidence of retention. A rendered repair is
+    checked against a listing before it runs rather than trusted because its inventory validated:
+    the artifacts it names are derived from the plan's own steps, a missing or non-matching one
+    refuses the repair, and a store member the repair never reads is not a reason to refuse it.
+    The durable host-completion record sits beside that store, at
+    `.data/prodbox/host-cleanup-intent`, for the same reason and under one further rule: it is
+    written before the local uninstall and read again after it, so both its Authority-bound and its
+    bootstrap-located coordinates are derived from the one control directory rather than authored at
+    each site. It carries no durability index, because unlike the artifact store it must be
+    *mutated* while the Authority is absent — recording local absence is exactly that write.
+    That check is not advisory. `Prodbox.Lifecycle.Teardown.RecoveryRepairExecution` is the only
+    consumer of a rendered repair, and the value it executes has no constructor reachable from a
+    rendered plan alone: a repair is *admitted* from the plan joined against the store listing, or
+    it does not run. A refusal carries the custody plan that would close it, and says explicitly
+    when none can — an artifact the inventory does not name has no pinned digest for an acquisition
+    to be checked against, and an unlistable store decides neither retention nor drift. Repair
+    steps, unlike custody obligations, are sequentially dependent, so application stops at the
+    first failure and records the unattempted tail rather than producing further failures that
+    describe the wrong boundary. Substrate convergence is then read back from a fresh observation
+    alone; the applied steps are not an input to it.
+
 ## Cross-References
 
 - [Config Doctrine](./config_doctrine.md) — storage paths and MinIO coordinates live in

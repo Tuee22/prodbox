@@ -26,9 +26,7 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
   , OperationalCredentialDispositionBlocker (..)
   , operationalCredentialInventoryDispositionBlockers
   , DispositionBlockerEvidence (..)
-  , AbsentDispositionCapability (..)
   , dispositionBlockerEvidence
-  , absentDispositionCapabilityDetail
   , LegacyOperationalIdentity
   , legacyOperationalIdentity
   , legacyOperationalIdentityPrincipal
@@ -36,11 +34,15 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
   , legacyOperationalIdentityResources
   , LegacyOperationalIdentityStatus (..)
   , legacyOperationalIdentityStatus
+  , LegacyOperationalResource (..)
+  , legacyOperationalResourceName
+  , legacyOperationalResources
+  , OperationalIdentityReplacement (..)
+  , legacyOperationalResourceReplacement
   , retainedCustodyCredentialClasses
   )
 where
 
-import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Numeric.Natural (Natural)
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
@@ -215,6 +217,19 @@ data OperationalCredentialGraphConsumer
   | ReadBackRegisteredTargetAbsentCredentialConsumer
   | RetireStackCheckpointPairCredentialConsumer
   | ReadBackStackCheckpointRetirementCredentialConsumer
+  | -- | Sprint 4.85 (2026-08-18): the terminal escape audit itself.
+    --
+    -- This is the capability assignment @TerminalAuditProviderCapabilityUnassigned@
+    -- named as missing.  An escape audit enumerates provider-side resources, so
+    -- it cannot run without a Lifecycle-provider session — and until it was
+    -- classified, the "credential must stay live /through/ the audit" ordering
+    -- claim rested on an audit that, as far as this inventory was concerned,
+    -- needed no credential at all.
+    --
+    -- The audit's executing adapter is Sprint @7.36@'s; this inventory makes no
+    -- claim about it.  What is assigned here is the requirement that adapter has
+    -- to satisfy, which is exactly what fixes the last consumer in the ordering.
+    TerminalEscapeAuditCredentialConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialGraphConsumerTag
@@ -238,6 +253,7 @@ operationalCredentialGraphConsumerTag consumer = case consumer of
     "retire-stack-checkpoint-pair"
   ReadBackStackCheckpointRetirementCredentialConsumer ->
     "read-back-stack-checkpoint-retirement"
+  TerminalEscapeAuditCredentialConsumer -> "terminal-escape-audit"
 
 operationalCredentialInventoryGraphConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialGraphConsumer]
@@ -249,6 +265,12 @@ operationalCredentialInventoryGraphConsumers _ = [minBound .. maxBound]
 -- one surface that would carry disposition has no audit at all, while the AWS
 -- audit doctrine requires the credential to remain live through the audit.
 --
+-- A retired blocker keeps its constructor and its derivation.  The published
+-- list is what the omission of the @Operational@ registry descriptors rests
+-- on, and the coverage join fails in __both__ directions, so a blocker that
+-- becomes true again is an unpublished-blocker failure rather than a silently
+-- lost reason.
+--
 -- Sprint 4.85: this list is load-bearing — it is the stated reason
 -- @OperationalTeardown@ has no registered descriptors and therefore no
 -- completion minter — and it was authored by hand with no consumer but a unit
@@ -259,38 +281,64 @@ operationalCredentialInventoryGraphConsumers _ = [minBound .. maxBound]
 -- derivable ones from the compiled programs and this module\'s own values,
 -- failing @prodbox dev check@ in both directions.
 data OperationalCredentialDispositionBlocker
-  = DispositionBeforeAuditConflictsWithLiveAuditCredential
-  | AuditBeforeDispositionConflictsWithCurrentCascadeGraph
-  | TerminalAuditProviderCapabilityUnassigned
-  | GlobalProviderAdmissionFreezeUnavailable
-  | ProviderOperationCleanupRunOwnershipUnavailable
-  | OrdinaryLifecycleProviderRevocationUnavailable
-  | CanonicalTargetRevocationReadBackUnavailable
-  | LegacyOperationalIdentityReplacementUndefined
+  = -- | Retired 2026-08-18: the total-decommission program orders every
+    -- credential disposition strictly after its terminal audit, so the audit
+    -- runs while the credential is still live.  Measured over the emitted
+    -- dependency graph, so re-ordering the program re-establishes it.
+    DispositionBeforeAuditConflictsWithLiveAuditCredential
+  | -- | Retired 2026-08-18: total decommission owns both halves — a terminal
+    -- escape audit and a credential disposition — so the audit-then-dispose
+    -- order is expressible on one surface.  The name is historical: it was
+    -- first measured against the cascade graph, which deliberately retains the
+    -- credential and therefore never carried a disposition.
+    AuditBeforeDispositionConflictsWithCurrentCascadeGraph
+  | -- | Retired 2026-08-18: the terminal escape audit is classified as a
+    -- Lifecycle-provider consumer, which is the capability assignment this
+    -- blocker named.
+    TerminalAuditProviderCapabilityUnassigned
+  | -- | Retired 2026-08-18: an authenticated control route now issues the
+    -- Cascade-audit freeze.  The constructor stays, and stays derivable, so
+    -- deleting the route re-establishes the blocker rather than leaving it
+    -- silently retired.
+    GlobalProviderAdmissionFreezeUnavailable
+  | -- | Retired 2026-08-18: a retained Provider operation carries the cleanup
+    -- operation that authorized it, and the teardown dispatch path supplies
+    -- one for every purpose.  Still derived, so a dispatch that stopped naming
+    -- its cleanup operation re-establishes it.
+    ProviderOperationCleanupRunOwnershipUnavailable
+  | -- | Retired 2026-08-18: the compiled @OperationalTeardown@ program names a
+    -- credential disposition and the mandatory read-back that confirms it, and
+    -- the canonical revocation protocol exists at the fenced Admin-worker
+    -- boundary.  Executing compiled nodes is the dispatcher activation Sprints
+    -- @4.86@ and @6.5@ own, which every compiled node on every surface waits
+    -- on equally; this blocker is about the path existing, not about that
+    -- activation.  Still derived, so deleting either node re-establishes it.
+    OrdinaryLifecycleProviderRevocationUnavailable
+  | -- | Retired 2026-08-18: the canonical target revocation read-back decision
+    -- exists and admits exactly one of its twelve observation pairs — both
+    -- absences independently observed.  Still derived, so a protocol that
+    -- drifted into accepting an unobservable or still-present target
+    -- re-establishes it.
+    CanonicalTargetRevocationReadBackUnavailable
+  | -- | Retired 2026-08-18: every legacy operational resource names the
+    -- supported surface that supersedes it.  Still derived, so an undeclared
+    -- successor re-establishes it.
+    LegacyOperationalIdentityReplacementUndefined
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialInventoryDispositionBlockers
   :: OperationalCredentialInventory
-  -> NonEmpty OperationalCredentialDispositionBlocker
-operationalCredentialInventoryDispositionBlockers _ =
-  DispositionBeforeAuditConflictsWithLiveAuditCredential
-    :| [ AuditBeforeDispositionConflictsWithCurrentCascadeGraph
-       , TerminalAuditProviderCapabilityUnassigned
-       , GlobalProviderAdmissionFreezeUnavailable
-       , ProviderOperationCleanupRunOwnershipUnavailable
-       , OrdinaryLifecycleProviderRevocationUnavailable
-       , CanonicalTargetRevocationReadBackUnavailable
-       , LegacyOperationalIdentityReplacementUndefined
-       ]
+  -> [OperationalCredentialDispositionBlocker]
+operationalCredentialInventoryDispositionBlockers _ = []
 
 -- | How one disposition blocker is established.
 --
--- The distinction is the point.  A blocker derived from a compiled program or
--- from a value in this repository stops being true the moment the source
--- changes, and the coverage join notices.  A blocker that rests on a
--- \"no constructor exists\" fact cannot be recomputed from a value at all, so it
--- is marked as such and names the missing capability rather than pretending to
--- be measured.
+-- Every kind is a recomputation.  Sprint @4.85@ began with four blockers whose
+-- evidence was a @TypeLevelAbsence@ — a \"no constructor exists\" fact that no
+-- value could witness, and therefore one that would go on justifying an
+-- omission after it stopped being true.  Each was closed by building the
+-- missing capability and deriving the blocker from it, and the last of them
+-- took the kind with it.
 data DispositionBlockerEvidence
   = -- | Recomputed by compiling the teardown programs and inspecting their
     -- operations.
@@ -300,40 +348,23 @@ data DispositionBlockerEvidence
     DerivedFromCredentialConsumerClassifier
   | -- | Recomputed from 'legacyOperationalIdentityStatus'.
     DerivedFromLegacyIdentityStatus
-  | -- | Rests on the absence of a constructor or transition, which no value in
-    -- this repository can witness.
-    TypeLevelAbsence !AbsentDispositionCapability
+  | -- | Recomputed from the canonical target revocation read-back decision
+    -- table in @Prodbox.Lifecycle.CredentialProvisioner.Execution@.
+    DerivedFromRevocationReadBackProtocol
+  | -- | Recomputed from the compiled @OperationalTeardown@ program: the
+    -- ordinary revocation path is a credential disposition together with the
+    -- mandatory read-back that confirms it.
+    DerivedFromCompiledOrdinaryRevocationPath
+  | -- | Recomputed from the teardown Provider dispatch key's cleanup
+    -- ownership: every dispatch names the cleanup operation that authorized
+    -- it, and the Authority retains that owner beside the intent.
+    DerivedFromProviderDispatchOwnership
+  | -- | Recomputed from the closed vocabulary of externally admissible
+    -- Authority control routes
+    -- ('Prodbox.Lifecycle.Authority.Admission.AuthorityControlRoute') and the
+    -- aggregate command each one issues.
+    DerivedFromAuthorityControlRoutes
   deriving (Eq, Show)
-
--- | The capabilities whose absence a non-derivable blocker rests on.  Each
--- names the exact missing transition or protocol, so implementing one is a
--- deliberate act rather than a silent invalidation of the blocker beside it.
-data AbsentDispositionCapability
-  = -- | The Cascade-audit freeze exists as a pure aggregate command, and the
-    -- submission gate already honours its reservation — but no authenticated
-    -- route issues that command, so no production caller can fence admission.
-    ProviderAdmissionFreezeRouteAbsent
-  | -- | No Provider operation is owned by a cleanup run, so a disposition
-    -- cannot be attributed to the run that authorized it.
-    ProviderOperationCleanupRunOwnershipAbsent
-  | -- | No ordinary lifecycle path revokes the Lifecycle-provider credential.
-    LifecycleProviderRevocationAbsent
-  | -- | No canonical target revocation read-back protocol exists, so a revoke
-    -- response could not be independently confirmed.
-    CanonicalTargetRevocationReadBackAbsent
-  deriving (Bounded, Enum, Eq, Ord, Show)
-
-absentDispositionCapabilityDetail :: AbsentDispositionCapability -> Text
-absentDispositionCapabilityDetail capability = case capability of
-  ProviderAdmissionFreezeRouteAbsent ->
-    "no authenticated route issues the Cascade-audit freeze command, so no \
-    \production caller can fence Provider admission"
-  ProviderOperationCleanupRunOwnershipAbsent ->
-    "no Provider operation is owned by a cleanup run"
-  LifecycleProviderRevocationAbsent ->
-    "no ordinary lifecycle path revokes the Lifecycle-provider credential"
-  CanonicalTargetRevocationReadBackAbsent ->
-    "no canonical target revocation read-back protocol exists"
 
 -- | Total over the closed blocker universe, so a new blocker cannot be added
 -- without stating how it is established.
@@ -347,13 +378,13 @@ dispositionBlockerEvidence blocker = case blocker of
   TerminalAuditProviderCapabilityUnassigned ->
     DerivedFromCredentialConsumerClassifier
   GlobalProviderAdmissionFreezeUnavailable ->
-    TypeLevelAbsence ProviderAdmissionFreezeRouteAbsent
+    DerivedFromAuthorityControlRoutes
   ProviderOperationCleanupRunOwnershipUnavailable ->
-    TypeLevelAbsence ProviderOperationCleanupRunOwnershipAbsent
+    DerivedFromProviderDispatchOwnership
   OrdinaryLifecycleProviderRevocationUnavailable ->
-    TypeLevelAbsence LifecycleProviderRevocationAbsent
+    DerivedFromCompiledOrdinaryRevocationPath
   CanonicalTargetRevocationReadBackUnavailable ->
-    TypeLevelAbsence CanonicalTargetRevocationReadBackAbsent
+    DerivedFromRevocationReadBackProtocol
   LegacyOperationalIdentityReplacementUndefined ->
     DerivedFromLegacyIdentityStatus
 
@@ -369,8 +400,76 @@ data LegacyOperationalIdentity = LegacyOperationalIdentity
   }
   deriving (Eq, Show)
 
+-- | The closed set of pre-cutover operational resources.
+--
+-- These names were a @[Text]@ field until 2026-08-18, which is why nothing
+-- could say what supersedes one: a string has no place to carry a replacement.
+-- The names are still exactly the @Operational@ rows of the flat lifecycle
+-- inventory, and @prodbox dev check@ joins the two lists so neither can drift.
+-- The join lives in @Prodbox.CheckCode@ rather than here: this module stays
+-- free of the inventory's imports.
+data LegacyOperationalResource
+  = LegacyOperationalSesLeaseRole
+  | LegacyOperationalIamUser
+  | LegacyOperationalAwsConfigBlock
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+legacyOperationalResourceName :: LegacyOperationalResource -> Text
+legacyOperationalResourceName resource = case resource of
+  LegacyOperationalSesLeaseRole -> "operational-aws-ses-lease-role"
+  LegacyOperationalIamUser -> "operational-iam-user"
+  LegacyOperationalAwsConfigBlock -> "operational-aws-config"
+
+legacyOperationalResources :: [LegacyOperationalResource]
+legacyOperationalResources = [minBound .. maxBound]
+
+-- | What supersedes one pre-cutover operational resource.
+--
+-- 'ReplacementUndeclared' is a real answer, not a placeholder: it is what makes
+-- @LegacyOperationalIdentityReplacementUndefined@ a measurement.  A new legacy
+-- resource is an exhaustiveness failure below until someone answers, and
+-- answering @ReplacementUndeclared@ re-establishes the blocker rather than
+-- quietly leaving it retired.
+--
+-- Declaring a replacement is not migrating to it.  This says which supported
+-- surface owns the capability the legacy resource carried; revoking the legacy
+-- identity and reading back its absence is separate work, tracked in the
+-- deletion ledger.
+data OperationalIdentityReplacement
+  = -- | Superseded by a credential the typed registry manages.
+    ReplacedByManagedCredential !AwsCredentialClass
+  | -- | Superseded by generated, non-secret repository configuration rather
+    -- than by any credential.
+    ReplacedByGeneratedRepositoryConfiguration
+  | -- | Nobody has said what supersedes this resource.
+    ReplacementUndeclared
+  deriving (Eq, Show)
+
+-- | Total over the closed legacy set.
+--
+-- The legacy pair collapses into one managed credential: the @prodbox@ IAM user
+-- becomes @prodbox-lifecycle-provider@, and the fixed session role that user
+-- assumed for one SES lease transaction becomes the registered provider role
+-- that credential's single 'AssumeRegisteredProviderRole' permission names.
+-- The operational @aws.*@ config block has no successor credential at all — the
+-- generated non-secret configuration carries what it carried.
+legacyOperationalResourceReplacement
+  :: LegacyOperationalResource -> OperationalIdentityReplacement
+legacyOperationalResourceReplacement resource = case resource of
+  LegacyOperationalSesLeaseRole ->
+    ReplacedByManagedCredential LifecycleProviderCredential
+  LegacyOperationalIamUser ->
+    ReplacedByManagedCredential LifecycleProviderCredential
+  LegacyOperationalAwsConfigBlock -> ReplacedByGeneratedRepositoryConfiguration
+
 data LegacyOperationalIdentityStatus
-  = LegacyOperationalIdentityMigrationRequired
+  = -- | At least one legacy resource has no declared successor, so the legacy
+    -- names cannot participate in credential disposition.
+    LegacyOperationalIdentityMigrationRequired
+  | -- | Every legacy resource names the supported surface that supersedes it.
+    -- Executing the migration is separate; this is the definition the
+    -- disposition argument needs.
+    LegacyOperationalIdentityReplacementDeclared
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 legacyOperationalIdentity :: LegacyOperationalIdentity
@@ -379,13 +478,20 @@ legacyOperationalIdentity =
     { internalLegacyOperationalIdentityPrincipal = "prodbox"
     , internalLegacyOperationalIdentityPolicy = "prodbox-inline"
     , internalLegacyOperationalIdentityResources =
-        [ "operational-aws-ses-lease-role"
-        , "operational-iam-user"
-        , "operational-aws-config"
-        ]
-    , internalLegacyOperationalIdentityStatus =
-        LegacyOperationalIdentityMigrationRequired
+        map legacyOperationalResourceName legacyOperationalResources
+    , internalLegacyOperationalIdentityStatus = derivedLegacyOperationalIdentityStatus
     }
+
+-- | Derived, never authored: the identity is migration-required for exactly as
+-- long as some legacy resource has no declared successor.
+derivedLegacyOperationalIdentityStatus :: LegacyOperationalIdentityStatus
+derivedLegacyOperationalIdentityStatus
+  | any undeclared legacyOperationalResources =
+      LegacyOperationalIdentityMigrationRequired
+  | otherwise = LegacyOperationalIdentityReplacementDeclared
+ where
+  undeclared resource =
+    legacyOperationalResourceReplacement resource == ReplacementUndeclared
 
 legacyOperationalIdentityPrincipal :: LegacyOperationalIdentity -> Text
 legacyOperationalIdentityPrincipal = internalLegacyOperationalIdentityPrincipal

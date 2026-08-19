@@ -20,6 +20,13 @@ controlPlaneDescriptorBoundLifecycleRuntimeSuite =
       descriptorBoundLifecycleRuntimeRecoveryOperationsExact regression
         `shouldBe` True
 
+    it "routes the four cascade host nodes to the closed cascade host runtime" $ do
+      -- One node per durable phase: a phase that discharged two nodes would
+      -- leave a resume with nothing to attribute a failure to.
+      regression <- fixedDescriptorBoundLifecycleRuntimeRegression
+      descriptorBoundLifecycleRuntimeCascadeHostOperationsExact regression
+        `shouldBe` True
+
     it "classifies every currently unsupported operation as a refusal" $ do
       regression <- fixedDescriptorBoundLifecycleRuntimeRegression
       descriptorBoundLifecycleRuntimeUnsupportedOperationsExact regression

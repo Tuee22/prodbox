@@ -20,6 +20,7 @@ module Prodbox.Lifecycle.Teardown.Report
   , completionEvidenceGraphDigest
   , completeCascadeDesiredAbsence
   , completeExplicitPerRunDesiredAbsence
+  , completeOperationalTeardownDesiredAbsence
   , SurfaceIncompleteEvidence
   , incompleteEvidenceSurface
   , incompleteEvidenceRunId
@@ -46,6 +47,10 @@ module Prodbox.Lifecycle.Teardown.Report
   , desiredAbsenceRegressionExplicitPerRunUnavailableRefused
   , desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused
   , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty
+  , desiredAbsenceRegressionOperationalCompletes
+  , desiredAbsenceRegressionOperationalUnavailableRefused
+  , desiredAbsenceRegressionOperationalSurfaceMismatchRefused
+  , desiredAbsenceRegressionOperationalObligationNonEmpty
   )
 where
 
@@ -64,6 +69,7 @@ import Prodbox.Lifecycle.Teardown.Report.Internal
   , classifyDesiredAbsenceReport
   , completeCascadeDesiredAbsence
   , completeExplicitPerRunDesiredAbsence
+  , completeOperationalTeardownDesiredAbsence
   , completionEvidenceGraphDigest
   , completionEvidenceRunId
   , completionEvidenceSurface
@@ -79,6 +85,10 @@ import Prodbox.Lifecycle.Teardown.Report.Internal
   , desiredAbsenceRegressionLocalAndTotalDistinct
   , desiredAbsenceRegressionLostRefused
   , desiredAbsenceRegressionNotEstablishedRefused
+  , desiredAbsenceRegressionOperationalCompletes
+  , desiredAbsenceRegressionOperationalObligationNonEmpty
+  , desiredAbsenceRegressionOperationalSurfaceMismatchRefused
+  , desiredAbsenceRegressionOperationalUnavailableRefused
   , desiredAbsenceRegressionReportBindingRefused
   , desiredAbsenceRegressionUnavailableRefused
   , fixedDesiredAbsenceReportRegression

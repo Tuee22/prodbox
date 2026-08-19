@@ -19,11 +19,16 @@ module Prodbox.Http.Client
   , httpRequestRaw
   , httpRequestRawBounded
   , httpRequestNoBody
+  , HttpDownloadError (..)
+  , HttpDownload (..)
+  , renderHttpDownloadError
+  , httpDownloadToFile
   , renderHttpError
   )
 where
 
 import Control.Exception (Exception, SomeException, try)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (FromJSON, ToJSON, eitherDecode, encode)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
@@ -53,6 +58,8 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (statusCode)
+import System.Directory (removeFile)
+import System.IO (Handle, IOMode (WriteMode), withFile)
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | Errors that surface from an HTTP request through this module.
@@ -321,6 +328,135 @@ readBoundedBody maximumBytes = go 0 []
         if nextObserved > maximumBytes
           then pure (Left nextObserved)
           else go nextObserved (chunk : chunks) reader
+
+-- | Why a streaming download did not produce a complete, bounded body.
+--
+-- The size bound is separate from the transport taxonomy because crossing it
+-- is a fact about the response rather than a failure to obtain one, and the
+-- caller reports the two differently.
+data HttpDownloadError
+  = HttpDownloadTransport !HttpError
+  | HttpDownloadTooLarge !Int !Int
+  | HttpDownloadStatus !Int
+  | HttpDownloadWriteFailed !String
+  deriving (Eq, Show)
+
+-- | What a completed download delivered.  The digest is computed over the
+-- bytes as they are written, so it describes the file on disk rather than a
+-- separate later read of it.
+data HttpDownload = HttpDownload
+  { httpDownloadBytes :: !Int
+  , httpDownloadSha256 :: !String
+  -- ^ Lowercase hex, without an algorithm prefix.
+  }
+  deriving (Eq, Show)
+
+renderHttpDownloadError :: HttpDownloadError -> String
+renderHttpDownloadError downloadErr = case downloadErr of
+  HttpDownloadTransport httpErr -> renderHttpError httpErr
+  HttpDownloadTooLarge observed maximumBytes ->
+    "HTTP response exceeded the "
+      ++ show maximumBytes
+      ++ " byte ceiling at "
+      ++ show observed
+      ++ " bytes"
+  HttpDownloadStatus status -> "HTTP " ++ show status ++ " response"
+  HttpDownloadWriteFailed detail -> "download write failed: " ++ detail
+
+-- | Stream a @GET@ body to a file under a byte ceiling, hashing it as it is
+-- written.
+--
+-- Unlike 'httpRequestRawBounded' the body is never accumulated in memory: the
+-- artifacts this exists for are hundreds of megabytes, and a retained-artifact
+-- acquisition that had to hold its payload in the heap would be a resource
+-- envelope rather than a transfer.  A response that crosses the ceiling, fails
+-- mid-stream, or reports a non-2xx status leaves no completed file, so a
+-- partial transfer cannot be mistaken for a delivered artifact.
+httpDownloadToFile
+  :: HttpConfig
+  -> Int
+  -> String
+  -> FilePath
+  -> IO (Either HttpDownloadError HttpDownload)
+httpDownloadToFile config maximumBytes url destination
+  | maximumBytes < 0 = pure (Left (HttpDownloadTooLarge 0 maximumBytes))
+  | otherwise = do
+      requestResult <- try (parseRequest url) :: IO (Either SomeException Request)
+      case requestResult of
+        Left ex ->
+          pure (Left (HttpDownloadTransport (HttpConnectionFailure (show ex))))
+        Right baseRequest -> do
+          let request =
+                baseRequest
+                  { method = "GET"
+                  , responseTimeout = responseTimeoutMicro (httpRequestTimeoutMicros config)
+                  }
+          streamed <-
+            try
+              ( withManager $ \manager ->
+                  withResponse request manager $ \response ->
+                    let status = statusCode (responseStatus response)
+                     in if status < 200 || status >= 300
+                          then pure (Left (HttpDownloadStatus status))
+                          else withFile destination WriteMode $ \handle ->
+                            streamBoundedBody
+                              maximumBytes
+                              (responseBody response)
+                              handle
+              )
+          completed <- case streamed of
+            Left (HttpExceptionRequest _ content) ->
+              pure (Left (HttpDownloadTransport (translateExceptionContent content)))
+            Left (InvalidUrlException invalidUrl reason) ->
+              pure
+                ( Left
+                    ( HttpDownloadTransport
+                        (HttpConnectionFailure ("invalid URL " ++ invalidUrl ++ ": " ++ reason))
+                    )
+                )
+            Right outcome -> pure outcome
+          case completed of
+            Left err -> do
+              _ <- try (removeFile destination) :: IO (Either SomeException ())
+              pure (Left err)
+            Right download -> pure (Right download)
+
+streamBoundedBody
+  :: Int
+  -> BodyReader
+  -> Handle
+  -> IO (Either HttpDownloadError HttpDownload)
+streamBoundedBody maximumBytes reader handle = go 0 SHA256.init
+ where
+  go observed context = do
+    chunk <- brRead reader
+    if BS.null chunk
+      then
+        pure
+          ( Right
+              HttpDownload
+                { httpDownloadBytes = observed
+                , httpDownloadSha256 = lowerHex (SHA256.finalize context)
+                }
+          )
+      else do
+        let nextObserved = observed + BS.length chunk
+        if nextObserved > maximumBytes
+          then pure (Left (HttpDownloadTooLarge nextObserved maximumBytes))
+          else do
+            written <- try (BS.hPut handle chunk) :: IO (Either SomeException ())
+            case written of
+              Left ex -> pure (Left (HttpDownloadWriteFailed (show ex)))
+              Right () -> go nextObserved (SHA256.update context chunk)
+
+lowerHex :: BS.ByteString -> String
+lowerHex = concatMap renderByte . BS.unpack
+ where
+  renderByte byte =
+    [hexDigit (byte `div` 16), hexDigit (byte `mod` 16)]
+  hexDigit value
+    | value < 10 = toEnum (fromEnum '0' + fromIntegral value)
+    | otherwise = toEnum (fromEnum 'a' + fromIntegral value - 10)
 
 -- | Decode a @(status, body)@ pair: any 2xx decodes the JSON body, anything
 -- else becomes an 'HttpStatus'.

@@ -7,7 +7,30 @@ where
 
 import Data.ByteString qualified as ByteString
 import Data.List (sort)
-import Data.List.NonEmpty qualified as NonEmpty
+import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+  ( AuthorityControlPayload (..)
+  , authorityControlPayloadCommand
+  , authorityControlPayloadRoute
+  )
+import Prodbox.Lifecycle.Authority.Admission
+  ( AuthorityAdmissionCommandTag (..)
+  , AuthorityControlRoute (..)
+  , authorityAdmissionCommandTag
+  , authorityControlRouteIssuedCommandTag
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry (mkClientSubmissionKey)
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( CascadeAuditFreezeBinding
+  , mkCascadeAuditFreezeBinding
+  )
+import Prodbox.Lifecycle.CleanupRun
+  ( mkCleanupAttemptId
+  , mkCleanupDigest
+  , mkCleanupNodeId
+  , mkCleanupOperationId
+  , mkCleanupRunId
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   , CredentialLifetime (..)
@@ -45,12 +68,17 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( cascadeTerminalAuditNodeName
   , coverageRegressionAncestryIsDiscriminating
-  , coverageRegressionAuditIsNotItsOwnConsumer
+  , coverageRegressionAuditConsumesCredential
   , coverageRegressionCheckpointTailCounted
   , coverageRegressionConsumersPrecedeAudit
   , coverageRegressionEveryConsumerReached
+  , coverageRegressionNonConsumersExist
   , dispositionRegressionAuditPredicateDiscriminates
   , dispositionRegressionCascadeHasAudit
+  , dispositionRegressionDecommissionOrdersDispositionAfterAudit
+  , dispositionRegressionDispositionIsNotAnAuditAncestor
+  , dispositionRegressionFreezeRouteIssuesFreeze
+  , dispositionRegressionFreezeRouteMeasurementDiscriminates
   , dispositionRegressionMeasuredEqualsPublished
   , dispositionRegressionOperationalSurfaceHasNoAudit
   , dispositionRegressionSomeBlockersAreDerived
@@ -109,6 +137,10 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                    , "read-back-registered-target-absent"
                    , "retire-stack-checkpoint-pair"
                    , "read-back-stack-checkpoint-retirement"
+                   , -- Sprint 4.85 (2026-08-18): the terminal escape audit
+                     -- itself. It is the last consumer, which is the whole
+                     -- content of the liveness-through-audit ordering.
+                     "terminal-escape-audit"
                    ]
 
     it "Sprint 4.84 joins the inventory to the program that contains those nodes" $
@@ -136,19 +168,28 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       coverageRegressionConsumersPrecedeAudit regression `shouldBe` True
       coverageRegressionCheckpointTailCounted regression `shouldBe` True
       coverageRegressionAncestryIsDiscriminating regression `shouldBe` True
-      coverageRegressionAuditIsNotItsOwnConsumer regression `shouldBe` True
+      coverageRegressionAuditConsumesCredential regression `shouldBe` True
+      coverageRegressionNonConsumersExist regression `shouldBe` True
 
-    it "keeps both revoke orders and missing global authority explicitly blocked" $ do
-      NonEmpty.toList (operationalCredentialInventoryDispositionBlockers inventory)
-        `shouldBe` [ DispositionBeforeAuditConflictsWithLiveAuditCredential
-                   , AuditBeforeDispositionConflictsWithCurrentCascadeGraph
-                   , TerminalAuditProviderCapabilityUnassigned
-                   , GlobalProviderAdmissionFreezeUnavailable
-                   , ProviderOperationCleanupRunOwnershipUnavailable
-                   , OrdinaryLifecycleProviderRevocationUnavailable
-                   , CanonicalTargetRevocationReadBackUnavailable
-                   , LegacyOperationalIdentityReplacementUndefined
-                   ]
+    it "publishes no surviving operational-credential disposition blocker" $ do
+      -- Sprint 4.85 (2026-08-18): GlobalProviderAdmissionFreezeUnavailable is
+      -- retired -- an authenticated control route now issues the Cascade-audit
+      -- freeze -- and is absent from the published list while keeping its
+      -- constructor and its derivation.
+      operationalCredentialInventoryDispositionBlockers inventory `shouldBe` []
+      dispositionBlockerEvidence GlobalProviderAdmissionFreezeUnavailable
+        `shouldBe` DerivedFromAuthorityControlRoutes
+      -- Retired the same day by the terminal audit's capability assignment.
+      dispositionBlockerEvidence TerminalAuditProviderCapabilityUnassigned
+        `shouldBe` DerivedFromCredentialConsumerClassifier
+      dispositionBlockerEvidence CanonicalTargetRevocationReadBackUnavailable
+        `shouldBe` DerivedFromRevocationReadBackProtocol
+      -- Retired: the compiled operational program names a credential
+      -- disposition and the mandatory read-back that confirms it. Executing
+      -- compiled nodes is the dispatcher activation Sprints 4.86 and 6.5 own,
+      -- which every compiled node waits on equally.
+      dispositionBlockerEvidence OrdinaryLifecycleProviderRevocationUnavailable
+        `shouldBe` DerivedFromCompiledOrdinaryRevocationPath
 
     -- Sprint 4.85: the list above is the stated reason OperationalTeardown has
     -- no registered descriptors, and until now its only consumer was the case
@@ -161,23 +202,23 @@ lifecycleTeardownOperationalCredentialInventorySuite =
           pure
           measuredOperationalCredentialDispositionBlockers
       sort measured
-        `shouldBe` sort
-          (NonEmpty.toList (operationalCredentialInventoryDispositionBlockers inventory))
+        `shouldBe` sort (operationalCredentialInventoryDispositionBlockers inventory)
 
-      -- Half the list is genuinely measured; the other half rests on a missing
-      -- constructor, which no value can witness, and says so.
-      [ blocker
-        | blocker <- [minBound .. maxBound]
-        , DerivedFromCompiledTeardownPrograms <- [dispositionBlockerEvidence blocker]
-        ]
-        `shouldBe` [ DispositionBeforeAuditConflictsWithLiveAuditCredential
-                   , AuditBeforeDispositionConflictsWithCurrentCascadeGraph
+      -- Sprint 4.85 (2026-08-18): every blocker is now recomputed from a source
+      -- that can stop being true. Four of the eight rested on a
+      -- "no constructor exists" fact when the sprint began; each was closed by
+      -- building the missing capability and deriving the blocker from it, and
+      -- the last of them took the evidence kind with it.
+      map dispositionBlockerEvidence [minBound .. maxBound]
+        `shouldBe` [ DerivedFromCompiledTeardownPrograms
+                   , DerivedFromCompiledTeardownPrograms
+                   , DerivedFromCredentialConsumerClassifier
+                   , DerivedFromAuthorityControlRoutes
+                   , DerivedFromProviderDispatchOwnership
+                   , DerivedFromCompiledOrdinaryRevocationPath
+                   , DerivedFromRevocationReadBackProtocol
+                   , DerivedFromLegacyIdentityStatus
                    ]
-      [ capability
-        | blocker <- [minBound .. maxBound]
-        , TypeLevelAbsence capability <- [dispositionBlockerEvidence blocker]
-        ]
-        `shouldBe` [minBound .. maxBound]
 
     it "Sprint 4.85 the disposition join is discriminating, not vacuous" $ do
       let regression = fixedOperationalCredentialDispositionRegression
@@ -189,8 +230,45 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       dispositionRegressionCascadeHasAudit regression `shouldBe` True
       dispositionRegressionOperationalSurfaceHasNoAudit regression `shouldBe` True
       dispositionRegressionAuditPredicateDiscriminates regression `shouldBe` True
+      -- The Cascade-audit freeze route exists and the route relation still
+      -- discriminates: six routes, six distinct commands.
+      dispositionRegressionFreezeRouteIssuesFreeze regression `shouldBe` True
+      dispositionRegressionFreezeRouteMeasurementDiscriminates regression
+        `shouldBe` True
+      -- The total-decommission program has both halves and compiles the legal
+      -- order: the audit precedes every disposition and no disposition
+      -- precedes the audit, so an unordered pair cannot read as ordered.
+      dispositionRegressionDecommissionOrdersDispositionAfterAudit regression
+        `shouldBe` True
+      dispositionRegressionDispositionIsNotAnAuditAncestor regression
+        `shouldBe` True
 
-    it "keeps the pre-cutover identity migration-required and distinct" $ do
+    it "Sprint 4.85 an authenticated control payload issues the freeze command" $ do
+      -- The measurement above reads the route enumeration. This is its anchor
+      -- to the wire vocabulary: a payload constructor that stopped existing
+      -- would fail to compile here rather than leave the blocker retired on a
+      -- route nothing can reach.
+      let payload =
+            AuthorityControlFreezeProviderAdmissionForCascadeAudit freezeBinding
+      authorityControlPayloadRoute payload
+        `shouldBe` AuthorityControlCascadeAuditFreezeRoute
+      authorityAdmissionCommandTag (authorityControlPayloadCommand payload)
+        `shouldBe` FreezeProviderAdmissionForCascadeAuditTag
+      authorityControlPayloadRoute (AuthorityControlBindProviderGeneration 7)
+        `shouldBe` AuthorityControlProviderGenerationBindingRoute
+      authorityAdmissionCommandTag
+        (authorityControlPayloadCommand (AuthorityControlBindProviderGeneration 7))
+        `shouldBe` BindProviderAdmissionGenerationTag
+      map authorityControlRouteIssuedCommandTag [minBound .. maxBound]
+        `shouldBe` [ ApplyAuthorityGenesisTag
+                   , ApplyAuthorityBackupRepairTag
+                   , BeginAuthorityMigrationTag
+                   , ApplyAuthorityForwardMigrationTag
+                   , BindProviderAdmissionGenerationTag
+                   , FreezeProviderAdmissionForCascadeAuditTag
+                   ]
+
+    it "keeps the pre-cutover identity distinct and names what supersedes it" $ do
       legacyOperationalIdentityPrincipal legacyOperationalIdentity
         `shouldBe` "prodbox"
       legacyOperationalIdentityPolicy legacyOperationalIdentity
@@ -200,8 +278,17 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                    , "operational-iam-user"
                    , "operational-aws-config"
                    ]
+      -- Sprint 4.85 (2026-08-18): the legacy pair collapses into one managed
+      -- credential and the config block has no successor credential at all.
+      -- The status is derived from these answers rather than authored, so an
+      -- undeclared successor re-establishes the blocker.
+      map legacyOperationalResourceReplacement legacyOperationalResources
+        `shouldBe` [ ReplacedByManagedCredential LifecycleProviderCredential
+                   , ReplacedByManagedCredential LifecycleProviderCredential
+                   , ReplacedByGeneratedRepositoryConfiguration
+                   ]
       legacyOperationalIdentityStatus legacyOperationalIdentity
-        `shouldBe` LegacyOperationalIdentityMigrationRequired
+        `shouldBe` LegacyOperationalIdentityReplacementDeclared
       legacyOperationalIdentityPrincipal legacyOperationalIdentity
         `shouldNotBe` operationalCredentialInventoryPrincipal inventory
 
@@ -231,6 +318,20 @@ lifecycleTeardownOperationalCredentialInventorySuite =
 
 inventory :: OperationalCredentialInventory
 inventory = operationalCredentialInventory
+
+freezeBinding :: CascadeAuditFreezeBinding
+freezeBinding =
+  mustRight
+    ( mkCascadeAuditFreezeBinding
+        (mustRight (mkCleanupRunId "cleanup-run-1"))
+        (mustRight (mkCleanupDigest (Text.replicate 64 "b")))
+        (mustRight (mkCleanupDigest (Text.replicate 64 "c")))
+        (Text.replicate 64 "a")
+        (mustRight (mkCleanupNodeId "cascade/audit-escapes"))
+        (mustRight (mkCleanupOperationId "cascade-audit-operation"))
+        (mustRight (mkCleanupAttemptId "cascade-audit-attempt"))
+        [mustRight (mkClientSubmissionKey "cascade-audit-submission")]
+    )
 
 providerIntents :: [ProviderIntent]
 providerIntents =

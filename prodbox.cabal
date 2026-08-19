@@ -143,6 +143,7 @@ library
         Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime
         Prodbox.ControlPlane.LocalRke2HostObservationEndpoint
         Prodbox.ControlPlane.LocalRke2HostObservationRepository
+        Prodbox.ControlPlane.CascadeHostRuntime
         Prodbox.ControlPlane.RecoveryPlaneHostRuntime
         Prodbox.ControlPlane.RecoveryPlaneRepository
         Prodbox.ControlPlane.RecoveryPlaneEndpoint
@@ -161,6 +162,7 @@ library
         Prodbox.ControlPlane.CallerPrincipal
         Prodbox.ControlPlane.Client
         Prodbox.ControlPlane.CleanupRunClient
+        Prodbox.ControlPlane.HostCleanupReadinessRepository
         Prodbox.ControlPlane.ConfigBackupClient
         Prodbox.ControlPlane.ConfigClient
         Prodbox.ControlPlane.ConfigEndpoint
@@ -225,6 +227,7 @@ library
         Prodbox.ControlPlane.ListenPort
         Prodbox.ControlPlane.LocalClient
         Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+        Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
         Prodbox.ControlPlane.MigrationEndpoint
         Prodbox.ControlPlane.OperationEndpoint
         Prodbox.ControlPlane.ProviderAwsScopeReceipt
@@ -426,6 +429,10 @@ library
         Prodbox.Lifecycle.CleanupRunRunner
         Prodbox.Lifecycle.HostCleanupIntent
         Prodbox.Lifecycle.HostCleanupRunner
+        Prodbox.Lifecycle.HostCleanupLocalAbsence
+        Prodbox.Lifecycle.HostCleanupCompletion
+        Prodbox.Lifecycle.HostCleanupRecoveryPlane
+        Prodbox.Lifecycle.HostCleanupAuthorityArms
         Prodbox.Lifecycle.HostCleanupRke2
         Prodbox.Lifecycle.HostCleanupLocalData
         Prodbox.Lifecycle.StoreLifetime
@@ -479,6 +486,8 @@ library
         Prodbox.Lifecycle.Teardown.AwsStackReaderInterpreter
         Prodbox.Lifecycle.Teardown.CascadeEvidence
         Prodbox.Lifecycle.Teardown.Checkpoint
+        Prodbox.Lifecycle.Teardown.CascadeCredentialDisposition
+        Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
         Prodbox.Lifecycle.Teardown.CheckpointAuthority
         Prodbox.Lifecycle.Teardown.CloudRuntime
         Prodbox.Lifecycle.Teardown.Decision
@@ -504,12 +513,15 @@ library
         Prodbox.Lifecycle.Teardown.RecoveryPlane
         Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver
         Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter
+        Prodbox.Lifecycle.Teardown.RecoveryRepairExecution
         Prodbox.Lifecycle.Teardown.RecoveryRequirement
+        Prodbox.Lifecycle.Teardown.PreUninstallReadiness
         Prodbox.Lifecycle.Teardown.Program
         Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
         Prodbox.Lifecycle.Teardown.RegisteredTargetResult
         Prodbox.Lifecycle.Teardown.Report
         Prodbox.Lifecycle.Teardown.Registry
+        Prodbox.Lifecycle.Teardown.RetainedArtifactCustody
         Prodbox.Lifecycle.Teardown.RetainedInventory
         Prodbox.Lifecycle.Teardown.StackGeneration
         Prodbox.Lifecycle.Teardown.TaggingApiReach
@@ -618,8 +630,10 @@ library
         Prodbox.ControlPlane.AwsStackReaderRepository.Internal
         Prodbox.ControlPlane.AwsStackReaderTransportClient
         Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
+        Prodbox.ControlPlane.HostCleanupReadinessRepository.Internal
         Prodbox.ControlPlane.CleanupRunClient.Internal
         Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
+        Prodbox.ControlPlane.CascadeHostRuntime.Internal
         Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal
         Prodbox.ControlPlane.RecoveryPlaneRepository.Internal
         Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
@@ -740,7 +754,9 @@ test-suite prodbox-unit
         ControlPlaneClient
         ControlPlaneCapacity
         ControlPlaneConfigEndpoint
+        ControlPlaneCascadeHostRuntime
         ControlPlaneDescriptorBoundLifecycleRuntime
+        ControlPlaneLifecycleAuthorityRestore
         ControlPlaneFederationBootstrap
         ControlPlaneDeadline
         CertScopeSuite
@@ -763,6 +779,10 @@ test-suite prodbox-unit
         HostCleanupIntent
         HostCleanupRunner
         HostCleanupRke2
+        LifecycleHostCleanupLocalAbsence
+        LifecycleHostCleanupCompletion
+        LifecycleHostCleanupRecoveryPlane
+        LifecycleHostCleanupAuthorityArms
         LifecycleCleanupClient
         LifecycleTestArtifactCleanup
         LifecycleTestArtifactIntentJournal
@@ -861,6 +881,11 @@ test-suite prodbox-unit
         LifecycleTeardownRecoveryPlaneInterpreter
         LifecycleTeardownRegisteredTargetResult
         LifecycleTeardownRegistry
+        LifecycleTeardownCascadeCredentialDisposition
+        LifecycleTeardownCascadeTerminalAudit
+        LifecycleTeardownPreUninstallReadiness
+        LifecycleTeardownRecoveryRepairExecution
+        LifecycleTeardownRetainedArtifactCustody
         LifecycleTeardownRetainedInventory
         LifecycleTeardownAuditFieldOfView
         LocalRetainedRoot

@@ -22,6 +22,7 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , completionEvidenceGraphDigest
   , completeCascadeDesiredAbsence
   , completeExplicitPerRunDesiredAbsence
+  , completeOperationalTeardownDesiredAbsence
   , SurfaceIncompleteEvidence
   , incompleteEvidenceSurface
   , incompleteEvidenceRunId
@@ -49,6 +50,10 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , desiredAbsenceRegressionExplicitPerRunUnavailableRefused
   , desiredAbsenceRegressionExplicitPerRunSurfaceMismatchRefused
   , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty
+  , desiredAbsenceRegressionOperationalCompletes
+  , desiredAbsenceRegressionOperationalUnavailableRefused
+  , desiredAbsenceRegressionOperationalSurfaceMismatchRefused
+  , desiredAbsenceRegressionOperationalObligationNonEmpty
   )
 where
 
@@ -212,22 +217,31 @@ data SurfaceCompletionEvidence surface where
   ExplicitPerRunCompletionEvidence
     :: !(SurfaceReadBackEvidence 'ExplicitPerRun)
     -> SurfaceCompletionEvidence 'ExplicitPerRun
+  -- | Sprint 4.85. Minted only by
+  -- 'completeOperationalTeardownDesiredAbsence'.
+  OperationalTeardownCompletionEvidence
+    :: !(SurfaceReadBackEvidence 'OperationalTeardown)
+    -> SurfaceCompletionEvidence 'OperationalTeardown
 
 completionEvidenceSurface :: SurfaceCompletionEvidence surface -> CleanupSurface
 completionEvidenceSurface evidence = case evidence of
   CascadeCompletionEvidence {} -> Cascade
   ExplicitPerRunCompletionEvidence {} -> ExplicitPerRun
+  OperationalTeardownCompletionEvidence {} -> OperationalTeardown
 
 completionEvidenceRunId :: SurfaceCompletionEvidence surface -> CleanupRunId
 completionEvidenceRunId evidence = case evidence of
   CascadeCompletionEvidence complete -> cascadeCompleteRunId complete
   ExplicitPerRunCompletionEvidence readBacks -> readBackEvidenceRunId readBacks
+  OperationalTeardownCompletionEvidence readBacks -> readBackEvidenceRunId readBacks
 
 completionEvidenceGraphDigest
   :: SurfaceCompletionEvidence surface -> CleanupDigest
 completionEvidenceGraphDigest evidence = case evidence of
   CascadeCompletionEvidence complete -> cascadeCompleteGraphDigest complete
   ExplicitPerRunCompletionEvidence readBacks ->
+    readBackEvidenceGraphDigest readBacks
+  OperationalTeardownCompletionEvidence readBacks ->
     readBackEvidenceGraphDigest readBacks
 
 -- | Sprint 4.85: complete an explicit per-run desired-absence run.
@@ -249,12 +263,8 @@ completionEvidenceGraphDigest evidence = case evidence of
 -- surface without a live recovery plane has made no liveness claim, and a run
 -- that cannot say its recovery plane held cannot report clean completion.
 --
--- The other two ordinary surfaces deliberately have no minter yet, and the
--- reason is missing evidence rather than missing typing.
--- @OperationalTeardown@ projects __zero__ registered targets, because
--- 'cleanupSurfaceAllows' admits only @Operational@-class descriptors and the
--- typed registry contains none; completing it would be a clean-completion
--- claim over an empty projection. @ExplicitLongLived@ requires the aggregate
+-- @ExplicitLongLived@ deliberately still has no minter, and the reason is
+-- missing evidence rather than missing typing: it requires the aggregate
 -- operator permit its deliverable names, and that permit has no type.
 completeExplicitPerRunDesiredAbsence
   :: SurfaceReadBackEvidence 'ExplicitPerRun
@@ -271,6 +281,52 @@ completeExplicitPerRunDesiredAbsence readBacks
       Nothing -> Left (DesiredAbsenceRecoveryEvidenceUnavailable ExplicitPerRun)
       Just RecoveryPlaneEstablished ->
         Right (ExplicitPerRunCompletionEvidence readBacks)
+      Just disposition ->
+        Left (DesiredAbsenceRecoveryDispositionConflict disposition)
+
+-- | Sprint 4.85 (2026-08-18): complete an operational teardown run.
+--
+-- The deliverable requires operational completion to carry consumer quiescence,
+-- credential\/lease absence, and retained-dependency observation. Two of the
+-- three are the content of a complete read-back set on this surface, for the
+-- same structural reason explicit per-run's are:
+-- 'classifyDesiredAbsenceReportInternal' refuses to produce one unless every
+-- mandatory read-back succeeded, and this surface's mandatory set contains
+-- @ReadBackOperationalCredentialRevocation@ — the credential\/lease absence,
+-- independently observed rather than taken from the revoke response — and
+-- @ReadBackOrdinarySurfaceReport@, its own committed report read back.
+-- Retained-dependency observation is the @Established@ recovery plane this
+-- minter re-checks.
+--
+-- Consumer quiescence is __not__ claimed here and this minter makes no
+-- statement about it: proving every Provider consumer quiescent before the
+-- credential is revoked is a condition on when an operator may start the run,
+-- and it belongs to the surface that admits the run rather than to the witness
+-- that reports it.
+--
+-- Until 2026-08-18 this surface had no minter at all, and the reason was that
+-- it projected __zero__ registered targets: completing it would have been a
+-- clean-completion claim over an empty projection. Its obligation is no longer
+-- empty — the credential revocation and that revocation's read-back are its
+-- own, not a registered target's.
+completeOperationalTeardownDesiredAbsence
+  :: SurfaceReadBackEvidence 'OperationalTeardown
+  -> Either
+       DesiredAbsenceReportError
+       (SurfaceCompletionEvidence 'OperationalTeardown)
+completeOperationalTeardownDesiredAbsence readBacks
+  | readBackEvidenceSurface readBacks /= OperationalTeardown =
+      Left
+        ( DesiredAbsenceReportSurfaceMismatch
+            OperationalTeardown
+            (readBackEvidenceSurface readBacks)
+        )
+  | otherwise = case recoveryPlaneFinalDisposition
+      <$> readBackEvidenceRecoveryPlane readBacks of
+      Nothing ->
+        Left (DesiredAbsenceRecoveryEvidenceUnavailable OperationalTeardown)
+      Just RecoveryPlaneEstablished ->
+        Right (OperationalTeardownCompletionEvidence readBacks)
       Just disposition ->
         Left (DesiredAbsenceRecoveryDispositionConflict disposition)
 
@@ -390,6 +446,19 @@ data DesiredAbsenceReportRegression = DesiredAbsenceReportRegression
   -- read-backs and checkpoint-retirement read-backs, so its complete
   -- read-back set really is selected-stack\/child-family absence plus
   -- checkpoint disposition.
+  , desiredAbsenceRegressionOperationalCompletes :: !Bool
+  -- ^ Sprint 4.85 (2026-08-18): an operational teardown run whose read-backs
+  -- are complete and whose recovery plane is @Established@ mints its own
+  -- completion witness.
+  , desiredAbsenceRegressionOperationalUnavailableRefused :: !Bool
+  -- ^ The same run without a recovery plane cannot.
+  , desiredAbsenceRegressionOperationalSurfaceMismatchRefused :: !Bool
+  -- ^ A classification whose surface tag is not @OperationalTeardown@ is
+  -- refused by the minter rather than trusted.
+  , desiredAbsenceRegressionOperationalObligationNonEmpty :: !Bool
+  -- ^ The operational program is not vacuous even with zero registered
+  -- targets: its mandatory read-back set contains the credential revocation
+  -- read-back, which is the credential\/lease absence the deliverable names.
   }
   deriving stock (Eq, Show)
 
@@ -879,6 +948,131 @@ fixedDesiredAbsenceReportRegression = do
       perRunHasTargetAbsence = any operationIsTargetAbsenceReadBack perRunObligations
       perRunHasCheckpointDisposition =
         any operationIsCheckpointRetirementReadBack perRunObligations
+  operationalCompiled <-
+    firstShow
+      ( compileDesiredAbsenceGraph
+          runId
+          (LinuxRke2FoundationId "report-foundation")
+          (Just fixedReportAwsScope)
+          OperationalTeardownSurface
+      )
+  operationalRun <-
+    firstShow
+      ( newCleanupRun
+          runId
+          (compiledDesiredAbsenceGraph operationalCompiled)
+          owner
+          0
+          1000000
+      )
+  operationalRequirement <-
+    firstShow
+      (deriveOrdinaryTeardownRecoveryRequirementInternal operationalCompiled operationalRun)
+  operationalIdentity <-
+    firstShow
+      ( RecoveryPlaneInternal.deriveRecoveryPlaneIdentityFromCompiledInternal
+          descriptorDigest
+          OperationalRecoverySurface
+          operationalCompiled
+          operationalRequirement
+      )
+  let operationalEstablishOperation =
+        recoveryPlaneIdentityEstablishOperationId operationalIdentity
+      operationalReadBackOperation =
+        recoveryPlaneIdentityReadBackOperationId operationalIdentity
+      operationalDispositionOperation =
+        recoveryPlaneIdentityDispositionOperationId operationalIdentity
+      operationalEstablishBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          operationalIdentity
+          operationalEstablishOperation
+          establishAttempt
+      operationalReadBackBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          operationalIdentity
+          operationalReadBackOperation
+          readBackAttempt
+      operationalDispositionBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          operationalIdentity
+          operationalDispositionOperation
+          dispositionAttempt
+  operationalInitialFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          operationalReadBackBinding
+          ( fixedComponentObservations
+              operationalIdentity
+              operationalReadBackOperation
+              readBackAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  operationalFinalFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          operationalDispositionBinding
+          ( fixedComponentObservations
+              operationalIdentity
+              operationalDispositionOperation
+              dispositionAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  operationalInitial <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneInitialReadBackInternal
+          operationalEstablishBinding
+          operationalReadBackBinding
+          operationalInitialFacts
+      )
+  operationalEstablished <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneFinalEvidenceInternal
+          operationalInitial
+          operationalDispositionBinding
+          operationalFinalFacts
+      )
+  let operationalGraph = compiledDesiredAbsenceGraph operationalCompiled
+      operationalStates =
+        fixedSuccessfulStates
+          operationalGraph
+          operationalEstablishOperation
+          establishAttempt
+          operationalReadBackOperation
+          readBackAttempt
+          operationalDispositionOperation
+          dispositionAttempt
+          otherAttempt
+      operationalClassification =
+        classifyDesiredAbsenceReportInternal
+          OperationalTeardownSurface
+          operationalCompiled
+          (fixedReport operationalCompiled operationalStates)
+          (Just operationalEstablished)
+      operationalCompletion = case operationalClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just (completeOperationalTeardownDesiredAbsence readBacks)
+        _ -> Nothing
+      operationalWithoutPlane = case operationalClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just
+            ( completeOperationalTeardownDesiredAbsence
+                readBacks {internalReadBackEvidenceRecoveryPlane = Nothing}
+            )
+        _ -> Nothing
+      operationalWrongSurface = case operationalClassification of
+        Right (DesiredAbsenceReadBacksComplete readBacks) ->
+          Just
+            ( completeOperationalTeardownDesiredAbsence
+                readBacks {internalReadBackEvidenceSurface = Cascade}
+            )
+        _ -> Nothing
+      operationalObligations =
+        [ operation
+        | (_, operation) <- compiledDesiredAbsenceOperations operationalCompiled
+        , operationIsMandatoryReadBack operation
+        ]
   pure
     DesiredAbsenceReportRegression
       { desiredAbsenceRegressionEstablishedCompletes =
@@ -926,6 +1120,30 @@ fixedDesiredAbsenceReportRegression = do
             _ -> False
       , desiredAbsenceRegressionExplicitPerRunObligationNonEmpty =
           perRunHasTargetAbsence && perRunHasCheckpointDisposition
+      , desiredAbsenceRegressionOperationalCompletes =
+          case operationalCompletion of
+            Just (Right completion) ->
+              completionEvidenceSurface completion == OperationalTeardown
+                && completionEvidenceRunId completion == runId
+                && completionEvidenceGraphDigest completion
+                  == cleanupGraphDigest operationalGraph
+            _ -> False
+      , desiredAbsenceRegressionOperationalUnavailableRefused =
+          case operationalWithoutPlane of
+            Just
+              ( Left
+                  (DesiredAbsenceRecoveryEvidenceUnavailable OperationalTeardown)
+                ) -> True
+            _ -> False
+      , desiredAbsenceRegressionOperationalSurfaceMismatchRefused =
+          case operationalWrongSurface of
+            Just
+              ( Left
+                  (DesiredAbsenceReportSurfaceMismatch OperationalTeardown Cascade)
+                ) -> True
+            _ -> False
+      , desiredAbsenceRegressionOperationalObligationNonEmpty =
+          any operationIsCredentialRevocationReadBack operationalObligations
       }
 
 fixedReportAwsScope :: AwsScope
@@ -1497,6 +1715,8 @@ confirmationOperation operation = case operation of
   UninstallLocalOnlyFoundation -> Just ReadBackLocalOnlyAbsence
   CommitLocalOnlyCompletion -> Just ReadBackLocalOnlyCompletion
   CommitOrdinarySurfaceReport -> Just ReadBackOrdinarySurfaceReport
+  RevokeOperationalCredential witness ->
+    Just (ReadBackOperationalCredentialRevocation witness)
   UninstallDecommissionLocalFoundation -> Just ReadBackDecommissionLocalAbsence
   ApplyDecommissionLocalDataDisposition ->
     Just ReadBackDecommissionLocalDataDisposition
@@ -1518,6 +1738,7 @@ confirmationOperation operation = case operation of
   ReadBackLocalOnlyAbsence -> Nothing
   ReadBackLocalOnlyCompletion -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
+  ReadBackOperationalCredentialRevocation _ -> Nothing
   AuditTotalDecommissionEscapes -> Nothing
   ObserveExternalDecommissionReceipt -> Nothing
   ReadBackDecommissionLocalAbsence -> Nothing
@@ -1534,6 +1755,13 @@ operationIsTargetAbsenceReadBack operation = case operation of
 operationIsCheckpointRetirementReadBack :: TeardownOperation surface -> Bool
 operationIsCheckpointRetirementReadBack operation = case operation of
   ReadBackStackCheckpointRetirement _ -> True
+  _ -> False
+
+-- | Sprint 4.85: the obligation that makes an operational completion claim
+-- non-empty even with zero registered targets.
+operationIsCredentialRevocationReadBack :: TeardownOperation surface -> Bool
+operationIsCredentialRevocationReadBack operation = case operation of
+  ReadBackOperationalCredentialRevocation _ -> True
   _ -> False
 
 operationIsMandatoryReadBack :: TeardownOperation surface -> Bool
@@ -1553,6 +1781,10 @@ operationIsMandatoryReadBack operation = case operation of
   ReadBackLocalOnlyAbsence -> True
   ReadBackLocalOnlyCompletion -> True
   ReadBackOrdinarySurfaceReport -> True
+  -- Sprint 4.85: the operational surface cannot report completion while its
+  -- own credential revocation is unconfirmed.
+  ReadBackOperationalCredentialRevocation _ -> True
+  RevokeOperationalCredential _ -> False
   AuditTotalDecommissionEscapes -> True
   ObserveExternalDecommissionReceipt -> True
   ReadBackDecommissionLocalAbsence -> True

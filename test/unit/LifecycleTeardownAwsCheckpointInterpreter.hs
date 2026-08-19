@@ -306,7 +306,8 @@ registeredTargetInterpreterFor
 registeredTargetInterpreterFor environment =
   AwsRegisteredTargetInterpreter
     { awsRegisteredTargetProviderBoundary =
-        TeardownProviderBoundary $ \submissionKey intent -> do
+        TeardownProviderBoundary $ \dispatchKey intent -> do
+          let submissionKey = providerDispatchSubmissionKey dispatchKey
           liftCheckpointIO
             (modifyIORef' (fakeProviderCalls environment) (++ [(submissionKey, intent)]))
           pure (providerResult environment intent)

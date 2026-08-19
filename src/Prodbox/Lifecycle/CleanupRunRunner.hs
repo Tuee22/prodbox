@@ -51,6 +51,7 @@ module Prodbox.Lifecycle.CleanupRunRunner
   , resumeDescriptorBoundDurableCleanupWithContext
   , recoverDescriptorBoundCleanupRunsWithContext
   , compactDescriptorBoundCleanupRuns
+  , deterministicCleanupNodeAttemptId
   )
 where
 
@@ -63,6 +64,7 @@ import Control.Exception
   , throwIO
   , try
   )
+import Data.Bifunctor (first)
 import Data.Either (partitionEithers)
 import Data.List (find)
 import Data.Map.Strict qualified as Map
@@ -579,26 +581,9 @@ resumeDurableCleanupWithContext client owner runAction = go
     CleanupNodeEffectUnconfirmed _ -> kind == CleanupRequiresAttempt
 
   attemptFor run plan =
-    case mkCleanupAttemptId ("cleanup-attempt/" <> attemptDigest) of
-      Left detail -> Left (CleanupRunDriverAttemptInvalid detail)
-      Right attempt -> Right attempt
-   where
-    attemptDigest =
-      TextEncoding.decodeUtf8
-        (hexSha256 (TextEncoding.encodeUtf8 canonicalAttempt))
-    canonicalAttempt =
-      Text.concat
-        ( map
-            frame
-            [ "cleanup-node-attempt/v2"
-            , cleanupRunIdText (cleanupRunId run)
-            , cleanupDigestText (cleanupGraphDigest (cleanupRunGraph run))
-            , cleanupNodeIdText (cleanupNodeId plan)
-            , cleanupOperationIdText (cleanupNodeOperationId plan)
-            , Text.pack (show (cleanupLeaseFence (cleanupRunLease run)))
-            ]
-        )
-    frame value = Text.pack (show (Text.length value)) <> ":" <> value
+    first
+      CleanupRunDriverAttemptInvalid
+      (deterministicCleanupNodeAttemptId run plan)
 
   beginCommand run node attempt =
     CleanupRunBeginNode
@@ -1116,3 +1101,37 @@ isAsync :: SomeException -> Bool
 isAsync exception = case fromException exception :: Maybe AsyncException of
   Just _ -> True
   Nothing -> False
+
+-- | The one derivation of a node's attempt id.
+--
+-- It is a pure function of the run, its graph, the node, its compiled
+-- operation, and the fence under which the attempt is made, so every writer
+-- that reaches the same node of the same run under the same fence produces the
+-- same id.  That is what makes @begin@ and @complete@ idempotent across a lost
+-- response: a rerun re-issues its /own/ attempt rather than a fresh one the
+-- Authority would read as a conflicting second attempt.
+--
+-- Sprint 4.86 exports it because the destructive host boundary reconciles the
+-- local-uninstall node directly, outside the driver loop, and a second
+-- derivation there would be a second answer to \"which attempt is this\".
+deterministicCleanupNodeAttemptId
+  :: CleanupRun -> CleanupNodePlan -> Either Text CleanupAttemptId
+deterministicCleanupNodeAttemptId run plan =
+  mkCleanupAttemptId ("cleanup-attempt/" <> attemptDigest)
+ where
+  attemptDigest =
+    TextEncoding.decodeUtf8
+      (hexSha256 (TextEncoding.encodeUtf8 canonicalAttempt))
+  canonicalAttempt =
+    Text.concat
+      ( map
+          frame
+          [ "cleanup-node-attempt/v2"
+          , cleanupRunIdText (cleanupRunId run)
+          , cleanupDigestText (cleanupGraphDigest (cleanupRunGraph run))
+          , cleanupNodeIdText (cleanupNodeId plan)
+          , cleanupOperationIdText (cleanupNodeOperationId plan)
+          , Text.pack (show (cleanupLeaseFence (cleanupRunLease run)))
+          ]
+      )
+  frame value = Text.pack (show (Text.length value)) <> ":" <> value

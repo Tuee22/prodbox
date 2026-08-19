@@ -116,7 +116,60 @@ localRetainedRootSuite =
       sort locatorConsumers
         `shouldBe` [ "src/Prodbox/Config/LocalRetainedRoot.hs"
                    , "src/Prodbox/Config/LocalRetainedRoot/Internal.hs"
+                   , "src/Prodbox/Lifecycle/HostCleanupCompletion.hs"
+                   , "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
+                   , "src/Prodbox/Lifecycle/Teardown/RetainedArtifactCustody.hs"
                    ]
+
+      -- The first consumer outside this boundary holds the locator to derive a
+      -- read location, which recovery needs while the Authority is absent. It
+      -- is admitted because the locator cannot reach the mutating surface
+      -- there: the store it produces carries the bootstrap index, and the
+      -- boundary that replaces or collects bytes demands the Authority-bound
+      -- one, so this is a type error rather than a convention.
+      custody <-
+        readFile "src/Prodbox/Lifecycle/Teardown/RetainedArtifactCustody.hs"
+      custody
+        `shouldContain` "bootstrapLocatedRetainedArtifactStore\n  :: BootstrapRetainedRootLocator -> RetainedArtifactStore 'BootstrapLocatedStore"
+      custody
+        `shouldContain` "productionRetainedArtifactCustodyBoundary\n  :: RetainedArtifactStore 'AuthorityBoundStore"
+      custody
+        `shouldContain` "authorityBoundRetainedArtifactStore\n  :: AuthorityBoundRetainedRoot -> RetainedArtifactStore 'AuthorityBoundStore"
+
+      -- Sprint 4.86: the second consumer reaches a *mutating* surface from the
+      -- bootstrap locator, on purpose.  The host-completion record is written
+      -- after the local uninstall, when the Authority is gone by construction,
+      -- so a durability index would forbid the one write the terminal node
+      -- exists for.  What authorizes that write is not the root's provenance
+      -- but the Authority-signed readiness proof bound into the record, which
+      -- is why both coordinates resolve to the same location and neither
+      -- carries an index.
+      hostIntent <- readFile "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
+      hostIntent
+        `shouldContain` "bootstrapLocatedHostCleanupIntentStore\n  :: BootstrapRetainedRootLocator\n  -> Either HostCleanupIntentError HostCleanupIntentStore"
+      hostIntent
+        `shouldContain` "authorityBoundHostCleanupIntentStore\n  :: AuthorityBoundRetainedRoot\n  -> Either HostCleanupIntentError HostCleanupIntentStore"
+      hostIntent
+        `shouldContain` "mkHostCleanupIntentStore . bootstrapRetainedRootControlDirectory"
+      hostIntent
+        `shouldContain` "mkHostCleanupIntentStore . authorityBoundRetainedRootControlDirectory"
+
+      -- Sprint 4.86: the third consumer is the completion journal, and it is
+      -- the same deliberate case as the record above rather than a new one.
+      -- The entry is appended at the moment the Authority may already be gone,
+      -- so both coordinates resolve to one location under the single
+      -- prodbox-owned control directory and neither carries a durability
+      -- index; what authorizes the append is the Authority-signed permit bound
+      -- into the entry, not the provenance of the root.
+      completion <- readFile "src/Prodbox/Lifecycle/HostCleanupCompletion.hs"
+      completion
+        `shouldContain` "bootstrapLocatedHostCleanupCompletionJournal\n  :: BootstrapRetainedRootLocator -> Either Text HostCleanupCompletionJournal"
+      completion
+        `shouldContain` "authorityBoundHostCleanupCompletionJournal\n  :: AuthorityBoundRetainedRoot -> Either Text HostCleanupCompletionJournal"
+      completion
+        `shouldContain` "mkHostCleanupCompletionJournal . bootstrapRetainedRootControlDirectory"
+      completion
+        `shouldContain` "mkHostCleanupCompletionJournal . authorityBoundRetainedRootControlDirectory"
 
       forM_
         [ "src/Prodbox/Config/OrdinaryTeardownRecovery.hs"

@@ -14,6 +14,8 @@
 module Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( -- * Wire payloads
     AuthorityControlPayload (..)
+  , authorityControlPayloadRoute
+  , authorityControlPayloadCommand
   , AuthorityOperationSubmitPayload (..)
   , AuthorityOperationObservePayload (..)
   , AuthorityOperationFieldError (..)
@@ -86,6 +88,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommand (..)
   , AuthorityAdmissionDecision (..)
   , AuthorityAdmissionInvariantError
+  , AuthorityControlRoute (..)
   , AuthorityDecommissionState
   , AuthorityMigrationMode (..)
   , AuthorityProviderOperation
@@ -144,6 +147,9 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   , MigrationImportCommandApplicator
   , mkMigrationImportCommandApplicator
   )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( CascadeAuditFreezeBinding
+  )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   ( AuthorityPulumiCheckpoints
   )
@@ -176,8 +182,51 @@ data AuthorityControlPayload
   | AuthorityControlBackupRepair !BackupRepairCommand
   | AuthorityControlBeginMigration
   | AuthorityControlForwardMigration !MigrationForwardCommand
+  | -- | Sprint 4.85: bind the serving Lifecycle-provider generation. Appended
+    -- so every earlier constructor keeps its @Serialise@ index and no
+    -- historical request re-decodes as a different payload.
+    AuthorityControlBindProviderGeneration !Natural
+  | -- | Sprint 4.85: fence fresh Provider submissions and reserve the terminal
+    -- audit's own submission. This is the route whose absence
+    -- @GlobalProviderAdmissionFreezeUnavailable@ named: the transition and the
+    -- reservation-honouring gate landed first, and until this constructor
+    -- existed no authenticated caller could reach either.
+    AuthorityControlFreezeProviderAdmissionForCascadeAudit
+      !CascadeAuditFreezeBinding
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Total projection onto the closed route vocabulary the Authority owns.
+--
+-- Sprint 4.85: the wire payload and the command it issues used to be related
+-- only inside 'serveAuthorityControlRequest', where nothing could read the
+-- relation. Both projections below are total over the payload, so a route that
+-- stops existing is an exhaustiveness failure here and a measurement change in
+-- the operational-credential disposition join.
+authorityControlPayloadRoute :: AuthorityControlPayload -> AuthorityControlRoute
+authorityControlPayloadRoute payload = case payload of
+  AuthorityControlGenesis _ -> AuthorityControlGenesisRoute
+  AuthorityControlBackupRepair _ -> AuthorityControlBackupRepairRoute
+  AuthorityControlBeginMigration -> AuthorityControlBeginMigrationRoute
+  AuthorityControlForwardMigration _ -> AuthorityControlForwardMigrationRoute
+  AuthorityControlBindProviderGeneration _ ->
+    AuthorityControlProviderGenerationBindingRoute
+  AuthorityControlFreezeProviderAdmissionForCascadeAudit _ ->
+    AuthorityControlCascadeAuditFreezeRoute
+
+-- | The aggregate command one externally admissible payload issues.
+authorityControlPayloadCommand
+  :: AuthorityControlPayload -> AuthorityAdmissionCommand
+authorityControlPayloadCommand payload = case payload of
+  AuthorityControlGenesis command -> ApplyAuthorityGenesis command
+  AuthorityControlBackupRepair command -> ApplyAuthorityBackupRepair command
+  AuthorityControlBeginMigration -> BeginAuthorityMigration
+  AuthorityControlForwardMigration command ->
+    ApplyAuthorityForwardMigration command
+  AuthorityControlBindProviderGeneration generation ->
+    BindProviderAdmissionGeneration generation
+  AuthorityControlFreezeProviderAdmissionForCascadeAudit binding ->
+    FreezeProviderAdmissionForCascadeAudit binding
 
 data AuthorityOperationSubmitPayload = AuthorityOperationSubmitPayload
   { authorityOperationSubmitKey :: !Text
@@ -653,11 +702,7 @@ serveAuthorityControlRequest maximumBytes repository body =
   case decodeControlPlaneRequest maximumBytes body of
     Left err -> pure (AuthorityTransitionBadRequest err)
     Right payload ->
-      serveAuthorityTransition repository $ case payload of
-        AuthorityControlGenesis command -> ApplyAuthorityGenesis command
-        AuthorityControlBackupRepair command -> ApplyAuthorityBackupRepair command
-        AuthorityControlBeginMigration -> BeginAuthorityMigration
-        AuthorityControlForwardMigration command -> ApplyAuthorityForwardMigration command
+      serveAuthorityTransition repository (authorityControlPayloadCommand payload)
 
 authorityTransitionHttpStatus :: AuthorityTransitionResult -> ReplyStatus
 authorityTransitionHttpStatus result = case result of
@@ -676,6 +721,8 @@ authorityTransitionHttpStatus result = case result of
     AuthorityMigrationImportDecided _ -> ReplyOk
     AuthorityForwardMigrationDecided (ForwardMigrationRefused _) -> ReplyConflict
     AuthorityForwardMigrationDecided _ -> ReplyOk
+    AuthorityProviderGenerationBound _ -> ReplyOk
+    AuthorityProviderAdmissionFrozenForCascadeAudit -> ReplyOk
     AuthorityAdmissionCommandRefused _ -> ReplyConflict
 
 authorityTransitionSummary :: AuthorityTransitionResult -> Text
@@ -713,6 +760,9 @@ authorityTransitionSummary result = case result of
       ForwardMigrationAccepted -> "authority-forward-migration-accepted"
       ForwardMigrationAlreadyApplied -> "authority-forward-migration-already-applied"
       ForwardMigrationRefused _ -> "authority-forward-migration-refused"
+    AuthorityProviderGenerationBound _ -> "authority-provider-generation-bound"
+    AuthorityProviderAdmissionFrozenForCascadeAudit ->
+      "authority-provider-admission-frozen-for-cascade-audit"
     AuthorityAdmissionCommandRefused _ -> "authority-transition-refused"
 
 data AuthorityOperationSubmitResult

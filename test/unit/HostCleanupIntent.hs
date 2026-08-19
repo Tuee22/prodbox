@@ -38,6 +38,9 @@ import Prodbox.Lifecycle.Teardown.Model
   , RegistryRevision (..)
   , mkObservationEvidenceScope
   )
+import Prodbox.Lifecycle.Teardown.RetainedArtifactCustody
+  ( retainedArtifactStoreDirectoryName
+  )
 import System.Directory
   ( createFileLink
   , doesFileExist
@@ -60,6 +63,28 @@ import TestSupport
 hostCleanupIntentSuite :: SuiteBuilder ()
 hostCleanupIntentSuite =
   describe "host-durable cleanup intent" $ do
+    it "keeps the record inside the one prodbox-owned control directory" $ do
+      -- Sprint 4.86: the record is created before the local uninstall, while
+      -- the Authority is reachable, and read again afterwards, while it is
+      -- not.  Both locations are derived from the same control directory, so
+      -- the segment naming it is a compiled constant rather than a literal
+      -- repeated at the write site and the resume site.
+      hostCleanupIntentStoreDirectoryName `shouldBe` "host-cleanup-intent"
+      hostCleanupIntentStoreDirectoryName
+        `shouldSatisfy` (/= retainedArtifactStoreDirectoryName)
+      case mkHostCleanupIntentStore "/srv/prodbox/.data/prodbox" of
+        Left err -> expectationFailure (show err)
+        Right store -> do
+          hostCleanupIntentPath store
+            `shouldBe` ( "/srv/prodbox/.data/prodbox"
+                           </> hostCleanupIntentStoreDirectoryName
+                           </> "active-v1.cbor"
+                       )
+
+    it "refuses a record location that is not an absolute non-root path" $ do
+      mkHostCleanupIntentStore "relative/root" `shouldSatisfy` isStoreRefusal
+      mkHostCleanupIntentStore "/" `shouldSatisfy` isStoreRefusal
+
     it "binds the full secret-free cascade observation scope to the cleanup run" $ do
       hostCleanupObservationEvidenceScope fixtureScope `shouldBe` fixtureEvidence fixtureRunId
       hostCleanupFoundationId fixtureScope `shouldBe` LinuxRke2FoundationId "home-rke2"
@@ -378,4 +403,9 @@ isEncodedTooLarge result = case result of
 isIoFailure :: Either HostCleanupIntentError value -> Bool
 isIoFailure result = case result of
   Left HostCleanupIntentIoFailure {} -> True
+  _ -> False
+
+isStoreRefusal :: Either HostCleanupIntentError HostCleanupIntentStore -> Bool
+isStoreRefusal result = case result of
+  Left (HostCleanupIntentStoreInvalid _) -> True
   _ -> False

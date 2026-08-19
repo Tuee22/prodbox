@@ -15,7 +15,9 @@ module Prodbox.Config.LocalRetainedRoot.Internal
   , LocalRetainedRootError (..)
   , RetainedRootMarkerReconcileOutcome (..)
   , bootstrapRetainedRootLocatorPath
+  , bootstrapRetainedRootControlDirectory
   , authorityBoundRetainedRootPath
+  , authorityBoundRetainedRootControlDirectory
   , authorityBoundRetainedRootInForceConfig
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
@@ -208,6 +210,18 @@ authorityBoundRetainedRootInForceConfig
   :: AuthorityBoundRetainedRoot -> InForceConfig
 authorityBoundRetainedRootInForceConfig = authorityRootInForceConfig
 
+-- | The prodbox-owned control directory of an Authority-bound root.  Exposed
+-- so a consumer that stores something beside the establishment marker derives
+-- the control coordinate from this boundary instead of re-spelling it.
+authorityBoundRetainedRootControlDirectory :: AuthorityBoundRetainedRoot -> FilePath
+authorityBoundRetainedRootControlDirectory = controlDirectory . authorityRootPath
+
+-- | The same coordinate under the non-authorizing bootstrap locator.  Locating
+-- retained bytes is a read; it is deliberately available before an Authority
+-- exists, because recovery reads the store while the Authority is absent.
+bootstrapRetainedRootControlDirectory :: BootstrapRetainedRootLocator -> FilePath
+bootstrapRetainedRootControlDirectory = controlDirectory . bootstrapLocatorRoot
+
 renderLocalRetainedRootError :: LocalRetainedRootError -> Text
 renderLocalRetainedRootError err = case err of
   LocalRetainedRootRepositoryInvalid detail ->
@@ -339,14 +353,22 @@ expectedMarker repository coordinate root =
     , markerRoot = Text.pack root
     }
 
+-- | The one derivation of the prodbox-owned control directory under a retained
+-- root.  Every consumer of that coordinate -- the establishment marker, its
+-- lock and temporary siblings, the layout validator, and the retained-artifact
+-- store -- derives it here, so the control segment exists once rather than as a
+-- literal repeated at each site.
+controlDirectory :: FilePath -> FilePath
+controlDirectory root = root </> "prodbox"
+
 markerPath :: FilePath -> FilePath
-markerPath root = root </> "prodbox" </> ".cluster-established"
+markerPath root = controlDirectory root </> ".cluster-established"
 
 markerLockPath :: FilePath -> FilePath
-markerLockPath root = root </> "prodbox" </> ".cluster-established.lock"
+markerLockPath root = controlDirectory root </> ".cluster-established.lock"
 
 markerTemporaryPath :: FilePath -> FilePath
-markerTemporaryPath root = root </> "prodbox" </> ".cluster-established.tmp"
+markerTemporaryPath root = controlDirectory root </> ".cluster-established.tmp"
 
 -- | Bootstrap reads only the Tier-0 storage subrecord and the canonical marker.
 -- The resulting locator carries no config identity and authorizes nothing.
@@ -674,11 +696,11 @@ validateRetainedRootLayout repository coordinate = do
         Left err -> pure (Left err)
         Right root -> do
           control <-
-            validateDirectoryPath LocalRetainedRootControlDirectory (root </> "prodbox")
+            validateDirectoryPath LocalRetainedRootControlDirectory (controlDirectory root)
           minio <-
             validateDirectoryPath
               LocalRetainedRootMinioDirectory
-              (root </> "prodbox" </> "minio" </> "0")
+              (controlDirectory root </> "minio" </> "0")
           vault <-
             validateDirectoryPath
               LocalRetainedRootVaultDirectory

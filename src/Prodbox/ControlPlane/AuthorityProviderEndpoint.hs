@@ -18,6 +18,7 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , AuthorityProviderClientError (..)
   , dispatchAuthorityProviderIntent
   , dispatchAuthorityProviderIntentWithOperation
+  , dispatchAuthorityProviderIntentOwnedBy
   )
 where
 
@@ -82,6 +83,7 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityProviderSettlementDecision (..)
   , AuthorityProviderSubmissionDecision (..)
+  , ProviderOperationCleanupOwner (..)
   , stepRegisteredProviderSettlement
   , stepRegisteredProviderSubmission
   )
@@ -115,6 +117,11 @@ data ProviderDispatchPayload = ProviderDispatchPayload
   { providerDispatchVersion :: !Word16
   , providerDispatchSubmissionKey :: !Text
   , providerDispatchIntent :: !ProviderIntent
+  , providerDispatchCleanupOwner :: !ProviderOperationCleanupOwner
+  -- ^ Sprint 4.85: the cleanup operation that authorized this submission, or
+  -- an explicit statement that no cleanup run did.  The Authority retains it
+  -- beside the intent, so a disposition can be attributed to the run that
+  -- authorized it.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -127,8 +134,11 @@ data ProviderDispatchPayload = ProviderDispatchPayload
 -- refusal that says what happened. A caller at another version is refused
 -- explicitly, in the same idiom as
 -- 'Prodbox.ControlPlane.AwsStackCreationBindingEndpoint.awsStackCreationEndpointFormatVersion'.
+--
+-- Sprint 4.85: bumped to @3@ when the payload began naming the cleanup
+-- operation that authorized the submission.
 providerDispatchFormatVersion :: Word16
-providerDispatchFormatVersion = 2
+providerDispatchFormatVersion = 3
 
 -- | Sprint 4.84: a settled dispatch names the operation the Authority admitted.
 --
@@ -323,6 +333,7 @@ admitProviderOperation boundary caller generation submissionKey payload = do
       submissionKey
       digest
       (providerDispatchIntent payload)
+      (providerDispatchCleanupOwner payload)
 
 confirmsProviderAdmission
   :: AuthorityProviderSubmissionDecision
@@ -459,14 +470,33 @@ dispatchAuthorityProviderIntent
   -> ProviderIntent
   -> IO (Either AuthorityProviderClientError Text)
 dispatchAuthorityProviderIntent transport submissionKey intent =
-  fmap snd <$> dispatchAuthorityProviderIntentWithOperation transport submissionKey intent
+  fmap snd
+    <$> dispatchAuthorityProviderIntentWithOperation transport submissionKey intent
 
 dispatchAuthorityProviderIntentWithOperation
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> ClientSubmissionKey
   -> ProviderIntent
   -> IO (Either AuthorityProviderClientError (OperationId, Text))
-dispatchAuthorityProviderIntentWithOperation transport submissionKey intent = do
+dispatchAuthorityProviderIntentWithOperation transport submissionKey intent =
+  dispatchAuthorityProviderIntentOwnedBy
+    transport
+    submissionKey
+    intent
+    ProviderOperationUnownedByCleanupRun
+
+-- | Sprint 4.85: dispatch and name the cleanup operation that authorized it.
+--
+-- The two forms above remain for desired-present provisioning work, which no
+-- cleanup run authorizes; they state that explicitly rather than leaving the
+-- Authority to infer it.
+dispatchAuthorityProviderIntentOwnedBy
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ClientSubmissionKey
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> IO (Either AuthorityProviderClientError (OperationId, Text))
+dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
   response <-
     callAuthenticatedClientTransport
       transport
@@ -477,6 +507,7 @@ dispatchAuthorityProviderIntentWithOperation transport submissionKey intent = do
                 { providerDispatchVersion = providerDispatchFormatVersion
                 , providerDispatchSubmissionKey = clientSubmissionKeyText submissionKey
                 , providerDispatchIntent = intent
+                , providerDispatchCleanupOwner = owner
                 }
           )
       )

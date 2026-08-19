@@ -3584,10 +3584,12 @@ unexpressible, and both are gated mechanically rather than only recorded here.
   zone is the harness's own always-run node over
   `src/Prodbox/Infra/Route53ValidationZone.hs`, so this sprint must not delete it.
 - **The `aws-operational-teardown` node.** Its `CleanupRequiresSuccess` edges implement Sprint
-  `7.10`'s credential-preservation rule, and `OperationalTeardown` projects zero registered targets
-  until Sprint `4.85` can register the `Operational` descriptors that
-  `OperationalCredentialDispositionBlocker` currently constrains. Deleting the harness graph before
-  then would drop that edge.
+  `7.10`'s credential-preservation rule. `OperationalTeardown` still projects zero registered targets
+  — the three operational rows are the pre-cutover identity, superseded rather than pending
+  registration — but as of Sprint `4.85`'s closure the surface is no longer empty: it compiles its own
+  credential revocation and that revocation's mandatory read-back, and mints completion over them.
+  Deleting the harness graph before this sprint converts the harness onto the lifecycle-owned cleanup
+  run would still drop that edge.
 
 ## Documentation Requirements
 

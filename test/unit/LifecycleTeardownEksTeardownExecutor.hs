@@ -183,7 +183,8 @@ registeredInterpreter
 registeredInterpreter environment =
   AwsRegisteredTargetInterpreter
     { awsRegisteredTargetProviderBoundary =
-        TeardownProviderBoundary $ \submissionKey _ -> do
+        TeardownProviderBoundary $ \dispatchKey _ -> do
+          let submissionKey = providerDispatchSubmissionKey dispatchKey
           liftExecutorIO
             ( modifyIORef'
                 (fakeProviderCalls environment)

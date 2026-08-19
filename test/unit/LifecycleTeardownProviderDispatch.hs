@@ -189,7 +189,8 @@ recordingBoundary
   -> TeardownProviderBoundaryResult
   -> TeardownProviderBoundary IO
 recordingBoundary trace result =
-  TeardownProviderBoundary $ \submissionKey intent -> do
+  TeardownProviderBoundary $ \dispatchKey intent -> do
+    let submissionKey = providerDispatchSubmissionKey dispatchKey
     modifyIORef' trace (++ [(clientSubmissionKeyText submissionKey, intent)])
     pure result
 

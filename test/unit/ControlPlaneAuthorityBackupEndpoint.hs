@@ -8,6 +8,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
+import Data.List qualified as List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -17,7 +18,8 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , AuthorityAdmissionSnapshot (..)
   )
 import Prodbox.ControlPlane.AuthorityBackupAdapter
-  ( authorityBackupRepositoryWithTransport
+  ( authorityBackupBlobObjectNameForClass
+  , authorityBackupRepositoryWithTransport
   )
 import Prodbox.ControlPlane.AuthorityBackupClient
   ( AuthorityAggregateBackupClient (..)
@@ -178,6 +180,24 @@ controlPlaneAuthorityBackupEndpointSuite =
         (Map.singleton (adapterObjectNameText objectName) (version, "different-ciphertext"))
       copyAuthorityBackupBlob repository AuthorityCheckpointBlob ciphertext
         `shouldReturn` Left "Authority backup read-back bytes did not match"
+    it "names an adapter object for every backup blob class" $ do
+      -- Sprint 4.87: the class-to-segment mapping crosses a stringly-typed
+      -- seam into the dedicated adapter store, and a class the store could not
+      -- name refused every copy of that class at run time rather than failing
+      -- to compile.  Enumerating the class is the guard.
+      let digest =
+            authorityBackupCiphertextDigest
+              (mustRight (mkAuthorityBackupCiphertext "class-naming"))
+          named =
+            [ (blobClass, authorityBackupBlobObjectNameForClass blobClass digest)
+            | blobClass <- [minBound .. maxBound]
+            ]
+      length named `shouldBe` 3
+      mapM_ (\(_, name) -> name `shouldSatisfy` isRight) named
+      length
+        (List.nub [adapterObjectNameText (mustRight name) | (_, name) <- named])
+        `shouldBe` 3
+
     it "distinguishes missing and corrupt observations" $ do
       (transport, objectsRef, _) <- freshMemoryTransport False
       let repository = authorityBackupRepositoryWithTransport transport

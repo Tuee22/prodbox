@@ -22,13 +22,7 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , hostCleanupRunnerTerminalIdentity
   , hostCleanupRunnerReadyPermitId
   , hostCleanupRunnerReadyReportDigest
-  , HostCleanupCompletionReadBack
-  , hostCompletionReadBackRunId
-  , hostCompletionReadBackGraphDigest
-  , hostCompletionReadBackScope
-  , hostCompletionReadBackOperationId
-  , hostCompletionReadBackReceiptDigest
-  , hostCompletionReadBackEvidence
+  , HostCleanupCompletionReadBack (..)
   , HostCleanupRunnerResult (..)
   , HostCleanupRunnerBinding (..)
   , HostCleanupRunnerError (..)
@@ -36,6 +30,8 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , validateHostCleanupReady
   , runHostCleanupRunner
   , resumeHostCleanupRunner
+  , HostCleanupRunnerProgress (..)
+  , stepHostCleanupRunner
   , HostCleanupRunnerRegression
   , fixedHostCleanupRunnerRegression
   , hostCleanupRunnerRegressionUnboundRefused
@@ -45,6 +41,8 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , hostCleanupRunnerRegressionWrongReadyRefused
   , hostCleanupRunnerRegressionMissingCompletionRefused
   , hostCleanupRunnerRegressionConcurrentLeaseFenced
+  , hostCleanupRunnerRegressionSteppedTopology
+  , hostCleanupRunnerRegressionStepStopsAtOnePhase
   )
 where
 
@@ -165,9 +163,11 @@ data HostCleanupRunnerStep
 data HostCleanupRunnerAction
   = HostCleanupAcceptAuthority
   | HostCleanupArmTerminal
-  | HostCleanupExecuteLocalUninstall
-  | HostCleanupRecoverAuthorityAndCommit
-  | HostCleanupVerifyAndComplete
+  | HostCleanupIssueLocalUninstall
+  | HostCleanupRecordLocalAbsence
+  | HostCleanupRecoverAuthority
+  | HostCleanupCommitCompletion
+  | HostCleanupVerifyCompletion
   | HostCleanupFinished
   deriving (Eq, Show)
 
@@ -175,9 +175,11 @@ nextHostCleanupRunnerAction :: HostCleanupIntent -> HostCleanupRunnerAction
 nextHostCleanupRunnerAction intent = case hostCleanupIntentPhase intent of
   HostCleanupPrepared -> HostCleanupAcceptAuthority
   HostCleanupAuthorityAccepted -> HostCleanupArmTerminal
-  HostCleanupTerminalArmed -> HostCleanupExecuteLocalUninstall
-  HostCleanupLocalAbsenceRecorded -> HostCleanupRecoverAuthorityAndCommit
-  HostCleanupAuthorityReconciled -> HostCleanupVerifyAndComplete
+  HostCleanupTerminalArmed -> HostCleanupIssueLocalUninstall
+  HostCleanupLocalUninstallIssued -> HostCleanupRecordLocalAbsence
+  HostCleanupLocalAbsenceRecorded -> HostCleanupRecoverAuthority
+  HostCleanupAuthorityReconciled -> HostCleanupCommitCompletion
+  HostCleanupCompletionCommitted -> HostCleanupVerifyCompletion
   HostCleanupComplete -> HostCleanupFinished
 
 data HostCleanupRunnerContext = HostCleanupRunnerContext
@@ -226,9 +228,16 @@ hostCleanupRunnerReadyReportDigest
   :: HostCleanupRunnerContext -> CascadeReportDigest
 hostCleanupRunnerReadyReportDigest = internalRunnerReadyReportDigest
 
--- | Positively observed final Authority read-back.  The constructor and raw
--- receipt observation stay private: callers may inspect only the exact
--- bindings and the already-opaque completion proof.
+-- | Positively observed final completion read-back.
+--
+-- The constructor is reachable only inside this library, because
+-- 'CascadeCompletionReceiptObservation' is Cabal-hidden and no exposed module
+-- can name it; the one producer is
+-- "Prodbox.Lifecycle.HostCleanupCompletion", the separate observation of the
+-- preserved cleanup journal.  Holding one still authorizes nothing:
+-- 'validateCompletionReadBack' rebuilds the expected completion proof from the
+-- run's own readiness and absence evidence and refuses any read-back that does
+-- not equal it.
 data HostCleanupCompletionReadBack = HostCleanupCompletionReadBack
   { hostCompletionReadBackRunId :: !CleanupRunId
   , hostCompletionReadBackGraphDigest :: !CleanupDigest
@@ -419,7 +428,7 @@ runHostCleanupRunner
   -> ReadyToUninstallEvidence
   -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
 runHostCleanupRunner store effects ready =
-  runHostCleanupRunnerUnderLease store effects (Just ready)
+  runHostCleanupRunnerUnderLease store effects (Just ready) toCompletion id
 
 -- | Resume solely from the positively read-back host intent.  There is no
 -- raw byte or durable-binding ingress on this API: an unbound Prepared intent
@@ -430,14 +439,66 @@ resumeHostCleanupRunner
   -> HostCleanupRunnerEffects IO
   -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
 resumeHostCleanupRunner store effects =
-  runHostCleanupRunnerUnderLease store effects Nothing
+  runHostCleanupRunnerUnderLease store effects Nothing toCompletion id
+
+-- | What one durable phase of the runner did.
+--
+-- The two arms are the only outcomes a single phase has: it either made the
+-- exact transition its action selects, or the run was already finished and the
+-- receipt digest is available.  There is deliberately no \"nothing happened\"
+-- arm: every other case is a typed 'HostCleanupRunnerError'.
+data HostCleanupRunnerProgress
+  = HostCleanupRunnerAdvanced !HostCleanupIntentPhase
+  | HostCleanupRunnerCompleted !HostCleanupRunnerResult
+  deriving (Eq, Show)
+
+-- | Perform exactly one durable phase and stop.
+--
+-- Sprint 4.86: the compiled cascade graph reaches the destructive host
+-- boundary through /separate/ nodes, and a node interpreter that ran the whole
+-- runner would collapse those nodes into one — the durable run would record a
+-- single node as having performed every later node's effect, and a resume
+-- would have nothing left to attribute a failure to.  Stepping keeps the
+-- durable cleanup run and the durable host intent advancing together.
+--
+-- The execution lease is taken for the step alone, exactly as the whole-run
+-- entrypoints take it for the run: two concurrent hosts cannot interleave
+-- phases, and a step that ends still leaves a resumable intent behind.
+stepHostCleanupRunner
+  :: HostCleanupIntentStore
+  -> HostCleanupRunnerEffects IO
+  -> Maybe ReadyToUninstallEvidence
+  -> IO (Either HostCleanupRunnerError HostCleanupRunnerProgress)
+stepHostCleanupRunner store effects suppliedReady =
+  runHostCleanupRunnerUnderLease
+    store
+    effects
+    suppliedReady
+    (\_ _ phase -> pure (Right (HostCleanupRunnerAdvanced phase)))
+    HostCleanupRunnerCompleted
+
+-- | Continue after an advance by re-entering the driver, which is what makes
+-- the whole-run entrypoints a loop over the same single-phase body.
+toCompletion
+  :: HostCleanupIntentStore
+  -> HostCleanupRunnerEffects IO
+  -> HostCleanupIntentPhase
+  -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
+toCompletion store effects _ =
+  runHostCleanupRunnerWithReady store effects Nothing toCompletion id
 
 runHostCleanupRunnerUnderLease
   :: HostCleanupIntentStore
   -> HostCleanupRunnerEffects IO
   -> Maybe ReadyToUninstallEvidence
-  -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
-runHostCleanupRunnerUnderLease store effects suppliedReady = do
+  -> ( HostCleanupIntentStore
+       -> HostCleanupRunnerEffects IO
+       -> HostCleanupIntentPhase
+       -> IO (Either HostCleanupRunnerError result)
+     )
+  -> (HostCleanupRunnerResult -> result)
+  -> IO (Either HostCleanupRunnerError result)
+runHostCleanupRunnerUnderLease store effects suppliedReady afterAdvance onFinished = do
   observed <- observeHostCleanupIntentForResume store
   case observed of
     Left err -> pure (Left (HostCleanupRunnerIntentError err))
@@ -447,7 +508,13 @@ runHostCleanupRunnerUnderLease store effects suppliedReady = do
         withHostCleanupExecutionLease
           store
           observedIntent
-          (runHostCleanupRunnerWithReady store effects suppliedReady)
+          ( runHostCleanupRunnerWithReady
+              store
+              effects
+              suppliedReady
+              afterAdvance
+              onFinished
+          )
       pure $ case leased of
         Left err -> Left (HostCleanupRunnerExecutionLeaseUnavailable err)
         Right result -> result
@@ -456,8 +523,14 @@ runHostCleanupRunnerWithReady
   :: HostCleanupIntentStore
   -> HostCleanupRunnerEffects IO
   -> Maybe ReadyToUninstallEvidence
-  -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
-runHostCleanupRunnerWithReady store effects suppliedReady = do
+  -> ( HostCleanupIntentStore
+       -> HostCleanupRunnerEffects IO
+       -> HostCleanupIntentPhase
+       -> IO (Either HostCleanupRunnerError result)
+     )
+  -> (HostCleanupRunnerResult -> result)
+  -> IO (Either HostCleanupRunnerError result)
+runHostCleanupRunnerWithReady store effects suppliedReady afterAdvance onFinished = do
   observed <- observeHostCleanupIntentForResume store
   case observed of
     Left err -> pure (Left (HostCleanupRunnerIntentError err))
@@ -530,7 +603,7 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
               advanceAndResume intent HostCleanupAuthorityAccepted Nothing
         HostCleanupArmTerminal ->
           advanceAndResume intent HostCleanupTerminalArmed Nothing
-        HostCleanupExecuteLocalUninstall -> do
+        HostCleanupIssueLocalUninstall -> do
           beforeAttempt <-
             hostRunnerReadBackLocalAbsence effects context selectedReady
           case requireOptionalLocalAbsence selectedReady beforeAttempt of
@@ -539,7 +612,7 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
               -- A prior attempt may have removed the foundation and then lost
               -- its journal response.  Exact absence closes that ambiguity;
               -- never issue the destructive operation again.
-              advanceAndResume intent HostCleanupLocalAbsenceRecorded Nothing
+              advanceAndResume intent HostCleanupLocalUninstallIssued Nothing
             Right Nothing -> do
               attempt <- hostRunnerRunLocalUninstall effects context
               readBack <-
@@ -547,14 +620,23 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
               case requireExactLocalAbsence attempt selectedReady readBack of
                 Left err -> pure (Left err)
                 Right _ ->
-                  advanceAndResume intent HostCleanupLocalAbsenceRecorded Nothing
-        HostCleanupRecoverAuthorityAndCommit -> do
+                  advanceAndResume intent HostCleanupLocalUninstallIssued Nothing
+        HostCleanupRecordLocalAbsence -> do
+          -- The separate absence node.  It never issues the destructive
+          -- operation: a phase that could re-issue would make the record of
+          -- absence and the act of removal one node again.
+          local <- readBackLocal context selectedReady
+          case local of
+            Left err -> pure (Left err)
+            Right _ ->
+              advanceAndResume intent HostCleanupLocalAbsenceRecorded Nothing
+        HostCleanupRecoverAuthority -> do
           local <- readBackLocal context selectedReady
           case local of
             Left err -> pure (Left err)
             Right localEvidence -> do
               recovered <-
-                recoverAuthorityAndCommit context selectedReady localEvidence
+                recoverAuthority context selectedReady localEvidence
               case recovered of
                 Left err -> pure (Left err)
                 Right () ->
@@ -562,7 +644,21 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
                     intent
                     HostCleanupAuthorityReconciled
                     Nothing
-        HostCleanupVerifyAndComplete -> do
+        HostCleanupCommitCompletion -> do
+          local <- readBackLocal context selectedReady
+          case local of
+            Left err -> pure (Left err)
+            Right localEvidence -> do
+              committed <-
+                commitCompletion context selectedReady localEvidence
+              case committed of
+                Left err -> pure (Left err)
+                Right _ ->
+                  advanceAndResume
+                    intent
+                    HostCleanupCompletionCommitted
+                    Nothing
+        HostCleanupVerifyCompletion -> do
           verified <- verifyCompletion context selectedReady
           case verified of
             Left err -> pure (Left err)
@@ -576,10 +672,12 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
           Just digest ->
             pure
               ( Right
-                  HostCleanupRunnerComplete
-                    { completedHostCleanupIntent = intent
-                    , completedHostCleanupReceiptDigest = digest
-                    }
+                  ( onFinished
+                      HostCleanupRunnerComplete
+                        { completedHostCleanupIntent = intent
+                        , completedHostCleanupReceiptDigest = digest
+                        }
+                  )
               )
    where
     intent = observedHostCleanupIntent observedIntent
@@ -588,13 +686,13 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
     advanced <- persistExactTransition store intent phase receipt
     case advanced of
       Left err -> pure (Left err)
-      Right _ -> runHostCleanupRunnerWithReady store effects Nothing
+      Right _ -> afterAdvance store effects phase
 
   readBackLocal context selectedReady = do
     readBack <- hostRunnerReadBackLocalAbsence effects context selectedReady
     pure (requireExactLocalAbsenceReadBack selectedReady readBack)
 
-  recoverAuthorityAndCommit context selectedReady localEvidence = do
+  recoverAuthority context selectedReady localEvidence = do
     recoveryAttempt <- hostRunnerReestablishBootstrapRecovery effects context
     recovery <- hostRunnerReadBackBootstrapRecovery effects context
     case requireRecovery recoveryAttempt context recovery of
@@ -612,26 +710,23 @@ runHostCleanupRunnerWithReady store effects suppliedReady = do
             runAttempt <-
               hostRunnerReconcileCleanupRun effects context localEvidence
             runReadBack <- hostRunnerReadBackCleanupRun effects context
-            case requireRunReadBack runAttempt context runReadBack of
-              Left err -> pure (Left err)
-              Right () -> do
-                receiptAttempt <-
-                  hostRunnerCommitCompletionReceipt
-                    effects
-                    context
-                    localEvidence
-                receipt <- hostRunnerReadBackCompletionReceipt effects context
-                pure
-                  ( void
-                      ( requireCompletionReadBack
-                          HostCleanupReadBackCompletionStep
-                          receiptAttempt
-                          context
-                          selectedReady
-                          localEvidence
-                          receipt
-                      )
-                  )
+            pure (requireRunReadBack runAttempt context runReadBack)
+
+  commitCompletion context selectedReady localEvidence = do
+    receiptAttempt <-
+      hostRunnerCommitCompletionReceipt effects context localEvidence
+    receipt <- hostRunnerReadBackCompletionReceipt effects context
+    pure
+      ( void
+          ( requireCompletionReadBack
+              HostCleanupReadBackCompletionStep
+              receiptAttempt
+              context
+              selectedReady
+              localEvidence
+              receipt
+          )
+      )
 
   verifyCompletion context selectedReady = do
     local <- readBackLocal context selectedReady
@@ -1001,6 +1096,8 @@ data HostCleanupRunnerRegression = HostCleanupRunnerRegression
   , hostCleanupRunnerRegressionWrongReadyRefused :: !Bool
   , hostCleanupRunnerRegressionMissingCompletionRefused :: !Bool
   , hostCleanupRunnerRegressionConcurrentLeaseFenced :: !Bool
+  , hostCleanupRunnerRegressionSteppedTopology :: !Bool
+  , hostCleanupRunnerRegressionStepStopsAtOnePhase :: !Bool
   }
 
 fixedHostCleanupRunnerRegression
@@ -1062,6 +1159,14 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
           fixedMissingCompletionScenario temporaryRoot intent run ready local complete
         leaseFenced <-
           fixedConcurrentLeaseScenario temporaryRoot intent run ready local complete
+        (steppedTopology, stoppedAtOnePhase) <-
+          fixedSteppedScenario
+            (temporaryRoot </> "stepped")
+            intent
+            run
+            ready
+            local
+            complete
         pure
           ( Right
               HostCleanupRunnerRegression
@@ -1074,6 +1179,9 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
                 , hostCleanupRunnerRegressionMissingCompletionRefused =
                     missingCompletion
                 , hostCleanupRunnerRegressionConcurrentLeaseFenced = leaseFenced
+                , hostCleanupRunnerRegressionSteppedTopology = steppedTopology
+                , hostCleanupRunnerRegressionStepStopsAtOnePhase =
+                    stoppedAtOnePhase
                 }
           )
 
@@ -1191,6 +1299,70 @@ fixedSuccessfulScenario root intent run ready local complete outcome = do
             && fixedHostUninstallCount finalState == 1
             && fixedHostReceiptCommitted finalState
         )
+
+-- | Drive the same successful topology one phase at a time.
+--
+-- The two facts it measures are different.  The first is that stepping reaches
+-- the same completion the whole-run entrypoint reaches, over the same effects
+-- and with the destructive uninstall still issued exactly once — stepping is a
+-- different /caller/, not a different protocol.  The second is that one step
+-- advances one phase: the first step over a Prepared intent leaves the durable
+-- record at `AuthorityAccepted` and goes no further, which is what lets the
+-- compiled graph attribute each node's effect to that node.
+fixedSteppedScenario
+  :: FilePath
+  -> HostCleanupIntent
+  -> CleanupRun
+  -> ReadyToUninstallEvidence
+  -> LocalUninstallEvidence
+  -> CascadeCompleteEvidence
+  -> IO (Bool, Bool)
+fixedSteppedScenario root intent run ready local complete = do
+  storeResult <- fixedStoreAt root
+  case storeResult of
+    Left _ -> pure (False, False)
+    Right store -> do
+      prepared <- prepareHostCleanupRunner store intent
+      state <- newIORef freshFixedHostRunnerState
+      let effects =
+            fixedHostRunnerEffects
+              run
+              ready
+              local
+              complete
+              state
+              HostCleanupEffectApplied
+              False
+      firstStep <- stepHostCleanupRunner store effects (Just ready)
+      afterFirst <- observeHostCleanupIntent store
+      steps <- driveSteps store effects (fixedHostCleanupStepBudget :: Int)
+      finalState <- readIORef state
+      pure
+        ( isRightRunner prepared
+            && maybe False (isCompletedWith (cleanupRunGraphDigest run) . Right) steps
+            && fixedHostUninstallCount finalState == 1
+            && fixedHostReceiptCommitted finalState
+        , firstStep == Right (HostCleanupRunnerAdvanced HostCleanupAuthorityAccepted)
+            && fmap
+              (fmap hostCleanupIntentPhase)
+              afterFirst
+              == Right (Just HostCleanupAuthorityAccepted)
+        )
+ where
+  driveSteps store effects budget
+    | budget <= 0 = pure Nothing
+    | otherwise = do
+        stepped <- stepHostCleanupRunner store effects Nothing
+        case stepped of
+          Left _ -> pure Nothing
+          Right (HostCleanupRunnerCompleted result) -> pure (Just result)
+          Right (HostCleanupRunnerAdvanced _) ->
+            driveSteps store effects (budget - 1)
+
+-- | One more than the number of durable phases, so a stepping loop that failed
+-- to advance terminates instead of spinning.
+fixedHostCleanupStepBudget :: Int
+fixedHostCleanupStepBudget = 10
 
 fixedNoRepeatScenario
   :: FilePath

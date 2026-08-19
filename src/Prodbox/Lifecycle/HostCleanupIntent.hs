@@ -8,6 +8,9 @@
 module Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntentStore
   , mkHostCleanupIntentStore
+  , hostCleanupIntentStoreDirectoryName
+  , bootstrapLocatedHostCleanupIntentStore
+  , authorityBoundHostCleanupIntentStore
   , hostCleanupIntentRetainedRoot
   , hostCleanupIntentPath
   , hostCleanupIntentRetiredPath
@@ -85,7 +88,9 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , HostTerminalPermitId
   , ObservedHostCleanupIntent
   , advanceHostCleanupIntent
+  , authorityBoundHostCleanupIntentStore
   , bindHostCleanupReady
+  , bootstrapLocatedHostCleanupIntentStore
   , decodeHostCleanupIntent
   , encodeHostCleanupIntent
   , fixedHostCleanupIntentRegression
@@ -103,6 +108,7 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , hostCleanupIntentRetainedRoot
   , hostCleanupIntentRetiredPath
   , hostCleanupIntentRetirementDigestText
+  , hostCleanupIntentStoreDirectoryName
   , hostCleanupObservationEvidenceScope
   , hostCleanupObservationRunScope
   , hostCleanupReadyBinding

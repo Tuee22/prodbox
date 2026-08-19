@@ -100,6 +100,12 @@ import Prodbox.Lifecycle.CleanupRunRunner
   , cleanupTerminalDependencyReceiptOperationId
   , cleanupTerminalDependencyReceiptResult
   )
+import Prodbox.Lifecycle.CredentialProvisioner.Execution
+  ( CredentialRevocationRefusal
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( CredentialTarget (LifecycleProviderTarget)
+  )
 import Prodbox.Lifecycle.Teardown.AwsStackReaderEvidence
 import Prodbox.Lifecycle.Teardown.Checkpoint
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
@@ -194,6 +200,27 @@ data LocalDataDispositionObservation = LocalDataDispositionObservation
   }
   deriving (Eq, Show)
 
+-- | Sprint 4.85: what re-observing the operational credential's revocation
+-- found.
+--
+-- The refusal arm carries the canonical decision's own refusal rather than a
+-- rendered string, so this surface and the Admin-worker boundary agree on why
+-- a revocation was not read back.
+data OperationalCredentialRevocationResult
+  = OperationalCredentialRevocationConfirmed
+  | OperationalCredentialRevocationRefused !CredentialRevocationRefusal
+  | OperationalCredentialRevocationUnobservable !ObservationFailure
+  deriving (Eq, Show)
+
+data OperationalCredentialRevocationObservation
+  = OperationalCredentialRevocationObservation
+  { operationalCredentialRevocationObservationScope :: !ObservationEvidenceScope
+  , operationalCredentialRevocationObservationTarget :: !CredentialTarget
+  , operationalCredentialRevocationObservationResult
+      :: !OperationalCredentialRevocationResult
+  }
+  deriving (Eq, Show)
+
 data TeardownNodeResult surface
   = TeardownNodeRefused !Text
   | TeardownMutationAttempt !TeardownMutationResult
@@ -220,6 +247,8 @@ data TeardownNodeResult surface
   | TeardownDurableReceiptObservation !DurableReceiptObservation
   | TeardownLocalFoundationObservation !LocalFoundationObservation
   | TeardownLocalDataDispositionObservation !LocalDataDispositionObservation
+  | TeardownOperationalCredentialRevocationObservation
+      !OperationalCredentialRevocationObservation
 
 data TeardownSucceededPredecessor surface = TeardownSucceededPredecessor
   { teardownSucceededPredecessorOperationId :: !CleanupOperationId
@@ -729,6 +758,9 @@ validateNodeResult
       ReadBackLocalOnlyAbsence -> expectLocalAbsence nodeResult
       CommitLocalOnlyCompletion -> expectMutation nodeResult
       ReadBackLocalOnlyCompletion -> expectReceipt LocalOnlyCompletionReceipt nodeResult
+      RevokeOperationalCredential _ -> expectMutation nodeResult
+      ReadBackOperationalCredentialRevocation _ ->
+        expectOperationalCredentialRevocation nodeResult
       CommitOrdinarySurfaceReport -> expectMutation nodeResult
       ReadBackOrdinarySurfaceReport ->
         expectReceipt OrdinarySurfaceReportReceipt nodeResult
@@ -1370,6 +1402,33 @@ validateNodeResult
             LocalFoundationPresent -> CleanupNodeFailed "local RKE2 foundation is still present"
             LocalFoundationUnobservable _ ->
               CleanupNodeFailed "local RKE2 foundation is unobservable"
+      _ -> resultKindMismatch
+
+    -- Sprint 4.85: the revocation read-back succeeds only on the canonical
+    -- confirmed decision. A refusal is a failure rather than an unobservable
+    -- result -- the boundary answered, and the answer was that the credential
+    -- is not gone -- and an unobservable read-back stays distinct from both.
+    expectOperationalCredentialRevocation
+      :: TeardownNodeResult surface -> CleanupNodeOutcome
+    expectOperationalCredentialRevocation result = case result of
+      TeardownOperationalCredentialRevocationObservation observation
+        | operationalCredentialRevocationObservationScope observation
+            /= expectedScope ->
+            bindingMismatch
+        | operationalCredentialRevocationObservationTarget observation
+            /= LifecycleProviderTarget ->
+            bindingMismatch
+        | otherwise ->
+            case operationalCredentialRevocationObservationResult observation of
+              OperationalCredentialRevocationConfirmed -> CleanupNodeSucceeded
+              OperationalCredentialRevocationRefused refusal ->
+                CleanupNodeFailed
+                  ( "operational credential revocation was not read back: "
+                      <> Text.pack (show refusal)
+                  )
+              OperationalCredentialRevocationUnobservable _ ->
+                CleanupNodeFailed
+                  "operational credential revocation is unobservable"
       _ -> resultKindMismatch
 
     expectLocalDataDisposition

@@ -152,6 +152,7 @@ Every sprint should use the same basic structure:
 **Status**: Done | Active | Planned | Blocked
 **Implementation**: `path/to/file` (required for Done, recommended otherwise)
 **Blocked by**: earlier-or-same-phase sprint id(s) or external prerequisite (required for Blocked); never a later phase or higher-numbered sprint (Standard N)
+**Closure dependency**: earlier-or-same-phase sprint id(s) (optional; for a non-`Blocked` sprint whose *closure* — not its start — waits on another sprint). Same direction rule as `Blocked by` (Standard N)
 **Live-proof**: pending | proven (optional; the non-blocking live-infra axis — Standard O)
 **Deployment qualification**: pending | proven (required when the sprint changes a Standard-P
 production-composition surface)
@@ -170,6 +171,13 @@ production-composition surface)
 Additional sections such as `Current Validation State`, `Current Blockers`, or `Architecture` are
 encouraged when they clarify design or closure.
 
+`**Blocked by**` and `**Closure dependency**` are the **only** fields in which a sprint may record a
+dependency on another sprint, and both carry the Standard-N direction rule. A sprint that needs to
+say something about later work states it as a *disclaimer* instead — "this sprint makes no claim
+about X; Sprint `Y` owns it" — which is a statement about ownership rather than a dependency. Any
+other dependency-shaped field name (`Closure dependencies`, `Depends on`, `Waiting on`) is a defect:
+`prodbox dev check` cannot read it, so a dependency recorded there is invisible to the queue gate.
+
 ### I. Explicit Cleanup and Removal Ledger
 
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is mandatory and comprehensive.
@@ -180,6 +188,12 @@ surfaces, and stale tooling residue that still need removal.
   in the ledger.
 - Each ledger item must name its location, why it is slated for removal, and the sprint that owns
   the cleanup.
+- A row whose removal waits on another sprint declares it as data, not prose, by writing a bold
+  **Prerequisite** field in the Notes cell followed by that sprint id — for example
+  `**Prerequisite**: Sprint 7.36` with the id in backticks. The prerequisite must be no later than
+  the Owning Sprint (Standard N): a row that would need a later sprint is **re-owned to that
+  sprint** instead, because a row nobody in the queue can close is a blocked earlier phase wearing a
+  ledger row. `prodbox dev check` enforces the direction.
 - If the supported replacement is done but the old helper still survives as a migration shim, the
   replacement may stay in `Completed` while the surviving helper remains in `Pending Removal`.
 - When the cleanup lands, move the item from `Pending Removal` to `Completed`.
@@ -333,7 +347,9 @@ substrate; AWS-substrate coverage of that same validation is tracked only in the
 A phase's validation never depends on another phase being complete. Forward build-order (Standard A — later phases compose earlier deliverables) remains the narrative spine, but it is **not a validation gate**.
 
 - **Independent validation.** Each phase is validatable on its owned surface even when any other phase is incomplete. Where a validation would touch a dependency owned by another phase, it is exercised against the home/local substrate, a fake, or a stub. Every phase document must carry an **Independent Validation** line stating how the phase is validated on its owned surface with no dependency on a later phase.
-- **Forward-only blocking.** A `**Blocked by**` entry may name only an **earlier-or-same-phase** sprint or an **external** prerequisite. It must **never** name a later phase or a higher-numbered sprint. A backward `Blocked by` is a structural defect: re-scope the sprint so its owned surface is validatable now, and track any genuinely-later-dependent extension separately (Standard O / the [substrates.md](substrates.md) parity table) — do not record the backward block.
+- **Forward-only blocking.** A `**Blocked by**` or `**Closure dependency**` entry may name only an **earlier-or-same-phase** sprint or an **external** prerequisite. It must **never** name a later phase or a higher-numbered sprint. A backward entry is a structural defect: re-scope the sprint so its owned surface is validatable now, and track any genuinely-later-dependent extension separately (Standard O / the [substrates.md](substrates.md) parity table) — do not record the backward block.
+- **Dependencies are declared, never narrated.** Those two fields (Standard H) and the ledger's `**Prerequisite**` marker (Standard I) are the only places a dependency may be recorded. Prose may *disclaim* later work — "this sprint makes no claim about X; Sprint `Y` owns it" — which states ownership rather than a dependency. A dependency written only in prose is invisible to `prodbox dev check`, which is how the 2026-08-17 audit found a queue in which no row could reach `Done` while the gate reported it clean. `prodbox dev check` now reads the declared fields and fails on a backward one.
+- **Validation criteria are bound by the same rule.** A sprint's `Validation` items must be satisfiable on its owned surface. An item that can only pass once a later phase lands is a backward dependency in a different field, and is re-scoped to the sprint that owns the composition it measures.
 - **No backward reopen.** An incomplete later phase never reopens or blocks an earlier phase. Reopening a closed phase (Standard A) is permitted only to expand that phase's **own** owned surface.
 
 ### O. Code-Local Completion vs. Live-Infra Proof

@@ -57,11 +57,17 @@ import Prodbox.ControlPlane.Codec
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 
+-- | Sprint 4.87: @Bounded@\/@Enum@ so the adapter's object-name mapping can be
+-- enumerated.  The mapping crosses a stringly-typed seam into
+-- 'Prodbox.ControlPlane.DedicatedAdapterStore.authorityBackupBlobObjectName',
+-- and a class the store could not name refused every copy of that class at
+-- run time instead of failing to compile.  Enumerating the class is what makes
+-- the gap measurable.
 data AuthorityBackupBlobClass
   = AuthorityAggregateEnvelope
   | AuthorityCheckpointBlob
   | AuthorityConfigBlob
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Bounded, Enum, Eq, Show, Generic)
   deriving anyclass (Serialise)
 
 newtype AuthorityBackupDigest = AuthorityBackupDigest Text

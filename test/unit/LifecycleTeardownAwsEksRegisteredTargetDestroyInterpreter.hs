@@ -201,7 +201,8 @@ receiptClient environment =
 
 providerBoundary :: FakeEnvironment -> TeardownProviderBoundary DestroyEffects
 providerBoundary environment =
-  TeardownProviderBoundary $ \submissionKey intent -> do
+  TeardownProviderBoundary $ \dispatchKey intent -> do
+    let submissionKey = providerDispatchSubmissionKey dispatchKey
     liftDestroyIO
       (modifyIORef' (fakeProviderCalls environment) (<> [(submissionKey, intent)]))
     pure $ case intent of

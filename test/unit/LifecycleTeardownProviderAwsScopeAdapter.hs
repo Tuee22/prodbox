@@ -52,6 +52,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , AuthorityProviderSettlementDecision (..)
   , AuthorityProviderSubmissionDecision (AuthorityProviderSubmissionAccepted)
+  , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   , initialCleanInstallAuthorityWithRegisteredClients
   , stepAuthorityAdmission
   , stepRegisteredProviderSettlement
@@ -697,6 +698,7 @@ admitOperation submissionKeyText intent =
               submissionKey
               digest
               intent
+              ProviderOperationUnownedByCleanupRun
           )
    in case decision of
         AuthorityProviderSubmissionAccepted operation -> (operation, admitted)

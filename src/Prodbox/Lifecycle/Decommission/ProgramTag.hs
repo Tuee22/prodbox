@@ -159,6 +159,9 @@ data DecommissionProgramTag
     AuthorityBackupObjectsTag
   | -- | Delete the shared object bucket — always last.
     SharedObjectBucketTag
+  | -- | Sprint 4.85: revoke the Lifecycle-provider credential and read the
+    -- revocation back.  Appended, so every earlier tag keeps its index.
+    OperationalCredentialRevocationTag
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 decommissionProgramTagText :: DecommissionProgramTag -> Text
@@ -184,6 +187,7 @@ decommissionProgramTagText tag = case tag of
   AuthorityBackupObjectsTag -> "authority-backup-objects"
   BackupPrefixAbsenceProofTag -> "backup-prefix-absence-proof"
   SharedObjectBucketTag -> "shared-object-bucket"
+  OperationalCredentialRevocationTag -> "operational-credential-revocation"
 
 -- | Total over the manifest node universe.
 decommissionNodeProgramTag :: DecommissionNode -> DecommissionProgramTag
@@ -233,6 +237,9 @@ totalDecommissionOperationProgramTag operation = case operation of
   ReadBackStackCheckpointRetirement {} ->
     Just RegisteredStackCheckpointRetirementTag
   AuditTotalDecommissionEscapes -> Just TotalDecommissionEscapeAuditTag
+  RevokeOperationalCredential _ -> Just OperationalCredentialRevocationTag
+  ReadBackOperationalCredentialRevocation _ ->
+    Just OperationalCredentialRevocationTag
   ObserveExternalDecommissionReceipt -> Just ExternalDecommissionReceiptTag
   UninstallDecommissionLocalFoundation -> Just HomeSubstrateUninstallTag
   ReadBackDecommissionLocalAbsence -> Just HomeSubstrateUninstallTag
@@ -298,6 +305,12 @@ decommissionProgramTagImplementation tag = case tag of
   AuthorityBackupObjectsTag -> DecommissionRunnerOnly
   BackupPrefixAbsenceProofTag -> DecommissionRunnerOnly
   SharedObjectBucketTag -> DecommissionRunnerOnly
+  -- The compiled program orders it strictly between the terminal audit and the
+  -- home uninstall. The signed manifest has no node for it: revoking the
+  -- Lifecycle-provider credential is not one of the resource families the
+  -- external receipt graph names, and giving it one is part of the convergence
+  -- Sprint 6.5 owns.
+  OperationalCredentialRevocationTag -> CompiledProgramOnly
 
 -- | The tags the compiled total-decommission program actually emits, measured
 -- by compiling it.
@@ -385,6 +398,7 @@ decommissionRunnerInterpreterIdentity tag = case tag of
   TlsRetentionIdentityTag -> Just "tls-retention-identity-v1"
   BackupPrefixAbsenceProofTag -> Just "backup-prefix-absence-proof-v1"
   AuthorityBackupObjectsTag -> Just "backup-objects-identity-v1"
+  OperationalCredentialRevocationTag -> Nothing
   SharedObjectBucketTag -> Just "shared-object-bucket-v1"
 
 -- | Whether the signed decommission runner is claimed to implement a tag.

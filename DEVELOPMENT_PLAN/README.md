@@ -22,13 +22,19 @@ the same queue.
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `4.85` | 4 | Next | — |
-| 2 | `4.86` | 4 | Parked | `4.85` |
-| 3 | `5.36` | 5 | Parked | `4.85` |
-| 4 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
-| 5 | `7.36` | 7 | Parked | `4.85` |
+| 1 | `4.86` | 4 | Next | — |
+| 2 | `5.36` | 5 | Parked | — |
+| 3 | `6.5` | 6 | Blocked | `4.86`, `5.36` |
+| 4 | `7.36` | 7 | Parked | — |
 
-Sprints `3.41`, `4.84`, and `5.35` are Done on their code-owned surfaces and are not open queue rows.
+Sprints `3.41`, `4.84`, `4.85`, `4.87`, and `5.35` are Done on their code-owned surfaces and are
+not open queue rows. Sprint `4.87` closed on 2026-08-19: the Authority Backup Adapter could not name
+an object for the config blob class, so the production config-backup replication path refused every
+copy and every observation; the class is now enumerable and the suite measures that every member
+names a distinct object. Sprint `4.85` closed on 2026-08-18: all four scheduled decommission nodes landed, all
+eight `OperationalCredentialDispositionBlocker`s are retired and measured, and `OperationalTeardown`
+mints its own completion witness. Executing the compiled nodes is the dispatcher activation Sprints
+`4.86` and `6.5` own, which every compiled node on every surface waits on equally.
 Sprint `3.41` closed on 2026-08-17 with the recovery-only repair renderer, the versioned retained
 artifact authority, the stopped/absent/healthy repair matrix, and the pure deletion-survivor
 projection; its stopped/absent host exercise remains a non-blocking Live-proof, and acquiring and
@@ -56,7 +62,48 @@ is durable and the retained-root host record has made its exact locked `Prepared
 transition with independent read-back. Deployment qualification remains pending and cannot be
 substituted for by partially landed code or an old live run.
 
-**Plan-compliance correction (2026-08-17, current).** A Standard-compliance audit of this plan found
+**Plan-compliance correction (2026-08-18, current — Sprint `0.30`).** The 2026-08-17 correction
+below fixed the rows it found and named the reason nothing had caught them: the dependencies "lived
+in prose rather than in a `**Blocked by**` field, [so] `prodbox dev lint docs` could not see them and
+reported the queue clean." That blind spot stayed open, and the same class had re-accumulated in
+Sprint `4.85`.
+
+Six items were held by a sprint that could not perform them:
+
+- Held by `4.85`: the `ExplicitLongLived` completion minter — gated on Sprint `7.36`'s retained-EBS
+  adapter, which `registeredTargetExecutorViolations` makes one change with it.
+- Held by `4.85`: the DNS01 Challenge/TXT executor and registration (ledger row) — gated on Sprint
+  `7.36`'s Route 53 desired-absence adapter.
+- Held by `4.85`: the terminal cascade audit's execution half (ledger row) — gated on Sprint
+  `7.36`'s Provider adapter, as the row itself said.
+- Held by `4.85`: the callback cleanup clients (ledger row) — owned by Sprint `5.36`, which both
+  sprint blocks already named.
+- Held by `4.85`: validation item 10, read as "every tag two-sided" — gated on Sprint `6.5`'s
+  convergence over Sprint `7.36`'s adapters.
+- Held by **nobody**: wiring `residueLayerAnswersResourceExistence` into
+  `residueBlocksTeardownGate` — gated on Sprint `7.36`'s observer *and* Sprint `5.36`'s cutover.
+
+Each moves to the sprint that owns the capability it waits on, using the `**Received from Sprint X**`
+pattern `5.36` already carried and the disclaimer pattern `4.85` already used for
+`CapabilityBoundCleanupAction`. This is the same remedy the `dns-aws` registration took on
+2026-08-17. Validation item 10 is rewritten to what Phase 4 can prove on its own surface — the parity
+*measurement*, which is landed and gates `dev check` — with convergence re-scoped to `6.5`.
+
+**Sprint `4.85` stayed `Active` and the queue table was unchanged.** Its surviving work was the eight
+`OperationalCredentialDispositionBlocker`s, which are type-level and program-level absences on Phase
+4's own lifecycle-core surface. The correction did not close `4.85`; it made `4.85` closable by doing
+its own work, which is what Standard N requires and what the previous deadlock prevented — and on
+2026-08-18 all eight were closed that way, so `4.85` is Done and `4.86` is `Next`.
+
+**The rule is now a gate rather than an audit.** `**Blocked by**` and `**Closure dependency**` are
+the only fields that may record a dependency (three Active sprints had been using an undefined field
+name), `Pending Removal` rows declare a `**Prerequisite**` as data, and `prodbox dev check` fails on
+a backward entry in either. Prose is deliberately not scanned — disclaiming later work is the correct
+pattern the plan uses everywhere — so Standard N now states that prose may only disclaim, never
+depend. Historical lines that record their own resolution in place keep working. **No code behaviour
+changed** outside the documentation gate.
+
+**Plan-compliance correction (2026-08-17, prior).** A Standard-compliance audit of this plan found
 a defect in the plan itself rather than in the code: **Sprint `4.84` declared `Blocked by: none`
 while its Remaining Work said its consumer conversion "cannot land independently of the caller
 restructuring in Sprints `4.85`/`5.36`/`6.5` … it is sequenced with them, not reassigned to them",
@@ -84,8 +131,434 @@ the sprint that performs each deletion, so no `Done` sprint owns undone removal 
 **No code changed and no landed surface was re-evaluated.** What changed is which sprint owns work
 that was already known to be undoable where it sat.
 
-**Session checkpoint (2026-08-18, current — Sprint `4.85`).** Seven increments landed on top of the
-2026-08-17 set. The queue is unchanged and `4.85` stays `Next`.
+**Session checkpoint (2026-08-19, current — Sprint `4.86` cascade host route).** The four compiled
+cascade host nodes are dispatched. `Prodbox.ControlPlane.CascadeHostRuntime` is the closed host
+runtime — a durable host-cleanup record and a production effects record, with no caller-supplied
+continuation and no injected boundary — and the descriptor-bound dispatcher routes
+`UninstallCascadeLocalFoundation`, `ReadBackCascadeLocalAbsence`, `CommitCascadeCompletion`, and
+`ReadBackCascadeCompletion` to it instead of classifying them as unreleased.
+
+**The durable phase set now has one phase per node.** `HostCleanupIntentPhase` gained
+`HostCleanupLocalUninstallIssued` and `HostCleanupCompletionCommitted`. Without the split a node
+interpreter would have attributed several nodes' effects to one node, which is the collapse stepping
+exists to prevent. No read-back weakened: the issue phase still advances only from an exact absence
+observation, so a lost uninstall response is still decided by the observation and a failed attempt
+still leaves the intent resumable where it may re-issue; the absence node performs a fresh read-back
+and never issues.
+
+**A node that finds its phase already reached performs nothing**, which is what keeps the destructive
+uninstall issued exactly once across an interrupted cascade, and a runner observation failure is
+reported as an *unconfirmed* effect rather than a refusal, because the effect may still have landed.
+
+**The queue table is unchanged and `4.86` stays `Next`.** One decision is still open and named in the
+sprint's Remaining Work: how a pre-uninstall report identity reaches the independent backup failure
+domain, which Stage C's read-back boundary needs before it can be wired to a real client.
+
+**Session checkpoint (2026-08-19, prior — Sprint `4.86` Authority restore boundary).** The host
+cleanup runner's last injected arm now has a production answer.
+`Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction` implements the restore boundary over the
+authenticated Lifecycle Authority observation route and the physically separate Authority Backup
+Adapter, and supplies the runner arm beside the accept, read-back, and reconcile arms that already
+existed. Every arm of `HostCleanupRunnerEffects` is now answered by a production surface.
+
+**A cascade never mints an authority epoch.** Restoration succeeds only from `BackupEstablished`;
+genesis-frozen, mid-genesis establishment, and repair-frozen are reported as the distinct states they
+are rather than advanced. An Authority that genesis re-opened would admit requests and have forgotten
+the run — which is exactly the empty control plane the restore-before-admit ordering exists to
+refuse — so the genesis and repair choreography is deliberately not reachable from this module.
+
+**The backup domain is the independent half.** The retained admission projection names its own
+`BackupReceipt` and the Backup Adapter is asked whether that exact receipt is healthy, so the two
+halves are joined by a value neither of them was handed rather than by the Authority answering for
+itself.
+
+**Only a transient failure is waited on.** A control plane that is not yet routable has said nothing
+and is retried under the bounded wait; a decided refusal and a terminal observation failure are
+answers, and retrying an answer would report a timeout where the run should report the refusal.
+Neither arm reaches an object store from the host: a host-direct read of either namespace would be an
+unregistered escape path.
+
+**The queue table is unchanged and `4.86` stays `Next`.** A closed cascade host runtime is now
+constructible, and building it with its dispatcher route is the next item.
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` Authority runner arms).** Every arm of the
+host cleanup runner's injected effects now has a production answer. Three pairs did not: accepting
+the pre-uninstall readiness at the Lifecycle Authority, re-establishing that Authority after the
+destructive step, and reconciling the durable cleanup run. Nothing in the repository stored a
+readiness at the Authority at all, so the destructive boundary could only ever be exercised against
+fakes. `Prodbox.ControlPlane.HostCleanupReadinessRepository` is the retained namespace it lives in
+and `Prodbox.Lifecycle.HostCleanupAuthorityArms` is the join to the runner.
+
+**One observation answers both readiness read-backs.** The runner reads the accepted readiness
+before the uninstall and again after re-establishment — the same question at two times, not two
+questions. A re-established Authority that cannot produce the readiness it accepted has not been
+re-established in the sense the run needs, and giving the second read-back a weaker source would
+hide exactly that.
+
+**A run owns exactly one readiness slot.** The logical name comes from the `CleanupRunId` alone and
+the only write the repository can issue is into an empty slot, so a second, different readiness
+under one run is a conflict rather than a second key — two readiness proofs under one run would be
+two permits. An exact replay is a success, because a rerun accepting what it already accepted is the
+case the protocol exists for.
+
+**Re-establishment never reports readiness.** Its answers are about what the attempt did, and
+whether the readiness survived is the read-back's. Admission is awaited only after a successful
+restore, because admission from an Authority whose bytes were not restored would accept an empty
+control plane that has forgotten the run. The reconciliation begins and completes the local-uninstall
+node under the one deterministic attempt derivation — now shared with the durable cleanup driver
+rather than copied — so a rerun after a lost response replays its own attempt instead of colliding
+with it.
+
+Restoring the aggregate from the independent backup domain and awaiting admission stay behind the
+injected restore boundary: they are host mutations belonging to the non-public candidate entrypoint.
+
+**The runner also became drivable one durable phase at a time.** The compiled cascade graph reaches
+the destructive host boundary through separate nodes, and a node interpreter that ran the whole
+runner would collapse them — the durable run would record one node as having performed every later
+node's effect, and a resume would have nothing left to attribute a failure to. `stepHostCleanupRunner`
+performs exactly the phase its action selects and stops, under the same execution lease and the same
+read-backs, and the whole-run entrypoints become a loop over that single-phase body rather than a
+second implementation of it. Wiring those nodes into the descriptor-bound dispatcher is deliberately
+not done yet: that dispatcher admits only closed production runtimes and has no caller-supplied
+continuation, so a host route may not take an injected effects record, and the runner's last injected
+arm is the Authority restore boundary. The sprint states that ordering rather than working around it.
+
+**The queue table is unchanged and `4.86` stays `Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` recovery-plane runner arms).** Sprint
+`3.41` landed the renderer that says what a recovery repair is and Sprint `4.86` landed the admission
+and execution that runs one, and neither reached the host cleanup runner — so the destructive host
+boundary had no way to re-establish the plane it depends on and no way to read the result back.
+`Prodbox.Lifecycle.HostCleanupRecoveryPlane` is that join.
+
+**The re-establishment never reports availability.** Its answers are about what the attempt did — a
+repair applied, a repair stopped at a step with its unattempted tail, a repair nothing could admit, a
+substrate nothing could observe. Whether the plane *is* available is decided only by the separate
+read-back from a fresh observation. That is the same separation the repair execution already applies
+to substrate convergence, and it is why the runner asks two questions rather than one.
+
+**An unobserved substrate selects no repair.** A repair plan is rendered *for an observed state*, so
+falling back to a default would choose a plan for a state nothing established — measured as the
+repair boundary not being called at all. Stopped, absent, and unread stay three answers rather than
+two, because the runner reports unavailability and unobservability as different errors and the two
+need different remedies. Admission is checked against the retained store before any boundary call, so
+a repair whose bytes are not retained is refused rather than half-run.
+
+Installing a substrate, starting its service, and reconciling the recovery charts stay behind the
+injected boundary: they are host mutations belonging to the non-public candidate entrypoint. The
+runner's surviving effects are the Authority clients. **The queue table is unchanged and `4.86` stays
+`Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` credential disposition).** The cascade's
+credential-disposition proof had a constructor and no producer, so the only inhabitant in the
+repository was the fixture's authored `Disposed` — a proof about nothing that the readiness
+composition would nonetheless accept.
+`Prodbox.Lifecycle.Teardown.CascadeCredentialDisposition` is that producer.
+
+**The disposal set is derived, not authored.** It is exactly the credential classes whose lifetime is
+run-scoped, and the retained set is its complement rather than a second list, so a class cannot be
+absent from both and become nobody's concern.
+
+**The operational credential is retained, and that is now structural.** A cascade that revoked the
+Lifecycle-provider credential would fence the terminal audit it had just run, which is why the
+compiled cascade program emits no credential-disposition node. Here the same fact falls out of the
+lifetime partition rather than being asserted a second time: that class is not in the disposal set,
+so the boundary is never asked about it and it can never be reported disposed.
+
+**A present credential outranks an unanswered one**, and an unanswered one decides unobservable
+rather than disposition — the same asymmetry the terminal audit applies to a blind query. An empty
+disposal set is a refusal rather than a vacuous `Disposed`.
+
+No production boundary is wired: observing whether an IAM principal still exists is a Provider effect
+Sprint `7.36` owns. **The queue table is unchanged and `4.86` stays `Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` local completion journal).** Doctrine
+§ 5b node 8 has two arms, and only one had a producer. `prepareLocalCompletion` and the receipt it
+mints existed solely as names in the doctrine: nothing in the repository appended a local-completion
+entry and nothing read one back, so a cascade that had proved exact host absence still could not
+close its durable run. `Prodbox.Lifecycle.HostCleanupCompletion` is that producer.
+
+**The append is keyed by the reference, not by the bytes.** The entry is published by an exclusive
+link under the digest of its reference, so a rerun whose first append response was lost finds its
+own entry already present and succeeds without writing a second one. That is what makes the append
+idempotent in the sense the node needs: the rerun performs the *observation* rather than
+reinstalling a control plane merely to rewrite history. An entry that is present and differs is a
+conflict, not an overwrite — the host does not rewrite a completion it already recorded, and the
+signed scope reaches the entry through the running context alone.
+
+**The writer does not decide.** Appending and observing are separate operations over separate
+descriptors, and the observation reads the journal rather than the append's answer, so an append
+that reported success over a journal holding nothing observable produces no receipt. A journal with
+no entry and a journal that could not be read stay distinct answers, because collapsing them would
+let an unreadable directory read as a clean "not yet".
+
+**Every field of the read-back is decoded from the durable bytes.** Run, graph digest, scope,
+operation reference, permit, and report digest come from the entry and none from the running
+context, so the runner's binding comparison is between two independent sources rather than a value
+with itself. The completion proof is still minted by the private constructor, which is why this
+module joins the cascade-evidence ownership set exactly as the absence read-back does. The
+read-back's own constructor became reachable inside the library for that one producer and remains
+uninhabitable outside it, because the receipt observation it carries is Cabal-hidden — so the gate
+that used to read the export list now measures the library's producer set instead.
+
+Both of the terminal node's arms now have a production implementation. The runner's surviving
+effects are Authority and recovery-plane clients. **The queue table is unchanged and `4.86` stays
+`Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` terminal escape audit).** Every part of
+doctrine § 5b node 6's decision existed — the retained matcher catalog, the query catalog, the
+classification, and the region-bounded verdict — and nothing assembled them, so there was no path
+from a set of issued queries to a `TerminalAuditObservation` and the cascade's terminal arm had no
+producer. `Prodbox.Lifecycle.Teardown.CascadeTerminalAudit` is that producer.
+
+**The queries are a union, issued separately.** The Resource Groups Tagging API intersects the tag
+filters inside one call, so the audit's field of view — any prodbox-owned tag family — is several
+calls unioned by ARN rather than one call carrying several filters. Issuing them as one call is the
+exact defect Sprint `4.77` found in the sweep.
+
+**A query that went unanswered is a blind spot, and a blind spot is not clean.** Rows that came back
+are still classified, because an escapee found through one query is an escapee whatever the others
+did; a would-be-clean verdict is downgraded to unobservable carrying that query's failure. That is
+the asymmetry the region bound already applies, preserved rather than re-decided — and the region
+bound is now exercised end to end, because the fixed run's own region answers for no global service
+and can therefore never report clean.
+
+**A decoder conflict refuses the audit rather than resolving it.** Two returned rows disagreeing
+about one ARN mean the audit's own view is incoherent, so no verdict is produced at all instead of
+one row being preferred over the other. And the audit scope is derived from the compiled run's
+observation scope through the same function the evidence constructor checks against, so an audit
+cannot be taken under a scope that constructor would then reject.
+
+No production boundary is wired: on AWS these queries are a Provider effect Sprint `7.36` owns, and
+a host-direct tagging call here would add an unregistered escape path. **The queue table is
+unchanged and `4.86` stays `Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` exact host-absence read-back).** The
+cascade's terminal node has two halves that could not meet.
+`Prodbox.Lifecycle.HostCleanupRke2` observes the eight canonical local-RKE2 install markers with
+`lstat(2)` and is forbidden — by a gate that measures it — from naming `LocalUninstallEvidence`,
+while the constructor that mints that proof is private to the cascade-evidence ownership set. The
+absent arm of an exact host observation therefore had nowhere to go.
+`Prodbox.Lifecycle.HostCleanupLocalAbsence` is the join, and it is a member of that ownership set for
+exactly that reason.
+
+**The scope comes from the durable record, not from the proof.** The observation is scoped by the
+running host-cleanup intent while the readiness carries its own scope, so the constructor's scope
+comparison is between two independent sources. Scoping the observation from the readiness would have
+made that check compare a value with itself.
+
+**Still-installed and unobservable stay distinct.** A host whose markers are present has not
+converged and the runner acts on it by issuing the uninstall; a host whose markers could not be read
+has said nothing, and calling that either absence or presence would invent a fact. A present marker
+continues to outrank an unrelated read failure — one positive marker already refutes absence — which
+is the observer's existing rule preserved rather than re-decided.
+
+**The record itself now has a derived location.** It is created before the local uninstall, while the
+Authority is reachable, and read again afterwards, while it is not — and its store was located from
+a caller-supplied absolute path, so nothing composed those two moments and a record could be written
+where no recovery would look. It is now derivable from the non-authorizing bootstrap locator and
+from the Authority-bound root, both resolving through the one prodbox-owned control directory.
+Deliberately without a durability index: unlike artifact custody, this record must be *mutated* after
+the Authority is gone, so an Authority-bound mutation index would forbid the one write that matters
+most.
+
+This gives one arm of the host cleanup runner's effects a production implementation. The remaining
+arms are Authority and recovery-plane clients. **The queue table is unchanged and `4.86` stays
+`Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` Stage C pre-uninstall readiness).** Every
+value doctrine § 5b node 7 names already existed as a type. What did not exist was the *sequence*:
+nothing in the repository committed a pre-uninstall report, read it back, and composed the result,
+so a production cascade could not reach `ReadyToUninstallEvidence` at all.
+`Prodbox.Lifecycle.Teardown.PreUninstallReadiness` is that sequence.
+
+**The read-back decides durability; the commit response does not.** It runs after every commit
+outcome, including a reported refusal. A commit that reported success and left nothing durable is
+not ready, and one whose response was lost — or that reported a refusal after the write had already
+landed — is separated from the first by the observation rather than by the response. Suppressing the
+read-back on either outcome would decide the run from the weaker fact, which is exactly the
+applied-but-response-lost case Standard P names.
+
+**The reader is a separate boundary from the writer.** Committing and reading back are two records
+rather than two fields of one, because the whole content of the requirement is that the surface
+claiming to have written the report is not the surface that decides it is durable. In production the
+writer is the Authority and the reader is the Backup Adapter.
+
+**A drifted report identity never reaches the Authority twice.** When the observed digest differs
+from the committed one, the run refuses before a permit is requested, so the Authority is never
+asked to sign over a report identity nothing durably holds — measured as the permit boundary not
+being called at all in that case.
+
+The module owns the protocol and says so: report *content* belongs to
+`Prodbox.Lifecycle.Teardown.Report`, the permit's one-shot semantics are enforced where the Authority
+signs it, and the uninstall that consumes this readiness is `Prodbox.Lifecycle.HostCleanupRunner`. No
+production client is wired into either boundary, so this activates no writer. **The queue table is
+unchanged and `4.86` stays `Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` repair admission and execution).** The
+retained-artifact custody surface landed with one part open: nothing *consumed* it, so a rendered
+Sprint-`3.41` repair still named retained bytes no path read and custody still retained bytes no
+path needed. `Prodbox.Lifecycle.Teardown.RecoveryRepairExecution` is that consumer, and it is the
+only surface that executes a rendered repair.
+
+**A repair is admitted, never merely rendered.** The executable value has no constructor reachable
+from a rendered plan alone: the plan is joined against an observation of the retained store, and
+only a join in which every artifact the plan names is present and hashes to its pinned digest
+produces one. A rendered plan is a claim about the inventory; an admitted repair is a claim about
+the disk, which is what a recovery actually runs against.
+
+**A refusal names its remedy, or names why it has none.** Retention drift is refused with the
+custody plan derived from the same observation the readiness check rejected. The two cases where no
+acquisition helps stay distinct rather than collapsing into an empty plan that would read as
+"nothing to do": an artifact the inventory never declares has no pinned digest for a delivery to be
+checked against, and an unlistable store decides neither retention nor drift.
+
+**Repair steps are sequentially dependent, and the run says so.** A custody plan's obligations are
+independent; a repair's are not, and starting a service that was never installed produces a second
+failure describing the wrong boundary. Application stops at the first failure and carries the
+unattempted tail explicitly. Convergence is then read from a fresh substrate observation alone — the
+run is not an input — and is scoped to the substrate arm, making no claim about chart convergence.
+
+No production boundary is wired, so this composition activates no writer; the host mutations belong
+to the non-public candidate entrypoint Sprint `4.86` still owns, along with Stage C, the locked host
+absence record, terminal audit/credential disposition, and the dispatcher's serialized aggregate.
+**The queue table is unchanged and `4.86` stays `Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.86` retained-artifact custody).** The first
+item of Sprint `4.86`'s Remaining Work — acquiring, retaining, and garbage-collecting the artifact
+bytes a Sprint-`3.41` repair plan names — has landed. Sprint `3.41` left the absent-substrate arm of
+its repair matrix able only to refuse: it could say exactly which retained artifacts a repair needed
+and the repository retained none of them, and rendering a network fetch instead would have made an
+ambient transport the authority over what a recovery reads.
+
+**The inventory decides what is retained; a source only delivers it.** A pinned-archive locator is
+bound to the inventory's own digest when the catalog is constructed, and the delivered bytes are
+discarded rather than placed unless they hash to that same digest at execution. The two checks are
+deliberately not one: the first refuses a declaration that disagrees with itself, and the second
+refuses a delivery that disagrees with the declaration, which is the case a correct declaration
+cannot exclude.
+
+**Membership is exact in both directions.** Every inventory entry is classified exactly once and
+every observed store member is classified exactly once, so a member the inventory does not name is a
+collection target rather than something quietly kept, and a collection can never name a location an
+entry holds. Retention drift in either direction is a planned action instead of a silent divergence.
+
+**A delivery response is not retention.** The read-back takes the inventory and a fresh listing and
+nothing else — the applied steps are not an input — so a run in which every acquisition reported
+success and the store still holds nothing reads as divergent rather than complete. An unobservable
+store closes nothing in either direction.
+
+**Custody mutation is Authority-bound; locating retained bytes is not.** The store is phantom-indexed
+by how its retained root was obtained. Recovery has to find retained bytes while the Authority is
+absent, so a bootstrap-located root can locate them; only an Authority-bound root can construct the
+boundary that replaces or collects them.
+
+**A rendered repair now checks its bytes.** An inventory entry is a claim that bytes are retained,
+and Sprint `3.41`'s repair plan is rendered from that claim alone — nothing between the two observed
+the store, so a validated plan could name an installer that is not on disk and find out at the one
+moment the recovery closure exists for. The readiness join derives the exact artifacts from the
+plan's own steps, so a plan and its check cannot disagree about what the repair will touch, and it
+deliberately says nothing about members the repair does not read: membership is custody's question,
+and answering it there would let an unrelated stray file block a recovery.
+
+The delivery locator has one arm on purpose. A mechanism belongs in that type only if the bytes it
+produces are a stable stream a digest fixed ahead of time can describe, and an image export is not:
+the image content is immutable but its archive serialization is not byte-stable, so an export could
+only be checked against a digest recorded from a previous export — a transport deciding what is
+retained. What was still open in this item is that no recovery path yet *consumed* custody, so a
+rendered repair plan still named bytes nothing populates — closed later the same day by the
+repair-admission checkpoint above, which makes an observed store the only way a repair may start.
+Stage C, the locked host absence record, terminal audit/credential disposition, and the dispatcher's
+serialized aggregate remain Sprint `4.86`'s. **The queue table is unchanged and `4.86` stays
+`Next`.**
+
+**Session checkpoint (2026-08-18, prior — Sprint `4.85` closed).** Sprint `4.85` is Done and the
+queue advances to `4.86`. All eight operational-credential disposition blockers are retired, each by
+building the missing capability and deriving the blocker from it rather than by deleting the reason:
+the retired constructor and its derivation both stay, so any of them becoming true again is an
+unpublished-blocker failure rather than a silently lost reason. Four of the eight rested on a
+`TypeLevelAbsence` — a "no constructor exists" fact no value could witness — when the session began;
+the kind is gone with the last blocker that used it.
+
+**The Cascade-audit freeze has a caller.** The freeze transition landed with no production caller,
+which is exactly what `GlobalProviderAdmissionFreezeUnavailable` said: the aggregate command existed,
+the submission gate already honoured its reservation, and the closed externally admissible control
+vocabulary the authenticated `authority/control` route decodes had four constructors, neither of them
+a Provider-admission command. Both are appended to that vocabulary, so every earlier constructor
+keeps its `Serialise` index. `CascadeAuditFreezeBinding` and its smart constructor leave the
+package-private facade — which said they would stay there "until the canonical terminal audit route
+exists" — while every way to *apply* one stays private.
+
+**The route and the command it issues are now one relation instead of two.** They used to be related
+only inside `serveAuthorityControlRequest`, where nothing could read the relation, which is why the
+blocker had to be an authored note rather than a measurement. `AuthorityControlRoute` is that
+relation as data and both projections of the payload onto it are total, so the blocker moves from
+`TypeLevelAbsence` to a derivation: deleting the route re-establishes it as an unpublished-blocker
+failure instead of leaving it silently retired.
+
+**The terminal audit is a credential consumer.** `TerminalAuditProviderCapabilityUnassigned` named a
+capability nobody had assigned, and the assignment was one arm of a classifier that already existed:
+both escape audits answered "opens no Lifecycle-provider session". That made the ordering claim the
+inventory rests on weaker than it reads — "the credential must stay live *through* the audit" is a
+statement about the audit needing the credential. An escape audit enumerates provider-side resources,
+so it cannot run without one, and it is now the last consumer in the cascade ancestry. The executing
+adapter stays Sprint `7.36`'s; what is assigned here is the requirement it has to satisfy.
+
+**The legacy operational identity names its successor.** The third blocker was derived from an
+authored status field on an identity whose three resources were a `[Text]` field — a string has
+nowhere to carry a successor, so "the replacement is undefined" could not stop being true by anything
+short of an edit. The names are now a closed enumeration with a total replacement map, and the answers
+are the collapse the target architecture already performs: the `prodbox` IAM user becomes
+`prodbox-lifecycle-provider`, the fixed session role it assumed becomes the registered provider role
+that credential's one permission names, and the operational `aws.*` block has no successor credential
+at all. `ReplacementUndeclared` is a real answer, which is what makes the blocker a measurement.
+Declaring a successor is not migrating to one; revoking the legacy identity stays in the deletion
+ledger.
+
+**A revoke response is not a read-back.** The fenced Admin worker revoked the target generation, took
+the boundary's own success text as evidence that the material was gone, and went on to destroy the IAM
+identity. The identity's absence *was* read back; the target generation's was not, so an
+applied-but-unconfirmed revoke and a confirmed one were the same value. The target is now re-observed
+through the same boundary the delivery path uses, before the identity is destroyed, and both paths
+decide through one total function over a closed observation product — twelve pairs, exactly one of
+which mints a read-back.
+
+**An ordinary surface that revokes.** The revocation protocol existed at the Admin-worker boundary and
+no compiled teardown program named it, so nothing an operator could run reached it. The operational
+surface — the one ordinary surface whose scope *is* the operational credential — now compiles the
+revocation and its mandatory read-back, and cannot report completion while that read-back is
+unconfirmed. Cascade deliberately keeps retaining the credential: a cascade that revoked it would
+fence the terminal audit it had just run. What survives of the blocker is that no released runtime
+executes either node, and that is now read from the dispatcher's own route classifier, so routing the
+adapter retires it rather than leaving a stale reason.
+
+**One surface with both halves.** The two revoke orders were one fact stated twice: the surface that
+would carry a disposition had no audit, and the surface that owns the audit had no disposition. Total
+decommission is the surface with both, and the compiled program now orders its credential revocation
+strictly after the terminal audit and strictly before the home uninstall — the audit needs the
+credential live to enumerate provider-side resources, and nothing after the disposition touches the
+provider at all. The home uninstall waits on the revocation's read-back, because the revocation is
+answered through the plane the uninstall dismantles. Both blockers are measured over the emitted
+dependency graph, in both directions, so an unordered pair cannot read as ordered.
+
+**A Provider operation names the run that authorized it.** The retained Provider record held the
+request digest and the exact intent and nothing about who asked for it, so "which run destroyed this?"
+was answerable only by matching intents by eye. It now carries the cleanup operation that authorized
+it — the identity the teardown dispatch path actually holds, since one stable operation id is derived
+per (run, node) — and that owner is part of the binding a duplicate retry must match. The pre-ownership
+retained shapes decode as explicitly unowned rather than being guessed into a run.
+
+**Operational teardown reports its own completion.** The surface had no minter because it projected
+zero registered targets, and completing it would have been a clean-completion claim over an empty
+projection. Its obligation is no longer empty: the credential revocation's mandatory read-back is the
+surface's own, so a complete read-back set really is credential/lease absence — independently observed
+rather than taken from the revoke response — plus its own committed report read back. Consumer
+quiescence is deliberately not claimed by the minter; it is a condition on when a run may start, not
+on what the witness reports.
+
+No sprint-owned work survives in `4.85`. `ExplicitLongLived` remains the one ordinary surface with no
+completion minter, and that is Phase 4's stated gap rather than this sprint's: it needs the aggregate
+operator permit its deliverable names, and that permit has no type.
 
 **The receipt says the run converged.** The external receipt records every node's intent,
 observation, and result, and never recorded that the *run* converged: a receipt whose last frame is

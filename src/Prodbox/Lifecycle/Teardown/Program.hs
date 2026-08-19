@@ -16,6 +16,7 @@ module Prodbox.Lifecycle.Teardown.Program
   , registeredTargetCoordinateDigest
   , registeredTargetRecoveryCapabilities
   , RecoverySurfaceWitness (..)
+  , CredentialDispositionSurfaceWitness (..)
   , TeardownOperation (..)
   , teardownOperationTag
   , ProgramNodeName (..)
@@ -71,6 +72,24 @@ data RecoverySurfaceWitness (surface :: CleanupSurface) where
 
 deriving instance Eq (RecoverySurfaceWitness surface)
 deriving instance Show (RecoverySurfaceWitness surface)
+
+-- | Sprint 4.85: the two surfaces that may dispose of the operational
+-- credential.
+--
+-- The operational surface's whole scope /is/ that credential.  Total
+-- decommission disposes of everything, and is the one surface that owns both a
+-- terminal escape audit and a disposition — which is what makes the
+-- audit-then-dispose order expressible at all.  No other surface has a
+-- constructor here, so a cascade or explicit run cannot acquire one by
+-- inheriting a polymorphic node list.
+data CredentialDispositionSurfaceWitness (surface :: CleanupSurface) where
+  OperationalCredentialDisposition
+    :: CredentialDispositionSurfaceWitness 'OperationalTeardown
+  TotalDecommissionCredentialDisposition
+    :: CredentialDispositionSurfaceWitness 'TotalDecommission
+
+deriving instance Eq (CredentialDispositionSurfaceWitness surface)
+deriving instance Show (CredentialDispositionSurfaceWitness surface)
 
 -- | Closed, surface-indexed lifecycle operations.  Effects and mandatory
 -- read-backs are different constructors and therefore receive different
@@ -140,6 +159,19 @@ data TeardownOperation (surface :: CleanupSurface) where
   ReadBackLocalOnlyCompletion :: TeardownOperation 'LocalOnly
   CommitOrdinarySurfaceReport :: TeardownOperation surface
   ReadBackOrdinarySurfaceReport :: TeardownOperation surface
+  -- | Sprint 4.85: submit the Lifecycle-provider credential's revocation and
+  -- independently read it back.
+  --
+  -- The witness admits exactly two surfaces.  Cascade deliberately retains the
+  -- credential — a cascade that revoked it would fence the terminal audit it
+  -- had just run, and every later run — and the two explicit ordinary surfaces
+  -- dispose of registered resources rather than of the credential itself.
+  RevokeOperationalCredential
+    :: CredentialDispositionSurfaceWitness surface
+    -> TeardownOperation surface
+  ReadBackOperationalCredentialRevocation
+    :: CredentialDispositionSurfaceWitness surface
+    -> TeardownOperation surface
   AuditTotalDecommissionEscapes :: TeardownOperation 'TotalDecommission
   ObserveExternalDecommissionReceipt :: TeardownOperation 'TotalDecommission
   UninstallDecommissionLocalFoundation :: TeardownOperation 'TotalDecommission
@@ -188,6 +220,9 @@ teardownOperationTag operation = case operation of
   ReadBackLocalOnlyCompletion -> "read-back-local-only-completion"
   CommitOrdinarySurfaceReport -> "commit-ordinary-surface-report"
   ReadBackOrdinarySurfaceReport -> "read-back-ordinary-surface-report"
+  RevokeOperationalCredential _ -> "revoke-operational-credential"
+  ReadBackOperationalCredentialRevocation _ ->
+    "read-back-operational-credential-revocation"
   AuditTotalDecommissionEscapes -> "audit-total-decommission-escapes"
   ObserveExternalDecommissionReceipt -> "observe-external-decommission-receipt"
   UninstallDecommissionLocalFoundation -> "uninstall-decommission-local-foundation"
@@ -367,7 +402,9 @@ ordinaryNodes recovery bindings =
            "recovery/observe-disposition"
            (ObserveRecoveryPlaneDisposition recovery)
            (recoveryDispositionDependencies bindings)
-       , programNode
+       ]
+    ++ credentialDispositionNodes recovery bindings
+    ++ [ programNode
            "surface/commit-report"
            CommitOrdinarySurfaceReport
            reportDependencies
@@ -380,6 +417,42 @@ ordinaryNodes recovery bindings =
   reportDependencies =
     success "recovery/observe-disposition"
       : map (success . targetCompletionName) bindings
+      ++ [ success "operational/read-back-credential-revocation"
+         | not (null (credentialDispositionNodes recovery bindings))
+         ]
+
+-- | Sprint 4.85: the operational surface's credential disposition.
+--
+-- @OrdinaryLifecycleProviderRevocationUnavailable@ said no ordinary lifecycle
+-- path revokes the Lifecycle-provider credential, and it was right: the
+-- revocation protocol existed at the Admin-worker boundary and no compiled
+-- teardown program named it, so nothing an operator could run reached it.
+--
+-- Only the operational surface emits it.  The witness is matched rather than
+-- wildcarded so a surface that later needs a disposition is a deliberate
+-- decision here instead of an accidental inheritance from this list.
+credentialDispositionNodes
+  :: RecoverySurfaceWitness surface
+  -> [RegisteredTargetBinding]
+  -> [ProgramNode surface]
+credentialDispositionNodes recovery bindings = case recovery of
+  CascadeRecoverySurface -> []
+  ExplicitPerRunRecoverySurface -> []
+  ExplicitLongLivedRecoverySurface -> []
+  OperationalRecoverySurface ->
+    [ programNode
+        "operational/revoke-credential"
+        (RevokeOperationalCredential OperationalCredentialDisposition)
+        ( success "recovery/observe-disposition"
+            : map (success . targetCompletionName) bindings
+        )
+    , programNode
+        "operational/read-back-credential-revocation"
+        ( ReadBackOperationalCredentialRevocation
+            OperationalCredentialDisposition
+        )
+        [attempt "operational/revoke-credential"]
+    ]
 
 totalDecommissionNodes
   :: [RegisteredTargetBinding]
@@ -394,11 +467,29 @@ totalDecommissionNodes bindings =
            "decommission/observe-external-receipt"
            ObserveExternalDecommissionReceipt
            []
+       , -- Sprint 4.85: the credential disposition is ordered strictly after the
+         -- terminal audit and strictly before the home uninstall. The audit
+         -- needs the credential live to enumerate provider-side resources, and
+         -- nothing after the disposition touches the provider at all -- the
+         -- uninstall, the local-data disposition, and the terminal receipt are
+         -- local. Disposing before the audit is the conflict this ordering
+         -- exists to make unrepresentable.
+         programNode
+           "decommission/revoke-operational-credential"
+           (RevokeOperationalCredential TotalDecommissionCredentialDisposition)
+           [success "decommission/audit-escapes"]
+       , programNode
+           "decommission/read-back-operational-credential-revocation"
+           ( ReadBackOperationalCredentialRevocation
+               TotalDecommissionCredentialDisposition
+           )
+           [attempt "decommission/revoke-operational-credential"]
        , programNode
            "decommission/uninstall-local"
            UninstallDecommissionLocalFoundation
            [ success "decommission/audit-escapes"
            , success "decommission/observe-external-receipt"
+           , success "decommission/read-back-operational-credential-revocation"
            ]
        , programNode
            "decommission/read-back-local-absence"
@@ -769,6 +860,8 @@ operationTargetBinding operation = case operation of
   ReadBackLocalOnlyCompletion -> Nothing
   CommitOrdinarySurfaceReport -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
+  RevokeOperationalCredential _ -> Nothing
+  ReadBackOperationalCredentialRevocation _ -> Nothing
   AuditTotalDecommissionEscapes -> Nothing
   ObserveExternalDecommissionReceipt -> Nothing
   UninstallDecommissionLocalFoundation -> Nothing

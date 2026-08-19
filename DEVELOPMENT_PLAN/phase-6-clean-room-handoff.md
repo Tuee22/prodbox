@@ -472,6 +472,16 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
   and zero unexpected residue under one run/revision/account/region/substrate/report-digest scope.
   After qualified activation and legacy deletion, rerun the required Standard-P campaign for the
   resulting source/deployment identity before claiming the ledger row complete.
+- **Received from Sprint `4.85` on 2026-08-18 under
+  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-no-backward-blocking):
+  total-decommission program-tag convergence.** Sprint `4.85` owns and has landed the *measurement* —
+  `Prodbox.Lifecycle.Decommission.ProgramTag` names the closed semantic operation universe, both
+  classifiers are total, and `validateDecommissionProgramTagParity` checks the authored claim against
+  both measured images in `prodbox dev check`. What it cannot own is convergence: making every tag
+  two-sided requires the compiled desired-absence program and the signed `DecommissionNode` manifest
+  to become one universe, which is exactly the single-writer cutover this sprint performs over the
+  adapters Sprint `7.36` supplies. Held in Phase 4 it was a Phase-4 validation item that only a
+  Phase-6/7 composition could satisfy; it belongs here.
 
 ### Validation
 
@@ -495,7 +505,12 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
 7. Local fake qualification receipts and mutation tests prove the staged plan cannot reorder
    qualification, activation, deletion, and post-activation requalification. The pre-activation
    scanner accepts only the exact registered legacy set; its post-activation mode accepts none.
-8. Two consecutive home clean-room candidate cycles produce the complete artifacts, uninstall last,
+8. After single-writer activation, `decommissionProgramTagImplementation` measures
+   `CompiledProgramAndRunner` for **every** `DecommissionProgramTag`, with the count asserted so a
+   later one-sided tag fails the build. Before activation the same assertion is the measured
+   partial state Sprint `4.85` closed on, so this item distinguishes convergence achieved from
+   convergence assumed.
+9. Two consecutive home clean-room candidate cycles produce the complete artifacts, uninstall last,
    and leave only intended retained resources. These live results remain non-blocking Standard-P
    evidence and do not themselves make code-local closure contingent on infrastructure.
 

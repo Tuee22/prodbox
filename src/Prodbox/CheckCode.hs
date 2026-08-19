@@ -14,6 +14,7 @@ module Prodbox.CheckCode
   , managedResourceRegistryParityViolations
   , untypedLifecycleInventoryExemptions
   , untypedLifecycleInventoryViolations
+  , legacyOperationalResourceParityViolations
   , registeredTargetExecutorViolations
   , ownershipEdgeDerivationViolations
   , codeCreatedResourceFieldOfViewViolations
@@ -56,6 +57,10 @@ module Prodbox.CheckCode
   , planSprintBlocks
   , developmentPlanResumeViolations
   , sprintBlockMissingFields
+  , sprintDependencyDirectionViolations
+  , sprintDependencyFields
+  , sprintLiveDependencyIds
+  , compareSprintIds
   , documentSectionNumbers
   , headingSectionNumber
   , governedDocStatusValues
@@ -66,6 +71,7 @@ module Prodbox.CheckCode
   , retiredCitedSourcePaths
   , listRepoOwnedPaths
   , matchesSprintToken
+  , pendingRemovalPrerequisiteViolations
   , parseGeneratedSectionsField
   , planOptionsHonoredViolations
   , destructivePlanOptionsArms
@@ -212,6 +218,10 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( operationalCredentialCoverageViolations
+  )
+import Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
+  ( legacyOperationalResourceName
+  , legacyOperationalResources
   )
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( controllerOwnedFamiliesWithoutRegisteredStack
@@ -695,6 +705,7 @@ runGovernedDocChecks repoRoot = do
   citedPathViolations <- checkPlanCitedSourcePaths repoRoot
   sectionCitationViolations <- checkDoctrineSectionCitations repoRoot
   sprintFieldViolations <- checkSprintRequiredFields repoRoot
+  dependencyDirectionViolations <- checkPlanDependencyDirection repoRoot
   resumeLedgerViolations <- checkDevelopmentPlanResumeLedger repoRoot
   pure
     ( harmonyViolations
@@ -703,6 +714,7 @@ runGovernedDocChecks repoRoot = do
         ++ citedPathViolations
         ++ sectionCitationViolations
         ++ sprintFieldViolations
+        ++ dependencyDirectionViolations
         ++ resumeLedgerViolations
     )
 
@@ -1814,6 +1826,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) createCallSiteViolations
     ++ map ("- " ++) managedResourceRegistryParityViolations
     ++ map ("- " ++) untypedLifecycleInventoryViolations
+    ++ map ("- " ++) legacyOperationalResourceParityViolations
     ++ map ("- " ++) registeredTargetExecutorViolations
     ++ map ("- " ++) ownershipEdgeDerivationViolations
     ++ map ("- " ++) codeCreatedResourceFieldOfViewViolations
@@ -5840,6 +5853,247 @@ checkSprintRequiredFields repoRoot = do
         , missing <- sprintBlockMissingFields body
         ]
 
+-- | Sprint 0.30: the two sprint-block fields in which a dependency may be
+-- recorded (Standard H).
+--
+-- A dependency written anywhere else is invisible to this gate, which is
+-- exactly how the 2026-08-17 plan-compliance audit found a queue in which no
+-- row could reach @Done@ while @prodbox dev lint docs@ reported it clean: the
+-- backward dependencies lived in prose, and three Active sprints declared
+-- theirs under an invented field name no gate reads.
+planDependencyFieldNames :: [String]
+planDependencyFieldNames = ["Blocked by", "Closure dependency"]
+
+-- | Field names that look like a dependency but are not the two Standard-H
+-- ones.  Named rather than pattern-matched loosely so a new spelling is a
+-- deliberate addition here instead of a silent bypass.
+planRejectedDependencyFieldNames :: [String]
+planRejectedDependencyFieldNames =
+  [ "Closure dependencies"
+  , "Closure Dependency"
+  , "Closure Dependencies"
+  , "Depends on"
+  , "Dependency"
+  , "Dependencies"
+  , "Waiting on"
+  , "Waits on"
+  , "Blocked On"
+  , "Blocked on"
+  , "Blocked by dependency"
+  ]
+
+-- | Sprint 0.30 (pure). Order two plan sprint ids the way the queue does:
+-- phase number first, then each remaining segment numerically when it is
+-- numeric and lexically otherwise, so @7.5.b.i@ sorts after @7.5.b@ and before
+-- @7.6@ rather than by string comparison, which would put @7.10@ before @7.5@.
+--
+-- Exposed for unit tests.
+compareSprintIds :: String -> String -> Ordering
+compareSprintIds left right =
+  compare (sprintIdSortKey left) (sprintIdSortKey right)
+
+sprintIdSortKey :: String -> [(Int, Int, String)]
+sprintIdSortKey = map segmentKey . splitOnDots
+ where
+  segmentKey segment = case span isDigit segment of
+    ([], _) -> (1, 0, segment)
+    (digits, rest) -> (0, read digits, rest)
+  splitOnDots value = case break (== '.') value of
+    (segment, '.' : rest) -> segment : splitOnDots rest
+    (segment, _) -> [segment]
+
+-- | Sprint 0.30 (pure). The dependency fields a sprint body declares, as
+-- @(fieldName, fieldText)@, including the rejected spellings so the caller can
+-- report them.  Exposed for unit tests.
+sprintDependencyFields :: String -> [(String, String)]
+sprintDependencyFields body =
+  [ (name, fieldText)
+  | lineText <- stripFencedCodeBlocks (lines body)
+  , (name, fieldText) <- maybe [] pure (dependencyFieldOnLine lineText)
+  ]
+ where
+  dependencyFieldOnLine lineText =
+    case [ (name, rest)
+         | name <- planDependencyFieldNames ++ planRejectedDependencyFieldNames
+         , Just rest <- [stripPrefix ("**" ++ name ++ "**:") lineText]
+         ] of
+      -- Longest match wins so `Closure dependency` never shadows
+      -- `Closure dependencies`.
+      [] -> Nothing
+      matches -> Just (longestFieldName matches)
+  longestFieldName = foldr1 (\left right -> if length (fst left) >= length (fst right) then left else right)
+
+-- | Sprint 0.30 (pure). The sprint ids a dependency field still asserts.
+--
+-- Historical lines record their own resolution in place — @~~Sprint 2.19~~
+-- unblocked@, @Sprint `1.38` (closed)@, @Sprint 0.8 (...) — resolved@ — and
+-- those are statements that the dependency is gone, not live dependencies. A
+-- struck span is dropped outright; a parenthetical or dash-introduced
+-- resolution note drops the ids it annotates. @none@ yields no ids.
+--
+-- Exposed for unit tests.
+sprintLiveDependencyIds :: String -> [String]
+sprintLiveDependencyIds fieldText
+  | resolvedInPlace = []
+  | otherwise = sprintIdsInText withoutStruck
+ where
+  withoutStruck = dropStruckSpans fieldText
+  lowered = map toLower withoutStruck
+  resolvedInPlace =
+    any
+      (`isInfixOf` lowered)
+      ["(closed)", "(satisfied", "(all closed)", "(now done", "resolved", "unblocked", "n/a"]
+
+dropStruckSpans :: String -> String
+dropStruckSpans = go
+ where
+  go [] = []
+  go ('~' : '~' : rest) = go (drop 2 (dropWhileNotStrike rest))
+  go (character : rest) = character : go rest
+  dropWhileNotStrike [] = []
+  dropWhileNotStrike ('~' : '~' : rest) = '~' : '~' : rest
+  dropWhileNotStrike (_ : rest) = dropWhileNotStrike rest
+
+-- | Every @Sprint N.M@ / @Sprint `N.M`@ / @Sprint-`N.M`@ id in a fragment.
+sprintIdsInText :: String -> [String]
+sprintIdsInText = go
+ where
+  go [] = []
+  go text@(_ : rest) = case stripPrefix "Sprint" text of
+    Just afterKeyword ->
+      let afterSeparator = dropWhile (\character -> character `elem` (" -s" :: String)) afterKeyword
+          candidate =
+            takeWhile
+              (\character -> isAlphaNum character || character == '.')
+              (dropWhile (== '`') afterSeparator)
+          trimmed = dropTrailingDots candidate
+       in if isPlanSprintId trimmed
+            then trimmed : go rest
+            else go rest
+    Nothing -> go rest
+  dropTrailingDots value = reverse (dropWhile (== '.') (reverse value))
+
+-- | Sprint 0.30 (pure). Standard N, made mechanical over the declared fields.
+--
+-- Two violations: a live dependency that sorts later than the sprint declaring
+-- it, and a dependency-shaped field this gate cannot read. Exposed for unit
+-- tests.
+sprintDependencyDirectionViolations :: [(FilePath, String)] -> [String]
+sprintDependencyDirectionViolations planDocuments =
+  concat
+    [ fieldViolations path sprintId body
+    | (path, contents) <- planDocuments
+    , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
+    , ".md" `isSuffixOf` path
+    , (heading, body) <- planSprintBlocks contents
+    , Just sprintId <- [sprintIdFromHeading heading]
+    ]
+ where
+  fieldViolations path sprintId body =
+    concat
+      [ fieldViolation path sprintId name fieldText
+      | (name, fieldText) <- sprintDependencyFields body
+      ]
+  fieldViolation path sprintId name fieldText
+    | name `elem` planRejectedDependencyFieldNames =
+        [ path
+            ++ " Sprint `"
+            ++ sprintId
+            ++ "` records a dependency under `**"
+            ++ name
+            ++ "**`, which is not a Standard-H dependency field. Use `**Blocked by**` "
+            ++ "or `**Closure dependency**`; a dependency under any other name is "
+            ++ "invisible to this gate, which is how a backward dependency last "
+            ++ "reached the queue undetected (Standard N)."
+        ]
+    | otherwise =
+        [ path
+            ++ " Sprint `"
+            ++ sprintId
+            ++ "` declares `**"
+            ++ name
+            ++ "**: Sprint `"
+            ++ dependencyId
+            ++ "``, which is a later sprint. Standard N forbids a backward "
+            ++ "dependency: re-scope this sprint so its owned surface is "
+            ++ "validatable now and re-own the later-dependent work to Sprint `"
+            ++ dependencyId
+            ++ "`, or state it as a disclaimer instead of a dependency."
+        | dependencyId <- sprintLiveDependencyIds fieldText
+        , compareSprintIds dependencyId sprintId == GT
+        ]
+
+-- | Sprint 0.30 (pure). The ledger's declarable prerequisite direction
+-- (Standard I).
+--
+-- A @Pending Removal@ row whose removal waits on a later sprint is a blocked
+-- earlier phase wearing a ledger row: nobody in the queue can close it. The
+-- row is re-owned to that sprint instead. Exposed for unit tests.
+pendingRemovalPrerequisiteViolations :: String -> [String]
+pendingRemovalPrerequisiteViolations contents =
+  case markdownHeadingSections "## Pending Removal" contents of
+    [sectionLines] -> concat (zipWith checkRow [1 :: Int ..] (dataRows sectionLines))
+    _ -> []
+ where
+  dataRows sectionLines =
+    drop
+      2
+      [ cells
+      | lineText <- sectionLines
+      , "|" `isPrefixOf` trimLine lineText
+      , let cells = markdownTableCells lineText
+      ]
+  checkRow rowNumber cells = case cells of
+    [_, ownerCell, notesCell] ->
+      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` Pending Removal row "
+          ++ show rowNumber
+          ++ " is owned by Sprint `"
+          ++ ownerId
+          ++ "` but declares `**Prerequisite**: Sprint `"
+          ++ prerequisiteId
+          ++ "``, a later sprint. Re-own the row to Sprint `"
+          ++ prerequisiteId
+          ++ "`; a row whose prerequisite lands after its owner closes has no "
+          ++ "scheduled remover (Standards I/N)."
+      | ownerId <- take 1 (sprintIdsInText ownerCell)
+      , prerequisiteId <- prerequisiteIdsInNotes notesCell
+      , compareSprintIds prerequisiteId ownerId == GT
+      ]
+    _ -> []
+  prerequisiteIdsInNotes notesCell =
+    concat
+      [ take 1 (sprintIdsInText fragment)
+      | fragment <- prerequisiteFragments notesCell
+      ]
+  prerequisiteFragments notesCell = go notesCell
+   where
+    go [] = []
+    go text@(_ : rest) = case stripPrefix "**Prerequisite**:" text of
+      Just after -> take 64 after : go rest
+      Nothing -> go rest
+
+-- | Sprint 0.30 (IO wrapper). Standard-N dependency direction over the plan
+-- documents and the deletion ledger.
+checkPlanDependencyDirection :: FilePath -> IO [String]
+checkPlanDependencyDirection repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let planPaths =
+        [ path
+        | path <- repoPaths
+        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
+        , ".md" `isSuffixOf` path
+        ]
+  planDocuments <-
+    forM planPaths $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  let ledgerContents =
+        maybe "" id (lookup "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md" planDocuments)
+  pure
+    ( sprintDependencyDirectionViolations planDocuments
+        ++ pendingRemovalPrerequisiteViolations ledgerContents
+    )
+
 -- | Sprint 0.21 (IO wrapper). The cited-source-path existence check over
 -- @DEVELOPMENT_PLAN/@ — the mechanical form of the evidence sweep that has
 -- repeatedly found real defects by hand (Sprints @4.51@, @4.53@, @5.18@,
@@ -6108,16 +6362,22 @@ untypedLifecycleInventoryExemptions =
     )
   ,
     ( "operational-aws-ses-lease-role"
-    , "operational credential surface; registering the Operational descriptors "
-        ++ "is constrained by OperationalCredentialDispositionBlocker"
+    , "the pre-cutover operational identity, whose successor is declared: the "
+        ++ "fixed session role becomes the registered provider role that "
+        ++ "prodbox-lifecycle-provider assumes. Registering it as a typed "
+        ++ "teardown descriptor would make a superseded identity a target of "
+        ++ "the supported registry; its removal is deletion-ledger work"
     )
   ,
     ( "operational-iam-user"
-    , "operational credential surface; see the disposition blockers"
+    , "the pre-cutover operational identity, superseded by "
+        ++ "prodbox-lifecycle-provider; see the SES lease role row"
     )
   ,
     ( "operational-aws-config"
-    , "operational credential surface; see the disposition blockers"
+    , "the pre-cutover operational aws.* block, superseded by generated "
+        ++ "non-secret configuration rather than by any credential; see the "
+        ++ "SES lease role row"
     )
   ]
 
@@ -6155,6 +6415,42 @@ untypedLifecycleInventoryViolations =
             ++ "why it cannot be in "
             ++ "Prodbox.CheckCode.untypedLifecycleInventoryExemptions."
         ]
+
+-- | Sprint 4.85: join the closed pre-cutover operational resource enumeration
+-- to the @Operational@ rows of the flat lifecycle inventory.
+--
+-- @LegacyOperationalResource@ is what carries each legacy name's declared
+-- successor, and 'legacyOperationalIdentityStatus' — the source
+-- @LegacyOperationalIdentityReplacementUndefined@ is derived from — is a
+-- statement about that enumeration being complete. An enumeration that had
+-- silently lost a row would report "every legacy resource has a successor"
+-- while a real one went unanswered, which is the same defect the disposition
+-- blockers exist to prevent.
+legacyOperationalResourceParityViolations :: [String]
+legacyOperationalResourceParityViolations =
+  [ "`"
+      ++ name
+      ++ "` is an Operational row in resourceLifecycleClasses but is not a "
+      ++ "LegacyOperationalResource, so no declared successor exists for it "
+      ++ "and legacyOperationalIdentityStatus would report the migration "
+      ++ "defined while it is not. Add it to "
+      ++ "Prodbox.Lifecycle.Teardown.OperationalCredentialInventory."
+  | name <- resourceNamesOfClass Operational
+  , name `notElem` legacyNames
+  ]
+    ++ [ "`"
+           ++ name
+           ++ "` is a LegacyOperationalResource but has no Operational row in "
+           ++ "resourceLifecycleClasses; the enumeration is describing a "
+           ++ "resource the repository no longer registers."
+       | name <- legacyNames
+       , name `notElem` resourceNamesOfClass Operational
+       ]
+ where
+  legacyNames =
+    map
+      (Text.unpack . legacyOperationalResourceName)
+      legacyOperationalResources
 
 -- | Join the typed teardown registry to the production registered-target
 -- interpreter.

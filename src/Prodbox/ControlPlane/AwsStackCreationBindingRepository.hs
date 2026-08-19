@@ -520,9 +520,9 @@ observeAuthorityAwsStackCreationOperation repository currentRevision operationId
             )
         )
     (digest, intent) <- case retained of
-      AuthorityProviderPending retainedDigest retainedIntent ->
+      AuthorityProviderPending retainedDigest retainedIntent _ ->
         Right (retainedDigest, retainedIntent)
-      AuthorityProviderCompleted retainedDigest retainedIntent _ ->
+      AuthorityProviderCompleted retainedDigest retainedIntent _ _ ->
         Right (retainedDigest, retainedIntent)
     unless
       (digest == operationIdDigest operationId)

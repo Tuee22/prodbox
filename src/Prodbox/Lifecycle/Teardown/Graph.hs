@@ -301,6 +301,10 @@ compileDesiredAbsenceGraph runId foundation awsScope surface = do
         mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
       ReadBackLocalOnlyCompletion ->
         mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+      RevokeOperationalCredential _ ->
+        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+      ReadBackOperationalCredentialRevocation _ ->
+        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
       CommitOrdinarySurfaceReport ->
         mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
       ReadBackOrdinarySurfaceReport ->
@@ -453,6 +457,8 @@ operationTargetBinding operation = case operation of
   ReadBackLocalOnlyAbsence -> Nothing
   CommitLocalOnlyCompletion -> Nothing
   ReadBackLocalOnlyCompletion -> Nothing
+  RevokeOperationalCredential _ -> Nothing
+  ReadBackOperationalCredentialRevocation _ -> Nothing
   CommitOrdinarySurfaceReport -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
   AuditTotalDecommissionEscapes -> Nothing

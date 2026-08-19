@@ -269,7 +269,7 @@ verifyAuthorityProviderAwsScopeCompletion
 verifyAuthorityProviderAwsScopeCompletion expectedOperation retained = do
   (retainedDigest, evidence) <- case retained of
     AuthorityProviderPending {} -> Left ProviderAwsScopeRetainedPending
-    AuthorityProviderCompleted digest intent payload -> do
+    AuthorityProviderCompleted digest intent payload _ -> do
       if intent == ObserveProviderAwsScope
         then Right ()
         else Left ProviderAwsScopeRetainedIntentMismatch

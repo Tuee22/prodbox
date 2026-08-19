@@ -335,6 +335,7 @@ authorityBackupBlobObjectName blobClass digest = do
   classSegment <- case blobClass of
     "authority-aggregate" -> Right "authority-aggregate"
     "checkpoint" -> Right "checkpoint"
+    "config" -> Right "config"
     _ -> Left "invalid Authority backup blob class"
   normalized <- validateSha256Digest digest
   Right (AdapterObjectName ("blobs/" <> classSegment <> "/sha256-" <> normalized))

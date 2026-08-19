@@ -210,9 +210,24 @@ lifecycleTeardownProgramSuite = do
       assertProgramDependencies
         total
         "uninstall-decommission-local-foundation"
+        -- Sprint 4.85: the credential revocation is answered through the home
+        -- plane, so the uninstall that dismantles that plane waits on its
+        -- read-back as well as on the audit and the external receipt.
         [ ("decommission/audit-escapes", CleanupRequiresSuccess)
         , ("decommission/observe-external-receipt", CleanupRequiresSuccess)
+        ,
+          ( "decommission/read-back-operational-credential-revocation"
+          , CleanupRequiresSuccess
+          )
         ]
+      assertProgramDependencies
+        total
+        "revoke-operational-credential"
+        [("decommission/audit-escapes", CleanupRequiresSuccess)]
+      assertProgramDependencies
+        total
+        "read-back-operational-credential-revocation"
+        [("decommission/revoke-operational-credential", CleanupRequiresAttempt)]
       assertProgramDependencies
         total
         "apply-decommission-local-data-disposition"
@@ -400,6 +415,24 @@ lifecycleTeardownProgramSuite = do
       -- carry both target absence and checkpoint disposition as mandatory
       -- read-backs, which is what makes the previous claim mean anything.
       desiredAbsenceRegressionExplicitPerRunObligationNonEmpty regression
+        `shouldBe` True
+
+    it "Sprint 4.85 operational teardown mints its own completion witness" $ do
+      -- The operational surface had no minter because it projected zero
+      -- registered targets: completing it would have been a clean-completion
+      -- claim over an empty projection. Its obligation is no longer empty --
+      -- the credential revocation's mandatory read-back is its own, not a
+      -- registered target's -- so the completion claim has content.
+      regression <- expectReportRegression
+      desiredAbsenceRegressionOperationalCompletes regression `shouldBe` True
+      desiredAbsenceRegressionOperationalObligationNonEmpty regression
+        `shouldBe` True
+      -- The same two minter-owned refusals as explicit per-run: a run with no
+      -- recovery plane has made no liveness claim, and a read-back value whose
+      -- surface tag is another surface's is refused rather than trusted.
+      desiredAbsenceRegressionOperationalUnavailableRefused regression
+        `shouldBe` True
+      desiredAbsenceRegressionOperationalSurfaceMismatchRefused regression
         `shouldBe` True
 
     it "Sprint 4.85 explicit per-run completion refuses a plane-less or wrong-surface value" $ do
@@ -603,9 +636,16 @@ surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
   , SurfaceCase CascadeSurface 47 perRunTargetKeys
   , SurfaceCase ExplicitPerRunSurface 42 perRunTargetKeys
-  , SurfaceCase OperationalTeardownSurface 5 []
+  , -- Sprint 4.85 (2026-08-18): the operational surface gained its credential
+    -- revocation and that revocation's own read-back, which is what
+    -- OrdinaryLifecycleProviderRevocationUnavailable named as missing.
+    SurfaceCase OperationalTeardownSurface 7 []
   , SurfaceCase ExplicitLongLivedSurface 8 [AwsEbsProductionRetainedKey]
-  , SurfaceCase TotalDecommissionSurface 48 allManagedTargetKeys
+  , -- Sprint 4.85 (2026-08-18): 50 rather than 48 — the credential revocation
+    -- and its read-back are ordered strictly between the terminal audit and the
+    -- home uninstall, which is the audit-then-dispose order the disposition
+    -- blockers said no surface could express.
+    SurfaceCase TotalDecommissionSurface 50 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
@@ -646,12 +686,22 @@ expectedOperationTags surface targetKeys = case surface of
          , "read-back-cascade-completion"
          ]
   ExplicitPerRunSurface -> ordinaryTags targetKeys
-  OperationalTeardownSurface -> ordinaryTags targetKeys
+  OperationalTeardownSurface ->
+    recoveryTags
+      ++ orderedTargetTags targetKeys
+      ++ [ "observe-recovery-plane-disposition"
+         , "revoke-operational-credential"
+         , "read-back-operational-credential-revocation"
+         , "commit-ordinary-surface-report"
+         , "read-back-ordinary-surface-report"
+         ]
   ExplicitLongLivedSurface -> ordinaryTags targetKeys
   TotalDecommissionSurface ->
     orderedTargetTags targetKeys
       ++ [ "audit-total-decommission-escapes"
          , "observe-external-decommission-receipt"
+         , "revoke-operational-credential"
+         , "read-back-operational-credential-revocation"
          , "uninstall-decommission-local-foundation"
          , "read-back-decommission-local-absence"
          , "apply-decommission-local-data-disposition"
@@ -732,9 +782,14 @@ expectedEffectCount surface targetKeys = surfaceEffectCount + length targetKeys 
       LocalOnlySurface -> 2
       CascadeSurface -> 4
       ExplicitPerRunSurface -> 2
-      OperationalTeardownSurface -> 2
+      -- Sprint 4.85: the recovery establish, the surface report commit, and
+      -- the credential revocation.
+      OperationalTeardownSurface -> 3
       ExplicitLongLivedSurface -> 2
-      TotalDecommissionSurface -> 3
+      -- Sprint 4.85: the audit, the local uninstall, the local-data
+      -- disposition, the terminal receipt commit, and the credential
+      -- revocation.
+      TotalDecommissionSurface -> 4
 
 registeredObservationKey
   :: TeardownOperation surface -> Maybe RegisteredResourceKey
@@ -873,6 +928,8 @@ confirmationTag operation = case operation of
   UninstallLocalOnlyFoundation -> Just "read-back-local-only-absence"
   CommitLocalOnlyCompletion -> Just "read-back-local-only-completion"
   CommitOrdinarySurfaceReport -> Just "read-back-ordinary-surface-report"
+  RevokeOperationalCredential _ ->
+    Just "read-back-operational-credential-revocation"
   UninstallDecommissionLocalFoundation -> Just "read-back-decommission-local-absence"
   ApplyDecommissionLocalDataDisposition ->
     Just "read-back-decommission-local-data-disposition"
@@ -894,6 +951,7 @@ isMandatoryReadBack operation = case operation of
   ReadBackLocalOnlyAbsence -> True
   ReadBackLocalOnlyCompletion -> True
   ReadBackOrdinarySurfaceReport -> True
+  ReadBackOperationalCredentialRevocation _ -> True
   ReadBackDecommissionLocalAbsence -> True
   ReadBackDecommissionLocalDataDisposition -> True
   ReadBackDecommissionTerminalReceipt -> True

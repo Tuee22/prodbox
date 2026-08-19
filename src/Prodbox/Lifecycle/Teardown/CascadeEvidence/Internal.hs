@@ -30,6 +30,7 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , CascadeCredentialDispositionEvidence
   , mkCascadeCredentialDispositionEvidence
   , CascadeTerminalAuditEvidence
+  , cascadeAuditScope
   , mkCascadeTerminalAuditEvidence
   , CascadePreUninstallReportEvidence
   , mkCascadePreUninstallReportEvidence
@@ -81,6 +82,7 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , cascadeEvidenceRegressionDurableReadyCorruptionRefused
   , withFixedCascadeEvidenceFixtureInternal
   , withCascadeEvidenceFixtureForRunInternal
+  , withCascadePreUninstallInputsInternal
   )
 where
 
@@ -1326,6 +1328,37 @@ withCascadeEvidenceFixtureForRunInternal rawRunId consume = do
         (fixedCascadeReady fixture)
         (fixedCascadeLocalUninstall fixture)
         (fixedCascadeComplete fixture)
+    )
+
+-- | Hand a package-private consumer the three node-5\/6 evidences a Stage-C
+-- readiness proof composes with, for one fixed compiled cascade run.
+--
+-- The Stage-C interpreter takes those evidences as inputs because earlier
+-- cascade nodes produce them; without this accessor its own regression would
+-- have to rebuild the registered-key observation set, the retained catalog,
+-- and the audit scope, which would make its fixture a second copy of this
+-- one and let the two drift.  Nothing authority-bearing escapes: the callback
+-- receives opaque evidence values and the fixture stays inside the package.
+withCascadePreUninstallInputsInternal
+  :: Text
+  -> ( CompiledDesiredAbsenceProgram 'Cascade
+       -> CleanupRun
+       -> CascadeAbsenceEvidence
+       -> CascadeCredentialDispositionEvidence
+       -> CascadeTerminalAuditEvidence
+       -> result
+     )
+  -> Either Text result
+withCascadePreUninstallInputsInternal rawRunId consume = do
+  fixture <- fixedCascadeEvidenceFixtureFor rawRunId fixedCascadeFoundation
+  let compiled = fixedCascadeCompiled fixture
+  pure
+    ( consume
+        compiled
+        (fixedCascadeRun fixture)
+        (fixedCascadeAbsence compiled)
+        (fixedCascadeCredentialsFor compiled)
+        (fixedCascadeAuditFor compiled)
     )
 
 data CascadeEvidenceRegression = CascadeEvidenceRegression

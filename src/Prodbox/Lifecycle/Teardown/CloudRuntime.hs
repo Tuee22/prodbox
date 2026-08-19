@@ -129,6 +129,8 @@ executeCloudOperation runtime context operation = case operation of
   ReadBackLocalOnlyAbsence -> pure Nothing
   CommitLocalOnlyCompletion -> pure Nothing
   ReadBackLocalOnlyCompletion -> pure Nothing
+  RevokeOperationalCredential _ -> pure Nothing
+  ReadBackOperationalCredentialRevocation _ -> pure Nothing
   CommitOrdinarySurfaceReport -> pure Nothing
   ReadBackOrdinarySurfaceReport -> pure Nothing
   AuditTotalDecommissionEscapes -> pure Nothing

@@ -9,6 +9,7 @@ module Prodbox.ControlPlane.ProviderCaller
   ( ProviderCallerError (..)
   , renderProviderCallerError
   , dispatchHostProviderIntent
+  , dispatchHostProviderIntentOwnedBy
   , dispatchHostProviderIntentFresh
   , dispatchAuthenticatedProviderIntent
   , dispatchAuthenticatedProviderIntentFresh
@@ -22,6 +23,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError
   , dispatchAuthorityProviderIntent
+  , dispatchAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntentWithOperation
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
@@ -31,6 +33,9 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , renderLifecycleAuthorityAuthenticationError
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
+  )
+import Prodbox.Lifecycle.Authority.Admission
+  ( ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   )
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKeyError
@@ -61,13 +66,38 @@ dispatchHostProviderIntent
   -> ProviderIntent
   -> IO (Either ProviderCallerError Text)
 dispatchHostProviderIntent caller repoRoot rawSubmissionKey intent =
+  dispatchHostProviderIntentOwnedBy
+    caller
+    repoRoot
+    rawSubmissionKey
+    intent
+    ProviderOperationUnownedByCleanupRun
+
+-- | Sprint 4.85: dispatch and name the cleanup operation that authorized it.
+--
+-- Desired-present provisioning work keeps the unowned form above and says so
+-- explicitly; a teardown dispatch names its cleanup operation, so the retained
+-- Provider record can be attributed to the run that authorized it.
+dispatchHostProviderIntentOwnedBy
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> Text
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> IO (Either ProviderCallerError Text)
+dispatchHostProviderIntentOwnedBy caller repoRoot rawSubmissionKey intent owner =
   case mkClientSubmissionKey rawSubmissionKey of
     Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
     Right submissionKey -> do
       authenticated <-
         withHostLifecycleAuthorityAuthentication caller repoRoot $ \authentication ->
           withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
-            dispatchAuthorityProviderIntent transport submissionKey intent
+            fmap snd
+              <$> dispatchAuthorityProviderIntentOwnedBy
+                transport
+                submissionKey
+                intent
+                owner
       pure $ case authenticated of
         Left err -> Left (ProviderCallerAuthenticationFailed err)
         Right (Left err) -> Left (ProviderCallerAuthenticationFailed err)

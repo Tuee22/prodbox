@@ -142,7 +142,12 @@ cleanupSurfaceMintsCompletionEvidence surface = case surface of
   LocalOnly -> False
   Cascade -> True
   ExplicitPerRun -> True
-  OperationalTeardown -> False
+  -- Sprint 4.85 (2026-08-18): the operational surface mints completion. Its
+  -- obligation is no longer empty -- the credential revocation and that
+  -- revocation's mandatory read-back are its own rather than a registered
+  -- target's -- which is what a completion claim over zero registered targets
+  -- previously lacked.
+  OperationalTeardown -> True
   ExplicitLongLived -> False
   TotalDecommission -> False
 

@@ -336,7 +336,8 @@ interpreterFor
 interpreterFor environment =
   AwsRegisteredTargetInterpreter
     { awsRegisteredTargetProviderBoundary =
-        TeardownProviderBoundary $ \submissionKey intent -> do
+        TeardownProviderBoundary $ \dispatchKey intent -> do
+          let submissionKey = providerDispatchSubmissionKey dispatchKey
           liftInterpreterIO
             (modifyIORef' (fakeProviderCalls environment) (++ [(submissionKey, intent)]))
           pure (providerResponse environment submissionKey intent)

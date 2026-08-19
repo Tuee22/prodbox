@@ -352,8 +352,16 @@ compatibilityFailureSummary failure = case failure of
   MigrationWriteFailed _ -> "projection-import-state-write-failed"
   MigrationConcurrentWrite -> "projection-import-state-concurrent-write"
 
+-- The two Provider-admission arms are refusals of a state transition this
+-- endpoint's route cannot reach: no authenticated route issues the
+-- generation-binding or Cascade-audit freeze command today (recorded as
+-- `ProviderAdmissionFreezeRouteAbsent`). They are mapped rather than
+-- wildcarded so that adding such a route is a wiring change, not a silent
+-- fall-through to a wrong status.
 authorityRefusalStatus :: AuthorityAdmissionCommandRefusal -> ReplyStatus
 authorityRefusalStatus refusal = case refusal of
+  AuthorityProviderGenerationBindingRefused _ -> ReplyConflict
+  AuthorityProviderAdmissionFreezeRefused _ -> ReplyConflict
   AuthorityMigrationBeforeGenesis -> ReplyServiceUnavailable
   AuthorityMigrationDuringBackupRepair -> ReplyServiceUnavailable
   AuthorityMigrationAlreadyStarted -> ReplyConflict
@@ -362,6 +370,8 @@ authorityRefusalStatus refusal = case refusal of
 
 authorityRefusalToken :: AuthorityAdmissionCommandRefusal -> Text
 authorityRefusalToken refusal = case refusal of
+  AuthorityProviderGenerationBindingRefused _ -> "provider-generation-binding-refused"
+  AuthorityProviderAdmissionFreezeRefused _ -> "provider-admission-freeze-refused"
   AuthorityMigrationBeforeGenesis -> "before-genesis"
   AuthorityMigrationDuringBackupRepair -> "during-backup-repair"
   AuthorityMigrationAlreadyStarted -> "already-started"

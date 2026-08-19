@@ -5098,6 +5098,36 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
   `registeredTargetExecutorViolations` gate keeps the ordering mandatory: registering either target
   before its adapter exists compiles a mandatory absence read-back that cannot succeed, which makes
   the projecting surface's completion unreachable rather than making the resource swept.
+- **Received from Sprint `4.85` on 2026-08-18 under
+  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-no-backward-blocking):
+  the `ExplicitLongLived` completion minter.** It lands in the *same change* as the retained-EBS
+  adapter above, not after it. `registeredTargetExecutorViolations` makes that mechanical rather
+  than advisory: the retained EBS family is admissible today only because neither
+  `ExplicitLongLived` nor `TotalDecommission` has a minter, and it "stops being admissible the
+  moment either gains one". A Phase-4 sprint therefore could not add the minter without failing
+  `prodbox dev check` until this adapter existed — a backward dependency, so ownership of the pair
+  moves here rather than the ordering being recorded in Phase 4.
+- **Received from Sprint `4.85` on the same re-scope: the DNS01 Challenge/TXT registered-target
+  executor and its registration.** Deletion is by Kubernetes owner object followed by a Route 53
+  read-back, and neither exists as a registered-target execution path; the AWS-lane challenge is
+  `PerRun`, so registering it before its executor would make the `Cascade` and `ExplicitPerRun`
+  programs unsatisfiable exactly as the `dns-aws` zone did. Phase 4 keeps the pure obligation data
+  (`Dns01ChallengeDesiredAbsence` and its always-run dependency); the executor, the
+  `RegisteredResourceKey`, and the response-loss/restart proof in the generic cleanup report land
+  here with the adapter.
+- **Received from Sprint `4.85` on the same re-scope: the terminal cascade audit's execution half.**
+  Phase 4 owns and has landed the admission algebra — the freeze transition over the same aggregate
+  the submission path reads, its projected pending-work proof, and the reservation that lets the
+  fence admit the audit it exists to run. What waits on this phase is the bounded paginated Provider
+  intent/result, the descriptor-bound retained matcher/query catalog, the independently read-back
+  durable audit receipt protected from compaction, and the separate IAM identity/generation/
+  attachment revoke and read-back.
+- **Received on the same re-scope from a note that owned nothing: wire
+  `residueLayerAnswersResourceExistence` into `residueBlocksTeardownGate`.** The predicate exists and
+  is deliberately unwired, because doing so today would refuse every long-lived teardown: `aws-ses`
+  has no AWS-side observer (this sprint) and the integration fixtures still supply absence through
+  the harness bypass (Sprint `5.36`). It "lands as one decision" with the `aws-ses` observer here,
+  after `5.36`'s cutover, rather than remaining a paragraph inside a ledger row that no sprint owned.
 
 ### Validation
 
@@ -5117,9 +5147,19 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
    session; checkpoint state and global audit cannot mint it.
 6. Controller API loss records a drain failure, runs exact `RequiresAttempt` backstops, and closes
    only on exact EKS/family absence.
-7. Fake adapters, adoption-plan confirmation/read-back interpreters, pagination/duplication
+7. The received Sprint-`4.85` items are validated with their adapters in the same change:
+   `ExplicitLongLived` completion is constructible only over a retained-EBS target whose exact
+   observe/destroy/absence read-back all exist, and `registeredTargetExecutorViolations` stays at
+   zero across the whole registry rather than passing because the surface still mints nothing; the
+   DNS01 challenge family compiles a node whose mandatory read-back its executor discharges, with
+   response-loss and restart resuming the same stable operation; the terminal cascade audit reserves
+   atomically under the freeze, reads its receipt back independently, and refuses on a key-only
+   allowlist, a write response, or an empty tag result; and `residueBlocksTeardownGate` consults
+   `residueLayerAnswersResourceExistence` without refusing a long-lived teardown that the AWS-side
+   observer answers.
+8. Fake adapters, adoption-plan confirmation/read-back interpreters, pagination/duplication
    fixtures, unit/integration suites, and `prodbox dev check` pass locally.
-8. The non-blocking live adapter campaign provisions with
+9. The non-blocking live adapter campaign provisions with
    `prodbox aws stack eks reconcile`, `prodbox aws stack aws-subzone reconcile`, and
    `prodbox aws stack test reconcile`; destroys through
    `prodbox aws stack eks destroy --yes`,

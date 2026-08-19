@@ -42,6 +42,7 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( teardownOperationCredentialConsumer
   , teardownOperationIsTerminalAudit
   , teardownOperationIsCredentialDisposition
+  , teardownOperationIsCredentialRevocationReadBack
   , measuredOperationalCredentialDispositionBlockers
   , OperationalCredentialCoverageError (..)
   , renderOperationalCredentialCoverageError
@@ -54,7 +55,8 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   , coverageRegressionConsumersPrecedeAudit
   , coverageRegressionCheckpointTailCounted
   , coverageRegressionAncestryIsDiscriminating
-  , coverageRegressionAuditIsNotItsOwnConsumer
+  , coverageRegressionAuditConsumesCredential
+  , coverageRegressionNonConsumersExist
   , OperationalCredentialDispositionRegression
   , fixedOperationalCredentialDispositionRegression
   , dispositionRegressionMeasuredEqualsPublished
@@ -62,25 +64,39 @@ module Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   , dispositionRegressionCascadeHasAudit
   , dispositionRegressionOperationalSurfaceHasNoAudit
   , dispositionRegressionAuditPredicateDiscriminates
+  , dispositionRegressionFreezeRouteIssuesFreeze
+  , dispositionRegressionFreezeRouteMeasurementDiscriminates
+  , dispositionRegressionDecommissionOrdersDispositionAfterAudit
+  , dispositionRegressionDispositionIsNotAnAuditAncestor
   )
 where
 
 import Data.List (nub, sort)
-import Data.List.NonEmpty qualified as NonEmpty
 import Data.Maybe (mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Lifecycle.Authority.Admission
+  ( AuthorityControlRoute
+  , authorityControlRouteIssuedCommandTag
+  , authorityControlRoutesIssueCascadeAuditFreeze
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.Execution
+  ( canonicalTargetRevocationReadBackProtocolExists
+  )
 import Prodbox.Lifecycle.Teardown.Model
-  ( CleanupSurface (Cascade)
-  , CleanupSurfaceWitness (CascadeSurface, OperationalTeardownSurface)
+  ( CleanupSurface (Cascade, TotalDecommission)
+  , CleanupSurfaceWitness
+    ( CascadeSurface
+    , OperationalTeardownSurface
+    , TotalDecommissionSurface
+    )
   )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
   ( DispositionBlockerEvidence (..)
   , LegacyOperationalIdentityStatus (LegacyOperationalIdentityMigrationRequired)
   , OperationalCredentialDispositionBlocker (..)
   , OperationalCredentialGraphConsumer (..)
-  , absentDispositionCapabilityDetail
   , dispositionBlockerEvidence
   , legacyOperationalIdentity
   , legacyOperationalIdentityStatus
@@ -100,6 +116,9 @@ import Prodbox.Lifecycle.Teardown.Program
   , programNodeDependencies
   , programNodeName
   , programNodeOperation
+  )
+import Prodbox.Lifecycle.Teardown.ProviderDispatch
+  ( teardownProviderDispatchOwnershipIsTotal
   )
 
 -- | Which operational-credential consumer, if any, one closed teardown
@@ -147,7 +166,13 @@ teardownOperationCredentialConsumer operation = case operation of
   EstablishRecoveryPlane {} -> Nothing
   ReadBackRecoveryPlane {} -> Nothing
   ObserveRecoveryPlaneDisposition {} -> Nothing
-  AuditCascadeEscapes -> Nothing
+  -- Sprint 4.85 (2026-08-18): an escape audit enumerates provider-side
+  -- resources, so it opens a Lifecycle-provider session of its own. Assigning
+  -- it is what retires @TerminalAuditProviderCapabilityUnassigned@, and it is
+  -- what makes the liveness-through-audit ordering claim about a node that
+  -- actually needs the credential. The executing adapter is Sprint @7.36@'s;
+  -- what is fixed here is the requirement it has to satisfy.
+  AuditCascadeEscapes -> Just TerminalEscapeAuditCredentialConsumer
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing
   UninstallCascadeLocalFoundation -> Nothing
@@ -160,7 +185,13 @@ teardownOperationCredentialConsumer operation = case operation of
   ReadBackLocalOnlyCompletion -> Nothing
   CommitOrdinarySurfaceReport -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
-  AuditTotalDecommissionEscapes -> Nothing
+  -- The credential disposition submits to the Authority and reads its own
+  -- result back; it never opens a Lifecycle-provider session. A disposition
+  -- that consumed the credential it disposes of could not be ordered after
+  -- the audit at all.
+  RevokeOperationalCredential _ -> Nothing
+  ReadBackOperationalCredentialRevocation _ -> Nothing
+  AuditTotalDecommissionEscapes -> Just TerminalEscapeAuditCredentialConsumer
   ObserveExternalDecommissionReceipt -> Nothing
   UninstallDecommissionLocalFoundation -> Nothing
   ReadBackDecommissionLocalAbsence -> Nothing
@@ -254,9 +285,15 @@ evidenceDetail blocker = case dispositionBlockerEvidence blocker of
     "derived from teardownOperationCredentialConsumer"
   DerivedFromLegacyIdentityStatus ->
     "derived from legacyOperationalIdentityStatus"
-  TypeLevelAbsence capability ->
-    "rests on a type-level absence: "
-      ++ Text.unpack (absentDispositionCapabilityDetail capability)
+  DerivedFromAuthorityControlRoutes ->
+    "derived from the closed Authority control-route vocabulary"
+  DerivedFromRevocationReadBackProtocol ->
+    "derived from the canonical target revocation read-back decision table"
+  DerivedFromCompiledOrdinaryRevocationPath ->
+    "derived from the compiled operational program's credential disposition \
+    \and its mandatory read-back"
+  DerivedFromProviderDispatchOwnership ->
+    "derived from the teardown Provider dispatch key's cleanup ownership"
 
 -- | Is this operation a terminal escape audit?
 --
@@ -268,31 +305,81 @@ teardownOperationIsTerminalAudit operation = case operation of
   AuditTotalDecommissionEscapes -> True
   _ -> False
 
+-- | Does this operation read back an operational credential disposition?
+--
+-- The pair matters, not either half: a disposition with no mandatory read-back
+-- is a revoke response, and the canonical read-back protocol exists precisely
+-- to refuse treating one as evidence.
+teardownOperationIsCredentialRevocationReadBack
+  :: TeardownOperation surface -> Bool
+teardownOperationIsCredentialRevocationReadBack operation = case operation of
+  ReadBackOperationalCredentialRevocation _ -> True
+  _ -> False
+
 -- | Does this operation dispose of the operational credential?
 --
--- Nothing does today: no @TeardownOperation@ constructor revokes, tombstones,
--- or otherwise disposes of the Lifecycle-provider credential. That is the whole
--- content of @AuditBeforeDispositionConflictsWithCurrentCascadeGraph@ — the
--- audit-then-dispose order cannot be expressed on the surface that owns the
--- audit, because the disposition half has no operation. Adding one is what
--- should retire that blocker, and this predicate is where the decision lands.
+-- Sprint 4.85 (2026-08-18): 'RevokeOperationalCredential' does. It is indexed
+-- at @'OperationalTeardown@, which is what
+-- @AuditBeforeDispositionConflictsWithCurrentCascadeGraph@ still measures
+-- against: the operation now exists, but the surface that owns a terminal
+-- audit does not yet emit one, so the audit-then-dispose order still has no
+-- single surface expressing both halves.
 teardownOperationIsCredentialDisposition :: TeardownOperation surface -> Bool
-teardownOperationIsCredentialDisposition _ = False
+teardownOperationIsCredentialDisposition operation = case operation of
+  RevokeOperationalCredential _ -> True
+  _ -> False
 
 -- | Recompute the disposition blockers the sources establish.
 --
--- The four derivable ones are measured; the four that rest on a missing
--- constructor are carried through unchanged, because no value in this
--- repository can witness their absence.
+-- Every one of the eight is measured from a source that can stop being true.
+-- The list carried four hand-authored reasons when Sprint @4.85@ began, and a
+-- reason nothing recomputes goes on justifying an omission after the reason is
+-- gone -- which is the failure mode this module exists to remove.
+--
+-- @GlobalProviderAdmissionFreezeUnavailable@ became the fifth on 2026-08-18.
+-- It rested on a type-level absence for exactly as long as the freeze had no
+-- caller-reachable route; the route is now a value
+-- ('Prodbox.Lifecycle.Authority.Admission.AuthorityControlRoute'), so the
+-- blocker is measured from it and deleting the route re-establishes it.
 measuredOperationalCredentialDispositionBlockers
   :: Either DesiredAbsenceProgramError [OperationalCredentialDispositionBlocker]
 measuredOperationalCredentialDispositionBlockers = do
   cascade <- compileDesiredAbsenceProgram CascadeSurface
   operational <- compileDesiredAbsenceProgram OperationalTeardownSurface
+  decommission <- compileDesiredAbsenceProgram TotalDecommissionSurface
   let operations program = map programNodeOperation (desiredAbsenceProgramNodes program)
-      operationalHasAudit = any teardownOperationIsTerminalAudit (operations operational)
-      cascadeHasDisposition =
-        any teardownOperationIsCredentialDisposition (operations cascade)
+      -- The audit-then-dispose order is expressible only on a surface that has
+      -- both halves. Total decommission is that surface: it owns the terminal
+      -- escape audit and it is the one surface that disposes of the credential
+      -- as part of destroying everything.
+      auditThenDispositionExpressible =
+        any teardownOperationIsTerminalAudit (operations decommission)
+          && any teardownOperationIsCredentialDisposition (operations decommission)
+      -- ... and the order actually compiled is the legal one. Every disposition
+      -- node on that surface is a strict descendant of the audit, so the
+      -- credential is live through the audit and disposed of only afterwards.
+      -- Measured over the emitted dependency graph rather than asserted beside
+      -- the node list, so re-ordering the program re-establishes the blocker.
+      dispositionFollowsAudit =
+        let nodes = desiredAbsenceProgramNodes decommission
+            auditNames =
+              [ programNodeName node
+              | node <- nodes
+              , teardownOperationIsTerminalAudit (programNodeOperation node)
+              ]
+            dispositionNames =
+              [ programNodeName node
+              | node <- nodes
+              , teardownOperationIsCredentialDisposition
+                  (programNodeOperation node)
+              ]
+         in not (null auditNames)
+              && not (null dispositionNames)
+              && and
+                [ auditName `Set.member` ancestorsOfDecommission nodes dispositionName
+                | auditName <- auditNames
+                , dispositionName <- dispositionNames
+                ]
       cascadeAuditConsumesCredential =
         or
           [ True
@@ -300,31 +387,46 @@ measuredOperationalCredentialDispositionBlockers = do
           , teardownOperationIsTerminalAudit operation
           , Just _ <- [teardownOperationCredentialConsumer operation]
           ]
+      -- The ordinary revocation path is the compiled operational program
+      -- naming a credential disposition and the mandatory read-back that
+      -- confirms it. Both halves are required: a disposition whose result is
+      -- never read back is a revoke response, which is exactly what the
+      -- canonical read-back protocol exists to refuse.
+      --
+      -- Executing the node is the dispatcher activation Sprints `4.86` and
+      -- `6.5` own; every other compiled node on every surface is in the same
+      -- position, including the ones whose completion minters this sprint
+      -- already landed. This sprint makes no claim about that activation.
+      operationalPathRevokes =
+        any teardownOperationIsCredentialDisposition (operations operational)
+          && any
+            teardownOperationIsCredentialRevocationReadBack
+            (operations operational)
       legacyMigrationRequired =
         legacyOperationalIdentityStatus legacyOperationalIdentity
           == LegacyOperationalIdentityMigrationRequired
   pure
     ( [ DispositionBeforeAuditConflictsWithLiveAuditCredential
-      | not operationalHasAudit
+      | not dispositionFollowsAudit
       ]
         ++ [ AuditBeforeDispositionConflictsWithCurrentCascadeGraph
-           | not cascadeHasDisposition
+           | not auditThenDispositionExpressible
            ]
         ++ [ TerminalAuditProviderCapabilityUnassigned
            | not cascadeAuditConsumesCredential
            ]
-        ++ typeLevelAbsenceBlockers
+        ++ [ GlobalProviderAdmissionFreezeUnavailable
+           | not authorityControlRoutesIssueCascadeAuditFreeze
+           ]
+        ++ [ CanonicalTargetRevocationReadBackUnavailable
+           | not canonicalTargetRevocationReadBackProtocolExists
+           ]
+        ++ [OrdinaryLifecycleProviderRevocationUnavailable | not operationalPathRevokes]
+        ++ [ ProviderOperationCleanupRunOwnershipUnavailable
+           | not teardownProviderDispatchOwnershipIsTotal
+           ]
         ++ [LegacyOperationalIdentityReplacementUndefined | legacyMigrationRequired]
     )
-
--- | The blockers whose evidence kind is a type-level absence, derived from the
--- evidence classifier rather than listed again.
-typeLevelAbsenceBlockers :: [OperationalCredentialDispositionBlocker]
-typeLevelAbsenceBlockers =
-  [ blocker
-  | blocker <- [minBound .. maxBound]
-  , TypeLevelAbsence _ <- [dispositionBlockerEvidence blocker]
-  ]
 
 dispositionBlockerViolations
   :: [OperationalCredentialCoverageError]
@@ -342,8 +444,7 @@ dispositionBlockerViolations =
            ]
  where
   published =
-    NonEmpty.toList
-      (operationalCredentialInventoryDispositionBlockers operationalCredentialInventory)
+    operationalCredentialInventoryDispositionBlockers operationalCredentialInventory
 
 -- | Prove the inventory and the compiled cascade program agree, and that every
 -- credential-consuming node precedes the terminal audit.
@@ -421,9 +522,15 @@ data OperationalCredentialCoverageRegression = OperationalCredentialCoverageRegr
   -- ^ The ancestry relation is not "everything": the cascade completion
   -- read-back runs strictly after the audit and must not be an ancestor of
   -- it. Without this the ordering check would pass vacuously.
-  , coverageRegressionAuditIsNotItsOwnConsumer :: !Bool
-  -- ^ The audit itself opens no provider session, so it cannot satisfy its
-  -- own liveness precondition.
+  , coverageRegressionAuditConsumesCredential :: !Bool
+  -- ^ Sprint 4.85 (2026-08-18): the audit is itself a credential consumer.
+  -- Until it was, "the credential must stay live through the audit" was an
+  -- ordering claim about a node the inventory said needed no credential.
+  , coverageRegressionNonConsumersExist :: !Bool
+  -- ^ The consumer classifier still discriminates: the cascade completion
+  -- read-back opens no provider session. Without this, classifying the audit
+  -- could have been the first step toward a classifier that answered
+  -- @Just@ for everything, which would satisfy the ordering check vacuously.
   }
   deriving (Eq, Show)
 
@@ -453,12 +560,23 @@ fixedOperationalCredentialCoverageRegression =
                   ( ProgramNodeName "cascade/read-back-completion"
                       `Set.member` auditAncestors
                   )
-            , coverageRegressionAuditIsNotItsOwnConsumer =
+            , coverageRegressionAuditConsumesCredential =
+                not
+                  ( null
+                      [ ()
+                      | node <- nodes
+                      , programNodeName node
+                          == ProgramNodeName cascadeTerminalAuditNodeName
+                      , Just _ <-
+                          [teardownOperationCredentialConsumer (programNodeOperation node)]
+                      ]
+                  )
+            , coverageRegressionNonConsumersExist =
                 null
                   [ ()
                   | node <- nodes
                   , programNodeName node
-                      == ProgramNodeName cascadeTerminalAuditNodeName
+                      == ProgramNodeName "cascade/read-back-completion"
                   , Just _ <-
                       [teardownOperationCredentialConsumer (programNodeOperation node)]
                   ]
@@ -470,8 +588,36 @@ fixedOperationalCredentialCoverageRegression =
       , coverageRegressionConsumersPrecedeAudit = False
       , coverageRegressionCheckpointTailCounted = False
       , coverageRegressionAncestryIsDiscriminating = False
-      , coverageRegressionAuditIsNotItsOwnConsumer = False
+      , coverageRegressionAuditConsumesCredential = False
+      , coverageRegressionNonConsumersExist = False
       }
+
+-- | Transitive predecessors on the total-decommission program.
+--
+-- Separate from 'ancestorsOf' only because that one is typed at @'Cascade@;
+-- the traversal is the same and both count every dependency kind.
+ancestorsOfDecommission
+  :: [ProgramNode 'TotalDecommission]
+  -> ProgramNodeName
+  -> Set.Set ProgramNodeName
+ancestorsOfDecommission nodes start =
+  go (Set.singleton start) (directPredecessors start)
+ where
+  go seen [] = seen
+  go seen (next : queue)
+    | next `Set.member` seen = go seen queue
+    | otherwise =
+        go (Set.insert next seen) (directPredecessors next ++ queue)
+
+  directPredecessors name =
+    sort
+      ( nub
+          [ programDependencyNode dependency
+          | node <- nodes
+          , programNodeName node == name
+          , dependency <- programNodeDependencies node
+          ]
+      )
 
 -- | Transitive predecessors of one node, over every dependency kind.
 --
@@ -510,9 +656,28 @@ ancestorsOf nodes start = go (Set.singleton start) (directPredecessors start)
 data OperationalCredentialDispositionRegression = OperationalCredentialDispositionRegression
   { dispositionRegressionMeasuredEqualsPublished :: !Bool
   , dispositionRegressionSomeBlockersAreDerived :: !Bool
+  -- ^ Sprint 4.85 (2026-08-18): every blocker is now recomputed from a source,
+  -- so no reason survives that nothing can invalidate.
   , dispositionRegressionCascadeHasAudit :: !Bool
   , dispositionRegressionOperationalSurfaceHasNoAudit :: !Bool
   , dispositionRegressionAuditPredicateDiscriminates :: !Bool
+  , dispositionRegressionFreezeRouteIssuesFreeze :: !Bool
+  -- ^ An externally admissible control route issues the Cascade-audit freeze,
+  -- so @GlobalProviderAdmissionFreezeUnavailable@ is retired by measurement
+  -- rather than by deletion.
+  , dispositionRegressionFreezeRouteMeasurementDiscriminates :: !Bool
+  -- ^ The route relation is not "everything is the freeze": the other five
+  -- routes issue five other commands. Without this the measurement above
+  -- would pass for a relation that had lost its discrimination.
+  , dispositionRegressionDecommissionOrdersDispositionAfterAudit :: !Bool
+  -- ^ The total-decommission program compiles a credential disposition and
+  -- orders it strictly after the terminal audit. This is what makes both
+  -- revoke-order blockers measurements rather than statements: the surface has
+  -- both halves, and the compiled order is the legal one.
+  , dispositionRegressionDispositionIsNotAnAuditAncestor :: !Bool
+  -- ^ ... and the relation discriminates in the other direction: the audit is
+  -- not a descendant of the disposition, so an unordered pair cannot read as
+  -- ordered.
   }
   deriving (Eq, Show)
 
@@ -529,15 +694,32 @@ fixedOperationalCredentialDispositionRegression =
           operationalOperations =
             map programNodeOperation (desiredAbsenceProgramNodes operational)
           published =
-            NonEmpty.toList
-              ( operationalCredentialInventoryDispositionBlockers
-                  operationalCredentialInventory
-              )
+            operationalCredentialInventoryDispositionBlockers
+              operationalCredentialInventory
        in OperationalCredentialDispositionRegression
             { dispositionRegressionMeasuredEqualsPublished =
                 sort measured == sort published
             , dispositionRegressionSomeBlockersAreDerived =
-                length typeLevelAbsenceBlockers < length published
+                null
+                  [ blocker
+                  | blocker <-
+                      [minBound .. maxBound]
+                        :: [OperationalCredentialDispositionBlocker]
+                  , DerivedFromCompiledTeardownPrograms
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromCredentialConsumerClassifier
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromLegacyIdentityStatus
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromAuthorityControlRoutes
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromRevocationReadBackProtocol
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromCompiledOrdinaryRevocationPath
+                      /= dispositionBlockerEvidence blocker
+                  , DerivedFromProviderDispatchOwnership
+                      /= dispositionBlockerEvidence blocker
+                  ]
             , dispositionRegressionCascadeHasAudit =
                 any teardownOperationIsTerminalAudit cascadeOperations
             , dispositionRegressionOperationalSurfaceHasNoAudit =
@@ -551,6 +733,30 @@ fixedOperationalCredentialDispositionRegression =
                       , operation /= AuditCascadeEscapes
                       ]
                   )
+            , dispositionRegressionFreezeRouteIssuesFreeze =
+                authorityControlRoutesIssueCascadeAuditFreeze
+            , dispositionRegressionFreezeRouteMeasurementDiscriminates =
+                length
+                  ( nub
+                      ( map
+                          authorityControlRouteIssuedCommandTag
+                          [minBound .. maxBound]
+                      )
+                  )
+                  == length ([minBound .. maxBound] :: [AuthorityControlRoute])
+            , dispositionRegressionDecommissionOrdersDispositionAfterAudit =
+                decommissionOrdering
+                  ( \auditName dispositionName nodes ->
+                      auditName `Set.member` ancestorsOfDecommission nodes dispositionName
+                  )
+            , dispositionRegressionDispositionIsNotAnAuditAncestor =
+                decommissionOrdering
+                  ( \auditName dispositionName nodes ->
+                      not
+                        ( dispositionName
+                            `Set.member` ancestorsOfDecommission nodes auditName
+                        )
+                  )
             }
     _ -> allDispositionFalse
  where
@@ -561,4 +767,40 @@ fixedOperationalCredentialDispositionRegression =
       , dispositionRegressionCascadeHasAudit = False
       , dispositionRegressionOperationalSurfaceHasNoAudit = False
       , dispositionRegressionAuditPredicateDiscriminates = False
+      , dispositionRegressionFreezeRouteIssuesFreeze = False
+      , dispositionRegressionFreezeRouteMeasurementDiscriminates = False
+      , dispositionRegressionDecommissionOrdersDispositionAfterAudit = False
+      , dispositionRegressionDispositionIsNotAnAuditAncestor = False
       }
+
+-- | Hold one relation between every compiled audit and every compiled
+-- disposition on the total-decommission surface.
+decommissionOrdering
+  :: ( ProgramNodeName
+       -> ProgramNodeName
+       -> [ProgramNode 'TotalDecommission]
+       -> Bool
+     )
+  -> Bool
+decommissionOrdering relation =
+  case compileDesiredAbsenceProgram TotalDecommissionSurface of
+    Left _ -> False
+    Right program ->
+      let nodes = desiredAbsenceProgramNodes program
+          auditNames =
+            [ programNodeName node
+            | node <- nodes
+            , teardownOperationIsTerminalAudit (programNodeOperation node)
+            ]
+          dispositionNames =
+            [ programNodeName node
+            | node <- nodes
+            , teardownOperationIsCredentialDisposition (programNodeOperation node)
+            ]
+       in not (null auditNames)
+            && not (null dispositionNames)
+            && and
+              [ relation auditName dispositionName nodes
+              | auditName <- auditNames
+              , dispositionName <- dispositionNames
+              ]

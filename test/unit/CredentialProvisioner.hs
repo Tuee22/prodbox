@@ -110,6 +110,58 @@ credentialProvisionerSuite =
         (awsCredentialDescriptorMaximumAccessKeys <$> descriptors)
           `shouldBe` replicate (length descriptors) 2
 
+    it "Sprint 4.85 admits exactly one of twelve revocation observation pairs" $ do
+      -- The production revoke path used to take the revoke response itself as
+      -- evidence that the target generation was gone, so an applied-but-
+      -- unconfirmed revoke and a confirmed one were the same value. Both paths
+      -- now decide through this one function, and it mints a read-back only
+      -- from two independent absences.
+      let generation = must (mkCredentialGeneration 3)
+          table =
+            credentialRevocationReadBackDecisionTable
+              LifecycleProviderTarget
+              generation
+      length table `shouldBe` 12
+      [pair | (pair, minted) <- table, minted]
+        `shouldBe` [(RevokedTargetAbsent, RevokedIdentityAbsent)]
+      canonicalTargetRevocationReadBackProtocolExists `shouldBe` True
+
+      -- Each refusal is distinct, so an unobservable target can never be read
+      -- as an absent one and an unattempted identity step can never be read as
+      -- an observed absence.
+      let refusalFor targetObservation identityObservation =
+            either
+              Just
+              (const Nothing)
+              ( decideCredentialRevocationReadBack
+                  LifecycleProviderTarget
+                  generation
+                  targetObservation
+                  identityObservation
+              )
+      refusalFor RevokedTargetUnobservable RevokedIdentityNotReached
+        `shouldBe` Just RevocationTargetUnobservable
+      refusalFor RevokedTargetStillPresent RevokedIdentityNotReached
+        `shouldBe` Just RevocationTargetStillPresent
+      refusalFor RevokedTargetAbsent RevokedIdentityNotReached
+        `shouldBe` Just RevocationIdentityNotReached
+      refusalFor RevokedTargetAbsent RevokedIdentityUnobservable
+        `shouldBe` Just RevocationIdentityUnobservable
+      refusalFor RevokedTargetAbsent RevokedIdentityStillPresent
+        `shouldBe` Just RevocationIdentityStillPresent
+
+      -- The minted read-back carries both absences and the exact target and
+      -- generation it was decided for.
+      case decideCredentialRevocationReadBack
+        LifecycleProviderTarget
+        generation
+        RevokedTargetAbsent
+        RevokedIdentityAbsent of
+        Left refusal -> expectationFailure ("unexpected refusal: " ++ show refusal)
+        Right readBack -> do
+          operatorMaterialRevocationTarget readBack `shouldBe` LifecycleProviderTarget
+          operatorMaterialRevocationGeneration readBack `shouldBe` generation
+
     it "constructs only the seven closed least-privilege production IAM programs" $ do
       let programs =
             [ must (mkLifecycleProviderIamProgram "us-west-2" "123456789012" "prodbox-provider-role")

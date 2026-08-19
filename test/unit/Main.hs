@@ -55,6 +55,9 @@ import ControlPlaneAwsStackReaderRepository
   )
 import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
+import ControlPlaneCascadeHostRuntime
+  ( controlPlaneCascadeHostRuntimeSuite
+  )
 import ControlPlaneCleanupProgramDescriptorRepository
   ( controlPlaneCleanupProgramDescriptorRepositorySuite
   )
@@ -71,6 +74,9 @@ import ControlPlaneEksDrainReadBackReceiptRepository
   ( controlPlaneEksDrainReadBackReceiptRepositorySuite
   )
 import ControlPlaneFederationBootstrap (controlPlaneFederationBootstrapSuite)
+import ControlPlaneLifecycleAuthorityRestore
+  ( controlPlaneLifecycleAuthorityRestoreSuite
+  )
 import ControlPlaneLocalRke2HostObservationEndpoint
   ( controlPlaneLocalRke2HostObservationEndpointSuite
   )
@@ -229,6 +235,18 @@ import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
 import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
 import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
 import LifecycleCleanupClient (lifecycleCleanupClientSuite)
+import LifecycleHostCleanupAuthorityArms
+  ( lifecycleHostCleanupAuthorityArmsSuite
+  )
+import LifecycleHostCleanupCompletion
+  ( lifecycleHostCleanupCompletionSuite
+  )
+import LifecycleHostCleanupLocalAbsence
+  ( lifecycleHostCleanupLocalAbsenceSuite
+  )
+import LifecycleHostCleanupRecoveryPlane
+  ( lifecycleHostCleanupRecoveryPlaneSuite
+  )
 import LifecycleLease (lifecycleLeaseSuite)
 import LifecycleProviderWork (lifecycleProviderWorkSuite)
 import LifecycleTeardownAuditFieldOfView
@@ -258,7 +276,13 @@ import LifecycleTeardownAwsStackAdapter
 import LifecycleTeardownAwsStackReaderInterpreter
   ( lifecycleTeardownAwsStackReaderInterpreterSuite
   )
+import LifecycleTeardownCascadeCredentialDisposition
+  ( lifecycleTeardownCascadeCredentialDispositionSuite
+  )
 import LifecycleTeardownCascadeEvidence (lifecycleTeardownCascadeEvidenceSuite)
+import LifecycleTeardownCascadeTerminalAudit
+  ( lifecycleTeardownCascadeTerminalAuditSuite
+  )
 import LifecycleTeardownCheckpoint (lifecycleTeardownCheckpointSuite)
 import LifecycleTeardownCheckpointAuthority
   ( lifecycleTeardownCheckpointAuthoritySuite
@@ -289,6 +313,9 @@ import LifecycleTeardownOperationalCredentialInventory
 import LifecycleTeardownOwnershipManifest
   ( lifecycleTeardownOwnershipManifestSuite
   )
+import LifecycleTeardownPreUninstallReadiness
+  ( lifecycleTeardownPreUninstallReadinessSuite
+  )
 import LifecycleTeardownProgram (lifecycleTeardownProgramSuite)
 import LifecycleTeardownProviderAwsScopeAdapter (providerAwsScopeAdapterSuite)
 import LifecycleTeardownProviderDispatch
@@ -306,10 +333,16 @@ import LifecycleTeardownRecoveryPlaneComponentObserver
 import LifecycleTeardownRecoveryPlaneInterpreter
   ( lifecycleTeardownRecoveryPlaneInterpreterSuite
   )
+import LifecycleTeardownRecoveryRepairExecution
+  ( lifecycleTeardownRecoveryRepairExecutionSuite
+  )
 import LifecycleTeardownRegisteredTargetResult
   ( lifecycleTeardownRegisteredTargetResultSuite
   )
 import LifecycleTeardownRegistry (lifecycleTeardownRegistrySuite)
+import LifecycleTeardownRetainedArtifactCustody
+  ( lifecycleTeardownRetainedArtifactCustodySuite
+  )
 import LifecycleTeardownRetainedInventory
   ( lifecycleTeardownRetainedInventorySuite
   )
@@ -560,6 +593,7 @@ import Prodbox.CheckCode
   , boundSectionCitationsInLine
   , brokerReadinessProjectionViolations
   , citedSourcePathsInDoc
+  , compareSprintIds
   , destructivePlanOptionsArms
   , developmentPlanResumeViolations
   , doctrineViolationsInPaths
@@ -582,6 +616,7 @@ import Prodbox.CheckCode
   , matchesSprintToken
   , parseGeneratedSectionsField
   , parseGovernedDocStatusField
+  , pendingRemovalPrerequisiteViolations
   , planOptionsHonoredViolations
   , planOptionsProjectionExemptions
   , planSprintBlocks
@@ -597,6 +632,9 @@ import Prodbox.CheckCode
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
   , sprintBlockMissingFields
+  , sprintDependencyDirectionViolations
+  , sprintDependencyFields
+  , sprintLiveDependencyIds
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , substrateImagePinningViolations
@@ -1830,6 +1868,8 @@ unitSuite = do
   controlPlaneClientSuite
   controlPlaneConfigEndpointSuite
   controlPlaneDescriptorBoundLifecycleRuntimeSuite
+  controlPlaneCascadeHostRuntimeSuite
+  controlPlaneLifecycleAuthorityRestoreSuite
   controlPlaneLocalRke2HostObservationEndpointSuite
   controlPlaneLocalRke2HostObservationRepositorySuite
   controlPlaneRecoveryPlaneRepositorySuite
@@ -1934,6 +1974,10 @@ unitSuite = do
   hostCleanupIntentSuite
   hostCleanupRunnerSuite
   hostCleanupRke2Suite
+  lifecycleHostCleanupLocalAbsenceSuite
+  lifecycleHostCleanupCompletionSuite
+  lifecycleHostCleanupRecoveryPlaneSuite
+  lifecycleHostCleanupAuthorityArmsSuite
   lifecycleCleanupClientSuite
   lifecycleTestArtifactCleanupSuite
   lifecycleTestArtifactIntentJournalSuite
@@ -1947,6 +1991,11 @@ unitSuite = do
   lifecycleTeardownAwsStackReaderInterpreterSuite
   lifecycleTeardownCloudRuntimeSuite
   lifecycleTeardownRegistrySuite
+  lifecycleTeardownCascadeCredentialDispositionSuite
+  lifecycleTeardownCascadeTerminalAuditSuite
+  lifecycleTeardownPreUninstallReadinessSuite
+  lifecycleTeardownRecoveryRepairExecutionSuite
+  lifecycleTeardownRetainedArtifactCustodySuite
   lifecycleTeardownRetainedInventorySuite
   lifecycleTeardownAuditFieldOfViewSuite
   lifecycleTeardownProgramSuite
@@ -16230,6 +16279,94 @@ unitSuite = do
       it "does not confuse a prose line that merely starts with bold" $
         sprintBlockMissingFields
           (block "1.1: A" ["**Implementation notes are below**: see § 2", "**Docs**: d"])
+          `shouldBe` []
+
+    describe "Sprint 0.30 plan dependency direction" $ do
+      let phaseDoc sprintId dependencyLines =
+            ( "DEVELOPMENT_PLAN/phase-4-fixture.md"
+            , unlines
+                ( [ "# Phase 4"
+                  , ""
+                  , "## Sprint " ++ sprintId ++ ": Fixture"
+                  , ""
+                  , "**Status**: Active"
+                  ]
+                    ++ dependencyLines
+                )
+            )
+          directionViolations sprintId dependencyLines =
+            sprintDependencyDirectionViolations [phaseDoc sprintId dependencyLines]
+
+      it "orders sprint ids numerically per segment, never as strings" $ do
+        -- String comparison would put `7.10` before `7.5` and `7.5.b.i`
+        -- before `7.5.b`, which is how a backward dependency could look
+        -- forward to a naive gate.
+        compareSprintIds "7.5" "7.10" `shouldBe` LT
+        compareSprintIds "7.10" "7.5" `shouldBe` GT
+        compareSprintIds "7.5.b" "7.5.b.i" `shouldBe` LT
+        compareSprintIds "4.85" "5.36" `shouldBe` LT
+        compareSprintIds "5.36" "6.5" `shouldBe` LT
+        compareSprintIds "6.5" "7.36" `shouldBe` LT
+        compareSprintIds "4.85" "4.85" `shouldBe` EQ
+
+      it "fails a sprint that declares a later-sprint dependency" $ do
+        let violations = directionViolations "4.85" ["**Blocked by**: Sprint `7.36`"]
+        length violations `shouldBe` 1
+        violations `shouldSatisfy` any (isInfixOf "Sprint `4.85`")
+        violations `shouldSatisfy` any (isInfixOf "`7.36`")
+        violations `shouldSatisfy` any (isInfixOf "Standard N")
+        -- The same-phase and earlier-phase forms are exactly what the rule
+        -- permits, so they must stay silent.
+        directionViolations "4.85" ["**Blocked by**: Sprint `4.84`"] `shouldBe` []
+        directionViolations "5.36" ["**Closure dependency**: Sprint `4.85`"] `shouldBe` []
+        directionViolations "4.85" ["**Blocked by**: none."] `shouldBe` []
+
+      it "reads a historical line that records its own resolution as resolved" $ do
+        -- ~130 existing `**Blocked by**` lines annotate their own closure in
+        -- place. Treating those as live dependencies would make the gate fire
+        -- on the entire plan rather than on the defect.
+        directionViolations "4.85" ["**Blocked by**: ~~Sprint `7.36`~~ unblocked"] `shouldBe` []
+        directionViolations "4.85" ["**Blocked by**: Sprint `7.36` (closed)"] `shouldBe` []
+        directionViolations "4.85" ["**Blocked by**: Sprint `7.36` — resolved"] `shouldBe` []
+        sprintLiveDependencyIds " Sprint `1.38` (closed)" `shouldBe` []
+        sprintLiveDependencyIds " Sprint `7.36`" `shouldBe` ["7.36"]
+        sprintLiveDependencyIds " Sprint-`4.85` inputs" `shouldBe` ["4.85"]
+
+      it "rejects a dependency recorded under a field the gate cannot read" $ do
+        -- Three Active sprints declared theirs under this name, which no gate
+        -- parsed; the direction was unchecked whatever it said.
+        let violations =
+              directionViolations "4.86" ["**Closure dependencies**: Sprint `3.41`"]
+        length violations `shouldBe` 1
+        violations `shouldSatisfy` any (isInfixOf "Closure dependencies")
+        violations `shouldSatisfy` any (isInfixOf "not a Standard-H dependency field")
+        map fst (sprintDependencyFields "**Closure dependency**: Sprint `4.85`\n")
+          `shouldBe` ["Closure dependency"]
+
+      it "fails a Pending Removal row whose declared prerequisite is later than its owner" $ do
+        let ledger ownerCell notesCell =
+              unlines
+                [ "## Pending Removal"
+                , ""
+                , "| Item | Owning Sprint | Notes |"
+                , "|------|---------------|-------|"
+                , "| Debt | " ++ ownerCell ++ " | " ++ notesCell ++ " |"
+                ]
+            violations =
+              pendingRemovalPrerequisiteViolations
+                (ledger "Sprint `4.85`" "**Prerequisite**: Sprint `7.36`. Adapter first.")
+        length violations `shouldBe` 1
+        violations `shouldSatisfy` any (isInfixOf "`4.85`")
+        violations `shouldSatisfy` any (isInfixOf "`7.36`")
+        -- Re-owning the row to the sprint that supplies the prerequisite is
+        -- the remedy, and it must clear the violation.
+        pendingRemovalPrerequisiteViolations
+          (ledger "Sprint `7.36`" "**Prerequisite**: Sprint `7.36`. Adapter first.")
+          `shouldBe` []
+        -- A row that merely mentions a later sprint in narrative is not a
+        -- declared dependency; prose is deliberately not scanned.
+        pendingRemovalPrerequisiteViolations
+          (ledger "Sprint `4.85`" "Sprint `7.36` supplies the adapter eventually.")
           `shouldBe` []
 
     describe "development-plan Resume Here projection" $ do

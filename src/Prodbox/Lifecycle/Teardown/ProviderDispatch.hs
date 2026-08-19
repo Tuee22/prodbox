@@ -15,6 +15,8 @@ module Prodbox.Lifecycle.Teardown.ProviderDispatch
   , TeardownProviderBoundaryResult (..)
   , TeardownProviderBoundary (..)
   , productionTeardownProviderBoundary
+  , providerDispatchKeyCleanupOwner
+  , teardownProviderDispatchOwnershipIsTotal
   , dispatchRegisteredProviderObservation
   , dispatchRegisteredProviderMutation
   , ProviderDispatchError (..)
@@ -35,11 +37,14 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   )
 import Prodbox.ControlPlane.ProviderCaller
   ( ProviderCallerError (..)
-  , dispatchHostProviderIntent
+  , dispatchHostProviderIntentOwnedBy
   , renderProviderCallerError
   )
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (ProviderIntentExecutionObserved)
+  )
+import Prodbox.Lifecycle.Authority.Admission
+  ( ProviderOperationCleanupOwner (ProviderOperationOwnedByCleanupOperation)
   )
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKey
@@ -50,6 +55,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupOperationId
   , cleanupOperationIdText
+  , mkCleanupOperationId
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
@@ -161,9 +167,18 @@ data TeardownProviderBoundaryResult
 -- | The only physical seam used here.  Production routes through the local
 -- Lifecycle Authority, which journals and dispatches a closed ProviderIntent.
 -- Tests inject a deterministic fake at the same boundary.
+-- | Sprint 4.85: the boundary receives the whole dispatch key rather than only
+-- its submission key.
+--
+-- The key already carried the cleanup operation the dispatch belongs to, and
+-- passing only the derived submission string threw that away at exactly the
+-- seam where the Authority could have retained it — which is what
+-- @ProviderOperationCleanupRunOwnershipUnavailable@ named. Recovering the
+-- operation id by parsing the submission string back apart would be deriving an
+-- identity from a rendering; the key is the identity.
 newtype TeardownProviderBoundary m = TeardownProviderBoundary
   { runTeardownProviderBoundary
-      :: ClientSubmissionKey
+      :: ProviderDispatchKey
       -> ProviderIntent
       -> m TeardownProviderBoundaryResult
   }
@@ -173,14 +188,48 @@ productionTeardownProviderBoundary
   -> FilePath
   -> TeardownProviderBoundary IO
 productionTeardownProviderBoundary caller repoRoot =
-  TeardownProviderBoundary $ \submissionKey intent -> do
+  TeardownProviderBoundary $ \dispatchKey intent -> do
     dispatched <-
-      dispatchHostProviderIntent
+      dispatchHostProviderIntentOwnedBy
         caller
         repoRoot
-        (clientSubmissionKeyText submissionKey)
+        (clientSubmissionKeyText (providerDispatchSubmissionKey dispatchKey))
         intent
+        (providerDispatchKeyCleanupOwner dispatchKey)
     pure (classifyProviderCallerResult dispatched)
+
+-- | The cleanup operation a teardown dispatch belongs to, as the owner the
+-- Authority retains beside the intent.
+--
+-- Total by construction: every dispatch key holds a 'CleanupOperationId',
+-- because a teardown dispatch has no other way to name itself. The production
+-- boundary above is defined in terms of this, so the ownership the Authority
+-- records and the ownership this projection claims cannot drift apart.
+providerDispatchKeyCleanupOwner
+  :: ProviderDispatchKey -> ProviderOperationCleanupOwner
+providerDispatchKeyCleanupOwner =
+  ProviderOperationOwnedByCleanupOperation . providerDispatchKeyOperationId
+
+-- | Sprint 4.85: does every teardown dispatch purpose name its cleanup
+-- operation?
+--
+-- @ProviderOperationCleanupRunOwnershipUnavailable@ is derived from this. It is
+-- a measurement rather than a constant because the projection above is total
+-- over the closed purpose enumeration: a purpose that stopped carrying its
+-- operation id would fail here, and the blocker would be re-established.
+teardownProviderDispatchOwnershipIsTotal :: Bool
+teardownProviderDispatchOwnershipIsTotal =
+  case mkCleanupOperationId "operational-credential-disposition-witness" of
+    Left _ -> False
+    Right operationId ->
+      all (ownedForPurpose operationId) [minBound .. maxBound]
+ where
+  ownedForPurpose operationId purpose =
+    case mkProviderDispatchKey operationId purpose of
+      Left _ -> False
+      Right dispatchKey ->
+        providerDispatchKeyCleanupOwner dispatchKey
+          == ProviderOperationOwnedByCleanupOperation operationId
 
 classifyProviderCallerResult
   :: Either ProviderCallerError Text -> TeardownProviderBoundaryResult
@@ -219,10 +268,7 @@ dispatchRegisteredProviderObservation boundary dispatchKey intent =
     Left err -> pure (Left err)
     Right () -> do
       dispatched <-
-        runTeardownProviderBoundary
-          boundary
-          (providerDispatchSubmissionKey dispatchKey)
-          intent
+        runTeardownProviderBoundary boundary dispatchKey intent
       pure $ case dispatched of
         TeardownProviderUnavailable detail ->
           Left (ProviderDispatchObservationUnobservable detail)
@@ -249,10 +295,7 @@ dispatchRegisteredProviderMutation boundary dispatchKey intent =
     Left err -> pure (Left err)
     Right () -> do
       dispatched <-
-        runTeardownProviderBoundary
-          boundary
-          (providerDispatchSubmissionKey dispatchKey)
-          intent
+        runTeardownProviderBoundary boundary dispatchKey intent
       pure $ case dispatched of
         TeardownProviderUnavailable detail ->
           Right (RegisteredTargetMutationResponseLost detail)

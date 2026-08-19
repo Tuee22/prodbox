@@ -616,6 +616,10 @@ controlPayload command = case command of
   ApplyAuthorityMigration _ -> Left "backup reconciler cannot apply migration"
   ApplyAuthorityMigrationImport _ -> Left "backup reconciler cannot import migration"
   ApplyAuthorityForwardMigration _ -> Left "backup reconciler cannot forward migration"
+  BindProviderAdmissionGeneration _ ->
+    Left "backup reconciler cannot bind the Provider admission generation"
+  FreezeProviderAdmissionForCascadeAudit _ ->
+    Left "backup reconciler cannot freeze Provider admission for the Cascade audit"
 
 mapShow :: (Show err) => Either err value -> Either Text value
 mapShow = either (Left . boundedShow) Right

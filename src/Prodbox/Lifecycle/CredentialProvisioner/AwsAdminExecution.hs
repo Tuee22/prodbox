@@ -50,6 +50,7 @@ import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
 import Data.List (sort)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word16, Word8)
@@ -91,12 +92,18 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( AccessKeyInventoryObservation (..)
   , AwsAccessKeyCreateResult (..)
+  , CredentialRevocationRefusal (..)
   , ProvisionedAccessKeyId
+  , RevokedIdentityObservation (..)
+  , RevokedTargetObservation (..)
+  , decideCredentialRevocationReadBack
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   , OperatorMaterialAction (..)
   , OperatorMaterialIngressSchema (AwsAdminProvisioningIngress)
+  , awsCredentialDescriptor
+  , awsCredentialDescriptorTarget
   , operatorMaterialPermitIdText
   )
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
@@ -532,6 +539,28 @@ executeAwsAdminPermit journalBoundary iam delivery permit = do
           | readBack == expected -> Right readBack
           | otherwise -> Left AwsAdminExecutionJournalReadBackMismatch
 
+-- | Revoke one credential identity, reading __both__ absences back.
+--
+-- Sprint 4.85 (2026-08-18): the revoke response used to be the only evidence
+-- that the target generation was gone.  @internalRevokeCredentialTarget@
+-- returns the worker's own claim about work it just performed, and a claim is
+-- not a read-back — which is what
+-- @CanonicalTargetRevocationReadBackUnavailable@ named.  The target is now
+-- re-observed through the same boundary the delivery path already uses to
+-- distinguish present from absent, and a still-present generation is a
+-- refusal rather than a successful revocation.
+--
+-- The two absences are then bound by 'mkOperatorMaterialRevocationReadBack',
+-- the smart constructor the pure provisioner algebra already uses, so
+-- \"revocation read-back\" has one definition across both paths instead of one
+-- per path.  It refuses unless the external identity and the target generation
+-- are __both__ independently observed absent, so neither half can stand in for
+-- the other.
+--
+-- Ordering is deliberate: the target generation is revoked and read back
+-- before the IAM identity is destroyed.  A run that fails in between leaves an
+-- identity with no usable material rather than material with no identity to
+-- revoke it under.
 revokeIdentity
   :: (Monad m)
   => AwsAdminIamBoundary m
@@ -544,26 +573,86 @@ revokeIdentity iam delivery permit prepared = do
   case targetResult of
     Left detail -> pure (Left (AwsAdminTargetRevocationFailed detail))
     Right evidence -> do
-      destroyed <- internalDestroyIamIdentity iam
-      case destroyed of
-        Left detail -> pure (Left (AwsAdminIdentityDestroyFailed detail))
-        Right () -> do
-          absent <- internalObserveIamIdentityAbsent iam
-          pure $ case absent of
-            Left detail -> Left (AwsAdminIdentityAbsenceUnobservable detail)
-            Right False -> Left AwsAdminIdentityStillPresent
-            Right True ->
-              Right
-                AwsAdminWorkerReceipt
-                  { internalAwsAdminWorkerReceiptKind = AwsAdminRevoked
-                  , internalAwsAdminWorkerReceiptPermitId = permitIdText permit
-                  , internalAwsAdminWorkerReceiptRequestDigest = permitRequestDigest permit
-                  , internalAwsAdminWorkerReceiptTarget = preparedCredentialTargetId prepared
-                  , internalAwsAdminWorkerReceiptGeneration =
-                      preparedCredentialTargetGeneration prepared
-                  , internalAwsAdminWorkerReceiptTargetReadBack =
-                      LazyByteString.toStrict (serialise evidence)
-                  }
+      observedTarget <- internalObserveCredentialTarget delivery prepared permit
+      case observedTarget of
+        Left detail ->
+          pure
+            ( decide
+                evidence
+                RevokedTargetUnobservable
+                RevokedIdentityNotReached
+                (Just detail)
+            )
+        Right (Just _) ->
+          pure
+            ( decide
+                evidence
+                RevokedTargetStillPresent
+                RevokedIdentityNotReached
+                Nothing
+            )
+        Right Nothing -> do
+          destroyed <- internalDestroyIamIdentity iam
+          case destroyed of
+            Left detail -> pure (Left (AwsAdminIdentityDestroyFailed detail))
+            Right () -> do
+              absent <- internalObserveIamIdentityAbsent iam
+              pure $ case absent of
+                Left detail ->
+                  decide
+                    evidence
+                    RevokedTargetAbsent
+                    RevokedIdentityUnobservable
+                    (Just detail)
+                Right False ->
+                  decide
+                    evidence
+                    RevokedTargetAbsent
+                    RevokedIdentityStillPresent
+                    Nothing
+                Right True ->
+                  decide evidence RevokedTargetAbsent RevokedIdentityAbsent Nothing
+ where
+  -- Both outcomes come from the canonical decision rather than from local
+  -- guards, so this path and the pure provisioner algebra cannot drift apart
+  -- about what a revocation read-back is.
+  decide evidence targetObservation identityObservation detail =
+    case decideCredentialRevocationReadBack
+      (awsCredentialDescriptorTarget (awsCredentialDescriptor credentialClass))
+      (preparedCredentialTargetGeneration prepared)
+      targetObservation
+      identityObservation of
+      Left refusal -> Left (revocationRefusalError refusal detail)
+      Right _ ->
+        Right
+          AwsAdminWorkerReceipt
+            { internalAwsAdminWorkerReceiptKind = AwsAdminRevoked
+            , internalAwsAdminWorkerReceiptPermitId = permitIdText permit
+            , internalAwsAdminWorkerReceiptRequestDigest = permitRequestDigest permit
+            , internalAwsAdminWorkerReceiptTarget = preparedCredentialTargetId prepared
+            , internalAwsAdminWorkerReceiptGeneration =
+                preparedCredentialTargetGeneration prepared
+            , internalAwsAdminWorkerReceiptTargetReadBack =
+                LazyByteString.toStrict (serialise evidence)
+            }
+
+  credentialClass =
+    awsAdminPermitIntentCredentialClass (signedAwsAdminPermitIntent permit)
+
+-- | Total over the canonical refusals.  The optional detail is the boundary
+-- text for the two unobservable arms; the others carry no boundary message
+-- because nothing failed to answer.
+revocationRefusalError
+  :: CredentialRevocationRefusal -> Maybe Text -> AwsAdminExecutionError
+revocationRefusalError refusal detail = case refusal of
+  RevocationTargetUnobservable ->
+    AwsAdminTargetRevocationUnobservable (fromMaybe "" detail)
+  RevocationTargetStillPresent -> AwsAdminTargetGenerationStillPresent
+  RevocationIdentityNotReached -> AwsAdminTargetGenerationStillPresent
+  RevocationIdentityUnobservable ->
+    AwsAdminIdentityAbsenceUnobservable (fromMaybe "" detail)
+  RevocationIdentityStillPresent -> AwsAdminIdentityStillPresent
+  RevocationNotBound -> AwsAdminRevocationNotReadBack
 
 materialForPermit
   :: SignedAwsAdminPermit
@@ -847,6 +936,16 @@ data AwsAdminExecutionError
   | AwsAdminTargetObservationUnobservable !Text
   | AwsAdminTargetReceiptMismatch
   | AwsAdminTargetRevocationFailed !Text
+  | -- | Sprint 4.85: the revoked target generation could not be re-observed,
+    -- so the revocation has no independent read-back.
+    AwsAdminTargetRevocationUnobservable !Text
+  | -- | Sprint 4.85: the target generation is still present after a revoke
+    -- the worker reported as applied.
+    AwsAdminTargetGenerationStillPresent
+  | -- | Sprint 4.85: both absences were observed but the canonical revocation
+    -- read-back refused to bind them.  Unreachable while both are @True@;
+    -- mapped rather than assumed so the binding stays load-bearing.
+    AwsAdminRevocationNotReadBack
   | AwsAdminIdentityDestroyFailed !Text
   | AwsAdminIdentityAbsenceUnobservable !Text
   | AwsAdminIdentityStillPresent

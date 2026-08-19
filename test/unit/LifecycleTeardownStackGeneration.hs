@@ -98,6 +98,7 @@ import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , AuthorityProviderSubmissionDecision (AuthorityProviderSubmissionAccepted)
+  , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   , initialCleanInstallAuthorityWithRegisteredClients
   , stepAuthorityAdmission
   , stepRegisteredProviderSubmission
@@ -1192,6 +1193,7 @@ admitFixtureIntent label digestCharacter intent = do
               submissionKey
               digest
               intent
+              ProviderOperationUnownedByCleanupRun
           )
   operation <- case decision of
     AuthorityProviderSubmissionAccepted accepted -> pure accepted

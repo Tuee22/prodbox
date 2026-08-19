@@ -468,6 +468,8 @@ expectedRoute operation = case operation of
   ReadBackLocalOnlyAbsence -> Nothing
   CommitLocalOnlyCompletion -> Nothing
   ReadBackLocalOnlyCompletion -> Nothing
+  RevokeOperationalCredential _ -> Nothing
+  ReadBackOperationalCredentialRevocation _ -> Nothing
   CommitOrdinarySurfaceReport -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
   AuditTotalDecommissionEscapes -> Nothing

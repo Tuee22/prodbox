@@ -36,6 +36,9 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , registeredStackCreationRunScope
   , registeredStackCreationScope
   )
+import Prodbox.Lifecycle.Authority.Admission
+  ( ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
+  )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.Authority.Submission
   ( ClientId (ClientId)
@@ -205,6 +208,7 @@ samplePayload =
     { providerDispatchVersion = providerDispatchFormatVersion
     , providerDispatchSubmissionKey = "submission-key"
     , providerDispatchIntent = ObserveProviderAwsScope
+    , providerDispatchCleanupOwner = ProviderOperationUnownedByCleanupRun
     }
 
 admittedOperation :: OperationId

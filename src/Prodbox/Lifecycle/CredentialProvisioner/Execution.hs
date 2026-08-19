@@ -34,6 +34,12 @@ module Prodbox.Lifecycle.CredentialProvisioner.Execution
   , mkOperatorMaterialRevocationReadBack
   , operatorMaterialRevocationTarget
   , operatorMaterialRevocationGeneration
+  , RevokedTargetObservation (..)
+  , RevokedIdentityObservation (..)
+  , CredentialRevocationRefusal (..)
+  , decideCredentialRevocationReadBack
+  , credentialRevocationReadBackDecisionTable
+  , canonicalTargetRevocationReadBackProtocolExists
   , CredentialProvisionerResult (..)
   , CredentialProvisionerBoundary
   , mkCredentialProvisionerBoundary
@@ -67,7 +73,7 @@ import Prodbox.Lifecycle.Authority.Genesis
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
-  , CredentialTarget (AuthorityBackupStoreTarget)
+  , CredentialTarget (AuthorityBackupStoreTarget, LifecycleProviderTarget)
   , GenesisBackupPermit
   , GenesisBackupPermitError
   , OperatorMaterialAction (..)
@@ -319,6 +325,110 @@ mkOperatorMaterialRevocationReadBack target generation externalAbsent targetAbse
           , internalOperatorMaterialRevocationTargetGenerationAbsent = True
           }
   | otherwise = Left CredentialProvisionerRevocationNotReadBack
+
+-- | What re-observing the revoked target generation found.
+--
+-- Sprint 4.85: a revoke response is the worker's own claim about work it just
+-- performed.  Independent absence is a separate observation, and the three
+-- answers are kept distinct so an unobservable target can never be read as an
+-- absent one.
+data RevokedTargetObservation
+  = RevokedTargetUnobservable
+  | RevokedTargetStillPresent
+  | RevokedTargetAbsent
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | What re-observing the external identity found after the destroy.
+--
+-- 'RevokedIdentityNotReached' is a real answer: the identity step is not
+-- attempted while the target generation is unobservable or still present, and
+-- the decision below has to be total over that case rather than pretending an
+-- unattempted step was an unobservable one.
+data RevokedIdentityObservation
+  = RevokedIdentityNotReached
+  | RevokedIdentityUnobservable
+  | RevokedIdentityStillPresent
+  | RevokedIdentityAbsent
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+data CredentialRevocationRefusal
+  = RevocationTargetUnobservable
+  | RevocationTargetStillPresent
+  | RevocationIdentityNotReached
+  | RevocationIdentityUnobservable
+  | RevocationIdentityStillPresent
+  | -- | Both absences were observed but the canonical binder refused.
+    -- Unreachable while both are @True@; named rather than assumed so the
+    -- binding below stays load-bearing.
+    RevocationNotBound
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | The canonical target revocation read-back decision.
+--
+-- This is the protocol @CanonicalTargetRevocationReadBackUnavailable@ named as
+-- missing: before it, the only production revocation path took the revoke
+-- response as evidence that the target generation was gone, so an applied-but-
+-- unconfirmed revoke and a confirmed one were the same value.  Both the fenced
+-- Admin-worker path and this module's pure algebra now decide through one
+-- function over one closed observation product, and the read-back is minted
+-- only from two independent absences.
+decideCredentialRevocationReadBack
+  :: CredentialTarget
+  -> CredentialGeneration
+  -> RevokedTargetObservation
+  -> RevokedIdentityObservation
+  -> Either CredentialRevocationRefusal OperatorMaterialRevocationReadBack
+decideCredentialRevocationReadBack target generation targetObservation identityObservation =
+  case targetObservation of
+    RevokedTargetUnobservable -> Left RevocationTargetUnobservable
+    RevokedTargetStillPresent -> Left RevocationTargetStillPresent
+    RevokedTargetAbsent -> case identityObservation of
+      RevokedIdentityNotReached -> Left RevocationIdentityNotReached
+      RevokedIdentityUnobservable -> Left RevocationIdentityUnobservable
+      RevokedIdentityStillPresent -> Left RevocationIdentityStillPresent
+      RevokedIdentityAbsent ->
+        either
+          (const (Left RevocationNotBound))
+          Right
+          (mkOperatorMaterialRevocationReadBack target generation True True)
+
+-- | Every observation pair and whether the canonical decision mints a
+-- read-back for it.  Enumerable, so the protocol's discrimination is a
+-- measurement rather than a claim.
+credentialRevocationReadBackDecisionTable
+  :: CredentialTarget
+  -> CredentialGeneration
+  -> [((RevokedTargetObservation, RevokedIdentityObservation), Bool)]
+credentialRevocationReadBackDecisionTable target generation =
+  [ ( (targetObservation, identityObservation)
+    , either
+        (const False)
+        (const True)
+        ( decideCredentialRevocationReadBack
+            target
+            generation
+            targetObservation
+            identityObservation
+        )
+    )
+  | targetObservation <- [minBound .. maxBound]
+  , identityObservation <- [minBound .. maxBound]
+  ]
+
+-- | Does a canonical target revocation read-back protocol exist?
+--
+-- True exactly when the decision admits one observation pair out of the twelve
+-- — both absences independently observed — so a protocol that had drifted into
+-- accepting an unobservable or still-present target stops satisfying it.
+canonicalTargetRevocationReadBackProtocolExists :: Bool
+canonicalTargetRevocationReadBackProtocolExists =
+  [pair | (pair, minted) <- table, minted]
+    == [(RevokedTargetAbsent, RevokedIdentityAbsent)]
+ where
+  table =
+    credentialRevocationReadBackDecisionTable
+      LifecycleProviderTarget
+      dummyGeneration
 
 operatorMaterialRevocationTarget
   :: OperatorMaterialRevocationReadBack -> CredentialTarget

@@ -15,6 +15,9 @@
 module Prodbox.Lifecycle.HostCleanupIntent.Internal
   ( HostCleanupIntentStore
   , mkHostCleanupIntentStore
+  , hostCleanupIntentStoreDirectoryName
+  , bootstrapLocatedHostCleanupIntentStore
+  , authorityBoundHostCleanupIntentStore
   , hostCleanupIntentRetainedRoot
   , hostCleanupIntentPath
   , hostCleanupIntentRetiredPath
@@ -67,8 +70,10 @@ module Prodbox.Lifecycle.HostCleanupIntent.Internal
   , transitionHostCleanupIntent
   , markHostCleanupAuthorityAccepted
   , markHostCleanupTerminalArmed
+  , markHostCleanupLocalUninstallIssued
   , markHostLocalAbsenceRecorded
   , markHostCleanupAuthorityReconciled
+  , markHostCleanupCompletionCommitted
   , markHostCleanupComplete
   , HostCleanupIntentRetirementDigest
   , hostCleanupIntentRetirementDigestText
@@ -111,6 +116,12 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Config.LocalRetainedRoot
+  ( AuthorityBoundRetainedRoot
+  , BootstrapRetainedRootLocator
+  , authorityBoundRetainedRootControlDirectory
+  , bootstrapRetainedRootControlDirectory
+  )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
   , CleanupOperationId
@@ -224,12 +235,47 @@ mkHostCleanupIntentStore retainedRoot
       Left (HostCleanupIntentStoreInvalid "retained root must not be the filesystem root")
   | otherwise = Right (HostCleanupIntentStore (normalise retainedRoot))
 
+-- | Locate the host-completion record from the non-authorizing bootstrap
+-- locator.
+--
+-- This is the direction that matters.  The record is created before the local
+-- uninstall, while the Lifecycle Authority is still reachable, and it has to
+-- be found again afterwards, when it is not.  Deriving both locations from the
+-- one prodbox-owned control directory in "Prodbox.Config.LocalRetainedRoot"
+-- makes \"the record a run wrote is the record a recovery reads\" a composition
+-- rather than a convention two call sites happen to share.
+bootstrapLocatedHostCleanupIntentStore
+  :: BootstrapRetainedRootLocator
+  -> Either HostCleanupIntentError HostCleanupIntentStore
+bootstrapLocatedHostCleanupIntentStore =
+  mkHostCleanupIntentStore . bootstrapRetainedRootControlDirectory
+
+-- | Locate the same record from an Authority-bound root.
+--
+-- It resolves to the same path as the bootstrap-located store for the same
+-- retained root, because both control-directory coordinates are the one
+-- composition in "Prodbox.Config.LocalRetainedRoot".  There is deliberately no
+-- durability index here: unlike retained artifact custody, the host-completion
+-- record must be *mutated* after the Authority is gone — recording local
+-- absence is the whole point of the terminal node — so an Authority-bound
+-- mutation index would forbid the one write that matters most.
+authorityBoundHostCleanupIntentStore
+  :: AuthorityBoundRetainedRoot
+  -> Either HostCleanupIntentError HostCleanupIntentStore
+authorityBoundHostCleanupIntentStore =
+  mkHostCleanupIntentStore . authorityBoundRetainedRootControlDirectory
+
 hostCleanupIntentRetainedRoot :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentRetainedRoot = internalRetainedRoot
 
+-- | The single segment naming the record inside the prodbox-owned control
+-- directory, beside the retained-artifact store and the establishment marker.
+hostCleanupIntentStoreDirectoryName :: FilePath
+hostCleanupIntentStoreDirectoryName = "host-cleanup-intent"
+
 hostCleanupIntentDirectory :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentDirectory store =
-  hostCleanupIntentRetainedRoot store </> "host-cleanup-intent"
+  hostCleanupIntentRetainedRoot store </> hostCleanupIntentStoreDirectoryName
 
 hostCleanupIntentPath :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentPath store = hostCleanupIntentDirectory store </> "active-v1.cbor"
@@ -419,12 +465,23 @@ hostCleanupReadyCompletionOperationId =
     . observeDurableReadyToUninstallBinding
     . internalHostReadyDurableBinding
 
+-- | The durable phases of one host cleanup run.
+--
+-- Sprint 4.86: there is one phase per compiled cascade host node, because the
+-- node interpreter attributes a node's effect to that node and a phase that
+-- discharged two nodes would leave a resume with nothing to attribute a failure
+-- to.  @'HostCleanupLocalUninstallIssued'@ is the uninstall node and
+-- @'HostCleanupLocalAbsenceRecorded'@ the separate absence read-back node;
+-- @'HostCleanupCompletionCommitted'@ is the completion commit and
+-- @'HostCleanupComplete'@ its separate read-back.
 data HostCleanupIntentPhase
   = HostCleanupPrepared
   | HostCleanupAuthorityAccepted
   | HostCleanupTerminalArmed
+  | HostCleanupLocalUninstallIssued
   | HostCleanupLocalAbsenceRecorded
   | HostCleanupAuthorityReconciled
+  | HostCleanupCompletionCommitted
   | HostCleanupComplete
   deriving stock (Bounded, Enum, Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
@@ -988,8 +1045,10 @@ fixedHostCleanupIntentRegressionFor run ready =
           receipt
           [ HostCleanupAuthorityAccepted
           , HostCleanupTerminalArmed
+          , HostCleanupLocalUninstallIssued
           , HostCleanupLocalAbsenceRecorded
           , HostCleanupAuthorityReconciled
+          , HostCleanupCompletionCommitted
           , HostCleanupComplete
           ]
       reopened <- ioEitherText (observeHostCleanupIntent store)
@@ -1366,6 +1425,17 @@ markHostCleanupTerminalArmed
 markHostCleanupTerminalArmed store expected =
   transitionHostCleanupIntent store expected HostCleanupTerminalArmed Nothing
 
+markHostCleanupLocalUninstallIssued
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> IO (Either HostCleanupIntentError HostCleanupIntent)
+markHostCleanupLocalUninstallIssued store expected =
+  transitionHostCleanupIntent
+    store
+    expected
+    HostCleanupLocalUninstallIssued
+    Nothing
+
 markHostLocalAbsenceRecorded
   :: HostCleanupIntentStore
   -> HostCleanupIntent
@@ -1386,6 +1456,17 @@ markHostCleanupAuthorityReconciled store expected =
     store
     expected
     HostCleanupAuthorityReconciled
+    Nothing
+
+markHostCleanupCompletionCommitted
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> IO (Either HostCleanupIntentError HostCleanupIntent)
+markHostCleanupCompletionCommitted store expected =
+  transitionHostCleanupIntent
+    store
+    expected
+    HostCleanupCompletionCommitted
     Nothing
 
 markHostCleanupComplete

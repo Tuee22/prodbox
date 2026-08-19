@@ -1409,7 +1409,8 @@ is live. Before uninstall, Authority signs the one-shot local-completion permit 
 `PreUninstallCommit`. After exact host absence, `prepareLocalCompletion` binds that permit and the
 observed uninstall digest to the stable local-completion operation reference. The host interpreter
 idempotently appends it to the preserved non-secret cleanup journal, and a separate observation of
-the same reference mints `LocalCompletionReceipt`. The host cannot widen the signed scope, and a
+the same reference mints the local completion receipt; both belong to
+`Prodbox.Lifecycle.HostCleanupCompletion`. The host cannot widen the signed scope, and a
 rerun can perform that observation after a lost append response without reinstalling a control plane
 merely to rewrite history. Local-only delete instead terminates at exact
 `LocalUninstallEvidence 'LocalOnly`; its result type has no conversion to `CascadeCompleteEvidence`.
@@ -1652,15 +1653,93 @@ The nodes have these contracts:
    proves there are no AWS targets, no AWS query runs and the scoped no-AWS witness satisfies the
    distinct terminal arm. Neither arm selects a stack, changes a stack decision, proves a stack
    absent, or resolves checkpoint corruption.
+   `Prodbox.Lifecycle.Teardown.CascadeTerminalAudit` produces the AWS arm's observation. The
+   catalog's queries are issued **separately and unioned by ARN**, because the Resource Groups
+   Tagging API intersects the tag filters within one call and the audit's field of view is their
+   union. A query that went unanswered is a blind spot: rows that did come back are still
+   classified — a discovered escapee is an escapee whatever the other queries did — but a
+   would-be-clean verdict is downgraded to unobservable carrying that failure, the same asymmetry the
+   region bound already applies. Two returned rows that disagree about one ARN refuse the audit
+   outright rather than being resolved by preferring a row. The audit scope is derived from the
+   compiled run's own observation scope through the same derivation the evidence constructor checks
+   against, so an audit can never be taken under a scope that constructor would then reject.
 7. **Commit convergence before uninstall.** The Lifecycle Authority commits the complete
    pre-uninstall cleanup report and the independent Backup Adapter reads back that exact report.
    Authority also signs the one-shot local-completion permit. Only `ReadyToUninstallEvidence`,
    bound to the same cleanup run and its terminal-audit evidence, admits local RKE2 uninstall.
+   `Prodbox.Lifecycle.Teardown.PreUninstallReadiness` is that sequence. The read-back runs after
+   *every* commit outcome, including a reported refusal: a commit that reported success and left
+   nothing durable is not ready, and one whose response was lost — or that reported a refusal after
+   the write had already landed — is disambiguated by the observation rather than by the response.
+   The writer and the reader are separate injected boundaries, because the surface that claims to
+   have written the report must not be the surface that decides it is durable. A report identity
+   that differs between the commit and the observation refuses before a permit is requested, so the
+   Authority is never asked to sign over a report identity nothing durably holds. The module owns
+   the protocol only: the report's content belongs to `Prodbox.Lifecycle.Teardown.Report`, the
+   permit's one-shot semantics are enforced where the Authority signs it, and the uninstall that
+   consumes the readiness belongs to `Prodbox.Lifecycle.HostCleanupRunner`.
+   `Prodbox.ControlPlane.HostCleanupReadinessRepository` is the retained namespace the accepted
+   readiness lives in, and `Prodbox.Lifecycle.HostCleanupAuthorityArms` is the join between it and
+   the runner. A run owns exactly one readiness slot, named from the `CleanupRunId` alone, and the
+   only write the repository can issue is into an empty slot, so a second and different readiness
+   under one run is a conflict rather than a second key — two readiness proofs under one run would
+   be two permits — while an exact replay is a success, because a rerun accepting what it already
+   accepted is what a resumable cascade does. The acceptance read-back and the read-back taken after
+   the Authority is re-established are the same observation asked at two times, so an Authority
+   restored without the readiness it accepted cannot satisfy the run; re-establishment reports only
+   what the attempt did and never that the readiness survived, and admission is awaited only after a
+   successful restore, because admission from an Authority whose bytes were not restored would
+   accept an empty control plane that has forgotten the run.
+   `Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction` is the production answer to that
+   restore boundary. Restoration succeeds only from `BackupEstablished`, so a cascade never advances
+   genesis on its own behalf — an Authority that genesis re-opened would admit requests and have
+   forgotten the run, which is the empty control plane the ordering rule exists to refuse — and it
+   is joined to the physically separate Backup Adapter through the exact `BackupReceipt` the
+   retained projection itself names, so the Authority is not the only surface answering for its own
+   aggregate. The bounded wait covers a control plane that is not yet routable and nothing else: a
+   decided refusal and a terminal observation failure are answers, and waiting on an answer would
+   report a timeout where the run should report the refusal. The cleanup-run reconciliation begins
+   and completes the local-uninstall node under the one deterministic attempt derivation shared with
+   the durable cleanup driver, so a rerun after a lost response replays its own attempt rather than
+   colliding with it, and a transport failure is reported as a lost response because the run
+   read-back is what decides.
 8. **Observe local absence and complete.** The uninstall preserves `.data/`, removes the managed
    kubeconfig, and is followed by an exact host observation. The host interpreter atomically stores
    and reads back the scoped completion receipt beside the preserved cleanup journal. Only that
    receipt plus the matching absence evidence can construct `CascadeCompleteEvidence` and close
-   the durable run.
+   the durable run. `Prodbox.Lifecycle.HostCleanupRke2` observes the canonical install markers with
+   `lstat(2)` and is deliberately forbidden from naming the absence proof;
+   `Prodbox.Lifecycle.HostCleanupLocalAbsence` is the only join between that observation and the
+   private constructor that mints it. The observation is scoped by the running host-cleanup record
+   rather than by the readiness, so the constructor's scope comparison is between two independent
+   sources; a still-installed host and an unread host are distinct answers, because treating an
+   unread host as either absence or presence would invent a fact; and a present marker outranks an
+   unrelated marker read failure, since one positive marker already refutes absence.
+   `Prodbox.Lifecycle.HostCleanupCompletion` owns the receipt half of the same node: it binds the
+   signed permit and the observed uninstall evidence to the stable local-completion operation
+   reference, appends that entry to the preserved journal, and separately observes it back. The
+   entry is keyed by the digest of its reference rather than by its bytes, so a rerun after a lost
+   append response finds its own entry already present instead of writing a second one, and an
+   entry that is present and differs is a conflict rather than an overwrite — the host does not
+   rewrite a completion it already recorded. A journal holding no entry and a journal that could
+   not be read are distinct answers. Every field of the read-back is decoded from the durable
+   bytes and none is taken from the running context, so the runner's binding comparison is
+   between two independent sources rather than a value with itself.
+
+**One durable phase per compiled cascade host node.** The graph reaches the destructive boundary
+through four separate nodes — `UninstallCascadeLocalFoundation`, `ReadBackCascadeLocalAbsence`,
+`CommitCascadeCompletion`, `ReadBackCascadeCompletion` — and `Prodbox.Lifecycle.HostCleanupRunner`
+performs each as its own durable phase, so a resume can attribute a failure to the node that failed.
+A phase that discharged two nodes would record one node as having performed the other's effect.
+`Prodbox.ControlPlane.CascadeHostRuntime` is the closed host runtime the descriptor-bound dispatcher
+routes those four nodes to: each node drives the durable runner until the intent reaches the phase
+that performs its effect and stops, and a node that finds its phase already reached performs nothing,
+which is what keeps the destructive uninstall issued exactly once across an interrupted cascade. The
+phases with no compiled node — accepting the readiness, arming the terminal, and re-establishing the
+recovery plane and the Authority — are the runner's own preparation, and no node claims to have
+performed them. A runner observation failure is reported to the run as an *unconfirmed* effect rather
+than as a refusal, because "the mutation was issued and its read-back failed" and "a read-back failed
+on its own" are one typed answer from the node's side and the effect may still have landed.
 
 If any required observation, mutation, read-back, credential disposition, audit, report receipt, or
 local-uninstall read-back remains unresolved, the result is `CascadeIncomplete` with the stable

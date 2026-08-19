@@ -20,6 +20,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , AuthorityProviderSettlementDecision (..)
   , AuthorityProviderSubmissionDecision (..)
+  , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   , authorityAggregateProviderAdmissionEpochView
   , initialCleanInstallAuthority
   , initialCleanInstallAuthorityWithRegisteredClients
@@ -104,6 +105,7 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
               providerSubmissionKey
               providerDigest
               ObserveOperationalIdentity
+              ProviderOperationUnownedByCleanupRun
           )
       operation <- acceptedOperation accepted
       stepRegisteredProviderSubmission
@@ -113,6 +115,7 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
         providerSubmissionKey
         providerDigest
         ObserveOperationalIdentity
+        ProviderOperationUnownedByCleanupRun
         `shouldBe` Right
           ( AuthorityProviderSubmissionDuplicatePending operation
           , pending
@@ -135,6 +138,7 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
         providerSubmissionKey
         providerDigest
         ObserveOperationalIdentity
+        ProviderOperationUnownedByCleanupRun
         `shouldBe` Right
           ( AuthorityProviderSubmissionDuplicateCompleted
               operation
@@ -188,15 +192,21 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
           forbidden =
             [ "ProviderAdmissionEpoch (.."
             , "ProviderCredentialGeneration"
-            , "CascadeAuditFreezeBinding"
             , "ReservedCascadeAuditSubmission"
             , "ProviderCredentialRevocationReceipt"
             , "servingProviderAdmissionEpoch"
-            , "mkCascadeAuditFreezeBinding"
             , "stepProviderAdmissionCascade"
             , "credentialRevokedProviderAdmissionEpoch"
             ]
       mapM_ (header `shouldNotContain`) forbidden
+      -- Sprint 4.85 (2026-08-18): the freeze binding and its smart constructor
+      -- leave the facade, because the authenticated control route that carries
+      -- one now exists -- which is the condition the facade's own comment named.
+      -- What stays private is every way to apply one: the epoch constructors
+      -- above, both transitions, and the revocation receipt. A caller can state
+      -- the reservation it owns and cannot transition the epoch itself.
+      header `shouldContain` "CascadeAuditFreezeBinding"
+      header `shouldContain` "mkCascadeAuditFreezeBinding"
       admission `shouldNotContain` "stepProviderAdmissionCascade"
       admission `shouldNotContain` "ReservedCascadeAuditSubmission"
       admission `shouldContain` "RegisteredSubmissionFresh"

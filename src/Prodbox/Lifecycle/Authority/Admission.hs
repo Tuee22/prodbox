@@ -35,6 +35,8 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityAggregateSubmissionEpoch
   , authorityAggregateSubmissionEpochBindings
   , authorityAggregateProviderOperations
+  , ProviderOperationCleanupOwner (..)
+  , authorityProviderOperationCleanupOwner
   , validateAuthorityAdmissionAggregate
   , validateAuthorityAdmissionAggregateWithRegisteredClients
 
@@ -49,6 +51,12 @@ module Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommandRefusal (..)
   , AuthorityAdmissionDecision (..)
   , stepAuthorityAdmission
+  , AuthorityAdmissionCommandTag (..)
+  , authorityAdmissionCommandTag
+  , AuthorityControlRoute (..)
+  , authorityControlRouteTag
+  , authorityControlRouteIssuedCommandTag
+  , authorityControlRoutesIssueCascadeAuditFreeze
 
     -- * Operation submission
   , AuthoritySubmissionDecision (..)
@@ -212,6 +220,7 @@ import Prodbox.Lifecycle.Authority.Submission
   , stepSubmit
   , submissionStatus
   )
+import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest (FrameDigest))
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent)
 import Prodbox.Lifecycle.PulumiCheckpoint
@@ -261,21 +270,103 @@ data AuthorityDecommissionDecision
 -- | Exact Provider intent retained beside its registered submission.  A
 -- completed record keeps bounded positive evidence so a response-loss retry
 -- can return the durable outcome without inventing another operation.
-data AuthorityProviderOperation
-  = AuthorityProviderPending !RequestDigest !ProviderIntent
-  | AuthorityProviderCompleted !RequestDigest !ProviderIntent !Text
+-- | Sprint 4.85: which cleanup operation, if any, authorized a Provider
+-- operation.
+--
+-- @ProviderOperationCleanupRunOwnershipUnavailable@ said no Provider operation
+-- is owned by a cleanup run, so a disposition could not be attributed to the
+-- run that authorized it.  The retained record held the request digest and the
+-- exact intent and nothing about who asked for it, so "which run destroyed
+-- this?" was answerable only by matching intents by eye.
+--
+-- The owner is a 'CleanupOperationId' rather than a bare run id because that is
+-- the identity the teardown dispatch path actually holds: the graph lowering
+-- derives one stable operation id per (run, node), the Provider submission key
+-- is derived from it, and the run's own durable record contains it.  Naming the
+-- operation therefore names the run and the node within it, which a run id
+-- alone would not.
+--
+-- 'ProviderOperationUnownedByCleanupRun' is a real answer: desired-present
+-- provisioning work is not authorized by a cleanup run, and pretending
+-- otherwise would make ownership meaningless.
+data ProviderOperationCleanupOwner
+  = ProviderOperationUnownedByCleanupRun
+  | ProviderOperationOwnedByCleanupOperation !CleanupOperationId
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+data AuthorityProviderOperation
+  = AuthorityProviderPending
+      !RequestDigest
+      !ProviderIntent
+      !ProviderOperationCleanupOwner
+  | AuthorityProviderCompleted
+      !RequestDigest
+      !ProviderIntent
+      !Text
+      !ProviderOperationCleanupOwner
+  deriving stock (Eq, Show, Generic)
+
+-- Keep retained pre-ownership records readable.  Generic @Serialise@ encodes a
+-- sum as a list of @1 + arity@ items whose head is the constructor tag, so the
+-- pre-ownership shapes are exactly the length-3 pending and length-4 completed
+-- encodings.  They decode as unowned rather than being guessed into a run.
+instance Serialise AuthorityProviderOperation where
+  encode operation = case operation of
+    AuthorityProviderPending digest intent owner ->
+      Cbor.encodeListLen 4
+        <> Cbor.encodeWord 0
+        <> encode digest
+        <> encode intent
+        <> encode owner
+    AuthorityProviderCompleted digest intent evidence owner ->
+      Cbor.encodeListLen 5
+        <> Cbor.encodeWord 1
+        <> encode digest
+        <> encode intent
+        <> encode evidence
+        <> encode owner
+
+  decode = do
+    encodedFields <- Cbor.decodeListLen
+    constructorTag <- Cbor.decodeWord
+    case (constructorTag :: Word, encodedFields) of
+      (0, 3) -> do
+        digest <- decode
+        intent <- decode
+        pure
+          (AuthorityProviderPending digest intent ProviderOperationUnownedByCleanupRun)
+      (0, 4) -> AuthorityProviderPending <$> decode <*> decode <*> decode
+      (1, 4) -> do
+        digest <- decode
+        intent <- decode
+        evidence <- decode
+        pure
+          ( AuthorityProviderCompleted
+              digest
+              intent
+              evidence
+              ProviderOperationUnownedByCleanupRun
+          )
+      (1, 5) -> AuthorityProviderCompleted <$> decode <*> decode <*> decode <*> decode
+      _ -> fail "AuthorityProviderOperation: unknown constructor or field count"
+
 authorityProviderOperationDigest :: AuthorityProviderOperation -> RequestDigest
 authorityProviderOperationDigest operation = case operation of
-  AuthorityProviderPending digest _ -> digest
-  AuthorityProviderCompleted digest _ _ -> digest
+  AuthorityProviderPending digest _ _ -> digest
+  AuthorityProviderCompleted digest _ _ _ -> digest
 
 authorityProviderOperationIntent :: AuthorityProviderOperation -> ProviderIntent
 authorityProviderOperationIntent operation = case operation of
-  AuthorityProviderPending _ intent -> intent
-  AuthorityProviderCompleted _ intent _ -> intent
+  AuthorityProviderPending _ intent _ -> intent
+  AuthorityProviderCompleted _ intent _ _ -> intent
+
+-- | The cleanup operation that authorized this Provider operation.
+authorityProviderOperationCleanupOwner
+  :: AuthorityProviderOperation -> ProviderOperationCleanupOwner
+authorityProviderOperationCleanupOwner operation = case operation of
+  AuthorityProviderPending _ _ owner -> owner
+  AuthorityProviderCompleted _ _ _ owner -> owner
 
 -- | The one retained authority object.  The epoch-binding map has exactly the
 -- same key set as the submission ledger; this is checked by the physical codec.
@@ -728,6 +819,94 @@ data AuthorityAdmissionCommand
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Sprint 4.85: one tag per closed 'AuthorityAdmissionCommand' constructor.
+--
+-- The command type carries payloads, so it has no @Enum@\/@Bounded@ instance
+-- and cannot be enumerated. The tag can be, which is what lets the
+-- externally admissible control vocabulary below be joined to the commands it
+-- issues as data rather than as prose.
+data AuthorityAdmissionCommandTag
+  = ApplyAuthorityGenesisTag
+  | ApplyAuthorityBackupRepairTag
+  | BeginAuthorityMigrationTag
+  | ApplyAuthorityMigrationTag
+  | ApplyAuthorityMigrationImportTag
+  | ApplyAuthorityForwardMigrationTag
+  | BindProviderAdmissionGenerationTag
+  | FreezeProviderAdmissionForCascadeAuditTag
+  deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+-- | Total over the closed command universe, so a new command is an
+-- exhaustiveness failure until it is tagged.
+authorityAdmissionCommandTag
+  :: AuthorityAdmissionCommand -> AuthorityAdmissionCommandTag
+authorityAdmissionCommandTag command = case command of
+  ApplyAuthorityGenesis _ -> ApplyAuthorityGenesisTag
+  ApplyAuthorityBackupRepair _ -> ApplyAuthorityBackupRepairTag
+  BeginAuthorityMigration -> BeginAuthorityMigrationTag
+  ApplyAuthorityMigration _ -> ApplyAuthorityMigrationTag
+  ApplyAuthorityMigrationImport _ -> ApplyAuthorityMigrationImportTag
+  ApplyAuthorityForwardMigration _ -> ApplyAuthorityForwardMigrationTag
+  BindProviderAdmissionGeneration _ -> BindProviderAdmissionGenerationTag
+  FreezeProviderAdmissionForCascadeAudit _ ->
+    FreezeProviderAdmissionForCascadeAuditTag
+
+-- | Sprint 4.85: the closed vocabulary of control transitions an authenticated
+-- caller may issue, as data.
+--
+-- @Prodbox.ControlPlane.AuthorityAdmissionEndpoint@ owns the wire payload and
+-- projects it onto this enumeration totally, so the routes a caller can reach
+-- and the commands they issue are one relation instead of two. The relation is
+-- what
+-- 'Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage.measuredOperationalCredentialDispositionBlockers'
+-- reads: @GlobalProviderAdmissionFreezeUnavailable@ was a disposition blocker
+-- for exactly as long as no route issued
+-- 'FreezeProviderAdmissionForCascadeAudit', and that is now a measurement
+-- rather than an authored note.
+data AuthorityControlRoute
+  = AuthorityControlGenesisRoute
+  | AuthorityControlBackupRepairRoute
+  | AuthorityControlBeginMigrationRoute
+  | AuthorityControlForwardMigrationRoute
+  | AuthorityControlProviderGenerationBindingRoute
+  | AuthorityControlCascadeAuditFreezeRoute
+  deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+authorityControlRouteTag :: AuthorityControlRoute -> Text
+authorityControlRouteTag route = case route of
+  AuthorityControlGenesisRoute -> "authority-control/genesis"
+  AuthorityControlBackupRepairRoute -> "authority-control/backup-repair"
+  AuthorityControlBeginMigrationRoute -> "authority-control/begin-migration"
+  AuthorityControlForwardMigrationRoute -> "authority-control/forward-migration"
+  AuthorityControlProviderGenerationBindingRoute ->
+    "authority-control/bind-provider-generation"
+  AuthorityControlCascadeAuditFreezeRoute ->
+    "authority-control/freeze-provider-admission-for-cascade-audit"
+
+-- | Which aggregate command one externally admissible route issues.
+authorityControlRouteIssuedCommandTag
+  :: AuthorityControlRoute -> AuthorityAdmissionCommandTag
+authorityControlRouteIssuedCommandTag route = case route of
+  AuthorityControlGenesisRoute -> ApplyAuthorityGenesisTag
+  AuthorityControlBackupRepairRoute -> ApplyAuthorityBackupRepairTag
+  AuthorityControlBeginMigrationRoute -> BeginAuthorityMigrationTag
+  AuthorityControlForwardMigrationRoute -> ApplyAuthorityForwardMigrationTag
+  AuthorityControlProviderGenerationBindingRoute ->
+    BindProviderAdmissionGenerationTag
+  AuthorityControlCascadeAuditFreezeRoute ->
+    FreezeProviderAdmissionForCascadeAuditTag
+
+-- | Does any externally admissible control route issue the Cascade-audit
+-- freeze?
+--
+-- Read by the operational-credential disposition join. It is deliberately a
+-- projection of the route relation rather than a constant: deleting the route
+-- re-establishes the blocker instead of silently leaving it retired.
+authorityControlRoutesIssueCascadeAuditFreeze :: Bool
+authorityControlRoutesIssueCascadeAuditFreeze =
+  FreezeProviderAdmissionForCascadeAuditTag
+    `elem` map authorityControlRouteIssuedCommandTag [minBound .. maxBound]
+
 data AuthorityAdmissionCommandRefusal
   = AuthorityProviderGenerationBindingRefused !ProviderAdmissionEpochError
   | AuthorityProviderAdmissionFreezeRefused !ProviderAdmissionFreezeRefusal
@@ -846,7 +1025,7 @@ aggregatePendingProviderWork aggregate =
  where
   pendingOperations =
     [ ()
-    | AuthorityProviderPending _ _ <-
+    | AuthorityProviderPending {} <-
         Map.elems (authorityAggregateProviderOperations aggregate)
     ]
 
@@ -1089,10 +1268,11 @@ stepRegisteredProviderSubmission
   -> ClientSubmissionKey
   -> RequestDigest
   -> ProviderIntent
+  -> ProviderOperationCleanupOwner
   -> Either
        AuthorityAdmissionInvariantError
        (AuthorityProviderSubmissionDecision, AuthorityAdmissionAggregate)
-stepRegisteredProviderSubmission aggregate caller generation submissionKey digest intent = do
+stepRegisteredProviderSubmission aggregate caller generation submissionKey digest intent owner = do
   validateCurrentAggregate aggregate
   case inspectRegisteredSubmission
     (authorityAggregateSubmissionLedger aggregate)
@@ -1131,7 +1311,7 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
                 { authorityAggregateProviderOperations =
                     Map.insert
                       key
-                      (AuthorityProviderPending digest intent)
+                      (AuthorityProviderPending digest intent owner)
                       (authorityAggregateProviderOperations submitted)
                 }
         validateCurrentAggregate next
@@ -1143,13 +1323,17 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
   confirmDuplicate operation submitted =
     case Map.lookup (providerOperationKey operation) (authorityAggregateProviderOperations submitted) of
       Just retained
+        -- Sprint 4.85: the owner is part of the binding a retry must match. A
+        -- second cleanup run replaying another run's submission key would
+        -- otherwise inherit its durable outcome.
         | authorityProviderOperationDigest retained == digest
-            && authorityProviderOperationIntent retained == intent ->
+            && authorityProviderOperationIntent retained == intent
+            && authorityProviderOperationCleanupOwner retained == owner ->
             pure
               ( case retained of
                   AuthorityProviderPending {} ->
                     AuthorityProviderSubmissionDuplicatePending operation
-                  AuthorityProviderCompleted _ _ evidence ->
+                  AuthorityProviderCompleted _ _ evidence _ ->
                     AuthorityProviderSubmissionDuplicateCompleted operation evidence
               , submitted
               )
@@ -1210,7 +1394,7 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
           (operationIdSequence operation)
       )
 
-  settle _ (AuthorityProviderCompleted _ _ existing)
+  settle _ (AuthorityProviderCompleted _ _ existing _)
     | existing == evidence =
         pure (AuthorityProviderSettlementAlreadyCompleted existing, aggregate)
     | otherwise =
@@ -1218,7 +1402,7 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
           ( AuthorityProviderSettlementRefused "provider completion evidence mismatch"
           , aggregate
           )
-  settle key (AuthorityProviderPending digest retainedIntent)
+  settle key (AuthorityProviderPending digest retainedIntent owner)
     | not (validProviderEvidence evidence) =
         pure (AuthorityProviderSettlementRefused "provider completion evidence is invalid", aggregate)
     | otherwise =
@@ -1237,7 +1421,12 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
                     , authorityAggregateProviderOperations =
                         Map.insert
                           key
-                          (AuthorityProviderCompleted digest retainedIntent evidence)
+                          ( AuthorityProviderCompleted
+                              digest
+                              retainedIntent
+                              evidence
+                              owner
+                          )
                           (authorityAggregateProviderOperations aggregate)
                     }
             validateCurrentAggregate next

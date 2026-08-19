@@ -6,6 +6,7 @@ module Prodbox.ControlPlane.AuthorityBackupAdapter
   ( authorityBackupRepository
   , authorityBackupRepositoryWithTransport
   , authorityBackupAdapterReady
+  , authorityBackupBlobObjectNameForClass
   )
 where
 
@@ -126,11 +127,17 @@ observeBlob transport blobClass digest =
                               }
                         )
 
-backupObjectName
+-- | The one place a typed backup blob class becomes an adapter object name.
+--
+-- Sprint 4.87: exported so every class can be enumerated against it.  The
+-- segment crosses a stringly-typed seam into the dedicated adapter store, and
+-- a class whose segment that store does not admit refuses every copy and every
+-- observation of that class at run time rather than failing to compile.
+authorityBackupBlobObjectNameForClass
   :: AuthorityBackupBlobClass
   -> AuthorityBackupDigest
   -> Either Text (AdapterObjectName 'AuthorityBackupAdapter)
-backupObjectName blobClass digest =
+authorityBackupBlobObjectNameForClass blobClass digest =
   authorityBackupBlobObjectName
     ( case blobClass of
         AuthorityAggregateEnvelope -> "authority-aggregate"
@@ -138,6 +145,12 @@ backupObjectName blobClass digest =
         AuthorityConfigBlob -> "config"
     )
     (authorityBackupDigestText digest)
+
+backupObjectName
+  :: AuthorityBackupBlobClass
+  -> AuthorityBackupDigest
+  -> Either Text (AdapterObjectName 'AuthorityBackupAdapter)
+backupObjectName = authorityBackupBlobObjectNameForClass
 
 authorityBackupAdapterReady
   :: DedicatedAdapterBinding 'AuthorityBackupAdapter
